@@ -18,7 +18,7 @@ set -uo pipefail
 : "${ASK_SWEEP_PLAN_CACHE:=$HOME/.agent/plans}"
 : "${ASK_SWEEP_TRANSCRIPTS:=$HOME/.claude/projects}"
 : "${ASK_SWEEP_REPOS:=unity-core-playground}"   # repos whose messages are read: work repos stay out
-: "${ASK_SWEEP_BOARD:=unity-playground}"        # the board those asks and the report's counts use
+: "${ASK_SWEEP_BOARD:=unity-core-playground}"   # the board those asks and the report's counts use
 : "${ASK_SWEEP_PR_REPO:=}"                      # owner/name whose merged PRs count as delivered; the caller sets it
 : "${ASK_SWEEP_MAX:=15}"
 : "${ASK_SWEEP_MSG_BYTES:=70000}"

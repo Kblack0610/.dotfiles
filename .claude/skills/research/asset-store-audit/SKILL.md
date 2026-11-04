@@ -10,7 +10,7 @@ metadata:
 
 # Asset Store Audit
 
-Turns a folder of downloaded .unitypackage files into a per-pack verdict (Adopt / Adopt with work / Reference only / Skip) with concrete evidence, and a synthesis of what to bring in, in what order, and which of our own pipeline gaps are the real blocker. First run: 2026-09-22, 31 packs, 14 GB, report at https://claude.ai/code/artifact/3236616c-55b9-4748-8be8-f39a2885974c (saved under the unity-playground lab project, `research/asset-store-audit-2026-09-22/`).
+Turns a folder of downloaded .unitypackage files into a per-pack verdict (Adopt / Adopt with work / Reference only / Skip) with concrete evidence, and a synthesis of what to bring in, in what order, and which of our own pipeline gaps are the real blocker. First run: 2026-09-22, 31 packs, 14 GB, report at https://claude.ai/code/artifact/3236616c-55b9-4748-8be8-f39a2885974c (saved under the unity-core-playground lab project, `research/asset-store-audit-2026-09-22/`).
 
 ## Scope and triggers
 
@@ -37,7 +37,7 @@ Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.ca
 5. **Spot check two claims by hand** (one material's `m_Shader` GUID, one prefab's structure) and fold them into the synthesis.
 6. **Synthesis.** Write `$OUT/synth.html` (fragment, plain ASCII): the short answer with verdict counts, what unlocks what (pipeline gap -> packs it unblocks), suggested order, style families, gaps no pack fills, cache space reclaimable from skipped packs. Take the counts from step 7's output, never from memory.
 7. **Build and publish.** `python3 scripts/build_report.py "$OUT" "$OUT/synth.html" "$OUT/report.html"` (fails if a pack lacks a verdict or a verdict has non-ASCII). Load `artifact-design`, then publish `report.html` with the Artifact tool. If the printed counts disagree with the synthesis, fix the synthesis and republish.
-8. **Save.** Copy `report.html`, `verdicts/`, `facts/`, `RUBRIC.md` and a short `README.md` (link, counts, pipeline gaps) to the lab project the user names (default: unity-playground, `~/.notes/lab/bnb/projects/current/unity-playground/research/asset-store-audit-<date>/`), and log it on that project's agent board with `notes ptask <project> --agent add` / `done --proof <artifact url>`.
+8. **Save.** Copy `report.html`, `verdicts/`, `facts/`, `RUBRIC.md` and a short `README.md` (link, counts, pipeline gaps) to the lab project the user names (default: unity-core-playground, `~/.notes/lab/bnb/projects/current/unity-core-playground/research/asset-store-audit-<date>/`), and log it on that project's agent board with `notes ptask <project> --agent add` / `done --proof <artifact url>`.
 
 ## Do NOT
 

@@ -231,6 +231,15 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" note)" = "a b c" ]
 }
 
+@test "a project rename moves the item's board origin with it, so agent-land closes the right row" {
+  "$AQ" add --project game --from "board:game:fix the lobby: soon" --slug r "fix the lobby"
+  run "$AQ" set r project=game-renamed "from=board:game-renamed:fix the lobby: soon"
+  assert_success
+  f="$(ls "$AGENT_QUEUE_DIR"/queued/*-r.md)"
+  [ "$(field "$f" project)" = game-renamed ]
+  [ "$(field "$f" from)" = "board:game-renamed:fix the lobby: soon" ]
+}
+
 @test "plan mode and --running are recorded; --running starts in running/" {
   "$AQ" add --project game --mode plan --slug p "plan this"
   [ "$(field "$(item queued p)" mode)" = plan ]
