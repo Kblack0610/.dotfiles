@@ -23,7 +23,6 @@ function showActions(actor, verb) {
   renderActions();
 }
 
-const sumOf = (verbs) => Object.values(verbs || {}).reduce((s, n) => s + n, 0);
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 

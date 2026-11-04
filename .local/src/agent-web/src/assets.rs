@@ -237,4 +237,43 @@ mod tests {
         assert_eq!(header_of(&js, header::CACHE_CONTROL), IMMUTABLE);
         assert_eq!(header_of(&js, header::REFERRER_POLICY), "same-origin");
     }
+
+    /// The page's scripts share one global scope, so a top-level name declared in two of them
+    /// is a SyntaxError that drops the later script whole (2026-11-04: `sumOf` in infra.js and
+    /// actions.js left the Actions tab blank). `node --check` sees one file and cannot catch it.
+    #[test]
+    fn no_top_level_name_is_declared_by_two_scripts() {
+        let mut seen: std::collections::HashMap<String, &str> = Default::default();
+        for (file, ctype, body) in FILES {
+            if *ctype != JS {
+                continue;
+            }
+            for line in std::str::from_utf8(body).unwrap().lines() {
+                let rest = [
+                    "const ",
+                    "let ",
+                    "var ",
+                    "function ",
+                    "async function ",
+                    "class ",
+                ]
+                .iter()
+                .find_map(|k| line.strip_prefix(k));
+                let Some(rest) = rest else { continue };
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(first) = seen.insert(name.clone(), file) {
+                    assert_eq!(
+                        first, *file,
+                        "{name} is declared in both {first} and {file}"
+                    );
+                }
+            }
+        }
+    }
 }
