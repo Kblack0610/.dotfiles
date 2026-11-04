@@ -145,6 +145,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list |
 | fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment |
 | see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
+| every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, current wave, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
 | add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
 | move a task between waves | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |

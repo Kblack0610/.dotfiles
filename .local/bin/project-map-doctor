@@ -40,15 +40,20 @@ if ! jq -e . "$MAP_FILE" >/dev/null 2>&1; then
 fi
 pass "map is valid JSON ($MAP_FILE)"
 
-# The set of names the registry considers real. `default` is a tracker fallback, not a
-# project, so it is excluded deliberately - otherwise every typo'd name would "resolve".
-known() {
-  jq -r '
-    [ (.paths // {}) | to_entries[] | .value ]
-    + [ (.trackers // {}) | keys[] | select(. != "default") ]
-    | unique[]' "$MAP_FILE" 2>/dev/null
-}
-is_known() { known | grep -qxF -- "$1"; }
+# The set of names the registry considers real comes from `project_keys`, the one
+# definition (`default` is a tracker fallback, not a project, so every typo'd name does not
+# "resolve"). Overridable because the deployed copy is a stow symlink into ~/.dotfiles, so
+# a worktree editing the library cannot verify its own change without pointing at it.
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+if [ ! -r "$PROJECT_NAME_LIB" ]; then
+  fail "$PROJECT_NAME_LIB not found; is the dotfiles stow current?"
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$PROJECT_NAME_LIB"
+export PROJECT_MAP_FILE="$MAP_FILE"
+KNOWN="$(project_keys)"
+is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
 
 # --- 1. every `path` has a `repo` ----------------------------------------------------
 # resolve_project_name maps a directory to a project only through a `repo` + `path` pair.
@@ -139,6 +144,40 @@ else
   skip "no $AGENT_DIR; cannot check runtime keys"
 fi
 
+# --- 5b. every project has an anchor, inside its budget --------------------------------
+# The anchor is what the session preflight injects first. A key with none starts every
+# session with no key facts, plans or lessons digest. One past the budget overflows Claude
+# Code's ~10 KB hook-output cap with the rest of the preflight, which then reaches the model
+# as a 2 KB preview. The budget counts what is injected: anchor-lib.sh swaps the decisions
+# log for a pointer line, so it is left out.
+ANCHOR_MAX=6144 FACTS_MAX=2048
+if [ -d "$AGENT_DIR/anchors" ]; then
+  n=0; bad=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    n=$((n + 1)); a="$AGENT_DIR/anchors/$name.md"
+    if [ ! -f "$a" ]; then
+      fail "project \"$name\" has no anchor (regen-anchor.sh $name scaffolds one)"
+      bad=$((bad + 1)); continue
+    fi
+    read -r injected facts < <(LC_ALL=C awk '
+      /^## / { sec = substr($0, 4) }
+      sec !~ /^Decisions log/ { t += length($0) + 1 }
+      sec ~ /^Key URLs/ { f += length($0) + 1 }
+      END { print t + 0, f + 0 }' "$a")
+    if [ "$injected" -gt "$ANCHOR_MAX" ]; then
+      fail "anchor $name injects $injected bytes, over the $ANCHOR_MAX budget (move history to lessons or a dated session note)"
+      bad=$((bad + 1))
+    elif [ "$facts" -gt "$FACTS_MAX" ]; then
+      fail "anchor $name has $facts bytes of key facts, over the $FACTS_MAX budget"
+      bad=$((bad + 1))
+    fi
+  done < <(project_anchor_keys)
+  [ "$bad" -eq 0 ] && pass "all $n projects have an anchor inside the budget ($ANCHOR_MAX B injected, $FACTS_MAX B key facts)"
+else
+  skip "no $AGENT_DIR/anchors; cannot check anchors"
+fi
+
 # --- 6. every lab project is registered ---------------------------------------------
 # Needs the private overlay. This is the check that would have caught all four minted
 # names at the moment they were created.
@@ -216,12 +255,7 @@ fi
 # design and have no product tag to find.
 STAGE_VOCAB="draft alpha beta prod"
 if declare -F lab_roots >/dev/null 2>&1; then
-  # Overridable like LAB_ROOTS_LIB above, and for a reason this check cannot do without:
-  # the deployed copy is a stow symlink into ~/.dotfiles, so a worktree editing these
-  # libraries cannot verify its own change without pointing the doctor at it.
-  # shellcheck source=/dev/null
-  [ -r "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" ] \
-    && . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+  # Overridable like PROJECT_NAME_LIB above, for the same worktree reason.
   # shellcheck source=/dev/null
   [ -r "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}" ] \
     && . "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}"
@@ -251,10 +285,6 @@ if declare -F lab_roots >/dev/null 2>&1; then
       # would fail this gate.
       [ "$stage" = prod ] || continue
 
-      if ! declare -F project_release_version >/dev/null 2>&1; then
-        skip "project-name.sh unavailable; cannot verify \"$name\" ships what prod claims"
-        continue
-      fi
       repo="$(project_repo_path "$name" 2>/dev/null || true)"
       if [ -z "$repo" ]; then
         warn "lab project \"$name\" claims prod but resolves no repo - nothing can verify it"

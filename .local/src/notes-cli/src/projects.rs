@@ -2532,10 +2532,13 @@ pub fn show_waves(p: &Profile, name: &str) -> Result<()> {
 #[derive(Debug, Default, PartialEq)]
 struct SheetCounts {
     open: usize,
+    done: usize,
     urgent: usize,
     high: usize,
     low: usize,
     planned: usize,
+    /// The current wave's label (`v0.3.2`, or its heading when it has no version).
+    wave: String,
 }
 
 fn sheet_counts(content: &str) -> SheetCounts {
@@ -2547,6 +2550,13 @@ fn sheet_counts(content: &str) -> SheetCounts {
             continue;
         }
         c.open = open.len();
+        c.wave = s.label();
+        c.done = content
+            .lines()
+            .skip(s.start + 1)
+            .take(s.end.saturating_sub(s.start + 1))
+            .filter(|l| md::is_checked(l))
+            .count();
         for l in &open {
             match md::task_priority(l) {
                 Some("#urgent") => c.urgent += 1,
@@ -2559,46 +2569,129 @@ fn sheet_counts(content: &str) -> SheetCounts {
     c
 }
 
-/// One `--stats` row for the project in `dir`. The sheet is the one `ptask` reads, so the
-/// counts here and `ptask list` cannot disagree; a project with no wave sheet yet reports
-/// zeros and its front page.
-fn stats_row(profile: &str, name: &str, dir: &Path) -> String {
+/// One project's open work and front-door facts: the row behind `--stats` and its `--json`.
+/// The sheet is the one `ptask` reads, so these counts and `ptask list` cannot disagree; a
+/// project with no wave sheet yet reports zeros and its front page.
+#[derive(Debug, serde::Serialize)]
+struct ProjectStats {
+    profile: String,
+    name: String,
+    dir: PathBuf,
+    stage: String,
+    version: String,
+    /// The current wave's label; empty when the sheet has no wave.
+    wave: String,
+    open: usize,
+    done: usize,
+    urgent: usize,
+    high: usize,
+    low: usize,
+    planned: usize,
+    agent: usize,
+    /// The summary's STATUS line without its leading `_YYYY-MM-DD_` date.
+    status: String,
+    /// That date; empty when the line carries none.
+    status_date: String,
+    sheet: PathBuf,
+    summary: PathBuf,
+}
+
+/// Split a STATUS line into its leading `_YYYY-MM-DD_` date and the rest. A line with no
+/// such date keeps its whole text and an empty date.
+fn split_status_date(line: &str) -> (String, String) {
+    let date = line
+        .strip_prefix('_')
+        .and_then(|r| r.get(..11))
+        .filter(|d| d.ends_with('_'))
+        .map(|d| &d[..10])
+        .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok());
+    match date {
+        Some(d) => {
+            let rest = line[12..]
+                .trim_start_matches([' ', '-', '\u{2014}', ':'])
+                .trim();
+            (d.to_string(), rest.to_string())
+        }
+        None => (String::new(), line.to_string()),
+    }
+}
+
+fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let read = |p: Option<PathBuf>| {
         p.and_then(|p| fs::read_to_string(p).ok())
             .unwrap_or_default()
     };
     let sheet = project_tasks::task_sheet(dir);
     let c = sheet_counts(&read(sheet.clone()));
-    let agent = sheet_counts(&read(project_tasks::task_sheet(&agent_dir(dir)))).open;
+    let summary = dir.join("summary.md");
+    let (status_date, status) = status_line(&read(Some(summary.clone())))
+        .map(|l| split_status_date(&l))
+        .unwrap_or_default();
+    ProjectStats {
+        profile: profile.to_string(),
+        name: name.to_string(),
+        dir: dir.to_path_buf(),
+        stage: stage_of(dir).unwrap_or_default(),
+        version: version_str(dir),
+        wave: c.wave,
+        open: c.open,
+        done: c.done,
+        urgent: c.urgent,
+        high: c.high,
+        low: c.low,
+        planned: c.planned,
+        agent: sheet_counts(&read(project_tasks::task_sheet(&agent_dir(dir)))).open,
+        status,
+        status_date,
+        sheet: sheet.unwrap_or_else(|| front_page(dir)),
+        summary,
+    }
+}
+
+/// One `--stats` TSV row.
+fn stats_row(s: &ProjectStats) -> String {
     format!(
-        "{profile}\t{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{agent}\t{}",
-        stage_of(dir).unwrap_or_default(),
-        version_str(dir),
-        c.open,
-        c.urgent,
-        c.high,
-        c.low,
-        c.planned,
-        sheet.unwrap_or_else(|| front_page(dir)).display(),
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        s.profile,
+        s.name,
+        s.stage,
+        s.version,
+        s.open,
+        s.urgent,
+        s.high,
+        s.low,
+        s.planned,
+        s.agent,
+        s.sheet.display(),
     )
 }
 
 /// `notes projects --stats` — every profile's indexed projects with their open work, as
 /// TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>low<TAB>
-/// planned<TAB>agent<TAB>sheet`.
+/// planned<TAB>agent<TAB>sheet`. With `json`, one JSON array of [`ProjectStats`], which
+/// adds the dir, current wave, done count, STATUS line and its date, and summary path
+/// (what `regen-anchor.sh` renders as an anchor's Lab section).
 ///
 /// One call for the whole projects popup, across every profile like `focus --all`, so the
 /// switcher opens without a process per project. A profile that does not resolve is
 /// skipped: one broken profile must not blank the list.
-pub fn stats() -> Result<()> {
+pub fn stats(json: bool) -> Result<()> {
+    let mut rows = Vec::new();
     for profile in config::all_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };
         for (name, summary) in indexed(&p) {
             if let Some(dir) = summary.parent() {
-                println!("{}", stats_row(&profile, &name, dir));
+                rows.push(project_stats(&profile, &name, dir));
             }
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+    } else {
+        for s in rows {
+            println!("{}", stats_row(&s));
         }
     }
     Ok(())
@@ -4320,10 +4413,12 @@ mod stats_tests {
             sheet_counts(SHEET),
             SheetCounts {
                 open: 4,
+                done: 1,
                 urgent: 1,
                 high: 1,
                 low: 1,
-                planned: 2
+                planned: 2,
+                wave: "v0.3.2".into(),
             }
         );
     }
@@ -4344,7 +4439,7 @@ mod stats_tests {
             "# agent\n\n## Wave: v0.3.2 (current)\n- [ ] a\n- [ ] b\n- [x] c\n",
         )
         .unwrap();
-        let row = stats_row("bnb", "demo", &dir);
+        let row = stats_row(&project_stats("bnb", "demo", &dir));
         let cols: Vec<&str> = row.split('\t').collect();
         assert_eq!(
             &cols[..10],
@@ -4356,12 +4451,51 @@ mod stats_tests {
     }
 
     #[test]
+    fn a_status_line_splits_off_its_leading_date() {
+        assert_eq!(
+            split_status_date("_2026-11-04_ - shipped v1.2"),
+            ("2026-11-04".into(), "shipped v1.2".into())
+        );
+        assert_eq!(
+            split_status_date("no date here"),
+            (String::new(), "no date here".into())
+        );
+        assert_eq!(
+            split_status_date("_2026-13-40_ not a real day"),
+            (String::new(), "_2026-13-40_ not a real day".into()),
+            "an invalid date stays in the text"
+        );
+    }
+
+    #[test]
+    fn json_stats_carry_wave_done_and_the_dated_status() {
+        let dir = std::env::temp_dir().join(format!("proj-stats-json-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), SHEET).unwrap();
+        fs::write(
+            dir.join("summary.md"),
+            "# demo\n\n<!-- STATUS:START -->\n_2026-10-01_ - boss fight in review\n<!-- STATUS:END -->\n",
+        )
+        .unwrap();
+        let v = serde_json::to_value(project_stats("bnb", "demo", &dir)).unwrap();
+        assert_eq!(v["wave"], "v0.3.2");
+        assert_eq!(v["done"], 1);
+        assert_eq!(v["open"], 4);
+        assert_eq!(v["status"], "boss fight in review");
+        assert_eq!(v["status_date"], "2026-10-01");
+        assert_eq!(v["dir"], dir.display().to_string());
+        assert_eq!(v["summary"], dir.join("summary.md").display().to_string());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_project_with_no_sheet_reports_zeros_and_its_front_page() {
         let dir = std::env::temp_dir().join(format!("proj-stats-bare-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("summary.md"), "# demo #draft\n").unwrap();
-        let cols: Vec<String> = stats_row("personal", "demo", &dir)
+        let cols: Vec<String> = stats_row(&project_stats("personal", "demo", &dir))
             .split('\t')
             .map(String::from)
             .collect();
