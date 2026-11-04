@@ -33,7 +33,7 @@ set -uo pipefail
 
 : "${DISPATCH_PROFILES:=bnb}"
 : "${DISPATCH_PER_PASS:=1}"   # new sessions a pass; each start after the first reads the gate again
-: "${DISPATCH_MAX_LIVE:=6}"
+: "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
@@ -172,28 +172,38 @@ account_env() {
 
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
-# state. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`; a
+# state, weight. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`; a
 # bare name is on DISPATCH_SERVER (tmux turns a ':' in a session name into '_', so one ':' splits).
 item_sessions() {
   agent-queue list --json --state active 2>/dev/null | jq -r --arg d "$DISPATCH_SERVER" '
     select(.state != "queued" and (.session // "") != "")
     | (.session | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else $d end), (if $i then .session[$i + 1:] else .session end),
-       (.origin // ""), .project, (.area // ""), .state] | join("\u001f")' 2>/dev/null
+       (.origin // ""), .project, (.area // ""), .state, (.weight // "light")] | join("\u001f")' 2>/dev/null
   return 0
 }
 
-# live_runs -> "<project>/<area>" for every running session this runner started itself. A hand
-# launch or a restore is tagged and tracked like any other, but holds none of the runner's
-# slots: a dozen restored sessions must not stop dispatch for the day.
+# live_runs -> "<project>/<area> <weight>" for every running session this runner started itself. A
+# hand launch or a restore is tagged and tracked like any other, but holds none of the runner's
+# units: a dozen restored sessions must not stop dispatch for the day.
 live_runs() {
-  local slug server sess origin project area state
-  while IFS=$'\x1f' read -r slug server sess origin project area state; do
+  local slug server sess origin project area state weight
+  while IFS=$'\x1f' read -r slug server sess origin project area state weight; do
     [ -n "$slug" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
-    session_live "$sess" "$server" && printf '%s/%s\n' "$project" "$area"
+    session_live "$sess" "$server" && printf '%s/%s %s\n' "$project" "$area" "$weight"
   done < <(item_sessions)
   return 0
+}
+
+# weight_units <weight> -> the run units an item of that weight holds.
+weight_units() { [ "$1" = heavy ] && echo 2 || echo 1; }
+
+# live_units -> the run units the runner's live sessions hold, out of DISPATCH_MAX_LIVE.
+live_units() {
+  local u=0 w
+  while read -r _ w; do u=$(( u + $(weight_units "$w") )); done < <(live_runs)
+  echo "$u"
 }
 
 # queue_areas -> "<project>/<area>" for every active queue item that names an area. An item holds
@@ -568,12 +578,16 @@ start_items() {
       [ -z "$why" ] || { say "$why, the pass stops after $n started"; return 0; }
     fi
     if ! pick_item "$items"; then
-      if [ "$n" -eq 0 ]; then settle BLOCKED "$PICK_WHY"; else say "$PICK_WHY"; fi
+      # Every item too heavy for the units left is a full fleet, not a block: NOOP, as cmd_run says.
+      if [ "$n" -gt 0 ]; then say "$PICK_WHY"
+      elif [ "$PICK_FULL" = 1 ]; then settle NOOP "$PICK_WHY"
+      else settle BLOCKED "$PICK_WHY"; fi
       return 0
     fi
     start_item "$PICKED"; rc=$?
     case "$rc" in 0 | 4) ;; 3) return 0 ;; *) return "$rc" ;; esac
     items=$(jq -c --arg s "$(jq -r .slug <<<"$PICKED")" 'select(.slug != $s)' <<<"$items")
+    [ "$rc" -eq 0 ] && UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
@@ -614,20 +628,27 @@ load_findings() {
   FIRING=$f
 }
 
-# pick_item <item json lines> -- PICKED is the first item no firing finding holds; rc 1 with the
-# reason in PICK_WHY when every one is held, or the findings cannot be read.
+# pick_item <item json lines> -- PICKED is the first item that fits in UNITS_FREE and no firing
+# finding holds; rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be
+# read. PICK_FULL is 1 when units alone held them all.
 pick_item() {
-  local items="$1" it why held=()
-  PICKED='' PICK_WHY=''
-  load_findings || { PICK_WHY="fleet-bench findings unreadable"; return 1; }
+  local items="$1" it why need held=()
+  PICKED='' PICK_WHY='' PICK_FULL=1
+  load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   while IFS= read -r it; do
     [ -n "$it" ] || continue
-    why=$(held_by "$it" "$FIRING")
+    need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+    if [ "$need" -gt "${UNITS_FREE:-$DISPATCH_MAX_LIVE}" ]; then
+      why="heavy needs $need run units, ${UNITS_FREE:-$DISPATCH_MAX_LIVE} free"
+    else
+      why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || PICK_FULL=0
+    fi
     if [ -z "$why" ]; then PICKED=$it; return 0; fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
-  PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
+  if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
+  else PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"; fi
   return 1
 }
 
@@ -725,7 +746,7 @@ cmd_starved() {
 # here raises a limit.
 cmd_headroom() {
   local live slots load cores idle runnable why could=0
-  live=$(live_runs | grep -c . || true)
+  live=$(live_units)
   slots=$(( DISPATCH_MAX_LIVE - live ))
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
@@ -743,12 +764,12 @@ cmd_headroom() {
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
-     held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run slot is used"
+     held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
             elif $runnable == 0 then "nothing runnable" else null end)}' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  run slots: \(.live_runs)/\(.max_live) used, \(.slots_free) free",
+        "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1)",
         "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room"'
     fi
@@ -918,11 +939,12 @@ cmd_run() {
   flock -n 9 || { settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  live=$(live_runs | grep -c . || true)
-  room=$(( DISPATCH_MAX_LIVE - live ))
+  live=$(live_units)
+  UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
+  room=$UNITS_FREE
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
   # A full fleet is working, not blocked: NOOP.
-  if [ "$room" -le 0 ]; then settle NOOP "at $live live dispatched sessions, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then settle NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
   # The queue comes first; board rows are only looked at while nothing in it is runnable.
   local items; items=$(next_items)
   if [ -n "$items" ]; then run_queue "$items" "$room"; return; fi

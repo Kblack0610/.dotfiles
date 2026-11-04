@@ -486,7 +486,7 @@ game_ready() {
   # The session holds a runner slot on its area, read from the item alone.
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run live_runs
-  assert_output 'game/fix crash on load'
+  assert_output 'game/fix crash on load light'
 }
 
 @test "fill promotes picks into the queue with no gate and starts nothing; --dry-run lists them" {
@@ -795,7 +795,7 @@ two_items() {
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
   export DISPATCH_MAX_LIVE=0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run slot is used'
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run unit is used'
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {
@@ -927,8 +927,41 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   started_item other-work lab:other-agent-1 run '' 'board:other:other work' running other
   printf 'other-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'live dispatched sessions'
+  assert_output --partial 'at 1 of 1 run units'
   assert_not_called 'wt new'
+}
+
+@test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=6
+  # Two heavy and one light live session: 2 + 2 + 1 = 5 units.
+  local s
+  for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
+  printf 'game-agent-h1\ngame-agent-h2\ngame-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  assert_equal "$(live_units)" 5
+  agent-queue add --project game --slug big-one --weight heavy "big one"
+  agent-queue add --project game --slug small-one --priority low --weight light "small one"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'game: small-one'
+  [ -n "$(qitem queued big-one)" ] || fail "the heavy item started past the unit budget"
+  [ -n "$(qitem running small-one)" ] || fail "the light item did not start"
+}
+
+@test "a heavy item alone at 5 of 6 run units is a full fleet: NOOP, not BLOCKED" {
+  project game beta "$SANDBOX/repos/game"
+  local s
+  for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
+  printf 'game-agent-h1\ngame-agent-h2\ngame-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug big-one --weight heavy "big one"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'heavy needs 2 run units, 1 free'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  [ -n "$(qitem queued big-one)" ] || fail "the heavy item left the queue"
 }
 
 # --- reap --------------------------------------------------------------------------------
@@ -1156,7 +1189,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
   started_item mine lab:game-agent-9 run wilds
   run live_runs
-  assert_output game/wilds
+  assert_output 'game/wilds light'
 }
 
 # --- night: tier 3 to an open PR ---------------------------------------------------------

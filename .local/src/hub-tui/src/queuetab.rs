@@ -167,6 +167,11 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
         "high" => p.warn(),
         _ => Default::default(),
     };
+    // The weight (agent-queue's, heavy or light) rides in extra; MODE shows it beside the mode.
+    let mode = match i.extra.get("weight").and_then(|w| w.as_str()) {
+        Some(w) => format!("{} {w}", i.mode),
+        None => i.mode.clone(),
+    };
     let mut task = i.title().to_string();
     if let Some(n) = &i.note {
         task = format!("{task}  ({n})");
@@ -175,7 +180,7 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
         cell(i.slug.clone(), Default::default()),
         cell(i.priority.clone(), prio),
         i.project.clone().into(),
-        i.mode.clone().into(),
+        mode.into(),
         t.into(),
         state(i, p),
         task.into(),
@@ -265,7 +270,7 @@ pub(crate) mod tests {
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(
-            r#"{"slug":"pick-sides","project":"game","mode":"plan","priority":"high","queued":"2026-11-03T10:00:00Z","started":"2026-11-03T10:05:00Z","session":"lab:game-agent-2","state":"waiting","task":"Pick a side\nmore"}"#,
+            r#"{"slug":"pick-sides","project":"game","mode":"plan","weight":"heavy","priority":"high","queued":"2026-11-03T10:00:00Z","started":"2026-11-03T10:05:00Z","session":"lab:game-agent-2","state":"waiting","task":"Pick a side\nmore"}"#,
             "\n",
             r#"{"slug":"fix-menu","project":"game","mode":"oneshot","priority":"high","queued":"2026-11-03T10:10:00Z","started":"2026-11-03T10:20:00Z","session":"lab:game-agent-3","state":"running","task":"Fix the menu"}"#,
             "\n",
@@ -314,6 +319,10 @@ pub(crate) mod tests {
         assert!(s.contains("to PR median 95m"), "{s}");
         assert!(s.contains("waits: night (01:00-06:00)"), "{s}");
         assert!(s.contains("ok, PR 812"), "{s}");
+        assert!(
+            s.contains("plan heavy"),
+            "the weight shows beside the mode\n{s}"
+        );
         assert!(
             s.contains("lab:game-agent-3") && s.contains("Pick a side"),
             "{s}"

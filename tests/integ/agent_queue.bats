@@ -36,6 +36,31 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output "Menu: pick sides and add people"
 }
 
+@test "add sets weight: light by default, heavy for a Unity checkout or a plan item, and --weight wins" {
+  "$AQ" add --project game --slug plain "plain"
+  [ "$(field "$(item queued plain)" weight)" = light ]
+  "$AQ" add --project game --mode plan --slug planned "planned"
+  [ "$(field "$(item queued planned)" weight)" = heavy ]
+  "$AQ" add --project game --weight heavy --slug forced "forced"
+  [ "$(field "$(item queued forced)" weight)" = heavy ]
+  mkdir -p "$REPO/ProjectSettings" && : > "$REPO/ProjectSettings/ProjectVersion.txt"
+  "$AQ" add --project game --slug unity "unity"
+  [ "$(field "$(item queued unity)" weight)" = heavy ]
+  "$AQ" add --project game --weight light --slug unity-light "unity light"
+  [ "$(field "$(item queued unity-light)" weight)" = light ]
+  run "$AQ" add --project game --weight huge "huge"
+  assert_failure
+  assert_output --partial "--weight is heavy or light, not huge"
+}
+
+@test "list --json gives an item with no weight line the derived weight" {
+  "$AQ" add --project game --slug old "old"
+  sed -i '/^weight:/d' "$(item queued old)"
+  [ "$(jq -r .weight <<<"$("$AQ" show old --json)")" = light ]
+  mkdir -p "$REPO/ProjectSettings" && : > "$REPO/ProjectSettings/ProjectVersion.txt"
+  [ "$(jq -r .weight <<<"$("$AQ" show old --json)")" = heavy ]
+}
+
 @test "add reads a multi-line task from stdin" {
   printf 'Line one\nline two\n' | "$AQ" add --project game --slug two-lines
   run awk 'f { print } $0 == "---" { f = 1 }' "$(item queued two-lines)"

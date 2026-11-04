@@ -2,9 +2,9 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
+#       [--weight heavy|light] [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
-#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--after slug] [--slug prefix]
+#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix]
 #       one oneshot item per unchecked `## Phases` line, each after the one before
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
@@ -13,6 +13,7 @@
 #   stats [--json] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
+# Weight: heavy holds two of fleet-dispatch's run units, light one; see item_weight.
 # Holds: `after <slug>`, and the tags night, at:HH:MM and pr:<owner>/<repo>#<N> (until that PR merges).
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -166,15 +167,18 @@ pr_state() {
   echo "$state"
 }
 
-# item_json <file> -> one JSON object: every header key, plus state, file, task, and hold.
+# item_json <file> -> one JSON object: every header key, plus state, file, task, and hold. An item
+# with no weight line gets item_weight's answer, so every reader sees a weight.
 item_json() {
-  local f="$1" state hold=""
+  local f="$1" state hold="" weight
   state="$(state_of "$f")"
   [ "$state" = queued ] && hold="$(hold_reason "$f")"
+  weight="$(fm_get "$f" weight)"
+  [ -n "$weight" ] || weight="$(item_weight "$(fm_get "$f" project)" "$(fm_get "$f" mode)" "$(fm_get "$f" phases)")"
   awk '$0 == "---" { exit } { i = index($0, ":"); if (i > 1) { v = substr($0, i + 1); sub(/^ +/, "", v); print substr($0, 1, i - 1) "\t" v } }' "$f" \
     | jq -Rnc --arg state "$state" --arg file "$f" --arg task "$(fm_body "$f")" --arg hold "$hold" \
-      '([inputs | split("\t") | {(.[0]): (.[1:] | join("\t"))}] | add // {})
-       + {state: $state, file: $file, task: $task} + (if $hold == "" then {} else {hold: $hold} end)'
+      --arg weight "$weight" '([inputs | split("\t") | {(.[0]): (.[1:] | join("\t"))}] | add // {})
+       + {weight: $weight, state: $state, file: $file, task: $task} + (if $hold == "" then {} else {hold: $hold} end)'
 }
 
 # Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
@@ -238,12 +242,13 @@ project_of_cwd() {
 # --- verbs ---
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry=""
+  local running="" session="" task=() tag planf="" dry="" weight=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
       --mode) mode="${2:?}"; shift 2 ;;
       --priority) priority="${2:?}"; shift 2 ;;
+      --weight) weight="${2:?}"; shift 2 ;;
       --tags) tags="$(printf '%s' "${2:?}" | tr ',' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"; shift 2 ;;
       --after) after="${2:?}"; shift 2 ;;
       --from) from="${2:?}"; shift 2 ;;
@@ -269,6 +274,7 @@ cmd_add() {
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
+  case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
   case "$from" in human | shepherd | board:?*:?*) ;; *) die "--from is human, shepherd or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   for tag in $tags; do
@@ -284,6 +290,7 @@ cmd_add() {
   local resolved
   resolved="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
   project="$resolved"
+  [ -n "$weight" ] || weight="$(item_weight "$project" "$mode" "${AQ_ITEM_PHASES:-}")"
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
   lock
@@ -298,7 +305,7 @@ cmd_add() {
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
   tmp="$(mktemp "$AQ_DIR/$state/.add.XXXXXX")" || die "cannot write in $AQ_DIR/$state"
   {
-    printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\n' "$slug" "$project" "$mode" "$priority"
+    printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
     [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
     [ -n "$after" ] && printf 'after: %s\n' "$after"
     [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
@@ -313,6 +320,18 @@ cmd_add() {
   exec 8>&-
   fleet-dispatch start --item "$slug" ||
     echo "agent-queue: $slug could not start now, so it stays queued for the next dispatch pass" >&2
+}
+
+# item_weight <project> <mode> <phases> -> heavy or light, for an item added without --weight.
+# Heavy: the checkout is a Unity project (a session there runs an editor and pool gates), a plan
+# session (it holds the whole plan), or an item that carries two or more phases. Else light.
+item_weight() {
+  local dir
+  dir="$(project_repo_path "$1" 2>/dev/null)" || dir=""
+  if [ -n "$dir" ] && [ -f "$dir/ProjectSettings/ProjectVersion.txt" ]; then echo heavy; return; fi
+  [ "$2" = plan ] && { echo heavy; return; }
+  [ "$(wc -w <<<"$3")" -ge 2 ] && { echo heavy; return; }
+  echo light
 }
 
 # add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
@@ -374,7 +393,7 @@ add_plan() {
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${prev:--}" "$text"
     else
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
-        cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} \
+        cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" ${prev:+--after "$prev"} -- "$text" ||
         die "added $n of $total items from $planf; $s and the rest are not queued"
     fi
