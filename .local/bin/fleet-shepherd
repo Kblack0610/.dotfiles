@@ -43,13 +43,14 @@ LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 LEASE="$LEDGER/.lease"
 BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
-INFRA="$LEDGER/.infra"       # this pass's infra lines
-INFRA_SEEN="$LEDGER/.infra-seen" # the ones a finished pass has already reported
+INFRA="$LEDGER/.infra"       # this pass's infra and watch lines
 DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what the last check handed to a pass
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
+PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
+: "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -258,23 +259,20 @@ cmd_infra() {
   printf '%s\n' "$out"
 }
 
-# infra_sample: this pass's cluster state and urgent Sentinel trips. A line that cleared leaves
-# the seen list, so the same trip coming back is news again.
+# infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears (high and
+# urgent, `watch-companion-loop tripped`). On 2026-11-04 queue-starved was high, so the shepherd
+# never heard that dispatch had started nothing for 7.5h.
 infra_sample() {
   {
     infra_now
-    watch-companion-loop urgent 2>/dev/null | sed 's/^/infra: urgent watch tripped: /'
+    watch-companion-loop tripped 2>/dev/null | awk -F'\t' 'NF { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
-  [ -e "$INFRA_SEEN" ] || return 0
-  grep -Fxf "$INFRA" "$INFRA_SEEN" > "$INFRA_SEEN.new"
-  mv -f "$INFRA_SEEN.new" "$INFRA_SEEN"
 }
 
-# infra_due -> the sampled lines no finished pass has reported. Once per trip: a standing red
-# would otherwise start a model pass every 15 minutes with nothing new to say.
+# infra_due -> the sampled lines. Like every due line, one stays due until a pass answers it (a
+# fix, or `skip` with the why), so a standing red costs one pass, not one every 15 minutes.
 infra_due() {
-  [ -s "$INFRA" ] || return 0
-  if [ -e "$INFRA_SEEN" ]; then grep -Fxvf "$INFRA_SEEN" "$INFRA"; else cat "$INFRA"; fi
+  [ ! -s "$INFRA" ] || cat "$INFRA"
 }
 
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
@@ -347,10 +345,12 @@ due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; 
 # receipts: due lines in, out the ones a pass still owes. Every line a pass is given is answered
 # by moving it (a mark or escalate, so it is no longer due) or by `fleet-shepherd skip`: a skipped
 # line stays out while it is still due, and a line the last pass was given and left as it was
-# comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw.
+# comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw. A line
+# owed for FLEET_SHEPHERD_UNHANDLED_MIN pages the human high, once: on 2026-11-04 the passes
+# reported "dispatch NOOP" for 6.5h and nobody was told.
 receipts() {
   local line key out="" owed="" keys="" rows="" now seen
-  touch "$DUE_LAST" "$SKIPPED"
+  touch "$DUE_LAST" "$SKIPPED" "$PAGED"
   now="$(date +%s)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -358,12 +358,22 @@ receipts() {
     keys+="$key"$'\n'
     cut -f1 "$SKIPPED" | grep -qxF -- "$key" && continue
     seen="$(awk -F'\t' -v k="$key" '$1 == k { print $3; exit }' "$DUE_LAST")"
-    if [ -n "$seen" ]; then owed+="unhandled: $line"$'\n'; else out+="$line"$'\n'; fi
+    if [ -n "$seen" ]; then
+      owed+="unhandled: $line"$'\n'
+      if [ $(( (now - seen) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
+        agent-notify -p high -t shepherd "unhandled $(( (now - seen) / 60 ))m: $key" >/dev/null 2>&1 || true
+        printf '%s\n' "$key" >> "$PAGED"
+      fi
+    else
+      out+="$line"$'\n'
+    fi
     rows+="$key"$'\t'"$(line_role "$line")"$'\t'"${seen:-$now}"$'\t'"$([ -n "$seen" ] && printf 'unhandled: ')$line"$'\n'
   done
   # a skip lasts while its line is due; once it is not, the next time it is due is a new one
   awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$SKIPPED" > "$SKIPPED.tmp" \
     && mv -f "$SKIPPED.tmp" "$SKIPPED"
+  awk 'NR == FNR { if ($0 != "") k[$0] = 1; next } $0 in k' <(printf '%s' "$keys") "$PAGED" > "$PAGED.tmp" \
+    && mv -f "$PAGED.tmp" "$PAGED"
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   printf '%s%s' "$owed" "$out" | sed '/^$/d'
 }
@@ -428,7 +438,6 @@ Roles due: $(roles_for "$due")
 
 Due this pass (from fleet-shepherd due):
 $due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
-  [ "$rc" != 0 ] || cp -f "$INFRA" "$INFRA_SEEN"
   verdict="$(proof_verdict "$log" "$rc" 2>/dev/null)" || true
   publish "${verdict:-FAILED}" "$(printf '%s' "$due" | wc -l | tr -d ' ') due$([ "$rc" = 0 ] || printf ' (exit %s)' "$rc")"
   return "$rc"

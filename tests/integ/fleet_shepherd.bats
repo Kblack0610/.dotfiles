@@ -16,7 +16,7 @@ setup() {
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
-  stub watch-companion-loop 'printf "%b" "${STUB_URGENT:-}"'
+  stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; printf "%b" "${STUB_PANE:-}"'
   export PROM_LIB="$HOME/prom-stub.sh"
@@ -241,34 +241,58 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output 'infra: no k3s status series'
 }
 
-@test "an urgent trip and a red cluster lead the due lines, ahead of sessions" {
+@test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
-  export STUB_URGENT='home-k3s-node-disk\n' STUB_K3S='[{"value":[0,"2"]}]'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
   run "$SH" run
-  assert_output --partial $': due\ninfra: k3s domain red\ninfra: urgent watch tripped: home-k3s-node-disk\nnudge DONE: a'
+  assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge DONE: a'
   refute_output --partial 'unbound variable'
-  grep -q 'nudge DONE: a' "$HOME/last-prompt"
+  grep -q 'watch: queue-starved tripped (high)' "$HOME/last-prompt"
 }
 
-@test "a standing trip starts one pass, and coming back after it clears starts another" {
+@test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
   doc "[$(row d WORKING false false)]"
-  export STUB_URGENT='home-k3s-node-disk\n'
-  run "$SH" run
-  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
-  run "$SH" run
-  assert_output --partial 'nothing to move'
-  STUB_URGENT='' run "$SH" run
-  assert_output --partial 'nothing to move'
-  run "$SH" run
-  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  run "$SH" check
+  assert_output 'watch: queue-starved tripped (high)'
+  # Negative control: a pass that only reported it still owes it.
+  run "$SH" check
+  assert_output 'unhandled: watch: queue-starved tripped (high)'
+  "$SH" skip 'unhandled: watch: queue-starved tripped (high)' 'started the head item by hand; gate fix in #795'
+  run "$SH" check
+  assert_failure 1
+  STUB_TRIPPED='' run "$SH" check
+  assert_failure 1
+  run "$SH" check
+  assert_output 'watch: queue-starved tripped (high)'
 }
 
 @test "a failed pass leaves the trip due, so the next pass reports it" {
   doc "[$(row d WORKING false false)]"
-  export STUB_URGENT='home-k3s-node-disk\n'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\n'
   STUB_RC=1 run "$SH" run
   run "$SH" run
-  assert_output --partial 'infra: urgent watch tripped: home-k3s-node-disk'
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
+}
+
+@test "a line owed for an hour pages the human high once; a fresh owed line and a skipped one do not" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  "$SH" check >/dev/null
+  "$SH" check >/dev/null                      # owed, but only just
+  [ ! -s "$HOME/pages" ]
+  sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  "$SH" check >/dev/null
+  run cat "$HOME/pages"
+  assert_output --partial '-p high -t shepherd unhandled'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  "$SH" check >/dev/null
+  assert_equal "$(grep -c unhandled "$HOME/pages")" 1
+  # once it stops being due the page is spent, so the next hour-long miss pages again
+  STUB_TRIPPED='' "$SH" check || true
+  run cat "$FLEET_SHEPHERD_DIR/.paged"
+  assert_output ''
 }
 
 # finding <rule> <scope> <class> <epoch> <episode>: one row of `fleet-bench findings --json`
