@@ -1,6 +1,6 @@
 # hub-tui
 
-`hub`, every hub board as one terminal app (ratatui) with a tab per board. It runs in the `hub:board` window (declared in `.config/tmux-servers/hub.conf`); tmux Prefix i, o and O land on its Overview, Sessions and Today tabs, and the waybar load, CI and day chips open it on click. It reads through `hub-core`, the same crate agent-web's tabs use, so the terminal and the browser cannot disagree. Read-only; actions stay in `fleet.sh` (Prefix C-g). Trends live in Grafana; `o` opens the dashboard for the tab you are on.
+`hub`, every hub board as one terminal app (ratatui) with a tab per board. It runs in the `hub:board` window (declared in `.config/tmux-servers/hub.conf`); tmux Prefix i, o and O land on its Overview, Sessions and Today tabs, and the waybar load, CI and day chips open it on click. It reads through `hub-core`, the same crate agent-web's tabs use, so the terminal and the browser cannot disagree. It reads only, except the Sessions tab's controls, which act on a session through `hub_core::session_actions` (the same actions as agent-web's session buttons). Trends live in Grafana; `o` opens the dashboard for the tab you are on.
 
 Install: the installer's `build_local_rust_tools` builds it and links `~/.local/bin/hub`. By hand: `cargo build --release` here, then `ln -sf "$PWD/target/release/hub" ~/.local/bin/hub`.
 
@@ -24,7 +24,7 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 | 2 Jobs | Every job `hub_core::jobs::collect` finds: agentctl runners (the run ledger), user timers (journald), Unity gates (the ledger plus running gates from `cc:host_local_gate`), CI and k8s from Prometheus. Queued, running and done with start, duration and result; Enter opens the log under the list. A k8s Job's log is its pods' lines in Loki, read through the API server's service proxy (`kubectl get --raw`, cluster `CC_KUBE_CONTEXT`, service `CC_LOKI_SERVICE`), so Loki needs no ingress and no token | `kb-ci-runners` |
 | 3 CI | Finished runs per workflow with failures, then the recent runs list | `kb-ci-runners` |
 | 4 Machines | One row per machine: CPU now and over 6h, load per core, memory, temperature, slots per pool. Machines with no runner show when named in `CC_HOSTS` | `kb-fleet` |
-| 5 Sessions | Every agent session's stages (sync, conflicts, tree, PR, CI, plan phases, ETA, bucket, idle, why) from `~/.local/state/fleet/state.json`, the open asks, and the newest changes from `~/.agent/shepherd/watch.log`. `fleet-state.timer` writes both every minute (`fleet-sessions tick`) | - |
+| 5 Sessions | First the session controls: every live agent session and every `claude-acct park` ledger whose session has no live claude (`hub_core::session_actions::gather`), the ones you are attached to first, with the account, plan, pending ask and the agent-queue item that started it. A key arms an action and a confirm line says what it will do; nothing runs until `y`. Each action is the command that owns it: interrupt is Escape into the pane, park, unpark and move are `claude-acct`, stop types `/exit` then closes the window, cancel is `agent-queue cancel` (only for a session a queue item started). A parked row offers only unpark. The list is read on entering the tab, on `r`, after an action and on the 60s tick while it is shown. Below it, every agent session's stages (sync, conflicts, tree, PR, CI, plan phases, ETA, bucket, idle, why) from `~/.local/state/fleet/state.json`, the open asks, and the newest changes from `~/.agent/shepherd/watch.log`. `fleet-state.timer` writes both every minute (`fleet-sessions tick`) | - |
 | 6 Forecast | `fleet-bench forecast`, `vs` and `flow` (`--json`): the all-done-by band (median, p90, last at p50 and slow), the drain (highlighted when not draining), the queue and the unscheduled count, a phase timeline per session out to the last slow finish (late ones marked), the burn-up of scope against done per hour, and the frozen baseline against what happened since. Read on the 60s tick while the tab is shown | - |
 | 7 Today | The day-log record (`~/.agent/daylog/<date>.json`, `day-log.timer` every 5 minutes): waiting on you, merged, still open, sessions bench, timeline, spend. `[`/`]` step a day, `t` back to today | - |
 | 8 History | One row per recorded day: merges, repos, sessions, cost, areas. Enter opens that day on Today | - |
@@ -48,6 +48,9 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `[` / `]`, `t` | Today: the day before / after, back to today |
 | `n` / `N` | Today: the next / previous section |
 | `j`/`k`, Enter | History: pick a day, open it on Today |
+| `j`/`k` | Sessions: pick a session (PgUp/PgDn, space and `g`/`G` scroll the page) |
+| `i` `p` `u` `m` `x` `c` | Sessions: interrupt, park, unpark, move, stop, cancel the selected session; each asks first |
+| `y`/Enter, `n`/Esc, Left/Right | Sessions, confirm armed: run it, drop it, pick the account a move goes to |
 | `q`, Ctrl-C | Quit |
 
 ## Environment
@@ -60,7 +63,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 
 ## Tests
 
-`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, the Forecast page from real `fleet-bench` answers in `tests/fixtures/`, `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
+`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, the Forecast page from real `fleet-bench` answers in `tests/fixtures/`, `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. The session controls run against a fixture snapshot and a fake runner (`controls.rs`, `app.rs`), so no test reaches tmux, claude-acct or agent-queue. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
 
 ## Troubleshooting
 

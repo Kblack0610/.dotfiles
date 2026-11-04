@@ -11,9 +11,9 @@
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
 #   claude-acct check usage|burn  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
-#   claude-acct move <tmux-session> [--server S] [--stop-shells] [--dry-run]
+#   claude-acct move <tmux-session> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that session's claude and resume it on the account pick
-#                        # returns, in the same pane: park, then unpark
+#                        # returns (or the one --to names), in the same pane: park, then unpark
 #   claude-acct park <tmux-session> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that session's claude so it costs nothing while it waits,
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<tmux-session>
@@ -480,11 +480,18 @@ hold_refusal() {
     return 1
 }
 
-# refusal <status> <from dir> <to dir> <best score> <best name> <best note> <stop shells 0|1>
+# refusal <status> <from dir> <to dir> <score> <name> <note> <stop shells 0|1> [chosen]
 #   -> why this session must not move, or nothing (exit 1) when it may: hold_refusal, then
-#   whether another account has room for it
+#   whether the account it would move to has room for it. That account is the best one, or
+#   with `chosen` set, the one --to named.
 refusal() {
     hold_refusal move "$1" "${7:-0}" && return 0
+    if [[ -n "${8:-}" ]]; then
+        if [[ -z "$4" ]]; then echo "no usage data for $5, so it is not known to have room"; return 0; fi
+        if awk -v s="$4" 'BEGIN { exit !(s >= 100) }'; then echo "$5 has no room ($6)"; return 0; fi
+        if [[ "$2" == "$3" ]]; then echo "already on $5 ($6)"; return 0; fi
+        return 1
+    fi
     if [[ -z "$4" ]]; then echo "no usage data, so no account is known to have room"; return 0; fi
     if awk -v s="$4" 'BEGIN { exit !(s >= 100) }'; then
         echo "no account has room (the best is $5: $6)"; return 0
@@ -670,14 +677,17 @@ resume_cmd() {
     printf '%s' "$c"
 }
 
-# park_flow <park|move> <tmux-session> [--server S] [--stop-shells] [--dry-run]
+# park_flow <park|move> <tmux-session> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 park_flow() {
-    local verb="$1" session="" server="" dry=0 stop=0
+    local verb="$1" session="" server="" dry=0 stop=0 to_name="" to_dir=""
     shift
     while (($#)); do
         case "$1" in
             --server) [[ -n "${2:-}" ]] || { echo "claude-acct: $verb: --server needs a value" >&2; return 2; }
                       server="$2"; shift 2 ;;
+            --to) [[ "$verb" == move ]] || { echo "claude-acct: $verb: --to is for move" >&2; return 2; }
+                  [[ -n "${2:-}" ]] || { echo "claude-acct: $verb: --to needs an account name" >&2; return 2; }
+                  to_name="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
             --stop-shells) stop=1; shift ;;
             -*) echo "claude-acct: $verb: unknown flag '$1'" >&2; return 2 ;;
@@ -687,6 +697,13 @@ park_flow() {
     done
     [[ -n "$session" ]] || { echo "claude-acct: $verb: name the tmux session to $verb" >&2; return 2; }
     [[ "$session" != */* ]] || { echo "claude-acct: $verb: '$session' is not a tmux session name" >&2; return 2; }
+    if [[ -n "$to_name" ]]; then
+        local n d known=0
+        while IFS=$'\037' read -r n d; do
+            [[ "$n" == "$to_name" ]] && { known=1; to_dir="$d"; }
+        done < <(accounts)
+        ((known)) || { echo "claude-acct: $verb: no account '$to_name' in $CONF (have: $(accounts | cut -d$'\037' -f1 | paste -sd' '))" >&2; return 2; }
+    fi
 
     if [[ -z "$server" ]]; then
         local s found=()
@@ -715,7 +732,13 @@ park_flow() {
     [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
     from=$(config_dir_of "$pid")
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
-    if [[ "$verb" == move ]]; then
+    if [[ "$verb" == move && -n "$to_name" ]]; then
+        # The named account's own score line, the same numbers best() ranks.
+        b=$(scores | awk -F'\037' -v n="$to_name" '$3 == n' | head -n1 | cut -d$'\037' -f2-)
+        IFS=$'\037' read -r score name to note <<< "$b"
+        name="$to_name" to="$to_dir"
+        why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop" chosen)
+    elif [[ "$verb" == move ]]; then
         b=$(best)
         IFS=$'\037' read -r score name to note <<< "$b"
         why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop")

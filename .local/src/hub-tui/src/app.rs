@@ -3,17 +3,20 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Duration;
 
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
+use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::controls::{Ask, Controls};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
@@ -142,6 +145,10 @@ pub enum Msg {
     Jobs(Box<Jobs>),
     Forecast(Box<Forecast>),
     Log(u64, Result<String, String>),
+    /// The live and parked agent sessions, for the Sessions tab's controls.
+    Sessions(Box<Snapshot>),
+    /// A session action ended: its output, or why it failed.
+    Acted(Result<String, String>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -180,6 +187,12 @@ pub struct App {
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
+    /// The Sessions tab's session list, selection and confirm.
+    pub controls: Controls,
+    /// Runs a session action's commands; tests swap in a fake.
+    pub runner: Arc<dyn Runner + Send + Sync>,
+    /// Reads the sessions an action may target; tests swap in a fixture.
+    pub gather: fn(&dyn Runner) -> Snapshot,
     /// The day the Today tab shows; None follows the newest record.
     pub day: Option<String>,
     /// The History tab's selected row, newest first.
@@ -194,6 +207,7 @@ pub struct App {
     jobs_read: Read,
     boards_read: Read,
     forecast_read: Read,
+    sessions_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -216,6 +230,9 @@ impl App {
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
+            controls: Controls::default(),
+            runner: Arc::new(actions::System),
+            gather: actions::gather,
             day: None,
             hist_sel: 0,
             sections: vec![],
@@ -226,6 +243,7 @@ impl App {
             jobs_read: Read::default(),
             boards_read: Read::default(),
             forecast_read: Read::default(),
+            sessions_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -269,6 +287,49 @@ impl App {
                 let _ = tx.send(Msg::Forecast(Box::new(Forecast::read())));
             });
         }
+    }
+
+    /// The session list has no one file to watch (tmux, `~/.claude/sessions`, the park
+    /// ledger, agent-queue), so the Sessions tab reads it on entering, on `r`, after an action
+    /// and on the 60s tick while it is shown.
+    pub fn read_sessions(&mut self) {
+        if self.sessions_read.want() {
+            let tx = self.tx.clone();
+            let (runner, gather) = (self.runner.clone(), self.gather);
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Sessions(Box::new(gather(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// Run a confirmed action in a worker: re-read the sessions, so the target and account are
+    /// checked against now and not the list on screen, then plan and execute through hub-core.
+    fn act(&mut self, target: String, a: Action, account: Option<String>) {
+        let label = format!("{} {target}", a.name());
+        self.controls.running = Some(label.clone());
+        self.controls.said = None;
+        let tx = self.tx.clone();
+        let (runner, gather) = (self.runner.clone(), self.gather);
+        std::thread::spawn(move || {
+            let snap = gather(runner.as_ref());
+            let r = actions::plan(
+                a,
+                &target,
+                account.as_deref(),
+                &snap.sessions(),
+                &snap.accounts,
+            )
+            .and_then(|steps| actions::execute(&steps, runner.as_ref()));
+            let r = match r {
+                Ok(out) if out.trim().is_empty() => Ok(format!("{label}: done")),
+                Ok(out) => Ok(format!(
+                    "{label}: {}",
+                    out.lines().collect::<Vec<_>>().join("; ")
+                )),
+                Err(e) => Err(format!("{label}: {e}")),
+            };
+            let _ = tx.send(Msg::Acted(r));
+        });
     }
 
     pub fn read_infra(&mut self) {
@@ -315,6 +376,9 @@ impl App {
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
                 }
+                if self.tab == Tab::Sessions {
+                    self.read_sessions();
+                }
             }
             Msg::Files => self.read_jobs(),
             Msg::BoardFiles => self.read_boards(),
@@ -358,6 +422,17 @@ impl App {
                     l.text = Some(text);
                 }
             }
+            Msg::Sessions(s) => {
+                self.controls.set(*s);
+                if self.sessions_read.done() {
+                    self.read_sessions();
+                }
+            }
+            Msg::Acted(r) => {
+                self.controls.running = None;
+                self.controls.said = Some(r);
+                self.read_sessions();
+            }
         }
     }
 
@@ -380,6 +455,9 @@ impl App {
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
+        if self.tab == Tab::Sessions && self.sessions_key(k) {
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -397,6 +475,9 @@ impl App {
                 self.read_boards();
                 if self.tab == Tab::Forecast {
                     self.read_forecast();
+                }
+                if self.tab == Tab::Sessions {
+                    self.read_sessions();
                 }
             }
             KeyCode::Char('o') => {
@@ -421,6 +502,29 @@ impl App {
         if t == Tab::Forecast {
             self.read_forecast();
         }
+        if t == Tab::Sessions {
+            self.read_sessions();
+        }
+    }
+
+    /// Sessions' own keys (controls.rs): j/k pick a session, a letter arms an action's
+    /// confirm, and with one armed every key is the confirm's. The page scrolls with
+    /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
+    fn sessions_key(&mut self, k: KeyEvent) -> bool {
+        match self.controls.key(k) {
+            Ask::Pass => return false,
+            Ask::Done => {}
+            Ask::Run(t, a, acct) => self.act(t, a, acct),
+        }
+        // The title and the table header sit above the first row.
+        let at = 2 + self.controls.sel;
+        let h = self.page.max(1);
+        if at < self.scroll {
+            self.scroll = at;
+        } else if at >= self.scroll + h {
+            self.scroll = at + 1 - h;
+        }
+        true
     }
 
     /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
@@ -680,7 +784,13 @@ impl App {
             Tab::Jobs => format!(
                 "Enter log  s source  f state  / search  h history  o open url  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Sessions | Tab::Forecast => {
+            Tab::Sessions if self.controls.confirm.is_some() => {
+                "y/Enter yes  n/Esc no  Left/Right account (move)".into()
+            }
+            Tab::Sessions => format!(
+                "j/k pick  i p u m x c act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Forecast => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Today if self.day.is_some() => {
@@ -706,8 +816,16 @@ impl App {
                 None => reading("fleet-bench forecast"),
                 Some(f) => (forecast::page(f, self.p, now, w), vec![]),
             },
-            (Tab::Sessions | Tab::Today | Tab::History, None, _) => reading("the board files"),
-            (Tab::Sessions, Some(b), _) => (fleet::page(&b.watch, self.p, now, w), vec![]),
+            (Tab::Sessions, b, _) => {
+                let mut l = self.controls.lines(self.p, w);
+                l.push(Line::raw(""));
+                match b {
+                    None => l.extend(reading("the board files").0),
+                    Some(b) => l.extend(fleet::page(&b.watch, self.p, now, w)),
+                }
+                (l, vec![])
+            }
+            (Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Today, Some(b), _) => {
                 let pg = day::today(b.rec.as_ref(), self.p, now, w);
                 (pg.lines, pg.sections)
@@ -825,12 +943,129 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    /// Records every argv it is asked to run and runs none, so no test reaches tmux,
+    /// claude-acct or agent-queue.
+    #[derive(Default)]
+    struct Fake(std::sync::Mutex<Vec<String>>);
+
+    impl Runner for Fake {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.lock().unwrap().push(argv.join(" "));
+            Ok(String::new())
+        }
+    }
+
+    fn no_sessions(_: &dyn Runner) -> Snapshot {
+        Snapshot {
+            agents: vec![],
+            accounts: vec![],
+        }
+    }
+
+    fn fixture_sessions(_: &dyn Runner) -> Snapshot {
+        crate::controls::tests::fixture()
+    }
+
     fn app(tab: Tab) -> App {
         let (tx, _rx) = std::sync::mpsc::channel();
+        with_tx(tab, tx)
+    }
+
+    fn with_tx(tab: Tab, tx: Sender<Msg>) -> App {
         let mut a = App::new(tab, tx);
         a.p = Palette { no_color: true };
         a.hosts = vec!["workstation".into()];
+        a.runner = Arc::new(Fake::default());
+        a.gather = no_sessions;
         a
+    }
+
+    #[test]
+    fn the_sessions_tab_lists_the_sessions_above_the_board_with_a_confirm() {
+        let mut a = app(Tab::Sessions);
+        a.controls.set(crate::controls::tests::fixture());
+        let s = screen(&mut a, 140, 30);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[1].starts_with("SESSION CONTROLS  i interrupt"), "{s}");
+        assert!(
+            lines[2].starts_with("SESSION") && lines[2].contains("ACCOUNT"),
+            "{s}"
+        );
+        let live = lines[3];
+        for want in [
+            "lab/dotfiles-agent-3:2",
+            "here",
+            "idle",
+            "bnb",
+            "new-curious-garden",
+            "a1",
+            "fix-the-thing",
+        ] {
+            assert!(live.contains(want), "{want} missing from {live:?}");
+        }
+        assert!(
+            lines[4].contains("lab/dotfiles-agent-9:1") && lines[4].contains("parked"),
+            "{s}"
+        );
+        assert!(s.contains("Reading the board files..."), "{s}");
+        assert!(lines[29].contains("j/k pick  i p u m x c act"), "{s}");
+
+        a.handle(key('x'));
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            s.contains(
+                "Stop lab/dotfiles-agent-3:2? It will type /exit and close its tmux window."
+            ),
+            "{s}"
+        );
+        assert!(
+            s.lines().last().unwrap().contains("y/Enter yes  n/Esc no"),
+            "{s}"
+        );
+        // Tab is the confirm's while one is armed, not the next page.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
+        assert_eq!(a.tab, Tab::Sessions);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.controls.confirm.is_none());
+        assert!(!screen(&mut a, 140, 30).contains("Stop lab/"));
+    }
+
+    #[test]
+    fn a_confirmed_move_runs_claude_acct_through_hub_core() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Sessions, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.gather = fixture_sessions;
+        a.controls.set(crate::controls::tests::fixture());
+        a.handle(key('m'));
+        assert!(fake.0.lock().unwrap().is_empty(), "nothing runs before y");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
+        a.handle(key('y'));
+        assert_eq!(
+            a.controls.running.as_deref(),
+            Some("move lab/dotfiles-agent-3:2")
+        );
+        // The worker sends Acted when the action ends: wait for that message, not a timer.
+        loop {
+            match rx.recv().unwrap() {
+                Msg::Acted(r) => {
+                    a.handle(Msg::Acted(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert_eq!(
+            a.controls.said,
+            Some(Ok("move lab/dotfiles-agent-3:2: done".into()))
+        );
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.contains(&"claude-acct move dotfiles-agent-3 --server lab --to alt".to_string()),
+            "{ran:?}"
+        );
+        assert!(ran.iter().all(|c| !c.starts_with("tmux")), "{ran:?}");
     }
 
     fn screen(a: &mut App, w: u16, h: u16) -> String {

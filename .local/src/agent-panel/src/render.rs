@@ -111,7 +111,7 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             // Plan-mode and pending-ask markers, each in its own column, blank otherwise,
             // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
-            let ask = if a.ask { format!("{BLUE}A{RESET}") } else { " ".to_string() };
+            let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
             // Window tags (Prefix+t) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
@@ -219,8 +219,8 @@ mod tests {
             cwd: String::new(),
             status: String::new(),
             plan,
-            ask,
-            started_at: None,
+            ask: ask.then(|| "a1".to_string()),
+            ..Agent::default()
         }
     }
 

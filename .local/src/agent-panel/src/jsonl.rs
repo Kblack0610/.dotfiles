@@ -47,6 +47,8 @@ pub struct RowInfo {
     pub summary: String,
     /// The session is in plan mode.
     pub plan: bool,
+    /// The plan it works: the stem of `plan_file` (`new-curious-garden`), empty for none.
+    pub plan_slug: String,
 }
 
 pub fn row_info(path: &Path) -> RowInfo {
@@ -54,7 +56,16 @@ pub fn row_info(path: &Path) -> RowInfo {
     RowInfo {
         summary: last_event_in(&text),
         plan: permission_mode(&text).as_deref() == Some("plan"),
+        plan_slug: plan_slug(&plan_file(&text)),
     }
+}
+
+/// `<dir>/new-curious-garden.md` -> `new-curious-garden`.
+fn plan_slug(file: &str) -> String {
+    Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// The transcript at `path` ends on the session asking the human something: `asks_human`.
@@ -1131,6 +1142,16 @@ mod tests {
         fs::remove_file(&p).ok();
 
         assert!(!row_info(Path::new("/no/such/file.jsonl")).plan);
+    }
+
+    #[test]
+    fn the_row_names_its_plan_by_slug() {
+        let p = tmpfile("slug", &[
+            r#"{"type":"assistant","planFilePath":"/h/.claude/plans/new-curious-garden.md","message":{"content":[]}}"#,
+        ]);
+        assert_eq!(row_info(&p).plan_slug, "new-curious-garden");
+        fs::remove_file(&p).ok();
+        assert_eq!(row_info(Path::new("/no/such/file.jsonl")).plan_slug, "");
     }
 
     #[test]

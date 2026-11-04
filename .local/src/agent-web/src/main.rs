@@ -2,7 +2,8 @@
 //!
 //! Lists every agent (the same pane x `~/.claude/sessions` join agent-panel uses),
 //! pages through any agent's transcript, shows its live screen, types into its
-//! pane, and answers the headless `agent-ask` queue. The board tabs show what the
+//! pane, acts on the session (`hub_core::session_actions`: interrupt, park, unpark,
+//! move, stop, cancel), and answers the headless `agent-ask` queue. The board tabs show what the
 //! tmux hub boards write (`boards`). Changes are pushed to the browser over SSE
 //! from inotify, so nothing polls.
 //!
@@ -22,7 +23,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, session, tmux};
+use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -32,6 +33,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use hub_core::boards;
+use hub_core::session_actions::{self as actions, Action};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -128,6 +130,8 @@ async fn main() -> Result<()> {
         .route("/api/transcript", get(transcript_page))
         .route("/api/screen", get(screen))
         .route("/api/send", post(send))
+        .route("/api/session/{target}/{action}", post(session_action))
+        .route("/api/session-options", get(session_options))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
         .route("/api/watch", get(watch_board))
@@ -247,6 +251,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
     }
+    // claude-acct's park ledgers: a parked session is a row with no live claude.
+    let parked = parked::root();
+    std::fs::create_dir_all(&parked)?;
+    targets.push((parked, flat));
     // agent-queue's store; its states and done/<date>/ come and go, so watch it whole.
     let queue = session::home().join(".agent").join("queue");
     std::fs::create_dir_all(&queue)?;
@@ -304,6 +312,10 @@ fn classify(p: &Path) -> Option<String> {
         if boards::is_day(day) {
             return Some(serde_json::json!({"kind": "log", "date": day}).to_string());
         }
+    }
+    // A park ledger is named by its tmux session; one starting with `.` is still being written.
+    if p.parent()?.ends_with(".agent/parked") && !p.file_name()?.to_str()?.starts_with('.') {
+        return Some(r#"{"kind":"sessions"}"#.to_string());
     }
     let ext = p.extension()?.to_str()?;
     let parent = p.parent()?.file_name()?.to_str()?;
@@ -466,6 +478,20 @@ struct AgentOut {
     summary: String,
     session: String,
     tags: String,
+    /// The Claude account it runs on (claude-acct's name for its `CLAUDE_CONFIG_DIR`).
+    account: String,
+    /// The human is attached to its tmux session right now.
+    attached: bool,
+    /// Parked by `claude-acct park`: no claude runs, unpark resumes it.
+    parked: bool,
+    /// The plan file's slug, empty when it has none.
+    plan: String,
+    /// The pending ask this session filed.
+    ask: Option<String>,
+    /// What `POST /api/session/<target>/<action>` accepts for it.
+    actions: Vec<&'static str>,
+    /// The agent-queue item that started it.
+    item: Option<String>,
     /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
     /// question asked in the conversation is not read here: the session files it as an ask
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
@@ -489,12 +515,33 @@ async fn find(target: &str) -> ApiResult<chooser::Agent> {
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no live agent at {target}")))
 }
 
+/// A live or parked session behind a target, for reading its transcript.
+async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
+    let t = target.to_string();
+    tokio::task::spawn_blocking(move || chooser::collect_all().into_iter().find(|a| a.target == t))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no session at {target}")))
+}
+
 async fn agents() -> Json<Vec<AgentOut>> {
     // Blocking: the dialog is a transcript read, done only for agents that have one open.
     let out = tokio::task::spawn_blocking(|| {
-        chooser::collect()
+        actions::gather(&actions::System)
+            .agents
             .into_iter()
-            .map(|a| AgentOut {
+            .map(|(a, s)| AgentOut {
+                actions: actions::available(&s)
+                    .into_iter()
+                    .map(Action::name)
+                    .collect(),
+                item: s.item,
+                account: a.account,
+                attached: a.attached,
+                parked: a.parked,
+                plan: a.plan_slug,
+                ask: a.ask,
                 question: match (a.status.as_str(), &a.jsonl) {
                     ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
@@ -524,7 +571,7 @@ struct PageQuery {
 }
 
 async fn transcript_page(Query(q): Query<PageQuery>) -> ApiResult<Json<transcript::Page>> {
-    let agent = find(&q.t).await?;
+    let agent = find_any(&q.t).await?;
     let path = agent
         .jsonl
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?;
@@ -579,6 +626,49 @@ async fn capture(pane: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || tmux::capture_pane(&pane, false, SCREEN_LINES))
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct ActionBody {
+    /// The account a move resumes on.
+    #[serde(default)]
+    account: String,
+}
+
+/// Run one session action. `hub_core::session_actions` checks the target against the live and
+/// parked sessions and the account against the accounts file, then runs the command that owns
+/// the action (claude-acct, agent-queue, tmux); its stderr comes back as the error.
+async fn session_action(
+    UrlPath((target, action)): UrlPath<(String, String)>,
+    Json(b): Json<ActionBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let act = Action::parse(&action)
+        .ok_or_else(|| bad(StatusCode::BAD_REQUEST, format!("no action {action}")))?;
+    let out = tokio::task::spawn_blocking(move || {
+        let snap = actions::gather(&actions::System);
+        let account = Some(b.account.as_str()).filter(|a| !a.is_empty());
+        let steps = actions::plan(act, &target, account, &snap.sessions(), &snap.accounts)?;
+        actions::execute(&steps, &actions::System)
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        serde_json::json!({ "action": act.name(), "output": out }),
+    ))
+}
+
+/// What the page's confirm says for each action, and the account names a move can pick.
+async fn session_options() -> Json<serde_json::Value> {
+    let describe: serde_json::Map<String, serde_json::Value> = Action::ALL
+        .into_iter()
+        .map(|a| (a.name().to_string(), a.describe().into()))
+        .collect();
+    let accounts: Vec<String> = agent_panel::account::load()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    Json(serde_json::json!({ "describe": describe, "accounts": accounts }))
 }
 
 #[derive(Deserialize)]
@@ -982,6 +1072,11 @@ mod tests {
             )),
             None
         );
+        assert_eq!(
+            classify(Path::new("/h/.agent/parked/dotfiles-agent-3")).as_deref(),
+            Some(r#"{"kind":"sessions"}"#)
+        );
+        assert_eq!(classify(Path::new("/h/.agent/parked/.agent-3.Xy12")), None);
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(

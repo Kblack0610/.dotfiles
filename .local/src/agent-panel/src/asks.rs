@@ -6,7 +6,7 @@
 //! `claude_session: <id>` line. Only the asking session owns an ask; the tmux
 //! session name is not a fallback.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,9 +17,10 @@ pub fn root() -> PathBuf {
         .unwrap_or_else(|| crate::session::home().join(".agent").join("asks"))
 }
 
-/// Claude session ids that own at least one pending ask under `root`.
-pub fn pending_sessions(root: &Path) -> HashSet<String> {
-    let mut out = HashSet::new();
+/// Claude session id -> the id of a pending ask it owns under `root` (its `id:` line, else
+/// the file name). A session with several keeps the first one read.
+pub fn pending_sessions(root: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::new();
     let Ok(projects) = fs::read_dir(root) else {
         return out;
     };
@@ -38,12 +39,20 @@ pub fn pending_sessions(root: &Path) -> HashSet<String> {
             if !text.lines().any(|l| l == "status: pending") {
                 continue;
             }
-            out.extend(
-                text.lines()
-                    .filter_map(|l| l.strip_prefix("claude_session: "))
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-            );
+            let id = text
+                .lines()
+                .find_map(|l| l.strip_prefix("id: "))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            for sid in text
+                .lines()
+                .filter_map(|l| l.strip_prefix("claude_session: "))
+                .filter(|s| !s.is_empty())
+            {
+                out.entry(sid.to_string()).or_insert_with(|| id.clone());
+            }
         }
     }
     out
@@ -87,7 +96,10 @@ mod tests {
 
         let got = pending_sessions(&root);
         let _ = fs::remove_dir_all(&root);
-        assert_eq!(got, HashSet::from(["sid-pending".to_string()]));
+        assert_eq!(
+            got,
+            HashMap::from([("sid-pending".to_string(), "a1".to_string())])
+        );
     }
 
     #[test]
