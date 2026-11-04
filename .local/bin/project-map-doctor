@@ -45,23 +45,24 @@ pass "map is valid JSON ($MAP_FILE)"
 known() {
   jq -r '
     [ (.paths // {}) | to_entries[] | .value ]
-    + [ (.apps  // {}) | to_entries[] | .value | to_entries[] | .value ]
     + [ (.trackers // {}) | keys[] | select(. != "default") ]
     | unique[]' "$MAP_FILE" 2>/dev/null
 }
 is_known() { known | grep -qxF -- "$1"; }
 
-# --- 1. every `apps.<repo>` key names a registered repo -----------------------------
-# A typo here does not error: the app block is simply never consulted and every path in
-# that repo falls through to the repo name.
+# --- 1. every `path` has a `repo` ----------------------------------------------------
+# resolve_project_name maps a directory to a project only through a `repo` + `path` pair.
+# A `path` with no `repo` is never consulted: sessions there silently file under the repo.
+# (Check 3 below covers a `repo` naming no registered project.)
 n=0
-while IFS= read -r repo; do
-  [ -n "$repo" ] || continue
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="${line%%	*}"; rest="${line#*	}"; repo="${rest%%	*}"; path="${rest#*	}"
   n=$((n + 1))
-  is_known "$repo" || fail "apps.\"$repo\" names no registered project"
-done < <(jq -r '(.apps // {}) | keys[]' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n apps.<repo> keys are registered projects" \
-  || skip "no apps blocks to check"
+  [ -n "$repo" ] || fail "trackers.$name has path \"$path\" but no repo, so no directory resolves to it"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.path)
+  | "\(.key)\t\(.value.repo // "")\t\(.value.path)"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n app paths have a repo" || skip "no app paths to check"
 
 # --- 2. every `inherits` names a real tracker ---------------------------------------
 n=0

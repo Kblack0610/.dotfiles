@@ -33,13 +33,14 @@ ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 # Read on a `source == compact` SessionStart to surface a "just compacted" banner.
 COMPACT_MARKER="$HOME/.agent/compact/${PROJECT_NAME}.pending"
 
-# An APP inside a monorepo inherits its repo's tracker config (see project-map.json
-# `inherits`). Two things follow: repo-wide lessons/plans still apply to it, and its
-# git/PR rows must be scoped to the app's own subtree or they show all 12 apps.
+# An APP inside a repo (a tracker entry with `repo` + `path`) is part of that repo. Two
+# things follow: the repo's lessons/plans still apply to it, and its git/PR rows must be
+# scoped to the app's own subtree or they show all 12 apps. The parent is the `repo`, not
+# `inherits`: that one only merges ticket config and can name a different tracker.
 PROJECT_MAP="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 PARENT_NAME=""; PROJECT_PATHFILTER=""; PROJECT_PRFILTER=""
 if [ -f "$PROJECT_MAP" ] && command -v jq >/dev/null 2>&1; then
-  PARENT_NAME=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].inherits // empty' "$PROJECT_MAP" 2>/dev/null || true)
+  PARENT_NAME=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n] | objects | select(.path) | .repo // empty' "$PROJECT_MAP" 2>/dev/null || true)
   PROJECT_PATHFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].path // empty' "$PROJECT_MAP" 2>/dev/null || true)
   PROJECT_PRFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].prFilter // empty' "$PROJECT_MAP" 2>/dev/null || true)
   [ -n "$PROJECT_PATHFILTER" ] && [ -z "$PROJECT_PRFILTER" ] && PROJECT_PRFILTER="$PROJECT_NAME"
