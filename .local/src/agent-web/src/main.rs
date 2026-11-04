@@ -13,6 +13,7 @@ mod auth;
 mod infra;
 mod jobs;
 mod queue;
+mod shepherd;
 mod transcript;
 
 use std::convert::Infallible;
@@ -71,6 +72,11 @@ const STATIC: &[(&str, &str, &str)] = &[
         "queue.js",
         "text/javascript",
         include_str!("../static/queue.js"),
+    ),
+    (
+        "shepherd.js",
+        "text/javascript",
+        include_str!("../static/shepherd.js"),
     ),
 ];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
@@ -134,6 +140,7 @@ async fn main() -> Result<()> {
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
         .route("/api/queue/projects", get(queue::projects))
+        .route("/api/shepherd", get(shepherd::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -257,6 +264,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             targets.push((dir, flat));
         }
     }
+    // The shepherd's kept rundowns: a directory of whole files, each landed by a rename.
+    // Made here, as the queue's is, so the first record reaches an open page.
+    let rundowns = boards::shepherd_dir().join("rundowns");
+    std::fs::create_dir_all(&rundowns)?;
+    targets.push((rundowns, flat));
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -303,6 +315,7 @@ fn classify(p: &Path) -> Option<String> {
         "md" if p.ancestors().any(|a| a.ends_with(".agent/asks")) => {
             Some(r#"{"kind":"asks"}"#.to_string())
         }
+        "md" if parent == "rundowns" => Some(r#"{"kind":"shepherd"}"#.to_string()),
         "jsonl" => {
             let stem = p.file_stem()?.to_str()?;
             Some(serde_json::json!({"kind": "transcript", "session": stem}).to_string())
@@ -959,6 +972,16 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/shepherd/watch.state")), None);
+        assert_eq!(
+            classify(Path::new("/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md")).as_deref(),
+            Some(r#"{"kind":"shepherd"}"#)
+        );
+        assert_eq!(
+            classify(Path::new(
+                "/h/.agent/shepherd/rundowns/2026-11-03T1201Z.md.tmp"
+            )),
+            None
+        );
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(
