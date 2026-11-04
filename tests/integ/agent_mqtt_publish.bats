@@ -167,7 +167,7 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 @test "each session carries its bucket from the fleet state document, joined by target" {
   printf 'a:1\t\xe2\x9c\x93\tplatform\tt1\na:2\t~\tplatform\tt2\n' > "$NOTES_FIXTURE/agent-panel.list"
   mkdir -p "$XDG_STATE_HOME/fleet"
-  echo '{"schema":1,"generated_at":"2026-10-28T20:00:00Z","sessions":[{"target":"a:1","bucket":"NEEDS"}],"main":[{"repo":"unity-core-playground","reason":"red"}]}' \
+  echo '{"schema":1,"generated_at":"2026-10-28T20:00:00Z","sessions":[{"target":"a:1","bucket":"NEEDS"}],"main":[{"repo":"unity-core-playground","reason":"red"}],"counts":{"NEEDS":1,"STALLED":0}}' \
     > "$XDG_STATE_HOME/fleet/state.json"
   run "$PUB" --quiet
   assert_success
@@ -176,7 +176,9 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r '.sessions[0].bucket' <<< "$p")" NEEDS
   # a session the document has not seen yet has no bucket; it is never guessed
   assert_equal "$(jq -r '.sessions[1].bucket' <<< "$p")" null
-  assert_equal "$(jq -c .buckets <<< "$p")" '{"NEEDS":1,"unknown":1}'
+  # every bucket the document counts is named, an empty one as 0, so a reader keyed on the
+  # bucket never keeps an emptied bucket's last count
+  assert_equal "$(jq -c -S .buckets <<< "$p")" '{"NEEDS":1,"STALLED":0,"unknown":1}'
   assert_equal "$(jq -r .fleet_state_at <<< "$p")" 2026-10-28T20:00:00Z
   assert_equal "$(jq -r .needs <<< "$(payload agents/testhost/sessions/platform)")" 1
 }

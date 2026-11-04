@@ -1174,12 +1174,15 @@ SH
   assert_output 'agent_session_context_tokens{target="lab/s1:1",project="wt",bucket="LANDED"} 5'
   run grep -c '^agent_sessions{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
   assert_output 7
+  # the document carries the same counts, every bucket named, for the feed to publish
+  assert_equal "$(jq -c '.counts | [.LANDED, .STALLED, length]' "$XDG_STATE_HOME/fleet/state.json")" '[1,0,7]'
 }
 
 # A state document with one session that has every fact and one that has almost none.
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
-{"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],"sessions":[
+{"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
+ "counts":{"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"UNCLEAR":0,"WORKING":1},"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
   "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
