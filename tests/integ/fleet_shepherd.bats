@@ -158,6 +158,34 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ]
 }
 
+@test "log --rundown keeps each rundown as its own record and points at it from the log" {
+  stub date 'case "$*" in *%F*) echo "2026-11-03 19:05 UTC" ;; *) echo "19:05 UTC 11-03" ;; esac'
+  run "$SH" log --rundown "what is agent-48 doing" <<< "agent-48 is on enemies-throw-real, PR #1680 red on PlayMode."
+  assert_success
+  assert_output "$FLEET_SHEPHERD_DIR/rundowns/2026-11-03T1905Z.md"
+  run "$SH" log --rundown "fleet at 19:05" <<< "3 working, 1 needs you."
+  assert_success
+  assert_output "$FLEET_SHEPHERD_DIR/rundowns/2026-11-03T1905Z-2.md"
+  run cat "$FLEET_SHEPHERD_DIR/rundowns/2026-11-03T1905Z.md"
+  assert_output "# what is agent-48 doing
+
+2026-11-03 19:05 UTC
+
+agent-48 is on enemies-throw-real, PR #1680 red on PlayMode."
+  run cat "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output "- 19:05 UTC 11-03: rundown: what is agent-48 doing (rundowns/2026-11-03T1905Z.md)
+- 19:05 UTC 11-03: rundown: fleet at 19:05 (rundowns/2026-11-03T1905Z-2.md)"
+}
+
+@test "log --rundown refuses a missing title or an empty body and writes nothing" {
+  run "$SH" log --rundown <<< "a body"
+  assert_failure
+  run "$SH" log --rundown "a title" <<< "   "
+  assert_failure
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ]
+  [ -z "$(ls -A "$FLEET_SHEPHERD_DIR/rundowns" 2>/dev/null)" ]
+}
+
 # The 2026-10-29 walk, as `fleet-assess --blocked` prints it (tab-separated).
 WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-playground-agent-28\twait_for_response\t/mnt/nas/private/immich/upload/thumbs\tbfs -S dfs / -name CutscenePlayer.cs\n'
 

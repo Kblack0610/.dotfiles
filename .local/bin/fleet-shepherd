@@ -20,6 +20,11 @@
 #   fleet-shepherd log [--heading] <text>
 #                          append to the rundown ($LEDGER/log.md) stamped with the clock's
 #                          time: a `## <date time> <text>` heading, or a `- <time>: <text>` line
+#   fleet-shepherd log --rundown <title> < body
+#                          keep a rundown or a chat answer as its own record,
+#                          $LEDGER/rundowns/<date>T<hhmm>Z.md, and point at it from log.md.
+#                          What the human asked for in chat survives compaction and restarts,
+#                          and agent-web's Shepherd tab lists these records
 #
 # Most passes find nothing to move, and deciding that is a jq query, not a model run. An
 # interactive shepherd loop holds the human's latest word in context, so its lease wins.
@@ -228,6 +233,7 @@ infra_due() {
 # guesses it: on 2026-10-28 entries stamped 00:55 and 01:00 UTC 10-29 were written at 23:44 UTC.
 cmd_log() {
   local heading=0
+  [ "${1:-}" = --rundown ] && { shift; log_rundown "$@"; return; }
   [ "${1:-}" = --heading ] && { heading=1; shift; }
   [ -n "$*" ] || die "usage: fleet-shepherd log [--heading] <text>"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
@@ -236,6 +242,24 @@ cmd_log() {
   else
     printf -- '- %s: %s\n' "$(date -u '+%H:%M UTC %m-%d')" "$*" >> "$LEDGER/log.md"
   fi
+}
+
+# log --rundown <title> < body: one record per rundown or chat answer. The body is read
+# before anything is written, so an empty one leaves no file and no log line.
+log_rundown() {
+  [ -n "$*" ] || die "usage: fleet-shepherd log --rundown <title> < body"
+  local body stamp name f n=1
+  body="$(cat)"
+  [ -n "${body//[[:space:]]/}" ] || die "log --rundown: the body comes on stdin and was empty"
+  stamp="$(date -u '+%F %H:%M UTC')"
+  name="$(printf '%s' "$stamp" | sed -E 's/^([0-9-]+) ([0-9]{2}):([0-9]{2}).*/\1T\2\3Z/')"
+  mkdir -p "$LEDGER/rundowns" || die "cannot create $LEDGER/rundowns"
+  f="$LEDGER/rundowns/$name.md"
+  while [ -e "$f" ]; do n=$((n + 1)); f="$LEDGER/rundowns/$name-$n.md"; done
+  printf '# %s\n\n%s\n\n%s\n' "$*" "$stamp" "$body" > "$f.tmp" && mv "$f.tmp" "$f" \
+    || die "cannot write $f"
+  printf -- '- %s: rundown: %s (rundowns/%s)\n' "$(date -u '+%H:%M UTC %m-%d')" "$*" "${f##*/}" >> "$LEDGER/log.md"
+  echo "$f"
 }
 
 # Nothing to move and nothing working is the settled fleet: page that once, as the skill's
