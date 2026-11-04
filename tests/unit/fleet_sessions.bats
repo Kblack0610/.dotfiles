@@ -119,7 +119,7 @@ b() { session_bucket "$@"; }
 
 @test "dirty_names lists up to FLEET_DIRTY_NAMES paths, then a count; - when clean" {
   run dirty_names ''
-  assert_output -
+  [ "$output" = - ] # assert_output - would read the expected text from stdin
   run dirty_names $'a\nb'
   assert_output 'a, b'
   FLEET_DIRTY_NAMES=2 run dirty_names $'a\nb\nc\nd'
