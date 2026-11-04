@@ -5,7 +5,8 @@
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
 # pass are red; each number takes its own colour; a second host's series count once; Prometheus
-# down reads ? and no dispatch numbers read -, never a blank chip.
+# down reads ? and no dispatch numbers read -, never a blank chip. The phone lines are the head
+# line, the exceptions, what is ready and the capacity, without the hover's history or shepherd.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -265,6 +266,43 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "no dispatch numbers on the feed"
+}
+
+@test "phone: the queue head, what is ready and the capacity, and no history" {
+  run "$MODULE"
+  head="$(tip | head -1)"
+  run jq -r .phone <<< "$output"
+  assert_line --index 0 "$head"
+  assert_line --index 1 --partial "39 ready (32 urgent or high), oldest"
+  assert_line --index 2 --partial "capacity: run units"
+  assert_line --index 2 --partial "16/24"
+  assert_line --index 2 --partial "27 of 36"
+  refute_output --partial "Shepherd"
+  assert_equal "${#lines[@]}" 3
+}
+
+@test "phone: an exception leads the ready line" {
+  feed runner_fleet_dispatch.failed=1
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_line --index 1 --partial "fleet-dispatch"
+  assert_line --index 2 --partial "39 ready"
+}
+
+@test "phone: the gate that paused the last pass is named" {
+  feed summary_dispatch.room_held_slots=1
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_line --index 3 "paused by: <span color='$Y'>every run unit is used (DISPATCH_MAX_LIVE)</span>"
+}
+
+# Negative control: no numbers means no ready or capacity line to show, only the reason.
+@test "phone: no dispatch numbers says so and invents no capacity" {
+  feed summary_dispatch.runnable=-
+  run "$MODULE"
+  run jq -r .phone <<< "$output"
+  assert_output --partial "no dispatch numbers on the feed"
+  refute_output --partial "capacity:"
 }
 
 @test "Prometheus unreadable reads ? in amber, never blank" {

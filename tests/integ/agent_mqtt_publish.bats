@@ -29,6 +29,9 @@ printf '%s\t%s\n' "$t" "$m" >> "$NOTES_FIXTURE/mqtt.log"
 EOF
   chmod +x "$SANDBOX/bin/mosquitto_pub"
 
+  # Stubbed so the host's own fleet-overview never reads the host's Prometheus into a test.
+  overview_stub 'exit 1'
+
   export AGENT_MQTT_HOST=stub AGENT_MQTT_HOST_ID=testhost TZ=UTC
 
   seed_runner alpha
@@ -36,6 +39,11 @@ EOF
   printf 'WORKED' > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
   seed_watch skill-drift TRIP
   printf '1789000000' > "$WATCH_STATE_DIR/skill-drift.since"
+}
+
+overview_stub() {
+  printf '#!/usr/bin/env bash\n%s\n' "$1" > "$SANDBOX/bin/fleet-overview"
+  chmod +x "$SANDBOX/bin/fleet-overview"
 }
 
 payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:-$PUBLOG}" | tail -1; }
@@ -344,4 +352,41 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/beta)")" true
   assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/gamma)")" true
   assert_equal "$(jq -r '.running | type' <<< "$(payload agents/testhost/runner/alpha)")" boolean
+}
+
+@test "overview: the widget's html rides as an attribute, past HA's 255-char state limit" {
+  overview_stub "jq -cn --arg h \"\$(printf 'x%.0s' {1..600})\" '{state: \"warn\", html: \$h}'"
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/overview)"
+  assert_equal "$(jq -r .state <<< "$p")" warn
+  assert_equal "$(jq -r '.html | length' <<< "$p")" 600
+  c="$(payload homeassistant/sensor/agent_testhost_summary_overview/config)"
+  assert_equal "$(jq -r .name <<< "$c")" "Fleet overview"
+  assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/overview
+}
+
+# Negative control: a failed or hollow overview publishes nothing rather than a blank widget.
+@test "overview: a failed run or one with no html publishes no topic" {
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/overview)" ]
+  overview_stub 'echo "{\"state\": \"ok\"}"'
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/overview)" ]
+}
+
+@test "overview: a run inside the TTL repeats the sent payload, an older one renders again" {
+  overview_stub 'echo x >> "$NOTES_FIXTURE/renders"; echo "{\"state\": \"ok\", \"html\": \"h$(wc -l < "$NOTES_FIXTURE/renders")\"}"'
+  "$PUB" --quiet
+  "$PUB" --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/renders")" 1
+  assert_equal "$(jq -r .html <<< "$(payload agents/testhost/summary/overview)")" h1
+  "$PUB" --full --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/renders")" 1
+  assert_equal "$(grep -c '^agents/testhost/summary/overview' "$PUBLOG")" 2
+  touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%overview"
+  "$PUB" --quiet
+  assert_equal "$(jq -r .html <<< "$(payload agents/testhost/summary/overview)")" h2
 }
