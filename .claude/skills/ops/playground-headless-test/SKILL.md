@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
-  reviewed: 2026-11-02
+  reviewed: 2026-11-03
 ---
 
 # Playground headless test
@@ -27,7 +27,7 @@ Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP".
    `scripts/test/run.sh --filter <Namespace.Class>` (add `--platform EditMode` for an EditMode class). A fresh worktree seeds `Library/` itself (`scripts/setup/library.sh`). Run it in the background and wait for the notification.
 3. Read the counts. `0/0` or no `==> n/m` line means run.sh refused the arguments, not that tests passed. Failure detail is in `Logs/test-runs/<stamp>/results.xml`.
 4. Prove a new check can fail: plant one fault per assertion (a bad asset, an entry removed from an allow list), run, see it red, revert, confirm `git status` is clean in the repo and in `External/asset-library`.
-5. Gate and land with the one background command in `docs/operations/ci.md`, One change, start to finish, committed. It ends in `agent-land`, which waits for Checks, merges and closes the board row, so a green gate wakes you once, already landed. Its Rules decide where it runs, what it picks, when to gate again after merging main, and what a FAIL or ONMAIN means; do not pick the place or the classes by hand.
+5. Gate and land with the one background command in `docs/operations/ci.md`, One change, start to finish, committed. It ends in `agent-land`, which waits for Checks, merges and closes the board row, so a green gate wakes you once, already landed. Its Rules decide where it runs, what it picks, when to gate again after merging main, and what a FAIL means; do not pick the place or the classes by hand.
 6. At session start, read main's last nightly as `docs/operations/ci.md` rule 10 says.
 
 ## Do NOT
