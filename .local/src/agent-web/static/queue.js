@@ -53,7 +53,7 @@ function qItem(i) {
     : i.started ? `started ${when(i.started)}` : `queued ${when(i.queued)}`;
   const meta = [
     `<span class="qprio ${esc(i.priority)}">${esc(i.priority)}</span>`,
-    esc(i.project), esc(i.mode), stamp,
+    esc(i.project), esc(i.mode), i.weight ? esc(i.weight) : "", stamp,
     i.from && i.from !== "human" ? esc(i.from) : "",
     i.session ? `session ${esc(i.session)}` : "",
     a && a.phases ? esc(phasesText(a)) : "",
