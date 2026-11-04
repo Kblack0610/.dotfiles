@@ -32,6 +32,15 @@ function qWhen(t) {
     : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// What the item's session needs from the human now: the dialog its pane shows, and the asks
+// it filed. Answered in place, through the same cards the Waiting tab uses.
+function qNeeds(a) {
+  if (!a) return "";
+  const cards = (a.question ? sessionCard(a) : "") +
+    st.asks.filter((k) => k.session && k.session === a.session).map(askCard).join("");
+  return cards ? `<div class="qneed">${cards}</div>` : "";
+}
+
 // The tmux pane agent-panel lists for this item's session, if it is still live.
 function qAgent(i) {
   if (!i.session) return null;
@@ -62,12 +71,12 @@ function qItem(i) {
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
   const prio = Q_PRIORITIES.map((p) => `<option${p === i.priority ? " selected" : ""}>${p}</option>`).join("");
   const acts = active
-    ? `<div class="opts">${approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
+    ? `<div class="opts">${a && a.question && a.question.kind === "plan" ? "" : approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
       `<select data-bump="${esc(i.slug)}" title="priority">${prio}</select>` +
       `<button class="btn sm" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
   return `<div class="card qitem"><div class="meta">${esc(i.slug)} ${tags}</div><div class="meta">${meta}</div>` +
-    `<div class="q">${esc(i.task || "")}</div>${hold}${note}${acts}</div>`;
+    `<div class="q">${esc(i.task || "")}</div>${hold}${note}${active ? qNeeds(a) : ""}${acts}</div>`;
 }
 
 function qCompose() {
@@ -101,6 +110,17 @@ function renderQueue() {
 function renderQueueList() {
   const el = $("q-list");
   if (!el) return;
+  // Keep a reply being typed into a row's answer card across the re-render.
+  const f = document.activeElement, card = f && f.closest && f.closest("#q-list .qneed .card");
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  drawQueueList(el);
+  if (!keep) return;
+  const again = [...el.querySelectorAll(".qneed .card")].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const input = again && again.querySelector("[data-free]");
+  if (input) { input.value = keep.v; input.focus(); }
+}
+
+function drawQueueList(el) {
   if (!qst.items) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
   let html = qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "";
   for (const [state, title] of Q_SECTIONS) {
@@ -150,6 +170,8 @@ const qPending = {};
 $("queue").addEventListener("click", (e) => {
   const t = e.target;
   if (t.id === "q-add") { qAdd(); return; }
+  const need = t.closest(".qneed .card");
+  if (need) { answerCard(need, e); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) { setTab("sessions"); select(a); }
@@ -166,11 +188,13 @@ $("queue").addEventListener("click", (e) => {
 });
 $("queue").addEventListener("change", (e) => {
   const t = e.target;
+  if (t.closest(".qneed")) return;
   if (t.dataset.bump) { qAct("/api/queue/bump", { slug: t.dataset.bump, priority: t.value }); return; }
   if (t.closest(".qadd")) qSaveDraft();
 });
 $("queue").addEventListener("input", (e) => { if (e.target.closest(".qadd")) qSaveDraft(); });
 $("queue").addEventListener("keydown", (e) => {
+  if (e.target.closest(".qneed")) { answerOnEnter(e); return; }
   if (e.target.id === "q-task" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qAdd(); }
 });
 
