@@ -563,20 +563,37 @@ cmd_stats() {
   } | jq -sc --arg since "$since" '
     def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
+    def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;
+    def age: ((now - (. | fromdateiso8601)) / 60 | floor);
+    # A `--running` or plan item starts the minute it is added; counting its 0 hid every real wait.
+    def waits: [.[] | mins(.queued; .started)];
+    def waited: waits | map(select(. > 0));
+    # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged".
+    def hold_kind: split(" ")[0] | split(":")[0];
     def source: (.from // "human") | split(":")[0];
     def count_by(f): group_by(f) | map({key: (.[0] | f), value: length}) | from_entries;
     def has_pr: (.pr // "") != "";
     def to_pr: [.[] | select(has_pr) | mins(.queued; .finished)] | median;
     def outcomes: {done: length, ok: map(select(.status == "ok")) | length,
       failed: map(select(.status == "failed")) | length, cancelled: map(select(.status == "cancelled")) | length,
-      prs: map(select(has_pr)) | length, wait_minutes_median: ([.[] | mins(.queued; .started)] | median),
+      prs: map(select(has_pr)) | length, wait_minutes_median: (waited | median),
       to_pr_minutes_median: to_pr};
     def group(f): group_by(f) | map({key: (.[0] | f), value: outcomes}) | from_entries;
     (map(select(.state == "done"))) as $done
+    | (map(select(.state == "queued"))) as $queued
+    | ($queued | map(select(.hold == null) | {slug, project, minutes: (.queued | age)}) | sort_by(-.minutes)) as $runnable
     | {since: $since,
        active: (map(select(.state != "done")) | count_by(.state)),
        done: ($done | count_by(.status // "unknown")),
-       wait_minutes_median: ([.[] | mins(.queued; .started)] | median),
+       wait_minutes_median: (waited | median),
+       wait_minutes_p90: (waited | p90),
+       started_at_once: (waits | map(select(. == 0)) | length),
+       sitting: {queued: ($queued | length), runnable: ($runnable | length),
+         held: ($queued | map(select(.hold)) | length),
+         held_by: ($queued | map(select(.hold)) | count_by(.hold | hold_kind)),
+         runnable_age_minutes_median: ($runnable | map(.minutes) | median),
+         oldest_runnable: $runnable[:3]},
+       added_per_day: (map(select((.queued // "")[:10] >= $since)) | count_by(.queued[:10])),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),
@@ -584,10 +601,16 @@ cmd_stats() {
        by_source: ($done | group(source)),
        done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
-  jq -r '"since \(.since)",
-    "active:  \(.active | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end)",
-    "done:    \(.done | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end)",
-    "wait:    median \(.wait_minutes_median // "-") min from queued to started",
+  jq -r 'def dur: if . == null then "-" elif . >= 120 then "\(. / 60 | floor)h" else "\(.)m" end;
+    def pairs: to_entries | map("\(.key) \(.value)") | join(", ");
+    "since \(.since)",
+    "active:  \(.active | pairs | if . == "" then "none" else . end)",
+    "done:    \(.done | pairs | if . == "" then "none" else . end)",
+    "wait:    median \(.wait_minutes_median // "-") min, p90 \(.wait_minutes_p90 // "-") min from queued to started, \(.started_at_once) started at once and not counted",
+    (.sitting | "sitting: \(.runnable) can start, oldest \(.oldest_runnable[0].minutes | dur)"
+      + (if .runnable > 0 then " (\(.oldest_runnable[0].slug)), median \(.runnable_age_minutes_median | dur)" else "" end)
+      + "; \(.held) held" + (if .held > 0 then " (\(.held_by | pairs))" else "" end)),
+    "added:   \(.added_per_day | pairs)",
     "run:     median \(.run_minutes_median // "-") min from started to finished",
     "to PR:   median \(.to_pr_minutes_median // "-") min from queued to finished with a PR",
     "per day: \(.per_day | to_entries | map("\(.key) \(.value)") | join(", "))",

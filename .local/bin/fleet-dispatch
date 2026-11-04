@@ -6,6 +6,7 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
+#   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
@@ -576,6 +577,13 @@ start_items() {
   done
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
   [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
+  [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
+  # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
+  why=$(gate "$scope")
+  [ -z "$why" ] || return 0
+  local limit=DISPATCH_PER_PASS; [ "$room" -lt "$DISPATCH_PER_PASS" ] && limit=DISPATCH_MAX_LIVE
+  settle WORKED "under-used: started $n, $limit is the limit while $(grep -c . <<<"$items") runnable wait and the gates are open (fleet-dispatch headroom)"
+  [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
 }
 
@@ -710,6 +718,41 @@ cmd_starved() {
   return 1
 }
 
+# headroom [--json] -- the window over the limits: how many more queue items a start could take now
+# (free run slots while every gate is open, else 0 and the gate that holds), and the margin under
+# load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
+# here raises a limit.
+cmd_headroom() {
+  local live slots load cores idle runnable why could=0
+  live=$(live_runs | grep -c . || true)
+  slots=$(( DISPATCH_MAX_LIVE - live ))
+  load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
+  cores=$(nproc 2>/dev/null || echo 1)
+  idle=$(real_idle)
+  runnable=$(next_items | grep -c . || true)
+  why=$(IDLE_NOW=$idle gate any)
+  if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
+  jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson max_live "$DISPATCH_MAX_LIVE" \
+    --argjson per_pass "$DISPATCH_PER_PASS" --argjson could "$could" --argjson cores "$cores" \
+    --arg load "${load:-}" --arg max_load "$DISPATCH_MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" '
+    def num: if . == "" then null else tonumber end;
+    {could_start: $could, per_pass: $per_pass, per_pass_limited: ($could > $per_pass),
+     runnable: $runnable, live_runs: $live, max_live: $max_live, slots_free: ($max_live - $live),
+     load: ($load | num), load_cap: (($max_load | tonumber) * $cores),
+     load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
+     idle: ($idle | num), min_idle: $min_idle,
+     idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
+     held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run slot is used"
+            elif $runnable == 0 then "nothing runnable" else null end)}' |
+    if [ "${1:-}" = --json ]; then cat; else
+      jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass))" +
+        (if .held then ", held: \(.held)" else "" end),
+        "  run slots: \(.live_runs)/\(.max_live) used, \(.slots_free) free",
+        "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
+        "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room"'
+    fi
+}
+
 # runnable -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
 # after:), one JSON object a line with t, the queued epoch. Fails when the queue is unreadable.
 runnable() {
@@ -799,7 +842,8 @@ waiting_sessions() {
 }
 
 # real_idle -> percent of the machine idle over a two-frame top sample; the first frame is since boot.
-real_idle() { LC_ALL=C top -bn2 -d2 2>/dev/null | sed -n 's/^%Cpu.* \([0-9.]*\) id,.*/\1/p' | tail -n 1; }
+# IDLE_NOW: a reading this call already took, so a report and its gate agree on one sample.
+real_idle() { [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }; LC_ALL=C top -bn2 -d2 2>/dev/null | sed -n 's/^%Cpu.* \([0-9.]*\) id,.*/\1/p' | tail -n 1; }
 
 # firing_findings -> the shared faults firing now, one per line. Open is not firing: a finding stays
 # open for an hour after its last sample, which would hold starts long after the fault cleared.
@@ -1068,8 +1112,9 @@ main() {
     starved) cmd_starved ;;
     stats) cmd_stats ;;
     start) shift; cmd_start "$@" ;;
-    -h | --help) sed -n '2,29p' "$0" ;;
-    *) sed -n '2,13p' "$0" >&2; return 2 ;;
+    headroom) shift; cmd_headroom "$@" ;;
+    -h | --help) sed -n '2,30p' "$0" ;;
+    *) sed -n '2,14p' "$0" >&2; return 2 ;;
   esac
 }
 

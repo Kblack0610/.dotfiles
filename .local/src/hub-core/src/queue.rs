@@ -113,7 +113,29 @@ pub struct Outcomes {
     pub to_pr_minutes_median: Option<i64>,
 }
 
-/// `agent-queue stats --json`: active counts now, and the items finished since `since`.
+/// A queued item that could start now, and how long it has sat.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Waiter {
+    pub slug: String,
+    pub project: String,
+    pub minutes: i64,
+}
+
+/// `stats.sitting`: what is queued right now, runnable or held, and how long it has sat.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sitting {
+    pub queued: u64,
+    pub runnable: u64,
+    pub held: u64,
+    /// Held items by the first word of their hold: after, pr, night, at.
+    pub held_by: BTreeMap<String, u64>,
+    pub runnable_age_minutes_median: Option<i64>,
+    /// The three runnable items that have sat longest, oldest first.
+    pub oldest_runnable: Vec<Waiter>,
+}
+
+/// `agent-queue stats --json`: active counts and what sits now, and the items finished since `since`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Stats {
@@ -121,13 +143,72 @@ pub struct Stats {
     pub active: BTreeMap<String, u64>,
     /// Done items by status.
     pub done: BTreeMap<String, u64>,
+    /// Queued to started, over the items that waited; `started_at_once` counts the rest.
     pub wait_minutes_median: Option<i64>,
+    pub wait_minutes_p90: Option<i64>,
+    pub started_at_once: u64,
     pub run_minutes_median: Option<i64>,
     pub to_pr_minutes_median: Option<i64>,
+    /// None from an agent-queue older than the field, so a view says nothing rather than "empty".
+    pub sitting: Option<Sitting>,
+    /// Items added per day (inflow); `per_day` is items finished per day.
+    pub added_per_day: BTreeMap<String, u64>,
     pub per_day: BTreeMap<String, u64>,
     pub by_project: BTreeMap<String, Outcomes>,
     pub by_source: BTreeMap<String, Outcomes>,
     pub done_by_tag: BTreeMap<String, u64>,
+}
+
+/// Minutes as the views print them: `-` for none, hours from two hours up.
+fn dur(m: Option<i64>) -> String {
+    match m {
+        None => "-".into(),
+        Some(m) if m >= 120 => format!("{}h", m / 60),
+        Some(m) => format!("{m}m"),
+    }
+}
+
+impl Stats {
+    /// The window's line: what finished, with a PR, and how long items waited to start.
+    pub fn week(&self) -> String {
+        let n = |k: &str| self.done.get(k).copied().unwrap_or(0);
+        let done: u64 = self.done.values().sum();
+        let prs: u64 = self.by_project.values().map(|o| o.prs).sum();
+        format!(
+            "since {}: {done} done ({} ok, {} failed, {} cancelled), {prs} with a PR, wait median {} p90 {} ({} started at once), to PR median {}",
+            self.since,
+            n("ok"),
+            n("failed"),
+            n("cancelled"),
+            dur(self.wait_minutes_median),
+            dur(self.wait_minutes_p90),
+            self.started_at_once,
+            dur(self.to_pr_minutes_median)
+        )
+    }
+
+    /// What sits in the queue now: how many could start and for how long, and what holds the rest.
+    pub fn sitting_line(&self) -> Option<String> {
+        let s = self.sitting.as_ref()?;
+        if s.queued == 0 {
+            return Some("sitting: nothing queued".into());
+        }
+        let mut out = format!("sitting: {} can start", s.runnable);
+        if let Some(o) = s.oldest_runnable.first() {
+            out += &format!(
+                ", oldest {} ({}), median {}",
+                dur(Some(o.minutes)),
+                o.slug,
+                dur(s.runnable_age_minutes_median)
+            );
+        }
+        out += &format!("; {} held", s.held);
+        if !s.held_by.is_empty() {
+            let by: Vec<String> = s.held_by.iter().map(|(k, v)| format!("{k} {v}")).collect();
+            out += &format!(" ({})", by.join(", "));
+        }
+        Some(out)
+    }
 }
 
 fn argv(args: &[&str]) -> Vec<String> {
@@ -300,7 +381,7 @@ mod tests {
         let fake = Fake {
             list: Some(LIST),
             stats: Some(
-                r#"{"since":"2026-10-27","active":{"queued":1},"done":{"ok":3},"wait_minutes_median":12,"run_minutes_median":null,"to_pr_minutes_median":95,"per_day":{"2026-11-03":3},"by_project":{"game":{"done":3,"ok":3,"failed":0,"cancelled":0,"prs":2,"wait_minutes_median":12,"to_pr_minutes_median":95}},"by_source":{},"done_by_tag":{}}"#,
+                r#"{"since":"2026-10-27","active":{"queued":1},"done":{"ok":3},"wait_minutes_median":12,"wait_minutes_p90":130,"started_at_once":4,"run_minutes_median":null,"to_pr_minutes_median":95,"sitting":{"queued":3,"runnable":1,"held":2,"held_by":{"after":1,"pr":1},"runnable_age_minutes_median":200,"oldest_runnable":[{"slug":"q1","project":"game","minutes":200}]},"added_per_day":{"2026-11-03":4},"per_day":{"2026-11-03":3},"by_project":{"game":{"done":3,"ok":3,"failed":0,"cancelled":0,"prs":2,"wait_minutes_median":12,"to_pr_minutes_median":95}},"by_source":{},"done_by_tag":{}}"#,
             ),
             ..Fake::default()
         };
@@ -311,6 +392,19 @@ mod tests {
         assert_eq!(s.to_pr_minutes_median, Some(95));
         assert_eq!(s.run_minutes_median, None);
         assert_eq!(s.by_project["game"].prs, 2);
+        assert_eq!(
+            s.week(),
+            "since 2026-10-27: 3 done (3 ok, 0 failed, 0 cancelled), 2 with a PR, wait median 12m p90 2h (4 started at once), to PR median 95m"
+        );
+        assert_eq!(
+            s.sitting_line().as_deref(),
+            Some("sitting: 1 can start, oldest 3h (q1), median 3h; 2 held (after 1, pr 1)")
+        );
+        assert_eq!(
+            Stats::default().sitting_line(),
+            None,
+            "an older agent-queue without `sitting` says nothing, never that the queue is empty"
+        );
 
         let q = Queue::read(&Fake::default());
         assert!(q.items.is_empty() && q.stats.is_none());

@@ -5,7 +5,7 @@
 #   agent-mqtt-publish --full     republish everything (the timer; refreshes expire_after)
 #   agent-mqtt-publish --dry-run  print `topic<TAB>payload` lines, touch nothing
 #
-# Entities use HA MQTT discovery: runners, watches, open asks, the dispatch queue and live sessions appear as
+# Entities use HA MQTT discovery: runners, watches, open asks, the dispatch queue, the pager and live sessions appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
 # mqtt2prom keeps only numeric and boolean keys, so each text fact Prometheus needs has a
 # number beside it: runner updated_epoch, duration_s (the main process of the last run, null
@@ -99,7 +99,7 @@ emit() {
         sessions) eid="agent_sessions_$id" ;;
         *)       eid="agent_$id"
                  case "$id" in asks_open) label="Open asks" ;; sessions) label="Live sessions" ;;
-                     dispatch) label="Dispatch queue" ;; esac ;;
+                     dispatch) label="Dispatch queue" ;; pager) label="Pages undelivered (24h)" ;; esac ;;
     esac
     uid="agent_${HOST_ID}_${kind}_${id}"
     base="agents/$HOST_ID/$kind/$id"
@@ -187,6 +187,15 @@ snapshot() {
         local dstats
         dstats="$(fleet-dispatch stats 2>/dev/null)" && jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
             emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
+    fi
+
+    # Pager: what agent-notify raised and which channel took it in the last 24h, as
+    # `agent-notify stats` counts it; the HA state is undelivered_24h, pages that reached nobody.
+    # No agent-notify, or output with no count, publishes nothing rather than a zero.
+    if command -v agent-notify >/dev/null 2>&1; then
+        local pstats
+        pstats="$(agent-notify stats 2>/dev/null)" && jq -e '.undelivered_24h | numbers' <<< "$pstats" >/dev/null 2>&1 &&
+            emit summary pager mdi:bell-alert "$(jq -c '{state: .undelivered_24h} + .' <<< "$pstats")" '{"state_class":"measurement"}'
     fi
 
     # Interactive sessions: live Claude panes, the same `agent-panel list` the waybar

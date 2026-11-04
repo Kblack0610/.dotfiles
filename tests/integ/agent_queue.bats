@@ -439,9 +439,19 @@ EOF
   "$AQ" set a finished=2026-11-03T11:30:00Z pr=812
   "$AQ" move b done --status cancelled
   "$AQ" set b finished=2026-11-02T09:00:00Z
+  # d started the minute it was added (--running): it is counted apart, not as a 0 min wait.
+  "$AQ" add --project game --slug d --running "d"
+  # c can start and has sat two hours; e waits on c.
+  f="$(item queued c)"; sed -i "s/^queued: .*/queued: $(date -u -d '2 hours ago' +%FT%TZ)/" "$f"
+  "$AQ" add --project game --slug e --after c "e"
   run "$AQ" stats --json --since 2000-01-01
   assert_success
-  [ "$(jq -r '.active.queued' <<<"$output")" = 1 ]
+  [ "$(jq -r '.active.queued' <<<"$output")" = 2 ]
+  [ "$(jq -r '.started_at_once' <<<"$output")" = 1 ]
+  [ "$(jq -r '.wait_minutes_p90' <<<"$output")" = 30 ]
+  [ "$(jq -c '.sitting | [.queued, .runnable, .held, .held_by.after, .runnable_age_minutes_median]' <<<"$output")" = '[2,1,1,1,120]' ]
+  [ "$(jq -c '.sitting.oldest_runnable | map([.slug, .minutes])' <<<"$output")" = '[["c",120]]' ]
+  [ "$(jq -r '.added_per_day | add' <<<"$output")" = 5 ]
   [ "$(jq -r '.done.ok' <<<"$output")" = 1 ]
   [ "$(jq -r '.done.cancelled' <<<"$output")" = 1 ]
   [ "$(jq -r '.wait_minutes_median' <<<"$output")" = 30 ]
@@ -455,6 +465,8 @@ EOF
   assert_success
   assert_output --partial "done:"
   assert_output --partial "to PR:   median 90 min"
+  assert_output --partial "wait:    median 30 min, p90 30 min from queued to started, 1 started at once and not counted"
+  assert_output --partial "sitting: 1 can start, oldest 2h (c), median 2h; 1 held (after 1)"
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 

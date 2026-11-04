@@ -125,6 +125,23 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(payload agents/testhost/summary/dispatch)" ''
 }
 
+@test "the pager is agent-notify's own stats, its state the pages that reached nobody" {
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"raised_24h\":9,\"ntfy_24h\":7,\"none_24h\":2,\"undelivered_1h\":1,\"undelivered_24h\":2}'" > "$SANDBOX/bin/agent-notify"
+  chmod +x "$SANDBOX/bin/agent-notify"
+  run "$PUB" --quiet
+  p="$(payload agents/testhost/summary/pager)"
+  assert_equal "$(jq -c '[.state, .raised_24h, .undelivered_1h]' <<< "$p")" '[2,9,1]'
+  c="$(payload homeassistant/sensor/agent_testhost_summary_pager/config)"
+  assert_equal "$(jq -r .name <<< "$c")" 'Pages undelivered (24h)'
+}
+
+@test "agent-notify with no stats publishes no pager sensor, rather than a zero" {
+  printf '#!/usr/bin/env bash\necho "usage: agent-notify"; exit 2\n' > "$SANDBOX/bin/agent-notify"
+  chmod +x "$SANDBOX/bin/agent-notify"
+  run "$PUB" --quiet
+  assert_equal "$(payload agents/testhost/summary/pager)" ''
+}
+
 @test "live sessions are counted by agent-panel glyph" {
   printf 'a:1\t~\tp1\tt1\nb:1\t!\tp2\tt2\nc:1\t✓\tp3\tt3\n' > "$NOTES_FIXTURE/agent-panel.list"
   run "$PUB" --quiet
