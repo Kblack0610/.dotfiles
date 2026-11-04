@@ -1,0 +1,4 @@
+{"session_id":"s1","project":"demo","transcript":"/home/demo/.claude-personal/projects/-home-demo--worktrees-demo-agent-1/s1.jsonl","updated":1767225600,"cost_usd":3.0,"tokens":{"cacheRead":50000,"output":130}}
+{"session_id":"s1","project":"demo","transcript":"/home/demo/.claude-personal/projects/-home-demo--worktrees-demo-agent-1/s1.jsonl","updated":1767229200,"cost_usd":4.0,"tokens":{"cacheRead":50000,"output":130}}
+{"session_id":"h1","project":"demo","transcript":"/home/demo/.claude/projects/-home-demo-cli/h1.jsonl","updated":1767236400,"cost_usd":1.0,"tokens":{"cacheRead":0,"output":30}}
+{"session_id":"gone","project":"demo","transcript":"/home/demo/.claude/projects/x/gone.jsonl","updated":1600000000,"cost_usd":99.0,"tokens":{}}
