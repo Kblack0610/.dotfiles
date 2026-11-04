@@ -208,8 +208,10 @@ snapshot() {
         local sessions proj fleet buckets
         fleet="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
         # main_red: repos whose default branch is red, the document's main[] (a widget line).
+        # zero: every bucket at 0, so `buckets` names each one and an emptied bucket reads 0,
+        # not its last count (an exporter keeps a gauge whose key stops arriving).
         buckets="$(jq -c '{at: .generated_at, by: (.sessions | map({key: .target, value: .bucket}) | from_entries),
-                           main_red: [.main[]?.repo]}' \
+                           main_red: [.main[]?.repo], zero: (.counts // {} | map_values(0))}' \
             "$fleet" 2>/dev/null)" || buckets='{"at":null,"by":{},"main_red":[]}'
         sessions="$(agent-panel list 2>/dev/null | jq -cR -s --argjson f "$buckets" '
             [split("\n")[] | select(length > 0) | split("\t")
@@ -219,7 +221,7 @@ snapshot() {
         emit summary sessions mdi:console "$(jq -c --argjson f "$buckets" '
             {state: length, working: map(select(.status == "working")) | length,
              attention: map(select(.status == "attention")) | length,
-             buckets: (map(.bucket // "unknown") | group_by(.) | map({(.[0]): length}) | add // {}),
+             buckets: ({unknown: 0} + $f.zero + (map(.bucket // "unknown") | group_by(.) | map({(.[0]): length}) | add // {})),
              fleet_state_at: $f.at, main_red: $f.main_red, sessions: .}' <<< "$sessions")" \
             '{"state_class":"measurement"}'
         # State is the group's most urgent status, so a widget or automation can key on it.

@@ -909,7 +909,12 @@ write_state() {
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
-                   session: (if (.[12] // "") == "" then null else .[12] end)}]}' > "$tmp"; then
+                   session: (if (.[12] // "") == "" then null else .[12] end)}]}
+      # Every bucket with its count, zeros included: a reader that keys on the buckets present
+      # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
+      | .counts = ((.sessions | map(.bucket)) as $b
+          | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "PARKED"] + $b | unique)
+          | map(. as $k | {key: $k, value: ($b | map(select(. == $k)) | length)}) | from_entries)' > "$tmp"; then
     rm -f "$tmp"; echo "fleet-sessions: could not build $STATE_FILE" >&2; return 1
   fi
   exec 8>"$dir/.lock"
@@ -948,9 +953,7 @@ sessions_prom() {
       .sessions | sort_by(.target)[] | select((.session_id // "") != "")
       | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
-      (.sessions | map(.bucket)) as $b
-      | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "PARKED"] + $b | unique)[]
-      | . as $k | [{bucket: $k}, ($b | map(select(. == $k)) | length)]),
+      .counts | to_entries[] | [{bucket: .key}, .value]),
     gauge("agent_asks_open"; "Pending asks waiting on the human.";
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }
