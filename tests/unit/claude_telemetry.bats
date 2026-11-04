@@ -85,6 +85,17 @@ telemetry_env() {
   assert_output --partial 'service.name=claude-agentctl,'
 }
 
+@test "a runner's name is a resource attribute, and only a runner has one" {
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"; chmod +x "$FAKEBIN/getent"
+  run env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" AGENTCTL_NAME=fleet-dispatch \
+    bash -c ". '$SNIP' >/dev/null 2>&1; echo \$OTEL_RESOURCE_ATTRIBUTES"
+  assert_output --partial 'agentctl.runner=fleet-dispatch'
+
+  run env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" OTEL_RESOURCE_ATTRIBUTES=agentctl.runner=stale \
+    bash -c ". '$SNIP' >/dev/null 2>&1; echo \$OTEL_RESOURCE_ATTRIBUTES"
+  refute_output --partial 'agentctl.runner'
+}
+
 @test ".ai-rc sources the snippet rather than redefining the env inline" {
   # The whole point of the split: two copies would drift, and the copy that drifts is the
   # one enforcing the privacy guard.
