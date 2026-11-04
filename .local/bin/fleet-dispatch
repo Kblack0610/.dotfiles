@@ -4,6 +4,7 @@
 #   fleet-dispatch run [--dry-run]   one pass: gates, candidates, judge new rows, launch picks
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
+#   fleet-dispatch queue [--json]    the order a pass would start rows in; no judge call, no write
 #   fleet-dispatch reap              settle ledger entries whose session is gone
 #   fleet-dispatch night [--dry-run] queue up to 3 tier-3 harness rows into night-shift, to a PR only
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
@@ -580,6 +581,24 @@ cmd_run() {
 # all_open -- candidates without the judged filter: every open, eligible row
 all_open() { VERDICTS=/dev/null cmd_candidates; }
 
+# cmd_queue [--json] -- the order a pass would start rows in, with no judge call and no write:
+# `ready` rows are picks over every open row (cached verdicts only, a live area skipped), then
+# `unjudged` rows, which no current verdict covers and the next pass judges first.
+cmd_queue() {
+  local open ready unj
+  open=$(all_open)
+  ready=$(picks "$open" 999)
+  unj=$(cmd_candidates)
+  if [ "${1:-}" = --json ]; then
+    { [ -z "$ready" ] || jq -c '. + {state: "ready"}' <<<"$ready"
+      [ -z "$unj" ] || jq -c '. + {state: "unjudged"}' <<<"$unj"; }
+    return 0
+  fi
+  [ -n "$ready$unj" ] || { echo "queue: no open row to start"; return 0; }
+  [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$ready"
+  [ -z "$unj" ] || jq -r '"unjudged  \(.project) (\(.stage)) \(.lane): \(.key)"' <<<"$unj"
+}
+
 # --- night: tier 3 to an open PR -------------------------------------------------------
 
 # night_rows <judged> -> the open agent-lane rows of the night projects that no merging session may
@@ -714,12 +733,13 @@ main() {
   case "${1:-}" in
     run) shift; cmd_run "$@" ;;
     candidates) cmd_candidates ;;
+    queue) shift; cmd_queue "$@" ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
     night) shift; cmd_night "$@" ;;
     start) shift; cmd_start "$@" ;;
-    -h | --help) sed -n '2,27p' "$0" ;;
-    *) sed -n '2,11p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,28p' "$0" ;;
+    *) sed -n '2,12p' "$0" >&2; return 2 ;;
   esac
 }
 
