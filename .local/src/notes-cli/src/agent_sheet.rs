@@ -57,8 +57,9 @@ impl Lane {
     }
 }
 
-/// The body a fresh agent sheet starts with: title, the version it tracks, a link home, and
-/// an empty current wave named for that version.
+/// The body a fresh agent sheet starts with: title, a link home, and an empty current wave
+/// named for the sheet's open version. No `Version:` line: the board follows its sheet, and
+/// `notes projects --roll` moves both together.
 ///
 /// Deliberately the same skeleton `projects::sheet_body` writes for the human, because every
 /// reader downstream (`waves::sections`, `open_wave_for_dir`, the board, `ptask`) is the
@@ -71,7 +72,7 @@ fn body(project: &str, ver: &str, home: &str) -> String {
         format!("Human sheet: [[{home}|{project}]]\n")
     };
     format!(
-        "# {project} - agent board\nVersion: {ver}\n{link}\n## {}\n- [ ] \n",
+        "# {project} - agent board\n{link}\n## {}\n- [ ] \n",
         crate::waves::heading_current(ver)
     )
 }
@@ -251,7 +252,8 @@ mod tests {
     #[test]
     fn a_fresh_sheet_is_the_same_skeleton_the_human_gets() {
         let b = body("notes-cockpit", "v0.0.2", "lab/projects/current/notes-cockpit/README");
-        assert!(b.starts_with("# notes-cockpit - agent board\nVersion: v0.0.2\n"), "{b}");
+        assert!(b.starts_with("# notes-cockpit - agent board\nHuman sheet: "), "{b}");
+        assert!(!b.contains("Version:"), "the board follows its sheet's version:\n{b}");
         assert!(b.contains("## Wave: v0.0.2 (current)"), "{b}");
         assert!(b.contains("- [ ] "), "{b}");
         // The human's reader must find the wave, or nothing downstream sees this file.
@@ -321,7 +323,6 @@ mod tests {
 
         assert!(!ensure(&dir, "demo", "v0.0.2", "lab/p/demo/README").unwrap());
         let got = fs::read_to_string(sheet_path(&dir)).unwrap();
-        assert!(got.contains("Version: v0.0.2"), "{got}");
         assert!(got.contains("## Wave: v0.0.2 (current)"), "{got}");
         assert!(!got.contains("v0.0.1"), "no trace of the old version:\n{got}");
         let _ = fs::remove_dir_all(&dir);
