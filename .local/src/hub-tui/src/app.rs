@@ -15,6 +15,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::fmt::{clock, Palette};
+use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::{board, day, fleet};
 
@@ -30,17 +31,19 @@ pub enum Tab {
     Ci,
     Machines,
     Sessions,
+    Forecast,
     Today,
     History,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Overview,
         Tab::Jobs,
         Tab::Ci,
         Tab::Machines,
         Tab::Sessions,
+        Tab::Forecast,
         Tab::Today,
         Tab::History,
     ];
@@ -51,6 +54,7 @@ impl Tab {
             Tab::Ci => "CI",
             Tab::Machines => "Machines",
             Tab::Sessions => "Sessions",
+            Tab::Forecast => "Forecast",
             Tab::Today => "Today",
             Tab::History => "History",
         }
@@ -69,7 +73,7 @@ impl Tab {
             Tab::Overview => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Sessions | Tab::Today | Tab::History => None,
+            Tab::Sessions | Tab::Forecast | Tab::Today | Tab::History => None,
         }
     }
 }
@@ -136,6 +140,7 @@ pub enum Msg {
     Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
+    Forecast(Box<Forecast>),
     Log(u64, Result<String, String>),
 }
 
@@ -174,6 +179,7 @@ pub struct App {
     pub jv: JobsView,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
+    pub forecast: Option<Forecast>,
     /// The day the Today tab shows; None follows the newest record.
     pub day: Option<String>,
     /// The History tab's selected row, newest first.
@@ -187,6 +193,7 @@ pub struct App {
     infra_read: Read,
     jobs_read: Read,
     boards_read: Read,
+    forecast_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -208,6 +215,7 @@ impl App {
             jv: JobsView::default(),
             files: BoardFiles::from_env(),
             boards: None,
+            forecast: None,
             day: None,
             hist_sel: 0,
             sections: vec![],
@@ -217,6 +225,7 @@ impl App {
             infra_read: Read::default(),
             jobs_read: Read::default(),
             boards_read: Read::default(),
+            forecast_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -248,6 +257,17 @@ impl App {
             let day = self.day.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Boards(Box::new(Boards::read(&f, day.as_deref()))));
+            });
+        }
+    }
+
+    /// fleet-bench writes no file to watch, so the Forecast tab is read on the tick, and only
+    /// while it is shown: each read is three jq passes over the progress history.
+    pub fn read_forecast(&mut self) {
+        if self.forecast_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Forecast(Box::new(Forecast::read())));
             });
         }
     }
@@ -293,6 +313,9 @@ impl App {
                 if self.watch_failed.is_some() {
                     self.read_boards();
                 }
+                if self.tab == Tab::Forecast {
+                    self.read_forecast();
+                }
             }
             Msg::Files => self.read_jobs(),
             Msg::BoardFiles => self.read_boards(),
@@ -301,6 +324,12 @@ impl App {
                 self.boards = Some(*b);
                 if self.boards_read.done() {
                     self.read_boards();
+                }
+            }
+            Msg::Forecast(f) => {
+                self.forecast = Some(*f);
+                if self.forecast_read.done() {
+                    self.read_forecast();
                 }
             }
             Msg::Infra(i) => {
@@ -367,6 +396,9 @@ impl App {
                 self.read_infra();
                 self.read_jobs();
                 self.read_boards();
+                if self.tab == Tab::Forecast {
+                    self.read_forecast();
+                }
             }
             KeyCode::Char('o') => {
                 let g = self.infra.as_ref().and_then(|i| i.grafana.clone());
@@ -387,6 +419,9 @@ impl App {
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
+        if t == Tab::Forecast {
+            self.read_forecast();
+        }
     }
 
     /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
@@ -637,21 +672,24 @@ impl App {
     }
 
     fn hints(&self) -> String {
+        let tabs = format!("1-{}", Tab::ALL.len());
         match self.tab {
             Tab::Jobs if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
             Tab::Jobs if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
-            Tab::Jobs => {
-                "Enter log  s source  f state  / search  h history  o open url  r refresh  1-7 tabs  q quit".into()
+            Tab::Jobs => format!(
+                "Enter log  s source  f state  / search  h history  o open url  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Sessions | Tab::Forecast => {
+                format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
-            Tab::Sessions => "1-7/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit".into(),
             Tab::Today if self.day.is_some() => {
-                "[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  1-7 tabs  q quit".into()
+                format!("[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit")
             }
-            Tab::Today => "[ ] day  n/N section  j/k PgUp/PgDn scroll  1-7 tabs  q quit".into(),
-            Tab::History => "j/k pick a day  Enter open it in Today  1-7 tabs  q quit".into(),
-            _ => "1-7/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit".into(),
+            Tab::Today => format!("[ ] day  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit"),
+            Tab::History => format!("j/k pick a day  Enter open it in Today  {tabs} tabs  q quit"),
+            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -665,6 +703,10 @@ impl App {
             )
         };
         match (self.tab, &self.boards, &self.infra) {
+            (Tab::Forecast, ..) => match &self.forecast {
+                None => reading("fleet-bench forecast"),
+                Some(f) => (forecast::page(f, self.p, now, w), vec![]),
+            },
             (Tab::Sessions | Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Sessions, Some(b), _) => (fleet::page(&b.watch, self.p, now, w), vec![]),
             (Tab::Today, Some(b), _) => {
@@ -829,6 +871,37 @@ mod tests {
         assert!(screen(&mut a, 80, 10).contains("Reading jobs..."));
     }
 
+    #[test]
+    fn the_forecast_tab_draws_the_drain_and_each_sessions_phases() {
+        let mut a = app(Tab::Forecast);
+        assert!(screen(&mut a, 100, 10).contains("Reading fleet-bench forecast..."));
+        a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
+        let s = screen(&mut a, 200, 60);
+        assert!(s.lines().next().unwrap().contains("6 Forecast"), "{s}");
+        assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
+        assert!(
+            s.contains("dotfiles:4") && s.contains("Step 0 board row"),
+            "{s}"
+        );
+        assert!(s.lines().last().unwrap().contains("1-8/Tab pages"), "{s}");
+    }
+
+    #[test]
+    fn a_failed_fleet_bench_draws_the_fallbacks() {
+        let mut a = app(Tab::Forecast);
+        let f = Forecast::read_with("hub-test-no-such-fleet-bench");
+        a.handle(Msg::Forecast(Box::new(f)));
+        let s = screen(&mut a, 160, 20);
+        assert!(
+            s.contains("No forecast: hub-test-no-such-fleet-bench"),
+            "{s}"
+        );
+        assert!(
+            s.contains("no baseline yet: fleet-bench forecast --baseline <label>"),
+            "{s}"
+        );
+    }
+
     fn key(c: char) -> Msg {
         Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))))
     }
@@ -838,7 +911,11 @@ mod tests {
         let mut a = app(Tab::Overview);
         a.handle(Msg::Tab(Tab::Sessions));
         assert_eq!(a.tab, Tab::Sessions);
+        // Entering Forecast reads fleet-bench; mark it already reading so no test runs it.
+        a.forecast_read.busy = true;
         a.handle(key('6'));
+        assert_eq!(a.tab, Tab::Forecast);
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Today);
     }
 

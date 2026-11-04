@@ -8,7 +8,7 @@ Install: the installer's `build_local_rust_tools` builds it and links `~/.local/
 
 ```
 hub                              the board, on the Overview tab
-hub --tab sessions               start on another tab (overview, jobs, ci, machines, sessions, today, history)
+hub --tab sessions               start on another tab (overview, jobs, ci, machines, sessions, forecast, today, history)
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
 hub --once                       print Overview, Machines and CI as plain text at $COLUMNS, then exit
 hub --once --tab jobs            print one tab; exit 1 when Prometheus did not answer
@@ -25,16 +25,17 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 | 3 CI | Finished runs per workflow with failures, then the recent runs list | `kb-ci-runners` |
 | 4 Machines | One row per machine: CPU now and over 6h, load per core, memory, temperature, slots per pool. Machines with no runner show when named in `CC_HOSTS` | `kb-fleet` |
 | 5 Sessions | Every agent session's stages (sync, conflicts, tree, PR, CI, plan phases, ETA, bucket, idle, why) from `~/.local/state/fleet/state.json`, the open asks, and the newest changes from `~/.agent/shepherd/watch.log`. `fleet-state.timer` writes both every minute (`fleet-sessions tick`) | - |
-| 6 Today | The day-log record (`~/.agent/daylog/<date>.json`, `day-log.timer` every 5 minutes): waiting on you, merged, still open, sessions bench, timeline, spend. `[`/`]` step a day, `t` back to today | - |
-| 7 History | One row per recorded day: merges, repos, sessions, cost, areas. Enter opens that day on Today | - |
+| 6 Forecast | `fleet-bench forecast`, `vs` and `flow` (`--json`): the all-done-by band (median, p90, last at p50 and slow), the drain (highlighted when not draining), the queue and the unscheduled count, a phase timeline per session out to the last slow finish (late ones marked), the burn-up of scope against done per hour, and the frozen baseline against what happened since. Read on the 60s tick while the tab is shown | - |
+| 7 Today | The day-log record (`~/.agent/daylog/<date>.json`, `day-log.timer` every 5 minutes): waiting on you, merged, still open, sessions bench, timeline, spend. `[`/`]` step a day, `t` back to today | - |
+| 8 History | One row per recorded day: merges, repos, sessions, cost, areas. Enter opens that day on Today | - |
 
-Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file is written (inotify; an open is not a write): Jobs on the agentctl state dir, `~/.agent/night` and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
+Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Everything else re-reads when its file is written (inotify; an open is not a write): Jobs on the agentctl state dir, `~/.agent/night` and the Unity ledger (CI and k8s on the 60s tick), Sessions on the fleet state and `watch.log`, Today and History on `~/.agent/daylog/`. Forecast has no file to watch: it runs fleet-bench on entering the tab, on `r`, and on the 60s tick while it is shown. When a watch cannot be set (inotify full), the tab bar says "no file watch" and the 60s tick reads those files instead.
 
 ## Keys
 
 | Key | Does |
 |---|---|
-| `1`-`7`, Tab, Shift-Tab | Switch tab |
+| `1`-`8`, Tab, Shift-Tab | Switch tab |
 | `r` | Re-read now |
 | `o` | Open this tab's Grafana dashboard (on Jobs: the selected row's URL) |
 | `j`/`k`, PgUp/PgDn, space, `g`/`G` | Scroll a page; on Jobs, move the selection |
@@ -59,7 +60,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 
 ## Tests
 
-`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
+`cargo test` here: the board sections against a fixture Prometheus answer (ported from the old `command_center.bats`), the Jobs table, filters and log cleaning, the Sessions, Today and History pages from fixture records, the Forecast page from real `fleet-bench` answers in `tests/fixtures/`, `hub tab` over the socket and the request file (`tabreq.rs`), and whole-screen `TestBackend` renders driven by keys. `tests/rust.sh` runs them in CI. Never drive the TUI on the live tmux server; use an isolated one (`tmux -L <name>`), or the container tier.
 
 ## Troubleshooting
 
@@ -75,6 +76,8 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | "CC_KUBE_CONTEXT is not set" or "CC_LOKI_SERVICE is not set" on a k8s log | The cluster and the Loki service come from `~/.config/command-center/env` (private repo): `CC_KUBE_CONTEXT=home-k3s`, `CC_LOKI_SERVICE=monitoring/loki:3100` |
 | A k8s log says "kubectl: ..." | The API server refused or timed out (10s guard). `kubectl --context home-k3s get --raw /api/v1/namespaces/monitoring/services/loki:3100/proxy/ready` shows whether Loki answers |
 | "Loki has no lines from this Job's pods" | The pod wrote nothing, or Alloy (home-config `apps/alloy`) did not ship it. Loki keeps a year |
+| Forecast says "No forecast: ... exit 2, usage" | The `fleet-bench` on PATH has no `forecast`, `vs` or `flow` verb (exit 2 is its usage). Pull the checkout `~/.local/bin/fleet-bench` links to |
+| Forecast says "no baseline yet" | `fleet-bench vs` found no frozen forecast: `fleet-bench forecast --baseline <label>` freezes one |
 | Sessions says no fleet state, or its changes stop moving | `fleet-state.timer` is not running: `systemctl --user enable --now fleet-state.timer`. The timer builds the log whether or not the tab is open |
 | Today is a day behind or empty | `day-log.timer` is not running: `systemctl --user enable --now day-log.timer`; `day-log snapshot` writes one record by hand |
 | Prefix o or O lands on the wrong tab | A hub older than the tab socket ignores the request. Rebuild, then `tmux kill-window -t hub:board` and press the key again |
