@@ -20,9 +20,9 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 
 ## Where to look
 
-- `~/.notes/lab/projects/current/agent-runtime/bench/latest.md`: the daily scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, CI reds, reverts and cost). One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
+- `~/.notes/lab/projects/current/agent-runtime/docs/bench/latest.md`: the daily scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, CI reds, reverts and cost). One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
 - The morning briefing (`agentctl-briefing`, 06:45) writes the scorecard, puts the headline and its path in `briefing.md`, and carries the pending-asks line in its one page.
-- `~/.notes/lab/projects/current/agent-runtime/bench/asks.md`: every pending ask, the ones blocking a live session first, rewritten by the briefing at 06:45 and 18:45. The 18:45 run pages it on its own (`-t asks`), naming the top three and what each session recommends.
+- `~/.notes/lab/projects/current/agent-runtime/docs/bench/asks.md`: every pending ask, the ones blocking a live session first, rewritten by the briefing at 06:45 and 18:45. The 18:45 run pages it on its own (`-t asks`), naming the top three and what each session recommends.
 - `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the last agentctl outcome of `fleet-bench`, `fleet-review` and `briefing`.
 - `fleet-bench eta`: one line per live session, or `--json` for scripts. The shepherd's "where are we" summary takes its ETAs from here.
 - `fleet-bench forecast`: when the whole fleet should be done, the drain, and the next phases in order. The scorecard's "Forecast" section carries it, plus `vs` against the newest baseline at least an hour old (at 06:45 that is yesterday's `daily-<date>`). The briefing freezes `daily-<date>` before it writes the scorecard.

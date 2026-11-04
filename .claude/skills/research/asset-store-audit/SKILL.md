@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: research
   tags: [unity, asset-store, audit, assets, catalog]
-  reviewed: "2026-09-23"
+  reviewed: "2026-11-04"
 ---
 
 # Asset Store Audit
@@ -37,7 +37,7 @@ Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.ca
 5. **Spot check two claims by hand** (one material's `m_Shader` GUID, one prefab's structure) and fold them into the synthesis.
 6. **Synthesis.** Write `$OUT/synth.html` (fragment, plain ASCII): the short answer with verdict counts, what unlocks what (pipeline gap -> packs it unblocks), suggested order, style families, gaps no pack fills, cache space reclaimable from skipped packs. Take the counts from step 7's output, never from memory.
 7. **Build and publish.** `python3 scripts/build_report.py "$OUT" "$OUT/synth.html" "$OUT/report.html"` (fails if a pack lacks a verdict or a verdict has non-ASCII). Load `artifact-design`, then publish `report.html` with the Artifact tool. If the printed counts disagree with the synthesis, fix the synthesis and republish.
-8. **Save.** Copy `report.html`, `verdicts/`, `facts/`, `RUBRIC.md` and a short `README.md` (link, counts, pipeline gaps) to the lab project the user names (default: unity-core-playground, `~/.notes/lab/bnb/projects/current/unity-core-playground/research/asset-store-audit-<date>/`), and log it on that project's agent board with `notes ptask <project> --agent add` / `done --proof <artifact url>`.
+8. **Save.** Copy `report.html`, `verdicts/`, `facts/`, `RUBRIC.md` and a short `README.md` (link, counts, pipeline gaps) to the lab project the user names (default: unity-core-playground, `~/.notes/lab/bnb/projects/current/unity-core-playground/docs/research/asset-store-audit-<date>/`), and log it on that project's agent board with `notes ptask <project> --agent add` / `done --proof <artifact url>`.
 
 ## Do NOT
 

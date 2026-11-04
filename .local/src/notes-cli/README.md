@@ -81,8 +81,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
 ```
 ~/.notes/lab/
   README.md                                  pointer to this section
-  ideas/_IDEAS.md                            ideas that span projects or have no project yet (`ideas` config key)
-  briefs/                                    one-pager briefs not yet tied to a project
+  ideas/                                     `_IDEAS.md` (`ideas` config key) and briefs for ideas with no project yet
   projects/{current,archived}/<name>/        the personal profile
   <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
@@ -106,7 +105,7 @@ current/<name>/
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
 
-Every project carries the same core: `README.md`, `summary.md`, `agent/README.md` and `ideas.md`, plus `versions/` and `docs/`. Anything else, including briefs and research, goes under `docs/`. Version notes belong in `versions/` and nowhere else.
+Every project carries the same core: `README.md`, `summary.md`, `agent/README.md` and `ideas.md`, plus `versions/` and `docs/`. Anything else, including briefs and research, goes under `docs/`, and binaries (screenshots, renders) under `docs/assets/`; `notes doctor --projects` reports any other root entry. Version notes belong in `versions/` and nowhere else.
 
 A project's `type` in `project-map.json` can add to the core through its `[project_type.<type>]` table, shipped in `notes-cli/templates/project_types.toml` (a table of the same type in `config.toml` replaces it on one machine): `files` lists extra root files the type carries (game carries `playtest.md`), and `requires` lists registry facts it needs (only `repo` is checked: `trackers.<name>.repo`, or the name registered in `paths`). A type with no table adds nothing. The root notes a project may hold are the core ones plus its type's `files`; a project with no type, or a machine with no registry, may hold any type's.
 
