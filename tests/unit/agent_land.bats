@@ -62,7 +62,7 @@ EOF
 item() {
   mkdir -p "$AGENT_QUEUE_DIR/running"
   {
-    printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: normal\nfrom: %s\nagent: claude\n' "$1" "${2:-human}"
+    printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: %s\nagent: claude\n' "$1" "${2:-human}"
     printf 'queued: 2026-11-03T10:00:00Z\nstarted: 2026-11-03T10:00:00Z\n'
     [ -z "${3:-}" ] || printf 'lane: %s\n' "$3"
     [ -z "${4:-}" ] || printf 'profile: %s\n' "$4"
