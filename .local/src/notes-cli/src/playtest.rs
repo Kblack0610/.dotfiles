@@ -80,7 +80,7 @@ pub fn run(p: &Profile, log: &Logger, name: &str, op: Op) -> Result<i32> {
 }
 
 /// The head a new playtest.md starts with: the title and the one rule every row follows.
-fn header(project: &str) -> String {
+pub(crate) fn header(project: &str) -> String {
     format!(
         "# Playtest\n\nOne row is one thing to play and check off: the scene or mode, and what \
          to look for. Written with `notes ptask {project} --playtest add`.\n"

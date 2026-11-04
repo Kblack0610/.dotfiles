@@ -617,10 +617,14 @@ cmd_stats() {
          runnable_age_minutes_median: ($runnable | map(.minutes) | median),
          oldest_runnable: $runnable[:3]},
        added_per_day: (map(select((.queued // "")[:10] >= $since)) | count_by(.queued[:10])),
-       # Flow over the last hours, for a drain trend: done by finished, added by queued.
+       # Flow over the last hours, for throughput and a drain trend: added by queued, started by
+       # started, done by finished (failed is the part of done that failed).
        recent: (. as $all | [1, 6, 24] | map(. as $h | (now - $h * 3600) as $t
-         | {("done_\($h)h"): ($done | map(select((.finished // "") != "" and (.finished | fromdateiso8601) >= $t)) | length),
-            ("added_\($h)h"): ($all | map(select((.queued // "") != "" and (.queued | fromdateiso8601) >= $t)) | length)}) | add),
+         | def since(f): map(select((f // "") != "" and (f | fromdateiso8601) >= $t));
+           ($done | since(.finished)) as $fin
+         | {("done_\($h)h"): ($fin | length), ("failed_\($h)h"): ($fin | map(select(.status == "failed")) | length),
+            ("started_\($h)h"): ($all | since(.started) | length),
+            ("added_\($h)h"): ($all | since(.queued) | length)}) | add),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),

@@ -82,7 +82,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` Sessions tab, agent-web Watch tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
-| waybar `custom/shepherd` (`.config/waybar/shepherd.sh`) | `counts` and `idle_min` by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_sessions`, `agent_session_idle_minutes`), and the file's age |
+| waybar `custom/dispatch`, its Sessions section (`.config/waybar/dispatch.sh`) | `counts` and `idle_min` by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_sessions`, `agent_session_idle_minutes`), and the file's age |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 

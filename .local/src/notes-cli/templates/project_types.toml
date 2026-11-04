@@ -1,0 +1,13 @@
+# What a lab project carries beyond the core shape (README.md, summary.md, agent/README.md,
+# ideas.md), keyed by its `type` in project-map.json. `files` are extra root files
+# (`projects --new` writes them, `doctor --projects` reports one missing); `requires` are
+# registry facts the type needs (only "repo" is checked). Compiled into notes as the
+# default; a `[project_type.<t>]` table in config.toml replaces that one type.
+[project_type.game]
+files = ["playtest.md"]
+requires = ["repo"]
+
+[project_type.app]
+requires = ["repo"]
+
+[project_type.infra]

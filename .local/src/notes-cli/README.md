@@ -81,8 +81,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
 ```
 ~/.notes/lab/
   README.md                                  pointer to this section
-  ideas/_IDEAS.md                            ideas that span projects or have no project yet (`ideas` config key)
-  briefs/                                    one-pager briefs not yet tied to a project
+  ideas/                                     `_IDEAS.md` (`ideas` config key) and briefs for ideas with no project yet
   projects/{current,archived}/<name>/        the personal profile
   <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
@@ -100,14 +99,17 @@ current/<name>/
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
-  docs/idea.md             the pitch and key ideas; links to the repo's design docs
-  docs/tech.md             the stack, with links to the repo's docs
-  playtest.md              things to play and check off, one per row (`ptask --playtest`)
+  playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
   agent/versions/vX.Y.Z.md proof table for a version, and the done rows `ptask --agent archive` moves off the board
   versions/vX.Y.Z.md       frozen sheet of a closed version
+  docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
 
-`projects --new <name>` writes the first six files and never overwrites one, so on an existing project it fills the gaps. Any other note (a design doc, `research/`, review reports, screenshots) goes under `docs/`; the only root notes are `README.md`, `summary.md`, `ideas.md` and `playtest.md`. Version notes belong in `versions/` and nowhere else. `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files, loose root notes, an agent board over 32 KiB, and a row open twice.
+Every project carries the same core: `README.md`, `summary.md`, `agent/README.md` and `ideas.md`, plus `versions/` and `docs/`. Anything else, including briefs and research, goes under `docs/`, and binaries (screenshots, renders) under `docs/assets/`; `notes doctor --projects` reports any other root entry. Version notes belong in `versions/` and nowhere else.
+
+A project's `type` in `project-map.json` can add to the core through its `[project_type.<type>]` table, shipped in `notes-cli/templates/project_types.toml` (a table of the same type in `config.toml` replaces it on one machine): `files` lists extra root files the type carries (game carries `playtest.md`), and `requires` lists registry facts it needs (only `repo` is checked: `trackers.<name>.repo`, or the name registered in `paths`). A type with no table adds nothing. The root notes a project may hold are the core ones plus its type's `files`; a project with no type, or a machine with no registry, may hold any type's.
+
+`projects --new <name>` writes the core and its type's files and never overwrites one, so on an existing project it fills the gaps. The name must already be registered in `project-map.json`, or it refuses and writes nothing (with no registry on the machine it does not check). `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files (core or type), a registry fact the type requires, loose root notes, an agent board over 32 KiB, and a row open twice. With no registry it prints one SKIP line, because type overlays cannot be checked.
 
 ### One home per fact
 
@@ -133,7 +135,8 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | I want to | Command |
 |---|---|
 | see projects | `notes projects`, `notes projects --archived`, `notes projects <name>` for its files |
-| add a project, or fill in a missing shape file | `notes --profile bnb projects --new <name>` |
+| add a project | `project-map add <name> --type game\|app\|infra --lab <profile>`, plus `--repo <key> --path <dir>` for part of a repo or `--repo-dir <abs>` for a whole one; it writes the registry entry, scaffolds the folder, regenerates the anchor and runs `project-map-doctor`. Land the registry change with dotfiles-land |
+| fill in a missing shape file | `notes --profile bnb projects --new <name>` |
 | check every project's shape | `notes doctor --projects` |
 | set where it shows in the Overview | `projects --stage <name> --set draft\|alpha\|beta\|prod` |
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
@@ -160,6 +163,35 @@ The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It li
 
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
+### The task row
+
+Every project sheet, in every project and both lanes, uses one row format. Projects differ only by data in the registry, never by row format.
+
+```
+- [ ] fix(fleet-sessions): class a gh gate-wait shell as a gate wait #high #size/s #c1104
+  Seen agent-10, run 41893820093: the row reads STALLED while its gate runs.
+```
+
+| Part | Required | Rule |
+|---|---|---|
+| `[ ]` `[/]` `[x]` | yes | open, doing (a queue item exists), closed |
+| `type(area): title` | agent lane yes; human lane at triage | Types: `feat fix perf refactor docs test chore ci` for work, `run decide check` for what only the human can do. The area is one lowercase kebab word naming the component. The title is imperative, 80 chars or fewer, and becomes the PR title. |
+| detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
+| priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
+| created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
+| size | no | `#size/s` (small single PR), `#size/m` (one PR), `#size/l` (needs a plan); there is no hour estimate |
+| `#tier/N` `#worker/X` `#vX.Y.Z` `#dueMMDD` | no | as the feed above reads them |
+| `#ask` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
+| marker | on close | `<!-- ... -->` at the end: `pr:N`, a run id or URL, `unverified: <why>` |
+
+No assignee field: the lane is the assignee. No comment thread: detail lines plus the PR. No per-project custom fields.
+
+Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
+
+Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check. A board row that runs as a session goes row -> `ptask start` or a dispatch promote -> queue item -> session -> PR -> `agent-land` closes the queue item and the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
+
+`notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. On the agent board it also counts the open rows not in `type(area): title` form and those with a title over 80 chars, one line each. Human sheet rows are free text and closed by hand, so those two checks skip them.
+
 ### The task feed
 
 `notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
@@ -175,8 +207,6 @@ The human sheet (`README.md`) is the queue: what you asked for and what only you
 - `wave` is null for a playtest row, and `game` is null for a sheet row.
 
 To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or removed the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control; there are no ids in the sheets. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
-
-`notes doctor --projects` checks the row grammar the feed parses, per top-level sheet and agent board row: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), a tier tag that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. Human sheet rows are closed by hand, so they need no marker.
 
 ## Daily-note model
 

@@ -7,13 +7,15 @@
 //! is no index file to go stale. Discovery mirrors `notes today`'s precedence — the
 //! project index `## Current` lane, else the `projects` dir scan (`daily`).
 
-use crate::config::{self, Profile};
+use crate::config::{self, Profile, ProjectType};
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
 use crate::project_tasks;
+use crate::registry::Registry;
 use crate::waves;
 use anyhow::{bail, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -498,65 +500,93 @@ fn check_name(name: &str) -> Result<()> {
 /// person can see and change it. See the stage/group section above. This file keeps only
 /// generated blocks.
 fn summary_template(name: &str) -> String {
-    format!(
-        "---\nid: summary\naliases: []\ntags: []\n---\n\n# {name}\n\
-\n\
-Working sheet: [[README]] - this file is generated (lab-status, lab-sync). Edit README, not here.\n\n\
-Wants for the agents go on the BOARD, not here: `notes ptask {name} add \"<title>\" #ai` (the session preflight injects that lane at turn 1).\n\n\
-<!-- STATUS:START — an agent writes a dated \"where we are\" note here; do not hand-edit -->\n\
-_(no status yet)_\n<!-- STATUS:END -->\n\n\
-<!-- AUTO:START — maintained by /lab-sync (regen-lab-feed.sh); edits below are overwritten -->\n\
-## ← Release & status feed\n_(run /lab-sync to populate)_\n<!-- AUTO:END -->\n"
-    )
+    include_str!("../templates/summary.md").replace("{name}", name)
 }
 
-/// The files every project carries, relative to its dir, in the order they are scaffolded:
+/// The core every project carries, relative to its dir, in the order they are scaffolded:
 /// the human sheet first, because the agent board takes its version and home link from it.
 ///
 /// - `README.md`: the human's sheet (what only the human can do), `summary.md`: STATUS + AUTO.
 /// - `agent/README.md`: the agents' working board.
-/// - `docs/idea.md`: the pitch and key ideas; `docs/tech.md`: the stack, with links to the
-///   repo's own docs. Every other note doc lives in `docs/` too.
 /// - `ideas.md`: unshaped ideas, where `notes focus sweep` puts an `#idea:<project>` row.
-pub(crate) const SHAPE: [&str; 6] = [
-    "README.md",
-    "summary.md",
-    "agent/README.md",
-    "docs/idea.md",
-    "docs/tech.md",
-    "ideas.md",
-];
-
-/// The `*.md` files a project root may hold. Any other note doc belongs in `docs/`.
-pub(crate) const ROOT_MD: [&str; 4] = ["README.md", "summary.md", "ideas.md", "playtest.md"];
+///
+/// Every other note doc (pitch, briefs, research) lives in `docs/`. A project's registry
+/// type adds root files on top of this core: [`Overlays`].
+pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
 /// A fresh `ideas.md`. Also the header `notes focus sweep` gives one it creates.
 pub(crate) fn ideas_template(name: &str) -> String {
-    format!(
-        "# {name} - ideas\n\n\
-Unshaped ideas for {name}, one row each, not yet on a wave. `notes focus sweep` appends a Focus row tagged `#idea:{name}` here; an idea that becomes work moves to the sheet with `notes ptask {name} add`.\n"
-    )
+    include_str!("../templates/ideas.md").replace("{name}", name)
 }
 
-fn idea_doc_template(name: &str) -> String {
-    format!(
-        "# {name} - idea\n\n\
-The pitch: what {name} is, who it is for, the ideas it stands on. Where a repo holds the design doc, link it here instead of copying it.\n"
-    )
+/// What a project carries beyond [`SHAPE`]: its type in the project registry, and that
+/// type's `[project_type.<type>]` table from config. `reg` is None when there is no
+/// registry on this machine; then nothing is typed and `--new` checks no name.
+#[derive(Default)]
+pub(crate) struct Overlays {
+    pub reg: Option<Registry>,
+    types: HashMap<String, ProjectType>,
 }
 
-fn tech_doc_template(name: &str) -> String {
-    format!(
-        "# {name} - tech\n\n\
-The stack, the repo and how it ships, as links to the repo's own docs rather than a copy of them.\n"
-    )
+/// The overlay of a type config has no table for.
+static NO_EXTRAS: ProjectType = ProjectType {
+    files: Vec::new(),
+    requires: Vec::new(),
+};
+
+impl Overlays {
+    pub fn load() -> Result<Self> {
+        Ok(Overlays {
+            reg: Registry::load(),
+            types: config::project_types()?,
+        })
+    }
+
+    /// The registry, `name`'s type in it, and that type's table ([`NO_EXTRAS`] when config
+    /// has none). None when there is no registry or `name` has no type.
+    fn of(&self, name: &str) -> Option<(&Registry, String, &ProjectType)> {
+        let reg = self.reg.as_ref()?;
+        let kind = reg.kind(name)?;
+        let t = self.types.get(&kind).unwrap_or(&NO_EXTRAS);
+        Some((reg, kind, t))
+    }
+
+    /// The files `name` carries: [`SHAPE`], then its type's `files`.
+    fn shape_files<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a str> {
+        let extra = self
+            .of(name)
+            .map_or(&[][..], |(_, _, t)| t.files.as_slice());
+        SHAPE
+            .iter()
+            .copied()
+            .chain(extra.iter().map(String::as_str))
+    }
+
+    /// The root `*.md` files `name` may hold: the core root files plus its type's `files`.
+    /// An untyped project may hold any type's, so a missing registry never makes a file loose.
+    fn root_md(&self, name: &str) -> Vec<&str> {
+        let extra: Vec<&str> = match self.of(name) {
+            Some((_, _, t)) => t.files.iter().map(String::as_str).collect(),
+            None => self
+                .types
+                .values()
+                .flat_map(|t| t.files.iter().map(String::as_str))
+                .collect(),
+        };
+        SHAPE
+            .iter()
+            .copied()
+            .chain(extra)
+            .filter(|f| !f.contains('/'))
+            .collect()
+    }
 }
 
-/// Write every [`SHAPE`] file `dir` lacks, never touching one that exists. Returns the
-/// files written, in [`SHAPE`] order.
-fn scaffold_missing(p: &Profile, dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+/// Write every [`Overlays::shape_files`] file `dir` lacks, never touching one that exists.
+/// Returns the files written, in that order.
+fn scaffold_missing(p: &Profile, dir: &Path, name: &str, o: &Overlays) -> Result<Vec<PathBuf>> {
     let mut wrote = Vec::new();
-    for rel in SHAPE {
+    for rel in o.shape_files(name) {
         let path = dir.join(rel);
         if path.exists() {
             continue;
@@ -569,9 +599,9 @@ fn scaffold_missing(p: &Profile, dir: &Path, name: &str) -> Result<Vec<PathBuf>>
                 wrote.push(path);
                 continue;
             }
-            "docs/idea.md" => idea_doc_template(name),
-            "docs/tech.md" => tech_doc_template(name),
-            _ => ideas_template(name),
+            "ideas.md" => ideas_template(name),
+            "playtest.md" => crate::playtest::header(name),
+            other => format!("# {name} - {}\n", other.trim_end_matches(".md")),
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -582,21 +612,26 @@ fn scaffold_missing(p: &Profile, dir: &Path, name: &str) -> Result<Vec<PathBuf>>
     Ok(wrote)
 }
 
-/// `notes projects --new <name>` — scaffold the project [`SHAPE`] under `current/<name>/`
-/// and add it to the index's `## Current` lane. Prints each file written.
+/// `notes projects --new <name>`: scaffold the project [`SHAPE`], plus the overlay files
+/// of its registry type, under `current/<name>/` and add it to the index's `## Current`
+/// lane. Prints each file written. When a registry is present, a name it does not know is
+/// refused before anything is written: the registry is the one place a project is named.
 ///
 /// On a project that already exists it writes only the files it is missing and leaves the
 /// index alone, so the same verb brings an old project up to the shape.
-pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+pub fn new_project(p: &Profile, log: &Logger, name: &str, o: &Overlays) -> Result<()> {
     let name = name.trim();
     check_name(name)?;
+    if o.reg.as_ref().is_some_and(|r| !r.known(name)) {
+        bail!("'{name}' is not a registered project: add its entry to project-map.json first");
+    }
     let Some(dir_root) = p.projects.as_ref() else {
         bail!("this profile has no `projects` dir configured");
     };
     let dir = dir_root.join(name);
     let existed = dir.exists();
     fs::create_dir_all(&dir)?;
-    let wrote = scaffold_missing(p, &dir, name)?;
+    let wrote = scaffold_missing(p, &dir, name, o)?;
 
     if !existed {
         if let Some(idx) = &p.project_index {
@@ -623,34 +658,67 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The dirs a project root may hold besides its files: the agent board, frozen waves, and
+/// `docs/`, which takes everything else.
+const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
+
 /// What a project's [`SHAPE`] check finds, one line per finding:
 ///
-/// - a missing shape file (`notes projects --new <name>` writes it);
-/// - a root `*.md` outside [`ROOT_MD`], which belongs in `docs/` (a version note or a
-///   changelog is the layout check's finding instead, fixed by `--migrate`);
+/// - a missing shape file or type overlay file (`notes projects --new <name>` writes it);
+/// - a registry fact its type requires and the registry lacks (only `repo` today);
+/// - a root entry outside the shape: a `*.md` outside [`Overlays::root_md`] or a dir outside
+///   [`ROOT_DIRS`] belongs in `docs/`, any other file in `docs/assets/` (dotfiles are not
+///   checked; a version note or a changelog is the layout check's finding, fixed by `--migrate`);
 /// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
 ///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
 /// - an open row written twice on one sheet (same [`md::task_key`]).
-pub(crate) fn shape_findings(dir: &Path, name: &str) -> Vec<String> {
+pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String> {
     let mut out = Vec::new();
-    for rel in SHAPE {
+    for rel in o.shape_files(name) {
         if !dir.join(rel).exists() {
             out.push(format!("missing {rel} (notes projects --new {name})"));
         }
     }
+    if let Some((reg, kind, t)) = o.of(name) {
+        for need in &t.requires {
+            match need.as_str() {
+                "repo" if !reg.has_repo(name) => out.push(format!(
+                    "type {kind} requires a repo: set trackers.{name}.repo or register its repo in paths"
+                )),
+                "repo" => {}
+                other => out.push(format!(
+                    "type {kind} requires \"{other}\", which notes cannot check (only \"repo\")"
+                )),
+            }
+        }
+    }
 
-    let mut loose: Vec<String> = fs::read_dir(dir)
+    let root_md = o.root_md(name);
+    let mut loose: Vec<(String, bool)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|f| f.ends_with(".md") && !ROOT_MD.contains(&f.as_str()))
-        .filter(|f| !is_version_file(f) && !f.eq_ignore_ascii_case("changelog.md"))
+        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path().is_dir())))
+        .filter(|(f, _)| !f.starts_with('.'))
+        .filter(|(f, is_dir)| {
+            if *is_dir {
+                !ROOT_DIRS.contains(&f.as_str())
+            } else {
+                !root_md.contains(&f.as_str())
+                    && !is_version_file(f)
+                    && !f.eq_ignore_ascii_case("changelog.md")
+            }
+        })
         .collect();
     loose.sort();
-    for f in loose {
-        out.push(format!("loose {f} (move it to docs/)"));
+    for (f, is_dir) in loose {
+        out.push(if is_dir {
+            format!("loose {f}/ (move it to docs/)")
+        } else if f.ends_with(".md") {
+            format!("loose {f} (move it to docs/)")
+        } else {
+            format!("loose {f} (move it to docs/assets/)")
+        });
     }
 
     if let Ok(content) = fs::read_to_string(dir.join("summary.md")) {
@@ -737,27 +805,118 @@ fn summary_findings(content: &str) -> Vec<String> {
 /// word looks meaningful and is not.
 const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
 
-/// The row grammar the board feed parses, per top-level row: a retired priority word, a
-/// malformed tier, and on the agent board a done row with no proof marker (`ptask done`
-/// refuses one, so it was closed by hand). Human sheet rows are closed by hand by design.
+/// Tags nothing reads any more. Each looks meaningful on a row and changes nothing.
+/// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
+const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
+
+/// The work and human-only types a row title starts with (README "The task row").
+pub(crate) const ROW_TYPES: &[&str] = &[
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "run", "decide", "check",
+];
+
+/// A title longer than this belongs on a detail line under the row.
+const TITLE_MAX: usize = 80;
+
+/// The `type(area): ` prefix of a row's text, when it has a well-formed one: a known type,
+/// then one lowercase kebab word in parentheses, a colon and a space. Returns the title
+/// behind it.
+fn split_row_prefix(text: &str) -> Option<&str> {
+    let (ty, rest) = text.split_once('(')?;
+    let (area, title) = rest.split_once("): ")?;
+    let kebab = !area.is_empty()
+        && !area.starts_with('-')
+        && area
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (ROW_TYPES.contains(&ty) && kebab && !title.trim().is_empty()).then_some(title)
+}
+
+/// A row's title as the grammar counts it: its text with the stamps, the hashtags and the
+/// `type(area): ` prefix taken off.
+fn row_title(line: &str) -> String {
+    let text = md::task_text(line);
+    let bare: Vec<&str> = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect();
+    let bare = bare.join(" ");
+    split_row_prefix(&bare).unwrap_or(&bare).to_string()
+}
+
+/// The row grammar the board feed parses, per top-level row: a retired priority word, two
+/// priorities, a retired tag or `since:` stamp, a malformed tier, and on the agent board a
+/// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
+/// Human sheet rows are closed by hand by design. On the agent board the open rows are also
+/// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer, rolled up to one line
+/// each, since a board written before the grammar fails it on most rows. The human sheet
+/// takes free text: triage rewrites it.
 fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
+    let (mut unprefixed, mut long) = (Vec::new(), Vec::new());
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
         }
         let n = i + 1;
-        let head = line.find("<!--").map_or(line, |i| &line[..i]);
-        for t in md::find_hashtags(head) {
+        let (head, marker) = line.find("<!--").map_or((line, ""), |i| line.split_at(i));
+        let tags = md::find_hashtags(head);
+        for t in &tags {
             if RETIRED_PRIORITIES.contains(&t.as_str()) {
-                out.push(format!("line {n}: #{t} is not a priority (urgent, high or low)"));
-            } else if md::looks_like_tier(&t) && md::tier_tag(&t).is_none() {
+                out.push(format!(
+                    "line {n}: #{t} is not a priority (urgent, high or low)"
+                ));
+            } else if RETIRED_TAGS.contains(&t.as_str()) {
+                out.push(format!("line {n}: #{t} is retired (nothing reads it)"));
+            } else if md::looks_like_tier(t) && md::tier_tag(t).is_none() {
                 out.push(format!("line {n}: #{t} is not a tier (#tier/1, 2 or 3)"));
             }
         }
-        if agent && md::is_checked(line) && !has_proof(line) {
-            out.push(format!("line {n}: done with no proof marker (<!-- pr:N -->)"));
+        let prios: Vec<&String> = tags
+            .iter()
+            .filter(|t| md::PRIORITIES.iter().any(|(w, _, _)| w == t))
+            .collect();
+        if prios.len() > 1 {
+            let named: Vec<String> = prios.iter().map(|t| format!("#{t}")).collect();
+            out.push(format!(
+                "line {n}: {} priorities, keep one",
+                named.join(" ")
+            ));
         }
+        if marker.contains("since:") {
+            out.push(format!(
+                "line {n}: since: is retired, the created stamp is #cMMDD"
+            ));
+        }
+        if agent && md::is_checked(line) && !has_proof(line) {
+            out.push(format!(
+                "line {n}: done with no proof marker (<!-- pr:N -->)"
+            ));
+        }
+        if agent && md::is_open_task(line) {
+            let text = md::task_text(line);
+            let bare: Vec<&str> = text
+                .split_whitespace()
+                .filter(|w| !w.starts_with('#'))
+                .collect();
+            if split_row_prefix(&bare.join(" ")).is_none() {
+                unprefixed.push(n);
+            }
+            if row_title(line).chars().count() > TITLE_MAX {
+                long.push(n);
+            }
+        }
+    }
+    if let Some(first) = unprefixed.first() {
+        out.push(format!(
+            "{} open row(s) not in `type(area): title` form (first: line {first})",
+            unprefixed.len()
+        ));
+    }
+    if let Some(first) = long.first() {
+        out.push(format!(
+            "{} open row(s) with a title over {TITLE_MAX} chars, detail goes on an indented line (first: line {first})",
+            long.len()
+        ));
     }
     out
 }
@@ -794,7 +953,7 @@ fn duplicate_open_rows(content: &str) -> Vec<(String, usize)> {
 /// `notes doctor --projects`: [`shape_findings`] for every indexed project in every
 /// profile, as `<profile>/<project>: <finding>` lines. A profile that does not resolve is
 /// skipped, like [`stats`].
-pub fn shape_report() -> Result<Vec<String>> {
+pub fn shape_report(o: &Overlays) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for profile in config::all_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
@@ -804,7 +963,7 @@ pub fn shape_report() -> Result<Vec<String>> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
-            for f in shape_findings(dir, &name) {
+            for f in shape_findings(dir, &name, o) {
                 out.push(format!("{profile}/{name}: {f}"));
             }
         }
@@ -2159,9 +2318,9 @@ pub fn wave_order_findings(p: &Profile) -> Vec<String> {
 /// Departures from the canonical project shape, as short lines for `notes doctor`.
 ///
 /// The shape: `README.md` (sheet), `summary.md` (cockpit), `agent/`, `versions/<vX.Y.Z>.md`,
-/// plus whatever notes and dirs a project wants. What is reported: a version note or
-/// `changelog.md` loose at a project root (readers only look in `versions/`), a project dir
-/// no index lane lists, a lane line whose target is missing or sits in another org's tree,
+/// and `docs/` for everything else ([`shape_findings`] reports any other root entry). What is
+/// reported here: a version note or `changelog.md` loose at a project root (readers only look
+/// in `versions/`), a project dir no index lane lists, a lane line whose target is missing or sits in another org's tree,
 /// and a dir under `current/` or `archived/` that is not a project at all.
 pub fn layout_findings(p: &Profile) -> Vec<String> {
     // Every OTHER org's projects tree, so a cross-org lane line can say whose it is.
@@ -3927,6 +4086,7 @@ mod move_layout_tests {
                 "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
                 "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
                 "line 6: done with no proof marker (<!-- pr:N -->)",
+                "4 open row(s) not in `type(area): title` form (first: line 2)",
             ]
         );
         assert_eq!(
@@ -3934,6 +4094,46 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // Each grammar check fires on its bad row; the well-formed rows (the negative control)
+    // draw nothing, on either lane.
+    #[test]
+    fn row_lint_holds_agent_rows_to_the_grammar_and_flags_retired_stamps() {
+        let long = "x".repeat(81);
+        let sheet = format!(
+            "## Wave: v1 (current)\n\
+            - [ ] fix(fleet-sessions): class a gate wait #high #size/s #c1104 <!-- id:ar-142 -->\n\
+            \x20 detail lines are not rows, however long they run on and on and on and on and on\n\
+            - [/] run(home-config): reboot the nas #low\n\
+            - [ ] plain words with no prefix #low\n\
+            - [ ] Fix(Area): wrong case #low\n\
+            - [ ] feat(ok): {long} #low\n\
+            - [ ] feat(two): both #urgent #low\n\
+            - [ ] chore(old): dead tags #oneshot #ci #high\n\
+            - [ ] chore(old): stamped the old way #high <!-- since:2026-10-01 -->\n\
+            - [x] fix(done): closed rows skip the grammar <!-- pr:3 -->\n"
+        );
+        let got = row_findings(&sheet, true);
+        assert_eq!(
+            got,
+            [
+                "line 8: #urgent #low priorities, keep one",
+                "line 9: #oneshot is retired (nothing reads it)",
+                "line 9: #ci is retired (nothing reads it)",
+                "line 10: since: is retired, the created stamp is #cMMDD",
+                "2 open row(s) not in `type(area): title` form (first: line 5)",
+                "1 open row(s) with a title over 80 chars, detail goes on an indented line (first: line 7)",
+            ]
+        );
+        assert_eq!(
+            row_findings(&sheet, false).len(),
+            4,
+            "the human sheet takes free text: only the stamp checks apply"
+        );
+        let clean =
+            "- [ ] fix(a-b2): fine #high <!-- id:x-1 -->\n- [ ] decide(ucp): pick one #low\n";
+        assert_eq!(row_findings(clean, true), Vec::<String>::new());
     }
 
     #[test]
@@ -4210,15 +4410,15 @@ mod shape_tests {
     #[test]
     fn new_writes_the_whole_shape_and_one_index_line() {
         let s = sandbox("new");
-        new_project(&s.p, &s.log, "demo").unwrap();
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
         let dir = s.p.projects.as_ref().unwrap().join("demo");
         for rel in SHAPE {
             assert!(dir.join(rel).is_file(), "{rel} missing");
         }
         assert!(
-            shape_findings(&dir, "demo").is_empty(),
+            shape_findings(&dir, "demo", &Overlays::default()).is_empty(),
             "{:?}",
-            shape_findings(&dir, "demo")
+            shape_findings(&dir, "demo", &Overlays::default())
         );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert!(board.contains("Version: v0.0.1"), "{board}");
@@ -4235,13 +4435,13 @@ mod shape_tests {
         fs::write(dir.join("README.md"), sheet).unwrap();
         fs::write(dir.join("ideas.md"), "my ideas\n").unwrap();
 
-        new_project(&s.p, &s.log, "old").unwrap();
+        new_project(&s.p, &s.log, "old", &Overlays::default()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("README.md")).unwrap(), sheet);
         assert_eq!(
             fs::read_to_string(dir.join("ideas.md")).unwrap(),
             "my ideas\n"
         );
-        assert!(dir.join("docs/idea.md").is_file());
+        assert!(dir.join("agent/README.md").is_file());
         assert!(dir.join("summary.md").is_file());
         // the agent board tracks the sheet's version, not a fresh project's
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
@@ -4250,12 +4450,9 @@ mod shape_tests {
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert!(!index.contains("|old]]"), "{index}");
         // and a second run writes nothing
-        let before = fs::read_to_string(dir.join("docs/tech.md")).unwrap();
-        new_project(&s.p, &s.log, "old").unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.join("docs/tech.md")).unwrap(),
-            before
-        );
+        let before = fs::read_to_string(dir.join("summary.md")).unwrap();
+        new_project(&s.p, &s.log, "old", &Overlays::default()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("summary.md")).unwrap(), before);
     }
 
     #[test]
@@ -4271,8 +4468,11 @@ mod shape_tests {
         fs::write(dir.join("overview.md"), "notes\n").unwrap();
         fs::write(dir.join("v0.0.9.md"), "frozen\n").unwrap();
         fs::write(dir.join("art.svg"), "<svg/>").unwrap();
+        for d in ["shots", "docs", "agent", "versions", ".obsidian"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
 
-        let f = shape_findings(&dir, "demo");
+        let f = shape_findings(&dir, "demo", &Overlays::default());
         assert!(
             f.contains(&"missing summary.md (notes projects --new demo)".to_string()),
             "{f:?}"
@@ -4285,10 +4485,23 @@ mod shape_tests {
             f.contains(&"loose overview.md (move it to docs/)".to_string()),
             "{f:?}"
         );
-        // a version note is the layout check's to report, and only *.md is a note doc
+        // a binary goes to docs/assets/, a dir under docs/
         assert!(
-            !f.iter()
-                .any(|l| l.contains("v0.0.9") || l.contains("art.svg")),
+            f.contains(&"loose art.svg (move it to docs/assets/)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(&"loose shots/ (move it to docs/)".to_string()),
+            "{f:?}"
+        );
+        // NEGATIVE CONTROL: the shape's own dirs, dotfiles and a version note (the layout
+        // check's to report) are not loose
+        assert!(
+            !f.iter().any(|l| l.contains("v0.0.9")
+                || l.contains("docs/ (")
+                || l.contains("agent/ (")
+                || l.contains("versions/ (")
+                || l.contains(".obsidian")),
             "{f:?}"
         );
         // the done copy is not a duplicate; the two open ones are, case and priority aside
@@ -4301,7 +4514,11 @@ mod shape_tests {
     #[test]
     fn a_summary_holds_only_its_two_blocks() {
         let clean = summary_template("demo");
-        assert!(summary_findings(&clean).is_empty(), "{:?}", summary_findings(&clean));
+        assert!(
+            summary_findings(&clean).is_empty(),
+            "{:?}",
+            summary_findings(&clean)
+        );
         // NEGATIVE CONTROL: a retired marker, an old nextup block and hand text are each a
         // stray line; the STATUS and AUTO bodies are not, whatever they hold.
         let dirty = clean
@@ -4337,7 +4554,7 @@ mod shape_tests {
         }
         board.push_str("- [ ] still open\n");
         fs::write(dir.join("agent/README.md"), &board).unwrap();
-        let f = shape_findings(&dir, "demo");
+        let f = shape_findings(&dir, "demo", &Overlays::default());
         let line = f
             .iter()
             .find(|l| l.starts_with("agent board is"))
@@ -4348,6 +4565,147 @@ mod shape_tests {
             )),
             "{line}"
         );
+    }
+
+    /// A registry fixture beside the sandbox, and the shipped overlay tables
+    /// (plus one `infra` table with a requirement nothing checks).
+    fn overlays(s: &Sandbox) -> Overlays {
+        let map = s.root.join("project-map.json");
+        fs::write(
+            &map,
+            r#"{
+              "paths": {"/src/alpha": "alpha"},
+              "aliases": {"alpha-old": "alpha"},
+              "trackers": {
+                "_comment": "a string, not a tracker",
+                "alpha": {"type": "game"},
+                "beta": {"type": "game", "repo": "alpha"},
+                "gamma": {"type": "app", "repo": "alpha"},
+                "delta": {"type": "game"},
+                "eta": {"type": "infra"},
+                "epsilon": {}
+              }
+            }"#,
+        )
+        .unwrap();
+        let t = |files: &[&str], requires: &[&str]| ProjectType {
+            files: files.iter().map(|f| f.to_string()).collect(),
+            requires: requires.iter().map(|r| r.to_string()).collect(),
+        };
+        let types = HashMap::from([
+            ("game".to_string(), t(&["playtest.md"], &["repo"])),
+            ("app".to_string(), t(&[], &["repo"])),
+            ("infra".to_string(), t(&[], &["repos"])),
+        ]);
+        Overlays {
+            reg: Registry::from_path(&map),
+            types,
+        }
+    }
+
+    #[test]
+    fn shape_is_the_lean_core() {
+        assert_eq!(
+            SHAPE[..],
+            ["README.md", "summary.md", "agent/README.md", "ideas.md"]
+        );
+        assert!(!SHAPE.contains(&"docs/idea.md") && !SHAPE.contains(&"docs/tech.md"));
+    }
+
+    #[test]
+    fn new_refuses_an_unregistered_name_and_writes_nothing() {
+        let s = sandbox("unreg");
+        let o = overlays(&s);
+        let index = s.p.project_index.as_ref().unwrap();
+        let before = fs::read_to_string(index).unwrap();
+        // an alias is a name for a project, not a project
+        for name in ["zeta", "alpha-old"] {
+            let err = new_project(&s.p, &s.log, name, &o).unwrap_err().to_string();
+            assert!(err.contains("not a registered project"), "{err}");
+            assert!(err.contains("project-map.json"), "{err}");
+            assert!(!s.p.projects.as_ref().unwrap().join(name).exists());
+        }
+        assert_eq!(fs::read_to_string(index).unwrap(), before);
+    }
+
+    #[test]
+    fn new_scaffolds_playtest_for_a_game_and_not_for_an_app() {
+        let s = sandbox("overlay");
+        let o = overlays(&s);
+        let root = s.p.projects.as_ref().unwrap();
+        new_project(&s.p, &s.log, "beta", &o).unwrap();
+        let game = root.join("beta");
+        let playtest = fs::read_to_string(game.join("playtest.md")).unwrap();
+        assert_eq!(playtest, crate::playtest::header("beta"));
+        assert!(shape_findings(&game, "beta", &o).is_empty());
+
+        new_project(&s.p, &s.log, "gamma", &o).unwrap();
+        let app = root.join("gamma");
+        assert!(app.join("summary.md").is_file());
+        assert!(!app.join("playtest.md").exists());
+        assert!(shape_findings(&app, "gamma", &o).is_empty());
+    }
+
+    #[test]
+    fn a_missing_overlay_file_is_reported() {
+        let s = sandbox("nooverlay");
+        let o = overlays(&s);
+        new_project(&s.p, &s.log, "beta", &o).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("beta");
+        fs::remove_file(dir.join("playtest.md")).unwrap();
+        assert_eq!(
+            shape_findings(&dir, "beta", &o),
+            vec!["missing playtest.md (notes projects --new beta)".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_game_needs_a_repo_and_a_paths_entry_is_one() {
+        let s = sandbox("repo");
+        let o = overlays(&s);
+        let root = s.p.projects.as_ref().unwrap();
+        for name in ["delta", "alpha", "eta"] {
+            new_project(&s.p, &s.log, name, &o).unwrap();
+        }
+        assert_eq!(
+            shape_findings(&root.join("delta"), "delta", &o),
+            vec![
+                "type game requires a repo: set trackers.delta.repo or register its repo in paths"
+                    .to_string()
+            ]
+        );
+        // alpha has no repo field, but it is a paths value: it IS a repo's key
+        assert!(shape_findings(&root.join("alpha"), "alpha", &o).is_empty());
+        // a requirement word nothing checks is said, never passed in silence
+        assert_eq!(
+            shape_findings(&root.join("eta"), "eta", &o),
+            vec![
+                "type infra requires \"repos\", which notes cannot check (only \"repo\")"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_untyped_project_may_hold_any_types_root_files() {
+        let s = sandbox("untyped");
+        let o = overlays(&s);
+        let root = s.p.projects.as_ref().unwrap();
+        let loose = "loose playtest.md (move it to docs/)".to_string();
+        for name in ["epsilon", "gamma"] {
+            new_project(&s.p, &s.log, name, &o).unwrap();
+            fs::write(root.join(name).join("playtest.md"), "# Playtest\n").unwrap();
+        }
+        // no type in the registry: playtest.md may be there
+        assert!(!shape_findings(&root.join("epsilon"), "epsilon", &o).contains(&loose));
+        // and with no registry at all, a game's file is not loose either
+        let no_reg = Overlays {
+            reg: None,
+            ..overlays(&s)
+        };
+        assert!(!shape_findings(&root.join("gamma"), "gamma", &no_reg).contains(&loose));
+        // NEGATIVE CONTROL: an app is typed, and an app carries no playtest.md
+        assert!(shape_findings(&root.join("gamma"), "gamma", &o).contains(&loose));
     }
 
     #[test]
