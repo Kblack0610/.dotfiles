@@ -45,7 +45,7 @@ LEASE="$LEDGER/.lease"
 BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
 INFRA="$LEDGER/.infra"       # this pass's infra lines
 INFRA_SEEN="$LEDGER/.infra-seen" # the ones a finished pass has already reported
-DUE_LAST="$LEDGER/.due"      # the due lines the last check handed to a pass
+DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what the last check handed to a pass
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 MAX_TURNS="${SHEPHERD_MAX_TURNS:-40}"
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
@@ -349,19 +349,22 @@ due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; 
 # line stays out while it is still due, and a line the last pass was given and left as it was
 # comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw.
 receipts() {
-  local line key out="" owed="" keys=""
+  local line key out="" owed="" keys="" rows="" now seen
   touch "$DUE_LAST" "$SKIPPED"
+  now="$(date +%s)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="$(due_key "$line")"
     keys+="$key"$'\n'
     cut -f1 "$SKIPPED" | grep -qxF -- "$key" && continue
-    if grep -qxF -- "$key" "$DUE_LAST"; then owed+="unhandled: $line"$'\n'; else out+="$line"$'\n'; fi
+    seen="$(awk -F'\t' -v k="$key" '$1 == k { print $3; exit }' "$DUE_LAST")"
+    if [ -n "$seen" ]; then owed+="unhandled: $line"$'\n'; else out+="$line"$'\n'; fi
+    rows+="$key"$'\t'"$(line_role "$line")"$'\t'"${seen:-$now}"$'\t'"$([ -n "$seen" ] && printf 'unhandled: ')$line"$'\n'
   done
   # a skip lasts while its line is due; once it is not, the next time it is due is a new one
   awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$SKIPPED" > "$SKIPPED.tmp" \
     && mv -f "$SKIPPED.tmp" "$SKIPPED"
-  printf '%s%s' "$owed" "$out" | while IFS= read -r line; do due_key "$line"; done > "$DUE_LAST"
+  printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   printf '%s%s' "$owed" "$out" | sed '/^$/d'
 }
 
@@ -374,12 +377,21 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
-# The role skills a pass needs for these due lines (fleet-lead, "Route"), so a headless pass
-# loads only those. finding and infra lines are fleet-lead's own.
+# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding and
+# infra lines are fleet-lead's own.
+line_role() {
+  case "${1#unhandled: }" in
+    nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
+    pace:*|blocked:*|limit:*) echo fleet-pace ;;
+    *) echo fleet-lead ;;
+  esac
+}
+
+# The role skills a pass needs for these due lines, so a headless pass loads only those.
 roles_for() {
-  local lines="${1//unhandled: /}" r=""
-  grep -qE '^(nudge|escalate|overdue|nightly red)' <<< "$lines" && r="shepherd"
-  grep -qE '^(pace|blocked|limit):' <<< "$lines" && r="${r:+$r, }fleet-pace"
+  local r
+  r="$(while IFS= read -r l; do [ -z "$l" ] || line_role "$l"; done <<< "$1" \
+    | grep -vx fleet-lead | sort -u -r | paste -sd, - | sed 's/,/, /g')"
   printf '%s\n' "${r:-none}"
 }
 

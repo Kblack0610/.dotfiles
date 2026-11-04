@@ -333,6 +333,89 @@ pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
         .collect()
 }
 
+/// One due line the last `fleet-shepherd check` handed to a pass (its `.due`, one TSV row each:
+/// key, role, first-seen epoch, line).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct DueLine {
+    pub key: String,
+    /// The role skill the line routes to (`fleet-shepherd line_role`); empty on a row an older
+    /// check wrote, until the next check rewrites it.
+    pub role: String,
+    /// When a check first printed this line; 0 when the row does not say.
+    pub first_seen: u64,
+    /// The line, without its `unhandled: ` prefix.
+    pub line: String,
+    /// The previous pass was given this line and neither moved nor skipped it.
+    pub unhandled: bool,
+}
+
+/// A due line a pass left on purpose (`fleet-shepherd skip`, its `.skipped`: key, why, epoch).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Skip {
+    pub key: String,
+    pub why: String,
+    pub at: u64,
+}
+
+/// What Binks owes and what it chose not to do, from `fleet-shepherd`'s ledger.
+#[derive(Serialize, Debug, PartialEq, Default)]
+pub struct Due {
+    pub due: Vec<DueLine>,
+    pub skipped: Vec<Skip>,
+    /// Who holds the pass lease (`.lease`: holder, epoch): `runner`, or `interactive` for a
+    /// loop the human drives.
+    pub lease_holder: Option<String>,
+    /// When the last pass took the lease.
+    pub lease_at: Option<u64>,
+}
+
+fn tsv_rows(path: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.split('\t').map(String::from).collect())
+        .collect()
+}
+
+/// The ledger in `dir`. A missing file reads as empty.
+pub fn due(dir: &Path) -> Due {
+    let due = tsv_rows(&dir.join(".due"))
+        .into_iter()
+        .map(|f| {
+            let key = f[0].clone();
+            let line = f.get(3).cloned().unwrap_or_else(|| key.clone());
+            let (unhandled, line) = match line.strip_prefix("unhandled: ") {
+                Some(l) => (true, l.to_string()),
+                None => (false, line),
+            };
+            DueLine {
+                key,
+                role: f.get(1).cloned().unwrap_or_default(),
+                first_seen: f.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
+                line,
+                unhandled,
+            }
+        })
+        .collect();
+    let skipped = tsv_rows(&dir.join(".skipped"))
+        .into_iter()
+        .map(|f| Skip {
+            key: f[0].clone(),
+            why: f.get(1).cloned().unwrap_or_default(),
+            at: f.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
+        })
+        .collect();
+    let lease = std::fs::read_to_string(dir.join(".lease")).unwrap_or_default();
+    let mut lease = lease.split_whitespace();
+    Due {
+        due,
+        skipped,
+        lease_holder: lease.next().map(String::from),
+        lease_at: lease.next().and_then(|s| s.parse().ok()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,5 +588,55 @@ mod tests {
         );
         assert_eq!(w.state, Value::Null);
         assert!(w.transitions.is_empty());
+    }
+
+    #[test]
+    fn due_reads_the_shepherd_ledger_and_an_empty_dir_reads_as_nothing() {
+        let dir = std::env::temp_dir().join(format!("hub-core-due-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(due(&dir), Due::default());
+        std::fs::write(
+            dir.join(".due"),
+            "nudge STALLED: a:1\tshepherd\t1000\tunhandled: nudge STALLED: a:1 idle 30m\n\
+             pace: HOLD\tfleet-pace\t2000\tpace: HOLD\n\
+             legacy key only\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".skipped"), "pace: HOLD\tkept on purpose\t3000\n").unwrap();
+        std::fs::write(dir.join(".lease"), "runner 4000\n").unwrap();
+        let d = due(&dir);
+        assert_eq!(d.due.len(), 3);
+        assert_eq!(
+            d.due[0],
+            DueLine {
+                key: "nudge STALLED: a:1".into(),
+                role: "shepherd".into(),
+                first_seen: 1000,
+                line: "nudge STALLED: a:1 idle 30m".into(),
+                unhandled: true,
+            }
+        );
+        assert!(!d.due[1].unhandled);
+        assert_eq!(
+            (
+                d.due[2].line.as_str(),
+                d.due[2].role.as_str(),
+                d.due[2].first_seen
+            ),
+            ("legacy key only", "", 0)
+        );
+        assert_eq!(
+            d.skipped,
+            vec![Skip {
+                key: "pace: HOLD".into(),
+                why: "kept on purpose".into(),
+                at: 3000
+            }]
+        );
+        assert_eq!(
+            (d.lease_holder.as_deref(), d.lease_at),
+            (Some("runner"), Some(4000))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
