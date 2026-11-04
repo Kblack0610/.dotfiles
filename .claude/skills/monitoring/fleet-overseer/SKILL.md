@@ -109,6 +109,7 @@ This is the shape for any status question about the fleet: "where are we", "how 
 3. **Telemetry, where it can be read cleanly:** the open PR and its gate (class count, batch N of M), whether it holds a Unity right now and its CPU (`fleet-assess` rows), context used (`context_tokens` in `fleet-sessions --json`), and idle minutes. Leave a field out rather than guess it.
 4. **Room for new work:** current load and idle against the 70% budget, how many Unity runs are live, and how many more would fit.
 5. **How far to trust the ETAs:** the accuracy table from `fleet-bench report` (per basis and per horizon: how many scored, median miss, and actual over predicted time), then one line saying whether the ETAs above run long or short and by how much. An ETA whose basis carries a factor (`project-median(13) x0.3 (n=21)`) is already scaled by its basis's raw ratio, so judge it by that basis's `calibrated` line, and say there is none yet when no calibrated ETA has been scored; do not apply the raw ratio to it a second time. Added 2026-10-28, when that table showed the project-median ETAs ran about 3x long.
+6. **When the fleet is done:** the all-done-by, slow and drain lines from `fleet-bench forecast`, never a hand roll-up of the ETAs, then `fleet-bench vs` against the day's `daily-<date>` baseline (phases ticked against expected, and inflow now against inflow when frozen). Added 2026-11-03, when the human asked for the whole picture: phases, the order of work, and expectations to compare against.
 
 ## Verb: `shepherd`
 
