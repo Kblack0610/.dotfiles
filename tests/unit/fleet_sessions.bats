@@ -1201,6 +1201,23 @@ SH
   assert_equal "$(jq -c '.counts | [.LANDED, .STALLED, length]' "$XDG_STATE_HOME/fleet/state.json")" '[1,0,7]'
 }
 
+@test "--write: the shepherd pass (label shepherd) is listed with its label but counted nowhere" {
+  landed_fixture
+  mkdir -p "$PROM_TEXTFILE_DIR" "$FLEET_SHEPHERD_DIR/labels"
+  printf 'manual\nshepherd\n' > "$FLEET_SHEPHERD_DIR/labels/sid-9"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  assert_equal "$(jq -c '.sessions[0].labels' "$doc")" '["manual","shepherd"]'
+  assert_equal "$(jq -c '.counts | [.LANDED, add]' "$doc")" '[0,0]'
+  run grep -c '^agent_session_idle_minutes{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
+  assert_output 0
+  # negative control: manual alone is an agent session the shepherd leaves alone, still counted
+  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-9"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_equal "$(jq -c '.counts | [.LANDED, add]' "$doc")" '[1,1]'
+}
+
 # A state document with one session that has every fact and one that has almost none.
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'

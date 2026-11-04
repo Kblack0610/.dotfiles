@@ -197,6 +197,23 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .needs <<< "$(payload agents/testhost/sessions/platform)")" 1
 }
 
+@test "the shepherd pass's pane (label shepherd in the document) is not a session" {
+  printf 'a:1\t~\tplatform\tt1\nhub/dotfiles:9\t~\tdotfiles\tpass\n' > "$NOTES_FIXTURE/agent-panel.list"
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  echo '{"schema":1,"sessions":[{"target":"hub/dotfiles:9","bucket":"WORKING","labels":["manual","shepherd"]}],"counts":{"WORKING":0}}' \
+    > "$XDG_STATE_HOME/fleet/state.json"
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/sessions)"
+  assert_equal "$(jq -r .state <<< "$p")" 1
+  assert_equal "$(jq -r '.sessions[0].target' <<< "$p")" a:1
+  assert_equal "$(payload agents/testhost/sessions/dotfiles)" ''
+  # negative control: manual alone is still a session
+  jq '.sessions[0].labels = ["manual"]' "$XDG_STATE_HOME/fleet/state.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$XDG_STATE_HOME/fleet/state.json"
+  run "$PUB" --quiet
+  assert_equal "$(jq -r .state <<< "$(payload agents/testhost/summary/sessions)")" 2
+}
+
 @test "no fleet state document: sessions still publish, with no bucket" {
   printf 'a:1\t~\tplatform\tt1\n' > "$NOTES_FIXTURE/agent-panel.list"
   run "$PUB" --quiet

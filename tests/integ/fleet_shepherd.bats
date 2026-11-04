@@ -21,6 +21,7 @@ setup() {
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1; printf "%b" "${STUB_PANE:-}"'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
+  stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub claude-acct '[ "$1" = pick ] && echo "$HOME/.claude-acct2"; [ "$1" = trust ] && echo "$*" >> "$HOME/trust.calls"; exit 0'
   stub agentctl 'echo "$*" >> "$HOME/agentctl.calls"'
   export PROM_LIB="$HOME/prom-stub.sh"
@@ -49,7 +50,7 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
 # The pass the last run started, and what its launcher hands claude.
 pass_id() { cut -f1 "$FLEET_SHEPHERD_DIR/.pass"; }
 prompt() { bash "$FLEET_SHEPHERD_DIR/.pass.sh" && cat "$HOME/last-prompt"; }
-starts() { grep -c 'respawn-pane' "$HOME/tmux.calls"; }
+starts() { grep -cE 'respawn-pane|new-window' "$HOME/tmux.calls"; }
 # live <id> <status>: claude's session file for the pass, on a live pid (this test's).
 live() { mkdir -p "$HOME/.claude/sessions"; printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "$$" "$1" "$2" > "$HOME/.claude/sessions/$$.json"; }
 gone() { rm -f "$HOME/.claude/sessions/$$.json"; }
@@ -119,18 +120,24 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
 }
 
-@test "run with something due starts a pass in the tmux window, as the runner, and does not wait for it" {
+@test "run with something due starts a pass in window shepherd of hub session dotfiles, as the runner, and does not wait for it" {
   doc "[$(row a DONE false false)]"
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
   local id; id="$(pass_id)"
   [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "no pass id recorded: '$id'"
-  grep -qxF -- "-L hub respawn-pane -k -t =shepherd: -c $HOME bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
+  grep -qxF -- "-L hub new-window -d -t =dotfiles: -n shepherd -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
     fail "$(cat "$HOME/tmux.calls")"
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id")" manual
-  grep -qxF -- 'trust hub =shepherd: bypass permissions on' "$HOME/trust.calls"
-  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L hub attach -t shepherd" "$HOME/agentctl.calls"
+  assert_equal "$(cut -f4 "$FLEET_SHEPHERD_DIR/.pass")" dotfiles:shepherd
+  # labelled shepherd, so fleet-sessions and the sessions feed list the pass but count it nowhere
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id" | paste -sd' ')" 'manual shepherd'
+  grep -qxF -- 'trust hub =dotfiles:=shepherd bypass permissions on' "$HOME/trust.calls"
+  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L hub attach -t dotfiles:shepherd" "$HOME/agentctl.calls"
+  # the session exists, so nothing creates it, and no session is ever closed without a legacy pass
+  [ ! -e "$HOME/tmx.calls" ]
+  run grep -c kill-session "$HOME/tmux.calls"
+  assert_output 0
   assert_equal "$(outcome)" WORKED
   # The launcher: the observe role, the pass's own session id, the due lines, the runner's lease.
   run prompt
@@ -144,18 +151,69 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_line --index 3 "$id"
   refute_output --partial --max-turns
   assert_equal "$(cat "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct2"
+  # the window already there: the pass respawns it in place, never a second window
+  rm "$FLEET_SHEPHERD_DIR/.pass"; : > "$HOME/tmux.calls"
+  STUB_PANE='shepherd\n' run "$SH" run
+  assert_success
+  grep -qxF -- "-L hub respawn-pane -k -t =dotfiles:=shepherd -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
+    fail "$(cat "$HOME/tmux.calls")"
+  run grep -c new-window "$HOME/tmux.calls"
+  assert_output 0
 }
 
-@test "with no pass window it opens one, and with no tmux server the server gets a scope of its own" {
+@test "with no dotfiles session hub's own tmx ensure makes it, and with no tmux server it gets a scope of its own" {
   doc "[$(row a DONE false false)]"
   STUB_TMUX_FAIL='has-session' run "$SH" run
   assert_success
-  grep -q -- "-L hub new-session -d -s shepherd -c $HOME bash" "$HOME/tmux.calls"
+  assert_equal "$(cat "$HOME/tmx.calls")" 'ensure hub dotfiles'
+  grep -q -- "-L hub new-window -d -t =dotfiles: -n shepherd -c $HOME/.dotfiles bash" "$HOME/tmux.calls"
   [ ! -e "$HOME/systemd-run.calls" ]
   rm "$FLEET_SHEPHERD_DIR/.pass"
   STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
   assert_success
-  grep -q -- "--user --scope --quiet tmux -L hub new-session -d -s shepherd" "$HOME/systemd-run.calls"
+  assert_equal "$(cat "$HOME/systemd-run.calls")" '--user --scope --quiet tmx ensure hub dotfiles'
+}
+
+@test "migration: a pass in the old shepherd session is never killed busy, and its session closes once it is done" {
+  doc "[$(row a DONE false false)]"
+  # a pass recorded the old way, three fields, no window
+  local old=11111111-2222-3333-4444-555555555555
+  printf '%s\t%s\t1\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
+  live "$old" busy
+  run "$SH" run
+  assert_output --partial "pass ${old:0:8} is busy"
+  [ ! -e "$HOME/tmux.calls" ] || [ "$(starts)" = 0 ]
+  # past the limit it is replaced in the new window, but its session stays: it is still busy
+  aged 31
+  run "$SH" run
+  assert_equal "$(outcome)" STALLED
+  grep -q -- "-L hub new-window -d -t =dotfiles: -n shepherd" "$HOME/tmux.calls"
+  run grep -c kill-session "$HOME/tmux.calls"
+  assert_output 0
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.legacy")" "$old"
+  # the old pass goes idle (the new one is gone and scored): the next run closes the old session
+  live "$old" idle
+  run "$SH" run
+  assert_output --partial "closed session shepherd on hub, its pass ${old:0:8} done"
+  grep -qxF -- '-L hub kill-session -t =shepherd' "$HOME/tmux.calls"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.legacy" ]
+}
+
+@test "migration: an idle pass in the old session is closed on the first run; a closed session only clears the record" {
+  doc "[$(row a DONE false false)]"
+  local old=11111111-2222-3333-4444-555555555555
+  printf '%s\t%s\t1\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
+  live "$old" idle
+  run "$SH" run
+  grep -qxF -- '-L hub kill-session -t =shepherd' "$HOME/tmux.calls"
+  assert_equal "$(cut -f4 "$FLEET_SHEPHERD_DIR/.pass")" dotfiles:shepherd
+  # negative control: the old session already gone, nothing is killed and the record clears
+  : > "$HOME/tmux.calls"
+  echo "$old" > "$FLEET_SHEPHERD_DIR/.legacy"
+  STUB_TMUX_FAIL='has-session -t =shepherd' run "$SH" run
+  run grep -c kill-session "$HOME/tmux.calls"
+  assert_output 0
+  [ ! -e "$FLEET_SHEPHERD_DIR/.legacy" ]
 }
 
 @test "the pass prompt names only the role skills its due lines need" {
@@ -254,7 +312,7 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind" {
   doc "[$(row a DONE false false)]"
-  STUB_TMUX_FAIL='respawn-pane' run "$SH" run
+  STUB_TMUX_FAIL='respawn-pane|new-window' run "$SH" run
   assert_failure
   assert_equal "$(outcome)" FAILED
   [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
@@ -273,11 +331,20 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   run "$SH" passes
   assert_line --index 0 --regexp "^[0-9-]+ [0-9:]+	$(pass_id)	now	1 due, gone$"
   assert_line --index 1 --regexp "	$first	WORKED	"
-  STUB_TMUX_FAIL='has-session' run "$SH" open
+  run "$SH" open
   assert_failure 2
-  assert_output --partial 'no pass window'
+  assert_output --partial 'no pass window: no dotfiles:shepherd on hub'
   run "$SH" open nosuchpass
   assert_failure 2
+  # the window there: open attaches to it, outside tmux
+  STUB_PANE='shepherd\n' TMUX='' run "$SH" open
+  assert_success
+  grep -qxF -- '-L hub attach -t =dotfiles:shepherd' "$HOME/tmux.calls"
+  # a pass recorded the old way (no window) is opened in the old session
+  cut -f1-3 "$FLEET_SHEPHERD_DIR/.pass" > "$HOME/p" && mv "$HOME/p" "$FLEET_SHEPHERD_DIR/.pass"
+  STUB_PANE='1\n' TMUX='' run "$SH" open
+  assert_success
+  grep -qxF -- '-L hub attach -t =shepherd:' "$HOME/tmux.calls"
 }
 
 @test "a live interactive lease stands the runner down; a stale one or the runner's own does not" {
