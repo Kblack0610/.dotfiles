@@ -48,10 +48,15 @@ impl Report {
 }
 
 /// `notes doctor --projects`: every project in every profile against the project shape
-/// (`projects::SHAPE`), one line per finding and a count. Exit 0 either way: a finding is a
-/// WARN, never a broken vault.
+/// (`projects::SHAPE` plus its registry type's overlay), one line per finding and a count.
+/// Exit 0 either way: a finding is a WARN, never a broken vault. With no project registry
+/// the type overlays cannot be checked, and it says so rather than passing them silently.
 pub fn projects() -> Result<i32> {
-    let findings = projects::shape_report()?;
+    let o = projects::Overlays::load()?;
+    if o.reg.is_none() {
+        println!("SKIP type overlays not checked (no project registry)");
+    }
+    let findings = projects::shape_report(&o)?;
     for f in &findings {
         println!("{f}");
     }

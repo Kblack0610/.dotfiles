@@ -28,6 +28,7 @@ mod playtest;
 mod project_sweep;
 mod project_tasks;
 mod projects;
+mod registry;
 mod status;
 mod summarize;
 mod sweep;
@@ -967,7 +968,7 @@ fn main() -> Result<()> {
                 new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
             ) {
                 (Some(n), ..) => {
-                    projects::new_project(&prof, &log, &n)?;
+                    projects::new_project(&prof, &log, &n, &projects::Overlays::load()?)?;
                     lab_refresh::kick();
                 }
                 (_, Some(n), ..) => {
