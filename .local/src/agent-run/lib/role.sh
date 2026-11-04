@@ -79,7 +79,7 @@ enforcement. An empty one means every user-scope server is callable."
 # A reviewer that shares the author's model family is not an independent review;
 # it is the same weights marking their own homework in a different voice. Ours
 # have been exactly that: no kb-* agent carried a `model:` key, so kb-developer,
-# kb-reviewer and kb-qa all inherited delivery-loop's single claude-sonnet-5 and
+# kb-reviewer and kb-qa all inherited the runner's single model and
 # the "adversarial" pass differed only by persona and tool grant.
 #
 # Herdforge's TARGET-WORKFLOW.md states the rule and, crucially, the failure

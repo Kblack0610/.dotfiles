@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # A recommendation, and free text alongside the option you pick.
 #
-# `wave.md` has always specified that per-item choices - "approve, but drop the mobile one" -
+# The ask contract has always said that per-item choices - "approve, but drop the mobile one" -
 # belong in the human's FREE TEXT next to the option. No surface could produce one: the
 # picker was a bare fzf list of `approve|hold|cancel` with no question text, no indication
 # of what the agent that asked would do, and nowhere to type. The contract existed and the
@@ -101,7 +101,7 @@ gate() { # [recommended]
 @test "notes do not stop the answer from being resumable" {
   local id
   id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold|cancel' \
-        --recommend approve --resume '/wave alpha start' 'go?')"
+        --recommend approve --resume '/captain alpha go' 'go?')"
   "$AGENT_ASK" answer "$id" 'approve - only T1' >/dev/null 2>&1
   run bash -c '"$AGENT_ASK" resumable alpha | cut -f4'
   assert_output 'approve - only T1'

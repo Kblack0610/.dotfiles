@@ -210,8 +210,8 @@ EOF
 # ── concurrency ──────────────────────────────────────────────────────────────
 
 @test "concurrent observers do not double-record a transition" {
-  # delivery-loop, wave-watchdog and captain-watchdog are all OnCalendar=*:0/12 with no
-  # RandomizedDelaySec, so they fire on the same wall-clock second every time.
+  # The hook can race a timer, and timers on one OnCalendar with no RandomizedDelaySec
+  # fire on the same wall-clock second.
   board_with queued queued
   board_observe "$BB"
   local before; before="$(nevents)"

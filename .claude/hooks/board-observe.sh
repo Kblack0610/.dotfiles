@@ -1,8 +1,8 @@
 #!/bin/bash
 # PostToolUse: record a sprint-board stage transition at the moment the board is edited.
 #
-# A board row's Status cell is edited by an LLM agent (the /wave dispatcher,
-# kb-coordinator, wave-overseer) and the edit OVERWRITES the previous value, so the board
+# A board row's Status cell is edited by an LLM agent (a dispatcher or
+# coordinator) and the edit OVERWRITES the previous value, so the board
 # holds a current stage and no history. board_observe reconstructs the history by diffing
 # the board against what it saw last time; this hook is what makes it look at the RIGHT
 # MOMENT, so the recorded timestamp is the real one rather than "some time in the last

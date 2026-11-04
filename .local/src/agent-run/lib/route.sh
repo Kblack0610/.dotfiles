@@ -10,8 +10,8 @@
 # WHY IT HAD TO EXIST BEFORE THE SCRUB COULD LAND. scrub.sh removes every
 # transport variable unconditionally, which is correct -- an inherited
 # ANTHROPIC_BASE_URL is an accident that looks like a configuration. But
-# delivery-loop legitimately NEEDS the gateway, and it was expressing that by
-# exporting ANTHROPIC_BASE_URL and letting agentctl-run inherit it. To the
+# a runner can legitimately NEED the gateway, and without a route it could only
+# say so by exporting ANTHROPIC_BASE_URL and letting agentctl-run inherit it. To the
 # receiving process, "declared in my .conf" and "left over in this shell" are the
 # same bytes. That indistinguishability IS the bug; a route file is what makes a
 # declaration legible as one. So the scrub is only safe once there is a way to
@@ -130,7 +130,7 @@ route_resolve() {
 
 # route_data_class -- what KIND of data this invocation handles.
 # Defaults to `personal`, deliberately the strictest: that is true of dream,
-# nightly-sync, comms, sessions and ask-resume, and it forces delivery-loop to
+# nightly-sync, comms, sessions and ask-resume, and it forces a work runner to
 # declare `work` explicitly rather than inheriting a permissive default.
 route_data_class() {
   printf '%s' "${AGENTCTL_DATA_CLASS:-${DATA_CLASS:-personal}}"
@@ -171,8 +171,7 @@ route_key() {
         local f="${src#file:}"; f="${f/#\~/$HOME}"
         [ -r "$f" ] || continue
         # A key file the world can read is not a key. Refuse rather than warn:
-        # the documented rbw fallback for delivery-loop never existed, so a soft
-        # failure here degrades to "spend the personal subscription instead".
+        # a soft failure here degrades to "spend the personal subscription instead".
         local mode; mode="$(stat -c '%a' "$f" 2>/dev/null)"
         case "$mode" in
           *00|*0) : ;;

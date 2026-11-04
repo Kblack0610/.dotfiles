@@ -5,14 +5,14 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, watches, observe-only, agentctl]
-  reviewed: "2026-08-05"
+  reviewed: "2026-11-03"
 ---
 
 # sentinel
 
 ## Scope and triggers
 
-Sentinel - the always-on, observe-only monitoring companion. Talk to it to keep an eye on anything: "watch the prod API and ping me if it goes down", "alert me if the fan-out backlog climbs", "keep an eye on payments after this deploy". It runs as a persistent agentctl service (survives logout) that polls a registry of declarative watches at ~/.agent/watches/*.yaml and notifies via agent-notify ONLY on a state change. Verbs: watch | list | status | stop | pause | resume. Deterministic probes (http/metric/kubectl/command) cost zero tokens; the model fires only to diagnose a trip or for a fuzzy `probe: agent` watch (per-hour budget-capped). It OBSERVES and NOTIFIES - it never executes fixes, never mutates, never touches release gates. Use when the user says "watch/monitor X", "keep an eye on X", "alert me if X", "what are you watching", "stop watching X". Other agents (release-coordinator, sprint-overseer, bug-bash) register watches by dropping a manifest. The third observe-only persona beside Argus (sprint-overseer) and Mercer (release-coordinator).
+Sentinel - the always-on, observe-only monitoring companion. Talk to it to keep an eye on anything: "watch the prod API and ping me if it goes down", "alert me if the fan-out backlog climbs", "keep an eye on payments after this deploy". It runs as a persistent agentctl service (survives logout) that polls a registry of declarative watches at ~/.agent/watches/*.yaml and notifies via agent-notify ONLY on a state change. Verbs: watch | list | status | stop | pause | resume. Deterministic probes (http/metric/kubectl/command) cost zero tokens; the model fires only to diagnose a trip or for a fuzzy `probe: agent` watch (per-hour budget-capped). It OBSERVES and NOTIFIES - it never executes fixes, never mutates, never touches release gates. Use when the user says "watch/monitor X", "keep an eye on X", "alert me if X", "what are you watching", "stop watching X". Other agents (release-coordinator, bug-bash) register watches by dropping a manifest. An observe-only persona, like Mercer (release-coordinator).
 
 ## Persona
 
@@ -160,7 +160,7 @@ Any agent can self-register by writing a manifest directly - no skill call neede
 
 - **release-coordinator** `monitor` drops a bake-window watch (`probe: agent`, `expiry: 60m`,
   `source: release-coordinator`) so the bake is watched without the user holding a `/loop`.
-- **sprint-overseer / bug-bash** can drop targeted watches with `source: <agent>` and an `expiry`.
+- **bug-bash** can drop targeted watches with `source: <agent>` and an `expiry`.
 
 Set `source:` to your agent name and **always** an `expiry` for anything temporary, so the watch
 self-cleans. Write the four legibility fields too, and check with `sentinel-manifest validate
@@ -189,4 +189,3 @@ registered it. Sentinel remains the single notification voice for whatever it's 
 - `~/.config/agentctl/sentinel-watches.examples/` - copy-ready manifests
 - `agentctl` (`~/.config/agentctl/README.md`) - the service supervisor
 - `release-coordinator` - registers bake-window watches; its hard constraints are inherited here
-- `sprint-overseer` (Argus) - the sibling observe-only persona for sprint runs

@@ -345,7 +345,7 @@ Version: v0.12.1
     }
 
     // THE catastrophic one: if the sweep leaves a section above the current wave, every
-    // reader (board, ptask list, /wave) silently switches to work that has not started.
+    // reader (board, ptask list) silently switches to work that has not started.
     #[test]
     fn the_declared_version_heads_the_roadmap_from_a_shuffled_sheet() {
         let shuffled = "\

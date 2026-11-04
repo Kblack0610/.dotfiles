@@ -281,9 +281,9 @@ EOF
 # ── mutation verbs: assert the CLI call, never real state ────────────────────
 
 @test "--runner-op runner start issues an agentctl start for that runner" {
-  run "$FLEET" --runner-op runner start delivery-loop
+  run "$FLEET" --runner-op runner start wave-roll
   assert_success
-  assert_called 'agentctl start delivery-loop'
+  assert_called 'agentctl start wave-roll'
 }
 
 @test "--runner-op runner stop and restart map to their agentctl verbs" {

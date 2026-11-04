@@ -170,8 +170,8 @@ cmd_rows() {
   #
   #   id \t status \t project \t branch \t started_epoch \t what \t kind
   #
-  # `kind` is headless|interactive. A headless run is `claude -p` - a wave, a
-  # delivery-loop pass, a cron agent - and nobody is watching it, so the cockpit
+  # `kind` is headless|interactive. A headless run is `claude -p` - a queue item,
+  # a timer runner's pass - and nobody is watching it, so the cockpit
   # renders it differently from a session someone is sitting in.
   #
   # Deliberately NO token/cost columns: a running session's usage is incomplete

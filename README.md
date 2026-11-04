@@ -113,7 +113,7 @@ Editing rules: change `.config/rulesync-global/.rulesync/rules/overview.md` (can
 This dir is loaded by Claude Code as the project's harness layer:
 
 - **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing, eval format).
-- **`.claude/agents/`** — 19 subagents: the `kb-*` delivery pipeline (`kb-product-owner`, `kb-architect`, `kb-developer`, `kb-reviewer`, `kb-qa`, `kb-coordinator`, `kb-sprint-owner`), the observe-only personas (`sprint-overseer`, `release-coordinator`, `compliance-counsel`), and a handful of domain specialists (`security-engineer`, `system-architect`, `quality-engineer`, `devops-architect`, `requirements-analyst`, `technical-writer`, `refactoring-expert`, `root-cause-analyst`, `deep-research-agent`).
+- **`.claude/agents/`** — 17 subagents: the `kb-*` delivery pipeline (`kb-product-owner`, `kb-architect`, `kb-developer`, `kb-reviewer`, `kb-qa`, `kb-coordinator`), the observe-only personas (`release-coordinator`, `compliance-counsel`), and a handful of domain specialists (`security-engineer`, `system-architect`, `quality-engineer`, `devops-architect`, `requirements-analyst`, `technical-writer`, `refactoring-expert`, `root-cause-analyst`, `deep-research-agent`).
 - **`.claude/skills/`** — 53 domain skills invoked by name; the canonical index is the list in `.claude/CLAUDE.md`, which spans both this repo and the private overlay.
 - **`.claude/commands/`** — 24 slash commands across four namespaces:
   `/sc:*` (analyze, git, manual-test, research, test), `/my:*` (autopilot, fix-ci, go, judge, worktree-recycle), `/kb:*` (workflow, implement, sprint, ci), `/daily:*` (analysis, standup, summary, slack), plus `binks`, `dream`, `feature`, `remember`.

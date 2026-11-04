@@ -118,7 +118,7 @@ Version: v1.13.0
 - [ ] android: sweep remaining screens
 ```
 
-The FIRST `## Wave` is the current one, always - `notes ptask`, `notes board` and `/wave` all read
+The FIRST `## Wave` is the current one, always - `notes ptask` and `notes board` both read
 it by position, which is exactly why they ignore everything planned below it.
 Anything writing a planned section must keep it there; `notes ptask <project> add --to vX.Y.Z`
 is the sanctioned way, and it inserts in version order.
@@ -145,7 +145,7 @@ list anywhere. "Rolled" now means finished, or explicitly moved on.
 
 The roll then freezes the current wave ALONE (the planned ones are not a release record) and
 PROMOTES the planned wave named for the next version, tasks and all. So the loop is: plan into
-v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> `/wave` runs the promoted v1.14.0.
+v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> work the promoted v1.14.0.
 
 ### Agent notes and the proof gate (`agent/versions/<vX.Y.Z>.md`)
 

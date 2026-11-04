@@ -80,7 +80,6 @@ Media/Music
 !.claude/commands/
 .claude/commands/kb/
 .claude/commands/remember.md
-.claude/commands/wave.md
 # Names a client monorepo blocklisted in .githooks/sensitive-tokens.txt, so it
 # lives in the private overlay alongside the other product-specific skills.
 # The path here is a symlink into ~/.dotfiles-private.
@@ -152,7 +151,6 @@ Media/Music
 !.claude/skills/workstreams/ingest-prs/
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
-!.claude/skills/workstreams/sprint-overseer/
 !.claude/skills/workstreams/stack-review/
 # Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
 !.claude/agents/
@@ -272,10 +270,6 @@ test_notifications.sh
 .local/bin/agentctl-project-index
 .local/bin/audio-stream
 .local/bin/binks
-.local/bin/board-runner
-.local/bin/captain-watchdog
-.local/bin/delivery-loop
-.local/bin/wave-watchdog
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
 .local/bin/notes-to-vikunja

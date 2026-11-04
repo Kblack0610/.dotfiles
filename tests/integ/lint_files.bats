@@ -50,7 +50,7 @@ setup() {
   assert_line '.local/bin/agent-ask'
   assert_line '.local/bin/tmx'
   assert_line '.local/bin/skill-deploy'
-  assert_line '.local/bin/wave-start'
+  assert_line '.local/bin/ask-resume'
 
   # .local/bin/ticket is deliberately NOT pinned either way. It is tracked, but as a symlink
   # into the private overlay (~/.dotfiles-private/.local/src/ticket/ticket), so it resolves

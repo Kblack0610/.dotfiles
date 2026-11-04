@@ -46,7 +46,7 @@ fi
 # so the agent complies literally: `focus add` then `focus done`, every pass.
 #
 # Measured 2026-08-04, not assumed: today's note held 45 `captain watch pass` entries —
-# one per 10-minute `captain-watchdog` fire — burying the three items that actually
+# one per 10-minute watchdog fire — burying the three items that actually
 # shipped. The daily note is the human's surface; a headless runner must never write to
 # it just to satisfy a gate aimed at a person.
 #

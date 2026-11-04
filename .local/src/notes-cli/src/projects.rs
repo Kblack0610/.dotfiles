@@ -1806,8 +1806,8 @@ fn relocate_ai_dir(dir: &Path) -> Result<usize> {
 /// Sheets where the roadmap's first `## Wave` does NOT name the declared `Version:`.
 ///
 /// This is the invariant every reader leans on without checking: `project_tasks::current_wave`,
-/// `board`, `/wave` and `roll_blocker` all take `sections()[0]` as the current wave. If a
-/// planned section ever sorts above it, all four silently switch to work that has not started,
+/// `board` and `roll_blocker` all take `sections()[0]` as the current wave. If a
+/// planned section ever sorts above it, all three silently switch to work that has not started,
 /// and nothing else in the system would say so.
 pub fn wave_order_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();

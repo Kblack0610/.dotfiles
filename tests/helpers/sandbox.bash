@@ -98,20 +98,18 @@ sandbox_init() {
   # real binary writes production -- the suite passes from a terminal and corrupts live
   # state from inside a runner, which is why local runs never reproduced it.
   #
-  # AGENTCTL_NAME is the worse half. wave-start reports with
-  # `--name "${AGENTCTL_NAME:-wave}"`, so fixtures land on the SUPERVISING runner's own
-  # row: production `dream/status` and `nightly-sync/status` both read
-  # `project=demoapp item="start ok"` -- strings that exist only in wave_start.bats --
-  # and the fleet view rendered them as real for two weeks.
+  # AGENTCTL_NAME is the worse half. A script that reports under
+  # `--name "${AGENTCTL_NAME:-...}"` lands its fixtures on the SUPERVISING runner's own
+  # row, and the fleet view renders them as real.
   unset AGENTCTL_STATE AGENTCTL_NAME
 
   # The suite runs from inside a Claude session, whose id and attended flag would otherwise
   # be read as the test's own: an attended post renders into the pane.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
 
-  # `agent-ask answer` runs the ask's resume command, and `wave-start` on the real PATH
-  # would start a real wave. Off for every test; ask_resume.bats turns it back on, with
-  # wave-start and claude stubbed, to assert exactly that behaviour.
+  # `agent-ask answer` runs the ask's resume command, which would start a real headless
+  # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
+  # to assert exactly that behaviour.
   export AGENT_ASK_NO_RESUME=1
 
   # `agent-ask post` starts the answer judge, a real model call through agentctl-run. Off for
