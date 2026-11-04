@@ -225,6 +225,78 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_not_called 'start --item o1'
 }
 
+plan_fixture() {
+  cat > "$SANDBOX/my-plan.md" <<'EOF'
+# A plan
+
+## Phases
+
+- [x] 1. Landed thing: details
+- [ ] 2. Second thing: details
+  - [ ] a step inside phase 2
+- [-] 3. Deferred thing
+- [ ] 4. Fourth thing. More words
+- [ ] 5. Fifth thing (with 4): shares the branch of 4
+- [ ] 6. Sixth thing
+
+## Verification
+
+- [ ] not a phase
+EOF
+}
+
+@test "add --plan queues one oneshot item per unchecked phase, each after the one before; --dry-run writes nothing" {
+  plan_fixture
+  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue my-plan-p2	phases 2	after base$'
+  assert_line --index 2 --regexp '^would queue my-plan-p4	phases 4 5	after my-plan-p2$'
+  assert_line --index 4 --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --priority high --tags night
+  assert_success
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+  f="$(item queued my-plan-p2)"
+  [ "$(field "$f" mode)" = oneshot ]
+  [ "$(field "$f" after)" = base ]
+  [ "$(field "$f" plan)" = "$SANDBOX/my-plan.md" ]
+  [ "$(field "$f" phases)" = 2 ]
+  [ "$(field "$f" priority)" = high ]
+  [ "$(field "$f" tags)" = night ]
+  grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
+  f="$(item queued my-plan-p4)"
+  [ "$(field "$f" after)" = my-plan-p2 ]
+  [ "$(field "$f" phases)" = "4 5" ]
+  grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
+  [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
+  ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
+}
+
+@test "add --plan writes nothing when a slug is taken, and refuses what it cannot expand" {
+  plan_fixture
+  "$AQ" add --project game --slug my-plan-p6 "already queued by hand" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "already in the queue: my-plan-p6 (nothing was added)"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --slug other "a task too"
+  assert_failure
+  assert_output --partial "pass no task with it"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --slug other --mode plan
+  assert_failure
+  printf '# no checklist\n' > "$SANDBOX/empty.md"
+  run "$AQ" add --plan "$SANDBOX/empty.md" --project game
+  assert_failure
+  assert_output --partial "no unchecked phase"
+  run "$AQ" add --plan "$SANDBOX/missing.md" --project game
+  assert_failure
+  run "$AQ" add --project game --dry-run "a task"
+  assert_failure
+  assert_output --partial "--dry-run goes with --plan"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+}
+
 @test "cancel moves a queued item to done, and kills a running item's session" {
   "$AQ" add --project game --slug q "q"
   run "$AQ" cancel q
