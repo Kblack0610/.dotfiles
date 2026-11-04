@@ -335,35 +335,6 @@ picks() {
 
 # --- launch --------------------------------------------------------------------------
 
-brief_for() {
-  local c="$1" project lane key prof stage text flag=''
-  project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c"); key=$(jq -r .key <<<"$c")
-  prof=$(jq -r .profile <<<"$c"); stage=$(jq -r .stage <<<"$c")
-  text=$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')
-  [ "$lane" = agent ] && flag=' --agent'
-  cat <<EOF
-/one-shot $text
-
-Dispatched by fleet-dispatch from $project ($stage), $lane sheet row "$key".
-You are already in a fresh worktree off the trunk: work here, do not cut another.
-When the PR merges, record done on THAT row: notes --profile $prof ptask $project$flag done "$key" --proof pr:<N>
-If the task needs a decision or clarification from the human, ask it here and file the same question with agent-ask post (your recommendation in --recommend), then stop and leave this window open.
-EOF
-}
-
-launch() {
-  local c="$1" project lane key prof repo text area model flag=()
-  project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c"); key=$(jq -r .key <<<"$c")
-  prof=$(jq -r .profile <<<"$c"); repo=$(jq -r .repo <<<"$c"); text=$(jq -r .text <<<"$c")
-  area=$(jq -r .area <<<"$c")
-  [ "$lane" = agent ] && flag=(--agent)
-  model=$(model-lane classify "$text" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
-  # Asked again here, so a start never lands on a fallback: the gate's answer may be minutes old.
-  RUN_ACCOUNT=$(claude-acct room 2>/dev/null) || { say "no account has room for $key"; return 1; }
-  START_ORIGIN=run RUN_ACCOUNT=$RUN_ACCOUNT cmd_start --profile "$prof" --project "$project" "${flag[@]}" --row "$key" \
-    --server "$DISPATCH_SERVER" --model "${model:-opus}" --cwd "$repo" --area "$area" --brief <(brief_for "$c")
-}
-
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
 # its server (the human reads [dispatch] as "an agent started this") with a ledger at

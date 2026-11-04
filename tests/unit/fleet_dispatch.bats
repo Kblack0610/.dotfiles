@@ -525,10 +525,10 @@ game_ready() {
   # A real board: grep -q stops at the first line while notes is still writing the rest.
   awk 'BEGIN { for (i = 1; i <= 4000; i++) printf "filler row %d\t- [ ] filler row %d padded to make the board larger\n", i, i }' \
     >> "$NOTES_FIXTURE/rows.game.human"
-  run launch "$(jq -cn --arg r "$SANDBOX/repos/game" --arg t "- [ ] fix crash on load #high $T" '{profile: "bnb",
-    project: "game", stage: "beta", lane: "human", key: "fix crash on load", text: $t, repo: $r, prio: 1}')"
+  run promote "$(jq -cn --arg t "- [ ] fix crash on load #high $T" '{profile: "bnb", project: "game", lane: "human",
+    key: "fix crash on load", text: $t, area: "load"}')" "" "fix crash on load"
   assert_success
-  assert_output --partial 'started game-agent-1'
+  assert_output --partial 'queued game: fix crash on load'
 }
 
 @test "run starts nothing while dispatch is held" {
