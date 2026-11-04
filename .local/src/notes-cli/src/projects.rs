@@ -677,8 +677,49 @@ pub(crate) fn shape_findings(dir: &Path, name: &str) -> Vec<String> {
         for (key, n) in duplicate_open_rows(&content) {
             out.push(format!("{label} has \"{key}\" open {n} times"));
         }
+        for f in row_findings(&content, label == "agent board") {
+            out.push(format!("{label} {f}"));
+        }
     }
     out
+}
+
+/// Priority words no reader knows. A row carrying one sorts as untagged (high), so the
+/// word looks meaningful and is not.
+const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
+
+/// The row grammar the board feed parses, per top-level row: a retired priority word, a
+/// malformed tier, and on the agent board a done row with no proof marker (`ptask done`
+/// refuses one, so it was closed by hand). Human sheet rows are closed by hand by design.
+fn row_findings(content: &str, agent: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if !line.starts_with("- [") {
+            continue;
+        }
+        let n = i + 1;
+        let head = line.find("<!--").map_or(line, |i| &line[..i]);
+        for t in md::find_hashtags(head) {
+            if RETIRED_PRIORITIES.contains(&t.as_str()) {
+                out.push(format!("line {n}: #{t} is not a priority (urgent, high or low)"));
+            } else if md::looks_like_tier(&t) && md::tier_tag(&t).is_none() {
+                out.push(format!("line {n}: #{t} is not a tier (#tier/1, 2 or 3)"));
+            }
+        }
+        if agent && md::is_checked(line) && !has_proof(line) {
+            out.push(format!("line {n}: done with no proof marker (<!-- pr:N -->)"));
+        }
+    }
+    out
+}
+
+/// A `<!-- ... -->` marker other than the bookkeeping ones (`carried:N`, `ask:<id>`): what
+/// `ptask done --proof`/`--unverified` stamps.
+fn has_proof(line: &str) -> bool {
+    line.split("<!--").skip(1).any(|m| {
+        let m = m.split("-->").next().unwrap_or("").trim();
+        !m.is_empty() && !m.starts_with("carried") && !m.starts_with("ask:")
+    })
 }
 
 /// The agent board's size budget. Past it the board is slow to scan and costly to load
@@ -3810,6 +3851,37 @@ mod move_layout_tests {
         assert_eq!(
             layout_findings_with(&v.personal, &others(&v)),
             Vec::<String>::new()
+        );
+    }
+
+    // Each check fires on its bad row, and the well-formed rows next to them (the negative
+    // control) draw nothing: proof in every form ptask stamps, tiers 1-3, a #tierlist word.
+    #[test]
+    fn row_lint_flags_retired_priorities_bad_tiers_and_unproven_agent_done_rows() {
+        let sheet = "## Wave: v1 (current)\n\
+            - [ ] fine #urgent #tier/3 #tierlist\n\
+            - [ ] old word #normal\n\
+            - [ ] squashed #tier3\n\
+            - [ ] too high #tier/4\n\
+            - [x] closed by hand <!-- carried:2 -->\n\
+            - [x] proven <!-- pr:12 -->\n\
+            - [x] by url <!-- https://example.com/pull/9 merged -->\n\
+            - [x] said so <!-- unverified: played it -->\n\
+            \x20 - [x] a child row is not a row\n";
+        let got = row_findings(sheet, true);
+        assert_eq!(
+            got,
+            [
+                "line 3: #normal is not a priority (urgent, high or low)",
+                "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
+                "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
+                "line 6: done with no proof marker (<!-- pr:N -->)",
+            ]
+        );
+        assert_eq!(
+            row_findings(sheet, false).len(),
+            3,
+            "a human sheet's done rows are closed by hand by design"
         );
     }
 
