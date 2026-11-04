@@ -43,6 +43,7 @@ set -uo pipefail
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
+: "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_NIGHT_PROJECTS:=agent-runtime notes-cockpit}"
@@ -388,6 +389,13 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
+  if [ -n "$item" ] && [ -z "$resume" ]; then
+    # One start of a queue item at a time, from the queued check until the item is running: on
+    # 11-04 a pass and a hand start both saw one item queued, and the pass's launch failed. fd 7
+    # closes when this item is running, or when the caller (start_item, or the process) ends.
+    mkdir -p "$DIR"; exec 7>"$DIR/.start.lock"
+    flock -w "$DISPATCH_START_WAIT" 7 || { say "start: another start held the queue lock for ${DISPATCH_START_WAIT}s; $item stays queued"; return 1; }
+  fi
   if [ -n "$item" ]; then
     it=$(agent-queue show "$item" --json 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
     st=$(jq -r .state <<<"$it")
@@ -435,6 +443,7 @@ cmd_start() {
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     agent-queue set "$item" "session=$server:$session" "account=$(basename "${acct:-main}")" "origin=$origin" "model=$model" >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
+    exec 7>&-
     # An account that never opened this repo asks "Do you trust this folder?" first, defaulting
     # to "No, exit". claude-acct trust answers it once and waits for claude's mode footer.
     case "$mode" in plan) ready="plan mode on" ;; *) ready="bypass permissions on" ;; esac
@@ -548,7 +557,7 @@ run_queue() {
 # one pass cannot stack Unity runs past the load and idle pace. Only a stop before anything started
 # is settled; a later one is said, so a pass that started a session still publishes WORKED.
 start_items() {
-  local items="$1" room="$2" scope="$3" n=0 why rc
+  local items="$1" room="$2" scope="$3" n=0 taken=0 why rc
   while [ "$n" -lt "$room" ] && [ -n "$items" ]; do
     if [ "$n" -gt 0 ]; then
       why=$(gate "$scope")
@@ -559,10 +568,12 @@ start_items() {
       return 0
     fi
     start_item "$PICKED"; rc=$?
-    [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && return 0; return "$rc"; }
+    case "$rc" in 0 | 4) ;; 3) return 0 ;; *) return "$rc" ;; esac
     items=$(jq -c --arg s "$(jq -r .slug <<<"$PICKED")" 'select(.slug != $s)' <<<"$items")
-    n=$((n + 1))
+    [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
+  # Every item this pass picked was started by someone else: the work moved, nothing failed.
+  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   return 0
 }
 
@@ -649,16 +660,21 @@ held_by() {
 }
 
 # start_item <item json> -- past the gates: start it, and publish what happened. rc 3 when no
-# account has room, which ends the pass: the next item would find none either.
+# account has room, which ends the pass: the next item would find none either. rc 4 when another
+# start (a hand start, say) took the item first: that is not a failed launch, and the pass goes on.
 start_item() {
-  local it="$1" slug acct model
+  local it="$1" slug acct model rc
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old.
   acct=$(claude-acct room 2>/dev/null) || { settle BLOCKED "no account has room for queue item $slug"; return 3; }
   model=$(model-lane classify "$(jq -r .task <<<"$it")" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
-  if START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --server "$DISPATCH_SERVER" --model "${model:-opus}"; then
+  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --server "$DISPATCH_SERVER" --model "${model:-opus}"
+  rc=$?; exec 7>&-
+  if [ "$rc" -eq 0 ]; then
     settle WORKED "started queue item $slug"
+  elif [ "$(item_state "$slug")" != queued ]; then
+    say "queue item $slug was started by another start"; return 4
   else
     settle FAILED "could not start queue item $slug"; return 1
   fi
