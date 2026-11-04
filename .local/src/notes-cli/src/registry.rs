@@ -71,6 +71,13 @@ impl Registry {
             .and_then(Value::as_str);
         repo.is_some_and(|r| !r.is_empty()) || self.is_value_of("paths", name)
     }
+
+    /// `trackers.<name>.code`: the 2-4 letter prefix of the project's row ids (`ar` in
+    /// `ar-142`), when it is set and well formed. `project-map-doctor` checks it is unique.
+    pub fn code(&self, name: &str) -> Option<String> {
+        let c = self.tracker(name)?.get("code")?.as_str()?;
+        crate::md::is_row_id(&format!("{c}-0")).then(|| c.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -87,7 +94,8 @@ mod tests {
               "aliases": {"alpha-old": "alpha", "omega-old": "omega"},
               "trackers": {
                 "_comment": "a string, not a tracker",
-                "beta": {"type": "game", "repo": "mono"},
+                "beta": {"type": "game", "repo": "mono", "code": "bt"},
+                "epsilon": {"code": "Not-A-Code"},
                 "gamma": {"type": "app"},
                 "delta": {"type": "game", "repo": ""}
               }
@@ -126,5 +134,14 @@ mod tests {
     #[test]
     fn an_absent_file_is_no_registry() {
         assert!(Registry::from_path(Path::new("/nonexistent/project-map.json")).is_none());
+    }
+
+    #[test]
+    fn code_is_the_trackers_well_formed_id_prefix() {
+        let (path, r) = fixture("code");
+        assert_eq!(r.code("beta").as_deref(), Some("bt"));
+        assert_eq!(r.code("gamma"), None, "no code set");
+        assert_eq!(r.code("epsilon"), None, "a malformed code is no code");
+        let _ = std::fs::remove_file(path);
     }
 }

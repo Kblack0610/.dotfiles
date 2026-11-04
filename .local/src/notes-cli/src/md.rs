@@ -1272,6 +1272,81 @@ pub fn insert_under_heading(content: &str, heading: &str, new_lines: &[String]) 
     }
 }
 
+/// A row's id, the `id:<code>-<n>` token in its marker comment (README "The task row"), e.g.
+/// `ar-142`. None when the row has no id yet.
+pub fn row_id(line: &str) -> Option<String> {
+    let t = line.trim_end().strip_suffix("-->")?;
+    let inner = &t[t.rfind("<!--")? + 4..];
+    inner
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("id:"))
+        .filter(|id| is_row_id(id))
+        .map(str::to_string)
+}
+
+/// True when `s` is shaped like a row id: 2-4 lowercase letters, a hyphen, a number.
+pub fn is_row_id(s: &str) -> bool {
+    let Some((code, n)) = s.split_once('-') else {
+        return false;
+    };
+    (2..=4).contains(&code.len())
+        && code.bytes().all(|b| b.is_ascii_lowercase())
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
+/// every non-blank line after it indented deeper than it is.
+pub fn row_block_end(lines: &[&str], i: usize) -> usize {
+    let depth = |l: &str| l.len() - l.trim_start().len();
+    let own = depth(lines[i]);
+    let mut end = i + 1;
+    while end < lines.len() && !lines[end].trim().is_empty() && depth(lines[end]) > own {
+        end += 1;
+    }
+    end
+}
+
+/// The detail lines for a row at `indent`: each of `details` two spaces deeper, blanks
+/// skipped. A detail is one line; a newline inside one splits it.
+pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
+    details
+        .iter()
+        .flat_map(|d| d.lines())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("{indent}  {d}"))
+        .collect()
+}
+
+/// Add `details` as indented lines at the end of the block of the first row in `## heading`
+/// that `pred` accepts (after its existing detail lines and children). None when the heading
+/// is absent or nothing matched.
+pub fn append_details<P>(
+    content: &str,
+    heading: &str,
+    pred: P,
+    details: &[String],
+) -> Option<String>
+where
+    P: Fn(&str) -> bool,
+{
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
+    let row = lines[idx];
+    let indent = &row[..row.len() - row.trim_start().len()];
+    let at = row_block_end(&lines, idx);
+    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    for (k, d) in detail_lines(indent, details).into_iter().enumerate() {
+        out.insert(at + k, d);
+    }
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2211,6 +2286,37 @@ after
         assert_eq!(
             parse_yaml_scalar("k: 'single quoted'", "k").as_deref(),
             Some("single quoted")
+        );
+    }
+
+    #[test]
+    fn row_id_reads_the_id_token_and_only_a_well_formed_one() {
+        assert_eq!(
+            row_id("- [ ] fix(x): y #high <!-- id:ar-142 pr:9 -->").as_deref(),
+            Some("ar-142")
+        );
+        assert_eq!(row_id("- [ ] fix(x): y <!-- pr:9 -->"), None);
+        assert_eq!(row_id("- [ ] id:ar-1 in the text, no marker"), None);
+        assert_eq!(row_id("- [ ] y <!-- id:AR-1 -->"), None);
+        assert_eq!(row_id("- [ ] y <!-- id:abcde-1 -->"), None);
+        assert!(is_row_id("ucp-7") && !is_row_id("ucp-") && !is_row_id("u-7"));
+    }
+
+    #[test]
+    fn details_land_after_the_rows_existing_block() {
+        let c = "## Wave\n- [ ] a #high\n  old detail\n  - [ ] child\n- [ ] b #high\n";
+        let out = append_details(c, "Wave", |l| l.contains(" a "), &["new one".into()]).unwrap();
+        assert_eq!(
+            out,
+            "## Wave\n- [ ] a #high\n  old detail\n  - [ ] child\n  new one\n- [ ] b #high\n"
+        );
+        // a blank line ends a block; a multi-line detail splits
+        let c = "## Wave\n- [ ] a\n\n  not a's\n";
+        let out = append_details(c, "Wave", |l| l.contains(" a"), &["x\ny".into()]).unwrap();
+        assert_eq!(out, "## Wave\n- [ ] a\n  x\n  y\n\n  not a's\n");
+        assert_eq!(
+            append_details(c, "Wave", |l| l.contains("zz"), &["x".into()]),
+            None
         );
     }
 }

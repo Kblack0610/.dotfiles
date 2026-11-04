@@ -131,7 +131,7 @@ enum Cmd {
         #[arg(long)]
         agent: bool,
         /// Act on the project's `playtest.md`: one row is one thing to play and check off.
-        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `rm` only
+        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `drop` only
         #[arg(long, conflicts_with = "agent")]
         playtest: bool,
         /// The query is one whole open task line, byte for byte (the `raw` field of
@@ -427,6 +427,9 @@ enum PtaskCmd {
         /// With --playtest: the PR the check is for, written as `<!-- pr:<n> -->`
         #[arg(long, value_name = "N")]
         pr: Option<u64>,
+        /// A detail line under the row: evidence, file:line, the original words. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -461,8 +464,15 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Delete the first open wave task whose text matches
-    Rm {
+    /// Close the first matching open wave task undelivered: the row stays, ticked, with the
+    /// reason in its marker. Needs --why or --dup
+    Drop {
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
+        /// It duplicates this row (its id, like ar-142)
+        #[arg(long, value_name = "ID")]
+        dup: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -470,11 +480,18 @@ enum PtaskCmd {
     /// its checkbox state and its tags stay as they were
     Edit {
         /// The task's new text
-        #[arg(long, conflicts_with = "append", required_unless_present = "append")]
+        #[arg(
+            long,
+            conflicts_with = "append",
+            required_unless_present_any = ["append", "detail"]
+        )]
         text: Option<String>,
         /// Words to add to the end of the task's text
         #[arg(long)]
         append: Option<String>,
+        /// A detail line to add under the row, after its existing ones. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -600,8 +617,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             to: None,
             game,
             pr,
+            detail,
             text,
-        }) => playtest::Op::Add {
+        }) if detail.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),
@@ -615,11 +633,12 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             unverified,
             pick: Pick::new(&query.join(" "), exact)?,
         },
-        Some(PtaskCmd::Rm { query }) => playtest::Op::Rm {
+        Some(PtaskCmd::Drop { why, dup, query }) => playtest::Op::Drop {
+            stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
         _ => bail!(
-            "--playtest takes list, add, done and rm only (no waves: no --to, --wave or --all)"
+            "--playtest takes list, add, done and drop only (no waves or details: no --to, --wave, --all or --detail)"
         ),
     })
 }
@@ -732,7 +751,7 @@ fn main() -> Result<()> {
             ..
         } => {
             let op = playtest_op(sub, exact)?;
-            if let playtest::Op::Done { pick, .. } | playtest::Op::Rm { pick } = &op {
+            if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
             }
             playtest::run(&prof, &log, &name, op)?
@@ -758,11 +777,25 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::List { wave, all }) => {
                     project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add { to, game, pr, text }) => {
+                Some(PtaskCmd::Add {
+                    to,
+                    game,
+                    pr,
+                    detail,
+                    text,
+                }) => {
                     if game.is_some() || pr.is_some() {
                         bail!("--game and --pr only apply with --playtest");
                     }
-                    project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
+                    project_tasks::add(
+                        &prof,
+                        &log,
+                        &name,
+                        &text.join(" "),
+                        &detail,
+                        to.as_deref(),
+                        lane,
+                    )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
                     (Some(dest), to) => {
@@ -802,12 +835,19 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
-                Some(PtaskCmd::Rm { query }) => {
-                    project_tasks::rm(&prof, &log, &name, &pick(&query)?, lane)?
-                }
+                Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
+                    &prof,
+                    &log,
+                    &name,
+                    &pick(&query)?,
+                    why.as_deref(),
+                    dup.as_deref(),
+                    lane,
+                )?,
                 Some(PtaskCmd::Edit {
                     text,
                     append,
+                    detail,
                     query,
                 }) => project_tasks::retext(
                     &prof,
@@ -816,6 +856,7 @@ fn main() -> Result<()> {
                     &pick(&query)?,
                     text.as_deref(),
                     append.as_deref(),
+                    &detail,
                     lane,
                 )?,
                 Some(PtaskCmd::Promote { query }) => {
@@ -1072,8 +1113,8 @@ mod tests {
             Ok(playtest::Op::Done { .. })
         ));
         assert!(matches!(
-            ptask(&["rm", "arena"]),
-            Ok(playtest::Op::Rm { .. })
+            ptask(&["drop", "--why", "cut", "arena"]),
+            Ok(playtest::Op::Drop { .. })
         ));
         for bad in [
             &["start", "arena"][..],
@@ -1082,10 +1123,11 @@ mod tests {
             &["edit", "arena", "--text", "x"],
             &["list", "--all"],
             &["add", "--to", "v1.0.0", "arena"],
+            &["add", "--detail", "why", "arena"],
         ] {
             let e = ptask(bad).err().expect("refused").to_string();
             assert!(
-                e.contains("--playtest takes list, add, done and rm"),
+                e.contains("--playtest takes list, add, done and drop"),
                 "{bad:?}: {e}"
             );
         }
