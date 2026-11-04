@@ -1,20 +1,20 @@
 ---
 name: one-pager
 description: >-
-  Write a 1-2 page problem doc (Brief, One-pager or Shape Up Pitch) to ~/.notes/lab/briefs/. Use to frame a problem without a full PRD or tech spec. A PRD, TSD and SOW set is scope.
+  Write a 1-2 page problem doc (Brief, One-pager or Shape Up Pitch) to a project's lab docs/briefs/. Use to frame a problem without a full PRD or tech spec. A PRD, TSD and SOW set is scope.
 metadata:
   category: authoring
   tags: [docs, briefs, writing]
-  reviewed: "2026-06-10"
+  reviewed: "2026-11-04"
 ---
 
 # one-pager
 
-Produce a short, focused problem doc and save it to `~/.notes/lab/briefs/`. Three formats are supported; pick one before drafting.
+Produce a short, focused problem doc and save it to the project's lab `docs/briefs/`, or `~/.notes/lab/ideas/` when no project exists yet. Three formats are supported; pick one before drafting.
 
 ## Scope and triggers
 
-Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~half page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to ~/.notes/lab/briefs/.
+Generate a concise 1-2 page problem doc in one of three formats - Problem Brief (framing only, ~half page), One-pager (problem + options + recommendation, default), or Pitch (Shape Up: problem + appetite + solution sketch). Use when the user wants to describe a problem succinctly without a full PRD or tech spec. Saves to the project's lab docs/briefs/.
 
 ## When to use this skill
 
@@ -72,12 +72,14 @@ Run the interview corresponding to the selected format. Reuse anything the user 
 Render the chosen template with the answers, then save to:
 
 ```
-~/.notes/lab/briefs/YYYY-MM-DD-{slug}.md
+<lab dir>/docs/briefs/YYYY-MM-DD-{slug}.md   # a registered project
+~/.notes/lab/ideas/YYYY-MM-DD-{slug}.md       # no project yet
 ```
 
 - `YYYY-MM-DD` = today's date (the `currentDate` value in your context).
 - `{slug}` = lowercase, hyphenated, derived from the title. Strip punctuation; keep <= 6 words. Example: title "Hyprland modular split" -> slug `hyprland-modular-split`.
-- Create `~/.notes/lab/briefs/` if it doesn't exist (`mkdir -p`).
+- `<lab dir>` is `$(source ~/.config/shared-hooks/lab-roots.sh; lab_project_root <project>)/<project>`; it resolves only for a project registered with a `lab` in `project-map.json`. A brief that becomes a project moves into its `docs/briefs/`.
+- Create the dir if it doesn't exist (`mkdir -p`).
 - If a file with the same name already exists, append `-2`, `-3`, etc. - never overwrite.
 
 After writing, print:
@@ -196,5 +198,5 @@ After writing, print:
 - `kb-product-owner` agent (Paige) - use for full Product Briefs with user stories + acceptance criteria.
 - `scope` skill - use for a comprehensive PRD with its tech spec and SOW.
 - `kb-architect` agent - use for technical specs and ADRs.
-- `~/.notes/lab/HANDBOOK.md` - incubator conventions.
+- notes-cli README, "Projects" - the lab layout.
 - `~/.notes/lab/ideas/_IDEAS.md` - raw idea capture (free-form, predates this skill).
