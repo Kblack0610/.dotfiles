@@ -150,6 +150,24 @@ landed_count() { landed | grep -c . || true; }
   assert_output '0'
 }
 
+@test "a session that claims no plan leaves no project dir behind" {
+  rmdir "$DEST"
+  plan someone-elses >/dev/null          # recent, but not in this transcript
+  run run_hook
+  assert_success
+  assert [ ! -e "$DEST" ]
+}
+
+@test "the project dir is created when the first plan lands" {
+  rmdir "$DEST"
+  plan mine >/dev/null
+  names mine
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'mine.md'
+}
+
 @test "no transcript in the payload copies NOTHING" {
   # No attribution is available, so the safe action is to copy nothing and let the
   # next Stop sync it. The old hook copied everything in exactly this case.

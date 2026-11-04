@@ -59,8 +59,9 @@ else
 fi
 [ -n "$PROJECT_NAME" ] || exit 0
 
+# Created only when a plan is copied: a session that wrote no plan (a headless run in a
+# mktemp dir, a reaped worktree's husk) must not leave an empty project dir behind.
 DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
-mkdir -p "$DEST_DIR" 2>/dev/null || exit 0
 
 while IFS= read -r f; do
   [ -n "$f" ] && [ -f "$f" ] || continue
@@ -77,7 +78,7 @@ while IFS= read -r f; do
     -not -path "$DEST_DIR/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue
 
-  cp -p "$f" "$DEST_DIR/" 2>/dev/null || true
+  mkdir -p "$DEST_DIR" 2>/dev/null && cp -p "$f" "$DEST_DIR/" 2>/dev/null || true
 done < <(find "$SRC_DIR" -maxdepth 1 -type f -name '*.md' -mtime -1 2>/dev/null)
 
 exit 0
