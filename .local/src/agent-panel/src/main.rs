@@ -42,6 +42,12 @@ enum Cmd {
     TimeUse { transcript: PathBuf },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
+    /// Internal fzf reload callback: print the chooser rows again (not meant to be run by hand).
+    #[command(hide = true)]
+    Rows {
+        #[arg(long)]
+        map_file: PathBuf,
+    },
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
         #[arg(long)]
@@ -65,6 +71,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
+        Some(Cmd::Rows { map_file }) => chooser::run_rows(&map_file),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

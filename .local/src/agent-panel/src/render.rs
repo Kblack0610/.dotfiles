@@ -87,6 +87,28 @@ pub struct Row {
     pub text: String,   // full row, tab included
 }
 
+/// The fleet stage beside the target, coloured as in the tmux status bar (`.tmux.conf`
+/// `@fleet_fmt`). WORKING and NEEDS print nothing: NEEDS is already the `!` glyph.
+fn stage(stage: &str) -> String {
+    let colour = match stage {
+        "STALLED" => RED,
+        "UNCLEAR" => YELLOW,
+        "LANDED" | "DONE" => GREEN,
+        "PARKED" => DIM,
+        _ => return String::new(),
+    };
+    format!(" {colour}{stage}{RESET}")
+}
+
+/// Session labels (`fleet-sessions label`), apart from the window tags by colour.
+fn labels(labels: &str) -> String {
+    if labels.is_empty() {
+        String::new()
+    } else {
+        format!(" {CYAN}[{labels}]{RESET}")
+    }
+}
+
 /// Build the grouped fzf rows (projects sorted) and the preview map-file body.
 /// Returns `(rows, map_lines)`.
 pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
@@ -119,6 +141,7 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             } else {
                 format!(" {ORANGE}[{}]{RESET}", a.tags.replace(' ', ","))
             };
+            let tags = format!("{}{tags}{}", stage(&a.stage), labels(&a.labels));
             let display = if a.summary.is_empty() {
                 format!(" {g} {mode}{ask} {}{tags}", a.short_target)
             } else {
@@ -244,6 +267,21 @@ mod tests {
         assert!(!row(&rows, "s:2").contains(&a));
         assert!(row(&rows, "s:2").contains("    s:2"));
         assert!(row(&rows, "s:3").contains(&format!("{p}{a} s:3")));
+    }
+
+    #[test]
+    fn shows_stage_and_labels_after_the_target() {
+        let mut stalled = agent("s:1", '✓', false, false);
+        stalled.stage = "STALLED".into();
+        stalled.labels = "manual".into();
+        stalled.tags = "pinned".into();
+        let mut working = agent("s:2", '~', false, false);
+        working.stage = "WORKING".into();
+        let (rows, _) = build(&[stalled, working]);
+        let want = format!("s:1 {RED}STALLED{RESET} {ORANGE}[pinned]{RESET} {CYAN}[manual]{RESET}");
+        assert!(row(&rows, "s:1").contains(&want), "{}", row(&rows, "s:1"));
+        // Negative control: WORKING and no labels add nothing after the target.
+        assert!(row(&rows, "s:2").ends_with(" s:2"), "{}", row(&rows, "s:2"));
     }
 
     #[test]
