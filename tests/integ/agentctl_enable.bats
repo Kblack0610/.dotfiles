@@ -145,3 +145,19 @@ setup() {
   grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
 }
+
+@test "reload removes the generated drop-in of a runner whose conf is gone, and keeps a hand-written one" {
+  "$AGENTCTL_BIN" reload
+  [ -f "$TIMERS/agentctl@beta.service.d/agentctl-oneshot.conf" ]
+  mkdir -p "$TIMERS/agentctl@delta.service.d"
+  echo stale > "$TIMERS/agentctl@delta.service.d/agentctl-oneshot.conf"
+  echo mine > "$TIMERS/agentctl@delta.service.d/override.conf"
+  rm "$AGENTCTL_CONF_DIR/beta.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_success
+  assert_output --partial 'removed orphan drop-in: beta'
+  [ ! -e "$TIMERS/agentctl@beta.service.d" ]
+  [ ! -e "$TIMERS/agentctl@delta.service.d/agentctl-oneshot.conf" ]
+  [ -f "$TIMERS/agentctl@delta.service.d/override.conf" ]
+  [ -f "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf" ]
+}
