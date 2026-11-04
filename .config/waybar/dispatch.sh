@@ -2,21 +2,19 @@
 # Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is the
 # ready queue items, how long the oldest has waited, and the run units in use against the cap,
 # and a colour:
-#   red    queue-starved is tripped, the fleet-dispatch runner failed, no pass in
-#          PASS_LATE_SECS, a session is STALLED, or a host's fleet_sessions.prom is older
-#          than STATE_LATE_SECS
+#   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
+#          PASS_LATE_SECS
 #   amber  the last pass left ready work waiting (BLOCKED), an item is flapping, more could
-#          start than the limits let the last pass (could_start), a session is UNCLEAR, or a
-#          shepherd due line went unhandled
+#          start than the limits let the last pass (could_start), or a shepherd due line went
+#          unhandled
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
 # The hover has one section per system: Queue (items, oldest, 1h and 24h flow, drain), Dispatch
-# (capacity, what paused the last pass, self-heal), Sessions (fleet-sessions stages and every
-# session that wants a look) and Shepherd (its last pass and the last 24h). Exceptions lead it.
+# (capacity, what paused the last pass, self-heal) and Shepherd (its last pass and the last 24h).
+# Exceptions lead it. Sessions and their stages are the agents chip (ai_agents.sh).
 #
 # Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
-# fleet_dispatch runner, the queue-starved watch, summary/shepherd from `fleet-shepherd stats`,
-# and the fleet_sessions.prom textfile `fleet-sessions tick` writes), so the chip reads the
-# same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
+# fleet_dispatch runner, the queue-starved watch and summary/shepherd from `fleet-shepherd
+# stats`), so the chip reads the same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
 # that stopped publishing cannot hold it red. Prometheus unreadable reads ? in amber and no
 # dispatch numbers read -, never a quiet nothing.
 
@@ -31,8 +29,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 ICON=$'\uf01c'
 # fleet-dispatch runs every 15 minutes; three missed passes is a stopped timer, not a slow one.
 PASS_LATE_SECS=2700
-# fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
-STATE_LATE_SECS=300
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
 URGENT_LATE_SECS=3600
 C_DIM="#7f7f7f"
@@ -41,7 +37,6 @@ C_GRN="${LEVEL_COLOUR[0]}"
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
-q+=' or agent_sessions or agent_session_idle_minutes{bucket=~"STALLED|UNCLEAR|NEEDS"} or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -163,46 +158,6 @@ else
   disp+=$'\n'"self-heal last hour: reaped ${reaped:-0}, flapping $fl"
 fi
 
-# --- Sessions: the fleet_sessions.prom textfile ---
-# counts: bucket -> sessions, max per host (two scrapes of one host read once), summed over hosts.
-counts="$(jq -c '[.data.result[] | select(.metric.__name__ == "agent_sessions")
-    | {h: (.metric.host // ""), b: .metric.bucket, v: (.value[1] | tonumber | floor)}]
-  | group_by([.h, .b]) | map({b: .[0].b, v: (map(.v) | max)})
-  | group_by(.b) | map({key: .[0].b, value: (map(.v) | add)}) | from_entries' <<< "$raw")"
-nb() { jq -r --arg b "$1" '.[$b] // 0' <<< "$counts"; }
-sess="<b>Sessions</b>  fleet-sessions stages, every minute"
-if [ "$counts" = "{}" ]; then
-  sess+=$'\n'"no agent_sessions on Prometheus: fleet-sessions tick writes fleet_sessions.prom"
-else
-  n_unclear="$(nb UNCLEAR)" n_stalled="$(nb STALLED)"
-  ((n_unclear > 0)) && flag 1 "$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged"
-  ((n_stalled > 0)) && flag 2 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
-  # stage <bucket> <label> [colour]: "2 need you", its number painted when it is not 0.
-  stage() {
-    local c
-    c="$(nb "$1")"
-    if [ -n "${3:-}" ] && ((c > 0)); then printf '%s %s' "$(paint "$3" "$c")" "$2"; else printf '%s %s' "$c" "$2"; fi
-  }
-  sess+=$'\n'"$(stage WORKING working), $(stage NEEDS 'need you' "$C_YEL"), $(stage STALLED stalled "$C_RED"), $(stage UNCLEAR unclear "$C_YEL"), $(stage LANDED landed), $(stage DONE done), $(stage PARKED parked)"
-  # One line per session that wants a look, worst first: stalled, unclear, then needs, by idle.
-  while IFS=$'\t' read -r bucket target project idle; do
-    line="$bucket  $(pango_esc "$target")  $(pango_esc "$project")  idle $(prom_dur $((idle * 60)))"
-    case "$bucket" in
-      STALLED) line="$(paint "$C_RED" "$line")" ;;
-      UNCLEAR) line="$(paint "$C_YEL" "$line")" ;;
-    esac
-    sess+=$'\n'"$line"
-  done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_idle_minutes")
-      | {b: .metric.bucket, t: (.metric.target // "?"), p: (.metric.project // "-"), i: (.value[1] | tonumber | floor)}]
-    | unique_by(.t) | sort_by(({STALLED: 0, UNCLEAR: 1, NEEDS: 2}[.b] // 3), -.i)[] | [.b, .t, .p, .i] | @tsv' <<< "$raw")
-fi
-while IFS=$'\t' read -r host age; do
-  [ -n "$host" ] && flag 2 "fleet_sessions.prom on $host is $(prom_dur "$age") old; is fleet-state.timer running?"
-done < <(jq -r --argjson now "$now" --argjson late "$STATE_LATE_SECS" '[.data.result[]
-    | select(.metric.__name__ == "node_textfile_mtime_seconds")
-    | {h: (.metric.host // "?"), a: ($now - (.value[1] | tonumber | floor))}]
-  | group_by(.h) | map({h: .[0].h, a: (map(.a) | min)})[] | select(.a > $late) | [.h, .a] | @tsv' <<< "$raw")
-
 # --- Shepherd: summary/shepherd, left out when it is not on the feed ---
 shep=''
 if [ -n "$(get shepherd.due)" ]; then
@@ -227,6 +182,6 @@ fi
 tip="$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
-for sec in "$disp" "$sess" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
+for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"

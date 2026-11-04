@@ -9,8 +9,8 @@
 # Adding a row is not enough - the module's exec must also be wrapped in
 # `modules.sh gate <id>` and given "signal": 10 in config.base / config.pin-full.
 
-agents|AI agents|custom/ai-agents
-dispatch|Queue: queue, dispatch, sessions, shepherd|custom/dispatch
+agents|Agent sessions by world|custom/ai-agents
+dispatch|Queue: queue, dispatch, shepherd|custom/dispatch
 fleet|Fleet health|custom/fleet
 load|CPU and load (fleet on hover)|custom/load
 ci|CI runners|custom/ci

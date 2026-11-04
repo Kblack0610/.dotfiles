@@ -1,12 +1,11 @@
 #!/usr/bin/env bats
 # dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is the ready queue
 # items, the oldest one's wait and the run units against the cap, coloured by what is wrong; the
-# hover has a section per system (Queue, Dispatch, Sessions, Shepherd). What these pin: a deep
-# queue that is moving stays neutral; BLOCKED, flapping, an unclear session and an unhandled
-# shepherd line are amber; queue-starved, a failed runner, a stopped pass, a stalled session and
-# a stale fleet_sessions.prom are red; each number takes its own colour; a second host's series
-# count once while sessions add up over hosts; Prometheus down reads ? and no dispatch numbers
-# read -, never a blank chip.
+# hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
+# (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
+# flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
+# pass are red; each number takes its own colour; a second host's series count once; Prometheus
+# down reads ? and no dispatch numbers read -, never a blank chip.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -29,11 +28,9 @@ STUB
 # feed [series=value ...] -> Prometheus's answer: a healthy queue on host h1 (39 ready, 32
 # urgent, the oldest 12h59m, last pass 3m ago, last start 12m ago, 7 reaps; 60 queued, 14
 # running, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
-# 30 done and 18 added in 6h; 16 of 24 run units, 5 by hand), and its
-# sessions (5 working, 2 needs idle 30 and 90 minutes, 1 done, the textfile written 60s ago),
-# with the overrides applied. A series is topic.key (a feed number, summary_shepherd.* for the
-# shepherd), sess:BUCKET (a count), idle:BUCKET:target (minutes), mtime (age in seconds); h2:
-# prefixes another host, dup: a second scrape of h1; a value of - drops the series.
+# 30 done and 18 added in 6h; 16 of 24 run units, 5 by hand), with the overrides applied. A
+# series is topic.key (a feed number, summary_shepherd.* for the shepherd); h2: prefixes another
+# host, dup: a second scrape of h1; a value of - drops the series.
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -55,8 +52,6 @@ s = {
     "summary_dispatch.room_held_account": 0,
     "runner_fleet_dispatch.failed": 0, "runner_fleet_dispatch.blocked": 0,
     "watch_queue_starved.tripped": 0,
-    "sess:WORKING": 5, "sess:NEEDS": 2, "sess:STALLED": 0, "sess:UNCLEAR": 0, "sess:LANDED": 0,
-    "sess:DONE": 1, "sess:PARKED": 0, "idle:NEEDS:hub/a:1": 30, "idle:NEEDS:lab/b:2": 90, "mtime": 60,
 }
 for a in sys.argv[2:]:
     k, v = a.split("=")
@@ -67,17 +62,8 @@ for k, v in s.items():
     host, inst = "h1", "i1"
     if k.startswith("h2:"): host, inst, k = "h2", "i2", k[3:]
     if k.startswith("dup:"): inst, k = "i9", k[4:]
-    if k == "mtime":
-        m = {"__name__": "node_textfile_mtime_seconds", "file": "/var/lib/node_exporter/textfile/fleet_sessions.prom"}
-        v = 100000 - v
-    elif k.startswith("idle:"):
-        _, b, t = k.split(":", 2)
-        m = {"__name__": "agent_session_idle_minutes", "bucket": b, "target": t, "project": "proj"}
-    elif k.startswith("sess:"):
-        m = {"__name__": "agent_sessions", "bucket": k[5:]}
-    else:
-        topic, name = k.split(".")
-        m = {"__name__": "mqtt_" + name, "topic": f"agents_{host}_main_{topic}"}
+    topic, name = k.split(".")
+    m = {"__name__": "mqtt_" + name, "topic": f"agents_{host}_main_{topic}"}
     m.update(host=host, instance=inst)
     res.append({"metric": m, "value": [0, str(v)]})
 json.dump({"status": "success", "data": {"result": res}}, open(sys.argv[1], "w"))
@@ -108,10 +94,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 7 "capacity: run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
   assert_line --index 8 "can start now: - more; last pass 3m ago, last start 12m ago"
   assert_line --index 9 "self-heal last hour: reaped 7, flapping 0"
-  assert_line --index 10 "<b>Sessions</b>  fleet-sessions stages, every minute"
-  assert_line --index 11 "5 working, <span color='$Y'>2</span> need you, 0 stalled, 0 unclear, 0 landed, 1 done, 0 parked"
-  assert_line --index 12 "NEEDS  lab/b:2  proj  idle 1h30m"
-  assert_line --index 13 "NEEDS  hub/a:1  proj  idle 30m"
+  refute_output --partial "<b>Sessions</b>"
   refute_output --partial "<b>Shepherd</b>"
 }
 
@@ -240,46 +223,10 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "no pass in 46m; is fleet-dispatch.timer running?"
 }
 
-@test "a stalled session is red, leads the hover and heads the Sessions list" {
-  feed sess:STALLED=1 "idle:STALLED:lab/c:3=200"
-  run "$MODULE"
-  assert_equal "$(class)" critical
-  run tip
-  assert_line --index 1 "<span color='$R'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
-  assert_output --partial "<span color='$R'>1</span> stalled"
-  assert_output --partial $'every minute\n5 working, <span color=\''"$Y"$'\'>2</span> need you, <span color=\''"$R"$'\'>1</span> stalled, 0 unclear, 0 landed, 1 done, 0 parked\n<span color=\''"$R"$'\'>STALLED  lab/c:3  proj  idle 3h20m</span>\nNEEDS  lab/b:2  proj  idle 1h30m'
-}
-
-@test "an unclear session is amber" {
-  feed sess:UNCLEAR=1
-  run "$MODULE"
-  assert_equal "$(class)" warn
-  run tip
-  assert_output --partial "<span color='$Y'>1</span> unclear"
-}
-
-@test "a sessions textfile older than five minutes is red: the tick stopped" {
-  feed mtime=900
-  run "$MODULE"
-  assert_equal "$(class)" critical
-  run tip
-  assert_output --partial "fleet_sessions.prom on h1 is 15m old"
-}
-
-@test "a second host's queue series count once, by their max; its sessions add up" {
-  feed h2:summary_dispatch.runnable=3 h2:watch_queue_starved.tripped=0 dup:sess:WORKING=5 h2:sess:WORKING=3 h2:mtime=30
+@test "a second host's queue series count once, by their max" {
+  feed h2:summary_dispatch.runnable=3 h2:watch_queue_starved.tripped=0 dup:summary_dispatch.runnable=39
   run "$MODULE"
   assert_equal "$(text)" "$ICON 39 12h <span color='$G'>16/24</span>"
-  run tip
-  assert_output --partial $'every minute\n8 working,'
-}
-
-@test "no sessions on the feed says so in the Sessions section and leaves the queue alone" {
-  feed sess:WORKING=- sess:NEEDS=- sess:STALLED=- sess:UNCLEAR=- sess:LANDED=- sess:DONE=- sess:PARKED=-
-  run "$MODULE"
-  assert_equal "$(class)" ok
-  run tip
-  assert_output --partial "no agent_sessions on Prometheus: fleet-sessions tick writes fleet_sessions.prom"
 }
 
 @test "the shepherd section shows its last pass and 24h; an unhandled due line is amber; off the feed it is left out" {
@@ -288,9 +235,9 @@ tip() { jq -r .tooltip <<< "$output"; }
   run "$MODULE"
   assert_equal "$(class)" ok
   run tip
-  assert_line --index 14 "<b>Shepherd</b>  moves sessions through their plans"
-  assert_line --index 15 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
-  assert_line --index 16 "last 24h: 40 nudges, 45 escalations, 3 passes"
+  assert_line --index 10 "<b>Shepherd</b>  moves sessions through their plans"
+  assert_line --index 11 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
+  assert_line --index 12 "last 24h: 40 nudges, 45 escalations, 3 passes"
   feed summary_shepherd.due=6 summary_shepherd.unhandled=2
   run "$MODULE"
   assert_equal "$(class)" warn
@@ -311,14 +258,13 @@ tip() { jq -r .tooltip <<< "$output"; }
 }
 
 # Negative control: no dispatch numbers is -, never a 0 nobody counted.
-@test "no summary/dispatch on the feed reads - in amber, never 0, and the sessions still show" {
+@test "no summary/dispatch on the feed reads - in amber, never 0" {
   feed summary_dispatch.runnable=-
   run "$MODULE"
   assert_equal "$(text)" "$ICON <span color='$Y'>-</span>"
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "no dispatch numbers on the feed"
-  assert_output --partial "<b>Sessions</b>"
 }
 
 @test "Prometheus unreadable reads ? in amber, never blank" {

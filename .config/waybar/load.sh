@@ -41,7 +41,7 @@ if [ -r "$cpu_state" ] && read -r prev_total prev_rest < "$cpu_state" && ((total
 fi
 printf '%s %s\n' "$total" "$rest" > "$cpu_state"
 
-printf -v text 'CPU %s LOAD %.1f' "$cpu" "$load1"
+printf -v text 'CPU %s L %.1f' "$cpu" "$load1"
 
 fallback() { emit "$text" "Load $load1 on $cores cores"$'\n'"$1" "$class"; exit 0; }
 

@@ -143,14 +143,18 @@
         "hide-empty-text": true,
         "tooltip": true
     },
+    // Agents: sessions in progress on the bar; the hover is the fleet-sessions stages, a section
+    // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
+    // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
         "format": "{}",
         "return-type": "json",
-        "interval": 3,
+        "interval": 15,
         "exec": "$HOME/.config/waybar/modules.sh gate custom/ai-agents /home/kblack0610/.config/waybar/ai_agents.sh",
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --tab sessions",
         "tooltip": true
     },
     "custom/fleet": {
@@ -189,7 +193,7 @@
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
-    // per system: Queue, Dispatch, Sessions, Shepherd (dispatch.sh). Click opens the hub board on Queue.
+    // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",
