@@ -70,7 +70,16 @@ proof_watch() {
   done
 }
 
-# proof_changed — 0 if any watched artifact changed since proof_watch.
+# proof_mark FILE / proof_restore FILE: keep proof_watch's fingerprint across processes, for a
+# runner that starts the agent in one run and scores it in a later one (fleet-shepherd's tmux pass).
+proof_mark() { printf '%s\n%s' "$_AGENT_PROOF_T0" "$_AGENT_PROOF_PRE" > "$1"; }
+proof_restore() {
+  [ -r "$1" ] || return 1
+  _AGENT_PROOF_T0="$(head -n 1 "$1")"
+  _AGENT_PROOF_PRE="$(tail -n +2 "$1")"
+}
+
+# proof_changed - 0 if any watched artifact changed since proof_watch.
 proof_changed() {
   local line f pre now
   while IFS= read -r line; do
