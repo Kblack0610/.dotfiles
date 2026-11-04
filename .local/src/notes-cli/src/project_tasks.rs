@@ -159,7 +159,7 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
 /// `notes ptask <name> list [--wave vX.Y.Z | --all]` — TSV of OPEN tasks.
 ///
 /// Bare `list` is the current wave and emits exactly the four columns it always has —
-/// `path<TAB>line<TAB>key<TAB>text` — because the cockpit parses it. A
+/// `path<TAB>line<TAB>key<TAB>text` - because the cockpit parses it. A
 /// wave SELECTOR adds a fifth column (the wave's version) rather than changing the first
 /// four, so a reader that only wants `$1..$4` is unaffected either way.
 pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool, lane: Lane) -> Result<i32> {

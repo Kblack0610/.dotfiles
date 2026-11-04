@@ -62,7 +62,7 @@ export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
 # The one that needs it today is the Focus gate (86-focus-reconcile.sh): it blocks a
 # turn that changed code without declaring the work on the human's daily `## Focus`.
 # On a timer there is nobody to answer, so the agent complied the only way it could —
-# `focus add` then `focus done` — and a 10-minute watchdog pass buried
+# `focus add` then `focus done` - and a 10-minute watchdog pass buried
 # 2026-08-04's real entries under 45 watch-pass lines.
 #
 # It is set HERE, not at each call site, because there are seven `claude -p` callers

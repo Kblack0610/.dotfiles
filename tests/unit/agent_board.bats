@@ -21,7 +21,7 @@ write_bb() { cat > "$BB"; }
 nrows() { board_rows "$BB" | grep -c . || true; }
 field() { board_rows "$BB" | sed -n "${1}p" | cut -d$'\037' -f"$2"; }
 
-# ── the header-shape bug (a `#`-keyed parser returned ZERO rows) ──────────
+# -- the header-shape bug (a `#`-keyed parser returned ZERO rows) ----------
 
 @test "a board headed Ticket-first is read, not silently skipped" {
   # THE regression. An older parser keyed the header on a literal `#` first

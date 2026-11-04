@@ -2,7 +2,7 @@
 //! heading format, shared by `projects` (roll) and `project_tasks` (ptask).
 //!
 //! A sheet carries a ROADMAP. The FIRST `## Wave …` section is the CURRENT wave — the one
-//! `notes board` shows, the one `roll` freezes. Every `## Wave …`
+//! `notes board` shows, the one `roll` freezes. Every `## Wave ...`
 //! after it is PLANNED: the road forward, held in ascending version order.
 //!
 //! ```markdown
@@ -18,7 +18,7 @@
 //!
 //! Planned waves are structurally invisible to every reader that predates them.
 //! `md::section_span` ends at the next `## `, and CURRENT is defined by POSITION (first),
-//! not by the `(current)` suffix — which is how `notes ptask list`, `notes board`
+//! not by the `(current)` suffix - which is how `notes ptask list`, `notes board`
 //! and the cockpit keep seeing exactly the current wave and nothing else, unchanged.
 //! Anything that writes a planned section must therefore keep it BELOW the current one;
 //! `insert_planned` is the only sanctioned way to do that.
