@@ -50,6 +50,7 @@ set -uo pipefail
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
+: "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
 : "${FLEET_MAIN_TTL:=300}" # seconds a repo's main run list is reused across passes: every caller (the
@@ -77,7 +78,8 @@ LABELS="$LEDGER/labels"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)>
+#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)> \
+#                <dirty names: the first dirty paths, shown beside the count, or ->
 #   -> "BUCKET reason"
 # Who must act decides before whether the session is active: an ask waits on the human, and
 # a PR that is otherwise ready but cannot merge wastes the wait, however busy the session is.
@@ -125,7 +127,8 @@ session_bucket() {
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}"
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm=""
+  [ "${18:--}" = - ] || nm=" (${18})"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
   [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
@@ -135,7 +138,7 @@ bucket_facts() {
     MERGED)
       # A merge that may have turned a nightly red is not landed, whatever the tree says.
       if [ "$red" != - ]; then echo "STALLED nightly red after PR #$pr: $red"
-      elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left"
+      elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left$nm"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1; fi ;;
     OPEN)
@@ -146,7 +149,7 @@ bucket_facts() {
       esac ;;
     CLOSED) echo "UNCLEAR PR #$pr closed without merging" ;;
     *)
-      if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s), no PR"
+      if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s)$nm, no PR"
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
       else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0; fi ;;
   esac
@@ -167,7 +170,8 @@ session_finished() {
 work_blockers() {
   local ids="$1"; shift
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
-        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out=""
+        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm=""
+  [ "${18:--}" = - ] || nm=" (${18})"
   if [ -n "$ids" ]; then
     for id in ${ids//,/ }; do b+=("open ask $id"); done
   elif [ "$asks" -gt 0 ]; then b+=("$asks open ask(s)"); fi
@@ -177,12 +181,12 @@ work_blockers() {
     MERGED)
       merged=1
       [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
-      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)")
+      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
     CLOSED) b+=("PR #$pr closed without merging") ;;
     *)
-      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s), no PR")
+      [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
       [ "$ahead" -gt 0 ] && b+=("$ahead file(s) not on the default branch, no PR") ;;
   esac
   case "$phases" in
@@ -510,21 +514,33 @@ main_health() {
   cut -f1-4 "$key"
 }
 
-# dirty_count <dir> <edited files, one absolute path per line>: the session's dirty files.
-# In its own worktree (under ~/.worktrees/) every dirty file is its own. A repo's main
-# checkout is shared with the human and other sessions, so there only the files this
-# session edited count: the human's half-done config is not this session's to land.
-dirty_count() {
+# dirty_paths <dir> <edited files, one absolute path per line>: the session's dirty files,
+# one repo-relative path per line. In its own worktree (under ~/.worktrees/) every dirty file
+# is its own. A repo's main checkout is shared with the human and other sessions, so there
+# only the files this session edited count: the human's half-done config is not this
+# session's to land. -z: no quoting of odd names; --no-renames: one record per path.
+dirty_paths() {
   local d="$1" edited="$2" top
   case "$d/" in
-    "$HOME/.worktrees/"*) git -C "$d" status --porcelain 2>/dev/null | wc -l; return ;;
+    "$HOME/.worktrees/"*)
+      git -C "$d" status --porcelain -z --no-renames 2>/dev/null \
+        | while IFS= read -r -d '' e; do printf '%s\n' "${e:3}"; done; return ;;
   esac
-  [ -n "$edited" ] || { echo 0; return; }
-  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { echo 0; return; }
-  # -z: no quoting of odd names; -uall: an untracked file inside a new dir is listed by name.
+  [ -n "$edited" ] || return 0
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
   git -C "$d" status --porcelain -z --no-renames -uall 2>/dev/null \
     | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
-    | grep -cxFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .)
+    | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
+    | cut -c"$(( ${#top} + 2 ))"-
+}
+
+# dirty_names <paths, one per line>: the first FLEET_DIRTY_NAMES of them for a reason, "+N more"
+# past that; - when there are none. "1 dirty file(s)" alone sent agent-18 (2026-11-04) and the
+# human guessing: the one file was a submodule Unity had re-imported.
+dirty_names() {
+  awk -v k="$FLEET_DIRTY_NAMES" 'NF { n++; if (n <= k) s = s (n > 1 ? ", " : "") $0 }
+    END { if (n > k) s = s ", +" (n - k) " more"; print (n ? s : "-") }' <<<"$1"
 }
 
 # ahead_files <dir> <base>: files the branch changed since the merge base whose content in
@@ -563,13 +579,15 @@ sync_facts() {
 }
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
-# plus branch, sync and the PR head: "git dirty ahead pr state ci in_pr branch behind conflicts fork oid".
+# plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
+# "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names".
 git_facts() {
-  local d="$1" edited="${2:-}" branch dirty ahead base pr state ci oid inpr=1 head
-  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - -"; return; }
+  local d="$1" edited="${2:-}" branch dirty=0 paths ahead base pr state ci oid inpr=1 head
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  dirty="$(dirty_count "$d" "$edited")"
+  paths="$(dirty_paths "$d" "$edited")"
+  [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
   ahead="$(ahead_files "$d" "$base")"
   IFS=$'\t' read -r _ pr state ci oid < <(prs_for "$d" | awk -F'\t' -v b="$branch" '$1 == b { print; exit }')
@@ -580,7 +598,7 @@ git_facts() {
     if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
        && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
   fi
-  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--}"
+  echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--} $(dirty_names "$paths")"
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
@@ -619,7 +637,7 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob pq
+          work jobs human parked compactions topic doing said gate test ojob pq names
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -638,7 +656,7 @@ collect() {
     askids="$(asks_for "$sid" | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
-    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid < <(git_facts "$cwd" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
@@ -663,11 +681,11 @@ collect() {
       fi
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
