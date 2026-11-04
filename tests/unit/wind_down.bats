@@ -318,7 +318,7 @@ EOF
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial 'run-shell -b'
-  assert_output --partial "wt reap '$HOME/.worktrees/repo-agent-1'"
+  assert_output --partial "wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"
   # kill-session must appear BEFORE the reap in the chain, not after it.
   local chain="$output"
   [ "${chain%%kill-session*}" != "$chain" ] || fail "no kill in the chain at all"

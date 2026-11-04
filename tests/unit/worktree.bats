@@ -698,3 +698,92 @@ done_from_inside() {
   assert_failure
   [ -f "$WT/sub/wip.txt" ]
 }
+
+# -- husks: a dir with no .git left behind after its worktree went --
+
+@test "a husk holding only Unity caches is reaped" {
+  mkdir -p "$WT_ROOT/repo-agent-4/Library/mcp-server/linux-x64" "$WT_ROOT/repo-agent-4/Logs"
+  run wt_reap_reason "$WT_ROOT/repo-agent-4"
+  assert_success
+  run cmd_reap "$WT_ROOT/repo-agent-4"
+  assert_success
+  assert_output --partial 'reaped repo-agent-4 (no git'
+  [ ! -e "$WT_ROOT/repo-agent-4" ]
+}
+
+@test "a git-less dir holding anything but Unity caches is kept" {
+  # A source tree whose .git went missing may be the only copy of its work.
+  mkdir -p "$WT_ROOT/repo-agent-4/Library" "$WT_ROOT/repo-agent-4/apps"
+  run wt_reap_reason "$WT_ROOT/repo-agent-4"
+  assert_failure
+  assert_output 'no git, and it holds more than Unity caches'
+  mkdir -p "$WT_ROOT/repo-agent-5/.claude"
+  run wt_reap_reason "$WT_ROOT/repo-agent-5"
+  assert_failure
+}
+
+@test "a husk with a process inside it is kept" {
+  mkdir -p "$WT_ROOT/repo-agent-4/Logs"
+  export WT_PROC_ROOT="$SANDBOX/proc"
+  mkdir -p "$WT_PROC_ROOT/100"
+  ln -s "$WT_ROOT/repo-agent-4/Logs" "$WT_PROC_ROOT/100/cwd"
+  run cmd_reap "$WT_ROOT/repo-agent-4"
+  assert_failure
+  [ -d "$WT_ROOT/repo-agent-4/Logs" ]
+}
+
+# -- reap --after-kill: the deferred reap of done and wind-down --
+
+# a landed worktree whose Library/ is ignored, as in a Unity repo
+make_unity_tree() {
+  make_repo
+  printf 'Library/\n' > "$MAIN/.gitignore"
+  git -C "$MAIN" add .gitignore
+  git -C "$MAIN" commit --quiet -m ignore
+  git -C "$MAIN" push --quiet origin main
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+}
+
+@test "reap --after-kill ends a server whose binary lives in the tree, then reaps" {
+  # Unity's gamedev-mcp-server runs from Library/ and is reparented to systemd: nothing else
+  # ever ends it, and its cwd pinned the tree for good.
+  command -v waitpid >/dev/null || skip 'needs util-linux waitpid'
+  make_unity_tree
+  mkdir -p "$WT_ROOT/repo-agent-1/Library/mcp-server"
+  cp "$(command -v sleep)" "$WT_ROOT/repo-agent-1/Library/mcp-server/server"
+  (cd "$WT_ROOT/repo-agent-1/Library/mcp-server" && exec ./server 300) &
+  local pid=$!
+  run cmd_reap --after-kill "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -d "$WT_ROOT/repo-agent-1" ]
+  ! kill -0 "$pid" 2>/dev/null || [ "$(ps -o stat= -p "$pid")" = Z ]
+}
+
+@test "reap --after-kill never kills a process that only works inside the tree" {
+  # A gate or a build is somebody's work; it is waited on, never killed.
+  command -v waitpid >/dev/null || skip 'needs util-linux waitpid'
+  make_unity_tree
+  (cd "$WT_ROOT/repo-agent-1" && exec sleep 300) &
+  local pid=$!
+  WT_SETTLE_SECS=1 run cmd_reap --after-kill "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'a running process is inside it'
+  kill -0 "$pid"
+  kill "$pid"
+}
+
+@test "reap --after-kill does nothing to a tree whose session is still live" {
+  make_unity_tree
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-1\n' >> "$NOTES_FIXTURE/tmux.sessions"
+  mkdir -p "$WT_ROOT/repo-agent-1/Library/mcp-server"
+  cp "$(command -v sleep)" "$WT_ROOT/repo-agent-1/Library/mcp-server/server"
+  (cd "$WT_ROOT/repo-agent-1/Library/mcp-server" && exec ./server 300) &
+  local pid=$!
+  run cmd_reap --after-kill "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'its tmux session is live'
+  kill -0 "$pid"
+  kill "$pid"
+}
