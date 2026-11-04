@@ -2607,7 +2607,9 @@ fn split_status_date(line: &str) -> (String, String) {
         .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok());
     match date {
         Some(d) => {
-            let rest = line[12..].trim_start_matches([' ', '-', '\u{2014}', ':']).trim();
+            let rest = line[12..]
+                .trim_start_matches([' ', '-', '\u{2014}', ':'])
+                .trim();
             (d.to_string(), rest.to_string())
         }
         None => (String::new(), line.to_string()),
