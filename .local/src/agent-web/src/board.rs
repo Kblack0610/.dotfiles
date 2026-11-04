@@ -43,6 +43,10 @@ pub struct WriteBody {
     proof: String,
     #[serde(default)]
     unverified: String,
+    #[serde(default)]
+    why: String,
+    #[serde(default)]
+    dup: String,
 }
 
 fn some(s: String) -> Option<String> {
@@ -67,8 +71,12 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             unverified: some(b.unverified),
         },
         "start" => Verb::Start { raw: b.raw },
-        "rm" => Verb::Rm { raw: b.raw },
-        _ => return Err("the verb is add, done, start or rm"),
+        "drop" => Verb::Drop {
+            raw: b.raw,
+            why: some(b.why),
+            dup: some(b.dup),
+        },
+        _ => return Err("the verb is add, done, start or drop"),
     };
     Ok(Write {
         profile: b.profile,
@@ -128,5 +136,24 @@ mod tests {
             r#"{"verb":"edit","profile":"bnb","project":"demo","lane":"human"}"#
         ))
         .is_err());
+        assert!(
+            to_write(body(
+                r#"{"verb":"rm","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a"}"#
+            ))
+            .is_err(),
+            "rm is gone: a row is dropped with a reason"
+        );
+    }
+
+    #[test]
+    fn a_drop_carries_its_reason() {
+        let w = to_write(body(
+            r#"{"verb":"drop","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a","why":"stale","dup":" "}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--exact", "drop", "--why", "stale", "--", "- [ ] a"]
+        );
     }
 }

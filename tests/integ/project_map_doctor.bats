@@ -117,6 +117,26 @@ EOF
   assert_output --partial 'trackers.labonly has repo "nope"'
 }
 
+@test "row-id codes: a shared code fails and names both projects" {
+  clean_map
+  jq '.trackers.alpha.code = "mo" | .trackers.labonly.code = "mo"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial '"mo" is shared by alpha, labonly'
+}
+
+@test "row-id codes: a malformed code fails; distinct well-formed codes pass" {
+  clean_map
+  jq '.trackers.alpha.code = "al" | .trackers.labonly.code = "Lab-1"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has code "Lab-1"'
+  jq '.trackers.labonly.code = "lab"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 2 row-id codes checked'
+  refute_output --partial 'code "'
+}
+
 @test "an alias pointing at nothing fails" {
   clean_map
   jq '.aliases.mono = "vanished"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
