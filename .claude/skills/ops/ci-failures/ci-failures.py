@@ -15,9 +15,9 @@ failed job gets:
   test (a test step or a FAIL/Failed line), check (any other step: lint, docs, build), or
   derived (failed only because an earlier job in the run did; listed, never counted);
 - main: the same signature is red on the base branch in the window, so every branch inherits it;
-- green@sha: the same job went green on the same commit in the same workflow (another run or
-  attempt). A lead, not a verdict: the PR body, a variable or a moving base can change between
-  the two, so it is flaky only once those are ruled out.
+- green@sha: the same job (exact name) went green on the same commit in the same workflow
+  (another run or attempt). A lead, not a verdict: the PR body, a variable, the tests a dispatch
+  picked or a moving base can change between the two, so it is flaky only once those are ruled out.
 
 A red run counts once, in the bucket of its first root (non-derived) job. A run whose own
 conclusion is cancelled is not a red. A finished attempt's jobs, annotations and logs never
@@ -251,14 +251,16 @@ def collect(src, runs):
             if not jobs and is_red and attempt == run.get("attempt", 1) and run["conclusion"] == "startup_failure":
                 records.append({**record_stub(run, attempt), "bucket": "check", "why": "startup failure"})
             for job in jobs:
-                key = (run["workflowName"], run["headSha"], normalize(job["name"]))
+                # The exact name: shards "PlayMode 1" and "PlayMode 2" share a job_key, and a
+                # green sibling shard is not the same job going green.
+                key = (run["workflowName"], run["headSha"], job["name"])
                 if job.get("conclusion") == "success":
                     greens.add(key)
                 elif is_red and job.get("conclusion") in ("failure", "timed_out"):
                     records.append(record(src, run, attempt, job))
     finish_buckets(records)
     for r in records:
-        r["green_sha"] = (r["workflow"], r["sha"], r["job_key"]) in greens
+        r["green_sha"] = (r["workflow"], r["sha"], r["job"]) in greens
     return records
 
 

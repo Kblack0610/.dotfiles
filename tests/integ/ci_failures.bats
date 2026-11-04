@@ -45,6 +45,10 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   assert_equal "$(sig PlayTests.Broken main)" "True"
 }
 
+@test "a green sibling shard in the same run is not green@sha: shard names stay distinct (102)" {
+  assert_equal "$(sig PlayTests.Broken green_sha)" "False"
+}
+
 @test "the signature is the output line, not the echoed script or post-job cleanup (101)" {
   run count
   refute_output --partial "source, not output"
