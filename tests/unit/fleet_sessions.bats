@@ -303,6 +303,26 @@ MD
   assert_output "$(printf -- '-	-	-')"
 }
 
+@test "plan_phase_list names every phase in order with its state, from the same parse" {
+  cat > "$SANDBOX/plan.md" <<'MD'
+## Phases
+
+- [x] Phase 1: sessions (#519)
+- [-] Phase 2: dashboard: deferred
+- [ ] Phase 3: rollout
+  - [ ] a step, not a phase
+- [ ] Phase 4: cleanup
+
+## Results
+
+- [ ] not a phase
+MD
+  run plan_phase_list "$SANDBOX/plan.md"
+  assert_output '[{"state":"done","name":"Phase 1: sessions (#519)"},{"state":"deferred","name":"Phase 2: dashboard: deferred"},{"state":"open","name":"Phase 3: rollout"},{"state":"open","name":"Phase 4: cleanup"}]'
+  run plan_phase_list "$SANDBOX/missing.md"
+  assert_output '[]'
+}
+
 @test "ahead counts content missing from the base, not commits: a local merge of landed work is 0" {
   git init -q --bare "$SANDBOX/origin.git"
   git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
