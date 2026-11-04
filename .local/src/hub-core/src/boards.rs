@@ -236,6 +236,36 @@ pub fn watch(state: &Path, log: &Path) -> Watch {
     }
 }
 
+/// A session's plan progress, as `fleet-sessions` read its plan's `## Phases` checklist.
+#[derive(Serialize, Debug, PartialEq, Clone)]
+pub struct Phases {
+    pub done: u64,
+    pub total: u64,
+    /// The first unchecked phase.
+    pub next: Option<String>,
+}
+
+/// Each session's plan progress by its tmux target, from a `state.json` document. A session
+/// whose plan has no checklist has no entry.
+pub fn phases(state: &Value) -> std::collections::HashMap<String, Phases> {
+    state["sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let total = r["phases_total"].as_u64().filter(|t| *t > 0)?;
+            Some((
+                r["target"].as_str()?.to_string(),
+                Phases {
+                    done: r["phases_done"].as_u64().unwrap_or(0),
+                    total,
+                    next: r["next_phase"].as_str().map(String::from),
+                },
+            ))
+        })
+        .collect()
+}
+
 /// One rundown or chat answer the shepherd kept (`fleet-shepherd log --rundown`).
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Rundown {
@@ -306,6 +336,27 @@ pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phases_are_keyed_by_target_and_skip_a_plan_with_no_checklist() {
+        let state = serde_json::json!({"sessions": [
+            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags"},
+            {"target": "lab/b:1", "phases_done": 2, "phases_total": 2, "next_phase": null},
+            {"target": "lab/c:1", "phases_done": null, "phases_total": null},
+        ]});
+        let p = phases(&state);
+        assert_eq!(p.len(), 2);
+        assert_eq!(
+            p["lab/a:1"],
+            Phases {
+                done: 3,
+                total: 6,
+                next: Some("4: weight tags".into())
+            }
+        );
+        assert_eq!(p["lab/b:1"].next, None);
+        assert!(phases(&Value::Null).is_empty());
+    }
 
     #[test]
     fn rundowns_come_newest_first_with_same_minute_records_in_order() {

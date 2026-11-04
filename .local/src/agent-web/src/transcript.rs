@@ -205,6 +205,12 @@ fn tool_question(b: &Value) -> Question {
             return question("choice", &str_of(first.get("question")), options);
         }
     }
+    if name == "ExitPlanMode" {
+        let plan = str_of(input.and_then(|i| i.get("plan")));
+        if !plan.trim().is_empty() {
+            return question("plan", &plan, Vec::new());
+        }
+    }
     question(
         "tool",
         &format!("{name}: {}", tool_input(input)),
@@ -412,6 +418,18 @@ mod tests {
         let p = write("tool", &format!("{SAID}\n{tool}\n"));
         let q = pending_question(&p).unwrap().unwrap();
         assert_eq!((q.kind, q.text.as_str()), ("tool", "Bash: git push"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pending_question_reads_an_open_plan_dialog_as_its_plan() {
+        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"Hello\n1. write hello.txt"}}]}}"#;
+        let p = write("plan", &format!("{SAID}\n{tool}\n"));
+        let q = pending_question(&p).unwrap().unwrap();
+        assert_eq!(
+            (q.kind, q.text.as_str()),
+            ("plan", "Hello\n1. write hello.txt")
+        );
         std::fs::remove_file(&p).ok();
     }
 
