@@ -86,7 +86,7 @@ set -uo pipefail
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
-: "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --date <day>
+: "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -1210,7 +1210,7 @@ def cell($label; $v): if $v == null then empty else "\($label)\($v)" end;
 # cmd_requests [--json] [--since T]: the human's requests, from the queue, the fleet state document
 # and the ETAs. T defaults to the last rundown, so a finished request is told once.
 cmd_requests() {
-  local json=0 since='' t items first day done_items sessions='[]' etas last out
+  local json=0 since='' t items first done_items sessions='[]' etas last out
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -1226,12 +1226,7 @@ cmd_requests() {
   items=$($BENCH_ITEMS_CMD) || { say "the agent queue is unreadable"; return 1; }
   # Done items go back to the oldest live chain as well as to T: an earlier phase holds its report.
   first=$(jq -rs --argjson s "$since" '[$s] + [.[] | select(.priority == "urgent" and .after != null) | .queued | fromdateiso8601] | min' <<<"$items")
-  day=$(date -d "@$first" +%F)
-  while :; do
-    done_items+=$'\n'$($BENCH_DONE_ITEMS_CMD --date "$day") || { say "the agent queue's done items are unreadable"; return 1; }
-    [ "$day" \< "$(date -d "@$t" +%F)" ] || break
-    day=$(date -d "$day + 1 day" +%F)
-  done
+  done_items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$first" +%F)") || { say "the agent queue's done items are unreadable"; return 1; }
   [ -r "$STATE_FILE" ] && sessions=$(jq -c '.sessions // []' "$STATE_FILE")
   etas=$(latest_live | jq -cs "$JQ_LIB"'map(select(.eta != null or .finished)
     | {key: .target, value: (if .finished then "finished" else eta_cell end)}) | from_entries')

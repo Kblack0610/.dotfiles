@@ -1499,8 +1499,7 @@ requests_setup() {
   export TZ=UTC FLEET_SHEPHERD_DIR="$SANDBOX/shepherd" BENCH_NOW=$(date -d 2026-11-04T23:00:00Z +%s)
   ITEMS="$SANDBOX/items.jsonl" DONE="$SANDBOX/done.jsonl"
   items_stub; : > "$DONE"
-  # Each day's list is its own: a done item is served once, on the day it finished.
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ngrep "\\"finished\\":\\"$2" "%s"\nexit 0\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   echo '{"sessions":[]}' > "$FLEET_STATE_FILE"
 }
@@ -1579,18 +1578,14 @@ requests_setup() {
   refute_output --partial "shipped"
 }
 
-@test "requests: reads each day's done items from the oldest live chain to now, and an unlinked item widens nothing" {
+@test "requests: reads done items from the oldest live chain, and an unlinked item widens nothing" {
   requests_setup
   item lone running urgent human '{"queued":"2026-10-20T10:00:00Z"}' >> "$ITEMS"
   item blossom-p3 running urgent human '{"queued":"2026-11-02T10:00:00Z","after":"blossom-p2"}' >> "$ITEMS"
   run "$SUBJECT" requests --since 2026-11-04T21:00:00Z
   assert_success
   run cat "$DONE.calls"
-  assert_output --partial "--date 2026-11-02"
-  assert_output --partial "--date 2026-11-03"
-  assert_output --partial "--date 2026-11-04"
-  refute_output --partial "--date 2026-11-05"
-  refute_output --partial "--date 2026-11-01"
+  assert_output "--since 2026-11-02"
 }
 
 @test "requests: a session recorded without its server is on lab" {
