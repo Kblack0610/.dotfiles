@@ -349,19 +349,11 @@ pub struct DueLine {
     pub unhandled: bool,
 }
 
-/// A due line a pass left on purpose (`fleet-shepherd skip`, its `.skipped`: key, why, epoch).
-#[derive(Serialize, Debug, PartialEq)]
-pub struct Skip {
-    pub key: String,
-    pub why: String,
-    pub at: u64,
-}
-
-/// What Binks owes and what it chose not to do, from `fleet-shepherd`'s ledger.
+/// What Binks owes, from `fleet-shepherd`'s ledger. What a pass chose to skip is in its
+/// `log.md`, read by `crate::actions`.
 #[derive(Serialize, Debug, PartialEq, Default)]
 pub struct Due {
     pub due: Vec<DueLine>,
-    pub skipped: Vec<Skip>,
     /// Who holds the pass lease (`.lease`: holder, epoch): `runner`, or `interactive` for a
     /// loop the human drives.
     pub lease_holder: Option<String>,
@@ -398,19 +390,10 @@ pub fn due(dir: &Path) -> Due {
             }
         })
         .collect();
-    let skipped = tsv_rows(&dir.join(".skipped"))
-        .into_iter()
-        .map(|f| Skip {
-            key: f[0].clone(),
-            why: f.get(1).cloned().unwrap_or_default(),
-            at: f.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-        })
-        .collect();
     let lease = std::fs::read_to_string(dir.join(".lease")).unwrap_or_default();
     let mut lease = lease.split_whitespace();
     Due {
         due,
-        skipped,
         lease_holder: lease.next().map(String::from),
         lease_at: lease.next().and_then(|s| s.parse().ok()),
     }
@@ -602,7 +585,6 @@ mod tests {
              legacy key only\n",
         )
         .unwrap();
-        std::fs::write(dir.join(".skipped"), "pace: HOLD\tkept on purpose\t3000\n").unwrap();
         std::fs::write(dir.join(".lease"), "runner 4000\n").unwrap();
         let d = due(&dir);
         assert_eq!(d.due.len(), 3);
@@ -624,14 +606,6 @@ mod tests {
                 d.due[2].first_seen
             ),
             ("legacy key only", "", 0)
-        );
-        assert_eq!(
-            d.skipped,
-            vec![Skip {
-                key: "pace: HOLD".into(),
-                why: "kept on purpose".into(),
-                at: 3000
-            }]
         );
         assert_eq!(
             (d.lease_holder.as_deref(), d.lease_at),
