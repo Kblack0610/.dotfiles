@@ -12,7 +12,7 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  open: {}, pending: {}, doneFor: null, controlsKey: "",
+  open: {}, closeFor: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
@@ -69,27 +69,31 @@ function bRow(r, i) {
   const k = bKey(r);
   const focus = r.lane === "focus";
   const tags = [r.wave, r.target && "-> " + r.target, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
-    r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
+    r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const meta = [
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
-    r.since ? "since " + esc(r.since) : "",
+    r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (focus) {
     acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.doneFor === k) {
+  } else if (bst.closeFor && bst.closeFor.k === k) {
+    // Every close says how: done with a proof or why it has none, or dropped with why or the
+    // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
+    const done = bst.closeFor.verb === "done";
+    const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
     acts = `<div class="opts">` +
-      `<select data-proofkind="${i}">${bOpt([["proof", "proof"], ["unverified", "unverified, because"]], "proof")}</select>` +
-      `<input data-proof="${i}" placeholder="pr:123, a URL, or why it is unverified">` +
-      `<button class="btn sm primary" data-donego="${i}">Mark done</button>` +
-      `<button class="btn sm" data-donecancel="${i}">Cancel</button></div>`;
+      `<select data-closekind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
+      `<input data-closeval="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
+      `<button class="btn sm primary" data-closego="${i}">${done ? "Mark done" : "Drop"}</button>` +
+      `<button class="btn sm" data-closecancel="${i}">Cancel</button></div>`;
   } else {
     acts = `<div class="opts">` +
       (r.lane !== "playtest" && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
       `<button class="btn sm" data-done="${i}">Done...</button>` +
-      `<button class="btn sm" data-rm="${i}">${bst.pending[k] ? "Click again to remove" : "Remove"}</button></div>`;
+      `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
@@ -200,27 +204,26 @@ $("board").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
-  const r = rows[t.dataset.start || t.dataset.done || t.dataset.rm || t.dataset.donego || t.dataset.donecancel];
+  const at = t.dataset.start || t.dataset.done || t.dataset.drop || t.dataset.closego || t.dataset.closecancel;
+  const r = rows[at];
   if (!r) return;
   const k = bKey(r);
   if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
-  if (t.dataset.done) { bst.doneFor = k; drawBoardList(); const i = $("board").querySelector(`[data-proof="${t.dataset.done}"]`); if (i) i.focus(); return; }
-  if (t.dataset.donecancel) { bst.doneFor = null; drawBoardList(); return; }
-  if (t.dataset.donego) {
-    const i = t.dataset.donego;
-    const v = $("board").querySelector(`[data-proof="${i}"]`).value.trim();
-    const kind = $("board").querySelector(`[data-proofkind="${i}"]`).value;
-    if (!v) { bst.msg = kind === "proof" ? "Give the proof (pr:N or a URL)." : "Say why it is unverified."; renderBoard(); return; }
-    bst.doneFor = null;
-    bWrite(Object.assign({ verb: "done", [kind]: v }, bTarget(r)), "Done.");
+  if (t.dataset.done || t.dataset.drop) {
+    bst.closeFor = { k, verb: t.dataset.done ? "done" : "drop" };
+    drawBoardList();
+    const i = $("board").querySelector(`[data-closeval="${at}"]`); if (i) i.focus();
     return;
   }
-  if (t.dataset.rm) {
-    // The page has no confirm dialog to lean on, so the button asks twice.
-    if (bst.pending[k]) { delete bst.pending[k]; bWrite(Object.assign({ verb: "rm" }, bTarget(r)), "Removed."); return; }
-    bst.pending[k] = true;
-    t.textContent = "Click again to remove";
-    setTimeout(() => { delete bst.pending[k]; }, 4000);
+  if (t.dataset.closecancel) { bst.closeFor = null; drawBoardList(); return; }
+  if (t.dataset.closego) {
+    const v = $("board").querySelector(`[data-closeval="${at}"]`).value.trim();
+    const kind = $("board").querySelector(`[data-closekind="${at}"]`).value;
+    const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+    if (!v) { bst.msg = need[kind]; renderBoard(); return; }
+    const verb = bst.closeFor.verb;
+    bst.closeFor = null;
+    bWrite(Object.assign({ verb, [kind]: v }, bTarget(r)), verb === "done" ? "Done." : "Dropped.");
   }
 });
 $("board").addEventListener("change", (e) => {
@@ -234,8 +237,8 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.proof;
-  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-donego="${i}"]`); if (b) b.click(); }
+  const i = e.target.dataset.closeval;
+  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-closego="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;

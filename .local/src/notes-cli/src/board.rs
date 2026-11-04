@@ -451,6 +451,13 @@ struct FeedRow {
     ask: bool,
     /// The row's own `#vX.Y.Z` tag: the wave it is aimed at, which `wave` may not be yet.
     target: Option<String>,
+    /// `<!-- id:<code>-<n> -->`: the row's stable id, which every `ptask` verb takes as a query.
+    id: Option<String>,
+    /// The `type(area):` prefix split out; `None` on a row without a well-formed one.
+    r#type: Option<String>,
+    area: Option<String>,
+    /// `#size/s|m|l`: s a small single PR, m one PR, l needs a plan.
+    size: Option<String>,
     text: String,
     tags: Vec<String>,
     marker: Option<String>,
@@ -498,7 +505,8 @@ struct Origin<'a> {
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the default every
 /// task carries (`md::default_priority`). `tags` are the hashtags no other field already
-/// carries: not the priority, tier, worker, ask, wave tag (`target`) or created tag (`since`).
+/// carries: not the priority, tier, worker, ask, size, wave tag (`target`) or created tag
+/// (`since`).
 fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate) -> FeedRow {
     let prio = md::task_priority(line).unwrap_or(md::default_priority());
     let priority = md::PRIORITIES
@@ -513,6 +521,10 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let ask = all.iter().any(|t| t == "ask");
+    let size = all
+        .iter()
+        .find_map(|t| t.strip_prefix("size/").map(str::to_string));
+    let (ty, area) = crate::projects::row_type_area(line).unzip();
     let tags = all
         .into_iter()
         .filter(|t| {
@@ -521,6 +533,7 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
                 && !md::is_created_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
+                && !t.starts_with("size/")
                 && t != "ask"
         })
         .collect();
@@ -540,6 +553,10 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         worker,
         ask,
         target: md::wave_tag(head).map(|t| t.trim_start_matches('#').to_string()),
+        id: md::row_id(line),
+        r#type: ty,
+        area,
+        size,
         text: md::task_text(line),
         tags,
         marker: marker_of(line),
@@ -875,7 +892,8 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\nVersion: v0.3.0\n\n## Wave: v0.3.0 (current)\n\
-             - [ ] break it down #low #tier/2 #ask #worker/asks #keep <!-- ask:Ab12 -->\n",
+             - [ ] fix(fleet): break it down #low #tier/2 #ask #worker/asks #keep #size/m \
+             <!-- id:dm-7 ask:Ab12 -->\n",
         );
         std::fs::write(
             crate::playtest::path(&dir),
@@ -920,13 +938,18 @@ mod tests {
         assert_eq!(
             (r.priority, r.tags.clone()),
             ("low", vec!["keep".to_string()]),
-            "tier, ask and worker have their own fields"
+            "tier, ask, worker and size have their own fields"
         );
+        assert_eq!(
+            (r.id.as_deref(), r.r#type.as_deref(), r.area.as_deref()),
+            (Some("dm-7"), Some("fix"), Some("fleet"))
+        );
+        assert_eq!(r.size.as_deref(), Some("m"));
         assert_eq!((r.tier, r.ask), (Some(2), true));
         assert_eq!(r.worker.as_deref(), Some("asks"));
         assert_eq!(r.target, None);
         assert_eq!(r.project.as_deref(), Some("demo"));
-        assert_eq!(r.marker.as_deref(), Some("ask:Ab12"));
+        assert_eq!(r.marker.as_deref(), Some("id:dm-7 ask:Ab12"));
         assert!(r.sheet.ends_with("agent/README.md"), "{}", r.sheet);
 
         let r = &rows[3];
@@ -938,7 +961,8 @@ mod tests {
         let v = serde_json::to_value(&rows[0]).unwrap();
         for k in [
             "profile", "project", "lane", "wave", "game", "state", "priority", "tier", "worker",
-            "ask", "target", "text", "tags", "marker", "since", "sheet", "line", "raw",
+            "ask", "target", "id", "type", "area", "size", "text", "tags", "marker", "since",
+            "sheet", "line", "raw",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
