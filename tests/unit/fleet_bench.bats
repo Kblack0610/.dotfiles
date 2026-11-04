@@ -718,7 +718,7 @@ kpi_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, before the breakdown and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -726,11 +726,12 @@ kpi_fixture() {
   run grep -e '^## ' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## KPIs'
   assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
-  assert_line --index 2 '## Bottlenecks'
-  assert_line --index 3 '## Where the time went'
-  assert_line --index 4 '## Sessions'
-  assert_line --index 5 '## Agent depth'
-  assert_line --index 6 '## Session time'
+  assert_line --index 2 '## Forecast'
+  assert_line --index 3 '## Bottlenecks'
+  assert_line --index 4 '## Where the time went'
+  assert_line --index 5 '## Sessions'
+  assert_line --index 6 '## Agent depth'
+  assert_line --index 7 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1295,4 +1296,20 @@ rowp() {
   run "$SUBJECT" report
   assert_line --partial '2 baselines scored'
   assert_line --partial 'or more (1 still open)'
+}
+
+@test "scorecard Forecast section carries the forecast and the newest baseline an hour or more old against since" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline daily-1 2>/dev/null >/dev/null
+  { rowp a lab/game-agent-1:1 1 3 pa; rowp b lab/game-agent-2:1 1 2 pb; } > "$SNAP"; sample_at 3600
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" forecast --baseline fresh 2>/dev/null >/dev/null
+  BENCH_NOW=$((T0 + 3660)) "$SUBJECT" scorecard
+  run sed -n '/^## Forecast/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --regexp '^forecast .*: 2 sessions with a plan, 3 phases open$'
+  assert_line --regexp '^- all done by: median '
+  assert_line --regexp '^  - .* game-agent-1:1  phase 3$'
+  # fresh is under an hour old, so the comparison is against daily-1
+  assert_line --regexp '^vs baseline daily-1 '
+  assert_line --partial '- ticked: 2 of the 2 phases expected by now'
 }

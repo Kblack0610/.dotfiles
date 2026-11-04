@@ -236,8 +236,13 @@ def vs($b; $t): . as $p | $b.made_epoch as $m
 # finished or gone, or $hz hours passed. Nothing until then, so a baseline is scored once.
 def forecast_score($b; $t; $hz): . as $p | $b.made_epoch as $m
   | ($p | map(select(.epoch <= $t)) | map(.epoch) | max) as $last
+  | ($p | flow_steps | map(select(.epoch > $m and .epoch <= $t))) as $st
   | ($b.schedule | map(. as $s | ($p | map(select(.session_id == $s.session_id and .epoch > $m and .epoch <= $t))) as $r
-      | ($r | map(select(.finished or (.phases_total != null and .phases_done != null and .phases_done >= .phases_total))) | map(.epoch) | min) as $fin
+      # done when it says so, or once it has ticked as many phases as it had open, as vs counts it
+      | ([$st[] | select(.session_id == $s.session_id)] | sort_by(.epoch)
+         | reduce .[] as $x ({n: 0, at: null}; .n += $x.ticked | if .at == null and .n >= $s.left then .at = $x.epoch else . end) | .at) as $ticked
+      | ([($r | map(select(.finished or (.phases_total != null and .phases_done != null and .phases_done >= .phases_total))) | map(.epoch) | min), $ticked]
+         | map(select(. != null)) | min) as $fin
       | ($r | map(.epoch) | max) as $seen
       | if $fin != null then {end: $fin, how: "finished"}
         # gone: ended by the first sample that no longer had it
@@ -589,6 +594,8 @@ cmd_scorecard() {
     echo
     kpi_table "$(kpi_json "$t" "$counts")"
     echo
+    forecast_section "$t"
+    echo
     wakes_lines
     echo
     bottleneck_section "$t"
@@ -621,6 +628,31 @@ cmd_scorecard() {
     ledger_section "$counts"
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
+}
+
+# forecast_section <now>: when the live work should be done and in what order, then the newest
+# baseline frozen at least an hour earlier (yesterday's daily one, at the 06:45 run) against what
+# happened since. Markdown bullets of the same lines forecast and vs print.
+forecast_section() {
+  local t="$1" f b label
+  echo "## Forecast"
+  echo
+  echo "Every open phase scheduled from its session's newest estimate, in plan order; the slow end is the last ${BENCH_WINDOW_H}h scored ratio. Inflow and the drain come from \`fleet-bench flow\`. Formulas: the fleet-bench skill."
+  echo
+  if f=$(BENCH_NOW=$t cmd_forecast 2>/dev/null); then
+    sed 's/^    /  - /; t; s/^  /- /' <<<"$f"
+  else
+    echo "- ? the forecast could not be made (fleet-bench forecast)"
+  fi
+  [ -s "$FORECASTS" ] || return 0
+  label=$(jq -rs --argjson t "$t" 'map(select(.made_epoch <= $t - 3600 and .made_epoch >= $t - 172800)) | last | .label // empty' "$FORECASTS")
+  [ -n "$label" ] || return 0
+  echo
+  if b=$(BENCH_NOW=$t cmd_vs "$label" 2>/dev/null); then
+    sed 's/^    /  - /; t; s/^  /- /' <<<"$b"
+  else
+    echo "- ? baseline $label could not be compared (fleet-bench vs $label)"
+  fi
 }
 
 # bottleneck_section <now>: the hours lost in the window, biggest first, and the branches behind the
