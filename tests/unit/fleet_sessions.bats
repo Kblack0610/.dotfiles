@@ -1309,7 +1309,7 @@ main_change() {
 
 @test "end to end: under a nightly red a non-owner's conflict row says main_red, and the NIGHTLY row does not own it" {
   # The shepherd leaves a non-owner's STALLED row alone while its repo has a nightly red
-  # (fleet-overseer shepherd step 4); these are the facts it reads to do that.
+  # (shepherd skill, nudge step 3); these are the facts it reads to do that.
   conflict_fixture
   local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
   open_pr_gh '[{"conclusion":"SUCCESS"}]' "$(page "[$(r Tests failure "$tip" 1)]")"

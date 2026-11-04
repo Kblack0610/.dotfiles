@@ -121,7 +121,10 @@ Media/Music
 !.claude/skills/messaging/work-comms/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
-!.claude/skills/monitoring/fleet-overseer/
+!.claude/skills/monitoring/fleet-dispatch/
+!.claude/skills/monitoring/fleet-lead/
+!.claude/skills/monitoring/fleet-pace/
+!.claude/skills/monitoring/shepherd/
 !.claude/skills/monitoring/sentinel/
 !.claude/skills/ops/game-eval/
 !.claude/skills/ops/gh-workflows/

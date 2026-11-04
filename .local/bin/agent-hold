@@ -13,7 +13,7 @@
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
 # a broadcast: the gate, the preflight and the coordinator all read this one file. Why and
-# how to use it: the fleet-comms and fleet-overseer skills.
+# how to use it: the fleet-comms and fleet-pace skills.
 #
 # A grant is GO as state: a staged restart lets a few sessions back in while the hold stays
 # set for the rest. It lives in the hold file, so it ends with the hold, and a new `set`
@@ -85,7 +85,7 @@ cmd_set() {
   # Re-setting an existing hold replaces it (new reason, new roster), atomically, so a
   # reader never sees half a file.
   mv "$tmp" "$f"
-  # Low on set and on release: fleet-overseer sets and lifts holds itself, so a hold is the
+  # Low on set and on release: fleet-pace sets and lifts holds itself, so a hold is the
   # fleet pacing itself, not something the human acts on. At high it was 10 of the phone's
   # 270 pages in 48h (2026-10-28). The hold still shows in the briefing and the preflight.
   notify -p low -t "hold: $resource" "$(oneline "$reason") (by $(oneline "$by"))"

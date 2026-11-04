@@ -1,0 +1,62 @@
+---
+name: fleet-dispatch
+description: >-
+  Start agent sessions from the board while the human is away, and start any session by hand the one way (`fleet-dispatch start`). Use for "what would dispatch pick", "why did it skip that row", "start a session for this row", "pause dispatch". Moving live sessions is shepherd.
+metadata:
+  category: monitoring
+  tags: [agents, fleet, dispatch, queue, board]
+  reviewed: 2026-11-03
+---
+
+# fleet-dispatch
+
+The intake role of `fleet-lead` (Binks). `fleet-dispatch` feeds the shepherd while the human is away. The agentctl runner `fleet-dispatch` runs `fleet-dispatch run` on the `SCHEDULE` in its conf (off while the conf says `ENABLED=no`; `agentctl enable fleet-dispatch` arms it, `agentctl disable fleet-dispatch` turns it off again); this skill is for running it by hand and reading what it decided. It is the only thing that starts sessions from the board unasked: a `fleet-lead` pass never does, and no order should tell one to.
+
+Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for `AWAY_AFTER_MIN` minutes (set in the conf). It takes no time of day, because a night is a long away. When the human comes back, new starts stop at the next pass and running sessions carry on. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here and starts nothing.
+
+Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
+
+- `asks`: `#ask` rows tagged `#worker/asks`, on `unity-playground`, up to tier 2.
+- `fleet`: rows the human tagged `#worker/fleet`, up to tier 1, with a `#tier/N`.
+- `board`: `unity-playground` agent-board rows with no `#worker` tag, up to tier 2. No tags are needed, because the judge reads the tier. A row tagged `#tier/3` stays out.
+
+The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners, build, deploy, harness and tooling) never gets a merging session; it runs unattended only to an open PR, as a `night` queue item (below). A row whose text starts `ci:` or `infra:` counts as tier 3 whatever its tag says. What each tier means is defined in `~/.config/fleet-dispatch/policy.md`, under Tier.
+
+- `fleet-dispatch run --dry-run` runs the gates, says what would stop a real pass, and prints the picks without starting anything. It still judges new rows, up to `DISPATCH_JUDGE_MAX`. `fleet-dispatch run` starts them.
+- `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, judged tier, area, and the one-line reason. A verdict made under an older policy is marked stale.
+- `fleet-dispatch candidates` lists the open rows it would judge next.
+- `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
+- Night items: `fleet-dispatch fill` also judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit) and promotes up to `DISPATCH_NIGHT_MAX` (3 active, one an area) whose verdict says tier 3 is the only reason to skip (`tier3_only`) as queue items tagged `night`, which agent-queue holds to its night window; each brief stops at an open PR. It skips `#ask`, `decide:`, device, the human's machine, secrets, prod and wishes; it ranks subtract-or-fix rows first, then `kpi:`/`dream`/`retro` rows, then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. `fleet-dispatch fill --dry-run` lists them as `night`.
+
+## A pass, in order
+
+1. Reap: an item whose session is gone is closed, and a live one moves to `waiting/` while its Claude waits on the human (agent-panel `waiting`, an open plan or dialog) or has a pending ask, back to `running/` after. Room is `DISPATCH_MAX_LIVE` minus live sessions the runner started (`origin: run`), capped at `DISPATCH_PER_PASS`.
+2. Gates, each refusing when it cannot read its source: no `dispatch` hold; `fleet-presence` says away; `fleet-assess` not HOLD; cluster not red; 1-minute load under `DISPATCH_MAX_LOAD` per core; no `starved`, `throughput-drop` or `blind` finding sampled in the last `DISPATCH_FINDING_FRESH_MIN` minutes; GitHub budget not LOW; real idle above `DISPATCH_MIN_IDLE` percent on a two-frame `top` sample. At launch, `claude-acct room` must name an account under its weekly pace, or the row waits. A nightly red is deliberately not a gate: nightlies stay red while sessions merge normally, and the NIGHTLY row handles it.
+3. Candidates: every open `[ ]` row a worker may take, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, or when `project-map.json` has no repo for it.
+4. Judgment: one sonnet call for up to `DISPATCH_JUDGE_MAX` rows not judged before, in worker order, against `~/.config/fleet-dispatch/policy.md`. Every verdict, skip included, lands in `~/.agent/dispatch/verdicts.jsonl`, so a row is judged once until its text, the policy or `workers.json` changes. To change what gets picked, edit the policy, not the script.
+5. Picks: verdict `dispatch` with size S or M, clear and agent-only, naming one `area`, judged no higher a tier than the row counts as, made under the current policy. Never two sessions on one area: an active queue item holds its area until reap closes it. Worker order first, then `#urgent`, then prod before beta before alpha.
+6. Launch: `fleet-dispatch start` (below) with the row and a `/one-shot <row> ...` brief, on the lab server. The pass publishes WORKED only when a session started, NOOP when a gate stopped it or no row qualified, FAILED when it could not judge or could not start its pick.
+
+## Starting a session by hand: `fleet-dispatch start`
+
+Every session an agent starts goes through `fleet-dispatch start`: the dispatch pass above, a session you start for a board row, and a reboot restore (`session-snapshot` restore). It opens the session (for a row, after re-reading the row, `ptask start`ing it and checking it reads `[/]`), tags it `@dispatch` on its server (the status line shows `dispatch: <project>: <row>`; the human reads it as "an agent started this") and records `session: <server>:<name>` on its queue item, the one record `reap` and `fleet-sessions` read (a bare name means `lab`). There is no separate session ledger. Never `wt new` + `claude` by hand, and never `tmux set-option @dispatch` on a session afterwards: on 2026-10-28 the human had to ask twice why sessions an agent started carried no label.
+
+- For a queue item: `fleet-dispatch start --item <slug> [--server lab] [--model <m>]`. It cuts a fresh worktree with `wt new --detach` and moves the item to `running/`.
+- For a row: `fleet-dispatch start --project <p> [--agent] --row "<row>" --brief <file> [--server lab] [--model <m>]`. Write the brief to a file first: `/one-shot <task>`, then where the row is and how to record it done. `start` claims the row, promotes it to a queue item (`from: board:<project>:<row>`) and starts that item. Do not `start` the row yourself first: `start` refuses a row that is not open.
+- After a reboot: `fleet-dispatch start --project <p> --server <server> --session <name> --cwd <dir> --resume <claude session id> [--item <slug>]`. With `--item` (a running or waiting item) the item records the new session, `origin: resume`; without one the session is only tagged. The sheet is left alone, `--row` is refused, and a session name that already exists on that server is refused.
+
+Only the sessions the dispatch pass started count against `DISPATCH_MAX_LIVE` and its area rule; hand launches and restores carry the label and their item but hold none of its slots. `start` does not check the `dispatch` hold, which pauses only the runner. Before starting anything, read `agent-hold list` and `fleet-pace`'s pace check as for any other new work.
+
+A dispatched session is an ordinary session from then on: the `shepherd` buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation, files the same question with `agent-ask post`, and stops; the human answers in the session or from a board, and either way the answer lands in the session and closes the ask. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`.
+
+## Do NOT
+
+The fleet-wide list is in `fleet-lead`; this is this role's own.
+
+- Widen dispatch beyond `DISPATCH_PROFILES=bnb`, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
+
+## Related
+
+- `fleet-lead`: the pass, and the rule that it never starts board work.
+- `one-shot`: what every dispatched session runs.
+- `session-snapshot`: the reboot restore that calls `start --resume`.

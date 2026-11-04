@@ -104,10 +104,26 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
   run "$SH" run
   assert_success
   run cat "$HOME/last-prompt"
-  assert_line '/fleet-overseer shepherd'
+  assert_line '/fleet-lead pass'
+  assert_line 'Roles due: shepherd'
   assert_line 'nudge DONE: a f-a'
   assert_equal "$(cat "$HOME/run.env")" holder=runner
   assert_equal "$(outcome)" WORKED
+}
+
+@test "the run prompt names only the role skills its due lines need" {
+  doc "[$(row a DONE false false)]"
+  STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
+  run cat "$HOME/last-prompt"
+  assert_line 'Roles due: shepherd, fleet-pace'
+  # Negative control: a pace line alone loads no shepherd, and infra alone loads no role.
+  doc "[$(row a WORKING false false)]"
+  STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
+  run cat "$HOME/last-prompt"
+  assert_line 'Roles due: fleet-pace'
+  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" run
+  run cat "$HOME/last-prompt"
+  assert_line 'Roles due: none'
 }
 
 @test "a due pass that logs nothing is STALLED, and a failed one is FAILED" {

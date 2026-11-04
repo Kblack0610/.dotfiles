@@ -3,7 +3,7 @@
 #
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): defer to a live
 #                          interactive shepherd, refresh the state document, and run a headless
-#                          `/fleet-overseer shepherd` pass only when the document holds
+#                          `/fleet-lead pass` only when the document holds
 #                          something to move
 #   fleet-shepherd check   refresh the state document and samples as `run` does, then print
 #                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
@@ -20,7 +20,7 @@
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
 #   fleet-shepherd lease   record that a shepherd pass is running now and tag its tmux pane
-#                          @shepherd; every pass calls it first (fleet-overseer, shepherd step 0)
+#                          @shepherd; every pass calls it first (fleet-lead, pass step 0)
 #   fleet-shepherd log [--heading] <text>
 #                          append to the rundown ($LEDGER/log.md) stamped with the clock's
 #                          time: a `## <date time> <text>` heading, or a `- <time>: <text>` line
@@ -32,7 +32,7 @@
 #
 # Most passes find nothing to move, and deciding that is a jq query, not a model run. An
 # interactive shepherd loop holds the human's latest word in context, so its lease wins.
-# Lease and orders: fleet-overseer SKILL.md, "Verb: shepherd".
+# Lease, orders and routing: the fleet-lead skill, "Verb: pass".
 
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
@@ -101,7 +101,7 @@ interactive_age() {
   echo $(( ($(date +%s) - at) / 60 ))
 }
 
-# The same rules as the skill's steps 4 and 5, over the document: a hands-off row is never
+# The shepherd skill's nudge rules (steps 3 and 4), over the document: a hands-off row is never
 # moved; DONE, LANDED and STALLED are nudged once; a row for the human is escalated once.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
@@ -374,6 +374,15 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
+# The role skills a pass needs for these due lines (fleet-lead, "Route"), so a headless pass
+# loads only those. finding and infra lines are fleet-lead's own.
+roles_for() {
+  local lines="${1//unhandled: /}" r=""
+  grep -qE '^(nudge|escalate|overdue|nightly red)' <<< "$lines" && r="shepherd"
+  grep -qE '^(pace|blocked|limit):' <<< "$lines" && r="${r:+$r, }fleet-pace"
+  printf '%s\n' "${r:-none}"
+}
+
 cmd_run() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local age
@@ -401,7 +410,9 @@ cmd_run() {
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md"
   local rc=0 log verdict
   log="$(mktemp)"; trap "rm -f '$log'" EXIT # expanded now: $log is local, and gone by EXIT
-  agentctl-run --role observe -p "/fleet-overseer shepherd
+  agentctl-run --role observe -p "/fleet-lead pass
+
+Roles due: $(roles_for "$due")
 
 Due this pass (from fleet-shepherd due):
 $due" --max-turns "$MAX_TURNS" 2>&1 | tee "$log" | tail -40 || rc=$?
