@@ -685,6 +685,49 @@ two_items() {
   assert_not_called 'wt new'
 }
 
+@test "run starts up to DISPATCH_PER_PASS queue items a pass, past the held ones" {
+  two_items
+  agent-queue add --project app --slug fix-app-2 "fix the app again"
+  agent-queue add --project app --slug fix-app-3 "fix the app once more"
+  export DISPATCH_PER_PASS=2
+  findings "$(finding starved pool:unity '["game"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'started queue item fix-app' <<<"$output")" 2
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 2
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "run --dry-run names every item a pass would start" {
+  two_items
+  export DISPATCH_PER_PASS=3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'would start queue item fix-game: game oneshot high'
+  assert_output --partial 'would start queue item fix-app: app oneshot normal'
+  assert_not_called 'wt new'
+}
+
+@test "a pass reads the gate again before each later start, and stops there still WORKED" {
+  two_items
+  export DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "99.0 99.0 99.0 1/1 1" > "$DISPATCH_LOADAVG"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game'
+  assert_output --partial 'the pass stops after 1 started'
+  refute_output --partial 'started queue item fix-app'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "with DISPATCH_PER_PASS at 1 a pass starts only the head" {
+  two_items
+  export DISPATCH_PER_PASS=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item fix-game'
+  refute_output --partial 'started queue item fix-app'
+}
+
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {
   game_ready
   stub fleet-bench "jq -cn --argjson e \$(( \$(date +%s) - 21 * 60 )) '{rule: \"starved\", scope: \"pool:unity\", epoch: \$e}'
