@@ -3,7 +3,7 @@
 // re-rank on each active row. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
 
-const Q_PRIORITIES = ["urgent", "high", "normal", "low"];
+const Q_PRIORITIES = ["urgent", "high", "low"];
 const Q_SECTIONS = [
   ["waiting", "Waiting for you"],
   ["running", "Running"],
@@ -73,7 +73,7 @@ function qItem(i) {
 }
 
 function qCompose() {
-  const d = qst.draft || (qst.draft = { project: "", mode: "oneshot", priority: "normal", tags: "", task: "" });
+  const d = qst.draft || (qst.draft = { project: "", mode: "oneshot", priority: "high", tags: "", task: "" });
   const opt = (list, cur) => list.map((v) => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
   return `<div class="card qadd">` +
     `<textarea id="q-task" placeholder="The whole task, as you would type it to a session (Ctrl+Enter to queue)">${esc(d.task)}</textarea>` +

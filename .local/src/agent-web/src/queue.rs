@@ -81,7 +81,7 @@ fn add_args(b: &AddBody) -> Result<Vec<String>, &'static str> {
         &b.mode
     };
     let priority = if b.priority.is_empty() {
-        "normal"
+        "high"
     } else {
         &b.priority
     };
@@ -92,7 +92,7 @@ fn add_args(b: &AddBody) -> Result<Vec<String>, &'static str> {
         return Err("mode is oneshot or plan");
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high, normal or low");
+        return Err("priority is urgent, high or low");
     }
     if !is_tags(&b.tags) {
         return Err("tags are words, or at:HH:MM");
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn add_defaults_to_a_normal_oneshot_from_the_human() {
+    fn add_defaults_to_a_high_oneshot_from_the_human() {
         let args = add_args(&body("dotfiles", "", "", "", "do it")).unwrap();
         assert_eq!(
             args,
@@ -188,7 +188,7 @@ mod tests {
                 "--mode",
                 "oneshot",
                 "--priority",
-                "normal"
+                "high"
             ]
         );
         let args = add_args(&body("dotfiles", "plan", "high", "night at:02:30", "x")).unwrap();

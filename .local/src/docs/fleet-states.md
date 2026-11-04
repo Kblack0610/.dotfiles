@@ -65,6 +65,7 @@ sessions[]        one object per live Claude session: the `fleet-sessions --json
 main[]            {repo, id, reason, escalated, owners[]}: a default branch whose latest CI run failed,
                   with the live sessions whose merge is a suspect
 asks[]            pending asks: {id, project, kind, question (160 chars), task, created, session}
+counts            {bucket: n} over sessions[], every bucket named, an empty one as 0
 ```
 
 A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, the key the shepherd nudges once per; an open PR's adds its head commit, `@branch@<sha12>`, so a new push is a new fact, except a conflict's, which adds the merge base, ` base <sha12>`, so the same conflict at a new head or a further-moved default branch is the same fact and only a branch that took the default branch in and conflicts again is a new one), `activity`, `target`, `pane`, `session_id`, `cwd`, `branch`, `pr`, `pr_state`, `ci`, `behind`, `conflicts`, `dirty`, `ahead`, `idle_min`, `age_min` (minutes since the session started), `context_tokens`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished`, `labels[]`, `dispatch`, `nudged`, `escalated`, `owners[]`, `asks` (pending asks this session posted, matched on the ask's `claude_session` only), `blockers[]` (every reason `finished` is false, empty when it is true), `prs[]` (`{repo, number, state, merged_at}` for each PR the session's own `gh pr create` or `gh pr merge` printed, in any repo; `state` is `null` when the repo's list did not reach it or was unreadable), `time` (`{work_min, jobs_min, human_min, parked_min}`, see below), `compactions`, `topic` (agent-panel's summary), `doing` (the last tool call, `<Tool>: <description>`; a Bash command is never copied), `said` (the last assistant text, clipped), `eta` (the expected finish from `fleet-bench eta`, `HH:MM` today or `Thu HH:MM`, with its basis short: `s3` the session's own median over 3 phases, `p16` the project's; absent when the bench has no estimate), `main_red` (true when the session's repo has a red `main[]` entry, false when its default branch is green, `null` when its CI was unreadable or it is not in git). A fact the pass could not establish is `null`.
@@ -77,10 +78,11 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
 | Reader | Reads |
 | --- | --- |
-| `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at` |
+| `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` Sessions tab, agent-web Watch tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
+| waybar `custom/shepherd` (`.config/waybar/shepherd.sh`) | `counts` and `idle_min` by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_sessions`, `agent_session_idle_minutes`), and the file's age |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 
@@ -92,8 +94,12 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | --- | --- |
 | Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
 | See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, UNCLEAR amber, LANDED and DONE green, PARKED dim, labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
+| See how many sessions sit in each stage | The waybar sessions chip: `W` working, `N` needs, `S` stalled (red), `U` unclear (amber), `L`/`D` landed and done, `P` parked; a zero is hidden. The hover lists every stalled, unclear and needs session with its idle time. Click opens `hub --tab sessions`; `modules.sh toggle shepherd` hides it |
 | See a label change at once | `label` sets the window option itself; a session too new to be in the document gets it at the next tick |
 
 | Problem | Fix |
 | --- | --- |
 | A window keeps a stage after its session ended | The next tick clears any window carrying `@fleet_stage` that no session claims; check `fleet-state.timer` is running |
+| The sessions chip reads `?` | Prometheus did not answer: check `CC_PROM_URL` in `~/.config/command-center/env` |
+| The sessions chip reads `-` | Prometheus has no `agent_sessions`: `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
+| The sessions chip is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |

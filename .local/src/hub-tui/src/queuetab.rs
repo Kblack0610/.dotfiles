@@ -267,14 +267,14 @@ pub(crate) mod tests {
         let jsonl = concat!(
             r#"{"slug":"pick-sides","project":"game","mode":"plan","priority":"high","queued":"2026-11-03T10:00:00Z","started":"2026-11-03T10:05:00Z","session":"lab:game-agent-2","state":"waiting","task":"Pick a side\nmore"}"#,
             "\n",
-            r#"{"slug":"fix-menu","project":"game","mode":"oneshot","priority":"normal","queued":"2026-11-03T10:10:00Z","started":"2026-11-03T10:20:00Z","session":"lab:game-agent-3","state":"running","task":"Fix the menu"}"#,
+            r#"{"slug":"fix-menu","project":"game","mode":"oneshot","priority":"high","queued":"2026-11-03T10:10:00Z","started":"2026-11-03T10:20:00Z","session":"lab:game-agent-3","state":"running","task":"Fix the menu"}"#,
             "\n",
             // agent-queue's own order: priority, then queued.
             r#"{"slug":"next-up","project":"dotfiles","mode":"oneshot","priority":"urgent","queued":"2026-11-03T11:30:00Z","state":"queued","task":"Next"}"#,
             "\n",
             r#"{"slug":"night-sweep","project":"dotfiles","mode":"oneshot","priority":"low","tags":"night","queued":"2026-11-03T11:00:00Z","state":"queued","hold":"night (01:00-06:00)","task":"Sweep"}"#,
             "\n",
-            r#"{"slug":"landed","project":"dotfiles","mode":"oneshot","priority":"normal","state":"done","status":"ok","pr":"812","finished":"2026-11-03T12:00:00Z","task":"Landed"}"#,
+            r#"{"slug":"landed","project":"dotfiles","mode":"oneshot","priority":"high","state":"done","status":"ok","pr":"812","finished":"2026-11-03T12:00:00Z","task":"Landed"}"#,
             "\n",
         );
         Queue {
@@ -369,7 +369,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             v.key(key('+'), Some(&q)),
-            Ask::Bump("night-sweep".into(), "normal")
+            Ask::Bump("night-sweep".into(), "high")
         );
         v.key(key('k'), Some(&q));
         assert_eq!(at(&v), "next-up");
