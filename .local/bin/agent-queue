@@ -15,10 +15,11 @@ set -uo pipefail
 
 AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
 AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
-# The registry's resolver, from this tree (public), reading the same map.
+# The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
+# from a copy, as in the tests), reading the same map.
 PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh"
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"

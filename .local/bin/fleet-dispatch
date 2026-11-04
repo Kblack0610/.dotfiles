@@ -85,17 +85,10 @@ prio_rank() {
 }
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
-# The registry names the repo (`repo`, null = notes-only, absent = the project's own name),
-# and `paths` maps a checkout to its repo name.
-repo_dir() {
-  local repo
-  repo=$(jq -r --arg p "$1" '.trackers[$p] as $t
-    | if $t == null or ($t | has("repo") | not) then $p else ($t.repo // "") end' \
-    "$DISPATCH_PROJECT_MAP" 2>/dev/null)
-  [ -n "$repo" ] || return 0
-  jq -r --arg r "$repo" '.paths | to_entries[] | select(.value == $r) | .key' \
-    "$DISPATCH_PROJECT_MAP" 2>/dev/null | head -1
-}
+# The registry's own resolver (project-name.sh), reading DISPATCH_PROJECT_MAP.
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
 
 # tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
 # Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
