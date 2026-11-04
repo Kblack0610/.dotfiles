@@ -15,6 +15,7 @@ setup() {
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
+  export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
@@ -1269,6 +1270,58 @@ rowp() {
   refute_line --partial 'queued after this'
   run "$SUBJECT" forecast --baseline
   assert_failure 2
+}
+
+# items_stub <json lines...>: serve these agent-queue items to forecast
+items_stub() {
+  printf '%s\n' "$@" > "$SANDBOX/items.jsonl"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/items.jsonl" > "$SANDBOX/bin/items-stub"
+  chmod +x "$SANDBOX/bin/items-stub"
+}
+
+@test "forecast places queue items on the dispatch slots: a chain waits on its parent, a live session is not counted twice" {
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+  items_stub \
+    '{"slug":"r0","project":"game","mode":"oneshot","state":"running","session":"game-agent-1","started":"'"$(iso "$T0")"'"}' \
+    '{"slug":"r1","project":"game","mode":"oneshot","state":"running","session":"lab:game-agent-9","started":"'"$(iso "$T0")"'"}' \
+    '{"slug":"q1","project":"game","mode":"oneshot","state":"queued","queued":"'"$(iso "$T0")"'"}' \
+    '{"slug":"q2","project":"game","mode":"oneshot","state":"queued","after":"q1","hold":"after q1"}' \
+    '{"slug":"q3","project":"game","mode":"oneshot","state":"queued","tags":"night","hold":"night (22:00-06:00)"}' \
+    '{"slug":"q4","project":"game","mode":"oneshot","state":"queued","after":"gone","hold":"after gone"}' \
+    '{"slug":"w1","project":"game","mode":"plan","state":"waiting"}' \
+    '{"slug":"q5","project":"game","mode":"oneshot","state":"queued","after":"w1","hold":"after w1"}'
+  # 3 slots: r0 (agent-1, already on the schedule, ends at its own ETA T0+1h) and r1 hold two,
+  # so q1 starts now; q2 waits for q1 even though a slot frees at T0+1h. 60 min a phase.
+  BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '.items | {count, running, queued, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
+      rows: [.schedule[] | [.slug, .start - '"$T0"', .p50 - '"$T0"']], not: (.not_scheduled | map("\(.slug) \(.why)") | sort)}' <<<"$output"
+  assert_output '{"count":8,"running":2,"queued":5,"waiting":1,"on_schedule":1,"phases":3,"slots":3,"finish":7800,"rows":[["r1",0,3600],["q1",600,4200],["q2",4200,7800]],"not":["q3 held: night (22:00-06:00)","q4 after gone, which did not finish ok","q5 behind an item that is not scheduled","w1 waiting on you"]}'
+  # 1 slot: r0 holds it to T0+1h, so q1 and q2 run one after the other behind it, and r1 too
+  BENCH_QUEUE_SLOTS=1 BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
+  run jq -c '[.items.schedule[] | [.slug, .start - '"$T0"']]' <<<"$output"
+  assert_output '[["r1",0],["q1",3600],["q2",7200]]'
+  BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_line --partial 'agent queue: 8 items (2 running, 5 queued, 1 waiting on you), 3 phases on 3 dispatch slots'
+  assert_line --partial '(1 running already counted above)'
+  assert_line --partial 'not scheduled: 4: '
+  assert_line --partial 'queue:game  q2'
+}
+
+@test "forecast counts a plan item by its plan's open phases, and an unreadable queue leaves the items out" {
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plan-q.md"
+  items_stub '{"slug":"p1","project":"game","mode":"plan","state":"queued","plan":"'"$SANDBOX/plan-q.md"'"}'
+  BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
+  run jq -c '.items | {phases, finish: (.finish_p50 - '"$T0"')}' <<<"$output"
+  assert_output '{"phases":2,"finish":7800}'
+  # negative control: the same forecast with the queue unreadable has no items and says so
+  BENCH_ITEMS_CMD=false BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_success
+  assert_line --partial 'agent queue could not be read'
+  assert_line --partial 'agent queue: unreadable'
+  refute_line --partial 'queue:game'
 }
 
 @test "a queue past the 128 KB argument limit still freezes, and vs reads the baseline back" {
