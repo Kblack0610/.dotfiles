@@ -162,14 +162,11 @@ lab_feed_fields() {
   prs="$(_lf_count "$auto" 'In flight')"
 
   # ── 5. what is next ────────────────────────────────────────────────────────
-  # The `nextup:auto` block first — it is generated from the sheet and already sorted
-  # by what matters. An empty checkbox (`- [ ]` with nothing after it) is a
-  # placeholder somebody left behind, not a task, so it never becomes the row.
-  next="$(sed -n '/nextup:auto/,/\/nextup:auto/p' "$meta" 2>/dev/null \
-    | sed -n 's/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/\1/p' | head -1)"
-  if [ -z "$next" ] && [ -n "$sheet" ]; then
-    next="$(sed -n 's/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/\1/p' "$sheet" 2>/dev/null | head -1)"
-  fi
+  # The sheet's first open row: the sheet is where the plan lives. An empty checkbox
+  # (`- [ ]` with nothing after it) is a placeholder somebody left behind, not a task, so
+  # it never becomes the row.
+  next=""
+  [ -n "$sheet" ] && next="$(sed -n 's/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/\1/p' "$sheet" 2>/dev/null | head -1)"
   # trailing tags (`#high`, a legacy `#ai`) are sheet routing, noise on an overview row
   next="$(printf '%s' "$next" | sed -E 's/([[:space:]]+#[A-Za-z0-9_-]+)+[[:space:]]*$//')"
   next="$(_lf_trunc "$(_lf_clean "$next")" 48)"
