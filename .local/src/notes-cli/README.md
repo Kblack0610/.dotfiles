@@ -146,17 +146,18 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment, and aligns a stale agent board to the sheet's version |
 | see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
 | every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, current wave, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
-| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave |
+| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave; `--detail "<line>"` (repeatable) adds an indented detail line under it |
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
 | move a task between waves | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>` |
-| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags |
-| drop a task | `ptask <name> rm "<query>"` |
+| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either |
+| drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
+| name a row exactly | any verb's `<query>` can be the row's id (`ar-142`) |
 | tidy a sheet | `ptask <name> sweep` |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |
 | shrink the agent board | `ptask <name> --agent archive [--dry-run]` moves its done rows to `agent/versions/<current version>.md` under `## Done rows` |
 | add a playtest check | `ptask <name> --playtest add [--game <name>] [--pr <n>] "<scene or mode: what to look for>"`; one short ASCII line per check, under `## <game>` (default `## General`) in `playtest.md` |
-| work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest rm "<query>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
+| work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest drop "<query>" --why "<why>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
 | regenerate the boards | `notes board` |
 | feed a board UI | `notes board --json` (read-only, below); act on a row with `ptask <name> [--agent\|--playtest] --exact <verb> -- "<raw>"` |
 
@@ -169,7 +170,7 @@ The human sheet (`README.md`) is the queue: what you asked for and what only you
 Every project sheet, in every project and both lanes, uses one row format. Projects differ only by data in the registry, never by row format.
 
 ```
-- [ ] fix(fleet-sessions): class a gh gate-wait shell as a gate wait #high #size/s #c1104
+- [ ] fix(fleet-sessions): class a gh gate-wait shell as a gate wait #high #size/s #c1104 <!-- id:ar-142 -->
   Seen agent-10, run 41893820093: the row reads STALLED while its gate runs.
 ```
 
@@ -180,34 +181,36 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 | detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
 | priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
 | created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
+| id | yes, stamped | `id:<code>-<n>` in the marker, stamped by `ptask add`. `code` is the project's `trackers.<name>.code` in the registry (2-4 lowercase letters, unique; `project-map-doctor` checks it). `n` is one past the highest id anywhere under the project dir, both lanes, playtest and `versions/`, so an id is never reused. A project with no code gets no id, and `ptask add` says so. |
 | size | no | `#size/s` (small single PR), `#size/m` (one PR), `#size/l` (needs a plan); there is no hour estimate |
 | `#tier/N` `#worker/X` `#vX.Y.Z` `#dueMMDD` | no | as the feed above reads them |
 | `#ask` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
-| marker | on close | `<!-- ... -->` at the end: `pr:N`, a run id or URL, `unverified: <why>` |
+| marker | on close | `<!-- ... -->` at the end: `pr:N`, a run id or URL, `unverified: <why>`, `dropped: <why>`, `dup:<id>` |
 
 No assignee field: the lane is the assignee. No comment thread: detail lines plus the PR. No per-project custom fields.
 
 Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
 
-Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check. A board row that runs as a session goes row -> `ptask start` or a dispatch promote -> queue item -> session -> PR -> `agent-land` closes the queue item and the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
+Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or roll. A board row that runs as a session goes row -> `ptask start` or a dispatch promote -> queue item -> session -> PR -> `agent-land` closes the queue item and the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
 
-`notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker. On the agent board it also counts the open rows not in `type(area): title` form and those with a title over 80 chars, one line each. Human sheet rows are free text and closed by hand, so those two checks skip them.
+`notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker (an `id:` alone is not proof). On the agent board it also counts the open rows not in `type(area): title` form, those with a title over 80 chars and those with no id, one line each. Human sheet rows are free text and closed by hand, so those checks skip them.
 
 ### The task feed
 
 `notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
 - A project is `{profile, project, dir, version, open, agent_open, playtest_open}`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, wave, game, state, priority, tier, worker, ask, target, text, tags, marker, since, sheet, line, raw}`.
+- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, wave, game, state, priority, tier, worker, ask, target, id, type, area, size, text, tags, marker, since, sheet, line, raw}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
 - `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `target` the row's own `#vX.Y.Z` tag. `wave` is the section the row sits in; `target` is where it is aimed, which can differ.
-- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, wave or created tags.
+- `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
+- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, wave or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
 - `wave` is null for a playtest row, and `game` is null for a sheet row.
 
-To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or removed the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control; there are no ids in the sheets. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
+To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or dropped the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control, which is why a UI writes by `raw` and not by `id`: the id names the row, not the version of it the UI showed. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
 
 ## Daily-note model
 

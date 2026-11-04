@@ -37,7 +37,9 @@ pub enum Op {
         unverified: Option<String>,
         pick: Pick,
     },
-    Rm {
+    /// Close a check undelivered; `stamp` is `project_tasks::drop_stamp`'s marker.
+    Drop {
+        stamp: String,
         pick: Pick,
     },
 }
@@ -75,7 +77,9 @@ pub fn run(p: &Profile, log: &Logger, name: &str, op: Op) -> Result<i32> {
             proof.as_deref(),
             unverified.as_deref(),
         ),
-        Op::Rm { pick } => edit_in(log, &dir, &project, &pick, "removed", |_| None),
+        Op::Drop { stamp, pick } => edit_in(log, &dir, &project, &pick, "dropped", |l| {
+            Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+        }),
     }
 }
 
