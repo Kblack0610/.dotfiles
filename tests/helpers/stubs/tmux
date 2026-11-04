@@ -22,6 +22,7 @@
 #   tmux.sessions.<server>      sessions on `-L <server>`, for has-session and list-sessions
 #   tmux.panes.<server>         lines for `-L <server> list-panes -a -F ...`
 #   tmux.window_stamps[.<srv>]  `created<TAB>@id<TAB>name` rows for harpoon's list-windows
+#   tmux.fleet_windows.<srv>    `session:index` windows that carry @fleet_stage (fleet-sessions)
 #   tmux.jobs                   written: one `cwd<TAB>command` per `run-shell` call
 set -uo pipefail
 
@@ -141,6 +142,10 @@ case "$verb" in
       # `root` can tell the landing page's own window from the boards beside it.
       '#{window_index} #{?@tmx_window,#{@tmx_window},#{window_name}}')
         [ -f "$FIX/tmux.window_idents" ] && cat "$FIX/tmux.window_idents"
+        exit 0 ;;
+      # fleet-sessions `tmux_project`: windows already carrying @fleet_stage, per server.
+      '#{session_name}:#{window_index}')
+        [ -f "$FIX/tmux.fleet_windows.${server:-}" ] && cat "$FIX/tmux.fleet_windows.${server:-}"
         exit 0 ;;
     esac
     ;;
