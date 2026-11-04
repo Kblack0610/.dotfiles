@@ -34,8 +34,6 @@ const MIN_KEEP_PCT: usize = 60;
 const REQUIRED: [&str; 4] = ["title", "summary", "tags", "updated"];
 /// How far back the daily note looks for logs it has not listed yet.
 const NEW_SECTION_DAYS: i64 = 7;
-/// Articles listed per log in the daily note before collapsing to "+N more".
-const NEW_SECTION_CAP: usize = 10;
 /// Excerpt length kept per source in the log.
 const EXCERPT_MAX: usize = 1500;
 
@@ -445,54 +443,68 @@ fn snapshot_original(p: &Profile, file: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The knowledge lines of the daily note's `## Morning`: every log from the last week that the
-/// previous note did not already list, oldest first, with the articles it created or updated.
-/// Keyed on the previous note's content rather than on dates, so a log that lands after today's
-/// note was created shows up tomorrow instead of never. With nothing new it says when the engine
-/// last compiled, so a stalled engine is visible instead of looking like a quiet night.
+/// The knowledge line of the daily note's `## Morning`: ONE line counting the articles created
+/// and updated by every log from the last week newer than the newest log the previous note links,
+/// linking the newest of them. The articles themselves are in that log and the knowledge MOC (a
+/// footer link), so listing them here repeated both; it ran to 18 lines after a three-log week.
+///
+/// Keyed on a DATE read from the previous note, not on the previous note containing each link:
+/// the "nothing new" line links the last log too, so a quiet day still carries the key forward
+/// and a log listed two notes ago is not listed again.
 pub fn morning_lines(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
-    let mut block = String::new();
+    let listed = prev_note.and_then(newest_linked_log);
+    let (mut created, mut updated) = (0, 0);
+    let mut span: Option<(NaiveDate, NaiveDate)> = None;
     for back in (1..=NEW_SECTION_DAYS).rev() {
-        let file = log_path(p, today - Duration::days(back));
-        let Ok(content) = fs::read_to_string(&file) else {
-            continue;
-        };
-        let link = config::wikilink(&p.root, &file);
-        if prev_note.is_some_and(|prev| prev.contains(&format!("[[{link}]]"))) {
+        let date = today - Duration::days(back);
+        if listed.is_some_and(|l| date <= l) {
             continue;
         }
-        let items: Vec<String> = md::section_lines(&content, "Changes")
-            .unwrap_or_default()
+        let Ok(content) = fs::read_to_string(log_path(p, date)) else {
+            continue;
+        };
+        let lines = md::section_lines(&content, "Changes").unwrap_or_default();
+        let c = lines
             .iter()
-            .filter_map(|l| {
-                let (verb, rest) = if let Some(r) = l.strip_prefix("- created [[") {
-                    ("new", r)
-                } else {
-                    ("updated", l.strip_prefix("- updated [[")?)
-                };
-                let target = rest.split("]]").next()?;
-                Some(format!("  - {verb} [[{target}]]"))
-            })
-            .collect();
-        if items.is_empty() {
+            .filter(|l| l.starts_with("- created [["))
+            .count();
+        let u = lines
+            .iter()
+            .filter(|l| l.starts_with("- updated [["))
+            .count();
+        if c + u == 0 {
             continue;
         }
-        block.push_str(&format!("- Knowledge: [[{link}]]\n"));
-        for item in items.iter().take(NEW_SECTION_CAP) {
-            block.push_str(item);
-            block.push('\n');
-        }
-        if items.len() > NEW_SECTION_CAP {
-            block.push_str(&format!("  - +{} more\n", items.len() - NEW_SECTION_CAP));
-        }
+        created += c;
+        updated += u;
+        span = Some((span.map_or(date, |(first, _)| first), date));
     }
-    if block.is_empty() {
-        block = match last_log_date(p) {
-            Some(d) => format!("- Knowledge: nothing new (last compiled {d})\n"),
-            None => "- Knowledge: nothing compiled yet\n".to_string(),
-        };
+    let link = |d: NaiveDate| config::wikilink(&p.root, &log_path(p, d));
+    match (span, last_log_date(p)) {
+        (Some((first, last)), _) => {
+            let when = if first == last {
+                format!("{last}")
+            } else {
+                format!("{first} to {last}")
+            };
+            format!(
+                "- Knowledge: {created} new, {updated} updated ({when}) [[{}]]\n",
+                link(last)
+            )
+        }
+        (None, Some(d)) => format!("- Knowledge: nothing new (last compiled [[{}]])\n", link(d)),
+        (None, None) => "- Knowledge: nothing compiled yet\n".to_string(),
     }
-    block
+}
+
+/// The date of the newest knowledge log a note links (`[[.../_log/YYYY/MM/YYYY-MM-DD]]`).
+fn newest_linked_log(note: &str) -> Option<NaiveDate> {
+    note.split("[[")
+        .skip(1)
+        .filter_map(|r| r.split("]]").next())
+        .filter(|t| t.contains(&format!("{LOG_DIR}/")))
+        .filter_map(|t| NaiveDate::parse_from_str(t.rsplit('/').next()?, "%Y-%m-%d").ok())
+        .max()
 }
 
 /// The newest date with a log under `knowledge/_log/YYYY/MM/`, if any.
@@ -809,12 +821,24 @@ mod tests {
         let lines = morning_lines(&p, Some("# yesterday\n"), today);
         assert_eq!(
             lines,
-            "- Knowledge: [[knowledge/_log/2026/10/2026-10-13]]\n  - new [[knowledge/software/gw]]\n"
+            "- Knowledge: 1 new, 0 updated (2026-10-13) [[knowledge/_log/2026/10/2026-10-13]]\n"
         );
-        // Tomorrow's note sees today's note already listed it.
+        // Tomorrow's note sees today's note already listed it, and still links the log.
+        let quiet = morning_lines(&p, Some(&lines), today + Duration::days(1));
         assert_eq!(
-            morning_lines(&p, Some(&lines), today + Duration::days(1)),
-            "- Knowledge: nothing new (last compiled 2026-10-13)\n"
+            quiet,
+            "- Knowledge: nothing new (last compiled [[knowledge/_log/2026/10/2026-10-13]])\n"
+        );
+        // The day after a quiet note, the log is still not listed again.
+        assert_eq!(
+            morning_lines(&p, Some(&quiet), today + Duration::days(2)),
+            quiet
+        );
+        // A note in the old per-log format is keyed the same way.
+        let old = "- Knowledge: [[knowledge/_log/2026/10/2026-10-13]]\n  - new [[knowledge/software/gw]]\n";
+        assert_eq!(
+            morning_lines(&p, Some(old), today + Duration::days(1)),
+            quiet
         );
         assert_eq!(
             morning_lines(&profile(&vault("empty")), None, today),

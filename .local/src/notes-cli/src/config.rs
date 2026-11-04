@@ -238,8 +238,8 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
-    /// Other orgs whose alpha/beta projects the daily note's `## Projects` section links,
-    /// as `### <name>` blocks beside this org's own (`rollup = ["acmecorp"]`). Empty = own only.
+    /// Other orgs this profile rolls up (`rollup = ["acmecorp"]`). Empty = own only. Read here
+    /// only as the fallback for `index-orgs`.
     #[serde(default)]
     rollup: Vec<String>,
     /// Orgs this profile's project INDEX rolls up. Unset falls back to `rollup`.
@@ -357,8 +357,8 @@ pub struct Profile {
     /// Profile NAMES whose alpha/beta projects this profile's daily note links. Empty = own only.
     ///
     /// Deliberately left unresolved: `resolve()` calling itself for each entry would
-    /// recurse forever on a config cycle (personal -> job -> personal). `daily::projects_block`
-    /// resolves each name lazily instead, and tolerates one that does not resolve.
+    /// recurse forever on a config cycle (personal -> job -> personal). Consumers resolve
+    /// each name lazily instead, and tolerate one that does not resolve.
     pub rollup: Vec<String>,
     /// Orgs this profile's project index rolls up; falls back to `rollup` when unset.
     pub index_orgs: Vec<String>,
