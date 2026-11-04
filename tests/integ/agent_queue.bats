@@ -476,6 +476,21 @@ EOF
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 
+@test "stats counts the flow of the last 1, 6 and 24 hours: done by finished, added by queued" {
+  ago() { date -u -d "$1 ago" +%FT%TZ; }
+  for spec in "a 3hours 30minutes" "b 10hours 5hours" "c 30hours 20hours"; do
+    set -- $spec
+    "$AQ" add --project game --slug "$1" "$1"
+    "$AQ" move "$1" done --status ok
+    "$AQ" set "$1" "finished=$(ago "$3")"
+    f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-"$1".md)"; sed -i "s/^queued: .*/queued: $(ago "$2")/" "$f"
+  done
+  "$AQ" add --project game --slug d "d"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c '.recent | [.done_1h, .done_6h, .done_24h, .added_1h, .added_6h, .added_24h]' <<<"$output")" '[1,2,3,1,2,3]'
+}
+
 @test "a slug is matched exactly, never as the tail of a longer one" {
   "$AQ" add --project game --slug x-first "x"
   "$AQ" add --project game --slug second --after first-missing "y" 2>/dev/null || true
