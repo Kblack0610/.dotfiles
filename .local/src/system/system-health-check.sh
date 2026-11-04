@@ -92,12 +92,4 @@ mkdir -p "$OUT_DIR"
 echo "$REPORT" > "$OUT_DIR/system-health-$DATE_FILE.md"
 ls -1t "$OUT_DIR"/system-health-*.md 2>/dev/null | tail -n +61 | xargs -r rm -f
 
-# Optional: Send to Slack if configured
-if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
-    SLACK_MSG=$(echo "$REPORT" | head -20)
-    curl -s -X POST -H 'Content-type: application/json' \
-        --data "{\"text\":\"$SLACK_MSG\"}" \
-        "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
-fi
-
 echo "Health check complete: $STATUS"
