@@ -295,7 +295,8 @@ fn queue_server() -> String {
 }
 
 /// Name each session's queue item from `agent-queue list --json` (one object per line): the
-/// item whose `session` is that tmux session on agent-queue's server, once it has started.
+/// item whose `session` names that tmux session, once it has started. `session` is
+/// `<server>:<tmux-session>`, or a bare tmux session on agent-queue's `server`.
 pub fn with_items(sessions: &mut [Session], items_jsonl: &str, server: &str) {
     for line in items_jsonl.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -306,8 +307,9 @@ pub fn with_items(sessions: &mut [Session], items_jsonl: &str, server: &str) {
         if slug.is_empty() || sess.is_empty() || field("state") == "queued" {
             continue;
         }
+        let (srv, sess) = sess.split_once(':').unwrap_or((server, sess));
         for s in sessions.iter_mut() {
-            if s.server == server && s.tmux_session == sess && !s.parked {
+            if s.server == srv && s.tmux_session == sess && !s.parked {
                 s.item = Some(slug.to_string());
             }
         }
@@ -535,6 +537,18 @@ mod tests {
         assert_eq!(s[0].item.as_deref(), Some("a"));
         assert_eq!(s[1].item, None, "a parked row is unparked, not cancelled");
         assert_eq!(s[2].item, None, "same name on another server");
+
+        with_items(
+            &mut s,
+            "{\"slug\":\"d\",\"session\":\"hub:dotfiles-agent-3\",\"state\":\"running\"}\n",
+            "lab",
+        );
+        assert_eq!(
+            s[2].item.as_deref(),
+            Some("d"),
+            "<server>:<session> names its server"
+        );
+        assert_eq!(s[0].item.as_deref(), Some("a"));
     }
 
     #[test]
