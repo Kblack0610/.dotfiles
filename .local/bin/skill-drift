@@ -92,7 +92,9 @@ CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
 STALE_DAYS="${SKILL_STALE_DAYS:-180}"
 USAGE_DAYS="${SKILL_USAGE_DAYS:-90}"
-TRANSCRIPTS="${CLAUDE_TRANSCRIPTS:-$HOME/.claude/projects}"
+# The one usage counter, by path beside this script: a worktree run uses the worktree's copy.
+# It honours CLAUDE_TRANSCRIPTS itself.
+RECALL="${CLAUDE_RECALL:-$(dirname "$(readlink -f "$0")")/claude-recall}"
 
 # The known categories. A skill outside this set is a typo or a taxonomy that
 # grew without anyone deciding to grow it; either way it should be a review
@@ -384,25 +386,20 @@ check_stale() {
 }
 
 # Every skill's description sits in the context window of every session whether
-# it fires or not, so a skill nothing calls is a standing cost. Counted from the
-# Skill tool calls recorded in transcripts.
+# it fires or not, so a skill nothing calls is a standing cost. Counted by
+# `claude-recall stats`: Skill-tool calls AND typed /commands, so a skill the human
+# reaches only by its slash command (captain, one-shot) is not reported unused.
 #
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
 declare -A USED=()
 load_usage() {
-  [ -d "$TRANSCRIPTS" ] || return 0
   local s
-  # -mtime, NOT -newermt '-90 days': the latter silently matches nothing here,
-  # and an empty input list would read as "no skill was ever used".
   while IFS= read -r s; do
     [ -n "$s" ] && USED[$s]=1
-  done < <(
-    find "$TRANSCRIPTS" -name '*.jsonl' -mtime "-$USAGE_DAYS" -print0 2>/dev/null \
-      | xargs -0 -r grep -hoE '"name": ?"Skill", ?"input": ?\{ ?"skill": ?"[^"]*"' 2>/dev/null \
-      | sed 's/.*"skill": \?"//; s/"$//' | sort -u
-  )
+  done < <("$RECALL" stats --days "$USAGE_DAYS" --kind skill,slash --top 0 --json 2>/dev/null \
+             | jq -r '.rows[].key' 2>/dev/null)
   return 0
 }
 
