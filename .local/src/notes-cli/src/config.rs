@@ -51,6 +51,22 @@ struct RawConfig {
     /// `board` above is already this file's key for the board's PATH.
     #[serde(default)]
     board_layout: RawBoardLayout,
+    /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
+    /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
+    #[serde(default)]
+    project_type: HashMap<String, ProjectType>,
+}
+
+/// One `[project_type.<type>]` table. Both keys are optional.
+#[derive(Debug, Deserialize)]
+pub struct ProjectType {
+    /// Extra root files a project of this type carries (`notes projects --new` writes them,
+    /// `notes doctor --projects` reports one missing).
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -412,7 +428,7 @@ pub struct Comms {
     pub accounts: Vec<Account>,
 }
 
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
 }
 
@@ -499,6 +515,7 @@ fn builtin_default() -> RawConfig {
         ideas: default_ideas(),
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
+        project_type: HashMap::new(),
     }
 }
 
@@ -716,6 +733,30 @@ pub fn board_layout() -> Result<BoardLayout> {
         order: raw.board_layout.order.clone(),
         full: raw.board_layout.full.clone(),
     })
+}
+
+/// The `[project_type.*]` tables, keyed by type: the shipped defaults
+/// (`templates/project_types.toml`), each replaced by a config table of the same type. Read
+/// independently of the active profile, like [`board_layout`]: a project's type comes from
+/// the registry, not from an org. The defaults ship in the binary because config.toml is a
+/// per-machine copy that git ignores, and the types are the same on every machine.
+pub fn project_types() -> Result<HashMap<String, ProjectType>> {
+    let (raw, _src) = load_raw()?;
+    let mut types = default_project_types();
+    types.extend(raw.project_type);
+    Ok(types)
+}
+
+const DEFAULT_PROJECT_TYPES: &str = include_str!("../templates/project_types.toml");
+
+fn default_project_types() -> HashMap<String, ProjectType> {
+    #[derive(Deserialize)]
+    struct Defaults {
+        project_type: HashMap<String, ProjectType>,
+    }
+    toml::from_str::<Defaults>(DEFAULT_PROJECT_TYPES)
+        .expect("templates/project_types.toml parses (pinned by a test)")
+        .project_type
 }
 
 /// Resolve the global comms config (defaults filled in). Read independently of the active
@@ -1015,5 +1056,34 @@ mod tests {
         assert_eq!(raw.projects.as_deref(), Some("lab/projects/current"));
         // untouched keys still fall through to the convention
         assert_eq!(raw.zettel, "permanent");
+    }
+
+    /// `[project_type.*]` is optional: a config without it parses to no overlays, and an
+    /// empty table (`[project_type.infra]`) is a type with no extras.
+    #[test]
+    fn project_type_tables_are_optional() {
+        let old: RawConfig = toml::from_str("default_profile = \"personal\"\n").unwrap();
+        assert!(old.project_type.is_empty());
+        let new: RawConfig = toml::from_str(
+            r#"
+            [project_type.game]
+            files = ["playtest.md"]
+            requires = ["repo"]
+            [project_type.infra]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(new.project_type["game"].files, vec!["playtest.md"]);
+        assert_eq!(new.project_type["game"].requires, vec!["repo"]);
+        assert!(new.project_type["infra"].files.is_empty());
+    }
+
+    /// The shipped defaults parse, and a game carries playtest.md.
+    #[test]
+    fn the_default_project_types_parse() {
+        let types = default_project_types();
+        assert_eq!(types["game"].files, vec!["playtest.md"]);
+        assert_eq!(types["app"].requires, vec!["repo"]);
+        assert!(types["infra"].files.is_empty());
     }
 }
