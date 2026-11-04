@@ -28,10 +28,13 @@
 #   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
 #                                phases in (plans started, phases added) against phases ticked,
 #                                open at each end, and whether the fleet is draining
+#   fleet-bench forecast [--json] [--queue] [--baseline <label>]
+#                                every open phase in expected order, all-done-by at the calibrated
+#                                and the recent pace, the drain; --baseline freezes it to compare
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP.
+# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD.
 
 set -uo pipefail
 
@@ -40,6 +43,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+# The forecast names each open phase from its plan with the one checklist parser.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -65,6 +71,7 @@ set -uo pipefail
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${BENCH_QUEUE_CMD:=fleet-dispatch queue --json}"   # rows dispatch would start after the live work
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
@@ -72,6 +79,7 @@ ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
+FORECASTS="$DIR/forecasts.jsonl"
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
@@ -132,6 +140,27 @@ def phase_minutes:
       | .prev = $r)
   | .starts as $s
   | [range(1; $s | length) | ($s[.].epoch - $s[. - 1].epoch) / 60 / ($s[.].to - $s[.].from)];
+def pct($q): sort | if length == 0 then null else .[((length - 1) * $q) | floor] end;
+# live rows (latest_live) in -> each session with phases left and a measured pace, every open
+# phase given a p50 end (per-phase minutes x the estimate factor) and a slow end (x $slow, the
+# last window scored ratio), in plan order. A session past its ETA has its current phase due
+# now and the rest after it. $names maps session_id to the open phase names of its plan.
+def schedule($t; $slow; $names):
+  map(select((.finished | not) and .phases_total != null and .phases_done != null and .eta != null)
+    | (.phases_total - .phases_done) as $left | select($left > 0)
+    | . as $r | ($r.eta.per_phase_min * 60) as $m
+    | ($m * ($r.eta.factor // 1)) as $P | ($m * $slow) as $S
+    | ([$r.eta.made_epoch + $P, $t] | max) as $p1 | ([$r.eta.made_epoch + $S, $t] | max) as $s1
+    | ($names[$r.session_id] // []) as $nm
+    | {session_id, target, project, bucket, phases_done, phases_total, left: $left, late_min,
+       basis: ($r.eta | basis_label),
+       phases: [range(0; $left) | {name: ($nm[.] // "phase \($r.phases_done + . + 1)"),
+                                   p50: ($p1 + . * $P | floor), slow: ($s1 + . * $S | floor)}]}
+    | . + {finish_p50: .phases[-1].p50, finish_slow: .phases[-1].slow});
+def fleet_finish: {median_p50: (map(.finish_p50) | median | if . == null then null else floor end),
+  p90_p50: (map(.finish_p50) | pct(0.9)), last_p50: (map(.finish_p50) | max),
+  median_slow: (map(.finish_slow) | median | if . == null then null else floor end),
+  p90_slow: (map(.finish_slow) | pct(0.9)), last_slow: (map(.finish_slow) | max)};
 # progress rows in -> open phases in the newest sample at or before $t
 def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
   | if $s == null then 0 else
@@ -1226,6 +1255,76 @@ cmd_throughput() {
        end)'
 }
 
+# forecast_json <now> [queue json lines] -> one object: the schedule of every open phase, the
+# fleet's all-done-by at both ends of the band, the drain against the last window's flow, and
+# the queue behind the live work.
+forecast_json() {
+  local t="$1" queue="${2:-}" live names sc="$SCORES"
+  live=$(latest_live)
+  [ -s "$sc" ] || sc=/dev/null
+  names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
+      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
+    done | jq -cs 'add // {}')
+  jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --argjson names "$names" --arg queue "$queue" \
+     --slurpfile live <(printf '%s\n' "$live") --slurpfile p "$PROGRESS" --slurpfile s "$sc" "$JQ_LIB"'
+    ($s | map(select(.done_epoch >= $t - $win * 3600) | .ratio // empty) | median) as $r24
+    | ($p | flow($t - $win * 3600; $t)) as $f
+    | ($live | schedule($t; $r24 // 1; $names)) as $sch
+    | ($sch | map(.left) | add // 0) as $open
+    | ($f.out_per_h - $f.net_in_per_h) as $net
+    | ($queue | split("\n") | map(select(. != "") | fromjson)) as $q
+    | ($p | map(select(.phases_total != null)) | group_by([.session_id, .plan_file]) | map(map(.phases_total) | max) | median) as $ppp
+    | {made_epoch: $t, made_at: ($t | iso), slow_ratio: $r24,
+       sessions: ($sch | length),
+       unscheduled: ($live | map(select((.finished | not) and (.phases_total == null or .eta == null))) | length),
+       open: $open}
+      + ($sch | fleet_finish)
+      + {drain: {out_per_h: $f.out_per_h, in_per_h: $f.net_in_per_h,
+                 epoch: (if $net > 0 then ($t + $open / $net * 3600 | floor) else null end)},
+         queue: (if $queue == "" then null else {rows: ($q | length), ready: ($q | map(select(.state == "ready")) | length),
+                 phases_per_plan: $ppp, phases: (($q | length) * ($ppp // 0) | floor)} end),
+         schedule: $sch}'
+}
+
+# cmd_forecast [--json] [--queue] [--baseline <label>]: when the live work should be done, and in
+# what order. --baseline freezes it into forecasts.jsonl, queue included, for vs to compare.
+cmd_forecast() {
+  local json=0 withq=0 label='' t fc queue=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --queue) withq=1; shift ;;
+      --baseline) label="${2:-}"; [ -n "$label" ] || { say "--baseline needs a label"; return 2; }; withq=1; shift 2 ;;
+      *) say "usage: fleet-bench forecast [--json] [--queue] [--baseline <label>]"; return 2 ;;
+    esac
+  done
+  [ -s "$PROGRESS" ] || { say "no samples yet: run fleet-bench sample"; return 1; }
+  t=$(now)
+  [ "$withq" = 0 ] || queue=$($BENCH_QUEUE_CMD 2>/dev/null) || { say "the dispatch queue could not be read; forecast without it"; queue=''; }
+  fc=$(forecast_json "$t" "$queue") || return 1
+  if [ -n "$label" ]; then
+    mkdir -p "$DIR"
+    jq -c --arg l "$label" '{label: $l} + .' <<<"$fc" >> "$FORECASTS"
+    say "baseline $label frozen in $FORECASTS"
+  fi
+  if [ "$json" = 1 ]; then printf '%s\n' "$fc"; return 0; fi
+  jq -r "$JQ_LIB"'
+    "forecast \(.made_epoch | hm): \(.sessions) sessions with a plan, \(.open) phases open"
+      + (if .unscheduled > 0 then " (\(.unscheduled) more with no plan or no estimate)" else "" end),
+    "  all done by: median \(.median_p50 | hm), p90 \(.p90_p50 | hm), last \(.last_p50 | hm) (each estimate as calibrated)",
+    "        slow: median \(.median_slow | hm), p90 \(.p90_slow | hm), last \(.last_slow | hm) (at the last 24h scored ratio, \(.slow_ratio // "none, so 1")x)",
+    "  drain: " + (if .drain.epoch != null
+      then "\(.drain.epoch | hm) at \(.drain.out_per_h)/h out against \(.drain.in_per_h)/h in (last 24h)"
+      else "not draining at current inflow (in \(.drain.in_per_h)/h, out \(.drain.out_per_h)/h): no time until one of them changes" end),
+    (if .queue != null then "  queued after this: \(.queue.rows) board rows (\(.queue.ready) ready to start), about \(.queue.phases) phases at the median \(.queue.phases_per_plan // "-") per plan" else empty end),
+    ([.schedule[] | . as $s | .phases[] | {t: .p50, slow, target: $s.target, name}] | sort_by(.t)) as $all
+    | .made_epoch as $now | ($all | map(select(.t <= $now))) as $due
+    | (if ($due | length) > 0 then "  due now, past their estimate: \($due | length) phases in \($due | map(.target) | unique | length) sessions" else empty end),
+      "  next phases, in expected order:",
+      ($all | map(select(.t > $now)) | .[:10][]
+        | "    \(.t | hm)  (slow \(.slow | hm))  \(.target | sub("^[^/]*/"; ""))  \(.name)")' <<<"$fc"
+}
+
 # cmd_flow [--from T] [--to T] [--json] [--hourly]: phases in against phases out over a window
 cmd_flow() {
   local from='' to='' json=0 hourly=0
@@ -1277,8 +1376,9 @@ main() {
     findings) shift; cmd_findings "$@" ;;
     throughput) shift; cmd_throughput "$@" ;;
     flow) shift; cmd_flow "$@" ;;
-    -h | --help) sed -n '2,34p' "$0" ;;
-    *) sed -n '2,30p' "$0" >&2; return 2 ;;
+    forecast) shift; cmd_forecast "$@" ;;
+    -h | --help) sed -n '2,37p' "$0" ;;
+    *) sed -n '2,33p' "$0" >&2; return 2 ;;
   esac
 }
 

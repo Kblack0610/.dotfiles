@@ -1213,3 +1213,49 @@ rowp() {
   run jq -c '[.hourly[] | [.in, .ticked, .scope, .done]]' <<<"$output"
   assert_output '[[1,1,3,1],[0,2,3,3]]'
 }
+
+@test "forecast schedules each open phase in plan order with its name, a late one restarting from now" {
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plan-a.md"
+  { rowp a lab/game-agent-1:1 1 3 "$SANDBOX/plan-a.md"; row b lab/game-agent-2:1 0 1; } > "$SNAP"; sample_at 0
+  # the default 60 min a phase, no calibration yet: a's next phase is due at T0+1h, b's at T0+1h
+  run env BENCH_NOW=$((T0 + 600)) "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '[.schedule[] | [.target, [.phases[] | [.name, .p50 - '"$T0"']]]]' <<<"$output"
+  assert_output '[["lab/game-agent-1:1",[["two",3600],["three",7200]]],["lab/game-agent-2:1",[["phase 1",3600]]]]'
+  # at T0+1.5h both are late: their current phase is due now and the rest follow at the pace
+  run env BENCH_NOW=$((T0 + 5400)) "$SUBJECT" forecast --json
+  run jq -c '{open, sessions, last: (.last_p50 - '"$T0"'), median: (.median_p50 - '"$T0"'), a: [.schedule[0].phases[].p50 - '"$T0"']}' <<<"$output"
+  assert_output '{"open":3,"sessions":2,"last":9000,"median":7200,"a":[5400,9000]}'
+  run env BENCH_NOW=$((T0 + 5400)) "$SUBJECT" forecast
+  assert_line --partial 'due now, past their estimate: 2 phases in 2 sessions'
+  assert_line --partial 'game-agent-1:1  three'
+}
+
+@test "forecast says not draining when inflow is at or above burn, and gives a drain time otherwise" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 1 6 > "$SNAP"; sample_at 3600
+  BENCH_WINDOW_H=1 BENCH_NOW=$((T0 + 3600)) run "$SUBJECT" forecast
+  assert_line --partial 'drain: not draining at current inflow (in 4/h, out 1/h)'
+  row a lab/game-agent-1:1 5 6 > "$SNAP"; sample_at 7200
+  BENCH_WINDOW_H=1 BENCH_NOW=$((T0 + 7200)) run "$SUBJECT" forecast --json
+  # 1 open at 4/h out and none in: a quarter hour
+  run jq -c '.drain | [.out_per_h, .in_per_h, .epoch - '"$((T0 + 7200))"']' <<<"$output"
+  assert_output '[4,0,900]'
+}
+
+@test "forecast --baseline freezes one labelled line with the queue, and a dead queue still forecasts" {
+  row a lab/game-agent-1:1 0 2 > "$SNAP"; sample_at 0
+  printf '#!/usr/bin/env bash\necho %s\necho %s\n' "'{\"state\":\"ready\",\"key\":\"x\"}'" "'{\"state\":\"unjudged\",\"key\":\"y\"}'" > "$SANDBOX/bin/queue-stub"
+  chmod +x "$SANDBOX/bin/queue-stub"
+  BENCH_QUEUE_CMD=queue-stub BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --baseline morning
+  assert_success
+  assert_line --partial 'queued after this: 2 board rows (1 ready to start), about 4 phases at the median 2 per plan'
+  run jq -c '{label, open, queue: .queue.rows, n: (.schedule | length)}' "$FLEET_BENCH_DIR/forecasts.jsonl"
+  assert_output '{"label":"morning","open":2,"queue":2,"n":1}'
+  BENCH_QUEUE_CMD=false BENCH_NOW=$((T0 + 60)) run "$SUBJECT" forecast --queue
+  assert_success
+  assert_line --partial 'dispatch queue could not be read'
+  refute_line --partial 'queued after this'
+  run "$SUBJECT" forecast --baseline
+  assert_failure 2
+}
