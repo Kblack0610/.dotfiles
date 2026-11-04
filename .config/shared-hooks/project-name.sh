@@ -10,7 +10,9 @@
 #   2. Exact path lookup in project-map.json `paths`.
 #   3. The containing repo's canonical name.
 #   4. basename (leading dot stripped) looked up in `aliases`.
-#   5. basename (leading dot stripped) as-is.
+#   5. Under the worktree root with no checkout left: the registered repo its
+#      <repo>-<slug> name starts with.
+#   6. basename (leading dot stripped) as-is.
 #
 # The app step runs BEFORE the exact-path lookup on purpose. A monorepo root is normally
 # registered in `paths` (bnb-platform), so checking `paths` first would short-circuit and
@@ -261,6 +263,27 @@ resolve_project_name() {
 
     hit=$(jq -r --arg b "$base" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
     if [ -n "$hit" ]; then echo "$hit"; return 0; fi
+
+    # A path under the worktree root that is no checkout (reaped while its session ran,
+    # or a husk an Editor wrote Logs/ into afterwards) names its repo only by the
+    # <repo>-<slug> convention `wt` keeps. The longest registered checkout basename that
+    # prefixes it wins, so unity-core-playground-agent-12 is unity-core-playground. Without
+    # this each such session filed plans and lessons under its own worktree name.
+    local wt_root="${WT_ROOT:-$HOME/.worktrees}" wt_name
+    if [ -z "${top:-}" ]; then
+      case "$abs_path" in
+        "$wt_root"/?*)
+          wt_name="${abs_path#"$wt_root"/}"; wt_name="${wt_name%%/*}"
+          hit=$(jq -r --arg w "$wt_name" '
+            [.paths // {} | to_entries[]
+             | (.key | split("/") | last | ltrimstr(".")) as $b
+             | select($b != "" and ($w == $b or ($w | startswith($b + "-"))))
+             | {l: ($b | length), v: .value}]
+            | max_by(.l) | .v // empty' "$map_file" 2>/dev/null || true)
+          if [ -n "$hit" ]; then echo "$hit"; return 0; fi
+          ;;
+      esac
+    fi
   fi
 
   echo "$base"
