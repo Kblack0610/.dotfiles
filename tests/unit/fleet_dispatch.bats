@@ -717,6 +717,7 @@ two_items() {
   assert_output --partial 'started queue item fix-game'
   assert_output --partial 'the pass stops after 1 started'
   refute_output --partial 'started queue item fix-app'
+  refute_output --partial 'under-used'
   assert_equal "$(outcome)" WORKED
 }
 
@@ -726,6 +727,40 @@ two_items() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-game'
   refute_output --partial 'started queue item fix-app'
+}
+
+@test "a pass a limit stopped while work waits and the gates are open says which limit, still WORKED" {
+  two_items
+  agent-queue add --project app --slug fix-app-2 "fix the app again"
+  export DISPATCH_PER_PASS=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'under-used: started 1, DISPATCH_PER_PASS is the limit while 2 runnable wait'
+  grep -q 'under-used: started 1, DISPATCH_PER_PASS is the limit, 2 runnable left' "$FLEET_DISPATCH_DIR/log.md" || fail "the log records it"
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "headroom counts what could start now against each limit" {
+  two_items
+  export DISPATCH_PER_PASS=1 DISPATCH_MAX_LIVE=6
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_success
+  assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1)'
+  assert_not_called 'wt new'
+}
+
+@test "headroom is 0 and names what holds: a gate, or every run slot used" {
+  two_items
+  echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r .could_start <<<"$output")" 0
+  assert_equal "$(jq -r .held <<<"$output")" "load 99.0 on $(nproc) cores is over the 0.7 pace"
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  export DISPATCH_MAX_LIVE=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run slot is used'
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {
