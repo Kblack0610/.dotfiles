@@ -38,7 +38,8 @@
 # trip list) is refused by proof_report below.
 #   WORKED   the run changed what it was meant to change
 #   NOOP     nothing to do, and the run said so
-#   BLOCKED  the run is waiting on a human: it posted a pending ask
+#   BLOCKED  the run had work it could not do: it posted a pending ask, or a gate held
+#            runnable work (fleet-dispatch). A warning on every dashboard, never a page.
 #   FAILED   the run errored: the harness or a step it needs exited non-zero
 #   STALLED  exit 0 but no work and no NOOP marker, or a plan instead of work
 AGENT_VERDICTS='WORKED NOOP BLOCKED FAILED STALLED'
