@@ -25,11 +25,13 @@ use notify::{RecursiveMode, Watcher};
 
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
+       hub tab board [SEARCH]
        hub actions --since WHEN [--json]
   TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue|board
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
-  tab     ask the running hub to show TAB (the next hub to start takes it when none runs)
+  tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
+          board takes a search, as `/` would (`hub tab board bnb/demo`: one project's rows)
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -45,10 +47,11 @@ fn main() {
             .next()
             .and_then(|t| Tab::parse(t))
             .unwrap_or_else(|| die(USAGE));
-        if it.next().is_some() {
+        let query: Vec<&str> = it.map(String::as_str).collect();
+        if !query.is_empty() && t != Tab::Board {
             die(USAGE)
         }
-        if let Err(e) = tabreq::request(&tabreq::dir(), t) {
+        if let Err(e) = tabreq::request(&tabreq::dir(), t, Some(&query.join(" "))) {
             die(&format!("hub tab: {e}"));
         }
         return;
@@ -76,8 +79,8 @@ fn main() {
     }
     // A request left while no hub ran (the binding that started this window) wins over --tab.
     let start = tabreq::take(&tabreq::dir())
-        .or(tab)
-        .unwrap_or(Tab::Overview);
+        .or(tab.map(|t| (t, None)))
+        .unwrap_or((Tab::Overview, None));
     if let Err(e) = run(start) {
         die(&format!("hub: {e}"));
     }
@@ -218,9 +221,10 @@ fn print_once(tab: Option<Tab>) -> i32 {
     i32::from(failed)
 }
 
-fn run(tab: Tab) -> std::io::Result<()> {
+fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tab, tx.clone());
+    app.board_search(query);
 
     let input = tx.clone();
     std::thread::spawn(move || {

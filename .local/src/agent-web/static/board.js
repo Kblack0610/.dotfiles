@@ -1,7 +1,8 @@
 "use strict";
 // The Board tab: every project's open rows from `notes board --json` (/api/board): the human
-// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done
-// and remove go through `notes ptask --exact` with the row's raw line (POST /api/board), so a
+// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done,
+// remove, move (to a project or a wave), a wave sooner or later, and edit go through
+// `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
 // resync, and on Refresh.
@@ -12,7 +13,8 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  open: {}, pending: {}, doneFor: null, controlsKey: "",
+  // `form` is the one row whose done, move or edit form is open: { k, kind }.
+  open: {}, pending: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
@@ -79,16 +81,35 @@ function bRow(r, i) {
   let acts = "";
   if (focus) {
     acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.doneFor === k) {
-    acts = `<div class="opts">` +
-      `<select data-proofkind="${i}">${bOpt([["proof", "proof"], ["unverified", "unverified, because"]], "proof")}</select>` +
-      `<input data-proof="${i}" placeholder="pr:123, a URL, or why it is unverified">` +
-      `<button class="btn sm primary" data-donego="${i}">Mark done</button>` +
-      `<button class="btn sm" data-donecancel="${i}">Cancel</button></div>`;
+  } else if (bst.form && bst.form.k === k) {
+    const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
+    const kind = bst.form.kind;
+    if (kind === "done") {
+      acts = `<div class="opts">` +
+        `<select data-proofkind="${i}">${bOpt([["proof", "proof"], ["unverified", "unverified, because"]], "proof")}</select>` +
+        `<input data-forminput="${i}" placeholder="pr:123, a URL, or why it is unverified">` +
+        `<button class="btn sm primary" data-formgo="${i}">Mark done</button>` + cancel;
+    } else if (kind === "move") {
+      const names = [...new Set(bst.feed.projects.map((p) => p.project))].filter((p) => p !== r.project).sort();
+      acts = `<div class="opts">` +
+        `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
+        `<input data-forminput="${i}" placeholder="wave vX.Y.Z (optional with a project)">` +
+        `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else {
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" value="${esc(r.text)}">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
+    }
   } else {
+    // A playtest check has no waves and no edit: notes takes add, done and rm there.
+    const waves = r.lane !== "playtest";
     acts = `<div class="opts">` +
-      (r.lane !== "playtest" && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
+      (waves && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
       `<button class="btn sm" data-done="${i}">Done...</button>` +
+      (waves ? `<button class="btn sm" data-promote="${i}" title="one wave sooner">Sooner</button>` +
+        `<button class="btn sm" data-demote="${i}" title="one wave later">Later</button>` +
+        `<button class="btn sm" data-move="${i}">Move...</button>` +
+        `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
       `<button class="btn sm" data-rm="${i}">${bst.pending[k] ? "Click again to remove" : "Remove"}</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
@@ -200,19 +221,43 @@ $("board").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
-  const r = rows[t.dataset.start || t.dataset.done || t.dataset.rm || t.dataset.donego || t.dataset.donecancel];
+  const d = t.dataset;
+  const r = rows[d.start || d.done || d.rm || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
-  if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
-  if (t.dataset.done) { bst.doneFor = k; drawBoardList(); const i = $("board").querySelector(`[data-proof="${t.dataset.done}"]`); if (i) i.focus(); return; }
-  if (t.dataset.donecancel) { bst.doneFor = null; drawBoardList(); return; }
-  if (t.dataset.donego) {
-    const i = t.dataset.donego;
-    const v = $("board").querySelector(`[data-proof="${i}"]`).value.trim();
-    const kind = $("board").querySelector(`[data-proofkind="${i}"]`).value;
-    if (!v) { bst.msg = kind === "proof" ? "Give the proof (pr:N or a URL)." : "Say why it is unverified."; renderBoard(); return; }
-    bst.doneFor = null;
-    bWrite(Object.assign({ verb: "done", [kind]: v }, bTarget(r)), "Done.");
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
+  if (d.promote || d.demote) {
+    const verb = d.promote ? "promote" : "demote";
+    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One wave sooner." : "One wave later.");
+    return;
+  }
+  const opened = d.done || d.move || d.edit;
+  if (opened) {
+    bst.form = { k, kind: d.done ? "done" : d.move ? "move" : "edit" };
+    drawBoardList();
+    const i = $("board").querySelector(`[data-forminput="${opened}"]`);
+    if (i) i.focus();
+    return;
+  }
+  if (d.formcancel) { bst.form = null; drawBoardList(); return; }
+  if (d.formgo && bst.form) {
+    const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
+    const v = q("forminput").value.trim(), kind = bst.form.kind;
+    let body, ok;
+    if (kind === "done") {
+      const how = q("proofkind").value;
+      if (!v) { bst.msg = how === "proof" ? "Give the proof (pr:N or a URL)." : "Say why it is unverified."; renderBoard(); return; }
+      body = { verb: "done", [how]: v }; ok = "Done.";
+    } else if (kind === "move") {
+      const dest = q("movedest").value;
+      if (!dest && !v) { bst.msg = "Pick a project, a wave, or both."; renderBoard(); return; }
+      body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
+    } else {
+      if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }
+      body = { verb: "edit", text: v }; ok = "Edited.";
+    }
+    bst.form = null;
+    bWrite(Object.assign(body, bTarget(r)), ok);
     return;
   }
   if (t.dataset.rm) {
@@ -234,8 +279,8 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.proof;
-  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-donego="${i}"]`); if (b) b.click(); }
+  const i = e.target.dataset.forminput;
+  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;

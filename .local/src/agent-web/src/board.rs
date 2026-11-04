@@ -43,6 +43,9 @@ pub struct WriteBody {
     proof: String,
     #[serde(default)]
     unverified: String,
+    /// A move's destination project; blank keeps the row on its own sheet.
+    #[serde(default)]
+    dest: String,
 }
 
 fn some(s: String) -> Option<String> {
@@ -68,7 +71,18 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
         },
         "start" => Verb::Start { raw: b.raw },
         "rm" => Verb::Rm { raw: b.raw },
-        _ => return Err("the verb is add, done, start or rm"),
+        "move" => Verb::Move {
+            raw: b.raw,
+            project: some(b.dest),
+            to: some(b.to),
+        },
+        "promote" => Verb::Promote { raw: b.raw },
+        "demote" => Verb::Demote { raw: b.raw },
+        "edit" => Verb::Edit {
+            raw: b.raw,
+            text: b.text,
+        },
+        _ => return Err("the verb is add, done, start, rm, move, promote, demote or edit"),
     };
     Ok(Write {
         profile: b.profile,
@@ -125,8 +139,38 @@ mod tests {
             ["--agent", "--exact", "done", "--proof", "pr:3", "--", "- [ ] a"]
         );
         assert!(to_write(body(
-            r#"{"verb":"edit","profile":"bnb","project":"demo","lane":"human"}"#
+            r#"{"verb":"sweep","profile":"bnb","project":"demo","lane":"human"}"#
         ))
         .is_err());
+    }
+
+    #[test]
+    fn a_move_names_its_dest_apart_from_the_rows_own_project() {
+        let w = to_write(body(
+            r#"{"verb":"move","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a","dest":"other","to":""}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[2..],
+            [
+                "demo",
+                "--profile",
+                "bnb",
+                "--exact",
+                "move",
+                "--project",
+                "other",
+                "--",
+                "- [ ] a"
+            ]
+        );
+        let w = to_write(body(
+            r#"{"verb":"edit","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","text":"b"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--agent", "--exact", "edit", "--text", "b", "--", "- [ ] a"]
+        );
     }
 }

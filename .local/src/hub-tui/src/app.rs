@@ -157,8 +157,8 @@ pub enum Msg {
     Files,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
-    /// `hub tab <name>` asked for a page (tabreq.rs).
-    Tab(Tab),
+    /// `hub tab <name> [search]` asked for a page (tabreq.rs); the search is the Board's.
+    Tab(Tab, Option<String>),
     Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
@@ -504,7 +504,10 @@ impl App {
                 }
             }
             Msg::BoardFiles => self.read_boards(),
-            Msg::Tab(t) => self.go(t),
+            Msg::Tab(t, q) => {
+                self.board_search(q);
+                self.go(t);
+            }
             Msg::Boards(b) => {
                 self.boards = Some(*b);
                 if self.boards_read.done() {
@@ -675,6 +678,14 @@ impl App {
         }
     }
 
+    /// Set the Board's search, as `/` would; None leaves it as it is.
+    pub fn board_search(&mut self, q: Option<String>) {
+        if let Some(q) = q {
+            self.tv.search = q;
+            self.tv.sel = 0;
+        }
+    }
+
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
@@ -707,6 +718,10 @@ impl App {
             tasktab::Ask::Done => true,
             tasktab::Ask::Write(label, w) => {
                 self.tasks_act(label, w);
+                true
+            }
+            tasktab::Ask::Open(sheet, line) => {
+                self.tv.said = Some(edit_in_tmux(&sheet, line));
                 true
             }
         }
@@ -1229,6 +1244,34 @@ pub fn is_job_file(paths: &Paths, p: &std::path::Path) -> bool {
         ) && p.starts_with(&paths.agentctl)
 }
 
+/// Open a sheet at a line in `$EDITOR` (nvim when unset), in a new window of the tmux session
+/// the hub runs in, so quitting the editor lands back here.
+fn edit_in_tmux(sheet: &str, line: usize) -> Result<String, String> {
+    if std::env::var_os("TMUX").is_none() {
+        return Err(format!("not in tmux: open {sheet}:{line} by hand"));
+    }
+    let editor = std::env::var("EDITOR")
+        .ok()
+        .filter(|e| !e.trim().is_empty() && !e.contains(char::is_whitespace))
+        .unwrap_or_else(|| "nvim".into());
+    let ok = std::process::Command::new("tmux")
+        .args(["new-window", "-n", "sheet", "--", &editor])
+        .arg(format!("+{}", line.max(1)))
+        .arg(sheet)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok {
+        Ok(format!("opened {sheet}:{line}"))
+    } else {
+        Err(format!(
+            "tmux new-window failed: open {sheet}:{line} by hand"
+        ))
+    }
+}
+
 /// Open a URL in the desktop's browser, detached: the board never waits on it.
 fn open(url: &str) {
     let _ = std::process::Command::new("xdg-open")
@@ -1596,7 +1639,7 @@ mod tests {
     #[test]
     fn a_tab_request_switches_the_running_board() {
         let mut a = app(Tab::Overview);
-        a.handle(Msg::Tab(Tab::Sessions));
+        a.handle(Msg::Tab(Tab::Sessions, None));
         assert_eq!(a.tab, Tab::Sessions);
         // Entering Forecast reads fleet-bench; mark it already reading so no test runs it.
         a.forecast_read.busy = true;
