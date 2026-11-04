@@ -23,15 +23,6 @@ function renderQueueBadge() {
   $("queue-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-// An ISO time as HH:MM today, with its weekday otherwise.
-function qWhen(t) {
-  if (!t) return "";
-  const d = new Date(t);
-  if (isNaN(d)) return esc(t);
-  return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
-    : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-}
-
 // What the item's session needs from the human now: the dialog its pane shows, and the asks
 // it filed. Answered in place, through the same cards the Waiting tab uses.
 function qNeeds(a) {
@@ -56,11 +47,11 @@ function qItem(i) {
   const active = i.state !== "done";
   const tags = (i.tags || "").split(/\s+/).filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const a = qAgent(i);
-  const when = i.state === "done" ? `finished ${qWhen(i.finished)}`
-    : i.started ? `started ${qWhen(i.started)}` : `queued ${qWhen(i.queued)}`;
+  const stamp = i.state === "done" ? `finished ${when(i.finished)}`
+    : i.started ? `started ${when(i.started)}` : `queued ${when(i.queued)}`;
   const meta = [
     `<span class="qprio ${esc(i.priority)}">${esc(i.priority)}</span>`,
-    esc(i.project), esc(i.mode), when,
+    esc(i.project), esc(i.mode), stamp,
     i.from && i.from !== "human" ? esc(i.from) : "",
     i.session ? `session ${esc(i.session)}` : "",
     a && a.phases ? esc(phasesText(a)) : "",
