@@ -24,6 +24,7 @@ mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
+mod playtest;
 mod project_tasks;
 mod project_sweep;
 mod projects;
@@ -127,6 +128,10 @@ enum Cmd {
         /// subtasks and in-flight state live - instead of the queue on its own README.
         #[arg(long)]
         agent: bool,
+        /// Act on the project's `playtest.md`: one row is one thing to play and check off.
+        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `rm` only
+        #[arg(long, conflicts_with = "agent")]
+        playtest: bool,
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
@@ -394,6 +399,12 @@ enum PtaskCmd {
         /// Plan it into this version instead (`vX.Y.Z`); opens the wave if it is new
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
+        /// With --playtest: the `## <game>` heading the check goes under (default General)
+        #[arg(long)]
+        game: Option<String>,
+        /// With --playtest: the PR the check is for, written as `(pr:<n>)`
+        #[arg(long, value_name = "N")]
+        pr: Option<u64>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -547,6 +558,43 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// The four verbs `ptask --playtest` takes. Everything else acts on waves, which playtest.md
+/// does not have, so it is refused rather than run against the sheet.
+fn playtest_op(sub: Option<PtaskCmd>) -> Result<playtest::Op> {
+    Ok(match sub {
+        None
+        | Some(PtaskCmd::List {
+            wave: None,
+            all: false,
+        }) => playtest::Op::List,
+        Some(PtaskCmd::Add {
+            to: None,
+            game,
+            pr,
+            text,
+        }) => playtest::Op::Add {
+            game,
+            pr,
+            text: text.join(" "),
+        },
+        Some(PtaskCmd::Done {
+            proof,
+            unverified,
+            query,
+        }) => playtest::Op::Done {
+            proof,
+            unverified,
+            query: query.join(" "),
+        },
+        Some(PtaskCmd::Rm { query }) => playtest::Op::Rm {
+            query: query.join(" "),
+        },
+        _ => bail!(
+            "--playtest takes list, add, done and rm only (no waves: no --to, --wave or --all)"
+        ),
+    })
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
@@ -647,14 +695,25 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Ptask { name, agent, sub } => {
+        Cmd::Ptask {
+            name,
+            playtest: true,
+            sub,
+            ..
+        } => playtest::run(&prof, &log, &name, playtest_op(sub)?)?,
+        Cmd::Ptask {
+            name, agent, sub, ..
+        } => {
             let lane = if agent { Lane::Agent } else { Lane::Human };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
                 Some(PtaskCmd::List { wave, all }) => {
                     project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add { to, text }) => {
+                Some(PtaskCmd::Add { to, game, pr, text }) => {
+                    if game.is_some() || pr.is_some() {
+                        bail!("--game and --pr only apply with --playtest");
+                    }
                     project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
@@ -919,4 +978,57 @@ fn main() -> Result<()> {
     };
 
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ptask(args: &[&str]) -> Result<playtest::Op> {
+        let argv = ["notes", "ptask", "demo", "--playtest"].iter().chain(args);
+        match Cli::try_parse_from(argv).expect("parses").cmd {
+            Cmd::Ptask { sub, .. } => playtest_op(sub),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn playtest_takes_four_verbs_and_refuses_the_rest() {
+        assert!(matches!(ptask(&[]), Ok(playtest::Op::List)));
+        assert!(matches!(ptask(&["list"]), Ok(playtest::Op::List)));
+        assert!(matches!(
+            ptask(&["add", "--game", "Dodgeball", "--pr", "7", "arena"]),
+            Ok(playtest::Op::Add { pr: Some(7), .. })
+        ));
+        assert!(matches!(
+            ptask(&["done", "--proof", "pr:7", "arena"]),
+            Ok(playtest::Op::Done { .. })
+        ));
+        assert!(matches!(
+            ptask(&["rm", "arena"]),
+            Ok(playtest::Op::Rm { .. })
+        ));
+        for bad in [
+            &["start", "arena"][..],
+            &["sweep"],
+            &["promote", "arena"],
+            &["edit", "arena", "--text", "x"],
+            &["list", "--all"],
+            &["add", "--to", "v1.0.0", "arena"],
+        ] {
+            let e = ptask(bad).err().expect("refused").to_string();
+            assert!(
+                e.contains("--playtest takes list, add, done and rm"),
+                "{bad:?}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn playtest_and_agent_are_exclusive() {
+        assert!(
+            Cli::try_parse_from(["notes", "ptask", "demo", "--playtest", "--agent", "list"])
+                .is_err()
+        );
+    }
 }

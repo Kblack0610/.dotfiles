@@ -83,6 +83,7 @@ current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
   summary.md               the lab bus: status + the release feed lab-sync writes
   agent/README.md          the agent board (`ptask --agent`)
+  playtest.md              things to play and check off, one per row (`ptask --playtest`)
   agent/versions/vX.Y.Z.md proof table for a version
   versions/vX.Y.Z.md       frozen sheet of a closed version
 ```
@@ -110,6 +111,8 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | drop a task | `ptask <name> rm "<query>"` |
 | tidy a sheet | `ptask <name> sweep` |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |
+| add a playtest check | `ptask <name> --playtest add [--game <name>] [--pr <n>] "<scene or mode: what to look for>"`; one short ASCII line per check, under `## <game>` (default `## General`) in `playtest.md` |
+| work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest rm "<query>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
 | regenerate the boards | `notes board` |
 
 The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It lists every profile's projects, main ones first (drafts behind `d`), each with its open work by priority and wave. `1`-`9` or Enter opens a project's tasks, where `a` adds, `m` moves a task to another project, `x` checks it off (asks for a proof), `+`/`-` change its wave and `o` opens the sheet at that row. On the project list, `n` is new, `s` stage, `x` archive and `o` open. `/` searches; Esc steps out of the search, then the filter, then the view. Moving a project between profiles and changing its group stay CLI-only (the table above).
