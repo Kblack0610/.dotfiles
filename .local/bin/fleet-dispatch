@@ -523,28 +523,96 @@ settle_item() {
   fi
 }
 
-# run_item <item json> -- start the queue head. The human's and the shepherd's items need every
-# gate but presence: they asked for it, and may be at the desk. A board-filled item waits for away.
-run_item() {
-  local it="$1" slug scope=any why
-  slug=$(jq -r .slug <<<"$it")
-  case "$(jq -r .from <<<"$it")" in board:*) scope=away ;; esac
+# run_queue <item json lines> -- start the first queued item nothing holds. The machine-wide gates
+# are asked once, for the head: the human's and the shepherd's items need every gate but presence
+# (they asked for it, and may be at the desk), and a board-filled item waits for away. A finding
+# holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
+run_queue() {
+  local items="$1" head scope=any why
+  head=$(head -n 1 <<<"$items")
+  case "$(jq -r .from <<<"$head")" in board:*) scope=away ;; esac
   why=$(gate "$scope")
-  if [ -n "$why" ]; then settle NOOP "$why, queue item $slug waits"; [ "$DRY" = 1 ] || return 0; fi
-  start_item "$it"
+  if [ -n "$why" ]; then settle NOOP "$why, queue item $(jq -r .slug <<<"$head") waits"; [ "$DRY" = 1 ] || return 0; fi
+  pick_item "$items" || { settle NOOP "$PICK_WHY"; return 0; }
+  start_item "$PICKED"
 }
 
-# next_item -> the queue head a pass should try: a board item waits for the human to be away
-# (run_item's gate), so while they are not, the first human or shepherd item behind it goes first.
-next_item() {
+# next_items -> the queued items a pass may try, queue order, one JSON object a line: a board item
+# waits for the human to be away (run_queue's gate), so while they are not, it is left out.
+next_items() {
   local q
   q=$(agent-queue list --json --state queued 2>/dev/null | jq -sc '[.[] | select(.hold == null)]' 2>/dev/null)
   case "$(fleet-presence 2>/dev/null)" in
     away*) ;;
     *) q=$(jq -c '[.[] | select(.from | startswith("board:") | not)]' <<<"$q" 2>/dev/null) ;;
   esac
-  jq -c '.[0] // empty' <<<"${q:-[]}" 2>/dev/null
+  jq -c '.[]' <<<"${q:-[]}" 2>/dev/null
   return 0
+}
+
+# load_findings -- FIRING is the findings firing now, read once a pass; rc 1 when they cannot be
+# read, which holds every item.
+load_findings() {
+  [ "${FIRING+set}" = set ] && return 0
+  local f
+  f=$(fleet-bench findings --json 2>/dev/null) && f=$(firing_findings <<<"$f") || return 1
+  FIRING=$f
+}
+
+# pick_item <item json lines> -- PICKED is the first item no firing finding holds; rc 1 with the
+# reason in PICK_WHY when every one is held, or the findings cannot be read.
+pick_item() {
+  local items="$1" it why held=()
+  PICKED='' PICK_WHY=''
+  load_findings || { PICK_WHY="fleet-bench findings unreadable"; return 1; }
+  while IFS= read -r it; do
+    [ -n "$it" ] || continue
+    why=$(held_by "$it" "$FIRING")
+    if [ -z "$why" ]; then PICKED=$it; return 0; fi
+    [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
+    held+=("$(jq -r .slug <<<"$it") ($why)")
+  done <<<"$items"
+  PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
+  return 1
+}
+
+# item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
+# (origin's last path segment), else its checkout's basename; nothing for a notes-only project.
+item_repo() {
+  local dir url
+  dir=$(repo_dir "$1"); [ -n "$dir" ] || return 0
+  url=$(git -C "$dir" remote get-url origin 2>/dev/null) || url=$dir
+  url=${url%/}; url=${url##*/}; url=${url##*:}
+  printf '%s' "${url%.git}"
+}
+
+# scope_dir <project> -> the checkout of a fleet-bench project name, which may be an alias
+# (`platform`) the queue never uses.
+scope_dir() {
+  local p
+  p=$(jq -r --arg s "$1" '.aliases[$s] // $s' "$DISPATCH_PROJECT_MAP" 2>/dev/null) || p=$1
+  repo_dir "${p:-$1}"
+}
+
+# held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
+# comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all
+# of them when the finding names no repos); a throughput drop, the items on that project's repo; a
+# starved host (local test slots, no repo known) every item.
+held_by() {
+  local project dir repo f rule scope out=()
+  project=$(jq -r .project <<<"$1"); dir=$(repo_dir "$project"); repo=$(item_repo "$project")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rule=$(jq -r .rule <<<"$f"); scope=$(jq -r .scope <<<"$f")
+    case "$rule:$scope" in
+      starved:pool:*)
+        jq -e --arg r "$repo" '.repos == null or (.repos | index($r)) != null' <<<"$f" >/dev/null || continue ;;
+      throughput-drop:*)
+        [ "$scope" = "$project" ] || { [ -n "$dir" ] && [ "$(scope_dir "$scope")" = "$dir" ]; } || continue ;;
+    esac
+    out+=("$rule $scope")
+  done <<<"$2"
+  [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")
 }
 
 # start_item <item json> -- past the gates: start it, and publish what happened.
@@ -610,18 +678,22 @@ real_idle() { LC_ALL=C top -bn2 -d2 2>/dev/null | sed -n 's/^%Cpu.* \([0-9.]*\) 
 
 # firing_findings -> the shared faults firing now, one per line. Open is not firing: a finding stays
 # open for an hour after its last sample, which would hold starts long after the fault cleared.
+# A blind finding is not one: it says a reader has a gap (a worktree name the merges source cannot
+# map, say), not that new work would make anything worse, so it holds nothing. Each line is
+# {rule, scope, repos}; held_by decides which items a finding is about.
 firing_findings() {
-  jq -r --argjson now "$(date +%s)" --argjson fresh "$DISPATCH_FINDING_FRESH_MIN" '
-    select(.rule == "starved" or .rule == "throughput-drop" or .rule == "blind")
-    | select((.epoch // $now) >= $now - $fresh * 60) | "\(.rule) \(.scope)"'
+  jq -c --argjson now "$(date +%s)" --argjson fresh "$DISPATCH_FINDING_FRESH_MIN" '
+    select(.rule == "starved" or .rule == "throughput-drop")
+    | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos}'
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
-# refuses: a start nobody can justify costs more than waiting for the next pass.
+# refuses: a start nobody can justify costs more than waiting for the next pass. Findings are not
+# here: one is about a pool or a repo, so pick_item asks them per item.
 # A nightly red is deliberately not here: nightlies stay red while sessions merge normally, so it
 # would stop everything, and the shepherd's NIGHTLY row handles it.
 gate() {
-  local load cores infra presence findings github idle
+  local load cores infra presence github idle
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
   if [ "${1:-away}" = away ]; then
     presence=$(fleet-presence 2>/dev/null)
@@ -643,9 +715,6 @@ gate() {
   cores=$(nproc 2>/dev/null || echo 1)
   awk -v l="${load:-0}" -v c="$cores" -v m="$DISPATCH_MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
     { echo "load ${load} on ${cores} cores is over the ${DISPATCH_MAX_LOAD} pace"; return; }
-  findings=$(fleet-bench findings --json 2>/dev/null) || { echo "fleet-bench findings unreadable"; return; }
-  findings=$(firing_findings <<<"$findings") || { echo "fleet-bench findings unreadable"; return; }
-  [ -z "$findings" ] || { echo "finding firing: $(paste -sd, <<<"$findings")"; return; }
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) echo "github budget unreadable"; return ;;
@@ -681,20 +750,23 @@ cmd_run() {
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
   if [ "$room" -le 0 ]; then settle NOOP "at $live live dispatched sessions, starting nothing"; return 0; fi
   # The queue comes first; board rows are only looked at while nothing in it is runnable.
-  local item; item=$(next_item)
-  if [ -n "$item" ]; then run_item "$item"; return; fi
+  local items; items=$(next_items)
+  if [ -n "$items" ]; then run_queue "$items"; return; fi
   why=$(gate)
   if [ -n "$why" ]; then
     settle NOOP "$why, starting nothing"
     [ "$DRY" = 1 ] || return 0
   fi
 
+  # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
+  load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
   fill_now "$room" || { settle FAILED "could not judge the new rows"; return 1; }
   if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle NOOP "no row qualifies this pass"; return 0; fi
   # Past the gates already: what fill promoted starts now, through the same start as any item.
-  item=$(next_item)
-  [ -n "$item" ] || { settle NOOP "no row qualifies this pass"; return 0; }
-  start_item "$item"
+  items=$(next_items)
+  [ -n "$items" ] || { settle NOOP "no row qualifies this pass"; return 0; }
+  pick_item "$items" || { settle NOOP "$PICK_WHY"; return 0; }
+  start_item "$PICKED"
 }
 
 # fill_now <room> -- judge the new rows, then promote the picks into the queue as low, `from:

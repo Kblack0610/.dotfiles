@@ -886,6 +886,18 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output 2
 }
 
+@test "findings: a starved pool names the repos whose jobs wait in it, and none when it cannot tell" {
+  use_fixture
+  eval_at 09:30
+  run jq -c 'select(.scope == "pool:unity") | .repos' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output null
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  { cat "$FX/prom.tsv"; printf 'cc:pool_waiting_repo\t%s\t%s\t%s\n' unity/unity-core-playground "$(clock 09:30)" 3 light/platform "$(clock 09:30)" 1; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -c 'select(.scope == "pool:unity") | .repos' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output '["unity-core-playground"]'
+}
+
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
   use_fixture
   eval_at 09:30; eval_at 10:30
@@ -1003,7 +1015,7 @@ EOF
   BENCH_NOW=$T0 run "$SUBJECT" findings --run
   assert_success
   run grep -c "time=$((T0 - 1200))" "$SANDBOX/curl.log"
-  assert_output 1
+  assert_output 2   # the finding metrics, and the repos waiting in each pool
   BENCH_NOW=$T0 run "$SUBJECT" findings --json
   assert_output --partial '"host-overload"'
   refute_output --partial '"scope":"prom"'
@@ -1065,6 +1077,16 @@ live_merges() {
   run jq -r .scope "$FLEET_BENCH_DIR/findings.jsonl"
   assert_line merges:unmapped
   refute_line merges:platform
+}
+
+@test "findings: a worktree name the map lacks reads its repo by the <repo>-<slug> convention, never blind" {
+  live_merges
+  printf '{"epoch":%s,"project":"%s","bucket":"WORKING"}\n' $((T0 - 600)) platform-agent-40-b $((T0 - 600)) plat-x >> "$FLEET_BENCH_DIR/progress.jsonl"
+  BENCH_NOW=$T0 "$SUBJECT" findings --run
+  run jq -r 'select(.rule == "blind") | .scope' "$FLEET_BENCH_DIR/findings.jsonl"
+  refute_output --partial merges:
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_output --partial 'merges/h: plat 0.5, platform 0.5'
 }
 
 @test "throughput: the 10-29 window reads runs, failures, merges, pool and hosts" {

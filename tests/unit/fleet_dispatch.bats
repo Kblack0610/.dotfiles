@@ -621,19 +621,68 @@ refuses() {
   refuses 'not away (fleet-presence unreadable)'
 }
 
-@test "run starts nothing while a shared fault is firing, one rule at a time" {
-  game_ready
-  local rule
-  for rule in starved throughput-drop blind; do
-    stub fleet-bench "jq -cn --argjson e \$(date +%s) '{rule: \"$rule\", scope: \"pool:unity\", epoch: \$e}'"
-    refuses "finding firing: $rule pool:unity"
-  done
+# finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
+finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e}'; }
+# findings <row>... -- fleet-bench reports exactly those rows
+findings() { printf '%s\n' "$@" > "$SANDBOX/findings.out"; stub fleet-bench "cat '$SANDBOX/findings.out'"; }
+
+# two_items: a game item at the head of the queue and an app item behind it, both the human's
+two_items() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project game --slug fix-game --priority high "fix the game"
+  agent-queue add --project app --slug fix-app "fix the app"
 }
 
-@test "run starts nothing on a blind row that carries no time" {
+@test "a starved pool or a starved host that names no repos holds every item" {
   game_ready
-  stub fleet-bench "echo '{\"rule\":\"blind\",\"scope\":\"sampler\"}'"
-  refuses 'finding firing: blind sampler'
+  findings "$(finding starved pool:unity)"
+  refuses 'finding firing: fix-crash-on-load (starved pool:unity), every queue item waits'
+  findings "$(finding starved workstation)"
+  refuses 'finding firing: fix-crash-on-load (starved workstation)'
+}
+
+@test "a blind finding holds nothing: a reader's gap is not a fault" {
+  game_ready
+  findings "$(finding blind merges:unity-core-playground-agent-40-b)" '{"rule":"blind","scope":"sampler"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1'
+}
+
+@test "a starved pool holds only the items whose repo waits in it, and the pass starts the next one" {
+  two_items
+  findings "$(finding starved pool:unity '["game"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+@test "a throughput drop holds only the items on that project's repo, an alias included" {
+  two_items
+  findings "$(finding throughput-drop game)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  agent-queue add --project game --slug fix-game-2 "fix it again"
+  jq '.aliases = {gm: "game"}' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
+  findings "$(finding throughput-drop gm)" "$(finding starved pool:light '["elsewhere"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started'
+  assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), every queue item waits'
+  for n in 3 4; do agent-queue add --project game --slug "fix-game-$n" "fix it $n"; done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), fix-game-3 (throughput-drop gm), 1 more, every queue item waits'
+}
+
+@test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {
+  two_items
+  findings "$(finding starved pool:unity '["game"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial 'queue item fix-game waits: starved pool:unity'
+  assert_output --partial 'would start queue item fix-app: app oneshot normal'
+  assert_not_called 'wt new'
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {

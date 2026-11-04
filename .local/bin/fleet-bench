@@ -1256,6 +1256,11 @@ prom_rows() {
   else
     out=$(prom_q "{__name__=~\"$FINDING_METRICS\"}" "$t" | jq -r '.data.result[]
       | [.metric.__name__, (.metric.host // .metric.pool // "-"), (.value[1] | tonumber)] | @tsv') || return 1
+    # Which repos' jobs wait in each pool, as "<pool>/<repo>": a starved pool holds only the work
+    # that feeds it. Unread, a starved pool names no repos, and whoever reads it must assume all.
+    out+=$'\n'$(prom_q "count by (pool, repo) ($W (github_actions_job_waiting{stuck!=\"true\"}))" "$t" |
+      jq -r '.data.result[] | select(.metric.pool and .metric.repo) | ["cc:pool_waiting_repo", "\(.metric.pool)/\(.metric.repo)", (.value[1] | tonumber)] | @tsv' 2>/dev/null)
+    out=$(grep . <<<"$out")
   fi
   [ -n "$out" ] && printf '%s\n' "$out"
 }
@@ -1269,7 +1274,10 @@ prom_snapshot() {
 
 # merge_rows <until> [since] -> project, merge epoch (tab-separated) for each project sampled in that
 # time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
-# failed fetch, whose old refs would otherwise read as no merges.
+# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is a worktree's,
+# `<repo>-<slug>` (the `project` def strips only -agent-N, so unity-core-playground-agent-40-b gets
+# here whole): the longest registered checkout basename or alias it starts with names it, as
+# project-name.sh does for a reaped worktree, and its merges count under that name.
 merge_rows() {
   local until="$1" since="${2:-$(($1 - 86400))}" p path head
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
@@ -1283,7 +1291,13 @@ merge_rows() {
   done < <(jq -rn --argjson since "$since" --slurpfile m "$BENCH_PROJECT_MAP" '
     ($m[0].paths | to_entries | map({key: .value, value: .key}) | from_entries) as $path
     | ($m[0].aliases // {}) as $alias
-    | [inputs | select(.epoch >= $since) | .project | select(. != "")] | unique[] | "\(.) \($path[$alias[.] // .] // "")"' "$PROGRESS")
+    | ([$m[0].paths | to_entries[] | {b: (.key | split("/") | last | ltrimstr(".")), p: .key}]
+       + [$alias | to_entries[] | {b: .key, p: ($path[.value] // "")}] | map(select(.b != "" and .p != ""))) as $bases
+    | [inputs | select(.epoch >= $since) | .project | select(. != "")] | unique
+    | [.[] | . as $n | ($path[$alias[$n] // $n] // "") as $direct
+       | if $direct != "" then "\($n) \($direct)"
+         else ([$bases[] | select(.b as $b | $n | startswith($b + "-"))] | max_by(.b | length)) as $hit
+           | if $hit then "\($hit.b) \($hit.p)" else "\($n) " end end] | unique[]' "$PROGRESS")
 }
 
 # finding_facts <now> -> everything the rules read, as one object; a source that could not be read is
@@ -1330,11 +1344,13 @@ finding_rows() {
           ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
             | (($a["cc:pool_waiting"][$pool]) // 0) as $n | ($a["cc:pool_busy"][$pool]) as $u | ($a["cc:pool_slots"][$pool]) as $s
             | select($w >= $l.finding_pool_wait_s and $n > 0)
+            | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
+               | if length > 0 then . else null end) as $repos
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $u, slots: $s, oldest_s: $w}; "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($u // "?")/\($s // "?") slots busy: "
                 + (if $u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share
                    then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
-                "\($n) jobs waiting") ),
+                "\($n) jobs waiting") + {repos: $repos} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
             | [$v, ($b["cc:host_load1"][$h]), ($c["cc:host_load1"][$h])] as $vs

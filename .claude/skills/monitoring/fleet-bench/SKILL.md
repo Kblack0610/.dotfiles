@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-04"
 ---
 
 # fleet-bench
@@ -66,10 +66,10 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 | Rule | Fires when | Reads | Class |
 |---|---|---|---|
 | `starved <host>` | `finding_queued_min` (5) local runs queued on 2 samples and the CPU over `finding_local_idle_min` (0.3) idle | `cc:host_local_queued`, `cc:host_cpu_busy_ratio` | shepherd, human after `finding_human_after_min` (60) |
-| `starved pool:<pool>` | oldest job waited `finding_pool_wait_s` (3600) with jobs still waiting. Busy share under `finding_pool_idle_share` (0.75) concludes admission or labels, otherwise demand over capacity | `cc:pool_*` | shepherd, human after that |
+| `starved pool:<pool>` | oldest job waited `finding_pool_wait_s` (3600) with jobs still waiting. Busy share under `finding_pool_idle_share` (0.75) concludes admission or labels, otherwise demand over capacity. `repos` names the repos whose jobs wait (`github_actions_job_waiting` by pool, repo), null when unread | `cc:pool_*` | shepherd, human after that |
 | `throughput-drop <project>` | merges/h over 2h under `finding_merge_ratio` (0.5) of the 24h rate, with a 24h rate of at least `finding_merge_floor_h` (2)/h, while live sessions hold at `finding_demand_ratio` (0.7) of their 24h average | `git log --first-parent`, `progress.jsonl` | human |
 | `host-overload <host>` | load per core at `finding_host_load_per_core` (2) on 3 samples | `cc:host_load1`, `cc:host_cores` | report, human after that |
-| `blind <source>` | Prometheus unreadable, a series missing, a project's merges unreadable (no mapped repo, or the fetch failed), the rules themselves failing, or nothing evaluated within `finding_clear_min` | every source | report |
+| `blind <source>` | Prometheus unreadable, a series missing, a project's merges unreadable (no mapped repo, or the fetch failed; a worktree name like `unity-core-playground-agent-40-b` maps by its longest registered `<repo>-` prefix), the rules themselves failing, or nothing evaluated within `finding_clear_min` | every source | report |
 
 - **Demand is sessions, not runs.** Local runs fall by design once gates move to the pool, so runs/h would read that as demand gone.
 - **Episode.** The time a rule first fired for a scope. It outlives a gap up to `finding_clear_min` (60), so one outage is one episode, and a recurrence after that is a new one. `fact` is `<rule> <scope> @<episode>`, the key a ledger pages once on. There are no close rows: a finding is open while its newest row is inside the clear window.
