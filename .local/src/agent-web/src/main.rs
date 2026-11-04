@@ -12,6 +12,7 @@
 
 mod assets;
 mod auth;
+mod cloud;
 mod fleet;
 mod infra;
 mod jobs;
@@ -103,6 +104,7 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/infra", get(infra_board))
+        .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
@@ -719,6 +721,35 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         run_tmux(server, &["send-keys", "-t", pane, k], None).await?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Run `prog` with plain arguments (never a shell), `stdin` piped in when given: its stdout on
+/// success, its stderr as a 400 the page shows otherwise.
+async fn run_cmd(prog: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<String> {
+    let err = |e: std::io::Error| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("{prog}: {e}"));
+    let mut child = tokio::process::Command::new(prog)
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(err)?;
+    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        pipe.write_all(text.as_bytes()).await.map_err(err)?;
+    }
+    let out = child.wait_with_output().await.map_err(err)?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(bad(
+            StatusCode::BAD_REQUEST,
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
 }
 
 async fn run_tmux(server: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<()> {

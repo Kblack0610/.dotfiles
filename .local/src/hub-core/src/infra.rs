@@ -39,6 +39,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
+        // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
+        // against the day cap, and the override in force. The Cloud runners card.
+        ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
         // Done today: when runs finished, and which failed. An absent metric is an empty answer,
         // so the tab says "no data" rather than an error until the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
@@ -61,6 +64,7 @@ pub const OPTIONAL: &[&str] = &[
     "cores",
     "runner_cores",
     "withheld",
+    "power",
     "recent",
     "recent_dur",
 ];
@@ -177,6 +181,7 @@ mod tests {
                 "cores",
                 "runner_cores",
                 "withheld",
+                "power",
                 "recent",
                 "recent_dur"
             ]

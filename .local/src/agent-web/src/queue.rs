@@ -5,16 +5,13 @@
 //! shells out here, since its task goes on stdin. Every call is plain arguments, never a shell,
 //! and agent-queue's stderr comes back as the error the page shows.
 
-use std::process::Stdio;
-
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::queue::{self as hub_queue, Item, PRIORITIES};
 use hub_core::session_actions::System;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
 
-use crate::{bad, ApiResult};
+use crate::{bad, run_cmd, ApiResult};
 
 const MODES: &[&str] = &["oneshot", "plan"];
 
@@ -33,47 +30,6 @@ fn is_tags(s: &str) -> bool {
             && t.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
     })
-}
-
-/// Run agent-queue; its stdout on success, its stderr as a 400 otherwise.
-async fn run(args: &[&str], stdin: Option<&str>) -> ApiResult<String> {
-    let mut cmd = tokio::process::Command::new("agent-queue");
-    cmd.args(args)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        bad(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("agent-queue: {e}"),
-        )
-    })?;
-    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(text.as_bytes()).await.map_err(|e| {
-            bad(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("agent-queue: {e}"),
-            )
-        })?;
-    }
-    let out = child.wait_with_output().await.map_err(|e| {
-        bad(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("agent-queue: {e}"),
-        )
-    })?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(bad(
-            StatusCode::BAD_REQUEST,
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ))
-    }
 }
 
 /// Every active item plus today's finished ones, in queue order, read through hub-core.
@@ -148,7 +104,7 @@ fn add_args(b: &AddBody) -> Result<Vec<String>, &'static str> {
 pub async fn add(Json(b): Json<AddBody>) -> ApiResult<Json<serde_json::Value>> {
     let args = add_args(&b).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = run(&argv, Some(b.task.trim())).await?;
+    let out = run_cmd("agent-queue", &argv, Some(b.task.trim())).await?;
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 

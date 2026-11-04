@@ -348,6 +348,59 @@ function recentTable(inst) {
     (rest.length ? `<details class="sec-d" data-k="recent-more"${ist.open["recent-more"] ? " open" : ""}><summary class="muted fold">+${rest.length} older</summary><table class="tbl">${rest.map(row).join("")}</table></details>` : "") + `</div>`;
 }
 
+// The Cloud runners card: each host the governor powers (its ci_governor_power_* series), with
+// buttons that hold it on or off for a while or hand it back. POST /api/cloud-runner writes the
+// governor's override ConfigMap; the pod sees the change within about two minutes.
+const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
+const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
+// The button armed by a first click ("host:action"), and the last answer.
+const cst = { armed: "", msg: "" };
+
+function cloudHosts(inst) {
+  const by = {};
+  for (const s of inst.power || []) {
+    const l = s.labels, h = (by[l.host] ||= { host: l.host });
+    if (l.__name__ === "ci_governor_power_state") { h.state = l.state; h.reason = l.reason; }
+    else if (l.__name__ === "ci_governor_power_hours_today") h.hours = s.value;
+    else if (l.__name__ === "ci_governor_power_max_hours_day") h.max = s.value;
+    else if (l.__name__ === "ci_governor_power_override") { h.override = l.action; h.until = s.value; }
+  }
+  return Object.values(by).sort((a, b) => a.host.localeCompare(b.host));
+}
+
+function cloudCard(inst) {
+  const hosts = cloudHosts(inst);
+  if (!hosts.length) return "";
+  const rows = hosts.map((h) => {
+    const btns = CLOUD_ACTS.map(([a, n, label]) => {
+      const k = `${h.host}:${a}`;
+      return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
+    }).join(" ");
+    const over = h.override && h.override !== "none" ? `${esc(h.override)} until ${when(h.until)}` : "none";
+    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--b-unclear)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="muted">${esc(h.reason || "-")}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h</td><td>${over}</td><td>${btns}</td></tr>`;
+  }).join("");
+  return `<h2 class="sec">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel scroll"><table class="tbl"><tr><th>host</th><th>state</th><th>why</th><th></th><th class="n">today</th><th>override</th><th></th></tr>${rows}</table><div class="err">${esc(cst.msg)}</div></div>`;
+}
+
+async function cloudAct(key, hours) {
+  const i = key.lastIndexOf(":"), host = key.slice(0, i), action = key.slice(i + 1);
+  cst.armed = "";
+  try { await post("/api/cloud-runner", { host, action, hours }); cst.msg = `${host}: ${action} sent; the governor reads it within about 2 minutes.`; }
+  catch (e) { cst.msg = `${host}: ${e.message}`; }
+  renderInfra();
+}
+
+// The page has no confirm dialog to lean on, so a button asks twice; the arm lapses after 4 s.
+$("infra").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cloud]");
+  if (!b) return;
+  const k = b.dataset.cloud;
+  if (cst.armed === k) { cloudAct(k, Number(b.dataset.hours)); return; }
+  cst.armed = k;
+  renderInfra();
+  setTimeout(() => { if (cst.armed === k) { cst.armed = ""; renderInfra(); } }, 4000);
+});
+
 function renderInfra() {
   const el = $("infra");
   const d = ist.data;
@@ -365,6 +418,7 @@ function renderInfra() {
   html += `<div class="sp"></div>` + kpis(cc);
   html += doneToday(inst, t1);
   html += `<h2 class="sec">Red right now <span class="muted">${red.length}</span></h2><div class="panel${red.length ? " down" : ""}">${red.length ? red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("") : "Nothing: every rostered runner is registered and online."}</div>`;
+  html += cloudCard(inst);
   html += `<h2 class="sec">Pools</h2><div class="panel scroll">${poolsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">CI by machine</h2><div class="panel scroll">${machineSlotsTable(cc, inst)}</div>`;
   html += `<h2 class="sec">Queued</h2><div class="panel scroll">${queuedTable(inst)}</div>`;
