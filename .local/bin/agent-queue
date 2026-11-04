@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+# agent-queue - the one intake for agent work, and the only writer of its store.
+#
+#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
+#       [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
+#       [--running [--session s]] [task...]    the task from args, or stdin when there are none
+#   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD]
+#   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
+#   stats [--json] [--since YYYY-MM-DD]
+#
+# One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
+set -uo pipefail
+
+AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
+AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+# The night window a `night` item may start in, local time; it may wrap midnight.
+AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
+AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
+ACTIVE="queued running waiting"
+
+die() { echo "agent-queue: $*" >&2; exit 1; }
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# --- the file format ---
+# `key: value` lines, a `---` line, then the task as typed (night-shift's format and parser).
+fm_get() { # file key
+  awk -v k="$2" '$0 == "---" { exit }
+    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null
+}
+fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
+
+slugify() {
+  printf '%s' "$1" | head -1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' \
+    | sed 's/^-//; s/-$//' | cut -c1-40 | sed 's/-$//'
+}
+
+prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; normal) echo 2 ;; low) echo 3 ;; *) return 1 ;; esac; }
+
+# Mutations take one lock, so the web page, the shepherd and the dispatcher never interleave.
+# The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
+lock() {
+  mkdir -p "$AQ_DIR" || die "cannot create $AQ_DIR"
+  exec 8> "$AQ_DIR/.lock"
+  flock -w 10 8 || die "the queue is locked by another writer"
+}
+
+items_in() { # state-dir -> item files, oldest first
+  local f
+  for f in "$1"/*.md; do [ -e "$f" ] && printf '%s\n' "$f"; done | sort
+}
+
+# slug_files <slug> <glob-dir>... -> the item files whose `slug:` header is exactly this slug.
+# The file name only narrows the search: `*-first.md` also matches `x-first`, and a second
+# finish on the same day carries a `-2` suffix.
+slug_files() {
+  local slug="$1" d f
+  shift
+  for d in "$@"; do
+    for f in "$d"/*"$slug"*.md; do
+      [ -e "$f" ] && [ "$(fm_get "$f" slug)" = "$slug" ] && printf '%s
+' "$f"
+    done
+  done
+}
+
+# latest_done <slug> -> the most recently finished item with this slug; the file's mtime breaks a
+# tie inside one second, since `finished` is whole seconds for jq's date parser.
+latest_done() {
+  local f
+  slug_files "$1" "$AQ_DIR"/done/* | while IFS= read -r f; do
+    printf '%s\t%s\t%s\n' "$(fm_get "$f" finished)" "$(stat -c %.9Y "$f")" "$f"
+  done | sort | tail -1 | cut -f3-
+}
+
+# find_item <slug> [any] -> the active item with that slug; `any` falls back to the latest
+# finished one, so `show` and `set` reach a done item.
+find_item() {
+  local s f
+  for s in $ACTIVE; do
+    f="$(slug_files "$1" "$AQ_DIR/$s" | head -1)"
+    [ -n "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  [ "${2:-}" = any ] || return 1
+  f="$(latest_done "$1")"
+  [ -n "$f" ] && printf '%s\n' "$f"
+}
+
+state_of() { # file -> its state, from its directory
+  case "$1" in "$AQ_DIR"/done/*) echo "done" ;; *) basename "$(dirname "$1")" ;; esac
+}
+
+# The status of the most recent finished item with this slug, empty if none.
+done_status() {
+  local f
+  f="$(latest_done "$1")"
+  [ -n "$f" ] && fm_get "$f" status
+}
+
+# hhmm_in <HH:MM> <from-to> -> true when the time is inside the window, which may wrap midnight.
+hhmm_in() {
+  local t="${1/:/}" a="${2%-*}" b="${2#*-}"
+  a="${a/:/}"; b="${b/:/}"
+  if [ "$a" -le "$b" ]; then [ "$t" -ge "$a" ] && [ "$t" -lt "$b" ]
+  else [ "$t" -ge "$a" ] || [ "$t" -lt "$b" ]; fi
+}
+
+# hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
+hold_reason() {
+  local f="$1" after tag now
+  after="$(fm_get "$f" after)"
+  if [ -n "$after" ] && [ "$(done_status "$after")" != ok ]; then echo "after $after"; return; fi
+  now="${AGENT_QUEUE_NOW:-$(date +%H:%M)}"
+  for tag in $(fm_get "$f" tags); do
+    case "$tag" in
+      night) hhmm_in "$now" "$AQ_NIGHT" || { echo "night ($AQ_NIGHT)"; return; } ;;
+      at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { echo "$tag"; return; } ;;
+    esac
+  done
+}
+
+# item_json <file> -> one JSON object: every header key, plus state, file, task, and hold.
+item_json() {
+  local f="$1" state hold=""
+  state="$(state_of "$f")"
+  [ "$state" = queued ] && hold="$(hold_reason "$f")"
+  awk '$0 == "---" { exit } { i = index($0, ":"); if (i > 1) { v = substr($0, i + 1); sub(/^ +/, "", v); print substr($0, 1, i - 1) "\t" v } }' "$f" \
+    | jq -Rnc --arg state "$state" --arg file "$f" --arg task "$(fm_body "$f")" --arg hold "$hold" \
+      '([inputs | split("\t") | {(.[0]): (.[1:] | join("\t"))}] | add // {})
+       + {state: $state, file: $file, task: $task} + (if $hold == "" then {} else {hold: $hold} end)'
+}
+
+# Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
+ORDER='sort_by((({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 2)), .queued)'
+
+# collect <states...> [--date D] -> a JSON array of items.
+collect() {
+  local states=() date="" s f
+  while [ $# -gt 0 ]; do
+    case "$1" in --date) date="$2"; shift 2 ;; *) states+=("$1"); shift ;; esac
+  done
+  for s in "${states[@]}"; do
+    if [ "$s" = "done" ]; then
+      for f in "$AQ_DIR/done/${date:-$(date +%F)}"/*.md; do [ -e "$f" ] && item_json "$f"; done
+    else
+      while IFS= read -r f; do item_json "$f"; done < <(items_in "$AQ_DIR/$s")
+    fi
+  done | jq -sc "$ORDER"
+}
+
+# header_set <file> <key> <value> -> rewrite the header field in place, atomically.
+header_set() {
+  local f="$1" k="$2" v="$3" tmp
+  case "$v" in *$'\n'*) die "a value cannot span lines: $k" ;; esac
+  tmp="$(mktemp "$(dirname "$f")/.set.XXXXXX")" || die "cannot write in $(dirname "$f")"
+  awk -v k="$k" -v v="$v" '
+    !done && $0 == "---" { if (!seen) print k ": " v; done = 1; print; next }
+    !done && index($0, k ":") == 1 { print k ": " v; seen = 1; next }
+    { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
+}
+
+# move_to <file> <state> -> the new path. done/ is dated by today, and a name that is already
+# there (the same slug finished twice in a day) gets a numeric suffix.
+move_to() {
+  local f="$1" to="$2" dir name dest n=2
+  if [ "$to" = "done" ]; then dir="$AQ_DIR/done/$(date +%F)"; else dir="$AQ_DIR/$to"; fi
+  mkdir -p "$dir"
+  name="$(basename "$f" .md)"; dest="$dir/$name.md"
+  while [ -e "$dest" ]; do dest="$dir/$name-$n.md"; n=$((n + 1)); done
+  mv -- "$f" "$dest" && printf '%s\n' "$dest"
+}
+
+project_known() { # name -> true when project-map knows it, or there is no map to ask
+  [ -f "$AQ_MAP" ] || return 0
+  jq -e --arg p "$1" '[.paths[]?] + [.aliases // {} | keys[]] | index($p) != null' "$AQ_MAP" >/dev/null 2>&1
+}
+
+project_of_cwd() {
+  local top
+  top="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  top="$(dirname "$top")"
+  [ -f "$AQ_MAP" ] && jq -r --arg r "$top" '.paths[$r] // empty' "$AQ_MAP" 2>/dev/null
+}
+
+# --- verbs ---
+cmd_add() {
+  local project="" mode=oneshot priority=normal tags="" after="" from=human agent=claude slug=""
+  local running="" session="" task=() tag
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2:?}"; shift 2 ;;
+      --mode) mode="${2:?}"; shift 2 ;;
+      --priority) priority="${2:?}"; shift 2 ;;
+      --tags) tags="$(printf '%s' "${2:?}" | tr ',' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"; shift 2 ;;
+      --after) after="${2:?}"; shift 2 ;;
+      --from) from="${2:?}"; shift 2 ;;
+      --agent) agent="${2:?}"; shift 2 ;;
+      --slug) slug="${2:?}"; shift 2 ;;
+      --running) running=1; shift ;;
+      --session) session="${2:?}"; shift 2 ;;
+      --) shift; task+=("$@"); break ;;
+      -*) die "unknown option: $1" ;;
+      *) task+=("$1"); shift ;;
+    esac
+  done
+  local text
+  if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
+  [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
+  case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
+  prio_rank "$priority" >/dev/null || die "--priority is urgent, high, normal or low, not $priority"
+  case "$from" in human | shepherd | board:?*:?*) ;; *) die "--from is human, shepherd or board:<project>:<key>, not $from" ;; esac
+  case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
+  for tag in $tags; do
+    case "$tag" in at:*) [[ "$tag" =~ ^at:([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "a time tag is at:HH:MM, not $tag" ;; esac
+  done
+  [ -n "$project" ] || project="$(project_of_cwd)"
+  [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
+  project_known "$project" || die "unknown project: $project (not in $AQ_MAP)"
+  slug="$(slugify "${slug:-$text}")"
+  [ -n "$slug" ] || die "could not derive a slug; pass --slug"
+  lock
+  [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
+  if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
+    die "--after $after: no item has that slug"
+  fi
+  local state=queued now; now="$(now_utc)"
+  [ -n "$running" ] && state=running
+  mkdir -p "$AQ_DIR/$state"
+  local f tmp
+  f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
+  tmp="$(mktemp "$AQ_DIR/$state/.add.XXXXXX")" || die "cannot write in $AQ_DIR/$state"
+  {
+    printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\n' "$slug" "$project" "$mode" "$priority"
+    [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
+    [ -n "$after" ] && printf 'after: %s\n' "$after"
+    printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
+    [ -n "$running" ] && printf 'started: %s\n' "$now"
+    [ -n "$session" ] && printf 'session: %s\n' "$session"
+    printf -- '---\n%s\n' "$text"
+  } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
+  echo "$state $slug -> $f"
+}
+
+cmd_list() {
+  local json="" state=active date=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --state) state="${2:?}"; shift 2 ;;
+      --date) date="${2:?}"; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  local states
+  case "$state" in
+    active) states="waiting running queued" ;;
+    all) states="waiting running queued done" ;;
+    queued | running | waiting | done) states="$state" ;;
+    *) die "--state is queued, running, waiting, done, active or all" ;;
+  esac
+  # shellcheck disable=SC2086
+  local items; items="$(collect $states ${date:+--date "$date"})"
+  if [ -n "$json" ]; then
+    jq -c '.[]' <<<"$items"
+    return 0
+  fi
+  [ "$(jq length <<<"$items")" -gt 0 ] || { echo "queue: nothing ${state/active/queued, running or waiting}"; return 0; }
+  # Grouped by state in this order, queue order inside each group.
+  jq -r '(["waiting","running","queued","done"]) as $o
+    | sort_by(.state as $s | $o | index($s)) | .[]
+    | [.state, .priority, .slug, .project, .mode,
+       (.hold // .status // .session // ""), (.tags // ""), .from] | map(if . == "" then "-" else . end) | @tsv' <<<"$items"
+}
+
+cmd_next() {
+  local items
+  items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')"
+  [ -n "$items" ] || return 1
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$items"; else jq -r .file <<<"$items"; fi
+}
+
+cmd_show() {
+  local slug="${1:?usage: agent-queue show <slug>}" f
+  f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  if [ "${2:-}" = --json ]; then item_json "$f"; return 0; fi
+  printf 'state: %s\nfile: %s\n' "$(state_of "$f")" "$f"
+  cat -- "$f"
+}
+
+cmd_cancel() {
+  local slug="${1:?usage: agent-queue cancel <slug>}" f session dest
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  session="$(fm_get "$f" session)"
+  if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
+    if tmux -L "$AQ_TMUX_SERVER" kill-session -t "=$session" 2>/dev/null; then
+      echo "killed session $session"
+    else
+      echo "agent-queue: session $session was not running on $AQ_TMUX_SERVER" >&2
+    fi
+  fi
+  header_set "$f" status cancelled
+  header_set "$f" finished "$(now_utc)"
+  dest="$(move_to "$f" "done")" || die "could not move $f"
+  echo "cancelled $slug -> $dest"
+}
+
+cmd_bump() {
+  local slug="${1:?usage: agent-queue bump <slug> <priority>}" prio="${2:?usage: agent-queue bump <slug> <priority>}" f
+  prio_rank "$prio" >/dev/null || die "priority is urgent, high, normal or low, not $prio"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  header_set "$f" priority "$prio"
+  echo "$slug -> $prio"
+}
+
+# The fields only the dispatcher and the session record. Identity fields (slug, queued, from)
+# are not settable: they are what the item is.
+SETTABLE=" project mode priority tags after agent started waiting finished session account plan pr note status "
+
+cmd_set() {
+  local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
+  shift
+  [ $# -gt 0 ] || die "usage: agent-queue set <slug> <key=value>..."
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    [ "$k" != "$kv" ] || die "not key=value: $kv"
+    case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
+  done
+  lock
+  f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  for kv in "$@"; do header_set "$f" "${kv%%=*}" "${kv#*=}"; done
+  echo "$slug: $*"
+}
+
+cmd_move() {
+  local slug="${1:?usage: agent-queue move <slug> <state> [--status s]}" to="${2:?usage: agent-queue move <slug> <state>}"
+  local status="" f from dest
+  [ "${3:-}" = --status ] && status="${4:?}"
+  case "$to" in queued | running | waiting | done) ;; *) die "state is queued, running, waiting or done, not $to" ;; esac
+  if [ "$to" = "done" ]; then
+    case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
+  fi
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  from="$(state_of "$f")"
+  [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  case "$to" in
+    running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)" ;;
+    waiting) header_set "$f" waiting "$(now_utc)" ;;
+    done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
+  esac
+  dest="$(move_to "$f" "$to")" || die "could not move $f"
+  echo "$slug: $from -> $to"
+}
+
+cmd_stats() {
+  local json="" since d f s
+  since="$(date -d '7 days ago' +%F)"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --since) since="${2:?}"; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  local stats
+  stats="$({
+    for s in $ACTIVE; do while IFS= read -r f; do item_json "$f"; done < <(items_in "$AQ_DIR/$s"); done
+    for d in "$AQ_DIR"/done/*/; do
+      [ -d "$d" ] || continue
+      [[ "$(basename "$d")" < "$since" ]] && continue
+      for f in "$d"*.md; do [ -e "$f" ] && item_json "$f"; done
+    done
+  } | jq -sc --arg since "$since" '
+    def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
+    def median: sort | if length == 0 then null else .[length / 2 | floor] end;
+    def source: (.from // "human") | split(":")[0];
+    def count_by(f): group_by(f) | map({key: (.[0] | f), value: length}) | from_entries;
+    (map(select(.state == "done"))) as $done
+    | {since: $since,
+       active: (map(select(.state != "done")) | count_by(.state)),
+       done: ($done | count_by(.status // "unknown")),
+       wait_minutes_median: ([.[] | mins(.queued; .started)] | median),
+       run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
+       done_by_project: ($done | count_by(.project)),
+       done_by_source: ($done | count_by(source)),
+       done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
+  if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
+  jq -r '"since \(.since)",
+    "active:  \(.active | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end)",
+    "done:    \(.done | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end)",
+    "wait:    median \(.wait_minutes_median // "-") min from queued to started",
+    "run:     median \(.run_minutes_median // "-") min from started to finished",
+    "project: \(.done_by_project | to_entries | map("\(.key) \(.value)") | join(", "))",
+    "source:  \(.done_by_source | to_entries | map("\(.key) \(.value)") | join(", "))"' <<<"$stats"
+}
+
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
+
+command -v jq >/dev/null || die "jq not on PATH"
+case "${1:-}" in
+  add | list | next | show | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (try --help)" ;;
+esac
