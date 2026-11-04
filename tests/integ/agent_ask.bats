@@ -137,10 +137,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 16 tab-separated fields per ask" {
+@test "list emits 18 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '16'
+  assert_output '18'
 }
 
 @test "the last two fields are created and session, for fleet-bench's ask digest" {
@@ -433,4 +433,129 @@ registry() {
   assert_failure 2
   run "$AGENT_ASK" post --project shop --task wave/shop/v1.16.0 --kind gate 'ship?'
   assert_success
+}
+
+# ── the answer judge (shadow) ────────────────────────────────────────────────
+
+# fake_judge <json>: a judge command that prints <json> between the markers, and logs its prompt.
+# Outside the sandbox dir: its path has a space, and the judge command is a word list.
+fake_judge() {
+  cat > "$BATS_TEST_TMPDIR/judge" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+printf 'thinking...\nASK-JUDGE-START\n%s\nASK-JUDGE-END\n' '$1'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge" AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
+}
+
+@test "judge records its call and reason, and leaves the ask pending" {
+  fake_judge '{"call":"take-recommend","answer":"","reason":"landing is standing authorization"}'
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes|no' --recommend yes 'open the PR?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: take-recommend'
+  assert_line 'judge_reason: landing is standing authorization'
+  assert_line 'status: pending'
+  assert_line --regexp '^judged_at: .+'
+  # the prompt carries the policy and the ask
+  run cat "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output --partial 'open the PR?'
+  assert_output --partial 'Always `human`'
+}
+
+@test "judge never sends a gate to the model, and the gate's judge is the human" {
+  fake_judge '{"call":"answer","answer":"approve","reason":"x"}'
+  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #1?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_success
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'
+  refute_line --partial 'answer: approve'
+}
+
+@test "judge turns a call the ask cannot carry out into human, and runs once per ask" {
+  fake_judge '{"call":"take-recommend","answer":"","reason":"x"}'
+  local id; id="$(post demo 'no recommendation here?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'
+  "$AGENT_ASK" judge "$id"
+  run grep -c "^## The ask$" "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+}
+
+@test "judge records a free answer, and a reply with no verdict records nothing" {
+  fake_judge '{"call":"answer","answer":"the simpler one","reason":"no product effect"}'
+  local id; id="$(post demo 'which way?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: answer:the simpler one'
+  fake_judge 'not json'
+  id="$(post demo 'again?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  refute_line --partial 'judge:'
+}
+
+@test "post starts the judge unless AGENT_ASK_NO_JUDGE is set" {
+  fake_judge '{"call":"human","answer":"","reason":"taste"}'
+  # The fake judge also writes to a fifo, so the test waits on the call itself, not a timer.
+  mkfifo "$BATS_TEST_TMPDIR/called"
+  sed -i "2i echo called > '$BATS_TEST_TMPDIR/called'" "$BATS_TEST_TMPDIR/judge"
+  unset AGENT_ASK_NO_JUDGE
+  local id got; id="$(post demo 'pick a colour?')"
+  # Opened read-write so the open itself never blocks; -t is the timeout guard on the read.
+  exec 7<>"$BATS_TEST_TMPDIR/called"   # not 3: bats owns it
+  read -r -t 10 -u 7 got || true
+  exec 7<&-
+  assert_equal "$got" called
+  run grep -c 'pick a colour?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  # negative control: with the guard, no call
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  export AGENT_ASK_NO_JUDGE=1
+  id="$(post demo 'pick a shape?')"
+  run "$AGENT_ASK" judge-report demo
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+}
+
+@test "every answer path records answered_by" {
+  local a b c
+  a="$(post demo 'one?')"; b="$(post demo 'two?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  "$AGENT_ASK" answer --by shepherd "$b" no 2>/dev/null
+  run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'
+  run "$AGENT_ASK" show "$b"; assert_line 'answered_by: shepherd'
+  run "$AGENT_ASK" answer --by robot "$b" no
+  assert_failure 2
+  c="$("$AGENT_ASK" post --project demo --session s 'three?')"
+  sed -i 's/^claude_session: .*/claude_session: sid-1/' "$HOME/.agent/asks/demo/$c.md"
+  "$AGENT_ASK" settle-session sid-1 answered ok
+  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: human'
+}
+
+@test "judge-report scores the judge against the human's answer" {
+  local agree differ session deferred
+  agree="$("$AGENT_ASK" post --project demo --options 'yes|no' --recommend yes 'a?')"
+  differ="$(post demo 'b?')"; session="$(post demo 'c?')"; deferred="$(post demo 'd?')"
+  sed -i 's/^judge: .*//' "$HOME/.agent/asks/demo/"*.md
+  printf 'judge: take-recommend\n' >> "$HOME/.agent/asks/demo/$agree.md"
+  printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$differ.md"
+  printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$session.md"
+  printf 'judge: human\n' >> "$HOME/.agent/asks/demo/$deferred.md"
+  "$AGENT_ASK" answer "$agree" Yes 2>/dev/null
+  "$AGENT_ASK" answer "$differ" right 2>/dev/null
+  "$AGENT_ASK" answer "$session" "in session: left" 2>/dev/null
+  "$AGENT_ASK" answer "$deferred" whatever 2>/dev/null
+  run "$AGENT_ASK" judge-report demo
+  assert_success
+  assert_line --regexp "^$agree	agree	take-recommend	Yes$"
+  assert_line --regexp "^$differ	differ	answer:left	right$"
+  assert_line --regexp "^$session	unscored	"
+  assert_line --regexp "^$deferred	asks-you	human	"
+  assert_line 'judged 4 answered asks: the judge would have answered 3, scored 2, agreed 1'
 }

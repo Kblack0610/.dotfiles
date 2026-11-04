@@ -9,8 +9,10 @@
 #   agent-ask list [project|--all] [--pending|--answered|--stale] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
-#   agent-ask answer <id> <answer...>   record the answer; flip to answered;
-#                                       run its `resume` command (via ask-resume)
+#   agent-ask answer [--by who] <id> <answer...>
+#                                       record the answer; flip to answered;
+#                                       run its `resume` command (via ask-resume).
+#                                       --by human (default) | judge | shepherd -> answered_by
 #   agent-ask cancel <id> [reason...]   flip to cancelled
 #   agent-ask stale <id> [reason...]    flip a pending ask to stale (still answerable)
 #   agent-ask expire [--days N]         flip pending asks older than N days to stale and
@@ -22,6 +24,10 @@
 #   agent-ask settle-session <sid> answered|stale [text...]
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
+#   agent-ask judge <id>                the answer judge: record what it would answer
+#                                       (judge, judge_reason, judged_at); post runs it
+#   agent-ask judge-report [project|--all]
+#                                       the judge's call against the human's answer
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
@@ -57,11 +63,19 @@
 # stale after AGENT_ASK_STALE_DAYS unanswered (`expire`, run by the briefing), or when the wave
 # its `task: wave/<app>/<version>` names has shipped (`stale`, run by agentctl-wave-roll).
 # cancel and stale stamp `closed_at` and, when given, `closed_reason`.
+#
+# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one observe-role
+# model call with $AGENT_ASK_POLICY writes `judge: human | take-recommend | answer:<text>` and
+# `judge_reason` into the ask. It never answers: the human still does, and `judge-report`
+# scores its calls against their answers. A gate or approval is never sent to the model; it is
+# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it).
 
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_STALE_DAYS:=14}"
+: "${AGENT_ASK_POLICY:=$HOME/.config/agent-ask/policy.md}"
+: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --role observe}"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 
 # --- helpers ---------------------------------------------------------------
@@ -98,15 +112,20 @@ find_ask() {
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
-# set_field <file> <key> <value> - update an existing key in place (in-place rewrite)
+# set_field <file> <key> <value> - update an existing key in place (in-place rewrite).
+# Under a per-project lock: the judge writes an ask in the background while the human may be
+# answering it, and two unlocked rewrites lose whichever finished first.
 set_field() {
   local f="$1" k="$2" v="$3" tmp
   tmp="$(mktemp)"
-  awk -v k="$k" -v v="$v" '
-    $0 ~ "^" k ": " { print k ": " v; done=1; next }
-    { print }
-    END { if (!done) print k ": " v }
-  ' "$f" > "$tmp" && mv "$tmp" "$f"
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    awk -v k="$k" -v v="$v" '
+      $0 ~ "^" k ": " { print k ": " v; done=1; next }
+      { print }
+      END { if (!done) print k ": " v }
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+  ) 9>"$(dirname "$f")/.lock"
 }
 
 # render_ask <file>: the ask as the human reads it in the asking session's pane.
@@ -217,6 +236,7 @@ cmd_post() {
     printf 'recommend: %s\n'  "$(oneline "$recommend")"
     printf 'answer: \n'
     printf 'answered_at: \n'
+    printf 'answered_by: \n'
     printf 'resume: %s\n'     "$(oneline "$resume")"
     # empty until somebody actually RUNS `resume`. An ask that is answered but not
     # resumed is a decision the system has not acted on yet - see the header.
@@ -230,6 +250,11 @@ cmd_post() {
   # pending asks, and the briefing pages headless ones. A page per ask was 53 a day.
   if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
     render_ask "$file" >&2
+  fi
+
+  # The judge is an event on the post, detached so a headless producer exits at once.
+  if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
+    setsid -f "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null || true
   fi
 
   if [ "$wait" -eq 1 ]; then
@@ -281,8 +306,8 @@ cmd_list() {
   fi
 
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
-  #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session
-  #      (append new columns at the end only)
+  #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
+  #      judge, answered_by  (append new columns at the end only)
   local f st at
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -291,13 +316,14 @@ cmd_list() {
     at="$(field "$f" answered_at)"
     # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
     [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
       "$st" "$(field "$f" kind)" "$(field "$f" question)" \
       "$(field "$f" options)" "$(field "$f" task)" \
       "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)" \
       "$(field "$f" created)" "$(field "$f" session)" \
-      "$(field "$f" closed_at)" "$(field "$f" closed_reason)" "$(field "$f" claude_session)"
+      "$(field "$f" closed_at)" "$(field "$f" closed_reason)" "$(field "$f" claude_session)" \
+      "$(field "$f" judge)" "$(field "$f" answered_by)"
   done < <(ask_files "$key")
 }
 
@@ -316,15 +342,19 @@ cmd_show() {
 }
 
 cmd_answer() {
+  local by=human
+  if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
+  case "$by" in human|judge|shepherd) ;; *) echo "agent-ask: --by is human, judge or shepherd" >&2; return 2 ;; esac
   local id="${1:-}"; shift 2>/dev/null || true
   local answer; answer="$(oneline "$*")"
-  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer <id> <answer...>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd] <id> <answer...>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
 
   set_field "$f" status answered
   set_field "$f" answer "$answer"
   set_field "$f" answered_at "$(now_iso)"
+  set_field "$f" answered_by "$by"
   queue_changed
 
   # No page: only the human answers, so "ask answered" told them what they just did. The
@@ -393,6 +423,7 @@ cmd_settle_session() {
       set_field "$f" status answered
       set_field "$f" answer "in session: ${text:-(no text)}"
       set_field "$f" answered_at "$(now_iso)"
+      set_field "$f" answered_by human
     else
       set_field "$f" status stale
       set_field "$f" closed_at "$(now_iso)"
@@ -512,6 +543,90 @@ cmd_mark_resumed() {
 # The header block IS the usage text. Read it by shape (leading `#` lines after the
 # shebang, up to the first blank/code line) rather than by a hardcoded line range - the
 # range was `3,26p` and silently started truncating the moment the header grew.
+# --- judge -----------------------------------------------------------------
+
+# judge <id>: what the answer judge would do with this ask. Shadow only: it records its call
+# and never answers. Runs once per ask; a gate is the human's without a model call.
+cmd_judge() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask judge <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  [ -z "$(field "$f" judge)" ] || return 0
+  case "$(field "$f" kind)" in
+    gate|approval)
+      set_field "$f" judge human
+      set_field "$f" judge_reason "a gate is the human's by rule; not sent to the judge"
+      set_field "$f" judged_at "$(now_iso)"
+      return 0 ;;
+  esac
+  [ -r "$AGENT_ASK_POLICY" ] || { echo "agent-ask: no policy at $AGENT_ASK_POLICY" >&2; return 1; }
+  local prompt out wd rc verdict call
+  prompt="$(cat "$AGENT_ASK_POLICY")
+
+## The ask
+
+project: $(field "$f" project)
+agent: $(field "$f" agent)
+task: $(field "$f" task)
+question: $(field "$f" question)
+options: $(field "$f" options)
+recommend: $(field "$f" recommend)
+
+## Answer
+
+One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE-END, nothing else between them:
+{\"call\": \"human|take-recommend|answer\", \"answer\": \"<your answer when call is answer, else empty>\", \"reason\": \"<one short sentence>\"}"
+  # An empty directory: from inside a repo, that repo's Stop hook would answer instead (see
+  # fleet-dispatch judge).
+  wd=$(mktemp -d)
+  # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
+  out=$(cd "$wd" && $AGENT_ASK_JUDGE_CMD -p "$prompt" 2>/dev/null)
+  rc=$?
+  rm -rf -- "$wd"
+  [ "$rc" = 0 ] || { echo "agent-ask: judge call failed for $id" >&2; return 1; }
+  verdict=$(sed -n '/^ASK-JUDGE-START$/,/^ASK-JUDGE-END$/p' <<<"$out" | sed '1d;$d' |
+    jq -cR 'fromjson? | select(type == "object" and (.call == "human" or .call == "take-recommend" or .call == "answer"))' 2>/dev/null | head -1)
+  [ -n "$verdict" ] || { echo "agent-ask: no judge verdict for $id" >&2; return 1; }
+  call=$(jq -r .call <<<"$verdict")
+  # A call the ask cannot carry out is the human's: no recommendation to take, or no answer text.
+  if { [ "$call" = take-recommend ] && [ -z "$(field "$f" recommend)" ]; } ||
+     { [ "$call" = answer ] && [ -z "$(jq -r '.answer // ""' <<<"$verdict")" ]; }; then
+    call=human
+  fi
+  [ "$call" = answer ] && call="answer:$(oneline "$(jq -r .answer <<<"$verdict")")"
+  set_field "$f" judge "$call"
+  set_field "$f" judge_reason "$(oneline "$(jq -r '.reason // ""' <<<"$verdict")")"
+  set_field "$f" judged_at "$(now_iso)"
+  queue_changed
+}
+
+# judge-report [project|--all]: every judged ask a human answered, with the judge's call against
+# that answer. agree/differ only where the judge would have answered; an answer typed in the
+# session ("in session: ...") is free text and is not scored.
+cmd_judge_report() {
+  local key="${1:-}" f judge by ans want verdict n=0 would=0 scored=0 agree=0
+  [ -n "$key" ] || key="$(resolve_project)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    judge="$(field "$f" judge)"; by="$(field "$f" answered_by)"
+    [ -n "$judge" ] && [ "$(field "$f" status)" = answered ] && [ "${by:-human}" = human ] || continue
+    ans="$(field "$f" answer)"
+    n=$((n + 1))
+    case "$judge" in
+      human) verdict=asks-you ;;
+      *)
+        would=$((would + 1))
+        if [ "$judge" = take-recommend ]; then want="$(field "$f" recommend)"; else want="${judge#answer:}"; fi
+        if [[ "$ans" == "in session:"* ]]; then verdict=unscored
+        elif [ "${ans,,}" = "${want,,}" ]; then verdict=agree; scored=$((scored + 1)); agree=$((agree + 1))
+        else verdict=differ; scored=$((scored + 1)); fi ;;
+    esac
+    printf '%s\t%s\t%s\t%s\n' "$(field "$f" id)" "$verdict" "$judge" "$ans"
+  done < <(ask_files "$key")
+  printf 'judged %s answered asks: the judge would have answered %s, scored %s, agreed %s\n' \
+    "$n" "$would" "$scored" "$agree"
+}
+
 usage() {
   awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
 }
@@ -533,6 +648,8 @@ case "$sub" in
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;
   settle-session) cmd_settle_session "$@" ;;
+  judge)        cmd_judge "$@" ;;
+  judge-report) cmd_judge_report "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

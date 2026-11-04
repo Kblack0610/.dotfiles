@@ -45,10 +45,12 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
-agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session
+agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by
 agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
-agent-ask answer <id> <answer...>            record answer; status->answered; type it into the live session; run `resume`
+agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
+agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
+agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
 agent-ask cancel <id>                        status->cancelled
 agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); stale files the question on the agent board as a plain row, and so does expire
 ```
@@ -69,8 +71,18 @@ question: which auth provider should ledger use?
 options: oauth|magic
 answer:                   # filled by `answer`
 answered_at:
+answered_by:              # human | judge | shepherd
+judge:                    # the answer judge: human | take-recommend | answer:<text>
+judge_reason:
+judged_at:
 resume: /captain resume
 ```
+
+## The answer judge (shadow)
+
+`post` starts `agent-ask judge <id>` in the background. One observe-role call (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --role observe`) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_reason` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule.
+
+The judge never answers. agent-web's Waiting tab shows "judge would ..." under the question, and `judge-report` scores each call against the human's answer. Turning on auto-answers for a class of asks is a later, separate change, made only on the agreement this records. `AGENT_ASK_NO_JUDGE=1` skips the call; the test sandbox sets it.
 
 ## Producer / consumer wiring
 
