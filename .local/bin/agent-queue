@@ -11,7 +11,8 @@
 #   mine [--session s]    the slug of the running or waiting item this tmux session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--since YYYY-MM-DD]
-# A plan item starts its session at once (fleet-dispatch start --item); AGENT_QUEUE_START=0 only queues it.
+# A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
+# `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Holds: `after <slug>`, and the tags night, at:HH:MM and pr:<owner>/<repo>#<N> (until that PR merges).
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -514,6 +515,30 @@ cmd_move() {
   esac
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   echo "$slug: $from -> $to"
+  [ "$to" = done ] && [ "$status" = ok ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
+  start_next "$slug"
+}
+
+# start_next <slug> -- the items `after:` this one start the moment it closes ok. Each takes the
+# slot the closing session frees, so it waits for no dispatch pass and none of its load gates: a
+# plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it.
+start_next() {
+  local f s next=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] && [ -z "$(hold_reason "$f")" ] && next+=("$(fm_get "$f" slug)")
+  done < <(items_in "$AQ_DIR/queued")
+  [ ${#next[@]} -gt 0 ] || return 0
+  # The starter writes these items back through this script: free the lock, and keep the fd out of tmux.
+  exec 8>&-
+  if ! agent-hold check dispatch >/dev/null 2>&1; then
+    echo "agent-queue: dispatch is held, so ${next[*]} stays queued for the next dispatch pass" >&2
+    return 0
+  fi
+  for s in "${next[@]}"; do
+    fleet-dispatch start --item "$s" ||
+      echo "agent-queue: $s could not start now, so it stays queued for the next dispatch pass" >&2
+  done
+  return 0
 }
 
 cmd_stats() {
