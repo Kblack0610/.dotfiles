@@ -259,13 +259,13 @@ board_workers() {
 
 @test "the shipped registry: asks, then the human's assignments, then the game's agent board, never tier 3" {
   export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
-  project unity-playground beta "$SANDBOX/repos/game"
+  project unity-core-playground beta "$SANDBOX/repos/game"
   project platform prod "$SANDBOX/repos/app"
-  row unity-playground agent 'an ask' '- [ ] an ask #ask #worker/asks #tier/2'
-  row unity-playground agent 'assigned' "- [ ] assigned $T"
-  row unity-playground agent 'plain' '- [ ] plain'
-  row unity-playground agent 'tier three' '- [ ] tier three #tier/3'
-  row unity-playground human 'human plain' '- [ ] human plain'
+  row unity-core-playground agent 'an ask' '- [ ] an ask #ask #worker/asks #tier/2'
+  row unity-core-playground agent 'assigned' "- [ ] assigned $T"
+  row unity-core-playground agent 'plain' '- [ ] plain'
+  row unity-core-playground agent 'tier three' '- [ ] tier three #tier/3'
+  row unity-core-playground human 'human plain' '- [ ] human plain'
   row platform agent 'platform plain' '- [ ] platform plain'
   run cmd_candidates
   assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=asks,assigned=fleet,plain=board'

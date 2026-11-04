@@ -157,7 +157,6 @@ seed_tracker_map() {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
   "paths": { "$REPO": "toolrepo" },
-  "apps": {},
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a STRING value; an unguarded .value.repo dies on this",
@@ -251,6 +250,33 @@ EOF
   assert_output --partial 'Session Preflight'
   assert_output --partial 'Recent commits'
   refute_output --partial 'Cannot index string'
+}
+
+@test "an app session gets its REPO's lessons as parent, not its ticket inherits" {
+  # `inherits` only merges ticket config and may name another tracker; the corpus that
+  # binds an app is its repo's. NEGATIVE CONTROL: the inherits target's lessons stay out.
+  export PROJECT_MAP_FILE="$SANDBOX/map.json"
+  cat > "$PROJECT_MAP_FILE" <<EOF
+{
+  "paths": { "$REPO": "toolrepo" },
+  "aliases": {},
+  "trackers": {
+    "_comment": "a string value",
+    "ticket-parent": { "system": "vikunja" },
+    "shop": { "repo": "toolrepo", "path": "apps/shop", "inherits": "ticket-parent" }
+  }
+}
+EOF
+  mkdir -p "$REPO/apps/shop" "$HOME/.agent/lessons"
+  echo "- a repo-wide lesson" > "$HOME/.agent/lessons/toolrepo.md"
+  echo "- a ticket-parent lesson" > "$HOME/.agent/lessons/ticket-parent.md"
+  export CLAUDE_PROJECT_DIR="$REPO/apps/shop"
+
+  run context
+  assert_success
+  assert_output --partial 'Session Preflight: shop'
+  assert_output --partial 'a repo-wide lesson'
+  refute_output --partial 'a ticket-parent lesson'
 }
 
 @test "the retired '-> For the agents' channel is gone" {

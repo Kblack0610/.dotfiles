@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tier 2: Prefix i, o and O land on a tab of the hub board, read out of .tmux.conf and
+# Tier 2: Prefix i and O land on a tab of the hub board, Prefix o on the shepherd pass, read out of .tmux.conf and
 # hub.conf as text.
 #
 # The board is one declared window (hub:board) running `hub`, a ratatui app with a tab per
@@ -16,9 +16,9 @@ setup() {
   HUB_CONF="$REPO_ROOT/.config/tmux-servers/hub.conf"
 }
 
-@test "prefix+i, o and O ask the hub for overview, sessions and today, then go to its window" {
+@test "prefix+i and O ask the hub for overview and today, then go to its window; o opens the shepherd pass" {
   assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab overview; tmx goto hub hub:board"'
-  assert_equal "$(bind_for o)" 'run-shell "$HOME/.local/bin/hub tab sessions; tmx goto hub hub:board"'
+  assert_equal "$(bind_for o)" "run-shell \"\$HOME/.local/bin/fleet-shepherd open >/dev/null 2>&1 || tmux display-message 'no shepherd pass running (fleet-shepherd passes)'\""
   assert_equal "$(bind_for O)" 'run-shell "$HOME/.local/bin/hub tab today; tmx goto hub hub:board"'
 }
 

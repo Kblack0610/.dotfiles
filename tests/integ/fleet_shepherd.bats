@@ -126,11 +126,11 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_output --partial 'started pass'
   local id; id="$(pass_id)"
   [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "no pass id recorded: '$id'"
-  grep -qxF -- "-L lab respawn-pane -k -t =shepherd: -c $HOME bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
+  grep -qxF -- "-L hub respawn-pane -k -t =shepherd: -c $HOME bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
     fail "$(cat "$HOME/tmux.calls")"
   assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id")" manual
-  grep -qxF -- 'trust lab =shepherd: bypass permissions on' "$HOME/trust.calls"
-  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L lab attach -t shepherd" "$HOME/agentctl.calls"
+  grep -qxF -- 'trust hub =shepherd: bypass permissions on' "$HOME/trust.calls"
+  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L hub attach -t shepherd" "$HOME/agentctl.calls"
   assert_equal "$(outcome)" WORKED
   # The launcher: the observe role, the pass's own session id, the due lines, the runner's lease.
   run prompt
@@ -150,12 +150,12 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   doc "[$(row a DONE false false)]"
   STUB_TMUX_FAIL='has-session' run "$SH" run
   assert_success
-  grep -q -- "-L lab new-session -d -s shepherd -c $HOME bash" "$HOME/tmux.calls"
+  grep -q -- "-L hub new-session -d -s shepherd -c $HOME bash" "$HOME/tmux.calls"
   [ ! -e "$HOME/systemd-run.calls" ]
   rm "$FLEET_SHEPHERD_DIR/.pass"
   STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
   assert_success
-  grep -q -- "--user --scope --quiet tmux -L lab new-session -d -s shepherd" "$HOME/systemd-run.calls"
+  grep -q -- "--user --scope --quiet tmux -L hub new-session -d -s shepherd" "$HOME/systemd-run.calls"
 }
 
 @test "the pass prompt names only the role skills its due lines need" {
@@ -262,6 +262,9 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
 }
 
 @test "passes lists the pass in the window, then the scored ones newest first; open names a missing window" {
+  run "$SH" passes
+  assert_success
+  assert_output --partial 'no passes yet'
   doc "[$(row a DONE false false)]"
   "$SH" run
   local first; first="$(pass_id)"

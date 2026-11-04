@@ -6,7 +6,7 @@
 #   resolve_project_name /home/kblack0610/.dotfiles   # -> dotfiles
 #
 # Resolution order (first match wins):
-#   1. App inside a monorepo (see below) via `apps.<repo>`.
+#   1. App inside a repo (see below): a `trackers` entry with `repo` + `path`.
 #   2. Exact path lookup in project-map.json `paths`.
 #   3. The containing repo's canonical name.
 #   4. basename (leading dot stripped) looked up in `aliases`.
@@ -19,21 +19,23 @@
 # make the main checkout resolve to the repo while a WORKTREE of it -- which has no `paths`
 # entry -- resolved to the app. Same branch, two different answers, silently.
 #
-# APP-IN-MONOREPO (step 2). A repo like bnb-platform holds many independently
-# released apps, and each should be its own project for tickets/plans/lessons.
+# APP-IN-REPO (step 1). A repo like bnb-platform holds many independently
+# released apps (and unity-core-playground many games), and each should be its own
+# project for tickets/plans/lessons. A project declares where it lives once, in its
+# `trackers` entry: `repo` (the repo's registry key) and `path` (repo-relative).
 # Two things make that work across the ~35 worktrees of a single repo:
 #
 #   a. The repo is normalized through `git rev-parse --git-common-dir`, so every
 #      worktree (platform-agent-2, platform-baa-gate, ...) collapses to the one
 #      canonical repo. Absolute `paths` entries cannot do this — they would need
 #      one entry per worktree per app, and would silently rot as worktrees churn.
-#   b. Apps are keyed by REPO-RELATIVE path in `apps.<repo>`, so those same
-#      relative keys apply in every worktree. Longest prefix wins, which is what
-#      makes apps/alpha/api resolve to `alpha` and not `api`.
+#   b. `path` is REPO-RELATIVE, so the same entry applies in every worktree.
+#      Longest prefix wins, which is what makes apps/alpha/api resolve to `alpha`
+#      and not `api`.
 #
 # At the REPO ROOT the cwd carries no app, so the BRANCH decides: a branch named
-# `<type>/<app>/<rest>` resolves to <app>, but only if <app> is a registered app
-# of that repo — an unregistered second segment (refactor/packages/...) correctly
+# `<type>/<app>/<rest>` resolves to <app>, but only if <app> is a tracker key with
+# that `repo` and a `path`: an unregistered second segment (refactor/packages/...) correctly
 # falls through to the repo. This matters because most worktrees are checked out
 # at the root on a fix/<app>/... branch, and CONTRIBUTING.md mandates that naming.
 # Repo-wide work (chore/ci-cache, docs/...) has no app segment and stays the repo.
@@ -202,7 +204,7 @@ project_lab_names() {
 }
 
 # project_known <name> -> 0 when <name> is a canonical project in the registry (a repo's
-# project, a tracker, an app, or what an alias resolves to), 1 when it is not (an alias
+# project, a tracker, or what an alias resolves to), 1 when it is not (an alias
 # itself, such as monorepo or waybar, or an unknown name), 2 when there is no registry.
 project_known() {
   local map_file; map_file="$(project_map_file)"
@@ -210,7 +212,6 @@ project_known() {
   jq -e --arg n "$1" '
     [(.paths // {} | .[]),
      (.trackers // {} | to_entries[] | select(.value | type == "object") | .key),
-     (.apps // {} | .[] | objects | .[]),
      (.aliases // {} | .[])] | index($n) != null' "$map_file" >/dev/null 2>&1
 }
 
@@ -243,7 +244,9 @@ resolve_project_name() {
           seg="$rel"
           while [ -n "$seg" ]; do
             app=$(jq -r --arg r "$repo_name" --arg s "$seg" \
-              '.apps[$r][$s] // empty' "$map_file" 2>/dev/null || true)
+              '[.trackers // {} | to_entries[] | select(.value | type == "object")
+                | select(.value.repo == $r and .value.path == $s) | .key][0] // empty' \
+              "$map_file" 2>/dev/null || true)
             if [ -n "$app" ]; then echo "$app"; return 0; fi
             case "$seg" in */*) seg="${seg%/*}" ;; *) seg="" ;; esac
           done
@@ -253,7 +256,8 @@ resolve_project_name() {
           #     positive evidence about which app is meant, and it must win. Consulting
           #     the branch from apps/beta on a fix/alpha/... branch
           #     would answer "alpha" for a directory that is plainly not it.
-          #     Validated against the registered apps, so a non-app second segment
+          #     Validated against the repo's tracker entries that carry a `path`, so a
+          #     non-app second segment
           #     (refactor/packages/...) falls through to the repo.
           branch=""
           [ -z "$rel" ] && branch=$(git -C "$abs_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
@@ -262,7 +266,7 @@ resolve_project_name() {
               seg="${branch#*/}"; seg="${seg%%/*}"
               for cand in "$seg" "${seg%-web}" "${seg%-api}" "${seg%-mobile}"; do
                 app=$(jq -r --arg r "$repo_name" --arg a "$cand" \
-                  '(.apps[$r] // {}) | to_entries | map(select(.value == $a)) | (.[0].value // empty)' \
+                  '.trackers[$a] | objects | select(.repo == $r and (.path // "") != "") | $a' \
                   "$map_file" 2>/dev/null || true)
                 if [ -n "$app" ]; then echo "$app"; return 0; fi
               done

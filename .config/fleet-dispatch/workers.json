@@ -2,7 +2,7 @@
   "asks": {
     "what": "/one-shot on an #ask row the human already decided, game work only",
     "max_tier": 2,
-    "projects": ["unity-playground"],
+    "projects": ["unity-core-playground"],
     "only_tag": "ask"
   },
   "fleet": {
@@ -12,7 +12,7 @@
   "board": {
     "what": "/one-shot on an agent-board row of the game, no tags needed, the judge reads the tier",
     "max_tier": 2,
-    "projects": ["unity-playground"],
+    "projects": ["unity-core-playground"],
     "lane": "agent",
     "untagged": true
   }

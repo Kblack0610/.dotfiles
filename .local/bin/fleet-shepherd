@@ -4,7 +4,7 @@
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): defer to a live
 #                          interactive shepherd, score the last pass, refresh the state
 #                          document, and when it holds something to move start a fresh
-#                          `/fleet-lead pass` in tmux session shepherd on server lab
+#                          `/fleet-lead pass` in tmux session shepherd on the hub server (Prefix o)
 #   fleet-shepherd open [id]
 #                          attach to the pass window, or resume an earlier pass in a
 #                          window of its own, to watch it or talk to it
@@ -62,7 +62,7 @@ SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to 
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>: the pass in the tmux window now
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
-SERVER="${FLEET_SHEPHERD_SERVER:-lab}"
+SERVER="${FLEET_SHEPHERD_SERVER:-hub}"  # hub, beside the human's chats; Prefix o jumps to it
 SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
 ATTACH="tmux -L $SERVER attach -t $SESSION"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long is STALLED and replaced
@@ -613,8 +613,12 @@ cmd_passes() {
   local id start n
   if { read -r id start n; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
     printf '%s\t%s\tnow\t%s due, %s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$n" "$(pass_status "$id")"
+  elif [ ! -s "$PASSES" ]; then
+    echo "no passes yet: the runner starts one when a line is due (agentctl status shepherd)"
+    return 0
   fi
   tail -n "${1:-20}" "$PASSES" 2>/dev/null | tac
+  return 0
 }
 
 lines() { local c; c="$(grep -c . "$1" 2>/dev/null)"; echo "${c:-0}"; }
