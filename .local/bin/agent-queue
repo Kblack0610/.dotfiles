@@ -45,6 +45,12 @@ lock() {
   exec 8> "$AQ_DIR/.lock"
   flock -w 10 8 || die "the queue is locked by another writer"
 }
+# Reads share the lock, so a list never sees an item a writer is moving between states.
+lock_read() {
+  [ -d "$AQ_DIR" ] || return 0
+  exec 8> "$AQ_DIR/.lock"
+  flock -s -w 10 8 || die "the queue is locked by another writer"
+}
 
 items_in() { # state-dir -> item files, oldest first
   local f
@@ -264,6 +270,7 @@ cmd_list() {
     queued | running | waiting | done) states="$state" ;;
     *) die "--state is queued, running, waiting, done, active or all" ;;
   esac
+  lock_read
   # shellcheck disable=SC2086
   local items; items="$(collect $states ${date:+--date "$date"})"
   if [ -n "$json" ]; then
@@ -280,6 +287,7 @@ cmd_list() {
 
 cmd_next() {
   local items
+  lock_read
   items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')"
   [ -n "$items" ] || return 1
   if [ "${1:-}" = --json ]; then printf '%s\n' "$items"; else jq -r .file <<<"$items"; fi
@@ -287,6 +295,7 @@ cmd_next() {
 
 cmd_show() {
   local slug="${1:?usage: agent-queue show <slug>}" f
+  lock_read
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   if [ "${2:-}" = --json ]; then item_json "$f"; return 0; fi
   printf 'state: %s\nfile: %s\n' "$(state_of "$f")" "$f"
@@ -371,6 +380,7 @@ cmd_stats() {
     esac
   done
   local stats
+  lock_read
   stats="$({
     for s in $ACTIVE; do while IFS= read -r f; do item_json "$f"; done < <(items_in "$AQ_DIR/$s"); done
     for d in "$AQ_DIR"/done/*/; do

@@ -12,6 +12,7 @@
 mod auth;
 mod infra;
 mod jobs;
+mod queue;
 mod transcript;
 
 use std::convert::Infallible;
@@ -65,6 +66,11 @@ const STATIC: &[(&str, &str, &str)] = &[
         "jobs.js",
         "text/javascript",
         include_str!("../static/jobs.js"),
+    ),
+    (
+        "queue.js",
+        "text/javascript",
+        include_str!("../static/queue.js"),
     ),
 ];
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
@@ -120,6 +126,10 @@ async fn main() -> Result<()> {
         .route("/api/infra", get(infra_board))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
+        .route("/api/queue", get(queue::list).post(queue::add))
+        .route("/api/queue/cancel", post(queue::cancel))
+        .route("/api/queue/bump", post(queue::bump))
+        .route("/api/queue/projects", get(queue::projects))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -181,6 +191,10 @@ fn watch(tx: broadcast::Sender<String>) -> Result<()> {
     if asks.is_dir() {
         w.watch(&asks, RecursiveMode::Recursive)?;
     }
+    // agent-queue's store; its states and done/<date>/ come and go, so watch it whole.
+    let queue = session::home().join(".agent").join("queue");
+    std::fs::create_dir_all(&queue)?;
+    w.watch(&queue, RecursiveMode::Recursive)?;
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -220,6 +234,9 @@ fn classify(p: &Path) -> Option<String> {
     let parent = p.parent()?.file_name()?.to_str()?;
     match ext {
         "json" if parent == "sessions" => Some(r#"{"kind":"sessions"}"#.to_string()),
+        "md" if p.ancestors().any(|a| a.ends_with(".agent/queue")) => {
+            Some(r#"{"kind":"queue"}"#.to_string())
+        }
         "md" if p.ancestors().any(|a| a.ends_with(".agent/asks")) => {
             Some(r#"{"kind":"asks"}"#.to_string())
         }
@@ -815,6 +832,12 @@ mod tests {
             classify(Path::new("/h/.agent/asks/bnb/Y3g.md")).as_deref(),
             Some(r#"{"kind":"asks"}"#)
         );
+        assert_eq!(
+            classify(Path::new("/h/.agent/queue/done/2026-11-03/20261103-x.md")).as_deref(),
+            Some(r#"{"kind":"queue"}"#)
+        );
+        assert_eq!(classify(Path::new("/h/.agent/queue/.lock")), None);
+        assert_eq!(classify(Path::new("/h/.agent/queue/queued/.add.AbC123")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/state.json")).as_deref(),
             Some(r#"{"kind":"watch"}"#)
