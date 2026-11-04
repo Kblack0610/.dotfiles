@@ -22,6 +22,10 @@ pub struct Agent {
     pub jsonl: Option<PathBuf>,
     /// Window tags (Prefix+t, see tags.sh). Empty when the window is untagged.
     pub tags: String,
+    /// Fleet stage and labels from the window (`tmux::Pane`). Display only: never put them in
+    /// `list --json`, which fleet-sessions reads, or the copy would feed its own source.
+    pub stage: String,
+    pub labels: String,
     /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
     pub pane: String,
     pub session_id: String,
@@ -123,6 +127,8 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> 
             summary,
             jsonl: jsonl_path.exists().then_some(jsonl_path),
             tags: pane.tags.clone(),
+            stage: pane.stage.clone(),
+            labels: pane.labels.clone(),
             pane: format!("{}/{}", pane.server, pane.pane_id),
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
@@ -235,15 +241,9 @@ pub fn run_interactive() -> Result<()> {
         return Ok(());
     }
 
-    let (rows, map_lines) = render::build(&agents);
     let map_file = map_file_path();
-    fs::write(&map_file, map_lines.join("\n"))?;
-
-    let rows_text = rows
-        .iter()
-        .map(|r| r.text.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let rows = write_rows(&agents, &map_file)?;
+    let rows_text = rows_text(&rows);
 
     // Position the cursor on the currently active agent, if any.
     let restore_line = tmux::current_target().and_then(|cur| {
@@ -266,6 +266,27 @@ pub fn run_interactive() -> Result<()> {
             tmux::jump(target);
         }
     }
+    Ok(())
+}
+
+/// Render the rows and write the preview map file they need.
+fn write_rows(agents: &[Agent], map_file: &Path) -> Result<Vec<render::Row>> {
+    let (rows, map_lines) = render::build(agents);
+    fs::write(map_file, map_lines.join("\n"))?;
+    Ok(rows)
+}
+
+fn rows_text(rows: &[render::Row]) -> String {
+    rows.iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
+/// from a key shows without leaving the chooser.
+pub fn run_rows(map_file: &Path) -> Result<()> {
+    println!("{}", rows_text(&write_rows(&collect(), map_file)?));
     Ok(())
 }
 

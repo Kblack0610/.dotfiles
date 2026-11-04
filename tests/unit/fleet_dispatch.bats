@@ -1533,6 +1533,22 @@ queued_item() {
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
 }
 
+@test "a real pass leaves its headroom for stats; a dry pass, or one older than three passes, gives none" {
+  two_items
+  export DISPATCH_PER_PASS=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a dry pass wrote the snapshot"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(jq -r '[.could_start, .runnable] | @tsv' "$FLEET_DISPATCH_DIR/headroom.json")" $'1\t1'
+  run cmd_stats
+  assert_equal "$(jq -r .could_start <<<"$output")" 1
+  touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
+  run cmd_stats
+  assert_equal "$(jq -r .could_start <<<"$output")" null
+}
+
 @test "stats fails, saying so, when the queue is unreadable" {
   stub agent-queue 'exit 1'
   run cmd_stats

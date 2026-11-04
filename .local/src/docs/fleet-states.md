@@ -80,5 +80,20 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at` |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` Sessions tab, agent-web Watch tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
+| tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
+
+## Labels and stages on screen
+
+Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact.
+
+| To | Do |
+| --- | --- |
+| Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
+| See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, UNCLEAR amber, LANDED and DONE green, PARKED dim, labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
+| See a label change at once | `label` sets the window option itself; a session too new to be in the document gets it at the next tick |
+
+| Problem | Fix |
+| --- | --- |
+| A window keeps a stage after its session ended | The next tick clears any window carrying `@fleet_stage` that no session claims; check `fleet-state.timer` is running |
