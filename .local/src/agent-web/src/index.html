@@ -107,6 +107,7 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
+.qneed > .card { margin: 6px 0; border-color: var(--b-stalled); }
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
 .qadd select, .qitem select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
@@ -595,6 +596,7 @@ const refreshAsks = coalesce(async () => {
   st.asks = await api("/api/asks");
   renderBadge();
   if (st.tab === "asks") renderAsks();
+  if (st.tab === "queue") renderQueueList();
 });
 
 // The Waiting tab: every live session with a dialog or permission prompt open (read from its
@@ -646,15 +648,12 @@ function judgeLine(a) {
   return `<div class="meta">judge would ${esc(call)}</div>`;
 }
 
-function drawAsks() {
-  const live = asking();
-  if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
-  let html = "";
-  if (live.length) html += '<h2 class="sec">Sessions</h2>' + live.map(sessionCard).join("");
-  const owner = (a) => st.agents.find((x) => a.session && x.session === a.session);
-  if (st.asks.length) html += '<h2 class="sec">Asks</h2>' + st.asks.map((a) => `
+// One pending ask, answered through agent-ask (the Queue tab shows a session's own asks too).
+function askCard(a) {
+  const owner = st.agents.find((x) => a.session && x.session === a.session);
+  return `
     <div class="card" data-id="${esc(a.id)}">
-      <div class="meta">${esc(a.project)} &middot; ${owner(a) ? esc(owner(a).target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
+      <div class="meta">${esc(a.project)} &middot; ${owner ? esc(owner.target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
       <div class="q">${esc(a.question)}</div>
       ${judgeLine(a)}
       <div class="opts">
@@ -662,7 +661,15 @@ function drawAsks() {
         <input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>
       </div>
       <div class="err"></div>
-    </div>`).join("");
+    </div>`;
+}
+
+function drawAsks() {
+  const live = asking();
+  if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
+  let html = "";
+  if (live.length) html += '<h2 class="sec">Sessions</h2>' + live.map(sessionCard).join("");
+  if (st.asks.length) html += '<h2 class="sec">Asks</h2>' + st.asks.map(askCard).join("");
   $("asks").innerHTML = html;
 }
 
@@ -687,9 +694,8 @@ async function answerSession(card, e) {
   card.querySelector("[data-free]").value = "";
 }
 
-$("asks").addEventListener("click", async (e) => {
-  const card = e.target.closest(".card");
-  if (!card) return;
+// A click inside a session card or an ask card, on the Waiting tab or a queue row.
+async function answerCard(card, e) {
   if (card.dataset.t) {
     try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
     catch (err) { card.querySelector(".err").textContent = err.message; }
@@ -700,14 +706,19 @@ $("asks").addEventListener("click", async (e) => {
   if (!answer || !answer.trim()) return;
   try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
   catch (err) { card.querySelector(".err").textContent = err.message; }
+}
+$("asks").addEventListener("click", (e) => {
+  const card = e.target.closest(".card");
+  if (card) answerCard(card, e);
 });
 
-$("asks").addEventListener("keydown", (e) => {
+function answerOnEnter(e) {
   if (e.key !== "Enter" || !e.target.matches("[data-free]")) return;
   e.preventDefault();
   const btn = e.target.parentElement.querySelector("[data-reply], [data-send]");
   if (btn) btn.click();
-});
+}
+$("asks").addEventListener("keydown", answerOnEnter);
 
 const TAB_NAMES = ["queue", "sessions", "asks", "shepherd", "watch", "log", "infra", "jobs", "fleet"];
 function setTab(t) {
