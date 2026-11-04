@@ -9,7 +9,8 @@
 # --match-head-commit HEAD, then gh pr view must say MERGED), board (agent row done with pr:<pr>), sheet (--sheet: a "<title>
 # #oneshot" row added and closed), plan (--plan: the one "- [ ] <phase>" line becomes
 # "- [x] <phase> (#<pr>)"). One line per step.
-# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it, re-gate, re-run.
+# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it and re-run. A merge of
+# <base> keeps a green gate green; gate again only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
@@ -65,7 +66,7 @@ current_with_base() {
   out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
   behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
   if [ "$behind" -ne 0 ]; then
-    printf 'agent-land: behind origin/%s by %s, merge it and re-gate\n' "$base" "$behind" >&2
+    printf 'agent-land: behind origin/%s by %s, merge it and re-run (a green gate stays green across a merge of %s unless the repo CI doc says otherwise)\n' "$base" "$behind" "$base" >&2
     exit 3
   fi
 }
