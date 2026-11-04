@@ -231,9 +231,107 @@ pub fn watch(state: &Path, log: &Path) -> Watch {
     }
 }
 
+/// One rundown or chat answer the shepherd kept (`fleet-shepherd log --rundown`).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Rundown {
+    /// The file name, `<YYYY-MM-DD>T<HHMM>Z[-N].md`.
+    pub file: String,
+    pub title: String,
+    /// `YYYY-MM-DD HH:MM UTC`, as written.
+    pub stamp: String,
+    pub body: String,
+}
+
+/// Newest-first sort key for a rundown file: its minute, then the `-N` a second record in the
+/// same minute gets (the first has none, so it counts as 1).
+fn rundown_key(file: &str) -> (String, u32) {
+    let stem = file.strip_suffix(".md").unwrap_or(file);
+    match stem.rsplit_once('-') {
+        Some((base, n)) if base.ends_with('Z') => (base.to_string(), n.parse().unwrap_or(1)),
+        _ => (stem.to_string(), 1),
+    }
+}
+
+/// The file as `log_rundown` writes it: `# <title>`, a blank line, the stamp, a blank line, the
+/// body. A file in any other shape keeps its whole text as the body.
+pub fn parse_rundown(file: &str, text: &str) -> Rundown {
+    let mut parts = text.splitn(3, "\n\n");
+    let (head, stamp, body) = (parts.next(), parts.next(), parts.next());
+    match (head.and_then(|h| h.strip_prefix("# ")), stamp, body) {
+        (Some(title), Some(stamp), Some(body))
+            if !title.contains('\n') && stamp.ends_with("UTC") =>
+        {
+            Rundown {
+                file: file.into(),
+                title: title.into(),
+                stamp: stamp.into(),
+                body: body.trim_end().into(),
+            }
+        }
+        _ => Rundown {
+            file: file.into(),
+            title: file.into(),
+            stamp: String::new(),
+            body: text.trim_end().into(),
+        },
+    }
+}
+
+/// The newest `limit` rundowns in `dir`, newest first.
+pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".md") && !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by_key(|f| std::cmp::Reverse(rundown_key(f)));
+    files
+        .into_iter()
+        .take(limit)
+        .filter_map(|f| {
+            let text = std::fs::read_to_string(dir.join(&f)).ok()?;
+            Some(parse_rundown(&f, &text))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rundowns_come_newest_first_with_same_minute_records_in_order() {
+        let dir = std::env::temp_dir().join(format!("hub-core-rundowns-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, title: &str| {
+            let text = format!("# {title}\n\n2026-11-03 12:01 UTC\n\nline one\n\nline two\n");
+            std::fs::write(dir.join(name), text).unwrap();
+        };
+        write("2026-11-02T2359Z.md", "yesterday");
+        write("2026-11-03T1201Z.md", "first");
+        write("2026-11-03T1201Z-2.md", "second");
+        write("2026-11-03T1201Z-10.md", "tenth");
+        std::fs::write(dir.join("2026-11-03T1300Z.md.tmp"), "half written").unwrap();
+        let got = rundowns(&dir, 10);
+        let titles: Vec<&str> = got.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, vec!["tenth", "second", "first", "yesterday"]);
+        assert_eq!(got[0].stamp, "2026-11-03 12:01 UTC");
+        assert_eq!(got[0].body, "line one\n\nline two");
+        assert_eq!(rundowns(&dir, 1).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(rundowns(&dir, 5).is_empty(), "a missing dir is no rundowns");
+    }
+
+    #[test]
+    fn a_rundown_in_another_shape_keeps_its_text() {
+        let r = parse_rundown("x.md", "just some notes\nwith no heading\n");
+        assert_eq!(r.title, "x.md");
+        assert_eq!(r.stamp, "");
+        assert_eq!(r.body, "just some notes\nwith no heading");
+    }
 
     #[test]
     fn parses_a_stage_change() {
