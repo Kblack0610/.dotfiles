@@ -152,18 +152,14 @@ Media/Music
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
 !.claude/skills/workstreams/stack-review/
-# Agents: allowlist the generic SuperClaude personas (kb-*/release/overseer are private).
+# Agents: allowlist the generic specialists (kb-* and release-coordinator are private).
 !.claude/agents/
 .claude/agents/*
 !.claude/agents/compliance-counsel.md
 !.claude/agents/deep-research-agent.md
-!.claude/agents/devops-architect.md
 !.claude/agents/quality-engineer.md
-!.claude/agents/refactoring-expert.md
-!.claude/agents/requirements-analyst.md
 !.claude/agents/root-cause-analyst.md
 !.claude/agents/security-engineer.md
-!.claude/agents/system-architect.md
 !.claude/agents/technical-writer.md
 
 # Explicitly never track Claude session/cache data

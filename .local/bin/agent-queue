@@ -12,6 +12,7 @@
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item); AGENT_QUEUE_START=0 only queues it.
+# Holds: `after <slug>`, and the tags night, at:HH:MM and pr:<owner>/<repo>#<N> (until that PR merges).
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -26,6 +27,9 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
+# A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
+AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
+AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 ACTIVE="queued running waiting"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
@@ -138,8 +142,26 @@ hold_reason() {
     case "$tag" in
       night) hhmm_in "$now" "$AQ_NIGHT" || { echo "night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { echo "$tag"; return; } ;;
+      pr:?*/?*#[0-9]*) [ "$(pr_state "${tag#pr:}")" = MERGED ] || { echo "$tag not merged"; return; } ;;
     esac
   done
+}
+
+# pr_state <owner/repo#N> -> the PR's state from gh (MERGED, OPEN, CLOSED), or nothing when gh
+# cannot say, which holds the item. MERGED never changes, so it is cached for good; any other
+# state for AQ_PR_TTL seconds, so a list or a dispatch pass costs one gh call per PR.
+pr_state() {
+  local ref="$1" f state
+  f="$AQ_PR_CACHE/$(printf '%s' "$ref" | tr '/#' '__')"
+  if [ -f "$f" ]; then
+    state="$(cat "$f")"
+    if [ "$state" = MERGED ] || [ $(( $(date +%s) - $(stat -c %Y "$f") )) -lt "$AQ_PR_TTL" ]; then
+      echo "$state"; return
+    fi
+  fi
+  state="$(gh pr view "${ref##*#}" -R "${ref%#*}" --json state -q .state 2>/dev/null)" || return 0
+  mkdir -p "$AQ_PR_CACHE" && printf '%s\n' "$state" > "$f"
+  echo "$state"
 }
 
 # item_json <file> -> one JSON object: every header key, plus state, file, task, and hold.
@@ -248,7 +270,10 @@ cmd_add() {
   case "$from" in human | shepherd | board:?*:?*) ;; *) die "--from is human, shepherd or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   for tag in $tags; do
-    case "$tag" in at:*) [[ "$tag" =~ ^at:([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "a time tag is at:HH:MM, not $tag" ;; esac
+    case "$tag" in
+      at:*) [[ "$tag" =~ ^at:([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "a time tag is at:HH:MM, not $tag" ;;
+      pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
+    esac
   done
   # A hand-started session records itself.
   if [ -n "$running" ] && [ -z "$session" ]; then session="$(own_session)" || session=""; fi

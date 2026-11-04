@@ -21,7 +21,7 @@ Default to `check` when the user's ask is ambiguous or the scope is large.
 
 ## Scope and triggers
 
-Strip the tells that make code read as machine-written, then do the adjacent hygiene pass - narration comments, changelog/diary comments, section banners, reassurance prose, emoji and fancy Unicode, placeholder residue, debug prints, commented-out blocks, unused imports, TODOs with no owner. Scoped to a DIFF by default, never a whole-repo sweep, and behavior-preserving. Use when the user says "clean up the AI comments", "de-slop this", "strip the AI bullshit", "remove the useless comments", "hygiene pass before the PR", "make this not look AI-written", or before opening a PR on agent-written code. Verbs - check (report only) | clean (apply). Runs as the last step of final-pass at the end of delivery. Differs from code-review and bug-bash (hunt defects) and simplify / refactoring-expert (restructure logic) - this skill changes what the code SAYS about itself, not what it does. Never regex-deletes comments in bulk, never touches generated or vendored files.
+Strip the tells that make code read as machine-written, then do the adjacent hygiene pass - narration comments, changelog/diary comments, section banners, reassurance prose, emoji and fancy Unicode, placeholder residue, debug prints, commented-out blocks, unused imports, TODOs with no owner. Scoped to a DIFF by default, never a whole-repo sweep, and behavior-preserving. Use when the user says "clean up the AI comments", "de-slop this", "strip the AI bullshit", "remove the useless comments", "hygiene pass before the PR", "make this not look AI-written", or before opening a PR on agent-written code. Verbs - check (report only) | clean (apply). Runs as the last step of final-pass at the end of delivery. Differs from code-review and bug-bash (hunt defects) and simplify and stack-review (restructure logic) - this skill changes what the code SAYS about itself, not what it does. Never regex-deletes comments in bulk, never touches generated or vendored files.
 
 ## Scope first: this is a diff pass, not a repo sweep
 
@@ -170,7 +170,7 @@ Verified: pnpm lint, pnpm typecheck, pnpm test - all pass. Comment-only commit i
 ## Anti-goals
 
 - Not a bug hunt - that is `/code-review`, `pr-review`, or `bug-bash`.
-- Not a refactor or simplification pass - that is `/simplify` or the `refactoring-expert` agent. This skill does not restructure logic; the one exception is a rename that makes a comment unnecessary.
+- Not a refactor or simplification pass - that is `/simplify` for a diff or `stack-review` for a whole repo. This skill does not restructure logic; the one exception is a rename that makes a comment unnecessary.
 - Not a formatting run.
 - Not a docs rewrite - prose style is the writing-style rule; this is about what the code says about itself.
 - Not a comment ban. A codebase with zero comments has usually lost the why-comments too, which is a worse failure than the one this skill fixes.

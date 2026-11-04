@@ -87,3 +87,12 @@ run_hook() {
   run_hook
   [ ! -e "$REG" ]
 }
+
+@test "first_prompt comes from the running account's history, not ~/.claude's" {
+  mkdir -p "$HOME/.claude" "$SANDBOX/acct"
+  echo '{"sessionId":"self","display":"from the default account"}' > "$HOME/.claude/history.jsonl"
+  printf '%s\n' '{"sessionId":"self","display":"/one-shot"}' '{"sessionId":"self","display":"from the bnb account"}' > "$SANDBOX/acct/history.jsonl"
+  CLAUDE_CONFIG_DIR="$SANDBOX/acct" run_hook
+  run jq -r .first_prompt "$REG"
+  assert_output "from the bnb account"
+}

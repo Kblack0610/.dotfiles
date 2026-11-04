@@ -62,6 +62,10 @@ DRIFT_JSON="$(skill-drift --json 2>/dev/null || true)"
 DRIFT_TEXT="$(skill-drift 2>/dev/null || true)"
 N_DRIFT="$(printf '%s' "$DRIFT_JSON" | sed -n 's/^{"drift":\([0-9]*\).*/\1/p')"
 N_NEW="$(printf '%s' "$DRIFT_JSON" | sed -n 's/^{"drift":[0-9]*,"new":\([0-9]*\).*/\1/p')"
+# Counted recurrence from the transcripts: intents with the share of sessions where a covering
+# skill ran, and repeated opening prompts in 3+ sessions (the CLAUDE.md skill-candidate bar).
+RECUR="$(claude-recall stats --days 30 --kind intent,prompt --origin interactive --min 3 --top 15 2>/dev/null \
+         || echo 'claude-recall stats failed; judge recurrence from the lessons alone')"
 
 read -r -d '' PROMPT <<PROMPT_EOF || true
 Run the \`skill-refine\` skill's \`audit\` verb. Read ~/.claude/skills/skill-refine/SKILL.md first and follow it exactly.
@@ -74,7 +78,9 @@ That is ${N_DRIFT:-?} finding(s), ${N_NEW:-?} new since the baseline.
 
 Your job is the JUDGMENT layer the script cannot do:
 1. For each DEADPATH, find where the file ACTUALLY went (search BOTH ~/.dotfiles and ~/.dotfiles-private). Most are the public/private overlay migration. Propose the corrected path. Do not guess - verify with the filesystem.
-2. Read ~/.agent/lessons/*.md for corrections whose root cause was a skill saying something untrue, and for a multi-step manual workflow recurring 3+ times with no skill covering it.
+2. Read ~/.agent/lessons/*.md for corrections whose root cause was a skill saying something untrue. For recurring workflows with no skill, start from the counted recurrence below (last 30 days, interactive sessions): an intent whose covering skill ran in few of its sessions is a skill the router misses (a description problem), an intent or prompt with no covering skill is a skill candidate.
+
+${RECUR}
 3. Check skill descriptions for overlapping triggers with no "Differs from" clause, and for stale "Do NOT" clauses.
 4. Rank everything by blast radius: a constantly-invoked skill with a dead path outranks a rare one with a clumsy description.
 
