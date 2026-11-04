@@ -249,7 +249,7 @@ cmd_fire() {
   # that ended mid-thought keeps its worktree and says so in the log -- there is no --force.
   local reap_cmd=''
   if [ -n "$worktree" ] && [ -d "$worktree" ] && [ -x "$HOME/.local/bin/wt" ]; then
-    reap_cmd="; $HOME/.local/bin/wt reap '$worktree' >> '$logf' 2>&1"
+    reap_cmd="; $HOME/.local/bin/wt reap --after-kill '$worktree' >> '$logf' 2>&1"
   fi
 
   # The scratchpad goes after the kill too: until then Claude may still be writing to it.

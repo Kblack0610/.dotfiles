@@ -159,6 +159,21 @@ wt_is_linked() {
   [ "$gd" != "$common" ]
 }
 
+# wt_is_husk <path> -- true when <path> has no .git and holds nothing but caches a Unity
+# editor or its MCP server rewrote after the worktree was removed. Such a dir is no worktree,
+# so nothing git-based ever reaped it, and it pinned its agent-N slot for good: 2026-11-03,
+# 15 of them, eight holding a slot number. Anything else in a git-less dir may be someone's
+# only copy of their work, so it stays out.
+WT_HUSK_ENTRIES=' Library Logs Temp obj UserSettings '
+wt_is_husk() {
+  local e
+  [ -d "$1" ] && [ ! -e "$1/.git" ] || return 1
+  for e in "$1"/* "$1"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case "$WT_HUSK_ENTRIES" in *" ${e##*/} "*) ;; *) return 1 ;; esac
+  done
+}
+
 wt_branch_of() { git -C "$1" branch --show-current 2>/dev/null; }
 
 # wt_dirty_count <path> -- uncommitted changes that are WORK. One shape is not counted: a
@@ -329,6 +344,11 @@ wt_work_reason() {
     printf 'no such directory\n'
     return 1
   }
+  if [ ! -e "$path/.git" ]; then
+    wt_is_husk "$path" && return 0
+    printf 'no git, and it holds more than Unity caches\n'
+    return 1
+  fi
   wt_is_linked "$path" || {
     printf 'a main checkout, not a worktree\n'
     return 1
@@ -827,9 +847,42 @@ wt_land() {
   panel_focus_session "$name"
 }
 
+# wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose
+# executable) is <path> or below. Same /proc seam as wt_process_inside.
+wt_pids_inside() {
+  local link="${2:-cwd}" d t
+  for d in "${WT_PROC_ROOT:-/proc}"/[0-9]*; do
+    t=$(readlink "$d/$link" 2>/dev/null) || continue
+    case "$t" in "$1" | "$1"/*) printf '%s\n' "${d##*/}" ;; esac
+  done
+}
+
+# wt_settle <path> -- after the kill and before the reap: let the killed session's processes
+# finish exiting, so the reap does not count them. `kill-session` only SIGHUPs the panes and
+# returns, and the reap ran in that same instant: from #681 to 2026-11-03, 57 of the last 60
+# done.log lines were "a running process is inside it", for slots whose sessions were gone.
+# A process whose BINARY lives in the tree (Unity's gamedev-mcp-server, in Library/) is
+# reparented to systemd and never exits, so it is told to. Nothing is waited on or killed
+# while a session or pane is still in the tree (a window-scope wind-down): reap refuses that
+# anyway. waitpid's timeout is a guard; whatever is still there afterwards is what reap reports.
+WT_SETTLE_SECS="${WT_SETTLE_SECS:-30}"
+wt_settle() {
+  local path="$1" pids
+  wt_session_exists "$(basename "$path")" && return 0
+  wt_pane_inside "$path" && return 0
+  pids=$(wt_pids_inside "$path" exe)
+  # shellcheck disable=SC2086 # one pid per word
+  [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
+  pids=$( { wt_pids_inside "$path"; wt_pids_inside "$path" exe; } | sort -u)
+  # shellcheck disable=SC2086
+  [ -z "$pids" ] || waitpid --exited --timeout "$WT_SETTLE_SECS" $pids >/dev/null 2>&1 || :
+}
+
 cmd_reap() {
-  local path="${1:-$PWD}" reason main name branch
-  path="$(realpath "$path" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
+  local settle=0 path reason main name branch
+  [ "${1:-}" = --after-kill ] && settle=1 && shift
+  path="$(realpath "${1:-$PWD}" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
+  [ "$settle" -eq 0 ] || wt_settle "$path"
 
   if reason=$(wt_reap_reason "$path"); then
     :
@@ -837,8 +890,16 @@ cmd_reap() {
     panel_fail "kept $(basename "$path"): $reason" || return 1
   fi
 
-  main=$(wt_main_repo "$path") || panel_die "cannot resolve the repo for $path"
   name="$(basename "$path")"
+  # A husk has no worktree for git to remove, and wt_reap_reason has just proved it holds
+  # nothing but Unity caches and nobody is in it.
+  if wt_is_husk "$path"; then
+    rm -rf -- "$path" || panel_fail "could not remove $path" || return 1
+    printf 'reaped %s (no git, Unity caches only)\n' "$name"
+    return 0
+  fi
+
+  main=$(wt_main_repo "$path") || panel_die "cannot resolve the repo for $path"
   # Captured BEFORE the removal -- afterwards there is no worktree left to ask.
   branch="$(wt_branch_of "$path")"
 
@@ -933,7 +994,7 @@ cmd_done() {
   # `-c /` is load-bearing. A run-shell job starts in the cwd of the client that asked for it,
   # which is this shell, inside the tree: the chain and the reap it starts then held the tree
   # themselves, wt_process_inside saw them, and every `done` since #652 was kept.
-  tmux run-shell -b -c / "sleep 1; tmux kill-session -t '=$name' 2>/dev/null; $me reap '$path' >> '$logf' 2>&1" 2>/dev/null ||
+  tmux run-shell -b -c / "sleep 1; tmux kill-session -t '=$name' 2>/dev/null; $me reap --after-kill '$path' >> '$logf' 2>&1" 2>/dev/null ||
     panel_die "could not schedule the teardown on the tmux server"
 
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
