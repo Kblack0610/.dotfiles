@@ -414,7 +414,8 @@ def cmd_show(a):
 
 
 STATS_KINDS = ("slash", "skill", "agent", "intent", "prompt")
-CMD_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
+# A typed command record opens with its tag; one quoted inside a summary or paste does not.
+CMD_RE = re.compile(r"\A\s*<command-(?:name|message)>(?:.*?<command-name>)?/?([^<\s]+)</command-name>", re.S)
 # Masks applied before a prompt becomes a counting key, so "fix PR #712" and "fix PR #713"
 # are one workflow. Order matters: URLs and paths hold digits the later masks would split.
 PROMPT_MASKS = [

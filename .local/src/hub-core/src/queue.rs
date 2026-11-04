@@ -61,7 +61,7 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`.
+    /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

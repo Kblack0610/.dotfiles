@@ -42,23 +42,27 @@ EOF
 {"type":"user","entrypoint":"sdk-cli","cwd":"/home/u/other",$ts,"message":{"role":"user","content":"<command-name>/one-shot</command-name>"}}
 {"type":"assistant","entrypoint":"sdk-cli","cwd":"/home/u/other",$ts,"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"one-shot"}}]}}
 EOF
-  # s3: a /loop firing /fleet-lead three times is one session and three calls, all auto.
-  : > "$P/s3.jsonl"
-  for _ in 1 2 3; do
+  # s3: a /loop firing /fleet-lead three times is one session and three calls, all auto. One
+  # record opens with the command-message tag, as some Claude Code versions write it.
+  echo "{\"type\":\"user\",\"turnOrigin\":\"scheduled\",$cli,$c4,$ts,\"message\":{\"role\":\"user\",\"content\":\"<command-message>fleet-lead</command-message>\\n<command-name>/fleet-lead</command-name>\"}}" > "$P/s3.jsonl"
+  for _ in 1 2; do
     echo "{\"type\":\"user\",\"turnOrigin\":\"scheduled\",$cli,$c4,$ts,\"message\":{\"role\":\"user\",\"content\":\"<command-name>/fleet-lead</command-name>\"}}" >> "$P/s3.jsonl"
   done
   # s4: the same ask with a filler and a transposition typo, a one-off ask, and no skill run.
   cat > "$P/s4.jsonl" <<EOF
 {"type":"user","turnOrigin":"human",$cli,$c4,$ts,"message":{"role":"user","content":"ok can you lnad it"}}
 {"type":"user","turnOrigin":"human",$cli,$c4,$ts,"message":{"role":"user","content":"why is the build so slow today"}}
+{"type":"user",$cli,$c4,$ts,"message":{"role":"user","content":"This session is being continued. The fixture typed <command-name>/quoted</command-name> once."}}
 EOF
 }
 
 stats() { "$RECALL" stats --since 2026-10-01 --json "$@"; }
 row() { jq -c --arg k "$1" --arg key "$2" '.rows[] | select(.kind==$k and .key==$key)'; }
 
-@test "slash: a /loop is one session; headless counts as auto" {
+@test "slash: a /loop is one session; headless counts as auto; a tag quoted in a summary is not a command" {
   out="$(stats --kind slash)"
+  run row slash quoted <<<"$out"
+  assert_output ""
   run row slash fleet-lead <<<"$out"
   assert_output --partial '"calls":3,"sessions":1,"interactive_sessions":0,"auto_sessions":1'
   run row slash one-shot <<<"$out"
