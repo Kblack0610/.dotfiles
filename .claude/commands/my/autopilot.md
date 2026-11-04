@@ -38,9 +38,10 @@ or it is likely to give a bad result for the player. "Unsure" is not a risk; nam
 
 **Sanity check before each new phase** - re-read my ask and your plan (still wanted?);
 `git fetch` and check origin/main has not already done or changed it; check no other live
-session or open PR is on the same files (`gh pr list --state open`, `fleet-sessions`); check
-the repo has no nightly red (`fleet-sessions` NIGHTLY rows). All pass -> start it. One fails -> that failure is
-your named risk.
+session or open PR is on the same files (`gh pr list --state open`, `fleet-sessions`). All pass ->
+start it. One fails -> that failure is your named risk. A nightly red is never one: the PR gate
+keeps the default branch green, so a nightly red stops no phase unless your own merged PR is a
+suspect for it (then fixing it is your next step).
 
 **Log assumptions** — each non-obvious choice as `assumed: <X> because <Y>`, persisted into
 the plan/PR body when one exists.
