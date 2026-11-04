@@ -15,6 +15,11 @@ set -uo pipefail
 
 AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
 AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+# The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
+# from a copy, as in the tests), reading the same map.
+PROJECT_MAP_FILE="$AQ_MAP"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
@@ -177,9 +182,15 @@ move_to() {
   mv -- "$f" "$dest" && printf '%s\n' "$dest"
 }
 
-project_known() { # name -> true when project-map knows it, or there is no map to ask
-  [ -f "$AQ_MAP" ] || return 0
-  jq -e --arg p "$1" '[.paths[]?] + [.aliases // {} | keys[]] | index($p) != null' "$AQ_MAP" >/dev/null 2>&1
+# project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
+# start it: an alias becomes its project, and the project must reach a checkout through the
+# registry (project-name.sh's project_repo_path). A game inside a repo is runnable; a notes-only
+# project is not. With no map there is nothing to ask.
+project_resolve() {
+  [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
+  local name
+  name="$(jq -r --arg p "$1" '.aliases[$p] // $p' "$AQ_MAP" 2>/dev/null)"
+  [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"
 }
 
 project_of_cwd() {
@@ -222,7 +233,9 @@ cmd_add() {
   done
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
-  project_known "$project" || die "unknown project: $project (not in $AQ_MAP)"
+  local resolved
+  resolved="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
+  project="$resolved"
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
   lock
