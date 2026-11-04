@@ -139,16 +139,3 @@ opencode() { _tmux_agent_wrap opencode "$@"; }
 aider()    { _tmux_agent_wrap aider "$@"; }
 
 alias co="codex"
-alias claw-setup="$HOME/.dotfiles/.config/openclaw/setup-openclaw.sh"
-
-# --- Claude Code Profiles ---
-# Interactive profiles
-alias cmt="claude-profile manual-test"    # Browser testing (Playwright, Docker)
-alias cim="claude-profile implement"      # Coding (Serena, GitHub, Linear, Context7)
-alias cfl="claude-profile full"           # All MCP servers
-alias cmn="claude-profile minimal"        # Fast startup (filesystem + memory)
-
-# Headless profiles (for scripting / calling from within Claude)
-alias cmt-h="claude-profile manual-test --headless"
-alias cim-h="claude-profile implement --headless"
-alias cmn-h="claude-profile minimal --headless"

@@ -47,16 +47,9 @@ Current post-checks, in order:
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. It also deletes any request older than a day, whose session ended without a Stop to consume it.
 
-## Manual compliance audit (not Stop-time)
+## Session evaluation (not Stop-time)
 
-There is no Stop-time judge: the per-turn transcript eval was retired 2026-10-28, because a score from the last 80 lines of a transcript could not be checked and read 10/10 on most turns. The session eval is `agentctl-session-outcomes` (nightly, from transcript structure, git and gh) plus the `fleet-bench` scorecard in the daily briefing. A manual rules-compliance LLM judge stays available on demand:
-
-| Surface | Invocation | Backing script |
-|---------|-----------|----------------|
-| Claude slash command | `/my:judge` | `~/.claude/hooks/llm-judge.sh` (+ `lib/`) |
-| Codex skill | `/llm-judge` | `~/.dotfiles/.config/codex/skills/llm-judge/judge.sh` |
-
-These read the project transcript and print a compliance audit. They are not wired into Stop. Configuration lives at `~/.dotfiles/.config/llm-judge/`.
+There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (nightly, from transcript structure, git and gh) plus the `fleet-bench` scorecard in the daily briefing.
 
 ## SessionStart hooks (user-global)
 

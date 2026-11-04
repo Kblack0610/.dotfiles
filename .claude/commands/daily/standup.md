@@ -83,7 +83,6 @@ is intentionally NOT used (project preference: `gh` CLI over MCP).
 
 ## Argument Options
 
-- `--slack` or `slack`: Format for Slack (uses mrkdwn)
 - `--markdown` or `md`: Format as clean markdown
 - `--plain` or `text`: Plain text format (default)
 

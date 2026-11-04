@@ -24,8 +24,6 @@ AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
 # The shared board parser. Exported so a subject can find it even though sandbox_init
 # rewrites $HOME, which is where the deployed copy would otherwise live.
 AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
-# The shared eval-corpus parser, same reason as the board lib above.
-AGENT_EVALS_LIB="$REPO_ROOT/.local/lib/agent-evals.sh"
 # The shared lab-feed parser, same reason again. Its other consumer lives in the private
 # overlay (lab-sync's regen-project-index.sh), so this suite is where the grammar is pinned.
 LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
@@ -41,7 +39,7 @@ MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
 GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 # The shared AUTO-block splicer, same reason again.
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB AGENT_EVALS_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -119,7 +117,7 @@ sandbox_init() {
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
   # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
-  unset NTFY_URL NTFY_TOKEN SLACK_WEBHOOK_URL DISPLAY
+  unset NTFY_URL NTFY_TOKEN DISPLAY
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the
@@ -172,7 +170,6 @@ sandbox_init() {
   mkdir -p "$HOME/.local/lib"
   ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
-  ln -sfn "$REPO_ROOT/.local/lib/agent-evals.sh" "$HOME/.local/lib/agent-evals.sh"
   ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"

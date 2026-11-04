@@ -22,7 +22,7 @@
 # So `lab/projects/index.md` — the file the lab root key (`Prefix+H`) opens — rendered every current
 # project as `- **name** — —` for months. Nothing failed: an index that knows
 # nothing and an index that has nothing to report print the same thing. Same lesson
-# as agent-board.sh (#170) and agent-evals.sh: a second copy of a grammar's regexes
+# as agent-board.sh (#170): a second copy of a grammar's regexes
 # does not drift loudly, it drifts silently.
 #
 # Public API:
