@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # fleet-dispatch - start one session per easy board row, for the shepherd to see through.
 #
-#   fleet-dispatch run [--dry-run]   one pass: start the queue head, else judge board rows, launch picks
+#   fleet-dispatch run [--dry-run]   one pass: start the queue head, else fill from the board and start that
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
-#   fleet-dispatch queue [--json]    the order a pass would start rows in; no judge call, no write
+#   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch reap              settle ledger entries whose session is gone
 #   fleet-dispatch night [--dry-run] queue up to 3 tier-3 harness rows into night-shift, to a PR only
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
@@ -19,9 +19,9 @@
 # A pass starts nothing unless the human is away (fleet-presence): see gate.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
-# row's text, the policy or workers.json changes. A picked row is started on its sheet and
-# gets a detached `wt new` session on the lab server running /one-shot, tagged @dispatch,
-# with a ledger entry at live/<session> that fleet-sessions reads. Pause with `agent-hold set dispatch`.
+# row's text, the policy or workers.json changes. A picked row is started on its sheet and added
+# to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the lab server
+# running /one-shot, tagged @dispatch, with a ledger entry at live/<session>. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # `night` is the one way tier 3 runs unattended: the night-shift runner calls it before its run,
 # and it queues the dotfiles boards' tier-3 rows as night-shift tasks, which stop at an open PR.
@@ -192,6 +192,12 @@ live_runs() {
   return 0
 }
 
+# queue_areas -> "<project>/<area>" for every active queue item that names an area.
+queue_areas() {
+  agent-queue list --json --state active 2>/dev/null | jq -r 'select(.area) | "\(.project)/\(.area)"' 2>/dev/null
+  return 0
+}
+
 # rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the current wave
 rows() {
   local flag=()
@@ -313,7 +319,7 @@ picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --arg sig "$(policy_sig)" --argjson max "$UNATTENDED_TIER_CEILING" \
-    --argjson busy "$(live_runs | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
+    --argjson busy "$({ live_runs; queue_areas; } | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) '
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
@@ -398,6 +404,7 @@ cmd_start() {
     it=$(agent-queue show "$item" --json 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
     [ "$(jq -r .state <<<"$it")" = queued ] || { say "start: $item is $(jq -r .state <<<"$it"), not queued"; return 1; }
     project=$(jq -r .project <<<"$it")
+    [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
   fi
   [ -n "$project" ] || { say "start: --project is required"; return 2; }
   [ "$lane" = agent ] && flag=(--agent)
@@ -476,17 +483,52 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # item_brief <item json> -> the prompt a queue item's session starts on: plan mode gets the
 # task as typed, oneshot runs it through /one-shot (--pr-only for a `night` item).
 item_brief() {
-  local it="$1" slug mode tags pr_only=''
+  local it="$1" slug mode tags pr_only='' row
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   [ "$mode" = plan ] || printf '/one-shot%s ' "$pr_only"
   jq -r .task <<<"$it"
-  cat <<EOF
+  echo
+  row=$(item_row "$it")
+  if [ -z "$row" ]; then
+    echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
+    echo "When the PR merges: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
+  elif [ -n "$pr_only" ]; then
+    echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
+    echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
+  else
+    local prof project lane key on=''
+    IFS=$'\t' read -r prof project lane key <<<"$row"
+    [ "$lane" = agent ] && on=' --agent'
+    echo "This is agent-queue item $slug, promoted from the $project $lane board row \"$key\"."
+    echo "When the PR merges: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok; and close the row: notes${prof:+ --profile $prof} ptask $project$on done \"$key\" --proof pr:<N>"
+  fi
+  echo "If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open."
+}
 
-This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it.
-When the PR merges: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok
-If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open.
-EOF
+# item_row <item json> -> "<profile>\t<project>\t<lane>\t<key>" of a `from: board:` item, else nothing.
+item_row() {
+  jq -r 'select(.from | startswith("board:")) | (.from | ltrimstr("board:")) as $r
+    | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | @tsv' <<<"$1"
+}
+
+# settle_row <slug> -- a board item that ended failed or cancelled hands its row back: un-start it
+# and record `failed`, as reap does for a ledger row, so it is not promoted again until its text
+# changes. Idempotent: a row no longer started is left alone (done by its session, or settled).
+settle_row() {
+  local it row prof project lane key flag=()
+  it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
+  [ "$(jq -r '.state + "/" + (.status // "")' <<<"$it")" = done/ok ] && return 0
+  [ "$(jq -r .state <<<"$it")" = "done" ] || return 0
+  row=$(item_row "$it"); [ -n "$row" ] || return 0
+  IFS=$'\t' read -r prof project lane key <<<"$row"
+  [ "$lane" = agent ] && flag=(--agent)
+  row_is "$prof" "$project" "$lane" "$key" / || return 0
+  np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+  jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
+    '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
+  logline "settled queue item $1: $project $lane row un-started: $key"
+  echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
 }
 
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
@@ -509,11 +551,31 @@ settle_item() {
 # run_item <item json> -- start the queue head. The human's and the shepherd's items need every
 # gate but presence: they asked for it, and may be at the desk. A board-filled item waits for away.
 run_item() {
-  local it="$1" slug scope=any why acct model
+  local it="$1" slug scope=any why
   slug=$(jq -r .slug <<<"$it")
   case "$(jq -r .from <<<"$it")" in board:*) scope=away ;; esac
   why=$(gate "$scope")
   if [ -n "$why" ]; then settle NOOP "$why, queue item $slug waits"; [ "$DRY" = 1 ] || return 0; fi
+  start_item "$it"
+}
+
+# next_item -> the queue head a pass should try: a board item waits for the human to be away
+# (run_item's gate), so while they are not, the first human or shepherd item behind it goes first.
+next_item() {
+  local q
+  q=$(agent-queue list --json --state queued 2>/dev/null | jq -sc '[.[] | select(.hold == null)]' 2>/dev/null)
+  case "$(fleet-presence 2>/dev/null)" in
+    away*) ;;
+    *) q=$(jq -c '[.[] | select(.from | startswith("board:") | not)]' <<<"$q" 2>/dev/null) ;;
+  esac
+  jq -c '.[0] // empty' <<<"${q:-[]}" 2>/dev/null
+  return 0
+}
+
+# start_item <item json> -- past the gates: start it, and publish what happened.
+start_item() {
+  local it="$1" slug acct model
+  slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old.
   acct=$(claude-acct room 2>/dev/null) || { settle NOOP "no account has room for queue item $slug"; return 0; }
@@ -533,7 +595,14 @@ run_item() {
 # the human may reuse its tmux session after the dispatched Claude ends, and that must not
 # hold a dispatch slot.
 cmd_reap() {
-  local f s project prof lane key item flag
+  local f s project prof lane key item flag d
+  # A board item cancelled or failed with no session of its own (cancelled while queued, say).
+  for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
+    [ -n "$d" ] || continue
+    agent-queue list --json --state "done" --date "$d" 2>/dev/null |
+      jq -r 'select((.from | startswith("board:")) and .status != "ok") | .slug' 2>/dev/null |
+      while IFS= read -r s; do settle_row "$s"; done
+  done
   for f in "$LIVE"/*; do
     [ -f "$f" ] || continue
     s="${f##*/}"
@@ -545,6 +614,7 @@ cmd_reap() {
         logline "reaped $s: queue item $item closed (session still up)"
       else
         settle_item "$item" "$s"
+        settle_row "$item"
       fi
       rm -f -- "$f"
       continue
@@ -634,7 +704,7 @@ settle() {
 }
 
 cmd_run() {
-  local why live room cands picked c n started=0
+  local why live room
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1
   mkdir -p "$DIR"
@@ -647,7 +717,7 @@ cmd_run() {
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
   if [ "$room" -le 0 ]; then settle NOOP "at $live live dispatched sessions, starting nothing"; return 0; fi
   # The queue comes first; board rows are only looked at while nothing in it is runnable.
-  local item; item=$(agent-queue next --json 2>/dev/null)
+  local item; item=$(next_item)
   if [ -n "$item" ]; then run_item "$item"; return; fi
   why=$(gate)
   if [ -n "$why" ]; then
@@ -655,35 +725,86 @@ cmd_run() {
     [ "$DRY" = 1 ] || return 0
   fi
 
-  judge "$(cmd_candidates)" || { settle FAILED "could not judge the new rows"; return 1; }
+  fill_now "$room" || { settle FAILED "could not judge the new rows"; return 1; }
+  if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle NOOP "no row qualifies this pass"; return 0; fi
+  # Past the gates already: what fill promoted starts now, through the same start as any item.
+  item=$(next_item)
+  [ -n "$item" ] || { settle NOOP "no row qualifies this pass"; return 0; }
+  start_item "$item"
+}
+
+# fill_now <room> -- judge the new rows, then promote the picks into the queue as low, `from:
+# board:`: up to <room> rows a merging session may take, and tier-3 rows (night_picks) tagged
+# `night`, which run to an open PR only, up to DISPATCH_NIGHT_MAX active at once.
+fill_now() {
+  local room="$1" picked night active c
+  FILLED=0
+  judge "$( { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]')" || return 1
   # Every open row again, judged ones included: a row judged on an earlier pass can be picked now.
-  cands=$(all_open)
-  picked=$(picks "$cands" "$room")
-  [ -n "$picked" ] || { settle NOOP "no row qualifies this pass"; return 0; }
-  n=$(grep -c . <<<"$picked")
+  picked=$(picks "$(all_open)" "$room")
+  active=$(agent-queue list --json --state active 2>/dev/null |
+    jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
+  active=$(( DISPATCH_NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
+  night=$(night_picks "$(night_rows '')" | head -n "$active")
   while IFS= read -r c; do
-    if [ "$DRY" = 1 ]; then
-      echo "would start: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$c")"
-    else
-      launch "$c" && started=$(( started + 1 ))
-    fi
+    [ -n "$c" ] || continue
+    FILLED=$(( FILLED + 1 ))
+    if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$c")"
+    else promote "$c" "" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')"; fi
   done <<<"$picked"
-  [ "$DRY" = 0 ] || return 0
-  if [ "$started" -gt 0 ]; then settle WORKED "started $started of $n"; else settle FAILED "picked $n, started none"; return 1; fi
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    FILLED=$(( FILLED + 1 ))
+    if [ "$DRY" = 1 ]; then echo "would queue for the night: $(jq -r '"\(.project) \(.area): \(.key)"' <<<"$c")"
+    else promote "$c" night "$(night_brief "$c")"; fi
+  done <<<"$night"
+  return 0
+}
+
+# promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue; a row
+# that cannot be added is un-started again, as start does for a session that never opened.
+promote() {
+  local c="$1" tags="$2" task="$3" prof project lane key area out slug flag=()
+  prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
+  key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
+  [ "$lane" = agent ] && flag=(--agent)
+  row_is "$prof" "$project" "$lane" "$key" ' ' || { say "skip $project: row no longer open: $key"; return 1; }
+  np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+  row_is "$prof" "$project" "$lane" "$key" / || { say "skip $project: could not start row: $key"; return 1; }
+  if ! out=$(agent-queue add --project "$project" --priority low --from "board:$project:$key" --slug "$key" \
+      ${tags:+--tags "$tags"} -- "$task" 2>&1); then
+    np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+    say "could not queue $project row, un-started: $key ($out)"
+    return 1
+  fi
+  slug=$(awk '{ print $2; exit }' <<<"$out")
+  agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
+  logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $key"
+  echo "queued $project: $key"
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
 all_open() { VERDICTS=/dev/null cmd_candidates; }
 
-# cmd_queue [--json] -- the order a pass would start rows in, with no judge call and no write:
+# cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks into the queue, no
+# gate. --dry-run is the order a pass would promote rows in, with no judge call and no write:
 # `ready` rows are picks over every open row (cached verdicts only, a live area skipped), then
 # `unjudged` rows, which no current verdict covers and the next pass judges first.
-cmd_queue() {
-  local open ready unj
+cmd_fill() {
+  local open ready unj dry=0 json=''
+  while [ $# -gt 0 ]; do
+    case "$1" in --dry-run) dry=1 ;; --json) json=1 ;; *) say "fill: unknown argument: $1"; return 2 ;; esac
+    shift
+  done
+  if [ "$dry" = 0 ]; then
+    DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
+    flock -n 9 || { say "fill: another pass is running"; return 0; }
+    fill_now "$DISPATCH_PER_PASS"; return
+  fi
   open=$(all_open)
   ready=$(picks "$open" 999)
   unj=$(cmd_candidates)
-  if [ "${1:-}" = --json ]; then
+  if [ -n "$json" ]; then
     { [ -z "$ready" ] || jq -c '. + {state: "ready"}' <<<"$ready"
       [ -z "$unj" ] || jq -c '. + {state: "unjudged"}' <<<"$unj"; }
     return 0
@@ -827,7 +948,7 @@ main() {
   case "${1:-}" in
     run) shift; cmd_run "$@" ;;
     candidates) cmd_candidates ;;
-    queue) shift; cmd_queue "$@" ;;
+    fill) shift; cmd_fill "$@" ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
     night) shift; cmd_night "$@" ;;

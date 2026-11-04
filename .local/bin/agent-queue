@@ -322,7 +322,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued, from)
 # are not settable: they are what the item is.
-SETTABLE=" project mode priority tags after agent started waiting finished session account plan pr note status "
+SETTABLE=" project mode priority tags after agent started waiting finished session account plan pr note status area origin lane profile "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k

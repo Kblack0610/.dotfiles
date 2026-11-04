@@ -453,24 +453,71 @@ game_ready() {
   game_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
-  assert_output --partial 'would start: game (beta) human, fleet, fix crash on load: fix crash on load'
+  assert_output --partial 'would queue: game (beta) human, fleet, fix crash on load: fix crash on load'
   assert_not_called 'wt new'
   assert_not_called 'start fix crash'
   [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "dry run wrote a ledger"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "dry run queued an item"
 }
 
-@test "run starts the row, opens a detached lab session, tags it and writes the ledger" {
+@test "run fills the queue from the board, then starts that item on a detached lab session" {
   game_ready
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
+  assert_output --partial 'queued game: fix crash on load'
   assert_output --partial 'started game-agent-1'
   assert_called 'ptask game start fix crash on load'
   grep -qF -- '- [/] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
+  f=$(qitem running fix-crash-on-load)
+  [ -n "$f" ] || fail "the promoted item is not running"
+  assert_equal "$(qfield "$f" from)" 'board:game:fix crash on load'
+  assert_equal "$(qfield "$f" priority) $(qfield "$f" lane) $(qfield "$f" profile) $(qfield "$f" area)" 'low human bnb fix crash on load'
+  assert_equal "$(qfield "$f" session)" game-agent-1
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
-  assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix crash on load'
-  assert_equal "$(sed -n 's/^key=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
+  assert_called 'ptask game done "fix crash on load" --proof pr:<N>'
+  assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: fix-crash-on-load'
   assert_equal "$(sed -n 's/^server=//p;s/^origin=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1" | paste -sd' ')" 'lab run'
   assert_equal "$(sed -n 's/^area=//p' "$FLEET_DISPATCH_DIR/live/game-agent-1")" 'fix crash on load'
+}
+
+@test "fill promotes picks into the queue with no gate and starts nothing; --dry-run lists them" {
+  game_ready
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  assert_success
+  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load: fix crash on load'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_output --partial 'queued game: fix crash on load'
+  [ -n "$(qitem queued fix-crash-on-load)" ] || fail "not queued"
+  assert_not_called 'wt new'
+}
+
+@test "a queued board item holds its area against another pick" {
+  game_ready
+  row game human 'fix crash on save' "- [ ] fix crash on save $T"
+  verdict game human 'fix crash on save' dispatch S 1 'fix crash on load'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  refute_output --partial 'ready'
+}
+
+@test "a board item that ends failed or cancelled hands its row back once, recorded failed" {
+  game_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  grep -qF -- '- [/] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
+  agent-queue cancel fix-crash-on-load
+  run cmd_reap
+  assert_success
+  assert_output --partial 'un-started game: fix crash on load (queue item fix-crash-on-load ended cancelled)'
+  grep -qF -- '- [ ] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not un-started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r .verdict)" failed
+  run cmd_reap
+  refute_output --partial 'un-started'
 }
 
 @test "run claims a row at the top of a board too big for one pipe buffer" {
@@ -535,7 +582,7 @@ refuses() {
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_called ':: CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
   assert_not_called '/wrong/pick'
 }
 
@@ -626,7 +673,7 @@ refuses() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
   assert_output --partial 'not away (here 0 tmux)'
-  assert_output --partial 'would start: game'
+  assert_output --partial 'would queue: game'
   assert_not_called 'wt new'
 }
 
@@ -1046,19 +1093,19 @@ J
   [ "$(jq -r .tier3_only "$FLEET_DISPATCH_DIR/verdicts.jsonl")" = true ]
 }
 
-@test "queue lists ready picks then unjudged rows, and never judges, claims or launches" {
+@test "fill --dry-run lists ready picks then unjudged rows, and never judges, claims or launches" {
   game_ready
   row game human 'add a new map' "- [ ] add a new map $T"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" queue
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
   assert_success
   assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load: fix crash on load'
   assert_line --index 1 'unjudged  game (beta) human: add a new map'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" queue --json
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run --json
   assert_equal "$(jq -r '"\(.state) \(.key)"' <<<"$output" | paste -sd, -)" 'ready fix crash on load,unjudged add a new map'
   assert_not_called 'judge called'
   assert_not_called 'wt new'
   assert_not_called 'start '
-  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "queue wrote a ledger"
+  [ ! -d "$FLEET_DISPATCH_DIR/live" ] || [ -z "$(ls "$FLEET_DISPATCH_DIR/live")" ] || fail "fill --dry-run wrote a ledger"
 }
 
 # --- the queue ---------------------------------------------------------------------------
@@ -1110,14 +1157,13 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'no queue item: nope'
 }
 
-@test "the human's queue item starts while the human is here; a board-filled one waits for away" {
+@test "the human's queue item starts while the human is here, past a board-filled one that waits for away" {
   game_ready
   stub fleet-presence 'echo "here 0 tmux"'
   agent-queue add --project game --slug from-board --from board:game:x "x"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'the human is not away'
   assert_not_called 'wt new'
-  agent-queue bump from-board low
   agent-queue add --project game --slug mine "mine"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
