@@ -181,7 +181,8 @@ function machinesTable(cc, inst) {
   }).join("")}</table>`;
 }
 
-// One row per Claude account, from claude-acct's textfile. The weekly percent is what stops work;
+// One row per Claude account, from claude-acct's textfile. The weekly percent is what stops work,
+// the 5h window what stops it for the next few hours;
 // dollars are the OTel list-price estimate, for scale.
 function accountsTable(inst) {
   const by = {};
@@ -191,12 +192,12 @@ function accountsTable(inst) {
   const names = Object.keys(by).sort();
   if (!names.length) return `<div class="empty">no data</div>`;
   const when = (t) => (t ? new Date(t * 1e3).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "-");
-  return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>pace</th><th>runs out</th><th>resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
+  return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>pace</th><th>runs out</th><th>resets</th><th class="n">5h</th><th>5h resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
     const a = by[n];
-    if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="8" class="bad">usage unreadable</td></tr>`;
-    if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="8" class="muted">idle, token refreshes on launch</td></tr>`;
+    if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="10" class="bad">usage unreadable</td></tr>`;
+    if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="10" class="muted">idle, token refreshes on launch</td></tr>`;
     const over = a.over_pace === 1;
-    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td>${over ? "over" : "under"}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
+    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td>${over ? "over" : "under"}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.five_hour_percent == null ? "-" : Math.floor(a.five_hour_percent) + "%"}</td><td>${when(a.five_hour_resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
   }).join("")}</table>`;
 }
 

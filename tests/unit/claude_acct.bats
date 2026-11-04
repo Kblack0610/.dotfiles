@@ -453,9 +453,23 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   assert_line 'claude_account_week_used_percent{account="main"} 30'
   assert_line 'claude_account_week_gone_percent{account="main"} 50'
   assert_line 'claude_account_over_pace{account="main"} 0'
+  refute_line --partial 'five_hour'
   assert_line 'claude_account_read_ok{account="alt"} 0'
   refute_line --partial 'week_used_percent{account="alt"}'
   [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
+}
+
+@test "textfile: a reported five hour window publishes its percent and its reset" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  printf '%s' "$(jq -c '.five_hour = {utilization: 26, resets_at: "2026-11-04T03:39:59.658454+00:00"}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  mkdir -p "$SANDBOX/tf"
+  run "$ACCT" textfile "$SANDBOX/tf"
+  assert_success
+  run cat "$SANDBOX/tf/claude_acct.prom"
+  assert_line 'claude_account_five_hour_percent{account="main"} 26'
+  assert_line 'claude_account_five_hour_resets_timestamp_seconds{account="main"} 1793763599'
 }
 
 @test "room: the emptier account under pace wins; main prints empty, alt its dir" {

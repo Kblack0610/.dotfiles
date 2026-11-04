@@ -254,6 +254,7 @@ usage_json() {
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
             {name: $name, dir: $dir, email: $email, state: $state,
              five_hour: ($usage.five_hour.utilization // null),
+             five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
              week_used: ($used | num), week_gone: ($gone | num),
              over_pace: (if $over == "" then null else $over == "true" end),
              resets: ($resets | num), run_out: ($run_out | num), live: $live,
@@ -305,6 +306,8 @@ cmd_textfile() {
         (rows("claude_account_week_used_percent"; .week_used)),
         (rows("claude_account_week_gone_percent"; .week_gone)),
         (rows("claude_account_over_pace"; if .over_pace == null then null elif .over_pace then 1 else 0 end)),
+        (rows("claude_account_five_hour_percent"; .five_hour)),
+        (rows("claude_account_five_hour_resets_timestamp_seconds"; .five_hour_resets)),
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
         (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
         (rows("claude_account_live_sessions"; .live)),
