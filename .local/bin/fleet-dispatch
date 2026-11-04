@@ -817,7 +817,7 @@ last_run_start() {
 # stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
 # all and by urgent/high; starved (the queue-starved verdict); the last pass and last run start;
-# starts in the last hour by origin; reap moves in the last hour, and the items moved
+# reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
 cmd_stats() {
   local now q aq since started pass=null starved=false hr=null
@@ -833,7 +833,6 @@ cmd_stats() {
     pass=$(stat -c %Y "$(proof_state_dir)/fleet-dispatch/last-outcome" 2>/dev/null || echo null)
   awk -v since="$since" '
     ($2 " " $3) < since { next }
-    $4 == "started" && match($0, / \([a-z]+\) for /) { print "start", substr($0, RSTART + 2, RLENGTH - 8); next }
     $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
     $4 == "reaped" { print "settle", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
@@ -841,13 +840,10 @@ cmd_stats() {
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select(.priority == "urgent" or .priority == "high"))) as $u
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
-        def starts(o): $ev | map(select(.[0] == "start" and .[1] == o)) | length;
         ($ev | map(select(.[0] == "move") | .[1]) | group_by(.) | map(select(length >= $flap) | .[0])) as $flapping
       | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length),
          oldest_runnable_s: age($q), oldest_urgent_s: age($u), starved: $starved,
          last_pass_epoch: $pass, last_run_start_epoch: $start,
-         starts_1h_run: starts("run"), starts_1h_hand: starts("hand"),
-         starts_1h_redispatch: starts("redispatch"), starts_1h_resume: starts("resume"),
          reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),
          flapping_items: ($flapping | length), flapping: $flapping,
          could_start: ($hr.could_start // null)}

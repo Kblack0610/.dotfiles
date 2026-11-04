@@ -1568,7 +1568,7 @@ queued_item() {
   assert_output --partial 'dispatch is held'
 }
 
-@test "stats: runnable work and its age, starts by origin and reap moves in the last hour, flapping items" {
+@test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
   queued_item stuck high "$old"
@@ -1589,7 +1589,6 @@ queued_item() {
   run cmd_stats
   assert_success
   assert_equal "$(jq -c '[.runnable, .runnable_urgent, .starved]' <<<"$output")" '[2,1,false]'
-  assert_equal "$(jq -c '[.starts_1h_run, .starts_1h_hand, .starts_1h_redispatch, .starts_1h_resume]' <<<"$output")" '[1,1,1,0]'
   assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[5,1,["b"]]'
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"

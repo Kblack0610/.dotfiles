@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch). The bar is the runnable queue items, how long
-# the oldest has waited, a dim +N when heals (reaps) ran in the last hour, and a colour:
-#   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in PASS_LATE_SECS
-#   amber  the last pass left runnable work waiting (BLOCKED), an item is flapping, or more
-#          could start than the limits let the last pass (could_start, `fleet-dispatch headroom`)
-#   neutral otherwise: a deep queue that is moving, or full slots on a full machine, is no fault
-# The hover is the whole queue: every state, holds by kind, the oldest waits, flow by the hour
-# and a drain trend, the room the last pass had and what held it, the last pass and start, heals.
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is the
+# ready queue items, how long the oldest has waited, and the run units in use against the cap,
+# and a colour:
+#   red    queue-starved is tripped, the fleet-dispatch runner failed, no pass in
+#          PASS_LATE_SECS, a session is STALLED, or a host's fleet_sessions.prom is older
+#          than STATE_LATE_SECS
+#   amber  the last pass left ready work waiting (BLOCKED), an item is flapping, more could
+#          start than the limits let the last pass (could_start), a session is UNCLEAR, or a
+#          shepherd due line went unhandled
+#   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
+# The hover has one section per system: Queue (items, oldest, 1h and 24h flow, drain), Dispatch
+# (capacity, what paused the last pass, self-heal), Sessions (fleet-sessions stages and every
+# session that wants a look) and Shepherd (its last pass and the last 24h). Exceptions lead it.
 #
-# Everything is read from Prometheus (the agent feed: summary/dispatch from
-# `fleet-dispatch stats`, which folds in `agent-queue stats` and the last pass's headroom; the
-# fleet_dispatch runner; the queue-starved watch), so the chip reads the same on the laptop thin
-# client. Only live feed topics count (cc:agents_topic_live), so a host that stopped publishing
-# cannot hold it red. Prometheus unreadable reads ? in amber and no dispatch numbers read -,
-# never a quiet nothing.
+# Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
+# fleet_dispatch runner, the queue-starved watch, summary/shepherd from `fleet-shepherd stats`,
+# and the fleet_sessions.prom textfile `fleet-sessions tick` writes), so the chip reads the
+# same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
+# that stopped publishing cannot hold it red. Prometheus unreadable reads ? in amber and no
+# dispatch numbers read -, never a quiet nothing.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -26,36 +31,32 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 ICON=$'\uf01c'
 # fleet-dispatch runs every 15 minutes; three missed passes is a stopped timer, not a slow one.
 PASS_LATE_SECS=2700
+# fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
+STATE_LATE_SECS=300
+# An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
+URGENT_LATE_SECS=3600
 C_DIM="#7f7f7f"
+C_GRN="${LEVEL_COLOUR[0]}"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
-q='{__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved)"} and on (topic) cc:agents_topic_live'
+q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q+=' or agent_sessions or agent_session_idle_minutes{bucket=~"STALLED|UNCLEAR|NEEDS"} or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
   exit 0
 fi
 
-# One object: kind.key -> value, kind being dispatch, runner or watch; max over hosts. Every
-# value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
-v="$(jq -c '[.data.result[] | {k: ((.metric.topic | capture("_(?<k>summary_dispatch|runner|watch)(_|$)") | .k
-      | sub("summary_"; "")) + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}]
+# One object: kind.key -> value, kind being dispatch, runner, watch or shepherd; max over hosts.
+# Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
+v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
+      | capture("_(?<k>summary_dispatch|summary_shepherd|runner|watch)(_|$)") | .k | sub("summary_"; ""))
+      + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}]
     | group_by(.k) | map({key: .[0].k, value: (map(.v) | max)}) | from_entries' <<< "$raw")"
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
-
-if [ -z "$(get dispatch.runnable)" ]; then
-  emit "$ICON $(paint "$C_YEL" -)" "$title"$'\n'"no dispatch numbers on the feed: agent-mqtt-publish publishes fleet-dispatch stats as summary/dispatch" warn
-  exit 0
-fi
-
-runnable="$(get dispatch.runnable)" urgent="$(get dispatch.runnable_urgent)"
-pass="$(get dispatch.last_pass_epoch)" start="$(get dispatch.last_run_start_epoch)"
-reaped="$(get dispatch.reaped_1h)" flapping="$(get dispatch.flapping_items)"
-oldest="$(get dispatch.oldest_runnable_s)"
-pass_age=$((now - ${pass:-0})) start_age=-
-[ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
+n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
 
 # short <seconds> -> 45m, 14h, 2d: the bar's width, where prom_dur's 14h35m is too long.
 short() {
@@ -64,69 +65,168 @@ short() {
   else printf '%dd' $(($1 / 86400)); fi
 }
 
+# flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
-[ "$(get runner.blocked)" = 1 ] && level=1 why+=("the last pass left runnable work waiting (BLOCKED)")
-((${flapping:-0} > 0)) && level=1 why+=("$flapping item(s) flapping between running and waiting")
-could="$(get dispatch.could_start)"
-((${could:-0} > 0)) && level=1 why+=("$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)")
-[ "$(get watch.tripped)" = 1 ] && level=2 why+=("queue-starved is tripped")
-[ "$(get runner.failed)" = 1 ] && level=2 why+=("the fleet-dispatch runner failed")
-((pass_age > PASS_LATE_SECS)) && level=2 why+=("no pass in $(prom_dur "$pass_age"); is fleet-dispatch.timer running?")
+flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
 
-text="$ICON $runnable $(short "$oldest")"
-((level == 2)) && text="$ICON $runnable !"
-((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
-((${reaped:-0} > 0)) && text+=" $(paint "$C_DIM" "+$reaped")"
-
-# drain: the last 6h of flow, added against done, as a trend. Holds release more work and new
-# work keeps coming, so it is never an ETA.
-drain=-
-done6="$(get dispatch.done_6h)" added6="$(get dispatch.added_6h)" queued="$(get dispatch.queued)"
-if [ -n "$done6" ] && [ -n "$added6" ]; then
-  drain="last 6h +$added6 added, -$done6 done: $(awk -v a="$added6" -v d="$done6" -v q="${queued:-0}" 'BEGIN {
-    n = (d - a) / 6
-    if (n > 0) printf "shrinking, clears in about %dh at that rate", int(q / n + 0.5)
-    else if (n < 0) printf "growing about %.0f/h", -n
-    else printf "steady" }')"
-fi
-
-# held: the one gate that held the last pass, if any, by name.
-held=''
-for k in slots load idle account assess other; do
-  [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
-  case $k in
-    slots) held="every run unit is used (DISPATCH_MAX_LIVE)" ;;
-    load) held="load is over the cap (DISPATCH_MAX_LOAD)" ;;
-    idle) held="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
-    assess) held="fleet-assess says the machine is too busy (fleet-assess)" ;;
-    account) held="no account has room under its weekly pace" ;;
-    other) held="a gate (fleet-dispatch headroom says which)" ;;
-  esac
-done
-
-tip="$title  $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
-for w in "${why[@]}"; do tip+=$'\n'"$(paint "${LEVEL_COLOUR[$level]}" "$w")"; done
-tip+=$'\n'"queued: $runnable runnable ($urgent urgent or high), $(d held) held ($(d held_after) after a phase, $(d held_pr) on a PR, $(d held_time) by a time tag)"
-tip+=$'\n'"oldest: runnable $(prom_dur "$oldest"), urgent $(prom_dur "$(get dispatch.oldest_urgent_s)")"
-n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
-tip+=$'\n'"flow: last hour $(($(n0 starts_1h_run) + $(n0 starts_1h_hand) + $(n0 starts_1h_redispatch) + $(n0 starts_1h_resume))) started (run $(d starts_1h_run), hand $(d starts_1h_hand), redispatch $(d starts_1h_redispatch), resume $(d starts_1h_resume)), $(d done_1h) done; $(d done_24h) done in 24h"
-tip+=$'\n'"drain: $drain"
-if [ -n "$(get dispatch.room_max_live)" ]; then
-  # Each number in its own colour, labels plain: green with room, amber near its limit, red past it.
-  # Full units are amber at most: the gates, not the count, decide when the machine is full.
-  units=$(n0 room_live_runs) cap=$(n0 room_max_live) load=$(n0 room_load) lcap=$(n0 room_load_cap)
-  idle=$(n0 room_idle) floor=$(n0 room_min_idle)
-  ul=0; [ "$units" -ge "$cap" ] && ul=1
-  ll=0; [ $((load * 100)) -ge $((lcap * 80)) ] && ll=1; [ "$load" -gt "$lcap" ] && ll=2
-  il=0; [ "$idle" -lt $((floor + 10)) ] && il=1; [ "$idle" -lt "$floor" ] && il=2
-  room="room: run units $(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
-  [ -n "$(get dispatch.room_live_hand)" ] && room+=", +$(d room_live_hand) started by hand"
-  tip+=$'\n'"$room; load $(paint "${LEVEL_COLOUR[$ll]}" "$load of $lcap"); idle $(paint "${LEVEL_COLOUR[$il]}" "$idle% (floor $floor%)")"
+# --- Queue and Dispatch: summary/dispatch ---
+ready="$(get dispatch.runnable)"
+qhead="$title" queue='' disp='' bar_units=''
+if [ -z "$ready" ]; then
+  flag 1 "no dispatch numbers on the feed: agent-mqtt-publish publishes fleet-dispatch stats as summary/dispatch"
 else
-  tip+=$'\n'"room: no headroom from a pass in the last 45 minutes"
+  pass="$(get dispatch.last_pass_epoch)" start="$(get dispatch.last_run_start_epoch)"
+  reaped="$(get dispatch.reaped_1h)" flapping="$(get dispatch.flapping_items)" could="$(get dispatch.could_start)"
+  oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)"
+  pass_age=$((now - ${pass:-0})) start_age=-
+  [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
+  [ "$(get runner.blocked)" = 1 ] && flag 1 "the last pass left ready work waiting (BLOCKED)"
+  ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping between running and waiting"
+  ((${could:-0} > 0)) && flag 1 "$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)"
+  [ "$(get watch.tripped)" = 1 ] && flag 2 "queue-starved is tripped"
+  [ "$(get runner.failed)" = 1 ] && flag 2 "the fleet-dispatch runner failed"
+  ((pass_age > PASS_LATE_SECS)) && flag 2 "no pass in $(prom_dur "$pass_age"); is fleet-dispatch.timer running?"
+
+  # oldest: the urgent wait is amber past URGENT_LATE_SECS, red when queue-starved trips.
+  uw="$(prom_dur "$urgent_s")"
+  if [ "$(get watch.tripped)" = 1 ]; then uw="$(paint "$C_RED" "$uw")"
+  elif [[ "$urgent_s" =~ ^[0-9]+$ ]] && ((urgent_s > URGENT_LATE_SECS)); then uw="$(paint "$C_YEL" "$uw")"; fi
+
+  # drain: the last 6h, added against finished, and the net. Blocks release more work and new
+  # work keeps coming, so the empty time is a rate, never an ETA. Shrinking is green, growing
+  # amber, steady plain.
+  drain=-
+  done6="$(get dispatch.done_6h)" added6="$(get dispatch.added_6h)" queued="$(get dispatch.queued)"
+  if [ -n "$done6" ] && [ -n "$added6" ]; then
+    net=$((added6 - done6))
+    t="$(awk -v n="$net" -v q="${queued:-0}" 'BEGIN {
+      r = -n / 6
+      if (r > 0) { h = int(q / r + 0.5); printf "0 shrinking, empty in about %s at that rate", (h < 48 ? h "h" : int(h / 24 + 0.5) "d") }
+      else if (r < 0) printf "1 growing about %.0f/h", -r
+      else printf "- steady" }')"
+    case ${t%% *} in 0) t="$(paint "$C_GRN" "${t#* }")" ;; 1) t="$(paint "$C_YEL" "${t#* }")" ;; *) t="${t#* }" ;; esac
+    drain="$added6 added, $done6 finished, net $( ((net > 0)) && printf '+')$net: $t"
+  fi
+
+  # flow <h>: started, done (finished and not failed) and failed in the last h hours; failed is amber.
+  flow() {
+    local st dn fl
+    st="$(d "started_${1}h")" dn="$(get "dispatch.done_${1}h")" fl="$(get "dispatch.failed_${1}h")"
+    [ -n "$dn" ] && [ -n "$fl" ] && dn=$((dn - fl))
+    ((${fl:-0} > 0)) && fl="$(paint "$C_YEL" "$fl")"
+    printf '%s started, %s done, %s failed' "$st" "${dn:--}" "${fl:--}"
+  }
+
+  total=-
+  [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
+  qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
+  queue="queued: $ready ready ($(d runnable_urgent) urgent or high), $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
+  queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
+  queue+=$'\n'"last hour: $(flow 1)"
+  queue+=$'\n'"last 24h: $(flow 24)"
+  queue+=$'\n'"drain 6h: $drain"
+
+  # paused by: the one gate that stopped the last pass, if any, by name.
+  paused=''
+  for k in slots load idle account assess other; do
+    [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
+    case $k in
+      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
+      load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
+      idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
+      assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
+      account) paused="no account has room under its weekly pace" ;;
+      other) paused="a gate (fleet-dispatch headroom says which)" ;;
+    esac
+  done
+
+  disp="<b>Dispatch</b>  a pass every 15 minutes"
+  if [ -n "$(get dispatch.room_max_live)" ]; then
+    # Each number in its own colour, labels plain: green with room, amber near its limit, red past it.
+    # Full units are amber at most: the gates, not the count, decide when the machine is full.
+    units=$(n0 room_live_runs) cap=$(n0 room_max_live) load=$(n0 room_load) lcap=$(n0 room_load_cap)
+    idle=$(n0 room_idle) floor=$(n0 room_min_idle)
+    ul=0; [ "$units" -ge "$cap" ] && ul=1
+    ll=0; [ $((load * 100)) -ge $((lcap * 80)) ] && ll=1; [ "$load" -gt "$lcap" ] && ll=2
+    il=0; [ "$idle" -lt $((floor + 10)) ] && il=1; [ "$idle" -lt "$floor" ] && il=2
+    bar_units="$(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
+    cl="capacity: run units $bar_units"
+    [ -n "$(get dispatch.room_live_hand)" ] && cl+=", +$(d room_live_hand) by hand"
+    disp+=$'\n'"$cl; load $(paint "${LEVEL_COLOUR[$ll]}" "$load of $lcap"); idle $(paint "${LEVEL_COLOUR[$il]}" "$idle% (floor $floor%)")"
+  else
+    disp+=$'\n'"capacity: no headroom from a pass in the last 45 minutes"
+  fi
+  [ -n "$paused" ] && disp+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
+  cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
+  disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"
+  fl="${flapping:-0}"; ((fl > 0)) && fl="$(paint "$C_YEL" "$fl")"
+  disp+=$'\n'"self-heal last hour: reaped ${reaped:-0}, flapping $fl"
 fi
-[ -n "$held" ] && tip+=$'\n'"held by: $held"
-tip+=$'\n'"last pass $(prom_dur "$pass_age") ago, last start $start_age ago"
-tip+=$'\n'"heals last hour: reaped ${reaped:-0}, flapping ${flapping:-0}; could start now: ${could:--} more"
+
+# --- Sessions: the fleet_sessions.prom textfile ---
+# counts: bucket -> sessions, max per host (two scrapes of one host read once), summed over hosts.
+counts="$(jq -c '[.data.result[] | select(.metric.__name__ == "agent_sessions")
+    | {h: (.metric.host // ""), b: .metric.bucket, v: (.value[1] | tonumber | floor)}]
+  | group_by([.h, .b]) | map({b: .[0].b, v: (map(.v) | max)})
+  | group_by(.b) | map({key: .[0].b, value: (map(.v) | add)}) | from_entries' <<< "$raw")"
+nb() { jq -r --arg b "$1" '.[$b] // 0' <<< "$counts"; }
+sess="<b>Sessions</b>  fleet-sessions stages, every minute"
+if [ "$counts" = "{}" ]; then
+  sess+=$'\n'"no agent_sessions on Prometheus: fleet-sessions tick writes fleet_sessions.prom"
+else
+  n_unclear="$(nb UNCLEAR)" n_stalled="$(nb STALLED)"
+  ((n_unclear > 0)) && flag 1 "$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged"
+  ((n_stalled > 0)) && flag 2 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
+  # stage <bucket> <label> [colour]: "2 need you", its number painted when it is not 0.
+  stage() {
+    local c
+    c="$(nb "$1")"
+    if [ -n "${3:-}" ] && ((c > 0)); then printf '%s %s' "$(paint "$3" "$c")" "$2"; else printf '%s %s' "$c" "$2"; fi
+  }
+  sess+=$'\n'"$(stage WORKING working), $(stage NEEDS 'need you' "$C_YEL"), $(stage STALLED stalled "$C_RED"), $(stage UNCLEAR unclear "$C_YEL"), $(stage LANDED landed), $(stage DONE done), $(stage PARKED parked)"
+  # One line per session that wants a look, worst first: stalled, unclear, then needs, by idle.
+  while IFS=$'\t' read -r bucket target project idle; do
+    line="$bucket  $(pango_esc "$target")  $(pango_esc "$project")  idle $(prom_dur $((idle * 60)))"
+    case "$bucket" in
+      STALLED) line="$(paint "$C_RED" "$line")" ;;
+      UNCLEAR) line="$(paint "$C_YEL" "$line")" ;;
+    esac
+    sess+=$'\n'"$line"
+  done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_idle_minutes")
+      | {b: .metric.bucket, t: (.metric.target // "?"), p: (.metric.project // "-"), i: (.value[1] | tonumber | floor)}]
+    | unique_by(.t) | sort_by(({STALLED: 0, UNCLEAR: 1, NEEDS: 2}[.b] // 3), -.i)[] | [.b, .t, .p, .i] | @tsv' <<< "$raw")
+fi
+while IFS=$'\t' read -r host age; do
+  [ -n "$host" ] && flag 2 "fleet_sessions.prom on $host is $(prom_dur "$age") old; is fleet-state.timer running?"
+done < <(jq -r --argjson now "$now" --argjson late "$STATE_LATE_SECS" '[.data.result[]
+    | select(.metric.__name__ == "node_textfile_mtime_seconds")
+    | {h: (.metric.host // "?"), a: ($now - (.value[1] | tonumber | floor))}]
+  | group_by(.h) | map({h: .[0].h, a: (map(.a) | min)})[] | select(.a > $late) | [.h, .a] | @tsv' <<< "$raw")
+
+# --- Shepherd: summary/shepherd, left out when it is not on the feed ---
+shep=''
+if [ -n "$(get shepherd.due)" ]; then
+  s() { local x; x="$(get "shepherd.$1")"; printf '%s' "${x:--}"; }
+  s_unh="$(get shepherd.unhandled)" s_pass="$(get shepherd.last_pass_epoch)"
+  ((${s_unh:-0} > 0)) && flag 1 "$s_unh shepherd due line(s) unhandled: the last pass neither moved nor skipped them"
+  uh="${s_unh:-0}"; ((uh > 0)) && uh="$(paint "$C_YEL" "$uh")"
+  shep="<b>Shepherd</b>  moves sessions through their plans"
+  shep+=$'\n'"last pass: $(s due) due, $uh unhandled, $(s skipped) skipped; $([ -n "$s_pass" ] && echo "$(prom_dur $((now - s_pass))) ago" || echo "none on record")"
+  shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
+fi
+
+# The bar: ready, the oldest wait, the units against the cap; the chip's level colours the first two.
+if [ -z "$ready" ]; then
+  text="$ICON $(paint "${LEVEL_COLOUR[$level]}" -)"
+else
+  text="$ICON $ready $(short "$oldest")"
+  ((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
+  [ -n "$bar_units" ] && text+=" $bar_units"
+fi
+
+tip="$qhead"
+for w in "${why[@]}"; do tip+=$'\n'"$w"; done
+[ -n "$queue" ] && tip+=$'\n'"$queue"
+for sec in "$disp" "$sess" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
