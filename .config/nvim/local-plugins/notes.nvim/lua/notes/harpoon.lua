@@ -4,8 +4,7 @@
 
 local M = {}
 
--- The stages lab pins, in slot order. Same list and order as the daily note's `## Projects`
--- (`QUICK_STAGES`, notes-cli/src/daily.rs): prod is visited directly, draft has nothing yet.
+-- The stages lab pins, in slot order: prod is visited directly, draft has nothing yet.
 M.STAGES = { "beta", "alpha" }
 
 -- `notes projects --stats` rows -> the sheets of every beta/alpha project under lab_root,
