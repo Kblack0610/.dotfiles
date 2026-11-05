@@ -87,11 +87,13 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 ## tool-output: where the tokens go
 
-`tool-output` is the one token counter: it sums `message.usage` per API response (deduplicated by message id) and every tool result's size, so do not write another transcript scanner for token questions.
+`tool-output` is the transcript token counter: it sums `message.usage` per API response (deduplicated by message id) and every tool result's size, so do not write another transcript scanner for token questions. Cost, merged PRs and start context belong to `agent-usage burn`; `agent-usage tokens` joins the two into a nightly snapshot per day (`.claude/hooks/README.md` "Token usage tracking").
 
 - Totals: input, cache write, cache read and output tokens; context per response; tool result chars (about 4 chars a token).
 - `carried` weights each tool result by how many later responses re-read it before a compaction drops it. It is the cost a big result really has, since the whole context is re-read on every turn.
 - `--by tool|command` ranks what produces output (`command` is the Bash command head, past env, `cd` and wrappers, with git/gh subcommands; an `rtk` rewrite counts under the tool it ran). `--by filetype` ranks file reads (Read, and the file a `sed`/`cat`/`head`/`tail` call names) as `<class> .<ext>`, class one of code, prose, config, output, data, other; `--by kind` splits tool output between main sessions and subagents. `--by method|day|week|project` splits usage over time; `method` reads the `token-filter` switch log (`.claude/hooks/README.md` "Token filter"), and `filtered` counts rewritten calls.
+- `--since`/`--until` take a date (a UTC day) or an ISO time (an exact window, any offset).
+- `long_runs` (JSON) and the text footer list the stretches between compactions that ran `--long-turns` (default 150) responses or more, top 10 by carried cost.
 
 ## Notes
 

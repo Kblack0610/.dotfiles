@@ -36,9 +36,27 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_output '[4,4,30,650,20,3,150,2,280]'
 }
 
-@test "start context is the first response's input, once per transcript" {
-  run jq -c '.totals | [.sessions,.start_context]' <<<"$(out)"
-  assert_output '[1,111]'
+@test "start context is left to agent-usage burn (first_turn_context): no second count here" {
+  run jq -c '.totals | has("start_context")' <<<"$(out)"
+  assert_output 'false'
+}
+
+@test "an ISO --since/--until window counts only what falls inside it" {
+  # 10:01 to 10:03 UTC holds m2 and m3, given in -08:00; m1, its results and m4 are outside
+  run jq -c '.totals | [.turns,.cache_read_input_tokens,.calls]' \
+    <<<"$("$RECALL" tool-output --since 2026-10-20T02:00:30-08:00 --until 2026-10-20T10:02:30Z --json)"
+  assert_output '[2,500,0]'
+}
+
+@test "long runs: each stretch between compactions, with its responses and carried cost" {
+  run jq -c '.long_runs | [.stretches, .long, (.rows | map([.turns, .chars, .carried, .compacted]))]' \
+    <<<"$(out --long-turns 2)"
+  assert_output '[2,1,[[3,140,280,true]]]'
+}
+
+@test "long runs negative control: no stretch reaches the default length" {
+  run jq -c '.long_runs | [.turns_over, .stretches, .long, .rows]' <<<"$(out)"
+  assert_output '[150,2,0,[]]'
 }
 
 @test "by command: the head is found past cd, rtk and git -C; filtered counts rewrites" {
@@ -62,6 +80,7 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_success
   assert_output --partial "4 API responses"
   assert_output --partial "carried"
+  assert_output --partial "stretches ran 150+ responses"
 }
 
 @test "by filetype: a Read and a sed/cat/head/tail file arg bucket by class and extension" {
