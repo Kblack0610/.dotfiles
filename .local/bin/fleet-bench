@@ -997,7 +997,9 @@ asks_md() {
 asks_line() {
   jq -r --argjson k "$2" '
     def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
-    def q: .question | gsub("\\s+"; " ") | if length > 60 then .[0:57] + "..." else . end;
+    # The first sentence is the question; the rest is context. Cut at a word only past 80.
+    def q: .question | gsub("\\s+"; " ") | ((capture("^(?<s>.*?[?.!])( |$)") | .s) // .)
+      | if length > 80 then (.[0:77] | sub(" [^ ]*$"; "")) + "..." else . end;
     (map(select(.live)) | length) as $l
     | (if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
       + (if $l == 0 then ", none holding up a session" else ", \($l) holding up a session" end)
