@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Jackie Brown Theme Palette
 # Sourced by theme-switch to apply colors across all tools.
+# ANSI 1-15 are lifted to 4.5:1 on BG by lightness only, hue kept (tests/unit/theme_contrast.bats).
 
 THEME_NAME="jackie-brown"
 THEME_WALLPAPER_PREFIX="jackie-brown"  # matches wallpapers/jackie-brown-*.{jpg,png,webp}
@@ -23,18 +24,18 @@ THEME_BLACK="#2c1d16"
 THEME_RED="#ef5734"
 THEME_GREEN="#2baf2b"
 THEME_YELLOW="#bdbe00"
-THEME_BLUE="#246db2"
+THEME_BLUE="#3a8bd7"
 THEME_MAGENTA="#cf5ec0"
 THEME_CYAN="#00acee"
 THEME_WHITE="#bfbfbf"
 
 # ── ANSI 8-15 (bright) ───────────────────────────────────────────────
-THEME_BRIGHT_BLACK="#666666"
-THEME_BRIGHT_RED="#e50000"
+THEME_BRIGHT_BLACK="#878787"
+THEME_BRIGHT_RED="#ff3535"
 THEME_BRIGHT_GREEN="#86a83e"
 THEME_BRIGHT_YELLOW="#e5e500"
-THEME_BRIGHT_BLUE="#0000ff"
-THEME_BRIGHT_MAGENTA="#e500e5"
+THEME_BRIGHT_BLUE="#7878ff"
+THEME_BRIGHT_MAGENTA="#ed00ed"
 THEME_BRIGHT_CYAN="#00e5e5"
 THEME_BRIGHT_WHITE="#e5e5e5"
 
