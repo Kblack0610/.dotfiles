@@ -37,40 +37,34 @@ const PREVIEW_MIN_HEIGHT: u16 = 18;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Home,
-    Infra,
-    Sessions,
-    Today,
-    History,
-    Fleet,
     Queue,
     Projects,
+    Sessions,
+    Infra,
+    Log,
+    Fleet,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
+    pub const ALL: [Tab; 7] = [
         Tab::Home,
         Tab::Queue,
-        // Jobs' slot and key 3; `jobs`, `ci` and `machines` resolve here and 4 and 5 open its CI
-        // and Machines sections, until the layout renumbers the digits once (dashboards.md).
-        Tab::Infra,
-        // Forecast's slot and key 6; `forecast` resolves here (hub_core::layout::RETIRED).
-        Tab::Sessions,
-        Tab::Today,
-        Tab::History,
-        Tab::Fleet,
-        // Board's slot and key 0 until the layout renumbers the digits once (dashboards.md).
         Tab::Projects,
+        Tab::Sessions,
+        Tab::Infra,
+        Tab::Log,
+        Tab::Fleet,
     ];
     pub fn title(self) -> &'static str {
         match self {
             Tab::Home => "Home",
-            Tab::Infra => "Infra",
-            Tab::Sessions => "Sessions",
-            Tab::Today => "Today",
-            Tab::History => "History",
-            Tab::Fleet => "Fleet",
             Tab::Queue => "Queue",
             Tab::Projects => "Projects",
+            Tab::Sessions => "Sessions",
+            Tab::Infra => "Infra",
+            Tab::Log => "Log",
+            Tab::Fleet => "Fleet",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -88,37 +82,32 @@ impl Tab {
     }
     /// The digit that opens this tab, as the tab bar shows it.
     fn digit(self) -> char {
-        DIGITS
-            .iter()
-            .find(|(_, t, s)| *t == self && s.is_none())
-            .map_or(' ', |(d, _, _)| *d)
+        char::from_digit(self.index() as u32 + 1, 10).unwrap_or(' ')
+    }
+    /// The tab a digit opens; 8, 9 and 0 open none.
+    fn by_digit(c: char) -> Option<Tab> {
+        let n = c.to_digit(10)? as usize;
+        n.checked_sub(1).and_then(|i| Tab::ALL.get(i).copied())
     }
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Sessions | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Projects => {
-                None
-            }
+            Tab::Queue | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
         }
     }
 }
 
-/// What each digit opens: a tab, or one of its sections. The digits stay where they were
-/// until the layout renumbers once (dashboards.md): 4 and 5 were CI and Machines.
-const DIGITS: [(char, Tab, Option<&str>); 10] = [
-    ('1', Tab::Home, None),
-    ('2', Tab::Queue, None),
-    ('3', Tab::Infra, None),
-    ('4', Tab::Infra, Some("ci")),
-    ('5', Tab::Infra, Some("machines")),
-    ('6', Tab::Sessions, None),
-    ('7', Tab::Today, None),
-    ('8', Tab::History, None),
-    ('9', Tab::Fleet, None),
-    ('0', Tab::Projects, None),
+/// Log's folded sections, their keys and headings, in the page's order after the day.
+const FOLDS: [(&str, char, &str); 5] = [
+    ("actions", 'a', "ACTIONS"),
+    ("changes", 'c', "CHANGES"),
+    ("rundowns", 's', "RUNDOWNS"),
+    ("verdicts", 'v', "JUDGES' VERDICTS"),
+    ("forecast", 'f', "FORECAST"),
 ];
+
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
 

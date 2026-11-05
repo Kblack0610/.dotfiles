@@ -308,61 +308,17 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         out.push(Line::styled(title, p.head()));
     };
 
-    // WAITING ON YOU
+    // What waits on you is Home's to list and answer; the day says how much, under the grid.
     let wt = &rec["waiting"];
-    let list = |k: &str| wt[k].as_array().map(Vec::as_slice).unwrap_or(&[]);
-    let (main, needs, asks) = (list("main"), list("needs"), list("asks"));
-    section(
-        &mut out,
-        format!("WAITING ON YOU ({})", main.len() + needs.len() + asks.len()),
-    );
-    let mut rows: Vec<Vec<Cell>> = vec![];
-    for m in main {
-        let r = s(m, "reason");
-        let r = r
-            .split_once(" red: ")
-            .map_or(r.to_string(), |(_, x)| format!("red: {x}"));
-        rows.push(vec![
-            cell("NIGHTLY", p.bad()),
-            s(m, "repo").into(),
-            r.into(),
-        ]);
-    }
-    for n in needs {
-        rows.push(vec![
-            cell("NEEDS", p.warn()),
-            s(n, "who").into(),
-            format!(
-                "{} (idle {}m)",
-                s(n, "reason"),
-                n["idle_min"].as_i64().unwrap_or(0)
-            )
-            .into(),
-        ]);
-    }
-    for a in asks {
-        rows.push(vec![
-            "ASK".into(),
-            format!("{} {}", s(a, "id"), s(a, "project")).into(),
-            s(a, "question").replace(['\t', '\n'], " ").into(),
-        ]);
-    }
-    if rows.is_empty() {
-        out.push(Line::styled("  nothing", p.dim()));
-    } else {
-        out.extend(
-            Table {
-                header: vec!["KIND", "WHO", "WHY"],
-                rows,
-                keep: vec![0, 1],
-                flex: Some(2),
-                flexmin: 20,
-                flexkeep: true,
-                cap: vec![(1, 30)],
-                ..Default::default()
-            }
-            .fit(w, p.head()),
-        );
+    let n: usize = ["main", "needs", "asks"]
+        .iter()
+        .map(|k| wt[*k].as_array().map_or(0, Vec::len))
+        .sum();
+    if n > 0 {
+        out.push(Line::from(vec![
+            Span::styled(format!("{n} waiting on you"), p.warn()),
+            Span::styled("  1 Home answers them", p.dim()),
+        ]));
     }
 
     // MERGED, every PR, newest first
@@ -700,11 +656,12 @@ pub mod tests {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("WAITING ON YOU (3)") < at("MERGED (2)"));
+        assert!(at("3 waiting on you  1 Home answers them") < at("MERGED (2)"));
+        assert!(!t.contains("WAITING ON YOU"), "Home lists them");
         assert!(at("MERGED (2)") < at("STILL OPEN (1 touched in 7d)"));
         assert!(at("STILL OPEN") < at("SESSIONS (1)"));
         assert!(at("SESSIONS (1)") < at("TIMELINE (2)"));
-        assert_eq!(pg.sections.len(), 5);
+        assert_eq!(pg.sections.len(), 4);
         for i in &pg.sections {
             assert!(plain(&pg.lines[*i])
                 .chars()
@@ -717,7 +674,6 @@ pub mod tests {
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
-        assert!(t.contains("red: Shots") && t.contains("ggK2ey dotfiles"));
         assert!(t.contains("+1 older, untouched in 7d"));
         assert!(
             t.contains("hub infra board") && !t.contains("feat(hub-tui)"),

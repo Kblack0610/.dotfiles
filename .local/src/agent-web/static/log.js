@@ -153,15 +153,8 @@ function openList(rec) {
   }), true)).join("");
 }
 
-function waiting(rec) {
-  const w = rec.waiting || {};
-  const rows = [
-    ...(w.main || []).map((m) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">nightly failed</span><span class="pt">${esc(m.reason)}</span></div>`),
-    ...(w.needs || []).map((n) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">needs you</span><span class="pt">${esc(n.who)}: ${esc(n.reason)}</span><span class="muted">idle ${dur(n.idle_min)}</span></div>`),
-    ...(w.asks || []).map((a) => `<div class="pr"><span class="chip sm" style="--c:var(--b-stalled)">question</span><span class="pt">${esc(a.project)}: ${esc(a.question)}</span><a href="#" data-asks>answer</a></div>`),
-  ];
-  return rows.length ? `<h2 class="sec">Waiting on you <span class="muted">${rows.length}</span></h2><div class="panel">${rows.join("")}</div>` : "";
-}
+// What waits on the human is Home's to show and answer; the day says how much and links there.
+const waiting = (n) => (n ? `<div class="badge-line"><a href="#" data-asks><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>` : "");
 
 function benchTable(rec) {
   const ss = ((rec.bench || {}).sessions || []).slice().sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
@@ -171,7 +164,7 @@ function benchTable(rec) {
 }
 
 function renderLog() {
-  const el = $("log");
+  const el = $("log-day");
   if (lst.err && !lst.rec) { el.innerHTML = `<div class="empty">${esc(lst.err)}</div>`; return; }
   if (!lst.rec) { el.innerHTML = '<div class="empty">Loading...</div>'; return; }
   const rec = lst.rec, day = rec.date;
@@ -190,10 +183,10 @@ function renderLog() {
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
     tile("SPEND", usd(total.cost_usd), "var(--c2)", `${kfmt(total.tokens)} tokens`)}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
-  html += historyCharts(day);
+  html += `<div id="sec-history">${historyCharts(day)}</div>`;
   const hours = byHour(rec);
   html += `<div class="g2"><div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div><div class="panel"><h3>Spend by project</h3>${usageTable(rec)}</div></div>`;
-  html += waiting(rec);
+  html += waiting(nWait);
   // The legend's pick narrows both lists to one project's group; the head says so.
   const only = lst.proj ? ` <span class="muted only">${esc(projLabel(lst.proj))} only, <a href="#" data-proj="${esc(lst.proj)}">show all</a></span>` : "";
   html += `<h2 class="sec">Merged <span class="muted">${(rec.merged || []).length}</span>${only}</h2>${mergedList(rec) || '<div class="empty">Nothing merged.</div>'}`;
@@ -227,6 +220,6 @@ document.addEventListener("keydown", (e) => {
 // Any record written changes the history charts, so a log event refetches both.
 const logFeed = pushed("log", ["log"], refreshLog);
 TABS.log = {
-  show() { renderLog(); logFeed.show(!lst.rec); },
-  onEvent: logFeed.onEvent,
+  show() { renderLog(); logFeed.show(!lst.rec); for (const p of LOG_PARTS) p.show(); seekSection(); },
+  onEvent(ev) { logFeed.onEvent(ev); for (const p of LOG_PARTS) p.onEvent(ev); },
 };

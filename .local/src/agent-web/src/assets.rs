@@ -181,11 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_names_lead_with_the_landed_layout() {
-        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs first.
+    fn tab_names_are_the_layout() {
+        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs, in its order.
         let names = js_list("TAB_NAMES");
-        let landed: Vec<&str> = hub_core::layout::landed().map(|t| t.id).collect();
-        assert_eq!(names[..landed.len()], landed[..], "{names:?}");
+        let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.id).collect();
+        assert_eq!(names, layout);
         // A retired name the TUI also knows is never a live web tab, and lands where hub-core says.
         let retired = js_list("RETIRED_TABS");
         for pair in retired.chunks(2) {
@@ -197,6 +197,9 @@ mod tests {
                 "{old}"
             );
         }
+        let ui = include_str!("../static/ui.js");
+        let rows = format!("const LOG_ROWS = {};", hub_core::layout::FOLD_ROWS);
+        assert!(ui.contains(&rows), "ui.js lacks {rows}");
         for (old, new) in hub_core::layout::RETIRED {
             // overview and forecast were only ever TUI tabs; the web never had them.
             if !["overview", "forecast"].contains(old) {

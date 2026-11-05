@@ -66,11 +66,12 @@ test("a bucket tile filters the list to that bucket", () => {
   assert.match(html, /data-ov/);
 });
 
-test("the overview folds the last day, the changes, the shepherd and its rundowns", () => {
+test("the overview folds the last day and the shepherd; the changes and the rundowns are Log's", () => {
   setup();
   ctx.renderOverview();
   const html = boxes.scroll.innerHTML;
-  for (const k of ["lanes", "changes", "shep", "rundowns"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}">`));
+  for (const k of ["lanes", "shep"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}">`));
+  for (const k of ["changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
   assert.match(html, /data-chat>Chat: open hub\/shep:1/);
   assert.match(html, /Skipped on purpose, in Actions/);
 });

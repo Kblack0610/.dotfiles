@@ -18,6 +18,7 @@ const logTime = (ts) => new Date(ts.replace(" ", "T")).getTime();
 const refreshWatch = coalesce(async () => {
   wst.data = await api("/api/watch");
   if (st.tab === "sessions") { renderList(); renderFacts(); renderOverview(); }
+  if (st.tab === "log") renderLogChanges();
 });
 
 function sessionsOf() {
@@ -123,15 +124,25 @@ function feed(now) {
   const rows = wst.data.transitions
     .filter((t) => logTime(t.ts) >= t0)
     .filter((t) => wst.allChanges || t.kind !== "change" || t.fields.some((f) => !NOISY.includes(f)))
-    .slice(-200).reverse();
+    .reverse();
   if (!rows.length) return '<div class="empty">No changes in the last day.</div>';
-  return rows.map((t) => {
+  return rows.slice(0, LOG_ROWS).map((t) => {
     let what = esc(t.text);
     if (t.kind === "change" && t.to) what = `<span class="chip sm" style="--c:${bucketColor(t.from)}">${esc(t.from)}</span> -&gt; <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/stage \S+ -> \S+,? ?/, ""))}`;
     if (t.kind === "new") what = `new <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/^new: \S+ ?/, ""))}`;
     return `<div class="fr"><span class="ft">${esc(t.ts.slice(11))}</span><span class="fg" title="${esc(t.target)}">${esc(clip(t.target))}</span><span class="fw">${what}</span></div>`;
-  }).join("");
+  }).join("") + older(rows.length - LOG_ROWS);
 }
+
+// Log's Changes section: fleet-state's transitions over the last day, newest first.
+function renderLogChanges() {
+  const el = $("log-changes");
+  if (!wst.data) { el.innerHTML = '<div class="empty">Loading.</div>'; return; }
+  paint(el, `<div class="ovbar"><label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></div><div class="panel feed">${feed(Date.now())}</div>`);
+}
+$("log-changes").addEventListener("change", (e) => {
+  if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
+});
 
 // The order of the list's groups: the shepherd first, then the buckets, then sessions fleet-state
 // has no row for, which read as PARKED as they do on the hub's Sessions tab.
@@ -169,8 +180,8 @@ function renderFacts() {
 }
 
 // The detail pane while no session is open: the bucket tiles (they filter the list), then the
-// last day's swimlanes, the change feed and the shepherd's pass, due lines and rundowns, each
-// folded.
+// last day's swimlanes and the shepherd's pass and due lines, each folded. The change feed and
+// the rundowns are Log's.
 function renderOverview() {
   if (st.sel || st.tab !== "sessions") return;
   const el = $("scroll");
@@ -189,7 +200,6 @@ function renderOverview() {
     html += tiles(sessions, state);
     html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
-    html += fold("changes", "Changes", `<div class="ovbar"><label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></div><div class="panel feed">${feed(now)}</div>`);
   }
   html += shepherdOverview();
   paint(el, html, wst.open);
@@ -206,7 +216,6 @@ $("scroll").addEventListener("click", (e) => {
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;
   if (e.target.matches("[data-ended]")) wst.ended = e.target.checked;
-  if (e.target.matches("[data-all]")) wst.allChanges = e.target.checked;
   renderOverview();
 });
 // A fold the reader opens stays open through the next push (paint reads it before a repaint;
@@ -218,6 +227,8 @@ for (const id of ["scroll", "facts", "list"]) {
 // fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);
 const shepFeed = pushed("sessions", ["shepherd", "sessions"], () => refreshShepherd()); // shepherd.js loads after this file
+const logWatchFeed = pushed("log", ["watch"], refreshWatch);
+LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
 TABS.sessions = {
   show() {
     if (!st.sel) overview(false);

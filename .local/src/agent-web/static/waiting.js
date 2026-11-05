@@ -1,9 +1,9 @@
 "use strict";
 // The answer cards for what waits on you: a live session's open dialog or permission prompt
 // (read from its transcript by the server) and a pending ask, the one record of a question to
-// the human. Home (home.js) draws them on its Needs you rows; the same two cards answer in place
-// on a Queue row (queue.js, inQueue), without their head. Answering a session's card types the
-// answer into its pane.
+// the human. Home (home.js) draws them on its Needs you rows, the one place they are answered;
+// a Queue row counts its own and links there. Answering a session's card types the answer into
+// its pane.
 
 // Which folds are open, by data-k: a section (`sec:<name>`) or a card's details.
 const askst = { open: {} };
@@ -21,18 +21,14 @@ function renderBadge() {
   $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-// What each kind of open dialog is, as a chip and as the label on a Queue row.
-const DIALOG = {
-  choice: ["Asking", "The session is asking"],
-  tool: ["Permission", "The session needs permission"],
-  plan: ["Plan to approve", "A plan to approve"],
-};
-const dialog = (q) => DIALOG[q.kind] || ["Your turn", "Your turn in the session"];
+// What each kind of open dialog is, as its chip.
+const DIALOG = { choice: "Asking", tool: "Permission", plan: "Plan to approve" };
+const dialog = (q) => DIALOG[q.kind] || "Your turn";
 
 // A live session's open dialog: what the session is, what it wants and for how long, then the
 // question and its answers. The tmux target is the title's tooltip and sits in Details.
-function sessionCard(a, inQueue) {
-  const q = a.question, [chip, label] = dialog(q);
+function sessionCard(a) {
+  const q = a.question, chip = dialog(q);
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
   if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
@@ -40,9 +36,6 @@ function sessionCard(a, inQueue) {
   const body = `<div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>`;
   const reply = `<input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>`;
   const attrs = `class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}"`;
-  if (inQueue === true) {
-    return `<div ${attrs}><div class="qask-h" title="${esc(a.target)}">${label}</div>${body}<div class="opts">${opts}${reply}</div><div class="err"></div></div>`;
-  }
   const p = a.phases;
   const head = cardHead(a.summary || a.plan || a.short || a.target,
     [cchip("waiting", `${chip}${a.waiting_since ? ` ${ago(a.waiting_since)}` : ""}`)], a.target);
@@ -64,18 +57,11 @@ function judgeText(a) {
 
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
 // waited, who filed it, then the rest of the question, which the options often lean on.
-function askCard(a, inQueue) {
+function askCard(a) {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
   const from = owner ? owner.short || owner.target : a.agent;
   const opts = a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (recommended)" : ""}</button>`).join("") +
     `<input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>`;
-  if (inQueue === true) {
-    // The Queue card around it already names the project and session, so routing is a tooltip.
-    const route = `${esc(a.project)}, ${owner ? esc(owner.target) : "headless"}, ${esc(a.kind)}, ${esc(a.id)}`;
-    const judge = judgeText(a);
-    return `<div class="card" data-id="${esc(a.id)}"><div class="qask-h" title="${route}">Question for you</div>` +
-      `<div class="q md">${md(a.question)}</div>${judge ? `<div class="cline">${judge}</div>` : ""}<div class="opts">${opts}</div><div class="err"></div></div>`;
-  }
   const head = cardHead(a.title || a.question, [cchip("waiting", `${esc(a.kind)}${a.created ? ` ${ago(a.created)}` : ""}`)]);
   const line = cardLine([esc(a.project), from ? `from ${esc(from)}` : "headless", judgeText(a)]);
   const body = a.title ? a.body : "";

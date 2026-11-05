@@ -132,3 +132,8 @@ mod tests {
         assert_eq!(p.status(None).1, "NODATA");
     }
 }
+
+/// The "+N older" line under a capped list: nothing when every row was shown.
+pub fn older(total: usize, shown: usize, p: Palette) -> Option<ratatui::text::Line<'static>> {
+    (total > shown).then(|| ratatui::text::Line::styled(format!("  +{} older", total - shown), p.dim()))
+}

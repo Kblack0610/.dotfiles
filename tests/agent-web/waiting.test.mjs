@@ -31,8 +31,8 @@ function run(expr, input) {
   ctx.input = input;
   return vm.runInContext(expr, ctx);
 }
-const sessionHtml = (a, inQueue) => run("st.agents = [input.a]; st.asks = []; sessionCard(input.a, input.q)", { a, q: inQueue });
-const askHtml = (k, agents = [], inQueue) => run("st.agents = input.agents; askCard(input.k, input.q)", { k, agents, q: inQueue });
+const sessionHtml = (a) => run("st.agents = [input.a]; st.asks = []; sessionCard(input.a)", { a });
+const askHtml = (k, agents = []) => run("st.agents = input.agents; askCard(input.k)", { k, agents });
 
 test("a session card leads with what the session is, what it wants and for how long", () => {
   const html = sessionHtml(agent());
@@ -49,12 +49,6 @@ test("a session card with no summary is titled by its plan, then its target; its
   assert.match(html, /<span class="ctitle"[^>]*>big-plan<\/span>/);
   assert.match(html, /phase 1\/3, <span title="estimate ">ETA /);
   assert.match(sessionHtml(agent({ summary: "", short: "" })), /<span class="ctitle"[^>]*>lab:w-1<\/span>/);
-});
-
-test("a session card on a queue row has no head of its own", () => {
-  const html = sessionHtml(agent(), true);
-  assert.match(html, /<div class="qask-h" title="lab:w-1">The session needs permission<\/div>/);
-  assert.doesNotMatch(html, /class="chead"|data-open/);
 });
 
 test("an ask card: first sentence as title, age, who filed it, then the rest of the question", () => {

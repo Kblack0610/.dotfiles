@@ -33,21 +33,19 @@ test("the pane hub-core joined to the item is the one the card can open", () => 
   assert.doesNotMatch(card([pane("c1", ["other"])], [], item()), /data-open/);
 });
 
-test("a waiting card shows the open ask, its options and the recommended one", () => {
+test("a waiting card counts its open ask and links to Home, which answers it", () => {
   const html = card([pane()], [ask()], item());
-  assert.match(html, /class="qneed"/);
-  assert.match(html, /Ship it\?/);
-  assert.match(html, /data-a="yes"/);
-  assert.match(html, /class="btn rec" data-a="no">no \(recommended\)/);
+  assert.match(html, /<a href="#" data-home><span class="chip sm"[^>]*>1 waiting on you<\/span> answer on Home<\/a>/);
+  assert.doesNotMatch(html, /Ship it|data-a=/, "the answer card is Home's");
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 
 test("an ask from another item's pane stays off this card", () => {
-  assert.doesNotMatch(card([pane("c1"), pane("c2", ["other"])], [ask({ session: "c2" })], item()), /Ship it/);
+  assert.doesNotMatch(card([pane("c1"), pane("c2", ["other"])], [ask({ session: "c2" })], item()), /waiting on you/);
 });
 
 test("an ask no Claude session owns is on no card, whatever its tmux name", () => {
-  assert.doesNotMatch(card([pane()], [ask({ session: "" })], item()), /Ship it/);
+  assert.doesNotMatch(card([pane()], [ask({ session: "" })], item()), /waiting on you/);
 });
 
 test("with no ask and no dialog, the card names the prompt and the tmux session", () => {
@@ -62,7 +60,7 @@ test("with no pane left, the card does not claim one", () => {
 
 test("a dialog open in the pane is the answer, not the prompt line", () => {
   const html = card([{ ...pane(), question: { kind: "choice", text: "Pick", options: ["a"] } }], [], item());
-  assert.match(html, /data-t="lab\/game-agent-2:c1"/);
+  assert.match(html, />1 waiting on you</);
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 
@@ -70,7 +68,7 @@ test("a session shared by several windows offers no single pane, but shows each 
   const panes = [pane("c1"), pane("c2")];
   const html = card(panes, [ask({ session: "c2" })], item());
   assert.doesNotMatch(html, /data-open="s"/);
-  assert.match(html, /Ship it\?/);
+  assert.match(html, />1 waiting on you</);
   assert.match(card(panes, [], item()), /Waiting on a prompt in its window/);
 });
 
@@ -89,14 +87,6 @@ test("the card leads with the title, not the slug, and folds the task and its bo
   assert.match(html, /<span class="cchip running">Running/);
   // An item from a store older than titles still has a heading.
   assert.match(card([], [], item("queued")), /<span class="ctitle">s<\/span>/);
-});
-
-test("an ask on a queue card says it is a question for you, with its routing only in the tooltip", () => {
-  const html = card([pane()], [ask({ judge: "human" })], item());
-  assert.match(html, /<div class="qask-h" title="p, lab\/game-agent-2:c1, question, a1">Question for you<\/div>/);
-  assert.doesNotMatch(html, /<div class="meta">p, /);
-  assert.doesNotMatch(html, /judge would/, "a judge that leaves it to you says nothing");
-  assert.match(card([pane()], [ask({ judge: "take-recommend" })], item()), /judge would take the recommendation \(no\)/);
 });
 
 test("a running item shows its estimate, and a past one as overdue", () => {

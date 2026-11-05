@@ -41,15 +41,15 @@ function qAgent(i) {
   return p.length === 1 ? p[0] : null;
 }
 
-// What the item's session needs from the human now: the dialogs its panes show and the asks they
-// filed, answered in place through the same cards the Waiting tab uses. An ask belongs to the
-// Claude session that filed it, never to a tmux name (agent-panel asks.rs). A waiting item with
-// neither says where the human has to look instead.
+// What the item's session needs from the human now: a count of the dialogs its panes show and the
+// asks they filed, linking to Home, which answers them in place. An ask belongs to the Claude
+// session that filed it, never to a tmux name (agent-panel asks.rs). A waiting item with neither
+// says where the human has to look instead.
 function qNeeds(i) {
   const panes = qPanes(i);
   const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
-  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, true)).join("") + asks.map((k) => askCard(k, true)).join("");
-  if (cards) return `<div class="qneed">${cards}</div>`;
+  const n = panes.filter((p) => p.question).length + asks.length;
+  if (n) return `<div class="badge-line"><a href="#" data-home><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>`;
   if (i.state !== "waiting" || !i.session) return "";
   return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
 }
@@ -142,8 +142,7 @@ function renderQueue() {
 function renderQueueList() {
   const el = $("q-list");
   if (!el) return;
-  // Keep a reply being typed into a row's answer card across the re-render.
-  keepTyping("#q-list .qneed .card", () => drawQueueList(el));
+  drawQueueList(el);
 }
 
 // The counts at the top, one tile each, and the week's prose folded under them.
@@ -246,8 +245,7 @@ const qPending = {};
 $("queue").addEventListener("click", (e) => {
   const t = e.target;
   if (t.id === "q-add") { qAdd(); return; }
-  const need = t.closest(".qneed .card");
-  if (need) { answerCard(need, e); return; }
+  if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) { setTab("sessions"); select(a); }
@@ -264,7 +262,6 @@ $("queue").addEventListener("click", (e) => {
 });
 $("queue").addEventListener("change", (e) => {
   const t = e.target;
-  if (t.closest(".qneed")) return;
   if (t.dataset.bump) { qAct("/api/queue/bump", { slug: t.dataset.bump, priority: t.value }); return; }
   if (t.closest(".qadd")) qSaveDraft();
 });
@@ -273,7 +270,6 @@ $("queue").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) qst.open[e.target.dataset.k] = e.target.open;
 }, true);
 $("queue").addEventListener("keydown", (e) => {
-  if (e.target.closest(".qneed")) { answerOnEnter(e); return; }
   if (e.target.id === "q-task" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qAdd(); }
 });
 
