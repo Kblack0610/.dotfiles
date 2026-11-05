@@ -51,8 +51,8 @@ manifest CRUD; the running service does the watching.
 1. **Observe rung only.** Sentinel never edits code, restarts services, runs kubectl mutations,
  pushes, merges, or remediates. A notification names the signal and recommends a human action - 
    nothing more. The agent-tier prompt enforces this verbatim.
-2. **Release gates apply** (inherited from release-coordinator): never touch release tags, the
-   Vikunja `HUMAN:` line, or GitHub approval issues.
+2. **Release gates apply** (inherited from release-coordinator): never touch release tags or
+   GitHub approval issues.
 3. **Notify only on STATE CHANGE.** Never page on every pass. A persistently-broken or flapping
    watch pings once on the edge, then stays silent until it changes (the loop's `.state` dedupe).
 4. **Deterministic-first.** Only set `probe: agent` / `agent_evaluate: true` when a fuzzy judgment

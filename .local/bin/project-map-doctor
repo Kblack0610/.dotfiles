@@ -69,17 +69,6 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
   | "\(.key)\t\(.value.repo // "")\t\(.value.path)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n app paths have a repo" || skip "no app paths to check"
 
-# --- 2. every `inherits` names a real tracker ---------------------------------------
-n=0
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  name="${line%%	*}"; parent="${line#*	}"
-  n=$((n + 1))
-  jq -e --arg p "$parent" '(.trackers // {}) | has($p)' "$MAP_FILE" >/dev/null 2>&1 \
-    || fail "trackers.$name inherits \"$parent\", which is not a tracker"
-done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.inherits) | "\(.key)\t\(.value.inherits)"' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n inherits targets exist" || skip "no inherits to check"
-
 # --- 3. every `repo` relation names a registered project ----------------------------
 # This is the relation the lab join now rides on: a project with no code declares the repo
 # whose runtime state it shares. A dangling one silently reads an empty namespace.

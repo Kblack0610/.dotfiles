@@ -36,7 +36,7 @@ setup() {
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a string value, to catch an unguarded jq",
-    "proj": { "system": "vikunja", "instance": "https://example.test" }
+    "proj": { "system": "board", "code": "pj" }
   }
 }
 EOF
@@ -242,7 +242,7 @@ EOF2
 @test "regen-anchor --all: scaffolds every project's anchor, but none for a repo-only key" {
   cat > "$MAP" <<'EOF2'
 { "paths": { "/repos/toolrepo": "toolrepo" }, "aliases": {},
-  "trackers": { "default": { "system": "vikunja" }, "_comment": "doc",
+  "trackers": { "default": { "system": "none" }, "_comment": "doc",
                 "game": { "repo": "toolrepo", "path": "games/g" },
                 "board-only": { "repo": "toolrepo" }, "proj": {} } }
 EOF2
