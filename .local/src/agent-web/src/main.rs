@@ -491,8 +491,8 @@ struct AgentOut {
     ask: Option<String>,
     /// What `POST /api/session/<target>/<action>` accepts for it.
     actions: Vec<&'static str>,
-    /// The agent-queue item that started it.
-    item: Option<String>,
+    /// The agent-queue items that record its tmux session.
+    items: Vec<String>,
     /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
     /// question asked in the conversation is not read here: the session files it as an ask
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
@@ -543,7 +543,7 @@ async fn agents() -> Json<Vec<AgentOut>> {
                     .into_iter()
                     .map(Action::name)
                     .collect(),
-                item: s.item,
+                items: s.items,
                 account: a.account,
                 attached: a.attached,
                 parked: a.parked,
@@ -808,8 +808,6 @@ struct Ask {
     recommend: String,
     /// The Claude session that asked, empty for a headless run: the tab puts the ask under it.
     session: String,
-    /// The tmux session it recorded: the Queue tab's match once no pane owns the Claude session.
-    tmux: String,
     /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
     judge: String,
 }
@@ -833,7 +831,6 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     .collect(),
                 recommend: f.get(10).copied().unwrap_or("").into(),
                 session: f.get(15).copied().unwrap_or("").into(),
-                tmux: f.get(12).copied().unwrap_or("").into(),
                 judge: f.get(16).copied().unwrap_or("").into(),
             })
         })
@@ -1183,10 +1180,6 @@ mod tests {
         let judged =
             "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
         assert_eq!(parse_asks(judged)[0].judge, "answer:b");
-        let filed =
-            "T1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\tgame-agent-2\t\t\tsid\t\t\n";
-        assert_eq!(parse_asks(filed)[0].tmux, "game-agent-2");
-        assert_eq!(parse_asks(filed)[0].session, "sid");
     }
 
     #[test]

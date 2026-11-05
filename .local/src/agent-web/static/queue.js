@@ -25,17 +25,9 @@ function renderQueueBadge() {
   $("queue-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-// The panes agent-panel lists in this item's tmux session. `session` is <server>:<session>, or a
-// bare session on agent-queue's server (hub-core `with_items` reads it the same way). A
-// hand-started item can share a session with other windows and no field names its own, so
-// this can be several.
-function qPanes(i) {
-  const s = i.session;
-  if (!s) return [];
-  return st.agents.filter((a) => s.includes(":")
-    ? a.target.startsWith(s.replace(":", "/") + ":")
-    : a.target.slice(a.target.indexOf("/") + 1).startsWith(s + ":"));
-}
+// The panes in this item's tmux session; hub-core `with_items` makes that join. A hand-started
+// item can share a session with other windows and none names its own, so this can be several.
+const qPanes = (i) => st.agents.filter((a) => a.items.includes(i.slug));
 
 // The one pane that is this item's, when its session has exactly one.
 function qAgent(i) {
@@ -43,23 +35,14 @@ function qAgent(i) {
   return p.length === 1 ? p[0] : null;
 }
 
-// The pending asks filed from this item's session: by the Claude session while a pane owns the
-// ask, else by the tmux session it recorded, which outlives the pane.
-function qAsks(i) {
-  const panes = qPanes(i), name = (i.session || "").split(":").pop();
-  return st.asks.filter((k) => {
-    const owner = st.agents.find((x) => k.session && x.session === k.session);
-    return owner ? panes.includes(owner) : !!name && k.tmux === name;
-  });
-}
-
-// What the item's session needs from the human now: the dialogs its panes show and the asks it
-// filed, answered in place through the same cards the Waiting tab uses. A waiting item with
+// What the item's session needs from the human now: the dialogs its panes show and the asks they
+// filed, answered in place through the same cards the Waiting tab uses. An ask belongs to the
+// Claude session that filed it, never to a tmux name (agent-panel asks.rs). A waiting item with
 // neither says where the human has to look instead.
 function qNeeds(i) {
   const panes = qPanes(i);
-  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p)).join("") +
-    qAsks(i).map((k) => askCard(k)).join("");
+  const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
+  const cards = panes.filter((p) => p.question).map(sessionCard).join("") + asks.map(askCard).join("");
   if (cards) return `<div class="qneed">${cards}</div>`;
   if (i.state !== "waiting" || !i.session) return "";
   return `<div class="qhold">${panes.length ? "Waiting on a prompt in its window" : "No live window"}: tmux session ${esc(i.session)}</div>`;

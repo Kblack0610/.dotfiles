@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# agent-web's Queue tab matches an item to its pane and its asks in the page, so the matching
-# is tested against the real scripts (tests/agent-web/queue.test.mjs); skips where node is absent.
+# agent-web's Queue card decides what a waiting item shows, so that is tested against the real
+# scripts (tests/agent-web/queue.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
