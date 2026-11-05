@@ -965,6 +965,7 @@ pub fn print(p: &Profile) {
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
     println!("inbox       {}", p.inbox.display());
+    println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
         "tag-scan    {}",
