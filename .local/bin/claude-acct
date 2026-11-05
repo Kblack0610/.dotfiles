@@ -179,6 +179,10 @@ cmd_pick() {
 WEEK=604800
 PACE_SLACK_PCT="${CLAUDE_ACCT_PACE_SLACK_PCT:-5}"   # how far past the pace line an automatic start may go
 RESERVE_PCT="${CLAUDE_ACCT_RESERVE_PCT:-15}"        # the last of each account, kept for the human
+# Points of its week one live session uses an hour, when Prometheus cannot say: 0.06 to 0.08 on
+# every account over 2026-11-01..04, so percents compare across accounts.
+SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-0.07}"
+RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The endpoint is private: the hub's own env file, the same one agent-web's Infra tab loads.
 PROM_ENV="${CLAUDE_ACCT_PROM_ENV:-$HOME/.config/command-center/env}"
 
@@ -189,14 +193,15 @@ email_of() {
     jq -r '.oauthAccount.emailAddress // empty' "$f" 2>/dev/null
 }
 
-# live_of -> one line per running claude, the account dir it runs under
+# live_of -> one line per running claude, "@" and the account dir it runs under. The "@" keeps the
+# main account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as
+# one main session to grep.
 live_of() {
     local c
     for c in "$PROC"/[0-9]*/comm; do
         [[ "$(cat "$c" 2>/dev/null)" == claude ]] || continue
         c="${c%/comm}"
-        config_dir_of "${c##*/}"
-        echo
+        printf '@%s\n' "$(config_dir_of "${c##*/}")"
     done
 }
 
@@ -218,13 +223,30 @@ spend_24h() {
     echo "${out:-null}"
 }
 
+# session_rate [nospend] -> points of an account's week one live session uses an hour: the fleet's
+# last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be read. A
+# reset inside the window reads low, never high. nospend reads the cache at any age and never asks
+# Prometheus; the claude-acct-usage timer's `textfile` keeps the cache fresh.
+session_rate() {
+    local f="$CACHE/session_rate" r
+    if [[ -s "$f" ]] && { [[ "${1:-}" == nospend ]] || (( $(date +%s) - $(stat -c %Y "$f") < RATE_TTL )); }; then
+        cat "$f"; return
+    fi
+    if [[ "${1:-}" == nospend ]]; then echo "$SESSION_RATE"; return; fi
+    r=$(prom_q 'sum(clamp_min(claude_account_week_used_percent - claude_account_week_used_percent offset 6h, 0)) / sum(avg_over_time(claude_account_live_sessions[6h])) / 6' |
+        jq -er '.data.result[0].value[1] | tonumber | select(. > 0 and . < 10)' 2>/dev/null) || r="$SESSION_RATE"
+    mkdir -p "$CACHE" && printf '%s\n' "$r" > "$f"
+    printf '%s\n' "$r"
+}
+
 # usage_json [nospend] -> one JSON object per account. state: ok, expired (idle, refreshes on launch)
 # or unread. nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
-    local name dir json rc state now resets start gone used run_out over live spend lives
+    local name dir json rc state now resets start gone used run_out over live spend lives rate
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
+    rate=$(session_rate "${1:-}")
     while IFS=$'\037' read -r name dir; do
         json=$(fetch "$name" "$dir"); rc=$?
         case $rc in
@@ -244,20 +266,24 @@ usage_json() {
             run_out=$(awk -v u="$used" -v n="$now" -v s="$start" -v r="$resets" 'BEGIN {
                 if (u <= 0) exit; t = s + (n - s) * 100 / u; if (t < r) printf "%d", t }')
         fi
-        live=$(grep -cxF -- "$dir" <<< "$lives")
+        live=$(grep -cxF -- "@$dir" <<< "$lives")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$(email_of "$dir")" --arg state "$state" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" --arg over "$over" \
             --arg resets "$resets" --arg run_out "$run_out" --argjson live "${live:-0}" --argjson spend "$spend" \
-            --argjson now "$now" --argjson reserve "$RESERVE_PCT" --argjson week "$WEEK" '
+            --argjson now "$now" --argjson reserve "$RESERVE_PCT" --argjson week "$WEEK" --argjson rate "$rate" '
             def num: if . == "" then null else tonumber end;
-            # Hours to the weekly reset per % left, so the account about to reset spends first:
-            # what is left there is lost anyway. Lower is better. A 5h window near full goes last.
+            # What is left of the week, as points an hour to the reset, less what the live sessions
+            # there already burn: lower is better. One hour per spare point, so the account whose
+            # remainder would otherwise be lost at its reset gets the work. An account its sessions
+            # already empty before the reset ranks behind every one with room, and among those the
+            # one its sessions empty last goes first. A 5h window near full goes last.
             def rank:
                 (.week_used // 0) as $u
+                | ((100 - $u) / (if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end)) as $carry
                 | (if .state == "expired" then 0
                    elif $u >= 100 then 1e9
-                   else ((if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end)
-                         / (100 - $u)) end)
+                   elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
+                   else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
             {name: $name, dir: $dir, email: $email, state: $state,
              five_hour: ($usage.five_hour.utilization // null),
@@ -265,6 +291,8 @@ usage_json() {
              week_used: ($used | num), week_gone: ($gone | num),
              over_pace: (if $over == "" then null else $over == "true" end),
              resets: ($resets | num), run_out: ($run_out | num), live: $live,
+             # points an hour its live sessions burn: their count times the fleet rate
+             burn: ($live * $rate),
              usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}
             | .rank = rank'
     done < <(accounts)
@@ -328,7 +356,9 @@ cmd_textfile() {
 
 # room: where an automatic start may go. Only automatic starts ask this: `cl`, a running session
 # and a hand start are never refused. An expired token means the account has been idle for hours,
-# and launching it is what refreshes it, so it has room, as in pick.
+# and launching it is what refreshes it, so it has room, as in pick. An account its live sessions
+# already empty before its reset has none, however far under pace: the next start there would stop
+# on the limit or push one of them off it.
 cmd_room() {
     local rows row
     rows=$(usage_json nospend | jq -s .)
@@ -336,7 +366,8 @@ cmd_room() {
         [.[] | select(.state != "unread")
              | select((.week_used == null) or
                       (.week_used <= .week_gone + $slack and .week_used < 100 - $reserve))
-             | select((.five_hour == null) or (.five_hour < 100 - $reserve))]
+             | select((.five_hour == null) or (.five_hour < 100 - $reserve))
+             | select(.rank < 1e3)]
         | sort_by(.rank) | first // empty' <<< "$rows")
     if [[ -n "$row" ]]; then
         echo "claude-acct: room on $(jq -r '"\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"' <<< "$row")" >&2
@@ -347,7 +378,7 @@ cmd_room() {
         echo "claude-acct: no account has room and one cannot be read" >&2
         return 2
     fi
-    echo "claude-acct: no account has room under its weekly pace" >&2
+    echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
     return 1
 }
 
