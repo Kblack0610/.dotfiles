@@ -1,4 +1,4 @@
-//! The Prometheus pages of `hub` (Overview, CI, Machines), laid out from one
+//! The Prometheus pages of `hub` (Home's infra body, CI, Machines), laid out from one
 //! `hub_core::infra::Infra` answer. It judges nothing: statuses are `cc:*` rules and rows are
 //! runner-exporter series, so it cannot disagree with Grafana or agent-web's Infra tab.
 
@@ -14,13 +14,10 @@ use crate::fmt::{clock, dur, pct, Palette};
 /// A job running longer than this shows its time amber: playground ci.md calls a gate that
 /// runs past about an hour a bug to fix, not a wait.
 pub const LONG_RUN_SECS: f64 = 3600.0;
-/// Queue groups the Overview lists before it counts the rest.
+/// Queue groups the Home lists before it counts the rest.
 pub const QUEUE_ROWS: usize = 8;
 /// Recent runs the CI page lists before it counts the rest (Grafana keeps them all).
 pub const RECENT_ROWS: usize = 60;
-const DOMAINS: [&str; 11] = [
-    "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
-];
 
 /// A label as a cell shows it: - when the series has none.
 fn lab<'a>(s: &'a Series, k: &str) -> &'a str {
@@ -170,10 +167,6 @@ impl<'a> Board<'a> {
     }
     fn dim(&self, s: String) -> Line<'static> {
         Line::styled(s, self.p.dim())
-    }
-    fn tag(&self, v: Option<f64>, label: &str) -> Span<'static> {
-        let (style, word) = self.p.status(v);
-        Span::styled(format!(" {label} {word} "), style)
     }
 
     /// Every pool a `cc:pool_*` series names, the longest queue first.
@@ -333,26 +326,9 @@ impl<'a> Board<'a> {
         hosts
     }
 
-    /// The status tag, what needs the human, the domain strip and the headline numbers.
-    pub fn header(&self, w: usize) -> Vec<Line<'static>> {
-        let mut out = vec![Line::from(vec![
-            self.tag(self.get("cc:overall_status"), "OVERALL"),
-            Span::raw(format!(
-                "  needs you: {} asks, {} sessions waiting",
-                self.num("cc:asks_open"),
-                self.num("cc:sessions_attention")
-            )),
-        ])];
-        let mut strip = vec![];
-        for d in DOMAINS {
-            let s = self.get(&format!("cc:domain_status/{d}"));
-            if s.is_none() && d != "k3s" && d != "ci" {
-                continue;
-            }
-            strip.push(self.tag(s, d));
-            strip.push(Span::raw(" "));
-        }
-        out.push(Line::from(strip));
+    /// The machinery's headline numbers. The status tag, what needs you and the domain strip
+    /// went to the Home sections above (`hub_core::home`).
+    pub fn numbers(&self, w: usize) -> Vec<Line<'static>> {
         let mut items = vec![
             format!(
                 "nodes {}/{}",
@@ -384,8 +360,10 @@ impl<'a> Board<'a> {
                 self.num("cc:agent_sessions_running")
             ));
         }
-        out.extend(wrap(&items, "  ", w).into_iter().map(|l| self.dim(l)));
-        out.into_iter().map(|l| clip_line(l, w)).collect()
+        wrap(&items, "  ", w)
+            .into_iter()
+            .map(|l| clip_line(self.dim(l), w))
+            .collect()
     }
 
     /// The balance view, one row per pool: busy of its slots, waiting, the oldest wait, the
@@ -462,7 +440,7 @@ impl<'a> Board<'a> {
 
     /// The machine view. Full (the Machines tab): one row per machine with where it is, busy
     /// of its slots, its load and busy/slots per pool; narrowing drops TEMP, MEM, 6H, WHERE, then
-    /// LOAD, and BUSY, CPU and POOLS stay. Compact (the Overview): only machines with
+    /// LOAD, and BUSY, CPU and POOLS stay. Compact (Home): only machines with
     /// a slot or a gate up, busiest first, and only MACHINE, WHERE, BUSY and POOLS.
     pub fn machines(&self, w: usize, compact: bool) -> Vec<Line<'static>> {
         let mut ms = self.machine_slots();
@@ -942,28 +920,6 @@ impl<'a> Board<'a> {
         }
         out
     }
-
-    /// What is red right now (`cc:red_now`): tripped watches, failed runners, NotReady nodes,
-    /// a frozen agent feed, a silent Sentinel.
-    pub fn red_now(&self, w: usize) -> Line<'static> {
-        let mut items: Vec<&str> = self
-            .infra
-            .get("red")
-            .iter()
-            .map(|s| s.label("item"))
-            .collect();
-        items.retain(|i| !i.is_empty());
-        items.sort();
-        let line = if items.is_empty() {
-            Line::raw("red now: nothing")
-        } else {
-            Line::from(vec![
-                Span::raw("red now: "),
-                Span::styled(items.join(", "), self.p.bad()),
-            ])
-        };
-        clip_line(line, w)
-    }
 }
 
 /// Machines listed even with no runner (`CC_HOSTS`, default the workstation).
@@ -1012,8 +968,8 @@ pub fn page(
     let blank = || Line::raw("");
     let mut out = vec![];
     match tab {
-        Tab::Overview => {
-            out.extend(b.header(w));
+        Tab::Home => {
+            out.extend(b.numbers(w));
             out.push(blank());
             out.extend(b.pools(w));
             out.push(blank());
@@ -1023,7 +979,6 @@ pub fn page(
             out.extend(b.down(w));
             out.push(blank());
             out.extend(b.finished(w, Some(0)).into_iter().take(1));
-            out.push(b.red_now(w));
         }
         Tab::Machines => out.extend(b.machines(w, false)),
         Tab::Ci => {
@@ -1278,7 +1233,7 @@ pub(crate) mod tests {
     }
 
     fn text(i: &Infra, w: usize) -> String {
-        [Tab::Overview, Tab::Machines, Tab::Ci]
+        [Tab::Home, Tab::Machines, Tab::Ci]
             .iter()
             .flat_map(|t| page(*t, i, Palette { no_color: true }, 0, w, &hosts()))
             .map(|l| plain(&l))
@@ -1346,15 +1301,15 @@ pub(crate) mod tests {
         );
         // No PR shows the repo alone, and a title that only repeats the workflow is not shown.
         assert_line(&ci, "platform E2E 5m develop");
-        // The Overview has the per-machine rollup instead of the job list.
-        assert!(!tab(&i, Tab::Overview, 160).contains("RUNNING"));
+        // Home has the per-machine rollup instead of the job list.
+        assert!(!tab(&i, Tab::Home, 160).contains("RUNNING"));
     }
 
     #[test]
-    fn the_overview_has_one_row_per_machine_with_a_slot_up_busiest_first() {
+    fn home_has_one_row_per_machine_with_a_slot_up_busiest_first() {
         let mut i = fixture();
         with_cloud(&mut i, "0");
-        let out = tab(&i, Tab::Overview, 160);
+        let out = tab(&i, Tab::Home, 160);
         assert_line(&out, "MACHINE WHERE BUSY POOLS");
         assert_line(&out, "razer-laptop local 3/4 unity 3/4");
         assert_line(&out, "aws-burst-1 cloud 1/2 unity 1/2");
@@ -1485,7 +1440,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_overview_queue_counts_the_groups_it_does_not_list() {
+    fn the_home_queue_counts_the_groups_it_does_not_list() {
         let mut i = fixture();
         let rows = (0..QUEUE_ROWS + 3)
             .map(|n| (json!({"pool": "unity", "repo": "r", "branch": format!("b{n}"), "stuck": "false"}), "60"))
@@ -1535,7 +1490,7 @@ pub(crate) mod tests {
     #[test]
     fn a_pass_rate_is_red_under_70_and_amber_under_90() {
         let p = Palette::default();
-        let lines = page(Tab::Overview, &fixture(), p, 0, 160, &hosts());
+        let lines = page(Tab::Home, &fixture(), p, 0, 160, &hosts());
         let style = |t: &str| {
             lines
                 .iter()
@@ -1549,20 +1504,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_domain_strip_and_numbers_come_from_the_cc_series_and_ci_with_no_status_is_nodata() {
+    fn the_numbers_come_from_the_cc_series() {
+        // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "OVERALL RED"));
-        assert!(has(&out, "k3s OK ci NODATA llm RED"));
         assert!(has(&out, "ci local 3/7 cloud 0/0, waiting 4"));
-        assert!(has(&out, "red now: watch mac_studio_mlx"));
+        assert!(!has(&out, "OVERALL"));
     }
 
     #[test]
-    fn a_narrow_header_wraps_its_numbers_instead_of_cutting_them() {
+    fn narrow_numbers_wrap_instead_of_cutting() {
         let i = fixture();
         let b = Board::new(&i, Palette { no_color: true }, 0, hosts());
-        let wide: Vec<String> = b.header(200).iter().map(plain).collect();
-        let narrow: Vec<String> = b.header(40).iter().map(plain).collect();
+        let wide: Vec<String> = b.numbers(200).iter().map(plain).collect();
+        let narrow: Vec<String> = b.numbers(40).iter().map(plain).collect();
         assert!(narrow.len() > wide.len(), "{narrow:?}");
         let joined = narrow.join("\n");
         for item in [
@@ -1573,8 +1527,7 @@ pub(crate) mod tests {
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }
-        // Only the status lines may clip; every numbers line fits whole.
-        assert!(narrow[2..].iter().all(|l| !l.ends_with('~')), "{narrow:?}");
+        assert!(narrow.iter().all(|l| !l.ends_with('~')), "{narrow:?}");
     }
 
     #[test]
@@ -1701,7 +1654,7 @@ pub(crate) mod tests {
         );
         // Without published local slots the machine counts its gates and invents no capacity.
         assert_line(&out, "workstation local - - - - - - 2 gates");
-        assert_line(&tab(&i, Tab::Overview, 160), "workstation local - 2 gates");
+        assert_line(&tab(&i, Tab::Home, 160), "workstation local - 2 gates");
         assert!(!out.lines().any(|l| l.starts_with("unity-local ")));
     }
 
@@ -1715,7 +1668,7 @@ pub(crate) mod tests {
         assert_line(&out, "unity-local 2/4+6 1 - 14 50% workstation");
         // The gates' busy/open fold into the machine, as cc:site_slots folds them into local.
         assert_line(
-            &tab(&i, Tab::Overview, 160),
+            &tab(&i, Tab::Home, 160),
             "workstation local 2/4 unity-local 2/4+6",
         );
         assert!(has(&out, "waiting 5"));
