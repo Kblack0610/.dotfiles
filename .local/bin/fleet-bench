@@ -651,8 +651,8 @@ cmd_scorecard() {
     forecast_section "$t"
     echo
     wakes_lines
-    tokens_line
-    week_line
+    report_line "$BENCH_TOKENS_CMD" tokens
+    report_line "$BENCH_WEEK_CMD" week
     echo
     bottleneck_section "$t"
     echo
@@ -1274,17 +1274,11 @@ wakes_lines() {
         else "median \(.all.median), p90 \(.all.p90) over \(.all.wakes) wakes" end)' <<<"$w"
 }
 
-# tokens_line: the newest nightly token-usage row, as written by agent-usage tokens snapshot.
-tokens_line() {
+# report_line <command> <label>: one scorecard row another tool writes (the nightly token-usage
+# row, the newest stored week from day-log).
+report_line() {
   local l
-  l=$($BENCH_TOKENS_CMD 2>/dev/null) && [ -n "$l" ] || l="tokens: ? (\`agent-usage tokens line\` unreadable)"
-  echo "- $l"
-}
-
-# week_line: the newest stored week from day-log, what moved against the week before.
-week_line() {
-  local l
-  l=$($BENCH_WEEK_CMD 2>/dev/null) && [ -n "$l" ] || l="week: ? (\`day-log week --line\` unreadable)"
+  l=$($1 2>/dev/null) && [ -n "$l" ] || l="$2: ? (\`$1\` unreadable)"
   echo "- $l"
 }
 

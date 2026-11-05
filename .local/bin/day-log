@@ -193,15 +193,16 @@ day_prom() {
 # and flow, and the week's value and delta per metric. A number the day has not got is left out.
 rollup_prom() {
   jq -r --slurpfile week "$2" "$PROM_JQ"'
+    def quantiles($l): [$l + {quantile: "0.5"}, .p50], [$l + {quantile: "0.9"}, .p90];
     (.ci.repos // {} | to_entries) as $ci | .agents as $a | .work as $w
     | gauge("agent_ci_pass_rate"; "Share of runs not red on the last finished day, by repo and workflow (ci-failures).";
         $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | [{repo: $r, workflow: .key}, .value.pass_rate]),
       gauge("agent_ci_main_red"; "Red runs on main on the last finished day, by repo (ci-failures).";
         $ci[] | [{repo: .key}, .value.main.red]),
       gauge("agent_ci_gate_wall_minutes"; "Gate wall time on the last finished day, by repo (ci-cost).";
-        $ci[] | .key as $r | .value.cost.gate.wall // {} | [{repo: $r, quantile: "0.5"}, .p50], [{repo: $r, quantile: "0.9"}, .p90]),
+        $ci[] | .key as $r | .value.cost.gate.wall // {} | quantiles({repo: $r})),
       gauge("agent_ci_gate_wait_minutes"; "Wait for a runner on the last finished day, by repo (ci-cost).";
-        $ci[] | .key as $r | .value.cost.queue.Tests // {} | [{repo: $r, quantile: "0.5"}, .p50], [{repo: $r, quantile: "0.9"}, .p90]),
+        $ci[] | .key as $r | .value.cost.queue.Tests // {} | quantiles({repo: $r})),
       gauge("agent_ci_runner_hours"; "Pool runner-hours on the last finished day, by repo (ci-cost).";
         $ci[] | [{repo: .key}, .value.cost.hours.pool]),
       gauge("agent_ci_regated_branches"; "Branches gated more than once on the last finished day, by repo (ci-cost).";
@@ -215,12 +216,11 @@ rollup_prom() {
       gauge("agent_usage_context_tokens"; "Context tokens on the last finished day (token-usage snapshot)."; [{}, $a.tokens.context]),
       gauge("agent_usage_cost_per_merged_pr_usd"; "Cost per merged PR on the last finished day (token-usage snapshot)."; [{}, $a.cost_per_merged_pr]),
       gauge("agent_usage_sessions_no_pr"; "Sessions with no PR on the last finished day (session-outcomes)."; [{}, $a.outcomes.no_pr]),
-      gauge("agent_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
+      gauge("agent_day_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
       gauge("agent_queue_flow"; "Queue items reaching each stage on the last finished day.";
         ($w.queue // {}) as $q | ("queued", "started", "waiting", "done", "failed") | [{stage: .}, $q[.]]),
       gauge("agent_queue_minutes"; "Queue lead, wait and run time on the last finished day, minutes.";
-        ($w.queue // {}) as $q | ("lead", "wait", "run") | . as $s | $q["\(.)_minutes"] // {}
-          | [{stage: $s, quantile: "0.5"}, .p50], [{stage: $s, quantile: "0.9"}, .p90]),
+        ($w.queue // {}) as $q | ("lead", "wait", "run") | . as $s | $q["\(.)_minutes"] // {} | quantiles({stage: $s})),
       gauge("agent_board_rows"; "Agent board rows opened and closed on the last finished day, and open at its end.";
         ($w.board // {}) | [{event: "opened"}, .opened], [{event: "closed"}, .closed], [{event: "open"}, .open_end]),
       gauge("agent_phases_ticked"; "Plan phases ticked on the last finished day (fleet-bench flow)."; [{}, $w.phases.ticked]),
@@ -299,12 +299,11 @@ finalize() {
 # outside the record's lock, and its result goes in as DAYLOG_CI_FILE. Everything is attempted
 # and any failure is the exit code: the runner reports it, the briefing names it.
 nightly() {
-  local day="$1" rc=0 s e tmp
+  local day="$1" rc=0 tmp
   [ "$day" = "$(today)" ] && { say "$day is not over yet"; return 2; }
-  s=$(date -d "$day 00:00" +%s); e=$(date -d "$day +1 day 00:00" +%s)
   $DAYLOG_USAGE_CMD tokens snapshot --date "$day" || rc=1
   tmp="$(mktemp)"
-  "$SNAPSHOTS" ci --day "$day" --start "$s" --end "$e" > "$tmp" || rc=1
+  "$SNAPSHOTS" ci --day "$day" > "$tmp" || rc=1
   [ -s "$tmp" ] || { rm -f "$tmp"; tmp=""; }
   DAYLOG_CI_FILE="$tmp" finalize "$day" || rc=1
   [ -z "$tmp" ] || rm -f "$tmp"

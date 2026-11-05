@@ -1631,7 +1631,7 @@ requests_setup() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- tokens: ? (`agent-usage tokens line` unreadable)'
+  assert_output --partial '- tokens: ? (`tokens-stub` unreadable)'
   echo 'tokens 2026-10-28: 3.3B context over 28,337 responses' > "$TOKLINE"
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
@@ -1644,7 +1644,7 @@ requests_setup() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- week: ? (`day-log week --line` unreadable)'
+  assert_output --partial '- week: ? (`week-stub` unreadable)'
   echo 'week to 2026-10-27 (7 of 7 days): 14 merged (+7)' > "$WEEKLINE"
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"

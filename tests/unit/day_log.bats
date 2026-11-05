@@ -304,13 +304,21 @@ PROM
 }
 
 @test "agents: the token snapshot's numbers, by kind and by account; absent is null and not a fault" {
-  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '[.agents.tokens, .agents.cost_per_merged_pr, .unreadable]' 2026-10-28
+  "$SUBJECT" snapshot --date 2026-10-27 >/dev/null
+  run rec -c '[.agents.tokens, .agents.cost_per_merged_pr, .unreadable]' 2026-10-27
   assert_output '[null,null,[]]'
-  echo '{"totals":{"context":900,"responses":3,"input":1,"cache_write":2,"cache_read":3,"cost_usd":12.5,"sessions":4},"merged_prs":5,"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3,"turns":9,"cache_read":1}},"by_account":{"bnb":{"sessions":4,"cost_usd":12.5,"output":1}}}' > "$SANDBOX/tokjson-2026-10-28"
-  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '.agents | [.sessions, .tokens.context, .cost_usd, .merged_prs, .cost_per_merged_pr, .by_kind, .by_account]' 2026-10-28
+  echo '{"totals":{"context":900,"responses":3,"input":1,"cache_write":2,"cache_read":3,"cost_usd":12.5,"sessions":4},"merged_prs":5,"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3,"turns":9,"cache_read":1}},"by_account":{"bnb":{"sessions":4,"cost_usd":12.5,"output":1}}}' > "$SANDBOX/tokjson-2026-10-27"
+  "$SUBJECT" snapshot --date 2026-10-27 >/dev/null
+  run rec -c '.agents | [.sessions, .tokens.context, .cost_usd, .merged_prs, .cost_per_merged_pr, .by_kind, .by_account]' 2026-10-27
   assert_output '[4,900,12.5,5,2.5,{"agent":{"sessions":3,"turns":9}},{"bnb":{"sessions":4,"cost_usd":12.5}}]'
+}
+
+@test "agents: outcomes are found by when the session was active, whichever month's file holds the row" {
+  mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
+  jq -cn --argjson t "$(date -d '2026-09-30 20:00' +%s)" '{session_id: "late", updated_epoch: $t, prs: []}' > "$DAYLOG_OUTCOMES_DIR/game/2026-10.jsonl"
+  "$SUBJECT" snapshot --date 2026-09-30 >/dev/null
+  run rec -c '.agents.outcomes | [.sessions, .no_pr]' 2026-09-30
+  assert_output '[1,1]'
 }
 
 @test "agents: outcomes count each session once, newest row, in the window, and only for a finished day" {
@@ -371,6 +379,7 @@ PROM
   assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
   assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
   assert_line 'agent_ci_runner_hours{repo="O/game"} 3.5'
+  refute_line --regexp '^(# TYPE )?agent_asks_open'   # fleet-sessions owns that series
   assert_line 'agent_ci_regated_branches{repo="O/game"} 1'
   assert_line 'agent_ci_quarantine_open{repo="O/game"} 6'
   assert_line 'agent_usage_sessions{kind="agent"} 3'
@@ -422,8 +431,8 @@ week_fixture() {
 echo "\$*" >> "$SANDBOX/rollup-args"
 [ "\$1" = rollup ] || exit 0
 case "\$3" in
-  $(date -d 2026-10-21 +%s)) printf 'game\t1\t1\t1\t70\t0\nTOTAL\t1\t1\t1\t70.00\t0\n' ;;
-  *) printf 'TOTAL\t1\t1\t1\t35.00\t0\n' ;;
+  $(date -d 2026-10-21 +%s)) printf 'game\t3\t1\t1\t70\t0\nTOTAL\t3\t1\t1\t70.00\t0\n' ;;
+  *) printf 'TOTAL\t2\t1\t1\t35.00\t0\n' ;;
 esac
 EOF
 }
@@ -444,9 +453,18 @@ EOF
   assert_output --partial 'dotfiles red 25%'
 }
 
-@test "week: cost comes from one read of the whole window, so a session is not counted once per day" {
+@test "week: cost and sessions come from one read of the whole window, so a session is not counted once per day" {
   week_fixture
+  mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
+  mon=$(date -d '2026-10-26 12:00' +%s); tue=$(date -d '2026-10-27 12:00' +%s)
+  {
+    jq -cn --argjson t "$mon" '{session_id: "spans", updated_epoch: $t, observed: 1, prs: []}'
+    jq -cn --argjson t "$tue" '{session_id: "spans", updated_epoch: $t, observed: 2, prs: [{number: 1}]}'
+    jq -cn --argjson t "$tue" '{session_id: "idle", updated_epoch: $t, observed: 1, prs: []}'
+  } > "$DAYLOG_OUTCOMES_DIR/game/2026-10.jsonl"
   run "$SUBJECT" week --date 2026-10-27 --json
+  assert_equal "$(jq -c '.metrics["sessions.total"] | [.value, .prev, .delta]' <<<"$output")" '[3,2,1]'
+  assert_equal "$(jq -c '.metrics["sessions.no_pr"].value' <<<"$output")" 1
   assert_equal "$(jq -c '.metrics.cost_usd | [.value, .prev, .delta]' <<<"$output")" '[70.0,35.0,35.0]'
   assert_equal "$(jq -c '.metrics.cost_per_merged_pr | [.value, .prev]' <<<"$output")" '[5.0,5.0]'
   assert_equal "$(grep -c '^rollup' "$SANDBOX/rollup-args")" 2

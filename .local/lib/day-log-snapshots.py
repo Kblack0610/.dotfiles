@@ -2,7 +2,7 @@
 """day-log-snapshots: the work, agents and ci sections of a day-log record, and the week.
 
   enrich --start S --end E [--prev FILE] [--ci-file FILE]   a record on stdin, the sections added
-  ci --day D --start S --end E                              a finished day's CI, slow: see below
+  ci --day D                                                a finished day's CI, slow: see below
   week [--date D] [--write] [--json | --line]               7 finished days against the 7 before
 
 day-log runs this: it owns the record, and every env var read here is set and exported there.
@@ -21,12 +21,11 @@ it, outside the record's lock; enrich keeps what it found.
 
 week: a sum adds the days, a ratio is taken from those sums, a p50 or p90 is the median of the
 daily values (a record keeps percentiles, not samples), a gauge is its last value, and cost is
-read over the whole window, because a day's cost is whole-session spend and days overlap.
+and sessions are read over the whole window, because a session spans days.
 A delta needs as many days with the metric in both weeks: fewer would read as a drop.
 """
 import argparse
 import datetime as dt
-import glob
 import json
 import os
 import re
@@ -40,22 +39,23 @@ import time
 from pathlib import Path
 
 ENV = os.environ
-DIR = Path(ENV.get("DAYLOG_DIR", Path.home() / ".agent" / "daylog"))
+DIR = Path(ENV["DAYLOG_DIR"])
 WEEKS = DIR / "weeks"
 WINDOW = 7
+CALL_TIMEOUT = 3600   # a guard, so a hung read fails its section instead of stalling the nightly
 SHEETS = "*/projects/current/*/agent/README.md"
 ROW = re.compile(r"^\s*- \[(.)\].*<!-- id:([\w-]+)[ >]")
 
 
-def cmd(name, default):
-    return shlex.split(ENV.get(name, default))
+def cmd(name):
+    return shlex.split(ENV[name])
 
 
 def run_json(argv, ok=(0,)):
     """(parsed stdout, error text); one of the two is None."""
     try:
-        p = subprocess.run(argv, capture_output=True, text=True)
-    except OSError as e:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
         return None, str(e)
     if p.returncode not in ok:
         return None, (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]
@@ -82,16 +82,22 @@ def share(part, whole):
     return round(part / whole, 4) if whole else None
 
 
+def day_bounds(day):
+    """(start, end) epochs of a local calendar day, YYYY-MM-DD: 23 or 25 hours when the clocks move."""
+    date = dt.date.fromisoformat(day)
+    return tuple(int(dt.datetime.combine(d, dt.time()).astimezone().timestamp()) for d in (date, date + dt.timedelta(days=1)))
+
+
 # --- the day ---------------------------------------------------------------
 
 def queue_flow(day):
     since = (dt.date.fromisoformat(day) - dt.timedelta(days=1)).isoformat()  # done/ is dated in UTC
-    stats, err = run_json(cmd("DAYLOG_QUEUE_CMD", "agent-queue") + ["stats", "--json", "--since", since])
+    stats, err = run_json(cmd("DAYLOG_QUEUE_CMD") + ["stats", "--json", "--flow", "--since", since])
     return (stats.get("flow", {}).get(day) or {}, None) if stats else (None, err)
 
 
 def notes_git(*args):
-    return subprocess.run(["git", "-C", ENV.get("DAYLOG_NOTES_DIR", str(Path.home() / ".notes")), *args],
+    return subprocess.run(["git", "-C", ENV["DAYLOG_NOTES_DIR"], *args],
                           capture_output=True, text=True)
 
 
@@ -126,7 +132,7 @@ def board_flow(start, end):
 
 
 def phase_flow(start, end):
-    flow, err = run_json(cmd("DAYLOG_BENCH_CMD", "fleet-bench") + ["flow", "--from", str(start), "--to", str(end), "--json"])
+    flow, err = run_json(cmd("DAYLOG_BENCH_CMD") + ["flow", "--from", str(start), "--to", str(end), "--json"])
     if not flow:
         return None, err
     return {k: flow.get(k) for k in ("ticked", "added", "removed", "started")}, None
@@ -140,30 +146,28 @@ def merges(record):
     return {"by_repo": by_repo, "by_area": by_area}
 
 
-def outcomes(start, end, month):
-    """The sessions session-outcomes last saw active in the window, each once, newest row wins."""
-    rows = {}
-    for path in glob.glob(os.path.join(ENV.get("DAYLOG_OUTCOMES_DIR", ""), "*", f"{month}.jsonl")):
-        with open(path) as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if start <= (row.get("updated_epoch") or 0) < end:
-                    rows[row.get("session_id")] = row
-    no_pr = [r for r in rows.values() if not r.get("prs")]
+def outcome_rows(start, end):
+    """The sessions last active in the window, by session-outcomes' own reader (newest row of each)."""
+    lib = Path(__file__).resolve().parent / "session-outcomes.sh"
+    p = subprocess.run(["bash", "-c", '. "$1"; so_latest "$2"', "-", str(lib), ENV["DAYLOG_OUTCOMES_DIR"]],
+                       capture_output=True, text=True, check=True, timeout=CALL_TIMEOUT)
+    return [r for r in map(json.loads, p.stdout.splitlines()) if start <= (r.get("updated_epoch") or 0) < end]
+
+
+def outcomes(start, end):
+    rows = outcome_rows(start, end)
+    no_pr = [r for r in rows if not r.get("prs")]
     time_use = {}
-    for row in rows.values():
+    for row in rows:
         for key, minutes in (row.get("time_use") or {}).items():
             time_use[key] = round(time_use.get(key, 0) + (minutes or 0), 1)
     total = lambda rs, key: sum(r.get(key) or 0 for r in rs)
     faults = lambda r: sum((r.get("hard_errors") or {}).values())
     return {"sessions": len(rows), "no_pr": len(no_pr), "no_pr_with_edits": sum(1 for r in no_pr if r.get("edits")),
-            "no_pr_cost_usd": round(total(no_pr, "cost_usd"), 2), "prs_merged": total(rows.values(), "prs_merged"),
-            "reverted_7d": total(rows.values(), "reverted_7d"),
-            "interrupts": sum((r.get("corrections") or {}).get("interrupts") or 0 for r in rows.values()),
-            "hard_errors": sum(map(faults, rows.values())), "time_use": time_use}
+            "no_pr_cost_usd": round(total(no_pr, "cost_usd"), 2), "prs_merged": total(rows, "prs_merged"),
+            "reverted_7d": total(rows, "reverted_7d"),
+            "interrupts": sum((r.get("corrections") or {}).get("interrupts") or 0 for r in rows),
+            "hard_errors": sum(map(faults, rows)), "time_use": time_use}
 
 
 def ask_ages(asks, now):
@@ -174,13 +178,12 @@ def ask_ages(asks, now):
 
 
 def usage_of(snap):
-    """What a token-usage snapshot says about the day, None when it has none yet."""
-    if not snap:
-        return {"sessions": None, "tokens": None, "cost_usd": None, "merged_prs": None, "cost_per_merged_pr": None,
-                "by_kind": None, "by_account": None}
+    """What a token-usage snapshot says about the day, each value None when it has none yet."""
+    snap = snap or {}
     t = snap.get("totals") or {}
-    keep = lambda table, *keys: {k: {x: v.get(x) for x in keys} for k, v in (table or {}).items()}
-    return {"sessions": t.get("sessions"), "tokens": {k: t.get(k) for k in ("context", "responses", "input", "cache_write", "cache_read")},
+    keep = lambda table, *keys: {k: {x: v.get(x) for x in keys} for k, v in table.items()} if table else None
+    return {"sessions": t.get("sessions"),
+            "tokens": {k: t.get(k) for k in ("context", "responses", "input", "cache_write", "cache_read")} if t else None,
             "cost_usd": t.get("cost_usd"), "merged_prs": snap.get("merged_prs"),
             "cost_per_merged_pr": snap.get("cost_per_merged_pr"),
             "by_kind": keep(snap.get("by_kind"), "sessions", "turns"),
@@ -205,7 +208,7 @@ def enrich(a):
         return value
 
     # A missing snapshot is a day the nightly has not reached, so it is null and not a fault.
-    snap, _ = run_json(cmd("DAYLOG_USAGE_CMD", "agent-usage") + ["tokens", "json", "--date", day])
+    snap = None if live else run_json(cmd("DAYLOG_USAGE_CMD") + ["tokens", "json", "--date", day])[0]
     now = float(ENV.get("DAYLOG_NOW") or time.time())
     record["work"] = {"queue": read("agent-queue", "work.queue", lambda: queue_flow(day)),
                       "merges": read("merges", "work.merges", lambda: (merges(record), None)),
@@ -214,7 +217,7 @@ def enrich(a):
     record["agents"] = {
         **usage_of(snap),
         # Today has no outcomes yet, and a past day has no live asks: it keeps its last gather's.
-        "outcomes": None if live else read("outcomes", "agents.outcomes", lambda: (outcomes(a.start, a.end, day[:7]), None)),
+        "outcomes": None if live else read("outcomes", "agents.outcomes", lambda: (outcomes(a.start, a.end), None)),
         "asks": read("asks", "agents.asks", lambda: (ask_ages(record["waiting"]["asks"], now), None))
         if live and record.get("waiting") else get(prev, "agents.asks"),
     }
@@ -242,10 +245,13 @@ def stamp(epoch):
     return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def window_args(start, end):
+    return ["--days", f"{(end - start) / 86400:.6f}", "--until", stamp(end), "--json"]
+
+
 def ci_failures(repo, base, start, end):
-    days = f"{(end - start) / 86400:.6f}"
-    got, err = run_json(cmd("DAYLOG_CI_FAILURES_CMD", "python3 " + str(Path.home() / ".claude/skills/ci-failures/ci-failures.py"))
-                        + ["--repo", repo, "--base", base, "--days", days, "--until", stamp(end), "--json"], ok=(0, 3))  # 3: partial
+    reader = ENV.get("DAYLOG_CI_FAILURES_CMD", "python3 " + str(Path.home() / ".claude/skills/ci-failures/ci-failures.py"))
+    got, err = run_json(shlex.split(reader) + ["--repo", repo, "--base", base] + window_args(start, end), ok=(0, 3))  # 3: partial
     if got is None:
         return None, err
     runs, red = got.get("runs"), got.get("red_runs")
@@ -267,8 +273,7 @@ def ci_cost(clone, base, day, start, end):
     with tempfile.NamedTemporaryFile("w", suffix=".py") as f:
         f.write(script.stdout)
         f.flush()
-        got, err = run_json([sys.executable, f.name, "--days", f"{(end - start) / 86400:.6f}", "--until", stamp(end),
-                             "--json", "--cache", str(cache), "--repo-dir", clone])
+        got, err = run_json([sys.executable, f.name, *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
     if got is not None:
         shutil.rmtree(cache, ignore_errors=True)
     return got, err
@@ -281,15 +286,16 @@ def ci(a):
     except OSError as e:
         out["unreadable"].append(f"{ENV.get('DAYLOG_CI')}: {e.strerror}")
         repos = []
+    start, end = day_bounds(a.day)
     for repo, base, clone in repos:
-        row, err = ci_failures(repo, base, a.start, a.end)
+        row, err = ci_failures(repo, base, start, end)
         if row is None:
             out["unreadable"].append(f"{repo} ci-failures: {err}")
             row = {}
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
         if clone:
-            row["cost"], err = ci_cost(clone, base, a.day, a.start, a.end)
+            row["cost"], err = ci_cost(clone, base, a.day, start, end)
             if row["cost"] is None:
                 out["unreadable"].append(f"{repo} ci-cost: {err}")
         out["repos"][repo] = row
@@ -303,7 +309,7 @@ def ci(a):
 SUM = {"queue.queued": "work.queue.queued", "queue.started": "work.queue.started", "queue.waiting": "work.queue.waiting",
        "queue.done": "work.queue.done", "queue.failed": "work.queue.failed", "board.opened": "work.board.opened",
        "board.closed": "work.board.closed", "phases.ticked": "work.phases.ticked", "tokens.context": "agents.tokens.context",
-       "merged_prs": "agents.merged_prs", "sessions.total": "agents.sessions", "sessions.no_pr": "agents.outcomes.no_pr"}
+       "merged_prs": "agents.merged_prs"}
 MEDIAN = {"queue.lead_p50_min": "work.queue.lead_minutes.p50", "queue.lead_p90_min": "work.queue.lead_minutes.p90",
           "queue.wait_p50_min": "work.queue.wait_minutes.p50", "queue.wait_p90_min": "work.queue.wait_minutes.p90"}
 LAST = {"board.open": "work.board.open_end", "asks.open": "agents.asks.open", "asks.age_h_max": "agents.asks.age_h_max"}
@@ -312,6 +318,9 @@ CI_SUM = {"runs": "runs", "red": "red", "main_red": "main.red", "runner_hours": 
 CI_MEDIAN = {"gate_wall_p50_min": "cost.gate.wall.p50", "gate_wall_p90_min": "cost.gate.wall.p90",
              "gate_wait_p50_min": "cost.queue.Tests.p50", "gate_wait_p90_min": "cost.queue.Tests.p90"}
 CI_LAST = {"quarantine_open": "cost.quarantine.open"}
+last = lambda values: values[-1]
+TABLES = ((SUM, sum), (MEDIAN, statistics.median), (LAST, last))
+CI_TABLES = ((CI_SUM, sum), (CI_MEDIAN, statistics.median), (CI_LAST, last))
 
 
 def day_list(end, offset):
@@ -327,22 +336,17 @@ def rollup(records):
         if have:
             out[name] = (round(how(have), 4), len(have))
 
+    def fold_tables(tables, rows, prefix=""):
+        for table, how in tables:
+            for name, path in table.items():
+                fold(prefix + name, [get(r, path) for r in rows], how)
+
     fold("merged", [len(r["merged"]) if "merged" in r else None for r in records], sum)
-    for name, path in SUM.items():
-        fold(name, [get(r, path) for r in records], sum)
-    for name, path in MEDIAN.items():
-        fold(name, [get(r, path) for r in records], statistics.median)
-    for name, path in LAST.items():
-        fold(name, [get(r, path) for r in records], lambda v: v[-1])
+    fold_tables(TABLES, records)
     for repo in sorted({k for r in records for k in (get(r, "ci.repos") or {})}):
         short = repo.split("/")[-1].lstrip(".")
         rows = [(get(r, "ci.repos") or {}).get(repo) or {} for r in records]
-        for name, path in CI_SUM.items():
-            fold(f"ci.{short}.{name}", [get(row, path) for row in rows], sum)
-        for name, path in CI_MEDIAN.items():
-            fold(f"ci.{short}.{name}", [get(row, path) for row in rows], statistics.median)
-        for name, path in CI_LAST.items():
-            fold(f"ci.{short}.{name}", [get(row, path) for row in rows], lambda v: v[-1])
+        fold_tables(CI_TABLES, rows, f"ci.{short}.")
         if f"ci.{short}.runs" in out:
             days = out[f"ci.{short}.runs"][1]
             out[f"ci.{short}.red_rate"] = (share(out[f"ci.{short}.red"][0], out[f"ci.{short}.runs"][0]), days)
@@ -352,18 +356,39 @@ def rollup(records):
     return out
 
 
-def window_cost(first, last):
-    """Spend over the window from the registry: a session counts once however many days it ran."""
-    start = int(dt.datetime.combine(dt.date.fromisoformat(first), dt.time()).astimezone().timestamp())
-    end = int(dt.datetime.combine(dt.date.fromisoformat(last) + dt.timedelta(days=1), dt.time()).astimezone().timestamp())
+def window_usage(start, end):
+    """(sessions, cost) over the window from the registry: a session counts once however many days it ran."""
     try:
-        out = subprocess.run(cmd("DAYLOG_USAGE_CMD", "agent-usage") + ["rollup", "--since", str(start), "--until", str(end)],
-                             capture_output=True, text=True).stdout
-    except OSError:
+        out = subprocess.run(cmd("DAYLOG_USAGE_CMD") + ["rollup", "--since", str(start), "--until", str(end)],
+                             capture_output=True, text=True, timeout=CALL_TIMEOUT).stdout
+    except (OSError, subprocess.TimeoutExpired):
         return None
     rows = [line.split("\t") for line in out.splitlines() if line.count("\t") >= 4]
     total = [r for r in rows if r[0] == "TOTAL"] or rows
-    return round(sum(float(r[4]) for r in total), 2) if total else None
+    return (sum(int(r[1]) for r in total), round(sum(float(r[4]) for r in total), 2)) if total else None
+
+
+def side(span):
+    """(records, metrics) of one week. Sessions and cost are read over the window, never added up
+    from the days, because a session spans days."""
+    records = [r for r in (load(DIR / f"{d}.json") for d in span) if r]
+    out = rollup(records)
+    if not records:
+        return records, out
+    start, end = day_bounds(span[0])[0], day_bounds(span[-1])[1]
+    usage = window_usage(start, end)
+    if usage:
+        out["sessions.total"], out["cost_usd"] = (usage[0], WINDOW), (usage[1], WINDOW)
+        prs, days_read = out.get("merged_prs", (0, 0))
+        if prs and days_read == WINDOW:  # the PRs burn counts per day, so it reads like the daily number
+            out["cost_per_merged_pr"] = (round(usage[1] / prs, 2), WINDOW)
+    try:
+        rows = outcome_rows(start, end)
+    except (subprocess.SubprocessError, ValueError):
+        rows = []
+    if rows:
+        out["sessions.no_pr"] = (sum(1 for r in rows if not r.get("prs")), WINDOW)
+    return records, out
 
 
 def compare(now, before):
@@ -402,16 +427,7 @@ def line_of(week):
 
 def compute(end):
     days, before = day_list(end, 0), day_list(end, WINDOW)
-    records = [r for r in map(lambda d: load(DIR / f"{d}.json"), days) if r]
-    earlier = [r for r in map(lambda d: load(DIR / f"{d}.json"), before) if r]
-    now, was = rollup(records), rollup(earlier)
-    for scope, span, have in ((now, days, records), (was, before, earlier)):
-        cost = window_cost(span[0], span[-1])
-        if cost is not None and have:
-            scope["cost_usd"] = (cost, WINDOW)
-            prs, days_read = scope.get("merged_prs", (0, 0))
-            if prs and days_read == WINDOW:  # the PRs burn counts per day, so it reads like the daily number
-                scope["cost_per_merged_pr"] = (round(cost / prs, 2), WINDOW)
+    (records, now), (earlier, was) = side(days), side(before)
     week = {"schema": 1, "end": end.isoformat(), "start": days[0], "prev_start": before[0], "prev_end": before[-1],
             "days_present": len(records), "prev_days_present": len(earlier),
             "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "metrics": compare(now, was)}
@@ -470,8 +486,6 @@ def main():
     e.add_argument("--ci-file")
     c = sub.add_parser("ci")
     c.add_argument("--day", required=True)
-    c.add_argument("--start", type=int, required=True)
-    c.add_argument("--end", type=int, required=True)
     w = sub.add_parser("week")
     w.add_argument("--date", type=dt.date.fromisoformat)
     w.add_argument("--write", action="store_true", help="recompute and store it, for `day-log nightly`")

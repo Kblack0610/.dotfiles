@@ -632,10 +632,10 @@ EOF
   f="$(item queued b)"; sed -i 's/^queued: .*/queued: 2026-11-04T02:00:00Z/' "$f"
   "$AQ" move b done --status failed
   "$AQ" set b finished=2026-11-04T03:00:00Z
-  run "$AQ" stats --json --since 2026-11-03
+  run "$AQ" stats --json --flow --since 2026-11-03
   assert_success
   assert_equal "$(jq -c '.flow["2026-11-03"] | [.queued, .started, .done, .ok, .failed, .lead_minutes, .wait_minutes.p50, .run_minutes.p50]' <<<"$output")" '[2,1,2,1,1,{"n":2,"p50":90,"p90":90},30,60]'
-  run "$AQ" stats --json --since 2026-11-04
+  run "$AQ" stats --json --flow --since 2026-11-04
   [ "$(jq -c '.flow | has("2026-11-03")' <<<"$output")" = false ]
 }
 

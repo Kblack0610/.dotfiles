@@ -146,7 +146,6 @@ def scan(path, start, end, acc):
                 b["output"] += o
                 b["cache_write"] += cw
                 b["cache_read"] += cr
-            acc["files"].add(path)
             acc["kind_files"][kind].add(path)
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
@@ -256,7 +255,7 @@ def main():
         return Counter()
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
-           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "files": set(), "kind_files": defaultdict(set)}
+           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
             if os.path.getmtime(p) < start:
@@ -275,7 +274,7 @@ def main():
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
-                   "transcripts": len(acc["files"])},
+                   "transcripts": len(set().union(*acc["kind_files"].values()))},
         "registry": {"sessions": n, "cost_usd": round(cost, 2)},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},

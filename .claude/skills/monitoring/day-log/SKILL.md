@@ -37,7 +37,7 @@ Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, ar
 
 The data feed for pipeline evaluation (queue item session-pipeline-eval): read these rather than measuring again. Schema 2, `.local/lib/day-log-snapshots.py`. A null is "not read yet", never zero. Records before 2026-11-04 do not have them; nothing backfills.
 
-- `work.queue`: `agent-queue stats` flow for the local day: queued, started, waiting, done, ok, failed, cancelled, and `lead_minutes`, `wait_minutes`, `run_minutes` as {n, p50, p90}.
+- `work.queue`: `agent-queue stats --flow` for the local day: queued, started, waiting, done, ok, failed, cancelled, and `lead_minutes`, `wait_minutes`, `run_minutes` as {n, p50, p90}.
 - `work.merges`: by_repo, by_area. `work.board`: opened, closed, open_end across every agent sheet, joined on row id, so null before ids (2026-11-04). `work.phases`: `fleet-bench flow` ticked, added, removed, started.
 - `agents`: sessions, tokens, cost_usd, merged_prs, cost_per_merged_pr, by_kind, by_account from the nightly token-usage snapshot; `outcomes` (sessions, no_pr, no_pr_with_edits, no_pr_cost_usd, prs_merged, reverted_7d, interrupts, hard_errors, time_use) for a finished day; `asks` (open, age_h_p50, age_h_max) from the last live gather.
 - `ci.repos[<owner/name>]`: `ci-failures` (runs, red, red_rate, pending, cancelled, partial, buckets, `main` {runs, red}, the base branch `~/.config/agentctl/day-log-ci` names, `workflows` {runs, red, pass_rate}) and, where the repo has `scripts/ci-cost.py`, its `--json` as `cost` (gate wall and runner minutes, queue, hours, regates, nightly, local, quarantine). Written once by `day-log nightly`; the repos are `~/.dotfiles/.config/day-log/ci`.
