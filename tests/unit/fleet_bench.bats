@@ -617,6 +617,27 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   assert_output 1
 }
 
+@test "asks quotes a question's first sentence whole, and cuts a long one at a word" {
+  stub_asks
+  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
+  q() { printf '%s\tgame\t\tpending\tquestion\t%s\ta|b\t\t\t\t\t%s\t\n' "$1" "$2" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)"; }
+  q a 'Real money: which US state do you live in? It decides whether the bot may trade at all.' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: Real money: which US state do you live in? (2h). List: fleet-bench asks.'
+  q a 'Should the nightly retry every red shard on the spare runner pool before it pages anyone about it' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: Should the nightly retry every red shard on the spare runner pool before it... (2h). List: fleet-bench asks.'
+  # The page quotes only the questions that fit its 300 chars.
+  { for i in a b c; do q $i "Question $i: should the nightly retry every red shard on the spare runner pool before it pages?" 2; done; } > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  assert_success
+  run sed 's/^notify -p normal -t asks //' "$SANDBOX/pages"
+  [ "${#output}" -le 300 ]
+  assert_output --partial 'Top: Question a: should'
+  assert_output --partial 'Question b: should'
+  refute_output --partial 'Question c'
+}
+
 @test "asks rejects an unknown flag instead of printing (negative control)" {
   stub_asks
   run "$SUBJECT" asks --pgae
@@ -673,8 +694,8 @@ ci_row() { jq -cn --argjson t "$T0" "$1" >> "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 # h1 inside 7d, h2 only inside 28d, h3 outside both; r1 and r2 are headless and never count
 kpi_fixture() {
   mkdir -p "$FLEET_BENCH_DIR"
-  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 4, reverted_7d: 1, cost_usd: 8, corrections: {interrupts: 2}}'
-  out_row game '{session_id: "h2", project: "game", updated_epoch: ($t - 864000), prs_merged: 1, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 0}}'
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 4, reverted_7d: 1, cost_usd: 8, corrections: {interrupts: 2}, plan_gate: {exits: 4, denied: 1}}'
+  out_row game '{session_id: "h2", project: "game", updated_epoch: ($t - 864000), prs_merged: 1, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 0}, plan_gate: {exits: 4, denied: 3}}'
   out_row game '{session_id: "h3", project: "game", updated_epoch: ($t - 3456000), prs_merged: 10, reverted_7d: 0, cost_usd: 1, corrections: {interrupts: 9}}'
   out_row game '{session_id: "r1", project: "game", runner: true, updated_epoch: ($t - 86400), prs_merged: 50, reverted_7d: 50, cost_usd: 100, corrections: null}'
   out_row _runner '{session_id: "r2", project: "_runner", updated_epoch: ($t - 86400), prs_merged: 30, reverted_7d: 30, cost_usd: 100, corrections: null}'
@@ -688,7 +709,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'

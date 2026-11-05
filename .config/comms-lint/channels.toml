@@ -45,9 +45,9 @@ forbid = [
 quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
 source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
-# The morning briefing page (refs/<date>/briefing.md): headline plus what needs you.
+# The morning briefing page (refs/<date>/briefing.md), linted whole: at most 5 under Needs you.
 [channel.briefing]
-stop_at = '^## (?!Needs you)'
+items_under = '^## Needs you$'
 max_items = 5
 max_item = 160
 max_line = 200
