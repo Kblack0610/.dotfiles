@@ -11,7 +11,7 @@
 # target before the slash), each with its own counts and one line per session, worst first.
 #
 # Read from Prometheus (agent_session_age_minutes, one series per session that `fleet-sessions
-# tick` writes to fleet_sessions.prom every minute), the same stages the hub Sessions tab shows,
+# tick` writes to fleet_sessions.prom every minute), the same stages the hub Fleet tab shows,
 # so the chip reads the same on the laptop thin client and there is one count of sessions, not
 # a pane count beside a stage count. Prometheus unreadable reads ? in amber, never a quiet nothing.
 #

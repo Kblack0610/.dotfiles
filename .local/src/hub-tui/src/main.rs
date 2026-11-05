@@ -1,5 +1,5 @@
 //! `hub`: the hub boards as terminal tabs, in one tmux window (hub:board, hub.conf). tmux
-//! Prefix i, o and O land on Overview, Sessions and Today through `hub tab`. Usage, keys and
+//! Prefix i and O land on Overview and Today through `hub tab`. Usage, keys and
 //! troubleshooting: README.md.
 
 mod app;
@@ -141,22 +141,15 @@ fn print_once(tab: Option<Tab>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Overview), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Sessions | Tab::Today | Tab::History)) = tab {
+    if let Some(t @ (Tab::Fleet | Tab::Today | Tab::History)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
-        if t == Tab::Sessions {
+        if t == Tab::Fleet {
             a.controls.set(hub_core::session_actions::gather(
                 &hub_core::session_actions::System,
             ));
+            a.fleet = Some(hub_core::fleet::collect());
         }
         a.tab = t;
-        for l in a.page_lines(w) {
-            let _ = writeln!(out, "{}", plain(&l));
-        }
-        return 0;
-    }
-    if tab == Some(Tab::Fleet) {
-        a.fleet = Some(hub_core::fleet::collect());
-        a.tab = Tab::Fleet;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -297,8 +290,6 @@ fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     }
     if app.tab == Tab::Fleet {
         app.read_fleet();
-    }
-    if app.tab == Tab::Sessions {
         app.read_sessions();
     }
     let mut term = ratatui::init();

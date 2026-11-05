@@ -1,4 +1,4 @@
-//! The Sessions tab: every agent session's stage from `fleet-sessions`' state document, what
+//! The Fleet tab's watch page, under the session controls: every agent session's stage from `fleet-sessions`' state document, what
 //! waits on main, the open asks, and the newest lines of watch.log. It judges nothing: the
 //! bucket, the reason and every cell come from fleet-sessions, as agent-web's Watch tab reads
 //! them (`hub_core::boards`).
