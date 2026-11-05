@@ -1024,3 +1024,60 @@ idle_row() {
   STUB_PANES='' run "$SH" stats
   assert_equal "$(jq -c '[.pass_status, .attach]' <<< "$output")" '["gone","tmux -L hub attach -t hub:shepherd"]'
 }
+
+# sweep_setup <runner>...: the runner exporter answers with these busy runners in the pool; each is
+# "<event> <branch> <run id>". gh answers a run's finished jobs with $STUB_JOBS (one conclusion a
+# line) and records every call; fleet-bench records what it is told.
+runner() { jq -cn --arg e "$1" --arg b "$2" --arg r "$3" '{metric: {event: $e, branch: $b, url: "https://github.com/o/r/actions/runs/\($r)/job/1"}}'; }
+sweep_setup() {
+  local r
+  r="$(for x in "$@"; do read -r e b id <<<"$x"; runner "$e" "$b" "$id"; done | jq -sc .)"
+  export STUB_RUNNERS="$r"
+  cat > "$PROM_LIB" <<'STUB'
+prom_q() { [ -z "${STUB_PROM_FAIL:-}" ] || return 1; echo "$1" >> "$HOME/prom.calls"; printf '{"status":"success","data":{"result":%s}}' "$STUB_RUNNERS"; }
+STUB
+  stub gh 'echo "$*" >> "$HOME/gh.calls"; case "$1" in api) printf "%b" "${STUB_JOBS:-}" ;; esac'
+  stub fleet-bench 'echo "$*" >> "$HOME/bench.calls"'
+}
+
+@test "sweep-cancel cancels a sweep that holds the pool and mostly fails, records it on the finding, and says who to tell" {
+  sweep_setup 'workflow_dispatch sweep/frames 42' 'workflow_dispatch sweep/frames 42' 'workflow_dispatch sweep/frames 42' 'pull_request feat/x 7'
+  export STUB_JOBS='failure\nfailure\nsuccess\n'
+  run "$SH" sweep-cancel 'starved pool:unity @1700000000'
+  assert_success
+  assert_line 'cancelled https://github.com/o/r/actions/runs/42: held 3 of 4 unity runners, 2 of 3 finished jobs failed'
+  assert_line --partial 'tell the session on sweep/frames:'
+  run grep -c 'pool="unity",state="running"' "$HOME/prom.calls"
+  assert_output 1
+  run grep -x 'run cancel 42 -R o/r' "$HOME/gh.calls"
+  assert_success
+  run cat "$HOME/bench.calls"
+  assert_output 'respond starved pool:unity @1700000000 shepherd cancelled https://github.com/o/r/actions/runs/42'
+  run grep -c 'cancelled sweep run 42 (sweep/frames)' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+}
+
+@test "sweep-cancel leaves a sweep whose jobs mostly pass, and one that holds half the pool or less" {
+  sweep_setup 'workflow_dispatch sweep/frames 42' 'workflow_dispatch sweep/frames 42' 'workflow_dispatch sweep/frames 42' 'pull_request feat/x 7'
+  export STUB_JOBS='failure\nsuccess\n'
+  run "$SH" sweep-cancel 'starved pool:unity @1700000000'
+  assert_failure 1
+  assert_output --partial '1 of 2 finished jobs failed: it stays'
+  sweep_setup 'workflow_dispatch sweep/frames 42' 'workflow_dispatch sweep/frames 42' 'pull_request feat/x 7' 'workflow_dispatch feat/y 8'
+  rm -f "$HOME/gh.calls"
+  run "$SH" sweep-cancel 'starved pool:unity @1700000000'
+  assert_failure 1
+  assert_output 'sweep-cancel: no sweep run holds most of pool unity'
+  [ ! -e "$HOME/gh.calls" ]
+  [ ! -e "$HOME/bench.calls" ]
+}
+
+@test "sweep-cancel: an unreadable exporter leaves the pool alone, and a fact that is not a starved pool is a usage error" {
+  sweep_setup 'workflow_dispatch sweep/frames 42'
+  STUB_PROM_FAIL=1 run "$SH" sweep-cancel 'starved pool:unity @1700000000'
+  assert_failure 1
+  assert_output --partial 'unreadable'
+  run "$SH" sweep-cancel 'host-overload host:a @1700000000'
+  assert_failure 2
+  [ ! -e "$HOME/gh.calls" ]
+}
