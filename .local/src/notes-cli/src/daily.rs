@@ -565,7 +565,11 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if let Some(b) = crate::board::board_path(p) {
         links.push(("Board".into(), config::wikilink(&p.vault, &b)));
     }
-    // The outbox: cross-org like the board, so linked against the vault the same way.
+    // The outbox: cross-org like the board, so linked against the vault the same way, and made
+    // when missing so the link opens a file the sweep reads.
+    if let Err(e) = crate::outbox::ensure(p) {
+        eprintln!("notes: could not create {}: {e}", p.outbox.display());
+    }
     links.push(("Outbox".into(), config::wikilink(&p.vault, &p.outbox)));
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
