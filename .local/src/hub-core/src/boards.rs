@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use crate::session_actions::Runner;
 
 /// Transitions sent to the Sessions tab: about a day of a busy fleet, sync lines included.
 pub const WATCH_LOG_LINES: usize = 1500;
@@ -28,6 +30,53 @@ pub fn fleet_state() -> PathBuf {
             .unwrap_or_else(|| home().join(".local/state"))
             .join("fleet/state.json")
     })
+}
+
+/// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
+pub fn asks_dir() -> PathBuf {
+    env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
+}
+
+/// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
+/// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
+/// home is agent-ask's store, so a board shows what the questions panel shows. A failed read
+/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does.
+pub fn state(path: &Path, r: &dyn Runner) -> Value {
+    let mut state = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null);
+    if !state.is_object() {
+        return state;
+    }
+    let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
+    match r.run(&argv) {
+        Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
+        Err(_) => {
+            state["asks"] = json!([]);
+            match state["unreadable"].as_array_mut() {
+                Some(u) => u.push("agent-ask".into()),
+                None => state["unreadable"] = json!(["agent-ask"]),
+            }
+        }
+    }
+    state
+}
+
+/// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
+fn asks(tsv: &str) -> Vec<Value> {
+    let some = |v: &str| (!v.is_empty()).then(|| v.to_string());
+    tsv.lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let col = |i: usize| f.get(i).copied().unwrap_or("");
+            json!({
+                "id": col(0), "project": col(1), "kind": col(4), "question": col(5),
+                "task": some(col(7)), "created": col(11), "session": some(col(12)),
+            })
+        })
+        .collect()
 }
 
 /// Where `fleet-sessions` keeps watch.log (`FLEET_SHEPHERD_DIR`).
@@ -350,17 +399,14 @@ pub fn parse_transition(line: &str) -> Option<Transition> {
 
 #[derive(Serialize)]
 pub struct Watch {
-    /// `state.json` exactly as `fleet-sessions --write` left it, or null when it is missing.
+    /// `state.json` as `fleet-sessions --write` left it with live asks (`state`), or null.
     pub state: Value,
     /// Oldest first.
     pub transitions: Vec<Transition>,
 }
 
-pub fn watch(state: &Path, log: &Path) -> Watch {
-    let state = std::fs::read_to_string(state)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
+pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
+    let state = self::state(state, r);
     let log = std::fs::read_to_string(log).unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
@@ -825,11 +871,47 @@ mod tests {
         assert_eq!(missing, None);
     }
 
+    /// A runner that answers every command the same, and records it.
+    struct Fixed(Result<String, String>);
+    impl Runner for Fixed {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            assert_eq!(argv.join(" "), "agent-ask list --all --pending");
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn state_reads_asks_live_and_names_a_failed_read() {
+        let dir = std::env::temp_dir().join(format!("hub-core-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("state.json");
+        // The snapshot holds an ask already answered and lacks one filed since.
+        std::fs::write(
+            &f,
+            r#"{"asks":[{"id":"old"}],"unreadable":[],"sessions":[]}"#,
+        )
+        .unwrap();
+        let tsv = "new\tdotfiles\t\tpending\tquestion\tWhich one?\ta|b\t\t\t\ta\t\
+                   2026-11-05T14:00:00-0800\tdotfiles-agent-1\n";
+        let s = state(&f, &Fixed(Ok(tsv.into())));
+        assert_eq!(s["asks"].as_array().unwrap().len(), 1);
+        assert_eq!(s["asks"][0]["id"], "new");
+        assert_eq!(s["asks"][0]["question"], "Which one?");
+        assert_eq!(s["asks"][0]["created"], "2026-11-05T14:00:00-0800");
+        assert_eq!(s["asks"][0]["session"], "dotfiles-agent-1");
+        assert_eq!(s["asks"][0]["task"], Value::Null);
+        let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
+        assert_eq!(s["asks"], json!([]));
+        assert_eq!(s["unreadable"], json!(["agent-ask"]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn watch_survives_missing_files() {
         let w = watch(
             Path::new("/nonexistent/state.json"),
             Path::new("/nonexistent/log"),
+            &Fixed(Err("not run".into())),
         );
         assert_eq!(w.state, Value::Null);
         assert!(w.transitions.is_empty());
