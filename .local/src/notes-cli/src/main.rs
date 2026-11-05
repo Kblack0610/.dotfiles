@@ -334,7 +334,7 @@ enum Cmd {
         #[arg(long)]
         stages: bool,
         /// Print a project's index group; with --set, declare it. Unset means the
-        /// project's own profile (bnb, personal); `dev` is the tooling lane.
+        /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
         /// Print a project's priority; with --set, declare it. One of: focus, high, low,

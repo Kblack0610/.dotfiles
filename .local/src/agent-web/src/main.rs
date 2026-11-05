@@ -231,7 +231,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 .map(|p| (p, flat)),
         );
     }
-    let asks = session::home().join(".agent").join("asks");
+    let asks = boards::asks_dir();
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
     }
@@ -900,6 +900,7 @@ async fn watch_board() -> ApiResult<Json<boards::Watch>> {
         boards::watch(
             &boards::fleet_state(),
             &boards::shepherd_dir().join("watch.log"),
+            &actions::System,
         )
     })
     .await
@@ -939,15 +940,12 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-/// The Home tab: hub_core::home over the fleet state, the queue and the cached Prometheus
-/// answer, the same join the hub TUI's Home draws.
+/// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
+/// Prometheus answer, the same join the hub TUI's Home draws.
 async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
     let infra = s.infra.infra().await;
     tokio::task::spawn_blocking(move || {
-        let state = std::fs::read_to_string(boards::fleet_state())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(serde_json::Value::Null);
+        let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
         hub_core::home::build(&state, Some(&queue), Some(&infra))
     })
