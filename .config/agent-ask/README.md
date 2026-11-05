@@ -50,7 +50,7 @@ agent-ask answer [--by who] <id> <answer...> record answer; status->answered; ty
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
 agent-ask cancel <id>                        status->cancelled
-agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); stale files the question on the agent board as a plain row, and so does expire
+agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); answered closes an ask with options only when the text names exactly one of them, recorded as the answer; stale files the question on the agent board as a plain row, and so does expire
 ```
 
 ## Ask file schema
