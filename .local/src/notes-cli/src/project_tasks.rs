@@ -1020,7 +1020,7 @@ pub fn tag(
 pub(crate) fn tag_token(t: &str) -> Result<String> {
     let t = t.trim().trim_start_matches('#');
     if t.is_empty() || t.contains(char::is_whitespace) {
-        bail!("not a tag: '{t}' (want one word, like size/s or ask)");
+        bail!("not a tag: '{t}' (want one word, like size/s or requested)");
     }
     if md::is_version_tag(t) {
         bail!("#{t} is a release: use move, promote or demote");
@@ -2421,7 +2421,9 @@ mod inbox_tests {
         let s = v.read();
         let row = s.lines().find(|l| l.contains("id:sc-4")).unwrap();
         assert!(
-            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"),
+            row.starts_with(
+                "- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"
+            ),
             "{row}"
         );
         assert!(!row.contains("#size/m") && !row.contains("#1469"), "{row}");

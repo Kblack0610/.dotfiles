@@ -1,10 +1,11 @@
-//! The Board tab: every project's open rows as `notes board --json` prints them, read through
-//! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
-//! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
-//! row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m, e, + and - add, start,
-//! finish, drop (with why, or the id it duplicates), move (to a project or a version), edit, and
-//! step a row a release sooner or later through `notes ptask --exact`; `o` opens the sheet at the
-//! row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
+//! The rows under the Projects tab (projtab.rs): one project's open rows, or every project's
+//! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
+//! same feed and writes as agent-web's Projects tab. Rows are grouped by profile and project
+//! (each profile's Focus rows are their own group, read-only) and their text wraps, so a row
+//! shows whole; j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
+//! e, t/T, + and - add, start, finish, drop (with why, or the id it duplicates), move (to a
+//! project or a version), edit, tag and untag, and step a row a release sooner or later through
+//! `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
 //! the read fails in `notes` and the page re-reads.
 
 use std::collections::BTreeMap;
@@ -16,7 +17,7 @@ use ratatui::text::{Line, Span};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::Palette;
 
-/// What a key on the Board tab asks the app to do.
+/// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
 pub enum Ask {
     /// Not one of the tab's own keys.
@@ -39,6 +40,8 @@ pub enum Kind {
     Dup,
     Move,
     Edit,
+    Tag,
+    Untag,
 }
 
 /// A line being typed at the status line, and the row it is about (none for a search).
@@ -64,6 +67,8 @@ pub struct TaskView {
     pub sel: usize,
     pub search: String,
     pub lane: Option<&'static str>,
+    /// One project's rows, as (profile, project); None shows every project's.
+    pub project: Option<(String, String)>,
     pub prompt: Option<Prompt>,
     /// The write now running, as "done in bnb/demo".
     pub running: Option<String>,
@@ -86,6 +91,11 @@ pub fn groups<'a>(f: &'a Feed, v: &TaskView) -> Vec<(String, Vec<&'a Row>)> {
     for r in &f.rows {
         if v.lane.is_some_and(|l| r.lane != l) {
             continue;
+        }
+        if let Some((profile, project)) = &v.project {
+            if r.profile != *profile || r.project.as_ref() != Some(project) {
+                continue;
+            }
         }
         let hay = format!("{} {} {}", group(r), r.text, r.tags.join(" ")).to_lowercase();
         if !q.is_empty() && !hay.contains(&q) {
@@ -207,6 +217,22 @@ impl TaskView {
                     text: p.text,
                 },
             ),
+            Kind::Tag | Kind::Untag => {
+                let tags: Vec<String> = p.text.split_whitespace().map(str::to_string).collect();
+                let (add, remove) = if p.kind == Kind::Tag {
+                    (tags, vec![])
+                } else {
+                    (vec![], tags)
+                };
+                (
+                    format!("tag in {at}"),
+                    Verb::Tag {
+                        raw: r.raw.clone(),
+                        add,
+                        remove,
+                    },
+                )
+            }
             Kind::Proof | Kind::Unverified => {
                 let (proof, unverified) = if p.kind == Kind::Proof {
                     (Some(p.text), None)
@@ -331,6 +357,12 @@ impl TaskView {
                     self.prompt = prompt(Kind::Move, Some(r));
                 }
             }
+            KeyCode::Char(c @ ('t' | 'T')) => {
+                if let Some(r) = self.target(f, false) {
+                    let kind = if c == 't' { Kind::Tag } else { Kind::Untag };
+                    self.prompt = prompt(kind, Some(r));
+                }
+            }
             KeyCode::Char('e') => {
                 if let Some(r) = self.target(f, false) {
                     self.prompt = Some(Prompt {
@@ -412,7 +444,11 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
     let mut out = vec![
         clip_line(
             heading(
-                "TASK BOARD",
+                if v.project.is_some() {
+                    "OPEN ROWS"
+                } else {
+                    "ALL PROJECTS"
+                },
                 format!("  {n} open rows in {} groups{filter}", gs.len()),
                 p,
             ),
@@ -438,7 +474,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             rest += "  (read-only)";
         }
         out.push(clip_line(heading(&title.to_uppercase(), rest, p), w));
-        let mut t = Table {
+        let (mut t, starts) = Table {
             header: vec!["PRIO", "LANE", "VERSION", "STATE", "TEXT"],
             rows: rows.iter().map(|r| row(r, p)).collect(),
             keep: vec![0, 3, 1, 2],
@@ -448,13 +484,16 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             cap: vec![(2, 16)],
             ..Default::default()
         }
-        .fit(w, p.head());
+        .fit_wrapped(w, p.head());
         if let Some(i) = rows
             .iter()
             .position(|r| sel.as_ref() == Some(&(r.sheet.clone(), r.raw.clone())))
         {
-            t[i + 1].style = p.sel();
-            at = Some(out.len() + i + 1);
+            let end = starts.get(i + 1).copied().unwrap_or(t.len());
+            for l in &mut t[starts[i]..end] {
+                l.style = p.sel();
+            }
+            at = Some(out.len() + starts[i]);
         }
         out.append(&mut t);
     }
@@ -476,6 +515,8 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
             (Kind::Move, _) => "Move to a project, a version vX.Y.Z, or both: ".into(),
             (Kind::Edit, _) => "New text (tags stay): ".into(),
+            (Kind::Tag, _) => "Add tags (size/s, requested; a new size replaces the old): ".into(),
+            (Kind::Untag, _) => "Remove tags: ".into(),
             (_, None) => String::new(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
@@ -563,7 +604,7 @@ pub(crate) mod tests {
         let v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("TASK BOARD  5 open rows in 3 groups"), "{s}");
+        assert!(s.contains("ALL PROJECTS  5 open rows in 3 groups"), "{s}");
         assert!(at("BNB FOCUS  1, 1 urgent  (read-only)") < at("BNB/DEMO  3, 1 urgent"));
         assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
@@ -835,5 +876,56 @@ pub(crate) mod tests {
         assert_eq!(v.selected(&fewer).unwrap().text, "sweep the logs");
         v.reselect(None, &Feed::default());
         assert_eq!(v.sel, 0);
+    }
+
+    #[test]
+    fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
+        let mut f = fixture();
+        f.rows[1].text = "fix the menu so the back button returns to the map".into();
+        f.rows[1].size = Some("m".into());
+        let mut v = TaskView {
+            project: Some(("bnb".into(), "demo".into())),
+            ..Default::default()
+        };
+        assert_eq!(shown(&f, &v).len(), 3, "only bnb/demo's rows");
+        let s = text(&f, &v, 50);
+        assert!(s.contains("OPEN ROWS  3 open rows in 1 groups"), "{s}");
+        assert!(!s.contains('~'), "nothing is clipped:\n{s}");
+        assert!(
+            s.contains("returns to the map"),
+            "the text wraps whole:\n{s}"
+        );
+        // The selected row is lit on every line it wraps onto.
+        let (lines, at) = page(&f, &v, Palette::default(), 50);
+        let at = at.unwrap();
+        assert_eq!(lines[at].style, lines[at + 1].style);
+        assert!(
+            plain(&lines[at + 1]).starts_with(' '),
+            "{:?}",
+            plain(&lines[at + 1])
+        );
+
+        v.key(key('t'), Some(&f), 10);
+        assert!(text(&f, &v, 160).contains("Add tags"));
+        typed(&mut v, &f, "size/s #requested");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("tag runs")
+        };
+        assert_eq!(label, "tag in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "tag",
+                "--add=size/s",
+                "--add=requested",
+                "--",
+                "- [ ] fix the menu"
+            ]
+        );
+        v.key(key('T'), Some(&f), 10);
+        typed(&mut v, &f, "v0.2.0");
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a release is move's");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("release")));
     }
 }

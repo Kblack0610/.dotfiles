@@ -1148,9 +1148,28 @@ mod tests {
         // The serialized names are the contract the UIs read.
         let v = serde_json::to_value(&rows[0]).unwrap();
         for k in [
-            "profile", "project", "lane", "version", "game", "state", "priority", "tier", "worker",
-            "requested", "id", "type", "area", "size", "text", "tags", "marker", "since", "filed",
-            "sheet", "line", "raw",
+            "profile",
+            "project",
+            "lane",
+            "version",
+            "game",
+            "state",
+            "priority",
+            "tier",
+            "worker",
+            "requested",
+            "id",
+            "type",
+            "area",
+            "size",
+            "text",
+            "tags",
+            "marker",
+            "since",
+            "filed",
+            "sheet",
+            "line",
+            "raw",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }

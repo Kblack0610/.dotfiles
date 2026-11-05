@@ -22,9 +22,9 @@
 #   e  the sheet in the hub notes editor   n  new project   d  show/hide drafts
 #   s  set stage            x  archive     q / Esc  quit
 #
-# A project's tasks live on the hub Board tab (`hub tab board <profile>/<name>`, then the hub
-# window), the one task view with the board's keys: add, start, done, move, edit, a wave
-# sooner or later, open the sheet at the row.
+# A project's tasks live on the hub Projects tab (`hub tab projects <profile>/<name>`, then the
+# hub window): its card on top, its rows below with the board's keys: add, start, done, move,
+# edit, tags, a wave sooner or later, open the sheet at the row.
 #
 # Every write here is a `notes` CLI call, so the CLI stays the only writer of a sheet or an index.
 # The counts come from one `notes projects --stats` call. `e` is `tmx open hub <sheet>`: the
@@ -201,7 +201,7 @@ cmd_archive() {
 # its socket, else the next hub to start takes the request.
 cmd_board() {
   panel_need hub tmx
-  hub tab board "$1/$2" && tmx goto hub hub:board
+  hub tab projects "$1/$2" && tmx goto hub hub:board
 }
 
 # --- Picker ---
