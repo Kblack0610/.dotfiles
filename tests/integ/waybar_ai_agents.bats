@@ -18,7 +18,8 @@ setup() {
   ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
   # bar <health colour> <working> <ready> <need>: the chip text.
-  bar() { printf "<span color='%s'>%s</span> <span color='$Y'>~%s</span> <span color='$G'>%s%s</span> <span color='$R'>!%s</span>" "$1" "$ICON" "$2" "$CK" "$3" "$4"; }
+  bar() { printf "<span color='%s'>%s</span> <span color='$Y'>~%s</span> <span color='$G'>%s%s</span> %s" "$1" "$ICON" "$2" "$CK" "$3" "$(need "$4")"; }
+  need() { if [ "$1" = 0 ]; then printf '!0'; else printf "<span color='$R'>!%s</span>" "$1"; fi; }
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -91,14 +92,14 @@ phone() { jq -r .phone <<< "$output"; }
   assert_line --index 7 "DONE     uc-agent-2:1       up 6h40m</tt>"
 }
 
-@test "a stalled session turns the robot red, leads the hover and heads its world" {
+@test "a stalled session turns the robot amber, leads the hover and heads its world" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$R" 1 0 0)"
-  assert_equal "$(class)" critical
+  assert_equal "$(text)" "$(bar "$Y" 1 0 0)"
+  assert_equal "$(class)" warn
   run tip
-  assert_line --index 1 "<span color='$R'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
-  assert_line --index 3 "<tt><span color='$R'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
+  assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
+  assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
 }
 
 @test "an unclear session turns the robot amber" {
@@ -146,7 +147,7 @@ phone() { jq -r .phone <<< "$output"; }
     p:games:lab/g7:1=DONE:30 p:games:lab/g8:1=PARKED:30 p:tools:hub/t1:1=WORKING:30
   run "$MODULE"
   run phone
-  assert_line --index 1 "games <span color='$R'>x</span><span color='$Y'>?</span><span color='$Y'>!</span>~~+.-"
+  assert_line --index 1 "games <span color='$Y'>x</span><span color='$Y'>?</span><span color='$Y'>!</span>~~+.-"
   assert_line --index 2 "tools ~"
   assert_equal "${#lines[@]}" 3
 }
