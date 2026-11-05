@@ -2,7 +2,7 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s]
+#       [--weight heavy|light] [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix]
 #       one oneshot item per unchecked `## Phases` line, each after the one before
@@ -336,7 +336,7 @@ project_of_cwd() {
 # --- verbs ---
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" weight=""
+  local running="" session="" task=() tag planf="" dry="" weight="" title=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -348,6 +348,7 @@ cmd_add() {
       --from) from="${2:?}"; shift 2 ;;
       --agent) agent="${2:?}"; shift 2 ;;
       --slug) slug="${2:?}"; shift 2 ;;
+      --title) title="$(printf '%s' "${2:?}" | tr -s '\n\t' '  ' | sed 's/^ *//; s/ *$//')"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
@@ -406,6 +407,7 @@ cmd_add() {
   tmp="$(mktemp "$AQ_DIR/$state/.add.XXXXXX")" || die "cannot write in $AQ_DIR/$state"
   {
     printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
+    [ -n "$title" ] && printf 'title: %s\n' "$title"
     [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
     [ -n "$after" ] && printf 'after: %s\n' "$after"
     [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
@@ -464,24 +466,26 @@ add_plan() {
             .of[$p.n | tostring] = .of[$p.with | tostring]
             | .items[.of[$p.n | tostring]] += [$p]
           else .of[$p.n | tostring] = (.items | length) | .items += [[$p]] end)
-    | .items | map({phases: map(.n), titles: map(.name | sub(" ?\\(with [0-9]+\\)"; "")
-        | sub("^[0-9]+[.)] "; "") | sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80])})')" ||
+    | .items | map({phases: map(.n), names: map(.name | sub(" ?\\(with [0-9]+\\)"; "") | sub("^[0-9]+[.)] "; ""))}
+      | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
+      | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))')" ||
     die "--plan $planf: could not read its Phases checklist"
   [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist"
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
   local rows
-  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" '.[]
+  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
     | (.phases | length > 1) as $many
     | [($pre + "-p\(.phases[0])"), (.phases | join(" ")),
        ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
-        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it.")]
+        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
   local s ph text prev="$after"
-  while IFS=$'\t' read -r s ph text; do
+  while IFS=$'\t' read -r s ph text _; do
     [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
   done <<<"$rows"
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
@@ -489,13 +493,13 @@ add_plan() {
   fi
   local n=0 total
   total="$(wc -l <<<"$rows")"
-  while IFS=$'\t' read -r s ph text; do
+  while IFS=$'\t' read -r s ph text ttl; do
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${prev:--}" "$text"
     else
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
-          --from "$from" --agent "$agent" --slug "$s" ${prev:+--after "$prev"} -- "$text" ||
+          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${prev:+--after "$prev"} -- "$text" ||
         die "added $n of $total items from $planf; $s and the rest are not queued"
     fi
     n=$((n + 1)); prev="$s"

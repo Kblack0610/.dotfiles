@@ -639,7 +639,11 @@ mod tests {
                  {\"slug\":\"b\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"waiting\"}\n",
             ),
         );
-        assert_eq!(s[0].items, ["b"], "no window recorded: every pane of the session");
+        assert_eq!(
+            s[0].items,
+            ["b"],
+            "no window recorded: every pane of the session"
+        );
         assert_eq!(s[1].items, ["a", "b"]);
     }
 
