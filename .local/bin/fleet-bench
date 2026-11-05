@@ -1122,8 +1122,8 @@ kpi_json() {
     | ($o | map(select($bot[.session_id] | not))) as $human
     | win(7; $human; $bot) as $w7 | win(28; $human; $bot) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
-       ($commskeys | split(" ")[] | {key: ., value: {"7d": (($cm[.] // {})["7d"] | numbers) // null,
-                                                     "28d": (($cm[.] // {})["28d"] | numbers) // null, now: false}}),
+       ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
+                                                     "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
        ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
