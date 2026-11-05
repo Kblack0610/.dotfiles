@@ -11,7 +11,7 @@
 #                                       options with meanings, recommendation, context, judge
 #   agent-ask pick [<id>]               card + one-key answer (the tmux popup); no id lists
 #                                       every pending ask first
-#   agent-ask list [project|--all] [--pending|--answered|--stale] [--since <n>d]
+#   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer [--by who] <id> <answer...>
@@ -19,14 +19,11 @@
 #                                       run its `resume` command (via ask-resume).
 #                                       --by human (default) | judge | shepherd -> answered_by
 #   agent-ask cancel <id> [reason...]   flip to cancelled
-#   agent-ask stale <id> [reason...]    flip a pending ask to stale (still answerable)
-#   agent-ask expire [--days N]         flip pending asks older than N days to stale and
-#                                       print them (default $AGENT_ASK_STALE_DAYS, 14)
 #   agent-ask count [project|--all]     number of pending asks (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
 #   agent-ask recommend <id> <option>   set/replace the recommended option
-#   agent-ask settle-session <sid> answered|stale [text...]
+#   agent-ask settle-session <sid> answered [text...]
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
 #   agent-ask judge <id>                the answer judge: record what it would answer
@@ -42,8 +39,8 @@
 # conversation AND posts here in the same turn (a Stop check blocks a question left unfiled):
 # post prints the ask into the session and pages once, every board reads these files, and the
 # ask closes itself when the human answers (typed into the session, or `answer` from a board,
-# which also types the answer into the session) or when the session ends (stale). A human-only
-# action the session will not wait on is a human-sheet row, not an ask.
+# which also types the answer into the session), or drops it. A human-only action the session
+# will not wait on is a human-sheet row, not an ask.
 #
 # A QUESTION IS ONE LINE. `post` refuses a question that does not end in `?` or runs past
 # AGENT_ASK_QUESTION_MAX characters: the background goes in --context and what each option
@@ -69,12 +66,14 @@
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
 # "PR #1036 is green, merge it?".
 
-# LIFECYCLE: pending -> answered | cancelled | stale. Every reader of "waiting on you" asks
-# for --pending, so a stale ask leaves the human's queue without anyone deciding it: it is
-# still answerable, and the morning briefing lists it once, the day it went stale. An ask goes
-# stale after AGENT_ASK_STALE_DAYS unanswered (`expire`, run by the briefing), or by hand
-# (`stale`).
-# cancel and stale stamp `closed_at` and, when given, `closed_reason`.
+# LIFECYCLE: pending -> answered | cancelled. A question has ONE home, this file, and stays
+# pending until the human answers or drops it, even after its session is gone (the card says so).
+# An answer that no live session takes and no `resume` consumes becomes one agent board row,
+# "<question> -> answered: <answer>", so the work it decides is not lost. Nothing else copies a
+# question onto a board: 2026-11-05 the old session-end and 14-day "stale" path filed an
+# "unanswered ask" row and closed the ask, so the A and the card vanished and the question lived
+# on as a board row nobody could answer. `stale` in old files is history; nothing writes it now.
+# cancel stamps `closed_at` and, when given, `closed_reason`.
 #
 # THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one observe-role
 # model call with $AGENT_ASK_POLICY writes `judge: human | take-recommend | answer:<text>` and
@@ -85,7 +84,6 @@
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
-: "${AGENT_ASK_STALE_DAYS:=14}"
 : "${AGENT_ASK_QUESTION_MAX:=150}"
 : "${AGENT_ASK_POLICY:=$HOME/.config/agent-ask/policy.md}"
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --role observe}"
@@ -372,7 +370,6 @@ cmd_list() {
     case "$1" in
       --pending)  want=pending; shift ;;
       --answered) want=answered; shift ;;
-      --stale)    want=stale; shift ;;
       --since)    since="$2"; shift 2 ;;
       --all)      key="--all"; shift ;;
       *)          key="$1"; shift ;;
@@ -443,7 +440,12 @@ cmd_answer() {
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
 
-  deliver_to_session "$f" "$answer"
+  local row; row="$(live_row "$(field "$f" claude_session)")"
+  if [ -n "$row" ]; then
+    deliver_to_session "$f" "$answer" "$row"
+  elif [ -z "$(field "$f" resume)" ]; then
+    file_board_row "$f" "$(field "$f" question) -> answered: $answer"
+  fi
 
   # Answering IS starting (see header). ask-resume marks before it runs and detaches the
   # long work, so this returns promptly; its failure must not fail the answer.
@@ -452,16 +454,18 @@ cmd_answer() {
   fi
 }
 
-# deliver_to_session <file> <answer>: an ask from a live attended session is answered in that
-# session too, so a board answer and a typed answer reach the same place. Skipped when the owner
-# is gone, or sits in a permission/question dialog that a paste would answer by accident.
+# live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
+live_row() {
+  [ -n "${1:-}" ] && command -v agent-panel >/dev/null 2>&1 || return 0
+  agent-panel list --json 2>/dev/null | jq -c --arg s "$1" 'select(.session_id == $s)' | head -1
+}
+
+# deliver_to_session <file> <answer> <live row>: an ask from a live attended session is answered
+# in that session too, so a board answer and a typed answer reach the same place. Skipped when
+# the session sits in a permission/question dialog that a paste would answer by accident.
 deliver_to_session() {
-  local f="$1" answer="$2" owner row pane server
+  local f="$1" answer="$2" row="$3" pane server
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
-  owner="$(field "$f" claude_session)"
-  [ -n "$owner" ] && command -v agent-panel >/dev/null 2>&1 || return 0
-  row="$(agent-panel list --json 2>/dev/null | jq -c --arg s "$owner" 'select(.session_id == $s)' | head -1)"
-  [ -n "$row" ] || return 0
   [ "$(jq -r .status <<< "$row")" = waiting ] && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
   pane="$(jq -r .pane <<< "$row")"; server="${pane%%/*}"; pane="${pane#*/}"
   printf 'Answer to ask %s: %s' "$(field "$f" id)" "$answer" | tmux -L "$server" load-buffer -b agent-ask - 2>/dev/null &&
@@ -469,14 +473,11 @@ deliver_to_session() {
     tmux -L "$server" send-keys -t "$pane" Enter 2>/dev/null || true
 }
 
-# file_stale_row <ask file>: an ask nobody answered is still an open question, and the ask file is
-# about to leave every queue. Put it on the agent board as a plain row: #ask is for the human's
-# own words, and this is an agent's question. Only
-# a session ending and an ask expiring come here; a hand `stale` means it was decided.
-# Runs inside SessionEnd, so it fails silently. 2026-10-30: ask ZFBwVg held a 352-ask audit and
-# went stale when its session closed, with no row anywhere.
-file_stale_row() {
-  local f="$1" project profile board q
+# file_board_row <ask file> <text>: an answer nobody is left to act on, as one plain agent board
+# row in the ask's project. The answer is already recorded, so a board that refuses the row
+# fails nothing.
+file_board_row() {
+  local f="$1" text="$2" project profile board q
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
   [ -n "$project" ] || return 0
   if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
@@ -485,9 +486,9 @@ file_stale_row() {
     board="$(project_lab_names "$project" 2>/dev/null | head -1)"
   fi
   # Boards are plain ASCII, and a # in the question would read as a tag.
-  q="$(field "$f" question | tr -cd ' -~' | tr -d '#' | cut -c1-160)"
+  q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
-    "unanswered ask $(field "$f" id): $q" >/dev/null 2>&1 || true
+    "$q (ask $(field "$f" id))" >/dev/null 2>&1 || true
 }
 
 cmd_card() {
@@ -495,6 +496,22 @@ cmd_card() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
+  session_gone_note "$f"
+}
+
+# session_gone_note <ask file>: a pending ask whose session has ended is still the question;
+# say where its answer will go, since nothing will type it into a session.
+session_gone_note() {
+  local f="$1" sid
+  [ "$(field "$f" status)" = pending ] || return 0
+  sid="$(field "$f" claude_session)"
+  [ -n "$sid" ] && command -v agent-panel >/dev/null 2>&1 || return 0
+  [ -z "$(live_row "$sid")" ] || return 0
+  if [ -n "$(field "$f" resume)" ]; then
+    echo "  session gone: the answer starts \`$(field "$f" resume)\`"
+  else
+    echo "  session gone: the answer becomes a row on the $(field "$f" project) board"
+  fi
 }
 
 # pick_pending: choose one pending ask (fzf with the card as preview); prints its id.
@@ -529,6 +546,7 @@ pick_one() {
   f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
+  session_gone_note "$f"
   echo
   if [ "$(field "$f" status)" != pending ]; then
     echo "no longer pending; any key closes"; read -rsn1 _ || true; return 0
@@ -574,56 +592,44 @@ named_option() {
   [ "$n" -eq 1 ] && printf '%s' "$hit"
 }
 
-# settle-session <claude_session> answered|stale [text...]: close every pending ask that session
-# owns. The UserPromptSubmit hook calls it with `answered` (the human typed into the session)
-# and the SessionEnd hook with `stale` (nobody is left to act on it). An ask with --options is
+# settle-session <claude_session> answered [text...]: settle the pending asks that session owns,
+# when the human typed into it (the UserPromptSubmit hook). An ask with --options is
 # answered only by a message that names exactly one of them, and records that option; any other
 # message leaves it pending, because it was about something else. 2026-11-04: three go|later asks
 # about the sheet cleanup closed on "whats going on here?" and "ok how many phases left?", so the
 # cleanup never started. An ask with no options takes the message as its free-text answer.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
-  [ -n "$owner" ] && { [ "$to" = answered ] || [ "$to" = stale ]; } ||
-    { echo "usage: agent-ask settle-session <claude_session> answered|stale [text...]" >&2; return 2; }
+  [ -n "$owner" ] && [ "$to" = answered ] ||
+    { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
   local text f opts pick n=0; text="$(oneline "$*" | cut -c1-200)"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ "$(field "$f" status)" = pending ] && [ "$(field "$f" claude_session)" = "$owner" ] || continue
-    if [ "$to" = answered ]; then
-      opts="$(field "$f" options)"
-      if [ -n "$opts" ]; then
-        pick="$(named_option "$opts" "$text")"
-        [ -n "$pick" ] || continue
-        set_field "$f" answer "$pick"
-        set_field "$f" answer_note "in session: $text"
-      else
-        set_field "$f" answer "in session: ${text:-(no text)}"
-      fi
-      set_field "$f" status answered
-      set_field "$f" answered_at "$(now_iso)"
-      set_field "$f" answered_by human
+    opts="$(field "$f" options)"
+    if [ -n "$opts" ]; then
+      pick="$(named_option "$opts" "$text")"
+      [ -n "$pick" ] || continue
+      set_field "$f" answer "$pick"
+      set_field "$f" answer_note "in session: $text"
     else
-      set_field "$f" status stale
-      set_field "$f" closed_at "$(now_iso)"
-      set_field "$f" closed_reason "${text:-session ended}"
-      file_stale_row "$f"
+      set_field "$f" answer "in session: ${text:-(no text)}"
     fi
+    set_field "$f" status answered
+    set_field "$f" answered_at "$(now_iso)"
+    set_field "$f" answered_by human
     n=$((n + 1))
   done < <(ask_files --all)
   [ "$n" -gt 0 ] && queue_changed
   return 0
 }
 
-# close_ask <status> <id> [reason...]: the shared body of cancel and stale.
+# close_ask <status> <id> [reason...]: cancel, from the CLI or pick's drop.
 close_ask() {
   local to="$1" id="${2:-}"; shift 2 2>/dev/null || shift $#
-  [ -n "$id" ] || { echo "usage: agent-ask cancel|stale <id> [reason...]" >&2; return 2; }
+  [ -n "$id" ] || { echo "usage: agent-ask cancel <id> [reason...]" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
-  # Only a pending ask goes stale: an answer or a cancel is a decision, and staleness is not.
-  if [ "$to" = stale ] && [ "$(field "$f" status)" != pending ]; then
-    echo "agent-ask: $id is $(field "$f" status), not pending" >&2; return 1
-  fi
   set_field "$f" status "$to"
   set_field "$f" closed_at "$(now_iso)"
   [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
@@ -632,33 +638,6 @@ close_ask() {
 }
 
 cmd_cancel() { close_ask cancelled "$@"; }
-cmd_stale() { close_ask stale "$@"; }
-
-# expire [--days N]: every pending ask created more than N days ago goes stale; print the
-# list rows of the ones this call changed. `created` is local ISO with an offset, and a
-# lexical compare is only safe within one offset, so each is parsed by date(1).
-cmd_expire() {
-  local days="$AGENT_ASK_STALE_DAYS"
-  case "${1:-}" in
-    --days) days="${2:-}"; shift 2 ;;
-    "") ;;
-    *) echo "usage: agent-ask expire [--days N]" >&2; return 2 ;;
-  esac
-  [[ "$days" =~ ^[0-9]+$ ]] || { echo "agent-ask expire: --days takes a whole number" >&2; return 2; }
-  local cutoff f c id
-  cutoff=$(( $(date +%s) - days * 86400 ))
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    [ "$(field "$f" status)" = pending ] || continue
-    c="$(date -d "$(field "$f" created)" +%s 2>/dev/null)" || continue
-    [ "$c" -lt "$cutoff" ] || continue
-    id="$(field "$f" id)"
-    close_ask stale "$id" "no answer in ${days}d" 2>/dev/null || continue
-    file_stale_row "$f"
-    cmd_list --all --stale | awk -F'\t' -v id="$id" '$1 == id'
-  done < <(ask_files --all)
-}
-
 cmd_recommend() {
   local id="${1:-}" opt="${2:-}"
   [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option>" >&2; return 2; }
@@ -822,8 +801,6 @@ case "$sub" in
   pick)   cmd_pick "$@" ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
-  stale)  cmd_stale "$@" ;;
-  expire) cmd_expire "$@" ;;
   recommend)    cmd_recommend "$@" ;;
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;

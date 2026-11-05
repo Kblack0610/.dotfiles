@@ -17,7 +17,8 @@ An ask file is the only record that something waits on the human, for attended s
 - An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
-- When the session ends, the SessionEnd hook (`ask-settle.sh stale`) marks what is left stale.
+- A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone" and where the answer will go.
+- An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
 - On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) shows a status-line notice with the question and "Prefix y to answer", never a popup. `Prefix y` opens every pending ask, one card after another. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
@@ -63,7 +64,7 @@ agent-ask answer [--by who] <id> <answer...> record answer; status->answered; ty
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
 agent-ask cancel <id>                        status->cancelled
-agent-ask settle-session <sid> answered|stale  close every pending ask a Claude session owns (hooks); answered closes an ask with options only when the text names exactly one of them, recorded as the answer; stale files the question on the agent board as a plain row, and so does expire
+agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); an ask with options closes only when the text names exactly one of them, recorded as the answer
 ```
 
 ## Ask file schema
@@ -77,7 +78,7 @@ agent: kb-coordinator
 task: <task-key|ticket>
 kind: question            # question | gate | approval
 created: 2026-07-24T13:47:04-0700
-status: pending           # pending | answered | cancelled
+status: pending           # pending | answered | cancelled (stale in files from before 2026-11-05)
 question: which auth provider should ledger use?
 options: oauth|magic
 option_notes: hosted, SSO later|email links, nothing to run   # optional, aligned with options

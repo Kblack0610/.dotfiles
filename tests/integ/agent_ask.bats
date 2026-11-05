@@ -120,10 +120,11 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'status: pending'
   run "$AGENT_ASK" show "$done_"
   assert_line 'answer: yes'
+  # Only the human typing settles an ask; there is no session-end close any more.
   run "$AGENT_ASK" settle-session sid-2 stale "session ended (exit)"
+  assert_failure 2
   run "$AGENT_ASK" show "$other"
-  assert_line 'status: stale'
-  assert_line 'closed_reason: session ended (exit)'
+  assert_line 'status: pending'
   run "$AGENT_ASK" settle-session sid-2 bogus
   assert_failure 2
 }
@@ -465,62 +466,45 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
 }
 
-# ── lifecycle: stale ─────────────────────────────────────────────────────────
-# Every "waiting on you" surface reads --pending, so stale is how an ask nobody will answer
-# leaves the human's queue without anyone deciding it.
+# ── lifecycle: one home ──────────────────────────────────────────────────────
+# An ask stays pending until the human answers or drops it, however old and whether or not its
+# session lives. Nothing marks it stale or copies it to a board.
 
 ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
-age_days() { sed -i "s/^created: .*/created: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$1")"; }
 
-@test "stale: leaves --pending and the count, keeps the reason, and can still be answered" {
+@test "stale and expire are gone, and an old ask stays pending" {
   local id; id="$(post demo 'ship it?')"
-  run "$AGENT_ASK" stale "$id" wave v1.0.0 shipped
-  assert_success
-  assert_equal "$("$AGENT_ASK" count demo)" 0
-  run "$AGENT_ASK" list demo --stale
-  assert_output --partial "$id"
-  [ "$(cut -f15 <<<"$output")" = 'wave v1.0.0 shipped' ]
-  [ -n "$(cut -f14 <<<"$output")" ]
-  AGENT_ASK_NO_RESUME=1 run "$AGENT_ASK" answer "$id" yes
-  assert_success
-  grep -q '^status: answered$' "$(ask_file "$id")"
-}
-
-@test "stale refuses an ask that was already decided" {
-  local id; id="$(post demo 'ship it?')"
-  "$AGENT_ASK" cancel "$id" 2>/dev/null
+  sed -i "s/^created: .*/created: 2026-01-01T00:00:00+0000/" "$(ask_file "$id")"
   run "$AGENT_ASK" stale "$id"
   assert_failure
-  grep -q '^status: cancelled$' "$(ask_file "$id")"
+  run "$AGENT_ASK" expire
+  assert_failure
+  grep -q '^status: pending$' "$(ask_file "$id")"
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+}
+
+@test "the card says where the answer goes once the session is gone" {
+  local gone live loose resumed
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
+  resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
+  loose="$(post demo 'headless?')"
+  run "$AGENT_ASK" card "$gone"
+  assert_output --partial 'session gone: the answer becomes a row on the demo board'
+  run "$AGENT_ASK" card "$resumed"
+  assert_output --partial 'session gone: the answer starts `/captain resume`'
+  # Negative controls: a live session, and an ask no session owns.
+  run "$AGENT_ASK" card "$live"
+  refute_output --partial 'session gone'
+  run "$AGENT_ASK" card "$loose"
+  refute_output --partial 'session gone'
 }
 
 @test "cancel records its reason" {
   local id; id="$(post demo 'ship it?')"
   "$AGENT_ASK" cancel "$id" superseded by the v1.19 gate 2>/dev/null
   grep -q '^closed_reason: superseded by the v1.19 gate$' "$(ask_file "$id")"
-}
-
-@test "expire: an ask older than the TTL goes stale and is printed; a younger one stays pending" {
-  local old young
-  old="$(post demo 'old?')"; young="$(post demo 'young?')"
-  age_days "$old" 20; age_days "$young" 3
-  run "$AGENT_ASK" expire
-  assert_success
-  assert_equal "$(cut -f1 <<<"$output")" "$old"
-  grep -q '^status: stale$' "$(ask_file "$old")"
-  grep -q '^status: pending$' "$(ask_file "$young")"
-  grep -q '^closed_reason: no answer in 14d$' "$(ask_file "$old")"
-  # a second pass changes nothing and prints nothing
-  run "$AGENT_ASK" expire
-  assert_output ''
-  # the TTL is a knob
-  AGENT_ASK_STALE_DAYS=2 run "$AGENT_ASK" expire
-  assert_equal "$(cut -f1 <<<"$output")" "$young"
-}
-
-@test "expire --days takes a number" {
-  run "$AGENT_ASK" expire --days soon
-  assert_failure 2
 }
 
 # ── post: where an ask is filed ──────────────────────────────────────────────
