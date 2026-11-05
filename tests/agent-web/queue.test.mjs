@@ -133,3 +133,32 @@ test("sections fold: Done starts shut and groups by day, the rest start open", (
   assert.match(html, /<span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span>/);
   assert.match(html, /<summary>Stats detail<\/summary><div class="muted">since x<\/div>/);
 });
+
+function cands(input, open = true) {
+  ctx.input = input;
+  return vm.runInContext(`qst.cands = input; qst.candErr = null; qst.open["sec:candidates"] = ${open}; qCandidates()`, ctx);
+}
+
+const cand = (o) => ({ profile: "bnb", project: "shape-city", lane: "agent", key: "bar-17", title: "fix the jump arc", text: "- [ ] fix the jump arc", why: "focus project, due today", auto: true, verdict: "unjudged", held: false, start_label: "auto", ...o });
+
+test("candidates start folded with their counts", () => {
+  const html = cands({ total: 3, auto: 2, rows: [cand()] }, false);
+  assert.match(html, /<details class="csec" data-k="sec:candidates"><summary>/);
+  assert.match(html, /Candidates <span class="muted">\(3, 2 auto\)/);
+});
+
+test("an open candidate row shows hub-core's start label, held in warn, and why, with Promote", () => {
+  const html = cands({ total: 40, auto: 1, rows: [cand({ verdict: "dispatch", start_label: "auto dispatch" }), cand({ key: "tr-41", auto: false, held: true, lane: "human", start_label: "man held" })] });
+  assert.match(html, /<td>bar-17<\/td><td class="wrap">fix the jump arc<\/td><td class="">auto dispatch<\/td>/);
+  assert.match(html, /<td>tr-41<\/td>.*<td class="warn">man held<\/td>/);
+  assert.doesNotMatch(html, /unjudged/);
+  assert.match(html, /data-promote="1"/);
+  assert.match(html, /\+38 more/);
+});
+
+test("a failed read says why instead of an empty list", () => {
+  ctx.input = "fleet-dispatch: no suggest";
+  const html = vm.runInContext(`qst.cands = null; qst.candErr = input; qCandidates()`, ctx);
+  assert.match(html, /No candidates: fleet-dispatch: no suggest/);
+  assert.match(html, /\(unread\)/);
+});

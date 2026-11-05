@@ -10,7 +10,7 @@ use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
-use hub_core::queue::Queue;
+use hub_core::queue::{Candidate, Candidates, Queue};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -220,8 +220,10 @@ pub enum Msg {
     /// An item file under the queue dir was written, moved or removed.
     QueueFiles,
     Queue(Box<Queue>),
-    /// A queue cancel or bump ended: its output, or why it failed.
+    /// A queue cancel, bump or promote ended: its output, or why it failed.
     QueueActed(Result<String, String>),
+    /// `fleet-dispatch suggest --json` (hub_core::queue::candidates), or why it failed.
+    Candidates(Result<Candidates, String>),
     /// `notes board --json`, or why it failed.
     Tasks(Box<Result<Feed, String>>),
     /// A board write ended: notes' output, or why it failed.
@@ -279,6 +281,8 @@ pub struct App {
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
     pub qv: QueueView,
+    /// The ranked board rows for the Queue tab's Candidates fold.
+    pub candidates: Option<Result<Candidates, String>>,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
     /// Every project's open rows, for the Projects tab; None until the first read.
@@ -318,6 +322,7 @@ pub struct App {
     outbox_read: Read,
     sessions_read: Read,
     queue_read: Read,
+    candidates_read: Read,
     tasks_read: Read,
     projects_read: Read,
     log_gen: u64,
@@ -350,6 +355,7 @@ impl App {
             focus_day: None,
             queue: None,
             qv: QueueView::default(),
+            candidates: None,
             queue_dir: queue_dir(),
             tasks: None,
             tv: TaskView::default(),
@@ -376,6 +382,7 @@ impl App {
             outbox_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
+            candidates_read: Read::default(),
             tasks_read: Read::default(),
             projects_read: Read::default(),
             log_gen: 0,
@@ -531,7 +538,20 @@ impl App {
         }
     }
 
-    /// Run a queue cancel or bump in a worker; the answer comes back as Msg::QueueActed.
+    /// The candidates read every board (seconds), so they are read in a worker on entering the
+    /// Queue tab, on `r` there and after a queue action, never on a queue file event.
+    pub fn read_candidates(&mut self) {
+        if self.candidates_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(
+                    runner.as_ref(),
+                )));
+            });
+        }
+    }
+
+    /// Run a queue cancel, bump or promote in a worker; the answer comes back as Msg::QueueActed.
     fn queue_act(
         &mut self,
         label: String,
@@ -794,7 +814,7 @@ impl App {
                     .as_ref()
                     .and_then(|old| self.qv.selected(old))
                     .map(|i| i.slug.clone());
-                self.qv.reselect(was, &q);
+                self.qv.reselect(was, &q, cands_of(&self.candidates));
                 self.queue = Some(*q);
                 if self.queue_read.done() {
                     self.read_queue();
@@ -804,6 +824,17 @@ impl App {
                 self.qv.running = None;
                 self.qv.said = Some(r);
                 self.read_queue();
+                self.read_candidates();
+            }
+            Msg::Candidates(c) => {
+                self.candidates = Some(c);
+                if let Some(q) = &self.queue {
+                    let was = self.qv.selected(q).map(|i| i.slug.clone());
+                    self.qv.reselect(was, q, cands_of(&self.candidates));
+                }
+                if self.candidates_read.done() {
+                    self.read_candidates();
+                }
             }
             Msg::Tasks(f) => {
                 if let Ok(new) = f.as_ref() {
@@ -895,6 +926,9 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
+                if self.tab == Tab::Queue {
+                    self.read_candidates();
+                }
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
                     self.read_sessions();
@@ -985,6 +1019,7 @@ impl App {
         }
         if t == Tab::Queue {
             self.read_queue();
+            self.read_candidates();
         }
         if t == Tab::Projects {
             self.read_projects();
@@ -1049,10 +1084,14 @@ impl App {
         }
     }
 
-    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item, c arms a cancel, +/-
-    /// move its priority. The page scrolls with PgUp/PgDn, space and g/G.
+    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item or a candidate, c arms
+    /// a cancel, +/- move its priority, f folds the candidates and p promotes one. The page
+    /// scrolls with PgUp/PgDn, space and g/G.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
-        match self.qv.key(k, self.queue.as_ref()) {
+        match self
+            .qv
+            .key(k, self.queue.as_ref(), cands_of(&self.candidates))
+        {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
@@ -1065,6 +1104,10 @@ impl App {
                 self.queue_act(format!("bump {slug} to {prio}"), move |r| {
                     hub_core::queue::bump(r, &slug, prio)
                 });
+                true
+            }
+            queuetab::Ask::Promote(label, w) => {
+                self.queue_act(label, move |r| hub_core::tasks::apply(r, &w));
                 true
             }
         }
@@ -1508,7 +1551,7 @@ impl App {
             Tab::History => format!("j/k pick a day  Enter open it in Today  {tabs} tabs  q quit"),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
-                "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  c cancel  +/- priority  f candidates  p promote  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -1607,7 +1650,10 @@ impl App {
             },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
-                Some(q) => (queuetab::page(q, &self.qv, self.p, now, w), vec![]),
+                Some(q) => (
+                    queuetab::page(q, &self.qv, self.candidates.as_ref(), self.p, now, w),
+                    vec![],
+                ),
             },
             // One row per session (its controls, stage and ETA), the selected one's detail, the
             // asks and the changes, then the forecast folded at the bottom.
@@ -1785,6 +1831,14 @@ fn said(label: &str, r: Result<String, String>) -> Result<String, String> {
             out.lines().collect::<Vec<_>>().join("; ")
         )),
         Err(e) => Err(format!("{label}: {e}")),
+    }
+}
+
+/// The candidates read, or none while it is reading or failed.
+fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
+    match c {
+        Some(Ok(c)) => &c.rows,
+        _ => &[],
     }
 }
 
@@ -2179,6 +2233,60 @@ mod tests {
             Some("agent-queue cancel pick-sides")
         );
         assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
+    }
+
+    #[test]
+    fn the_queue_tab_reads_candidates_and_p_promotes_through_fleet_dispatch() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.handle(Msg::QueueFiles);
+        a.handle(key('2'));
+        // Both workers reply when their read ends: wait for the two messages, not a timer.
+        let (mut queue, mut cands) = (false, false);
+        while !(queue && cands) {
+            let m = rx.recv().unwrap();
+            queue |= matches!(m, Msg::Queue(_));
+            cands |= matches!(m, Msg::Candidates(_));
+            a.handle(m);
+        }
+        // The fake's queue read came back empty; put the fixture back.
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        let ran = fake.0.lock().unwrap().clone();
+        assert_eq!(
+            ran.iter()
+                .filter(|c| *c == "fleet-dispatch suggest --json")
+                .count(),
+            1,
+            "read once, on entering the tab, not on a queue file event: {ran:?}"
+        );
+        assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
+        a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
+        a.handle(key('f'));
+        for _ in 0..4 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("bar-17") && s.contains("auto dispatch"), "{s}");
+        assert!(s.contains("f candidates  p promote"), "{s}");
+        a.handle(key('p'));
+        assert_eq!(a.qv.running.as_deref(), Some("promote shape-city bar-17"));
+        loop {
+            match rx.recv().unwrap() {
+                Msg::QueueActed(r) => {
+                    a.handle(Msg::QueueActed(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.contains(&"fleet-dispatch promote --project shape-city --profile bnb --agent --raw - [ ] fix the jump arc #high <!-- id:bar-17 -->".to_string()),
+            "{ran:?}"
+        );
     }
 
     /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
