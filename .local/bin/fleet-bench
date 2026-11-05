@@ -1605,7 +1605,7 @@ cmd_loop() {
   if [ "${1:-}" = --json ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
   [ -n "$rows" ] || { echo "loop: no finding episodes in 7d"; return 0; }
   jq -rs "$JQ_LIB"'
-    "loop, 7d: \(length) episodes, \(map(select(.dark)) | length) dark (\(map(select(.dark and .open)) | length) still firing), first response after \(map(.first_response_min | numbers) | median // "-")m median",
+    "loop, 7d: \(length) episodes, \(map(select(.dark)) | length) dark (\(map(select(.dark and .open)) | length) still firing), \(map(.first_response_min | numbers) | median | if . == null then "no act recorded" else "first response after \(.)m median" end)",
     (sort_by(.episode)[] | [(if .dark then "DARK" elif .first_response_min != null then "\(.first_response_min)m" else "-" end),
        (if .open then "firing" else "cleared" end), .fact,
        (.responses | if length == 0 then "no response" else join(",") end)] | @tsv)' <<<"$rows" |
