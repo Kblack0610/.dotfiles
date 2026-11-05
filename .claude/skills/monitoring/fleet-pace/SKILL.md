@@ -88,6 +88,7 @@ What a `fleet-lead pass` runs for a `pace:`, `blocked:` or `limit:` due line, or
 The fleet-wide list is in `fleet-lead`; these are this role's own.
 
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
+- Lift a `dispatch` hold set by `machine-mode`, or read the mode's lower runner and Unity slots as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it.
 - Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.

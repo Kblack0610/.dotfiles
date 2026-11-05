@@ -6,8 +6,7 @@
 # group per project pushed the clock off the bar); sessions group by world, not repo; parked is
 # listed but counted nowhere; a stalled session or a stale textfile turns the robot red, an unclear
 # one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
-# never a quiet 0. The phone lines are the same counts, then a glyph strip per project, biggest
-# project and worst stage first.
+# never a quiet 0.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -61,7 +60,6 @@ PY
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
-phone() { jq -r .phone <<< "$output"; }
 
 @test "the bar is a green robot and amber working, green ready and red need-you totals, however many" {
   feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10 \
@@ -138,51 +136,6 @@ phone() { jq -r .phone <<< "$output"; }
   run "$MODULE"
   assert_equal "$(class)" warn
   run tip
-  assert_output --partial "no fleet_sessions.prom on Prometheus"
-}
-
-@test "phone: a glyph strip per project, biggest project and worst stage first" {
-  feed p:games:lab/g1:1=WORKING:30 p:games:lab/g2:1=STALLED:30 p:games:lab/g3:1=NEEDS:30 \
-    p:games:lab/g4:1=UNCLEAR:30 p:games:lab/g5:1=WORKING:30 p:games:lab/g6:1=LANDED:30 \
-    p:games:lab/g7:1=DONE:30 p:games:lab/g8:1=PARKED:30 p:tools:hub/t1:1=WORKING:30
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "games <span color='$Y'>x</span><span color='$Y'>?</span><span color='$Y'>!</span>~~+.-"
-  assert_line --index 2 "tools ~"
-  assert_equal "${#lines[@]}" 3
-}
-
-@test "phone: the head line is the hover's counts" {
-  feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20
-  run "$MODULE"
-  head="$(tip | head -1)"
-  assert_equal "$(phone | head -1)" "$head"
-}
-
-@test "phone: a run of sessions in one stage is one glyph each, and a second scrape counts once" {
-  feed lab/a:1=WORKING:30 lab/b:1=WORKING:30 lab/c:1=WORKING:30 dup:lab/a:1=WORKING:30
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "proj ~~~"
-}
-
-@test "phone: a project name with markup stays valid" {
-  feed "p:a&b:lab/x:1=WORKING:30"
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "a&amp;b ~"
-}
-
-# Negative control: the strips show stalled sessions, but a missing feed has nothing to draw.
-@test "phone: a missing feed says so, a stalled session gets no sentence" {
-  feed lab/a:1=STALLED:30
-  run "$MODULE"
-  run phone
-  refute_output --partial "no fleet_sessions.prom"
-  refute_output --partial "STALLED:"
-  feed mtime=-
-  run "$MODULE"
-  run phone
   assert_output --partial "no fleet_sessions.prom on Prometheus"
 }
 

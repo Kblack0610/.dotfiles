@@ -15,10 +15,6 @@
 # tick` writes to fleet_sessions.prom every minute), the same stages the hub Sessions tab shows,
 # so the chip reads the same on the laptop thin client and there is one count of sessions, not
 # a pane count beside a stage count. Prometheus unreadable reads ? in amber, never a quiet nothing.
-#
-# The phone lines (fleet-overview) are the same counts, then one line per project with a glyph
-# per session, worst stage first: x stalled, ? unclear, ! needs you, ~ working, + landed, . done,
-# - parked.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -52,21 +48,21 @@ done < <(jq -r --argjson now "$now" --argjson late "$STATE_LATE_SECS" '[.data.re
   | group_by(.h) | map({h: .[0].h, a: (map(.a) | min)})[] | select(.a > $late) | [.h, .a] | @tsv' <<< "$raw")
 
 # One row per session (a second scrape of a host reads once): world, stage, target without its
-# world, age and idle minutes (- when unknown), project. Worst stage first, then the longest idle
+# world, age and idle minutes (- when unknown). Worst stage first, then the longest idle
 # and age.
 mapfile -t rows < <(jq -r '
   [.data.result[] | select(.metric.target)
-   | {t: .metric.target, b: (.metric.bucket // "?"), p: (.metric.project // "?"), n: .metric.__name__,
+   | {t: .metric.target, b: (.metric.bucket // "?"), n: .metric.__name__,
       v: (.value[1] | tonumber | floor)}]
   | group_by(.t)
-  | map({t: .[0].t, b: .[0].b, p: .[0].p,
+  | map({t: .[0].t, b: .[0].b,
          age: (map(select(.n == "agent_session_age_minutes") | .v) | max),
          idle: (map(select(.n == "agent_session_idle_minutes") | .v) | max)})
   | map(select(.age != null or .idle != null))
   | map(. + {w: (if (.t | contains("/")) then (.t | split("/")[0]) else "other" end),
              s: ({STALLED: 0, UNCLEAR: 1, NEEDS: 2, WORKING: 3, LANDED: 4, DONE: 5, PARKED: 6}[.b] // 7)})
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
-  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-"), .p] | map(tostring) | join("|")' <<< "$raw")
+  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-")] | map(tostring) | join("|")' <<< "$raw")
 
 # stage_paint <stage> <text>: amber for what wants a look, plain for the rest.
 stage_paint() {
@@ -92,25 +88,19 @@ counts() {
 }
 
 total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 n_unclear=0 width=8
-declare -A per_project=() per_stage=()
 for r in "${rows[@]}"; do
-  IFS='|' read -r _ b t _ _ p <<< "$r"
+  IFS='|' read -r _ b t _ <<< "$r"
   in_progress "$b" && total=$((total + 1))
   case $b in WORKING) n_work=$((n_work + 1)) ;; LANDED|DONE) n_ready=$((n_ready + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
   [ "$b" = UNCLEAR ] && n_unclear=$((n_unclear + 1))
   ((${#t} > width)) && width=${#t}
-  per_project[$p]=$((${per_project[$p]:-0} + 1))
-  per_stage[$p/$b]=$((${per_stage[$p/$b]:-0} + 1))
 done
 
 # No textfile on Prometheus at all is a missing feed, not an empty fleet.
 if ! jq -e 'any(.data.result[]; .metric.__name__ == "node_textfile_mtime_seconds")' <<< "$raw" >/dev/null; then
   flag 1 "no fleet_sessions.prom on Prometheus: fleet-sessions tick writes it"
 fi
-# The phone's project lines already show stalled and unclear sessions, so only feed faults go there.
-feed_why=("${why[@]}")
-
 ((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
 ((n_unclear > 0)) && flag 1 "$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged"
 
@@ -126,7 +116,7 @@ flush() {
   [ -n "$body" ] && tip+=$'\n'"<tt>${body#$'\n'}</tt>"
 }
 for r in "${rows[@]}"; do
-  IFS='|' read -r w b t age idle _ <<< "$r"
+  IFS='|' read -r w b t age idle <<< "$r"
   if [ "$w" != "$world" ]; then flush; world="$w" section=() body=''; fi
   section+=("$r")
   up=-; [ "$age" != - ] && up="$(prom_dur $((age * 60)))"
@@ -141,27 +131,9 @@ for r in "${rows[@]}"; do
 done
 flush
 
-# glyphs <project>: one glyph per session, worst stage first.
-glyphs() {
-  local k stage glyph n run out=''
-  for k in STALLED:x UNCLEAR:? NEEDS:! WORKING:~ LANDED:+ DONE:. PARKED:-; do
-    stage="${k%%:*}" glyph="${k#*:}" n="${per_stage[$1/$stage]:-0}"
-    ((n > 0)) || continue
-    printf -v run '%*s' "$n" ''
-    out+="$(stage_paint "$stage" "${run// /"$glyph"}")"
-  done
-  printf '%s' "$out"
-}
-
-phone="$head"
-for w in "${feed_why[@]}"; do phone+=$'\n'"$w"; done
-while read -r _ p; do
-  phone+=$'\n'"$(pango_esc "$p") $(glyphs "$p")"
-done < <(for p in "${!per_project[@]}"; do printf '%s %s\n' "${per_project[$p]}" "$p"; done | sort -k1,1nr -k2,2)
-
 need="!$n_need"
 ((n_need == 0)) || need="$(paint "$C_RED" "$need")"
 text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && total == 0)) && class=inactive
-emit "$text" "$tip" "$class" "$phone"
+emit "$text" "$tip" "$class"

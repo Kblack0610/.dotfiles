@@ -10,7 +10,6 @@
 # no gh calls. A record older than STALE_SECS is shown dimmed with its age, and no record
 # reads -, never 0. Red-now is cc:red_now, the home-config recording rule the hub board's
 # "red now" line and the Grafana table also read; Prometheus unreadable reads !? in amber, never a quiet nothing.
-# The phone lines (fleet-overview) are the merged count and the red-now line.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -74,5 +73,4 @@ else
   red_text=" $(paint "$C_YEL" '!?')" class=warn red_tip="red now: cannot read $PROM_URL"
 fi
 
-emit "${merged_text}${red_text}" "<b>Today</b>  merged PRs, red now"$'\n'"$merged_tip"$'\n\n'"$red_tip" "$class" \
-  "${merged_tip%%$'\n'*}"$'\n'"$red_tip"
+emit "${merged_text}${red_text}" "<b>Today</b>  merged PRs, red now"$'\n'"$merged_tip"$'\n\n'"$red_tip" "$class"

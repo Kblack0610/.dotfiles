@@ -10,9 +10,7 @@
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
 # The hover has one section per system: Queue (items, oldest, 1h and 24h flow, drain), Dispatch
 # (capacity, what paused the last pass, self-heal) and Shepherd (its last pass and the last 24h).
-# Exceptions lead it. The phone lines (fleet-overview) are the head line, the exceptions, what is
-# ready, the capacity and what paused the last pass. Sessions and their stages are the agents chip
-# (ai_agents.sh).
+# Exceptions lead it. Sessions and their stages are the agents chip (ai_agents.sh).
 #
 # Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
 # fleet_dispatch runner, the queue-starved watch and summary/shepherd from `fleet-shepherd
@@ -67,7 +65,7 @@ flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"
 
 # --- Queue and Dispatch: summary/dispatch ---
 ready="$(get dispatch.runnable)"
-qhead="$title" queue='' disp='' bar_units='' phone_ready='' phone_room=''
+qhead="$title" queue='' disp='' bar_units=''
 if [ -z "$ready" ]; then
   flag 1 "no dispatch numbers on the feed: agent-mqtt-publish publishes fleet-dispatch stats as summary/dispatch"
 else
@@ -119,7 +117,6 @@ else
   ready_line="$ready ready ($(d runnable_urgent) urgent or high)"
   queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
-  phone_ready="$ready_line, oldest $(short "$oldest"), urgent $uw"
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
@@ -156,7 +153,6 @@ else
   fi
   [ -n "$paused" ] && cl+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
   disp+=$'\n'"$cl"
-  phone_room="$cl"
   cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
   disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"
   fl="${flapping:-0}"; ((fl > 0)) && fl="$(paint "$C_YEL" "$fl")"
@@ -189,7 +185,4 @@ for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
 
-phone="$qhead"
-for line in "${why[@]}" "$phone_ready" "$phone_room"; do [ -n "$line" ] && phone+=$'\n'"$line"; done
-
-emit "$text" "$tip" "${LEVEL_CLASS[$level]}" "$phone"
+emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
