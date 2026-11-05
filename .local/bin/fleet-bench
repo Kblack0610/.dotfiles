@@ -947,17 +947,18 @@ asks_md() {
     end)' <<<"$1"
 }
 
-# asks_line <rows> <path> -> the page: counts, then the top 3 blocking a live session
+# asks_line <rows> <top-n> -> one plain line (comms-standard): the count, the top few
+# questions with their age and recommendation, and where to see them all. Ids and session
+# targets stay in asks.md; the line is read on a lock screen and in the briefing.
 asks_line() {
-  jq -r --arg path "$2" '
+  jq -r --argjson k "$2" '
     def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
-    map(select(.live)) as $l | map(select(.live | not)) as $n
-    | "\(length) asks pending: \($l | length) block a live session, \($n | length) have none"
-      + (if ($n | length) > 0 then " (oldest \($n[0].age_h | age))" else "" end) + "."
-      + ([$l[:3] | to_entries[] | .key as $k | .value
-          | " \($k + 1)) \(.id) \(.target | sub(":[0-9]+$"; "")), \(.age_h | age): \(.question[0:60])"
-            + (if .recommend != "" then " -> \(.recommend)." else "." end)] | join(""))
-      + " Full list: \($path)"' <<<"$1"
+    def q: .question | gsub("\\s+"; " ") | if length > 60 then .[0:57] + "..." else . end;
+    (map(select(.live)) | length) as $l
+    | (if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
+      + (if $l == 0 then ", none holding up a session" else ", \($l) holding up a session" end)
+      + ". Top: " + ([.[:$k][] | q + " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")"] | join("; "))
+      + ". List: fleet-bench asks."' <<<"$1"
 }
 
 cmd_asks() {
@@ -980,10 +981,10 @@ cmd_asks() {
     [ "$mode" = --page ] && report_outcome NOOP "no pending asks"
     return 0
   fi
-  line=$(asks_line "$rows" "$out")
-  # --write is the morning briefing's step: it puts the line in its own page, so the
-  # verdict and the page belong to the briefing run, not to this verb.
-  [ "$mode" = --write ] && { printf '%s\n' "$line"; return 0; }
+  # --write is the morning briefing's step: one item of at most 160 chars, so the top one.
+  # It puts the line in its own page, so the verdict and the page belong to the briefing run.
+  [ "$mode" = --write ] && { asks_line "$rows" 1; return 0; }
+  line=$(asks_line "$rows" 3)
   command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t asks "$line"
   say "$line"
   report_outcome WORKED "$out"
