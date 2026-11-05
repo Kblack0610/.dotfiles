@@ -2,7 +2,8 @@
 # agentctl-session-outcomes - nightly, model-free record of what each session did.
 #
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
-#   agentctl-session-outcomes worst [--project P] [--days N] [-n N]
+#   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
+#   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
 #   agentctl-session-outcomes langfuse [--all]             push outcomes to Langfuse as scores
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
@@ -17,7 +18,11 @@
 # by them. URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry SO_LF_ENTRY,
 # "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push leaves the
 # mark where it was, so the next run sends them again.
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL.
+# A row is the session's whole card: the registry's cost, tokens and models, the transcript's
+# counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
+# escalations, merged PRs with their lines and CI reds), read once per run. The account is the
+# Claude config dir its transcript lives under, as `agent-usage burn` names it.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH.
 
 set -uo pipefail
 
@@ -29,6 +34,7 @@ PR_LIMIT="${SO_PR_LIMIT:-1000}"   # newest N PRs per repo; one paginated call co
 GH="${SO_GH:-gh}"
 RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
+BENCH="${SO_BENCH:-fleet-bench}"
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
@@ -115,12 +121,24 @@ cmd_run() {
       "$work/index.json" > "$work/index.next" && mv "$work/index.next" "$work/index.json"
   done < "$work/repos"
 
+  # Delivery from the bench, keyed by session. An unreadable bench leaves delivery null and
+  # says so in the report: the rest of the row does not depend on it.
+  local bench_note=""
+  if ! "$BENCH" stats --json > "$work/bench.jsonl" 2>"$work/bench.err"; then
+    bench_note="; fleet-bench stats failed: $(head -c 120 "$work/bench.err")"
+    : > "$work/bench.jsonl"
+  fi
+  jq -cs 'map({key: .session_id, value: del(.session_id, .project)}) | from_entries' \
+    "$work/bench.jsonl" > "$work/bench.json" 2>/dev/null \
+    || { printf '{}' > "$work/bench.json"; bench_note="; fleet-bench stats unreadable"; }
+
   local observed
   observed="$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)"
   : > "$work/lines.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
-    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" --arg observed "$observed" '
+    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" \
+       --slurpfile bench "$work/bench.json" --arg observed "$observed" '
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
@@ -138,6 +156,9 @@ cmd_run() {
           transcript: ($m != null),
           edits: ($row.edits // 0),
           cost_usd: ($row.cost_usd // null),
+          cost_by_model: ($row.cost_by_model // null),
+          models: ($row.models // null),
+          account: ($row.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a // null),
           tokens_total: ($row.tokens.total // null),
           duration_s: ($row.duration_s // null),
           prs: $prs,
@@ -149,7 +170,9 @@ cmd_run() {
           corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null),
           activity: ($mm.activity // null),
-          time_use: $time_use[0] }
+          uses: ($mm.uses // null),
+          time_use: $time_use[0],
+          delivery: ($bench[0][$row.session_id] // null) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
@@ -163,8 +186,8 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked"
-  proof_report "$NAME" WORKED "observed $written; $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note; $(lf_push "" "$work")"
 }
 
 # lf_push [--all] WORKDIR - send every session's newest row observed after the mark (all
@@ -239,35 +262,31 @@ cmd_langfuse() {
 
 # worst: the sessions to look at first over the last N days, as a markdown table.
 cmd_worst() {
-  local project="" days=7 top=5
+  local project="" days=7 top=5 json=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:-}"; shift 2 ;;
       --days) days="${2:-7}"; shift 2 ;;
       -n) top="${2:-5}"; shift 2 ;;
+      --json) json=true; shift ;;
       *) echo "$NAME worst: unknown arg $1" >&2; return 2 ;;
     esac
   done
-  so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" \
-      --argjson days "$days" --argjson top "$top" "$(so_friction_def)"'
+  so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" --argjson json "$json" \
+      --argjson days "$days" --argjson top "$top" "$(so_friction_def)$(so_why_def)"'
     [inputs
      | select($p == "" or .project == $p)
      | select(.updated_epoch >= $now - $days * 86400)
      | . + {f: friction}
      | select(.f > 0)]
     | sort_by(-.f, -(.cost_usd // 0)) | .[:$top]
-    | if length == 0 then "_(no session with friction in the last \($days) days)_"
+    | if $json then .[] | del(.f) + {friction: .f, why: why} | tojson
+      elif length == 0 then "_(no session with friction in the last \($days) days)_"
       else
         (["| friction | session | project | title | why | cost | test runs | CI polls | spent after last edit |",
           "|---|---|---|---|---|---|---|---|---|"]
          + map("| \(.f) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
-               + ([ (if .reverted_7d > 0 then "\(.reverted_7d) reverted" else empty end),
-                    (if .prs_closed_unmerged > 0 then "\(.prs_closed_unmerged) PR closed unmerged" else empty end),
-                    (if (.corrections.lessons_written // 0) > 0 then "\(.corrections.lessons_written) lesson(s) written" else empty end),
-                    (if (.corrections.interrupts // 0) > 0 then "\(.corrections.interrupts) interrupt(s)" else empty end),
-                    (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
-                    (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API error(s)" else empty end)
-                  ] | join(", "))
+               + why
                + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end)"
                + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
                + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0
@@ -276,10 +295,71 @@ cmd_worst() {
       end'
 }
 
+# cmd_card PREFIX [--json] - one session's newest row as its full card: time, stages, cost,
+# delivery, the friction sum term by term, activity and what it reached for. --json is the
+# row plus friction and why. A prefix that names no session or more than one is an error.
+cmd_card() {
+  local prefix="" json=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=true ;;
+      -*) echo "$NAME card: unknown arg $1" >&2; return 2 ;;
+      *) prefix="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$prefix" ] || { echo "usage: $NAME card <session-id prefix> [--json]" >&2; return 2; }
+  local rows n
+  rows="$(so_latest "$OUT" | jq -c --arg p "$prefix" 'select(.session_id | startswith($p))')"
+  n=$(grep -c . <<<"$rows")
+  if [ "$n" -eq 0 ]; then
+    echo "$NAME card: no outcome row for $prefix" >&2; return 1
+  elif [ "$n" -gt 1 ]; then
+    echo "$NAME card: $prefix names $n sessions:" >&2
+    jq -r '"  \(.session_id)  \(.project)  \(.title | .[0:60])"' <<<"$rows" >&2
+    return 2
+  fi
+  jq -r --argjson json "$json" "$(so_friction_def)$(so_why_def)"'
+    def hm: if . == null then "-" else (floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)" else "\($m)m" end end;
+    def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;
+    def big: if . == null then "-" elif . >= 1e6 then "\(. / 1e5 | round / 10)M" elif . >= 1e3 then "\(. / 1e3 | round)k" else tostring end;
+    def counts: to_entries | sort_by(-.value) | map("\(.key) \(.value)") | join(", ");
+    . + {friction: friction, why: why}
+    | if $json then tojson else
+      (.time_use // {}) as $t | (.delivery // {}) as $d | (.activity // {}) as $a
+      | [ "\(.title | gsub("\n"; " ") | .[0:80]) (\(.session_id[0:8])), \(.project), updated \(.updated[0:16] | sub("T"; " ")): "
+          + "\(if .duration_s then .duration_s / 60 | hm else "-" end) wall, friction \(.friction), \(.cost_usd | usd), "
+          + "\(.prs_merged) of \(.prs | length) PRs merged",
+          "  Time      " + (if .time_use == null then "-" else
+            "work \($t.work_min | hm), gate \($t.gate_min | hm), tests \($t.test_min | hm), jobs \($t.jobs_min | hm), waiting on you \($t.human_min | hm), parked \($t.parked_min | hm)" end),
+          "  Stages    " + (if .delivery == null or $d.sampled == false then "never sampled by fleet-bench" else
+            ($d.minutes | to_entries | sort_by(-.value) | map("\(.key) \(.value | hm)") | join(", ") | if . == "" then "-" else . end)
+            + "; phases ticked \($d.ticked // 0); nudges \($d.nudges // 0), escalations \($d.escalations // 0); peak context \($d.peak_context | big)" end),
+          "  Cost      \(.cost_usd | usd)"
+            + (if .cost_by_model then ": " + (.cost_by_model | to_entries | sort_by(-.value) | map("\(.key) \(.value | usd)") | join(", ")) else "" end)
+            + "; account \(.account // "-"); \(.tokens_total | big) tokens",
+          "  Delivery  " + (if (.prs | length) == 0 then "no PR" else
+            "\(.prs_merged) merged, \(.prs_open) open, \(.prs_closed_unmerged) closed unmerged, \(.reverted_7d) reverted"
+            + " (" + (.prs | map("#\(.number)") | if length > 6 then .[0:6] + ["+\(length - 6) more"] else . end | join(" ")) + ")" end)
+            + (if $d.merged then "; +\($d.merged.lines_added) -\($d.merged.lines_deleted) landed; CI \($d.merged.ci_runs) runs, \($d.merged.ci_reds) red before merge" else "" end),
+          "  Friction  \(.friction)" + (if .why == "" then "" else " = " + .why end),
+          "  Activity  " + (if .activity == null then "no transcript" else
+            "\($a.tool_calls) tool calls, \($a.test_runs) test runs, \($a.ci_polls) CI polls"
+            + (if $a.compactions then ", \($a.compactions.auto + $a.compactions.manual) compactions (\($a.compactions.auto) auto)" else "" end)
+            + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
+          "  Uses      " + (if .uses == null then "-" else
+            ([ (.uses.skills | if length > 0 then "skills: " + counts else empty end),
+               (.uses.subagents | if length > 0 then "agents: " + counts else empty end),
+               (.uses.slash | if length > 0 then "commands: " + counts else empty end) ] | join("; ") | if . == "" then "nothing" else . end) end)
+        ] | join("\n")
+      end' <<<"$rows"
+}
+
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
+  card) shift; cmd_card "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
-  -h|--help) sed -n '2,19p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] | langfuse [--all]" >&2; exit 2 ;;
+  -h|--help) sed -n '2,25p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | langfuse [--all]" >&2; exit 2 ;;
 esac

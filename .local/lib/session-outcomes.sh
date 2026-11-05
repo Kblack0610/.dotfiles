@@ -27,7 +27,8 @@
 # own notes; a commit counts because an edit made through Bash is not a tool call of its own.
 # uses counts what the session reached for, by name: Agent spawns by subagent_type, Skill
 # calls, and typed /commands. Calls made inside a subagent live in its own transcript and
-# are not counted here; `claude-recall stats` folds those in.
+# are not counted here; `claude-recall stats` folds those in. A compaction is a
+# compact_boundary record, split by what triggered it: auto (the context filled) or manual.
 so_transcript_metrics() {
   jq -nR '
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
@@ -40,6 +41,7 @@ so_transcript_metrics() {
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
+        compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
       | if $r.type == "assistant" then
@@ -106,6 +108,8 @@ so_transcript_metrics() {
               .interrupts += 1
             else . end)
         end
+      elif $r.type == "system" and $r.subtype == "compact_boundary" then
+        .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
     | { prs: (.prs | unique),
         entrypoint,
@@ -113,7 +117,8 @@ so_transcript_metrics() {
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
-                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0) },
+                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
+                    compactions },
         uses }
   ' < "$1"
 }
@@ -167,8 +172,10 @@ so_latest() {
 # so_friction_def - the ONE ranking every reader uses: a sort key for "look at this
 # session first", not a grade (an idle session scores 0 like a perfect one). A revert
 # undoes shipped work (5); a PR closed unmerged or a written-down correction is redirected
-# work (2); an interrupt, rejected tool call or API error is friction (1). tool_errors
-# stay out: failed commands are how work gets done.
+# work (2); an interrupt, rejected tool call, API error, shepherd nudge or CI red before a
+# merge is friction (1): pipeline-eval found nudges and reds are rework worth scoring.
+# tool_errors stay out: failed commands are how work gets done. Minutes, cost and
+# escalations stay on the card and out of the sum: they measure size, not friction.
 so_friction_def() {
   cat <<'EOF'
 def friction:
@@ -177,7 +184,27 @@ def friction:
   + 2 * (.corrections.lessons_written // 0)
   + (.corrections.interrupts // 0)
   + (.hard_errors.denied // 0)
-  + (.hard_errors.api_error // 0);
+  + (.hard_errors.api_error // 0)
+  + (.delivery.nudges // 0)
+  + (.delivery.merged.ci_reds // 0);
+EOF
+}
+
+# so_why_def - friction's terms as words, for the readers that say why a session ranks
+# where it does (`worst`, `card`). One term of so_friction_def per entry, in its order,
+# with its weight, so the words add up to the number.
+so_why_def() {
+  cat <<'EOF'
+def why:
+  [ (if (.reverted_7d // 0) > 0 then "5 x \(.reverted_7d) reverted" else empty end),
+    (if (.prs_closed_unmerged // 0) > 0 then "2 x \(.prs_closed_unmerged) closed unmerged" else empty end),
+    (if (.corrections.lessons_written // 0) > 0 then "2 x \(.corrections.lessons_written) lessons written" else empty end),
+    (if (.corrections.interrupts // 0) > 0 then "\(.corrections.interrupts) interrupts" else empty end),
+    (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
+    (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API errors" else empty end),
+    (if (.delivery.nudges // 0) > 0 then "\(.delivery.nudges) nudges" else empty end),
+    (if (.delivery.merged.ci_reds // 0) > 0 then "\(.delivery.merged.ci_reds) CI reds before merge" else empty end)
+  ] | join(" + ");
 EOF
 }
 
@@ -199,7 +226,11 @@ so_langfuse_events() {
         ["lessons_written", .corrections.lessons_written],
         ["denied", .hard_errors.denied],
         ["api_error", .hard_errors.api_error],
-        ["tool_errors", .hard_errors.tool_errors] ][]
+        ["tool_errors", .hard_errors.tool_errors],
+        ["compactions", (.activity.compactions | if . == null then null else .auto + .manual end)],
+        ["nudges", .delivery.nudges],
+        ["ci_reds", .delivery.merged.ci_reds],
+        ["lines_added", .delivery.merged.lines_added] ][]
     | select(.[1] != null)
     | { id: "so:\($r.session_id):\(.[0]):\($r.observed)",
         type: "score-create",

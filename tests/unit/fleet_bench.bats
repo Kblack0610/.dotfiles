@@ -388,6 +388,29 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output 2
 }
 
+@test "stats: a session's whole life, past the 24h window, with escalations and its merged PRs" {
+  rowj 'bucket: "WORKING", escalated: false' > "$SNAP"; sample_at 0
+  rowj 'bucket: "NEEDS", escalated: true' > "$SNAP"; sample_at 600
+  rowj 'bucket: "WORKING", escalated: true' > "$SNAP"; sample_at 1200
+  rowj 'bucket: "WORKING", escalated: false' > "$SNAP"; sample_at 1800
+  rowj 'bucket: "STALLED", escalated: true' > "$SNAP"; sample_at 2400
+  printf '%s\n' \
+    '{"repo":"o/r","number":5,"session_id":"a","merged_epoch":1793160100,"additions":10,"deletions":2,"ci_runs":3,"ci_red":1}' \
+    '{"repo":"o/r","number":6,"session_id":"a","merged_epoch":1793160200,"additions":5,"deletions":0,"ci_runs":1,"ci_red":0}' \
+    '{"repo":"o/r","number":7,"session_id":"z","merged_epoch":1793160300,"additions":1,"deletions":1,"ci_runs":1,"ci_red":0}' \
+    >> "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json
+  assert_success
+  run jq -sc 'map({session_id, minutes, escalations, sampled,
+                   merged: (.merged | if . then {prs: (.prs | length), lines_added, lines_deleted, ci_runs, ci_reds} else . end)})' <<<"$output"
+  assert_output '[{"session_id":"a","minutes":{"NEEDS":10,"WORKING":30},"escalations":2,"sampled":null,"merged":{"prs":2,"lines_added":15,"lines_deleted":2,"ci_runs":4,"ci_reds":1}},{"session_id":"z","minutes":null,"escalations":null,"sampled":false,"merged":{"prs":1,"lines_added":1,"lines_deleted":1,"ci_runs":1,"ci_reds":0}}]'
+  BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json --since $((T0 + 250))
+  assert_output --partial '"session_id":"z"'
+  refute_output --partial '"number":5'
+  run "$SUBJECT" stats
+  assert_failure 2
+}
+
 @test "scorecard writes the dated file and latest.md, joining session-outcomes by session_id" {
   export BENCH_SCORECARD_DIR="$HOME/lab/bench" BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
   mkdir -p "$BENCH_OUTCOMES_DIR/game"

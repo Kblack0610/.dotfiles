@@ -11,6 +11,10 @@
 #   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench sessions --json  the scorecard's session rows, one JSON object each (day-log reads them)
+#   fleet-bench stats --json [--since E]
+#                                each session's whole life since E: minutes per bucket, nudges,
+#                                escalations, phases ticked, peak context, merged PRs, lines, CI
+#                                runs and reds (session-outcomes joins it into its row)
 #   fleet-bench review           count failed CI runs (any workflow) before merge on PRs merged in the window
 #   fleet-bench asks [--write|--page]
 #                                pending asks, the ones blocking a live session ranked first;
@@ -514,11 +518,12 @@ cmd_accuracy() {
   jq -cs "${CAL_ARGS[@]}" "$JQ_LIB"'accuracy($minn; $lo; $hi) | .[]' "$SCORES"
 }
 
-# window_stats -> one JSON object per session seen in the window: phases ticked, minutes
-# per bucket (each sample owns the gap to the next one, capped), nudges, peak context.
+# window_stats <now> [since] -> one JSON object per session seen since <since> (default: the
+# window): phases ticked, minutes per bucket (each sample owns the gap to the next one,
+# capped), nudges and escalations (a flag turning on), peak context, first and last sample.
 window_stats() {
   local t="$1"
-  jq -cn --argjson since $(( t - BENCH_WINDOW_H * 3600 )) --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
+  jq -cn --argjson since "${2:-$(( t - BENCH_WINDOW_H * 3600 ))}" --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
      --slurpfile p "$PROGRESS" '
     def mins($g; $b): [$g[] | select(.b == $b) | .m] | add // 0 | floor;
     $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
@@ -529,8 +534,10 @@ window_stats() {
      phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
      ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
      working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
+     minutes: ($gaps | group_by(.b) | map({key: .[0].b, value: (map(.m) | add | floor)}) | from_entries),
      nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
-     peak_context: (map(.context_tokens // 0) | max)}'
+     escalations: ([range(1; length) | select($r[.].escalated == true and $r[. - 1].escalated != true)] | length),
+     peak_context: (map(.context_tokens // 0) | max), first_epoch: (.[0].epoch), last_epoch: (last.epoch)}'
 }
 
 # bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project. Waiting
@@ -645,6 +652,36 @@ cmd_sessions() {
   [ "${1:-}" = --json ] || { echo "usage: fleet-bench sessions --json" >&2; return 2; }
   [ -s "$PROGRESS" ] || return 0
   session_rows "$(now)"
+}
+
+# cmd_stats --json [--since E] -> one JSON object per session sampled or merging a PR since E
+# (default: all of it): its whole life from this bench's two stores, the progress samples and
+# pr-ci. merged is null on a session with no merged PR in pr-ci, and sampled is false on one
+# the sampler never saw. session-outcomes keeps each row as its own row's delivery.
+cmd_stats() {
+  local json=0 since=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --since) since="${2:-}"; shift ;;
+      *) json=0; break ;;
+    esac
+    shift
+  done
+  { [ "$json" = 1 ] && [[ "$since" =~ ^[0-9]+$ ]]; } || { echo "usage: fleet-bench stats --json [--since <epoch>]" >&2; return 2; }
+  local ci=/dev/null
+  [ -s "$CI" ] && ci="$CI"
+  jq -cn --slurpfile w <([ -s "$PROGRESS" ] && window_stats "$(now)" "$since") \
+     --slurpfile c <(jq -c --argjson s "$since" 'select(.merged_epoch >= $s)' "$ci") '
+    ($w | map({key: .session_id, value: del(.working_min, .waiting_min, .stalled_min)}) | from_entries) as $ws
+    | ($c | group_by(.session_id)
+       | map({key: .[0].session_id,
+              value: {prs: (map({repo, number, additions, deletions, ci_runs, ci_red})),
+                      lines_added: (map(.additions // 0) | add), lines_deleted: (map(.deletions // 0) | add),
+                      ci_runs: (map(.ci_runs // 0) | add), ci_reds: (map(.ci_red // 0) | add)}})
+       | from_entries) as $ci
+    | (($ws | keys) + ($ci | keys) | unique)[] as $k
+    | {session_id: $k} + ($ws[$k] // {sampled: false}) + {merged: ($ci[$k] // null)}'
 }
 
 cmd_scorecard() {
@@ -1911,6 +1948,7 @@ main() {
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
     sessions) shift; cmd_sessions "$@" ;;
+    stats) shift; cmd_stats "$@" ;;
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;

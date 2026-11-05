@@ -87,6 +87,27 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   assert_output --partial 'no telemetry'
 }
 
+@test "with telemetry, cost is split by model, rounded to 1/100 cent" {
+  # A curl stub stands in for Prometheus: it answers by which sum the query asks for.
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+q="$*"
+case "$q" in
+  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"data":{"result":[{"metric":{},"value":[0,"1.73456"]}]}}' ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+  assert_equal "$(usage_field .usage_source)" 'otel'
+  assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
+}
+
+@test "without telemetry there is no per-model cost" {
+  assert_equal "$(usage_field .cost_by_model)" 'null'
+}
+
 # ── rows: the TSV the cockpit consumes ───────────────────────────────────────
 
 @test "every row carries 9 fields" {
