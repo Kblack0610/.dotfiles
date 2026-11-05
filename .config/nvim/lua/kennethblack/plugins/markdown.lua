@@ -626,8 +626,6 @@ return {
         return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
       end
 
-      -- Apply the on-save sweep to the current buffer (inherit ON: a task dragged into a
-      -- column gets that column's tag), restoring the cursor row.
       -- A buffer is a project SHEET when it declares a `Version:` and holds a `## Wave`;
       -- anything else with a `## Focus` is a daily note. One dispatcher so the keymaps and
       -- the save hook cannot disagree about which sweep a buffer gets.
@@ -650,12 +648,12 @@ return {
       -- so the cursor stays on the task it was on instead of on the old row number. Matched
       -- by exact text first, then by `task_key` (the save sweep rewrites tags). Falls back to
       -- a row-clamp when the line can't be found, or is blank (a blank would match the first
-      -- blank anywhere). No-op when the sweep changes nothing. `inherit` is passed to the
-      -- sweep: OFF for the live cycles, ON for save (see rebuild_focus_body).
-      local function sweep_and_follow(track_lnum, inherit)
+      -- blank anywhere). No-op when the sweep changes nothing. Used by the live cycles, so
+      -- drop-to-tag is OFF (see rebuild_focus_body); the save sweep is file_focus_done.
+      local function sweep_and_follow(track_lnum)
         local target = vim.fn.getline(track_lnum)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_buffer(lines, inherit or false)
+        local out, changed = sweep_buffer(lines, false)
         if not changed then
           return
         end
@@ -683,9 +681,20 @@ return {
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
       end
 
-      -- The on-save sweep: drop-to-tag ON, cursor follows the task it was on.
+      -- The on-save sweep: drop-to-tag ON, and the window does not move. A finished task
+      -- still goes to Done, but the cursor keeps its row (clamped to the buffer) and the
+      -- view its scroll, instead of following the task down there like the cycles do.
       local function file_focus_done()
-        sweep_and_follow(vim.api.nvim_win_get_cursor(0)[1], true)
+        local out, changed = sweep_buffer(vim.api.nvim_buf_get_lines(0, 0, -1, false), true)
+        if not changed then
+          return
+        end
+        local view = vim.fn.winsaveview()
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
+        local last = vim.api.nvim_buf_line_count(0)
+        view.lnum = math.min(view.lnum, last)
+        view.topline = math.min(view.topline, last)
+        vim.fn.winrestview(view)
       end
 
       -- Date a hand-typed task the day it was written: in a daily note, every open Focus

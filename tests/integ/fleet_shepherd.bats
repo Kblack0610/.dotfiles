@@ -313,6 +313,24 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_equal "$(outcome)" NOOP
 }
 
+@test "a pass whose only human turn is its own prompt is not the human, even just after midnight" {
+  # `date -d ""` is midnight today, so an empty last-human timestamp once read as the human
+  # talking for the first lease window after local midnight. Pin local time to 00:01.
+  local s=$(( $(date -u +%s) % 86400 - 60 ))
+  (( s >= 0 )) || s=$(( s + 86400 ))
+  export TZ="TST+$(( s / 3600 )):$(( s % 3600 / 60 )):$(( s % 60 ))"
+  [ "$(date +%H:%M)" = 00:01 ] || fail "TZ pin missed: $(date)"
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  aged 5
+  live "$id" idle
+  said "$id" assistant ExitPlanMode
+  run "$SH" run
+  refute_output --partial 'the human is talking'
+  assert_equal "$(starts)" 2
+}
+
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind" {
   doc "[$(row a DONE false false)]"
   STUB_TMUX_FAIL='respawn-pane|new-window' run "$SH" run
