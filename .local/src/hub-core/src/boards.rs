@@ -243,6 +243,12 @@ pub struct Phases {
     pub total: u64,
     /// The first unchecked phase.
     pub next: Option<String>,
+    /// fleet-bench's finish estimate as fleet-sessions wrote it: `HH:MM <basis>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta: Option<String>,
+    /// The same estimate as epoch seconds, so a view can tell a past one from a future one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_epoch: Option<i64>,
 }
 
 /// Each session's plan progress by its tmux target, from a `state.json` document. A session
@@ -260,6 +266,11 @@ pub fn phases(state: &Value) -> std::collections::HashMap<String, Phases> {
                     done: r["phases_done"].as_u64().unwrap_or(0),
                     total,
                     next: r["next_phase"].as_str().map(String::from),
+                    eta: r["eta"]
+                        .as_str()
+                        .filter(|e| !e.is_empty() && *e != "-")
+                        .map(String::from),
+                    eta_epoch: r["eta_epoch"].as_i64(),
                 },
             ))
         })
@@ -406,7 +417,7 @@ mod tests {
     #[test]
     fn phases_are_keyed_by_target_and_skip_a_plan_with_no_checklist() {
         let state = serde_json::json!({"sessions": [
-            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags"},
+            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags", "eta": "18:20 p150", "eta_epoch": 1793900000},
             {"target": "lab/b:1", "phases_done": 2, "phases_total": 2, "next_phase": null},
             {"target": "lab/c:1", "phases_done": null, "phases_total": null},
         ]});
@@ -417,10 +428,16 @@ mod tests {
             Phases {
                 done: 3,
                 total: 6,
-                next: Some("4: weight tags".into())
+                next: Some("4: weight tags".into()),
+                eta: Some("18:20 p150".into()),
+                eta_epoch: Some(1793900000),
             }
         );
         assert_eq!(p["lab/b:1"].next, None);
+        assert_eq!(
+            p["lab/b:1"].eta, None,
+            "no estimate is none, not an empty string"
+        );
         assert!(phases(&Value::Null).is_empty());
     }
 

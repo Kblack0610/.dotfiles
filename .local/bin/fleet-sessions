@@ -725,7 +725,7 @@ main_rows() {
 }
 
 # --- tick: the stage cells and their changes -------------------------------------------------------------
-# eta_cells -> "sid <TAB> eta" for each session fleet-bench has an estimate for: the expected
+# eta_cells -> "sid <TAB> eta <TAB> epoch" for each session fleet-bench has an estimate for: the expected
 # finish (HH:MM today, else "Thu HH:MM") and its basis, short: "<word>-median(N)" as its first
 # letter and N ("21:30 s3" is the session's own median over 3 phases, "p16" the project's), its
 # calibration suffix dropped, anything else as it is. fleet-bench reads only its own files, so one call per tick is cheap; how
@@ -735,7 +735,7 @@ eta_cells() {
     select(type == "object" and .eta_epoch != null and (.finished | not))
     | .eta_epoch as $e
     | ($e | strflocaltime(if ($e | strflocaltime("%F")) == $today then "%H:%M" else "%a %H:%M" end)) as $at
-    | [.session_id, ([$at, (.basis // empty | sub("^(?<k>[a-z])[a-z]*-median\\((?<n>[0-9]+)\\)( .*)?$"; "\(.k)\(.n)"))] | join(" "))] | @tsv' 2>/dev/null
+    | [.session_id, ([$at, (.basis // empty | sub("^(?<k>[a-z])[a-z]*-median\\((?<n>[0-9]+)\\)( .*)?$"; "\(.k)\(.n)"))] | join(" ")), $e] | @tsv' 2>/dev/null
   return 0 # no bench, or a failed read, is no estimate: the column reads -
 }
 
@@ -917,12 +917,12 @@ write_state() {
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
        --arg asks "$asks" --arg rows "$json" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
-      | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]})
+      | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          sessions: ($r | map(select(.bucket != "NIGHTLY")
-                     | if $e[.session_id] then .eta = $e[.session_id] else . end)),
+                     | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")

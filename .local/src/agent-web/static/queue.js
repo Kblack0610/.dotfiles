@@ -8,14 +8,18 @@ const Q_SECTIONS = [
   ["waiting", "Waiting for you"],
   ["running", "Running"],
   ["queued", "Up next"],
-  ["done", "Done today"],
+  ["done", "Done, last 7 days"],
 ];
-const qst = { items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null };
+// Each state's chip on a card, with how long it has been in it.
+const Q_STATE = { waiting: "Waiting on you", running: "Running", queued: "Queued" };
+// Which folds are open, by data-k: a section (`sec:<state>`) or a card's task (`task:<slug>`).
+// Re-renders come with every event, so the page keeps what the human opened. Done starts shut.
+const qst = { items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null, open: { "sec:done": false } };
 
 const refreshQueue = coalesce(async () => {
   try { qst.items = await api("/api/queue"); qst.err = null; } catch (e) { qst.err = e.message; }
   // The window's line and what sits now; the list still shows when agent-queue stats fails.
-  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}`, sitting: null }; }
+  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
 });
@@ -42,10 +46,39 @@ function qAgent(i) {
 function qNeeds(i) {
   const panes = qPanes(i);
   const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
-  const cards = panes.filter((p) => p.question).map(sessionCard).join("") + asks.map(askCard).join("");
+  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, true)).join("") + asks.map((k) => askCard(k, true)).join("");
   if (cards) return `<div class="qneed">${cards}</div>`;
   if (i.state !== "waiting" || !i.session) return "";
-  return `<div class="qhold">${panes.length ? "Waiting on a prompt in its window" : "No live window"}: tmux session ${esc(i.session)}</div>`;
+  return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
+}
+
+// The state chip: what the item is doing and for how long, or how it ended.
+function qChip(i) {
+  if (i.state === "done") {
+    const s = i.status || "ok";
+    const [cls, word] = s === "ok" ? ["ok", "Done"] : s === "failed" ? ["bad", "Failed"] : ["off", "Cancelled"];
+    return `<span class="qchip ${cls}">${word}</span>`;
+  }
+  const since = i.state === "waiting" ? i.waiting || i.started : i.state === "running" ? i.started : i.queued;
+  return `<span class="qchip ${i.state}">${Q_STATE[i.state] || esc(i.state)}${since ? ` ${ago(since)}` : ""}</span>`;
+}
+
+// When it will be done: the session's estimate (fleet-bench through fleet-sessions), late when
+// it has passed; a queued item's typical run; a done item's run time.
+function qEta(i, a) {
+  if (i.state === "done") {
+    const m = (tms(i.finished) - tms(i.started)) / 60000;
+    return m >= 0 ? `took ${dur(m)}` : "";
+  }
+  const p = a && a.phases;
+  if (p && p.eta_epoch) {
+    const late = (Date.now() / 1000 - p.eta_epoch) / 60;
+    return late > 0
+      ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
+      : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
+  }
+  const run = qst.stats && qst.stats.run_minutes_median;
+  return i.state === "queued" && run ? `usually ${dur(run)} once started` : "";
 }
 
 function qPr(pr) {
@@ -53,31 +86,40 @@ function qPr(pr) {
   return /^https?:\/\//.test(pr) ? `<a href="${esc(pr)}" target="_blank" rel="noopener">PR</a>` : `PR ${esc(pr)}`;
 }
 
+// A card says what the item is, its state and since when, what it needs from the human and when
+// it will be done. The task as typed and the bookkeeping fold away.
 function qItem(i) {
   const active = i.state !== "done";
-  const tags = (i.tags || "").split(/\s+/).filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const a = qAgent(i);
-  const stamp = i.state === "done" ? `finished ${when(i.finished)}`
-    : i.started ? `started ${when(i.started)}` : `queued ${when(i.queued)}`;
-  const meta = [
-    `<span class="qprio ${esc(i.priority)}">${esc(i.priority)}</span>`,
-    esc(i.project), esc(i.mode), i.weight ? esc(i.weight) : "", stamp,
-    i.from && i.from !== "human" ? esc(i.from) : "",
-    i.session ? `session ${esc(i.session)}` : "",
-    a && a.phases ? esc(phasesText(a)) : "",
-    i.state === "done" ? `<span class="${i.status === "ok" ? "" : "qbad"}">${esc(i.status || "")}</span>` : "",
+  const p = a && a.phases;
+  const prio = i.priority && i.priority !== "low" ? `<span class="qchip prio ${esc(i.priority)}">${esc(i.priority)}</span>` : "";
+  const when = i.state === "done" ? `finished ${stamp(i.finished)}`
+    : i.started ? `started ${stamp(i.started)}` : `queued ${stamp(i.queued)}`;
+  const line = [
+    esc(i.project), when,
+    p ? `phase ${p.done}/${p.total}` : "",
+    qEta(i, a),
     qPr(i.pr),
-  ].filter(Boolean).join(", ");
-  const hold = i.hold ? `<div class="qhold">waits: ${esc(i.hold)}</div>` : "";
+  ].filter(Boolean).join(" &middot; ");
+  const next = active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "";
+  const hold = i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "";
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
-  const prio = Q_PRIORITIES.map((p) => `<option${p === i.priority ? " selected" : ""}>${p}</option>`).join("");
+  const facts = [
+    ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags],
+    ["from", i.from], ["session", i.session], ["queued", i.queued && stamp(i.queued)],
+    ["started", i.started && stamp(i.started)], ["plan", i.plan], ["phases", i.phases],
+  ].filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${k === "queued" || k === "started" ? v : esc(v)}</dd>`).join("");
+  const k = `task:${i.slug}`;
+  const more = `<details class="qmore" data-k="${esc(k)}"${qst.open[k] ? " open" : ""}><summary>Full task and details</summary>` +
+    `<dl>${facts}</dl><div class="q">${esc(i.task || "")}</div></details>`;
+  const prios = Q_PRIORITIES.map((x) => `<option${x === i.priority ? " selected" : ""}>${x}</option>`).join("");
   const acts = active
     ? `<div class="opts">${a && a.question && a.question.kind === "plan" ? "" : approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
-      `<select data-bump="${esc(i.slug)}" title="priority">${prio}</select>` +
+      `<select data-bump="${esc(i.slug)}" title="priority">${prios}</select>` +
       `<button class="btn sm quiet" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
-  return `<div class="card qitem"><div class="meta">${esc(i.slug)} ${tags}</div><div class="meta">${meta}</div>` +
-    `<div class="q">${esc(i.task || "")}</div>${hold}${note}${active ? qNeeds(i) : ""}${acts}</div>`;
+  return `<div class="card qitem ${esc(i.state)}"><div class="qhead"><span class="qtitle">${esc(i.title || i.slug)}</span>${prio}${qChip(i)}</div>` +
+    `<div class="qline">${line}</div>${active ? qNeeds(i) : ""}${hold}${note}${next}${more}${acts}</div>`;
 }
 
 function qCompose() {
@@ -121,17 +163,68 @@ function renderQueueList() {
   if (input) { input.value = keep.v; input.focus(); }
 }
 
+// The counts at the top, one tile each, and the week's prose folded under them.
+function qTiles() {
+  const it = qst.items, n = (st8) => it.filter((i) => i.state === st8).length;
+  const held = it.filter((i) => i.state === "queued" && i.hold).length;
+  const failed = it.filter((i) => i.state === "done" && i.status === "failed").length;
+  const s = qst.stats || {};
+  const tile = (num, label, sub) => `<div class="qtile"><b>${num}</b>${label}${sub ? `<span>${sub}</span>` : ""}</div>`;
+  const typical = [s.wait_minutes_median != null ? `wait ${dur(s.wait_minutes_median)}` : "",
+    s.to_pr_minutes_median != null ? `to PR ${dur(s.to_pr_minutes_median)}` : ""].filter(Boolean).join(", ");
+  const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
+  const k = "stats";
+  return `<div class="qtiles">${tile(n("waiting"), "waiting on you")}${tile(n("running"), "running")}` +
+    `${tile(n("queued"), "up next", held ? `${held} held` : "")}${tile(n("done"), "done in 7 days", failed ? `${failed} failed` : "")}` +
+    `${typical ? tile("", "typical", typical) : ""}</div>` +
+    (prose ? `<details class="qmore qstats" data-k="${k}"${qst.open[k] ? " open" : ""}><summary>Stats detail</summary><div class="muted">${prose}</div></details>` : "");
+}
+
+// Done items under a heading per day, newest day first.
+function qDoneDays(rows) {
+  const day = (i) => new Date(tms(i.finished)).toDateString();
+  const today = new Date().toDateString(), yday = new Date(Date.now() - 864e5).toDateString();
+  const sorted = [...rows].sort((a, b) => tms(b.finished) - tms(a.finished));
+  let html = "", last = null;
+  for (const i of sorted) {
+    const d = day(i);
+    if (d !== last) {
+      last = d;
+      const label = d === today ? "Today" : d === yday ? "Yesterday"
+        : new Date(tms(i.finished)).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+      html += `<h3 class="qday">${label}</h3>`;
+    }
+    html += qItem(i);
+  }
+  return html;
+}
+
+// Waiting: longest-waiting first. Running: soonest estimate first, none last. The rest as
+// agent-queue ordered them.
+function qSorted(state, rows) {
+  const key = state === "waiting" ? (i) => tms(i.waiting || i.started) || 0
+    : state === "running" ? (i) => { const a = qAgent(i); return (a && a.phases && a.phases.eta_epoch) || Infinity; }
+    : null;
+  return key ? [...rows].sort((a, b) => key(a) - key(b)) : rows;
+}
+
 function drawQueueList(el) {
   if (!qst.items) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
   let html = qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "";
-  if (qst.stats) html += `<div class="muted qstats">${esc(qst.stats.week)}${qst.stats.sitting ? `<br>${esc(qst.stats.sitting)}` : ""}</div>`;
+  html += qTiles();
   for (const [state, title] of Q_SECTIONS) {
-    const rows = qst.items.filter((i) => i.state === state);
+    const rows = qSorted(state, qst.items.filter((i) => i.state === state));
     if (!rows.length && state === "waiting") continue;
-    html += `<h2 class="sec">${title} <span class="muted">${rows.length}</span></h2>`;
-    html += rows.length ? rows.map(qItem).join("") : `<div class="card muted">Nothing ${state === "done" ? "finished today" : "here"}.</div>`;
+    const k = `sec:${state}`, open = qst.open[k] != null ? qst.open[k] : true;
+    const failed = state === "done" ? rows.filter((i) => i.status === "failed").length : 0;
+    const body = !rows.length ? `<div class="card muted">Nothing ${state === "done" ? "finished this week" : "here"}.</div>`
+      : state === "done" ? qDoneDays(rows) : rows.map(qItem).join("");
+    html += `<details class="qsec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">${title} ` +
+      `<span class="muted">${rows.length}${failed ? `, <span class="qbad">${failed} failed</span>` : ""}</span></h2></summary>${body}</details>`;
   }
+  const y = $("queue").scrollTop;
   el.innerHTML = html;
+  $("queue").scrollTop = y;
 }
 
 function qSaveDraft() {
@@ -195,6 +288,9 @@ $("queue").addEventListener("change", (e) => {
   if (t.closest(".qadd")) qSaveDraft();
 });
 $("queue").addEventListener("input", (e) => { if (e.target.closest(".qadd")) qSaveDraft(); });
+$("queue").addEventListener("toggle", (e) => {
+  if (e.target.dataset && e.target.dataset.k) qst.open[e.target.dataset.k] = e.target.open;
+}, true);
 $("queue").addEventListener("keydown", (e) => {
   if (e.target.closest(".qneed")) { answerOnEnter(e); return; }
   if (e.target.id === "q-task" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qAdd(); }

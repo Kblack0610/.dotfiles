@@ -863,9 +863,9 @@ bench_eta() {
     "{\"session_id\":\"e\",\"finished\":false,\"eta_epoch\":$today}"
   run eta_cells
   assert_success
-  assert_line $'a\t00:05 s3'
-  assert_line $'b\t'"$(date -d @"$later" +%a)"' 00:05 default'
-  assert_line $'e\t00:05'
+  assert_line $'a\t00:05 s3\t'"$today"
+  assert_line $'b\t'"$(date -d @"$later" +%a)"$' 00:05 default\t'"$later"
+  assert_line $'e\t00:05\t'"$today"
   [ "${#lines[@]}" -eq 3 ]
   # fleet-bench missing or failing is an empty board column, never a failed tick
   FLEET_BENCH=/nonexistent run eta_cells
@@ -953,7 +953,7 @@ time_row() {
   export TZ=UTC
   bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$(date +%s),\"basis\":\"project-median(34) x1.15 (n=70)\"}"
   run eta_cells
-  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34$'
+  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
 }
 
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {

@@ -39,6 +39,10 @@ pub const SECTIONS: [(State, &str); 4] = [
 pub struct Item {
     pub slug: String,
     pub state: State,
+    /// What the item is, in a few words: the `title:` header when it has one, else `parse` fills
+    /// it from the task (`title()`), so every view shows the same words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default)]
     pub project: String,
     #[serde(default)]
@@ -86,13 +90,15 @@ impl Item {
         self.tags.split_whitespace()
     }
 
-    /// The first line of the task, for a one-line row.
-    pub fn title(&self) -> &str {
-        self.task
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim()
+    /// What the item is in a few words: the `title:` header, else the task's first sentence
+    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    pub fn title(&self) -> String {
+        let t = if self.title.trim().is_empty() {
+            first_sentence(&self.task)
+        } else {
+            self.title.trim().to_string()
+        };
+        cap(&t, TITLE_MAX)
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -102,6 +108,50 @@ impl Item {
         let j = if up { i.checked_sub(1)? } else { i + 1 };
         PRIORITIES.get(j).copied()
     }
+}
+
+/// The longest title a view shows, in chars.
+pub const TITLE_MAX: usize = 100;
+
+/// The first non-empty line up to its first sentence end, with `/a/b/plan.md` as `plan`.
+fn first_sentence(task: &str) -> String {
+    let line = task
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let words: Vec<String> = line.split_whitespace().map(short_path).collect();
+    let line = words.join(" ");
+    let end = line
+        .match_indices(". ")
+        .chain(line.match_indices("? "))
+        .chain(line.match_indices("! "))
+        .map(|(i, _)| i + 1)
+        .min()
+        .unwrap_or(line.len());
+    line[..end].trim_end_matches('.').to_string()
+}
+
+/// A word that is a file path, as the file's name without its extension; the punctuation after
+/// it is kept. Anything else as it is.
+fn short_path(w: &str) -> String {
+    let body = w.trim_end_matches([':', ',', ';', '.', ')']);
+    if !(body.starts_with('/') || body.starts_with("~/")) || !body[1..].contains('/') {
+        return w.to_string();
+    }
+    let name = body.rsplit('/').next().unwrap_or(body);
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    format!("{stem}{}", &w[body.len()..])
+}
+
+/// `s` cut to `max` chars on a word boundary, with "..." when cut.
+fn cap(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a);
+    format!("{}...", cut.trim_end_matches([',', ';', ':']))
 }
 
 /// One group of `stats.by_project` or `stats.by_source`: the done items in it.
@@ -226,6 +276,10 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
+        .map(|mut i| {
+            i.title = i.title();
+            i
+        })
         .collect()
 }
 
@@ -235,6 +289,25 @@ pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
         .run(&argv(&["list", "--json", "--state", state]))
         .map(|out| parse(&out))
+}
+
+/// The items in `state` with the done ones finished on `since` (`YYYY-MM-DD`) or later.
+pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<Item>, String> {
+    if since.len() != 10 || !since.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err(format!("bad date: {since}"));
+    }
+    runner
+        .run(&argv(&[
+            "list", "--json", "--state", state, "--since", since,
+        ]))
+        .map(|out| parse(&out))
+}
+
+/// The local date `days` before today, as `list_since` takes it.
+pub fn days_ago(days: i64) -> String {
+    (chrono::Local::now().date_naive() - chrono::Days::new(days.max(0) as u64))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
@@ -363,11 +436,64 @@ mod tests {
     }
 
     #[test]
+    fn a_title_is_the_header_or_the_tasks_first_sentence_with_paths_as_names() {
+        let item = |title: &str, task: &str| Item {
+            title: title.into(),
+            task: task.into(),
+            ..Item::default()
+        };
+        assert_eq!(item("Fix the page", "long task").title(), "Fix the page");
+        assert_eq!(
+            item(
+                "",
+                "\nDodginBalls epic, P4 (game: verified join). The plan is /a/b.md: read it."
+            )
+            .title(),
+            "DodginBalls epic, P4 (game: verified join)"
+        );
+        assert_eq!(
+            item(
+                "",
+                "Phase 4 of the plan /home/k/.agent/plans/x/rewards-admin.md: Game. Read it"
+            )
+            .title(),
+            "Phase 4 of the plan rewards-admin: Game"
+        );
+        assert_eq!(item("", "is ~/x/y.sh ok? yes").title(), "is y ok?");
+        let long = item(&"word ".repeat(40), "").title();
+        assert!(
+            long.ends_with("word...") && long.chars().count() <= TITLE_MAX + 3,
+            "{long}"
+        );
+        let parsed = parse(r#"{"slug":"s","state":"queued","title":"From the header","task":"x"}"#);
+        assert_eq!(parsed[0].title, "From the header");
+    }
+
+    #[test]
+    fn list_since_passes_a_date_and_refuses_anything_else() {
+        let fake = Fake {
+            list: Some(LIST),
+            ..Fake::default()
+        };
+        assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
+        assert_eq!(
+            fake.calls.borrow()[0],
+            "agent-queue list --json --state all --since 2026-10-30"
+        );
+        assert!(list_since(&fake, "all", "--state").is_err());
+        assert_eq!(days_ago(0).len(), 10);
+    }
+
+    #[test]
     fn an_item_hands_on_every_key_agent_queue_printed() {
         let items = parse(LIST);
         let back = serde_json::to_value(&items[0]).unwrap();
-        let orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
-        assert_eq!(back, orig, "agent and file ride in extra");
+        let mut orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
+        orig["title"] = "Pick a side".into();
+        assert_eq!(
+            back, orig,
+            "agent and file ride in extra; parse adds the title"
+        );
         let q = serde_json::to_value(&items[1]).unwrap();
         assert_eq!(
             q["tags"], "night at:02:30",

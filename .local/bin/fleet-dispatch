@@ -1266,8 +1266,11 @@ promote() {
     say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
     return 1
   fi
+  # The row's words are the item's title: no checkbox, id comment or #tags.
+  local title
+  title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
   if ! out=$(agent-queue add --project "$project" --priority "$(row_priority "$line")" --from "board:$project:$id" --slug "$id" \
-      ${tags:+--tags "$tags"} -- "$task" 2>&1); then
+      ${title:+--title "$title"} ${tags:+--tags "$tags"} -- "$task" 2>&1); then
     np "$prof" ptask "$project" "${flag[@]}" start "$id" >/dev/null 2>&1
     say "could not queue $project row, un-started: $id ($out)"
     return 1

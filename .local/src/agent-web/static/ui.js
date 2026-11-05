@@ -39,6 +39,24 @@ function when(t) {
   return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
     : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
+// A time (epoch seconds, or an ISO string) as epoch milliseconds, NaN when it is neither.
+const tms = (t) => new Date(typeof t === "number" ? t * 1e3 : t).getTime();
+// A time as HH:MM today, "Tue 3 Nov HH:MM" on another day.
+function stamp(t) {
+  const m = tms(t);
+  if (!t || isNaN(m)) return t ? esc(t) : "-";
+  const d = new Date(m);
+  if (d.toDateString() === new Date().toDateString()) return clock(m);
+  return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${clock(m)}`;
+}
+// Minutes as one coarse unit, for an age: "5m", "3h", "2d".
+function ageMin(min) {
+  if (min == null || isNaN(min)) return "";
+  min = Math.max(0, Math.round(min));
+  return min < 60 ? `${min}m` : min < 2880 ? `${Math.round(min / 60)}h` : `${Math.round(min / 1440)}d`;
+}
+// How long ago a time was, as ageMin words.
+const ago = (t) => ageMin((Date.now() - tms(t)) / 60000);
 // "3m", "2h 5m", "4d 3h".
 function dur(min) {
   if (min == null || isNaN(min)) return "-";
