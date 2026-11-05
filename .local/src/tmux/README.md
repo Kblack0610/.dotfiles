@@ -32,7 +32,7 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 |-----|--------------|
 | `Prefix+p` | Projects finder: every project with its open counts. Enter, `o` or a digit opens it on the hub Board, `e` opens its sheet in the hub notes editor |
 | `Prefix+i` | The hub board (`hub:board`), on its Board tab. Digits inside reach the other tabs |
-| `Prefix+o` | The shepherd pass running now, on the shepherd server. Never starts one |
+| `Prefix+o` | The shepherd pass running now, window `hub:shepherd`. Never starts one |
 | `Prefix+P` | Open PRs from the configured repos, with their status |
 | `Prefix+L` | Back to the window you left, across worlds; never back to the board |
 | `Prefix+Space` | This session's editor (window 1); again goes back where you were |
@@ -46,6 +46,7 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 | `Prefix+H` / `Prefix+N` | Root of lab / hub: its landing page (projects index / today's daily) |
 | `Prefix+g` | Agent windows (`agent-panel`) |
 | `Prefix+G` | Jump to the next agent that needs you |
+| `Prefix+y` | The question card of the session you are on; with none asked here, every pending ask |
 | `Prefix+C-g` | Fleet: runners, watches, asks, agents in other sessions |
 | `Prefix+R` | Search every Claude session ever run; Enter resumes it |
 | `Prefix+C-y` | Copy the latest Claude compact summary to the clipboard |
@@ -181,9 +182,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
-| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (`fleet-shepherd open` goes to the pass running now) |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -511,9 +511,8 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
-| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (`fleet-shepherd open` goes to the pass running now) |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the

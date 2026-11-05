@@ -8,7 +8,7 @@ A world is a tmux server on its own socket. The `.conf` files here are the only 
 |---|---|---|
 | The human's home and config repos on their base checkout: notes, dotfiles, home-config | hub | named in `hub.conf` |
 | Any other repo nothing claims | hub | `@repos` in `hub.conf` |
-| The shepherd's passes | shepherd | named in `shepherd.conf`: its own server, so a pass's window churn, or a crash of that server, never reaches hub |
+| The shepherd's pass | hub | window `hub:shepherd`, owned by `fleet-shepherd run`, not declared in `hub.conf`: each pass replaces the last in that pane, so no run makes or closes a window there |
 | Every agent worktree of every project, `<repo>-agent-N`, whoever started it | lab | `@agents` in `lab.conf` |
 | Game checkouts, unity-core-playground first | lab | named in `lab.conf`, or `@repos ~/dev/bnb/games` |
 
@@ -53,4 +53,4 @@ An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and th
 | `fleet-dispatch: start: no world declares @agents` | the `@agents` world is in `hidden`, or the line is gone | put it back or unhide that world; dispatch will not guess |
 | `tmux-world: command not found` after a pull | the link in `~/.local/bin` is per file | `dotfiles-deploy --apply` |
 | A work repo opens on hub | the catch-all took it | add `@repos <dir>` to the work world's manifest |
-| A `shepherd` session still on hub | made before passes moved to their own world (2026-11-04) | close it once no pass in it is talking to you; nothing reads it, and `fleet-shepherd open` goes to `-L shepherd` |
+| A `shepherd` server or session still up | left from when passes had their own world (2026-11-04 to 2026-11-05) | `tmux -L shepherd kill-server` and `tmux -L hub kill-session -t =shepherd` once no pass there is talking to you; nothing reads them, and Prefix o goes to `hub:shepherd` |
