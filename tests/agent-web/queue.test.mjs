@@ -17,7 +17,7 @@ const ctx = vm.createContext({
   document: { getElementById: el, addEventListener() {}, querySelector: el, querySelectorAll: () => [] },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 function card(agents, asks, item) {
   ctx.input = { agents, asks, item };
@@ -38,7 +38,7 @@ test("a waiting card shows the open ask, its options and the recommended one", (
   assert.match(html, /class="qneed"/);
   assert.match(html, /Ship it\?/);
   assert.match(html, /data-a="yes"/);
-  assert.match(html, /class="btn rec" data-a="no">no \(rec\)/);
+  assert.match(html, /class="btn rec" data-a="no">no \(recommended\)/);
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 
@@ -51,12 +51,12 @@ test("an ask no Claude session owns is on no card, whatever its tmux name", () =
 });
 
 test("with no ask and no dialog, the card names the prompt and the tmux session", () => {
-  assert.match(card([pane()], [], item()), /Waiting on a prompt in its window: tmux session lab:game-agent-2/);
+  assert.match(card([pane()], [], item()), /title="tmux session lab:game-agent-2">Waiting on a prompt in its window/);
 });
 
 test("with no pane left, the card does not claim one", () => {
   const html = card([], [], item());
-  assert.match(html, /No live window: tmux session lab:game-agent-2/);
+  assert.match(html, /title="tmux session lab:game-agent-2">Its session window is closed/);
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 
@@ -80,4 +80,55 @@ test("the prompt line is for waiting items only", () => {
 
 test("Stop and cancel stays, as the quiet button", () => {
   assert.match(card([], [], item()), /class="btn sm quiet" data-cancel="s">Stop and cancel/);
+});
+
+test("the card leads with the title, not the slug, and folds the task and its bookkeeping away", () => {
+  const html = card([], [], { ...item("running"), title: "Fix the join", task: "The long prompt", mode: "oneshot" });
+  assert.match(html, /<span class="ctitle">Fix the join<\/span>/);
+  assert.match(html, /<details class="cfold" data-k="task:s"><summary>Full task and details<\/summary><dl>.*<dt>slug<\/dt><dd>s<\/dd>.*<div class="q">The long prompt<\/div><\/details>/s);
+  assert.match(html, /<span class="cchip running">Running/);
+  // An item from a store older than titles still has a heading.
+  assert.match(card([], [], item("queued")), /<span class="ctitle">s<\/span>/);
+});
+
+test("an ask on a queue card says it is a question for you, with its routing only in the tooltip", () => {
+  const html = card([pane()], [ask({ judge: "human" })], item());
+  assert.match(html, /<div class="qask-h" title="p, lab\/game-agent-2:c1, question, a1">Question for you<\/div>/);
+  assert.doesNotMatch(html, /<div class="meta">p, /);
+  assert.doesNotMatch(html, /judge would/, "a judge that leaves it to you says nothing");
+  assert.match(card([pane()], [ask({ judge: "take-recommend" })], item()), /judge would take the recommendation \(no\)/);
+});
+
+test("a running item shows its estimate, and a past one as overdue", () => {
+  const soon = Math.floor(Date.now() / 1000) + 3600, past = Math.floor(Date.now() / 1000) - 7200;
+  const withEta = (e) => [{ ...pane(), phases: { done: 1, total: 3, next: "2: wire it", eta: "x p9", eta_epoch: e } }];
+  const html = card(withEta(soon), [], item("running"));
+  assert.match(html, /phase 1\/3/);
+  assert.match(html, /<span title="estimate x p9">ETA /);
+  assert.match(html, /<div class="qnext">Next: 2: wire it<\/div>/);
+  assert.match(card(withEta(past), [], item("running")), /<span class="qlate"[^>]*>overdue 2h \(ETA was /);
+});
+
+test("a done card shows how it ended and how long it took, with no buttons", () => {
+  const d = { ...item("done"), status: "failed", started: "2026-11-05T08:00:00Z", finished: "2026-11-05T10:30:00Z", pr: "https://x/pr/1" };
+  const html = card([], [], d);
+  assert.match(html, /<span class="cchip bad">Failed<\/span>/);
+  assert.match(html, /took 2h 30m/);
+  assert.match(html, /<a href="https:\/\/x\/pr\/1"/);
+  assert.doesNotMatch(html, /data-cancel|data-bump/);
+});
+
+test("sections fold: Done starts shut and groups by day, the rest start open", () => {
+  ctx.input = [
+    { ...item("waiting"), slug: "w" },
+    { ...item("done"), slug: "d1", status: "ok", finished: new Date().toISOString() },
+  ];
+  const html = vm.runInContext(`st.agents = []; st.asks = []; qst.items = input; qst.stats = { week: "since x", wait_minutes_median: 60 };
+    const box = {}; drawQueueList(box); box.innerHTML`, ctx);
+  assert.match(html, /<details class="csec" data-k="sec:waiting" open>/);
+  assert.match(html, /<details class="csec" data-k="sec:running" open>/);
+  assert.match(html, /<details class="csec" data-k="sec:done"><summary><h2 class="sec">Done, last 7 days <span class="muted">1<\/span>/);
+  assert.match(html, /<h3 class="qday">Today<\/h3>/);
+  assert.match(html, /<span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span>/);
+  assert.match(html, /<summary>Stats detail<\/summary><div class="muted">since x<\/div>/);
 });

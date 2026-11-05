@@ -15,9 +15,6 @@
 # Grafana also draw, so the bar cannot call CI green while the board calls it red. A failed
 # read shows `CI: prom down`, never the last numbers.
 #
-# The phone lines (fleet-overview) are the bar, the finished line, the ci status, each pool's
-# busy/slots with its queue, and what is down.
-#
 # Forgejo Actions runners export no metrics yet, so they are not here.
 
 set -u
@@ -106,13 +103,8 @@ for row in "${pool_rows[@]}"; do
 done
 
 printf -v body "%-${pw}s %6s %6s %7s %5s  %s" POOL BUSY QUEUE OLDEST DONE PASS
-phone_pools=''
 for row in "${pool_rows[@]}"; do
   IFS='|' read -r q p bs d r <<< "$row"
-  if [ -n "$bs" ]; then
-    phone_pools+=", $p $bs"
-    ((q > 0)) && phone_pools+=" $(paint "$C_YEL" "q$q")"
-  fi
   printf -v qs '%6s' "$q"
   oldest=-
   if ((q > 0)); then
@@ -207,12 +199,10 @@ fi
 
 # Counted per machine and state: a roster slot that never registered is one line per box,
 # not one per slot.
-phone_down=''
 if ((${#DOWN[@]})); then
   body+=$'\n\n'"$(paint "$C_RED" DOWN:)"
   while read -r key; do
     body+=$'\n'"  $(pango_esc "${key%/*}  ${DOWN[$key]} ${key#*/}")"
-    phone_down+=", $(pango_esc "${key%/*} ${DOWN[$key]} ${key#*/}")"
   done < <(printf '%s\n' "${!DOWN[@]}" | sort)
 fi
 
@@ -259,9 +249,6 @@ if ((done_total > 0)); then
   [ -z "$ratio" ] || finished+=", $(pass_cell "$ratio") passed"
 fi
 
-phone="<b>$label</b> $busy/$slots $q, $finished"$'\n'"ci:${status%,}"$'\n'"${phone_pools#, }"
-[ -z "$phone_down" ] || phone+=$'\n'"$(paint "$C_RED" DOWN:) ${phone_down#, }"
-
 emit "$label $busy/$slots $q" \
   "<b>CI runners</b>  busy/slots, queued"$'\n'"ci:${status%,}"$'\n'"$running"$'\n'"$finished"$'\n'"<tt>$body</tt>" \
-  "${LEVEL_CLASS[$level]}" "$phone"
+  "${LEVEL_CLASS[$level]}"

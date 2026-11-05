@@ -817,11 +817,28 @@ fn project_tag_word(w: &str) -> Option<String> {
 
 /// `line` without its `#p:<project>` tag, the rest as it was.
 pub fn without_project_tag(line: &str) -> String {
+    without_words(line, |w| project_tag_word(w).is_some())
+}
+
+/// Whether `line` carries an `#agent` word, which files it on the agent board. Only the text
+/// before the marker comment counts.
+pub fn agent_tag(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().any(is_agent_word)
+}
+
+fn is_agent_word(w: &str) -> bool {
+    w.eq_ignore_ascii_case("#agent")
+}
+
+/// `line` without its `#agent` tag, the rest as it was.
+pub fn without_agent_tag(line: &str) -> String {
+    without_words(line, is_agent_word)
+}
+
+fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
     let indent = &line[..line.len() - line.trim_start().len()];
-    let kept: Vec<&str> = line
-        .split_whitespace()
-        .filter(|w| project_tag_word(w).is_none())
-        .collect();
+    let kept: Vec<&str> = line.split_whitespace().filter(|w| !drop(w)).collect();
     format!("{indent}{}", kept.join(" "))
 }
 

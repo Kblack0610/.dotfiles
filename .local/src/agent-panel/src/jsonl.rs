@@ -1,5 +1,5 @@
 //! Tail a Claude transcript JSONL: a one-line summary for the chooser row and
-//! the last few events for the preview pane.
+//! the last message for the preview pane.
 
 use std::fs;
 use std::path::Path;
@@ -810,48 +810,156 @@ fn summarize(v: &Value) -> String {
     }
 }
 
-/// The last few turns formatted (most-recent first) for the preview pane.
-pub fn recent_events(path: &Path, count: usize) -> Vec<String> {
-    let all = turns(&read(path));
-    all.iter()
-        .rev()
-        .take(count)
-        .map(format_event)
-        .collect()
+/// What the preview shows of a session's transcript: its last message in full, line breaks kept,
+/// and its last tool call (`doing_said`'s `doing`). Both empty when the session wrote neither.
+pub fn preview_info(path: &Path) -> (String, String) {
+    let text = read(path);
+    (last_message(&text), doing_said(&text).0)
 }
 
-fn format_event(v: &Value) -> String {
-    if v.get("type").and_then(Value::as_str) == Some("assistant") {
-        match v.pointer("/message/content/0") {
-            Some(c) => match c.get("type").and_then(Value::as_str) {
-                Some("tool_use") => {
-                    let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
-                    let input = c
-                        .get("input")
-                        .map(|i| collapse(&i.to_string()))
-                        .unwrap_or_default();
-                    format!("  \x1b[33m⚙\x1b[0m {name} \x1b[2m{}\x1b[0m", truncate(&input, 160))
-                }
-                Some("text") => {
-                    let t = collapse(c.get("text").and_then(Value::as_str).unwrap_or(""));
-                    format!("  \x1b[32m▸\x1b[0m {}", truncate(&t, 500))
-                }
-                other => format!("  ? {}", other.unwrap_or("?")),
-            },
-            None => "  ? ".to_string(),
+/// The newest main-thread assistant text, whole: the session's last word to the human.
+fn last_message(text: &str) -> String {
+    for line in text.lines().rev() {
+        if !line.contains("\"type\":\"assistant\"") {
+            continue;
         }
-    } else {
-        let content = v.pointer("/message/content").map(value_text).unwrap_or_default();
-        format!("  \x1b[36m◂\x1b[0m {}", truncate(&collapse(&content), 500))
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if !own_turn(&v) {
+            continue;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        if let Some(t) = blocks
+            .iter()
+            .rev()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .find(|t| !t.trim().is_empty())
+        {
+            return t.trim().to_string();
+        }
     }
+    String::new()
 }
 
-/// User message content is sometimes a string, sometimes an array of blocks.
-fn value_text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
+/// The turn that posted an ask, for its card: the prompt the human typed to start that turn and
+/// everything the session wrote in it, up to the next prompt.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub struct Said {
+    /// The session's first typed prompt: the request it was started with.
+    pub first: String,
+    /// The typed prompt the asking turn answered.
+    pub prompt: String,
+    /// The assistant's own text in that turn, blocks joined by a blank line.
+    pub said: String,
+}
+
+/// `said_around` over the transcript at `path`.
+pub fn said_around_at(path: &Path, id: &str) -> Option<Said> {
+    said_around(&read(path), id)
+}
+
+/// The turn around ask `id`. The post is found by its output: `agent-ask post` prints the id on a
+/// line of its own, in the result of the call that ran it. Only the lines of that one turn are
+/// parsed, so a 90 MB transcript costs a string search. None when no tool result prints the id.
+fn said_around(text: &str, id: &str) -> Option<Said> {
+    if id.is_empty() {
+        return None;
     }
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|l| l.contains("\"tool_result\"") && l.contains(id) && prints_id(l, id))?;
+    let start = (0..at).rev().find(|&i| typed_prompt(lines[i]).is_some());
+    let end = (at + 1..lines.len()).find(|&i| typed_prompt(lines[i]).is_some()).unwrap_or(lines.len());
+    let prompt = start.and_then(|i| typed_prompt(lines[i])).unwrap_or_default();
+    let mut said = Vec::new();
+    for line in &lines[start.map_or(0, |i| i + 1)..end] {
+        if !line.contains("\"type\":\"assistant\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if !own_turn(&v) {
+            continue;
+        }
+        for b in content_blocks(&v) {
+            if b.get("type").and_then(Value::as_str) == Some("text") {
+                let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                if !t.is_empty() {
+                    said.push(t.to_string());
+                }
+            }
+        }
+    }
+    let first = lines.iter().find_map(|l| typed_prompt(l)).unwrap_or_default();
+    Some(Said { first, prompt, said: said.join("\n\n") })
+}
+
+/// A tool result entry whose text has `id` alone on a line.
+fn prints_id(line: &str, id: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
+    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { return false };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .any(|b| {
+            let text = match b.get("content") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Array(parts)) => parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            text.lines().any(|l| l.trim() == id)
+        })
+}
+
+/// The text of a prompt the human typed, for a main-thread user entry that is one: a string,
+/// not a tool result, a reminder or a notice the harness queued.
+fn typed_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"type\":\"user\"") || line.contains("\"tool_result\"") {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    if v.get("type").and_then(Value::as_str) != Some("user")
+        || v.get("isMeta").and_then(Value::as_bool) == Some(true)
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || v.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let s = v.pointer("/message/content")?.as_str()?.trim();
+    if s.is_empty() || HARNESS.iter().any(|h| s.starts_with(h)) {
+        return None;
+    }
+    // A typed slash command is stored as tags; the human typed "/name args".
+    Some(match tag(s, "command-name") {
+        Some(name) => format!("{name} {}", tag(s, "command-args").unwrap_or("")).trim().to_string(),
+        None => s.to_string(),
+    })
+}
+
+/// Text that reaches a session as a user turn but nobody typed: harness tags, and what our own
+/// tooling sends with tmux (claude-acct park/move). The prose ones are claude-recall's
+/// HARNESS_PREFIXES; a test keeps the two lists in step.
+const HARNESS: &[&str] = &[
+    "<task-notification",
+    "<system-reminder",
+    "<cross-session-message",
+    "<local-command",
+    "This session is being continued",
+    "Stop hook feedback",
+    "[Request interrupted",
+    "Another Claude session sent",
+    "Caveat:",
+    "This session was parked",
+    "This session was moved",
+    "Moved to the alt Claude account",
+];
+
+fn tag<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    let start = s.find(&format!("<{name}>"))? + name.len() + 2;
+    let len = s[start..].find(&format!("</{name}>"))?;
+    Some(s[start..start + len].trim())
 }
 
 #[cfg(test)]
@@ -1179,6 +1287,24 @@ mod tests {
     }
 
     #[test]
+    fn preview_shows_the_last_own_message_whole() {
+        let p = tmpfile("lastmsg", &[
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line one\n\nline two?"},{"type":"tool_use","name":"Bash","input":{"description":"run it"}}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"}]}}"#,
+            r#"{"type":"user","message":{"content":"ok"}}"#,
+        ]);
+        let (msg, tool) = preview_info(&p);
+        assert_eq!(msg, "line one\n\nline two?");
+        assert_eq!(tool, "Bash: run it");
+        fs::remove_file(&p).ok();
+        // Negative control: no assistant text at all -> nothing.
+        let q = tmpfile("nomsg", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
+        assert_eq!(preview_info(&q), (String::new(), String::new()));
+        fs::remove_file(&q).ok();
+    }
+
+    #[test]
     fn summarizes_text_and_missing() {
         let p = tmpfile("text", &[r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello  world"}]}}"#]);
         assert_eq!(last_event(&p), "say: hello world");
@@ -1398,5 +1524,46 @@ mod tests {
         ]);
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn said_around_is_the_turn_that_printed_the_ask_id() {
+        let lines = [
+            r#"{"type":"user","message":{"content":"earlier ask"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"not this turn"}]}}"#,
+            r#"{"type":"user","message":{"content":"should we keep the merge queue"}}"#,
+            r#"{"type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#,
+            r#"{"type":"user","message":{"content":"This session was moved from the main Claude account to alt"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looked at the queue."},{"type":"tool_use","id":"b1","name":"Bash","input":{}}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"a subagent's words"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"asking you\nAbC123"}]}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"content":"a reminder"}}"#,
+            r#"{"type":"user","message":{"content":"<task-notification> done"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Keep it? 1 keep 2 drop"}]}}"#,
+            r#"{"type":"user","message":{"content":"1"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"after the answer"}]}}"#,
+        ];
+        let got = said_around(&lines.join("\n"), "AbC123").unwrap();
+        let slash = r#"{"type":"user","message":{"content":"<command-message>go</command-message>\n<command-name>/my:go</command-name>\n<command-args>ship it</command-args>"}}"#;
+        assert_eq!(typed_prompt(slash).as_deref(), Some("/my:go ship it"));
+        assert_eq!(got.first, "earlier ask");
+        assert_eq!(got.prompt, "should we keep the merge queue");
+        assert_eq!(got.said, "Looked at the queue.\n\nKeep it? 1 keep 2 drop");
+        // Negative controls: an id only mentioned in passing, or never printed, finds nothing.
+        assert_eq!(said_around(&lines.join("\n"), "AbC12"), None);
+        assert_eq!(said_around(&lines.join("\n"), "zzz999"), None);
+        assert_eq!(said_around(&lines.join("\n"), ""), None);
+    }
+
+    #[test]
+    fn harness_prefixes_cover_claude_recalls() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../bin/claude-recall")).unwrap();
+        let start = src.find("HARNESS_PREFIXES = (").expect("claude-recall lost HARNESS_PREFIXES");
+        let body = &src[start..start + src[start..].find(')').unwrap()];
+        let theirs: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
+        assert!(theirs.len() >= 5, "{theirs:?}");
+        for p in theirs {
+            assert!(HARNESS.contains(&p), "claude-recall skips {p:?}; add it to HARNESS");
+        }
     }
 }

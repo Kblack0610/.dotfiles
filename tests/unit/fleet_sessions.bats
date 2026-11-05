@@ -418,6 +418,16 @@ MD
   assert_failure
 }
 
+@test "escalating a finding to the human records a page on its episode; a session or shepherd-class one does not" {
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/bench.calls"\n' "$SANDBOX" > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-bench"
+  escalate finding-starved-pool-other 'starved pool:other @1700000000 human'
+  escalate finding-starved-pool-other 'starved pool:other @1700000000 shepherd'
+  escalate sid-2 'STALLED PR #9 CI red @feat/x human'
+  run cat "$SANDBOX/bench.calls"
+  assert_output 'respond starved pool:other @1700000000 shepherd paged'
+}
+
 @test "mark refuses a session id that would escape the ledger" {
   run mark ../evil 'x'
   assert_failure 2
@@ -430,7 +440,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]}}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -636,6 +646,22 @@ queue_item() {
   # a claude live in that tmux session again: the stale ledger does not hide it
   sed -i 's|lab/s2:3|lab/s1:7|' "$HOME/.agent/parked/s2"
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
+}
+
+@test "end to end: a session:window ledger stays PARKED beside the shared session's other live claudes; the row carries its account" {
+  landed_fixture
+  PANEL_ACCOUNT=alt panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=s1 server=lab target=lab/s1:3 pane=%9 direct=0 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s1:3"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -sr 'map("\(.target) \(.bucket) \(.account)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED alt,lab/s1:3 PARKED null' ]
+  # Negative control: a claude live in that window again makes the ledger stale
+  sed -i 's|lab/s1:3|lab/s1:1|' "$HOME/.agent/parked/s1:3"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
 }
@@ -863,9 +889,9 @@ bench_eta() {
     "{\"session_id\":\"e\",\"finished\":false,\"eta_epoch\":$today}"
   run eta_cells
   assert_success
-  assert_line $'a\t00:05 s3'
-  assert_line $'b\t'"$(date -d @"$later" +%a)"' 00:05 default'
-  assert_line $'e\t00:05'
+  assert_line $'a\t00:05 s3\t'"$today"
+  assert_line $'b\t'"$(date -d @"$later" +%a)"$' 00:05 default\t'"$later"
+  assert_line $'e\t00:05\t'"$today"
   [ "${#lines[@]}" -eq 3 ]
   # fleet-bench missing or failing is an empty board column, never a failed tick
   FLEET_BENCH=/nonexistent run eta_cells
@@ -953,7 +979,7 @@ time_row() {
   export TZ=UTC
   bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$(date +%s),\"basis\":\"project-median(34) x1.15 (n=70)\"}"
   run eta_cells
-  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34$'
+  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
 }
 
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {

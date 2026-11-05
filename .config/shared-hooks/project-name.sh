@@ -108,6 +108,21 @@ project_repo_path() {
   printf '%s' "$repo"
 }
 
+# project_of_repos_json <repo-name>... -> {"<repo>": "<project>"} for GitHub repo names
+# (`.dotfiles`, `freqtrade_trading_attempt`), the question a PR list asks; one jq call.
+# A repo is the project its registered checkout (`paths`, matched by basename) names,
+# else its alias, else its name without a leading dot - the same steps
+# resolve_project_name takes for a repo root, without a checkout or its branch.
+project_of_repos_json() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] || map_file=/dev/null
+  printf '%s\n' "$@" | jq -Rn --slurpfile m <(cat "$map_file" 2>/dev/null; echo '{}') '
+    ($m[0] // {}) as $map
+    | ($map.paths // {} | to_entries | map({key: (.key | split("/") | last), value}) | from_entries) as $by_base
+    | [inputs | select(. != "") | ltrimstr(".") as $b
+       | {key: ., value: ($by_base[.] // $map.aliases[.] // $map.aliases[$b] // $b)}] | from_entries'
+}
+
 # ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
@@ -201,6 +216,18 @@ project_lab_names() {
     | select(.value.repo == $n or .key == $n)
     | .key
   ' "$map_file" 2>/dev/null || true
+}
+
+# project_inherited <repo or project> <field> -> its own value, else the one value shared by
+# every project under it, else "". `.dotfiles` has no type of its own, but both its projects
+# are infra.
+project_inherited() {
+  local own name vals
+  own="$(project_field "$1" "$2")"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  vals="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" "$2"; done | sort -u)"
+  [ -n "$vals" ] && [ "$(wc -l <<<"$vals")" -eq 1 ] && printf '%s\n' "$vals"
+  return 0
 }
 
 # project_keys -> every registered project key, sorted, one per line: the `paths` names

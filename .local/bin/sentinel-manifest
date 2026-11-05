@@ -153,6 +153,14 @@ def cmd_env(path):
             )
         else:
             out.append(f"W_{key}={shlex.quote(scalar(value))}")
+    # A page and the briefing word a watch the same way (comms-standard): what is watched,
+    # and the trip as a sentence. The manifest may say either; these are the defaults.
+    name = scalar(doc.get("name") or "") or path.rsplit("/", 1)[-1].removesuffix(".yaml")
+    subject = scalar(doc.get("subject") or "") or name.replace("-", " ")
+    subject = subject[:1].upper() + subject[1:]
+    trip = (scalar(doc.get("trip") or "") or f"{subject} failing").rstrip(".")
+    out = [line for line in out if not line.startswith(("W_subject=", "W_trip="))]
+    out += [f"W_subject={shlex.quote(subject)}", f"W_trip={shlex.quote(trip)}"]
     # The caller reads these counts unconditionally under `set -u`, so every
     # list key must be defined even when the manifest omits it entirely.
     for key in LIST_KEYS:

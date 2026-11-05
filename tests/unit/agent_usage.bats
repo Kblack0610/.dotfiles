@@ -87,6 +87,28 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   assert_output --partial 'no telemetry'
 }
 
+@test "with telemetry, cost is split by model, rounded to 1/100 cent" {
+  # A curl stub stands in for Prometheus: it answers by which sum the query asks for.
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+q="$*"
+case "$q" in
+  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"data":{"result":[]}}' ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+  assert_equal "$(usage_field .usage_source)" 'otel'
+  assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
+  assert_equal "$(usage_field .cost_usd)" '1.73456'
+}
+
+@test "without telemetry there is no per-model cost" {
+  assert_equal "$(usage_field .cost_by_model)" 'null'
+}
+
 # ── rows: the TSV the cockpit consumes ───────────────────────────────────────
 
 @test "every row carries 9 fields" {
@@ -223,7 +245,7 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 #
 # The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
 # two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
-# m4 follows a compaction), one subagent call, one headless call, a registry with a superseded
+# m4 follows a compaction; m1's request is recorded as an api-request-shape and two blobs), one subagent call, one headless call, a registry with a superseded
 # row, outcomes naming PR o/r#1 twice, and a dream log with one real and one dry run.
 
 burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
@@ -244,6 +266,10 @@ burn() {
 
 @test "burn: kinds split worktree, subagent and headless threads" {
   assert_equal "$(burn '.by_kind | keys')" '["headless","subagent","worktree"]'
+}
+
+@test "burn: each kind counts its sessions, a transcript once however many turns it has" {
+  assert_equal "$(burn '[.by_kind.worktree.sessions, .by_kind.worktree.turns > .by_kind.worktree.sessions]')" '[1,true]'
 }
 
 @test "burn: cache writes are attributed to first turn, idle gap, compaction or flow" {
@@ -326,4 +352,13 @@ burn() {
   assert_output --partial 'turn mix: investigate 1'
   assert_output --partial 'by session (top 1 of 2'
   refute_output --partial $'\n  h1\t'
+}
+
+@test "burn: the first request splits into its parts, in chars, from the recorded request" {
+  assert_equal "$(burn '.first_request_parts.parts | map_values(.median_chars)')" \
+    '{"skill_listing":200,"preflight":100,"system_prompt":100,"memory_md":90,"global_claude_md":80,"repo_claude_md":60,"tools_builtin":38,"tools_mcp":21,"instructions_other":18,"prompt":14,"system_other":0}'
+  assert_equal "$(burn '.first_request_parts.tools_mean_chars')" '{"Bash":38,"mcp__x__y":21}'
+  # Negative control: only the worktree session recorded its request, so the headless one,
+  # which still counts toward first_turn_context, adds no parts.
+  assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
 }

@@ -205,8 +205,8 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
 
 # ── A board is never somewhere to go back to ────────────────────────────────
 #
-# The boards (Prefix o / O) are declared windows of the landing session, and tmux keeps
-# one last-session slot, so a glance at a board took it: A, o, L, L landed on the board.
+# The board (Prefix i) is a declared window of the landing session, and tmux keeps
+# one last-session slot, so a glance at it took that slot: A, i, L, L landed on the board.
 
 # sessions_on <server> <name>... -- list-sessions for that world, most recent first.
 sessions_on() {
@@ -222,7 +222,7 @@ sessions_on() {
 board_declared() { printf 'daily:watch ~ hub\n' >> "$TMUX_SERVERS_DIR/hub.conf"; }
 
 @test "when tmux's last session is sitting on a board, L goes to the session worked in before" {
-  # A, Prefix o, L back to A: tmux now says the last session is the board's.
+  # A, Prefix i, L back to A: tmux now says the last session is the board's.
   board_declared
   sessions_on hub notes daily other
   at hub notes 0

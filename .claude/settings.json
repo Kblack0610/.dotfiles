@@ -112,7 +112,7 @@
     "defaultMode": "plan",
     "disableAutoMode": "disable"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "autoCompactWindow": 200000,
   "subagentPromptCacheTtl": "1h",
   "fallbackModel": [
@@ -160,6 +160,15 @@
         ]
       },
       {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
@@ -174,6 +183,16 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/block-pip.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/block-poll.py || true",
+            "timeout": 5
           }
         ]
       },
@@ -232,6 +251,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
           }
         ]
       }
@@ -278,17 +301,6 @@
         ]
       }
     ],
-    "SessionEnd": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh stale"
-          }
-        ]
-      }
-    ],
     "PostToolUseFailure": [
       {
         "matcher": "Bash",
@@ -311,6 +323,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "tui": "default",
   "cleanupPeriodDays": 365,
   "remoteControlAtStartup": true,
   "additionalDirectories": [

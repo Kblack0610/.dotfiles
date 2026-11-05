@@ -1395,7 +1395,7 @@ fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
 /// naming the orgs, because guessing which of two live sheets you meant is how edits land in the
 /// copy nothing reads.
 pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
-    let want = name.trim().to_lowercase();
+    let want = crate::registry::canonical(name.trim()).to_lowercase();
 
     // Fast path: the active org has it AND it is the real sheet. No other org is consulted, so
     // the common case costs exactly what it did before.
@@ -2469,6 +2469,10 @@ struct ProjectStats {
     low: usize,
     planned: usize,
     agent: usize,
+    /// The sheet's `Goal:` head line (under `Version:`): what the open version is for.
+    goal: String,
+    /// The open version's rows and closes, both lanes, counted.
+    progress: Progress,
     /// The summary's STATUS line without its leading `_YYYY-MM-DD_` date.
     status: String,
     /// That date; empty when the line carries none.
@@ -2497,6 +2501,139 @@ fn split_status_date(line: &str) -> (String, String) {
     }
 }
 
+/// A project's open version as counted rows: the human sheet's and the agent board's open
+/// rows, their closed rows (the board's archived ones in `agent/versions/<v>.md` too), and how
+/// many closed in the last 7 and 28 days. A dropped or duplicate row is out of scope, so it is
+/// in neither. Weights are a row's size: `#size/s` 1, `m` 3, `l` 8, unsized 1.
+///
+/// A close is dated by the row's `done:` marker. Rows closed before `done` stamped one are
+/// dated by the version note's frozen `## Proof` table (`when` column), the record until
+/// 2026-11-04; the two never cover the same close.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct Progress {
+    pub open: usize,
+    pub done: usize,
+    pub open_weight: u32,
+    pub done_weight: u32,
+    pub closed_7d: usize,
+    pub closed_28d: usize,
+    pub closed_weight_7d: u32,
+    pub closed_weight_28d: u32,
+}
+
+/// A row's weight from its `#size/<s|m|l>` tag; 1 when it has none.
+pub(crate) fn size_weight(line: &str) -> u32 {
+    match project_tasks::size_tag(line) {
+        Some("#size/m") => 3,
+        Some("#size/l") => 8,
+        _ => 1,
+    }
+}
+
+impl Progress {
+    fn close(&mut self, on: Option<chrono::NaiveDate>, weight: u32, today: chrono::NaiveDate) {
+        let Some(age) = on.map(|d| (today - d).num_days()) else {
+            return;
+        };
+        if (0..7).contains(&age) {
+            self.closed_7d += 1;
+            self.closed_weight_7d += weight;
+        }
+        if (0..28).contains(&age) {
+            self.closed_28d += 1;
+            self.closed_weight_28d += weight;
+        }
+    }
+
+    /// Count one sheet: its open-version open rows and closed rows.
+    fn sheet(&mut self, content: &str, cur: Option<V>, today: chrono::NaiveDate) {
+        let lines: Vec<&str> = content.lines().collect();
+        for (_, l) in sheet::current_rows(content, cur) {
+            if !l.starts_with("- [") {
+                continue; // a child step is part of its row, not a row
+            }
+            self.open += 1;
+            self.open_weight += size_weight(l);
+        }
+        self.closed(
+            project_tasks::done_rows_of(content, cur)
+                .into_iter()
+                .map(|r| lines[r.start]),
+            today,
+        );
+    }
+
+    fn closed<'a>(&mut self, rows: impl Iterator<Item = &'a str>, today: chrono::NaiveDate) {
+        for l in rows.filter(|l| !md::is_dropped(l)) {
+            let w = size_weight(l);
+            self.done += 1;
+            self.done_weight += w;
+            self.close(project_tasks::done_on(l), w, today);
+        }
+    }
+
+    /// The version note: its archived `## Done rows` count as closed, and its frozen
+    /// `## Proof` table dates the closes that predate the `done:` stamp.
+    fn note(&mut self, content: &str, today: chrono::NaiveDate) {
+        let lines: Vec<&str> = content.lines().collect();
+        if let Some(span) = md::section_span(&lines, "Done rows") {
+            let body = lines[span].join("\n");
+            let rows: Vec<&str> = body.lines().collect();
+            self.closed(
+                project_tasks::done_rows(&body)
+                    .into_iter()
+                    .map(|r| rows[r.start]),
+                today,
+            );
+        }
+        let Some(span) = md::section_span(&lines, "Proof") else {
+            return;
+        };
+        for l in &lines[span] {
+            let cells: Vec<&str> = l
+                .trim()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            let (Some(task), Some(when)) = (cells.first(), cells.last()) else {
+                continue;
+            };
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(when, "%Y-%m-%d") {
+                self.close(Some(d), size_weight(task), today);
+            }
+        }
+    }
+}
+
+/// [`Progress`] for one project dir, read from its sheet, agent board and the open version's
+/// agent note.
+pub(crate) fn progress_of(dir: &Path, cur: Option<V>, today: chrono::NaiveDate) -> Progress {
+    let read = |p: Option<PathBuf>| {
+        p.and_then(|p| fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    };
+    let mut pr = Progress::default();
+    pr.sheet(&read(project_tasks::task_sheet(dir)), cur, today);
+    pr.sheet(
+        &read(project_tasks::task_sheet(&agent_dir(dir))),
+        cur,
+        today,
+    );
+    if let Some(v) = cur {
+        pr.note(&read(Some(agent_note_path(dir, &fmt_version(v)))), today);
+    }
+    pr
+}
+
+/// The sheet's `Goal:` head line, empty when it has none.
+fn goal_line(content: &str) -> String {
+    head_lines(content)
+        .find_map(|l| l.trim().strip_prefix("Goal:"))
+        .map(|g| g.trim().to_string())
+        .unwrap_or_default()
+}
+
 fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let read = |p: Option<PathBuf>| {
         p.and_then(|p| fs::read_to_string(p).ok())
@@ -2523,6 +2660,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         low: c.low,
         planned: c.planned,
         agent: sheet_counts(&read(project_tasks::task_sheet(&agent_dir(dir))), cur).open,
+        goal: goal_line(&content),
+        progress: progress_of(dir, cur, chrono::Local::now().date_naive()),
         status,
         status_date,
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
@@ -3236,6 +3375,74 @@ mod stage_tag_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PROGRESS_SHEET: &str = "\
+# demo
+Version: v0.2.0 #alpha
+Goal: the board reads itself
+
+## Tasks
+- [ ] open small #size/s
+- [ ] open large #size/l
+  - [ ] a child is not a row
+- [ ] open unsized
+- [ ] later one #v0.3.0 #size/l
+- [x] closed today #size/m <!-- done:2026-11-05 pr:1 -->
+- [x] closed last month <!-- done:2026-10-01 pr:2 -->
+- [x] dropped #size/l <!-- done:2026-11-05 dropped: stale -->
+";
+
+    const PROGRESS_NOTE: &str = "\
+# demo v0.2.0
+
+## Proof
+| task | proof | when |
+|---|---|---|
+| fix(x): old close #size/l | pr:3 | 2026-11-01 |
+| fix(y): older | pr:4 | 2026-09-01 |
+
+## Done rows
+- [x] archived row #size/m <!-- pr:5 -->
+";
+
+    #[test]
+    fn progress_weighs_open_and_closed_rows_of_the_open_version_by_size() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let cur = Some((0, 2, 0));
+        let mut p = Progress::default();
+        p.sheet(PROGRESS_SHEET, cur, today);
+        p.note(PROGRESS_NOTE, today);
+        assert_eq!(
+            p,
+            Progress {
+                // small 1 + large 8 + unsized 1; the later row and the child are out
+                open: 3,
+                open_weight: 10,
+                // today (m 3) + last month (1) + archived (m 3); the dropped row is out
+                done: 3,
+                done_weight: 7,
+                // today on the sheet, 2026-11-01 from the frozen Proof table
+                closed_7d: 2,
+                closed_weight_7d: 11,
+                closed_28d: 2,
+                closed_weight_28d: 11,
+            }
+        );
+        assert_eq!(goal_line(PROGRESS_SHEET), "the board reads itself");
+        assert_eq!(goal_line("# demo\nVersion: v0.2.0\n"), "");
+    }
+
+    #[test]
+    fn a_close_window_counts_today_and_stops_at_its_edge() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let mut p = Progress::default();
+        for ago in [0, 6, 7, 27, 28] {
+            p.close(Some(today - chrono::Days::new(ago)), 1, today);
+        }
+        p.close(Some(today + chrono::Days::new(1)), 1, today);
+        p.close(None, 1, today);
+        assert_eq!((p.closed_7d, p.closed_28d), (2, 4));
+    }
 
     const INDEX: &str = "\
 # Projects

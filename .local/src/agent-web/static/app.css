@@ -90,6 +90,7 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 .empty { color: var(--muted); padding: 24px 16px; }
 .err { color: var(--wait); font-size: 12px; min-height: 1em; }
 #asks { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
+#asks > details { max-width: 760px; margin: 0 auto; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: 760px; }
 .card .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-family: var(--mono); }
 .card .q:not(.md) { white-space: pre-wrap; margin-bottom: 10px; }
@@ -97,19 +98,50 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 .planpeek { flex-basis: 100%; margin: 4px 0; font-size: 12px; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
 .card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .card .opts .rec { border-color: var(--accent); }
-.card .open { float: right; color: var(--accent); cursor: pointer; }
 h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px auto 8px; max-width: 760px; }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
 #queue > *, #queue h2.sec { max-width: 760px; }
+#home > *, #home h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
+#home .hnum span { white-space: nowrap; }
 #q-list .card { max-width: none; }
-#board > *, #board h2.sec { max-width: 760px; }
+#board > *, #board h2.sec, #p-cards > *, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 #b-list .card, #b-list h2.sec { max-width: none; }
 #board summary { cursor: pointer; }
 #board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
-.qitem .q { margin-bottom: 6px; max-height: 12em; overflow-y: auto; }
+.qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
+/* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and
+   chips, one quiet line, then what the human must do; the rest folds. */
+details.csec > summary { cursor: pointer; }
+details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8px; }
+.chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 2px; }
+.ctitle { flex: 1 1 240px; min-width: 0; font-weight: 600; font-size: var(--fs-lg); overflow-wrap: anywhere; }
+.cchip { font-size: var(--fs-xs); font-weight: 600; padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--tool); color: var(--muted); }
+.cchip.waiting, .cchip.bad, .cchip.prio.urgent { color: var(--b-needs); background: color-mix(in srgb, var(--b-needs) 14%, transparent); }
+.cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
+.cchip.ok { color: var(--b-done); background: color-mix(in srgb, var(--b-done) 14%, transparent); }
+.cchip.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.cline.warn { color: var(--b-stalled); }
+.cchip.prio.high { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.cline { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }
+.cline a { color: var(--accent); }
+details.cfold { margin: 8px 0; }
+details.cfold > summary { cursor: pointer; font-size: var(--fs-sm); color: var(--muted); padding: 2px 0; }
+details.cfold[open] > summary { margin-bottom: 6px; }
+.cfold dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 0 0 8px; font-size: var(--fs-xs); font-family: var(--mono); }
+.cfold dt { color: var(--muted); } .cfold dd { margin: 0; overflow-wrap: anywhere; }
+.qlate { color: var(--b-stalled); }
+.qnext { font-size: var(--fs-sm); margin-bottom: 6px; }
+.qask-h { font-size: var(--fs-sm); font-weight: 600; color: var(--b-stalled); margin-bottom: 4px; }
+.qitem.done { padding-block: 8px; }
+.qitem.done .chead { margin-bottom: 0; } .qitem.done .ctitle { font-size: var(--fs-md); font-weight: 500; }
+.qitem.done .cline { margin-bottom: 4px; }
+h3.qday { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 6px; }
+.qtiles { margin: 0 0 6px; }
+.qtiles .tv { font-size: 22px; white-space: nowrap; }
+.qstats { font-size: 12px; margin: 4px 0 8px; }
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
@@ -119,18 +151,25 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
 .qadd select, .qitem select, .bfilter select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
-.qstats { font-size: 12px; margin: 4px 0 8px; }
 .board { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
-/* Shepherd tab: kept rundowns beside the chat; stacked on a phone */
-.shep { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.shep-chat { position: sticky; top: 0; }
-#sh-chat { max-height: 60vh; overflow-y: auto; }
-#sh-text { width: 100%; box-sizing: border-box; min-height: 70px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+/* Sessions (static/watch.js, shepherd.js): the overview row, fleet-state rows with no session here
+   (they fold open to their card), the open session's folded facts, the overview's folded sections. */
+.row.ov .s { font-size: 12px; font-family: var(--mono); }
+.ghost > summary { list-style: none; opacity: .75; }
+.ghost > summary::-webkit-details-marker { display: none; }
+.ghost[open] > summary { opacity: 1; }
+.ghost > .wcard { margin: 0 12px 8px; }
+#facts { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
+#facts summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+#facts .wcard { margin-top: 6px; }
+.ovsec > summary { cursor: pointer; list-style-position: inside; }
+.ovsec > summary h2.sec { display: inline-flex; gap: 10px; align-items: baseline; margin: 14px 0 6px; }
+.ovbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; }
+h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .row-end { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 6px; }
 .row-end .err { flex: 1; }
 .rd summary { cursor: pointer; }
 .rd-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
-@media (max-width: 900px) { .shep { grid-template-columns: 1fr; } .shep-chat { position: static; } }
 .board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
 /* The Actions tab (static/actions.js): filter chips, then one line per action. */
@@ -164,15 +203,23 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .lane.axis .ticks span { position: absolute; transform: translateX(-50%); top: 2px; }
 .legend { text-transform: none; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; font-weight: normal; letter-spacing: 0; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.legend button.lg { all: unset; cursor: pointer; }
+.sec .only { text-transform: none; letter-spacing: 0; font-weight: normal; }
+.legend button.lg.on { font-weight: 600; text-decoration: underline; }
+.legend button.lg:focus-visible { outline: 1px solid var(--accent); }
 .meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 3px; }
+.pcard[data-open] { cursor: pointer; }
+.pcard .pprog { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 6px 0; font-family: var(--mono); font-size: var(--fs-sm); }
+.pcard .pprog .meter { width: 180px; max-width: 100%; height: 8px; }
+.pcard .pline { display: grid; grid-template-columns: 6.5em 1fr; gap: 8px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.pcard .plead { color: var(--muted); }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 9px; font: 600 11px var(--mono); color: #fff; background: var(--c); }
 .chip.sm { padding: 0 6px; font-size: 10px; }
 .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 10px; }
 .wcard { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .wh { display: flex; gap: 8px; align-items: center; }
 .wt { font: 600 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.wcard .open { color: var(--accent); cursor: pointer; font-size: 12px; }
 .wm { font: 12px var(--mono); color: var(--muted); margin: 4px 0; overflow-wrap: anywhere; }
 .wf { margin-bottom: 6px; }
 .wk { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); }
@@ -237,6 +284,7 @@ details.area summary { cursor: pointer; font-weight: 600; display: flex; gap: 8p
 .pr .ft { flex: none; width: 40px; font: 12px var(--mono); color: var(--muted); }
 .pr a { flex: none; color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 12px; }
 .pr .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr .lbl { flex: none; max-width: 28%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
 .pr .by { flex: none; font: 12px var(--mono); color: var(--muted); }
 .pr a.by { color: var(--accent); }
 details.sec-d summary { list-style: none; cursor: pointer; }

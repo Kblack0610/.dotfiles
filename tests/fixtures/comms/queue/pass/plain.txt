@@ -1,0 +1,1 @@
+Rerun the nightly, then report the result on the board row.

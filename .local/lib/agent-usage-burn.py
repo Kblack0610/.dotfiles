@@ -13,6 +13,10 @@ Sources and what each one is trusted for:
                here) and the account, read from the transcript path's account dir.
   outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window.
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
+  requests     the api-request-shape and api-request-blob lines Claude Code writes before a
+               session's first response: what that first request carried, part by part, in
+               chars (first_request_parts). Chars, because only the request total has a
+               token count; chars_per_token is that total over these chars.
 There is no price table on purpose; see the agent-usage header.
 """
 import argparse
@@ -35,6 +39,47 @@ WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
+
+# Where each part of the first request's system-role text starts. Text before the first
+# marker is system_other.
+SYS_PARTS = [("preflight", r"SessionStart hook additional context"), ("environment", r"^# Environment\n"),
+             ("deferred_list", r"^The following deferred tools are now available"),
+             ("agent_listing", r"^Available agent types for the Agent tool"),
+             ("mcp_instructions", r"^# MCP Server Instructions"),
+             ("skill_listing", r"^The following skills are available for use with the Skill tool")]
+
+
+def request_parts(shape, blobs):
+    """Chars per part of one recorded first request: system prompt, tool schemas, the
+    system-role listings, and the CLAUDE.md / MEMORY.md files in the first user block."""
+    parts, tools = Counter(), Counter()
+    parts["system_prompt"] = sum(len(b.get("text", "")) for b in shape.get("system") or [])
+    for t in shape.get("tools") or []:
+        n = t.get("name", "?")
+        tools[n] = len(json.dumps(t))
+        parts["tools_mcp" if n.startswith("mcp__") else "tools_builtin"] += tools[n]
+    for m in blobs:
+        for j, b in enumerate(m.get("content") or []):
+            txt = b.get("text", "") if isinstance(b, dict) else ""
+            if m.get("role") == "system":
+                pos = sorted((x.start(), n) for n, pat in SYS_PARTS for x in [re.search(pat, txt, re.M)] if x)
+                parts["system_other"] += pos[0][0] if pos else len(txt)
+                for k, (at, n) in enumerate(pos):
+                    parts[n] += (pos[k + 1][0] if k + 1 < len(pos) else len(txt)) - at
+            elif j == 0 and "Contents of /" in txt:
+                for seg in re.split(r"(?=Contents of /)", txt):
+                    f = re.match(r"Contents of (\S+)", seg)
+                    if not f:
+                        parts["instructions_other"] += len(seg)
+                    elif f.group(1).endswith("MEMORY.md"):
+                        parts["memory_md"] += len(seg)
+                    elif os.path.basename(os.path.dirname(f.group(1))).startswith(".claude"):
+                        parts["global_claude_md"] += len(seg)
+                    else:
+                        parts["repo_claude_md"] += len(seg)
+            else:
+                parts["prompt"] += len(txt)
+    return parts, tools
 
 
 def ts(s):
@@ -108,6 +153,7 @@ def scan(path, start, end, acc):
     ctx_by_mid, wait_mids, tools_by_mid = {}, set(), defaultdict(set)
     sess = acc["session"][session_of(path)]
     first, turns, seq = None, 0, 0  # seq: the session's responses, in the window or not
+    shape, blobs = None, []  # the first request, as recorded before the first response
     try:
         fh = open(path, errors="ignore")
     except OSError:
@@ -121,6 +167,12 @@ def scan(path, start, end, acc):
             if first is None and d.get("type") in ("user", "assistant"):
                 first = d
             t = d.get("type")
+            if t == "api-request-shape" and shape is None and seq == 0:
+                shape = d.get("shape") or {}
+                continue
+            if t == "api-request-blob" and seq == 0 and len(blobs) < 2:
+                blobs.append(d.get("message") or {})
+                continue
             if t == "system" and "compact" in str(d.get("subtype", "")):
                 after_compact = True
                 n = 1 if start <= (ts(d.get("timestamp", "")) or 0) < end else 0
@@ -178,12 +230,16 @@ def scan(path, start, end, acc):
                 b["output"] += o
                 b["cache_write"] += cw
                 b["cache_read"] += cr
-            acc["files"].add(path)
+            acc["kind_files"][kind].add(path)
             sess["turns"] += 1
             sess["context"] += ctx
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
                 sess["first_turn_context"] = ctx
+                if shape is not None:
+                    parts, tools = request_parts(shape, blobs)
+                    acc["first_parts"].append((ctx, parts))
+                    acc["first_tools"].update(tools)
                 cause = "first-turn"
             elif after_compact:
                 cause = "after-compaction"
@@ -307,7 +363,8 @@ def main():
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
            "mix": defaultdict(tok), "session": defaultdict(tok),
-           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "files": set()}
+           "first_parts": [], "first_tools": Counter(),
+           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
             if os.path.getmtime(p) < start:
@@ -339,14 +396,18 @@ def main():
 
     def q(p):
         return fc[min(len(fc) - 1, int(len(fc) * p))] if fc else None
+    fp = acc["first_parts"]
+    fp_chars = sum(sum(p.values()) for _, p in fp)
+    fp_keys = sorted({k for _, p in fp for k in p}, key=lambda k: (-sum(p.get(k, 0) for _, p in fp), k))
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
-                   "transcripts": len(acc["files"])},
+                   "transcripts": len(set().union(*acc["kind_files"].values()))},
         "registry": {"sessions": n, "cost_usd": round(cost, 2)},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
-        "by_kind": {k: dict(v) for k, v in sorted(acc["kind"].items(), key=lambda x: -x[1]["cache_read"])},
+        "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}
+                    for k, v in sorted(acc["kind"].items(), key=lambda x: -x[1]["cache_read"])},
         "by_model": {k: dict(v) for k, v in sorted(acc["model"].items(), key=lambda x: -x[1]["turns"])},
         "context_tokens": ctx_all,
         "merged_prs": prs,
@@ -355,6 +416,14 @@ def main():
         "zero_merge_context_share": round(zero_ctx / out_ctx, 3) if out_ctx else None,
         "first_turn_context": {"sessions": len(fc), "p10": q(0.1),
                                "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9)},
+        "first_request_parts": {
+            "sessions": len(fp),
+            "chars_per_token": round(fp_chars / sum(c for c, _ in fp), 2) if fp else None,
+            "parts": {k: {"median_chars": int(statistics.median([p.get(k, 0) for _, p in fp])),
+                          "mean_chars": sum(p.get(k, 0) for _, p in fp) // len(fp),
+                          "share": round(sum(p.get(k, 0) for _, p in fp) / fp_chars, 3)} for k in fp_keys},
+            "tools_mean_chars": {k: v // len(fp) for k, v in acc["first_tools"].most_common(12)} if fp else {},
+        },
         "waits": {"calls": acc["wait_calls"], "context": acc["wait_ctx"],
                   "share": round(acc["wait_ctx"] / ctx_all, 3) if ctx_all else None},
         "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
@@ -387,10 +456,15 @@ def main():
         print()
     table("by account (registry)", out["by_account"], ["sessions", "cost_usd", "cache_read", "output"])
     table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
-    table("by kind (transcripts)", out["by_kind"], ["turns", "input", "output", "cache_write", "cache_read"])
+    table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
     f = out["first_turn_context"]
     print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
+    r = out["first_request_parts"]
+    if r["sessions"]:
+        print(f"first request by part ({r['sessions']} sessions, {r['chars_per_token']} chars a token): "
+              + ", ".join(f"{k} {v['mean_chars']:,} ({v['share']:.0%})" for k, v in r["parts"].items() if v["share"] >= 0.005))
+        print("  largest tools (mean chars): " + ", ".join(f"{k} {v:,}" for k, v in r["tools_mean_chars"].items()))
     wt = out["waits"]
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))

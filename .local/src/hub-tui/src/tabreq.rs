@@ -2,8 +2,9 @@
 //! socket, so a request arrives as an event and needs no file watch (inotify can be full: an
 //! open Unity Editor takes nearly all of it). With no hub listening, the request is left in a
 //! file that the next hub to start takes, which is how a Prefix key that creates hub:board
-//! lands on its page. A request is the tab's name, then for the Board tab an optional search
-//! (`board bnb/demo`, what the projects popup sends to land on one project's rows).
+//! lands on its page. A request is the tab's name, then for the Projects tab an optional search
+//! (`projects bnb/demo`, what the projects popup sends to land on one project's rows) or for
+//! Infra the section to open (`infra ci`, what `hub tab ci` sends).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -30,17 +31,19 @@ pub fn dir() -> PathBuf {
 /// A page to show, and for the Board tab the search to show it with.
 pub type Req = (Tab, Option<String>);
 
-/// `board bnb/demo` -> (Board, Some("bnb/demo")); a bare name has no search.
+/// `board bnb/demo` -> (Board, Some("bnb/demo")), `ci` -> (Infra, Some("ci")); any other
+/// bare name has no query.
 pub fn parse(s: &str) -> Option<Req> {
     let (t, q) = s
         .trim()
         .split_once(char::is_whitespace)
         .unwrap_or((s.trim(), ""));
     let q = q.trim();
-    Some((
-        Tab::parse(t)?,
-        Some(q.to_string()).filter(|q| !q.is_empty()),
-    ))
+    // A retired name that became a section (`ci`) asks for that section of its new tab.
+    let q = Some(q.to_string())
+        .filter(|q| !q.is_empty())
+        .or_else(|| hub_core::layout::section(t).map(String::from));
+    Some((Tab::parse(t)?, q))
 }
 
 /// Send `t` to the hub listening in `dir`, else leave it in `dir/tab` for the next one.
@@ -135,18 +138,30 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_name_that_became_a_section_asks_for_it() {
+        assert_eq!(parse("ci"), Some((Tab::Infra, Some("ci".into()))));
+        assert_eq!(
+            parse("Machines"),
+            Some((Tab::Infra, Some("machines".into())))
+        );
+        assert_eq!(parse("jobs"), Some((Tab::Infra, Some("jobs".into()))));
+        assert_eq!(parse("infra"), Some((Tab::Infra, None)));
+        assert_eq!(parse("infra ci"), Some((Tab::Infra, Some("ci".into()))));
+    }
+
+    #[test]
     fn a_board_request_carries_its_search_on_one_line() {
         let d = Scratch::new("query");
-        request(&d.0, Tab::Board, Some(" bnb/demo \n extra ")).unwrap();
+        request(&d.0, Tab::Projects, Some(" bnb/demo \n extra ")).unwrap();
         assert_eq!(
             std::fs::read_to_string(d.0.join("tab")).unwrap(),
-            "board bnb/demo extra"
+            "projects bnb/demo extra"
         );
         assert_eq!(
             take(&d.0),
-            Some((Tab::Board, Some("bnb/demo extra".into())))
+            Some((Tab::Projects, Some("bnb/demo extra".into())))
         );
-        assert_eq!(parse("board  "), Some((Tab::Board, None)));
+        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
         assert_eq!(parse("nonsense bnb/demo"), None);
     }
 
@@ -162,8 +177,8 @@ mod tests {
         std::thread::spawn(move || serve(l, tx));
         for (t, q) in [
             (Tab::Fleet, None),
-            (Tab::Board, Some("bnb/demo")),
-            (Tab::Overview, None),
+            (Tab::Projects, Some("bnb/demo")),
+            (Tab::Home, None),
         ] {
             request(&d.0, t, q).unwrap();
             match rx.recv_timeout(Duration::from_secs(5)) {

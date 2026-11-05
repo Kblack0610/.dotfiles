@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# machine-mode - how much of this workstation background work may use.
+#
+#   machine-mode            print the mode and what each part reads right now
+#   machine-mode <mode>     switch to a mode from the modes file
+#   machine-mode next       switch to the next one, wrapping (the waybar chip's click)
+#
+# A mode sets three things, its numbers in .config/machine-mode/modes:
+#   runners      {"slots": N} under this host's key in the ci-runner-governor-override
+#                ConfigMap. The governor stays the only writer of runner labels, so a busy
+#                runner finishes its job. Takes minutes, and longer if a gate is running.
+#   local Unity  ~/.agent/machine-mode.env, which unity-core-playground's slots.sh reads. A
+#                file because slots.sh ignores its env overrides in an agent session.
+#   agent starts agent-hold on dispatch, by machine-mode. A hold set by anyone else is theirs:
+#                it is neither replaced nor released here.
+#
+# If the cluster cannot be reached the two local parts still apply, the command exits 1, and
+# RUNNERS_PINNED=no in the state file turns the chip amber until a retry lands. There is no
+# second path to the runner labels. Usage and troubleshooting: .local/src/docs/machine-mode.md
+
+set -uo pipefail
+here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/prom.sh
+. "$here/../lib/prom.sh"
+
+MODES="$here/../../.config/machine-mode/modes"
+STATE="$HOME/.agent/machine-mode.env"
+RUNNER_UNITS="${MACHINE_MODE_RUNNER_UNITS:-/etc/systemd/system/actions.runner.*-unity-pool-*.service}"
+CONFIGMAP=ci-runner-governor-override
+NAMESPACE=monitoring
+HOLD_BY=machine-mode
+HOST="$(uname -n)"
+
+die() { echo "machine-mode: $*" >&2; exit 1; }
+
+mode_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MODES"; }
+mode_names() { mode_rows | cut -d'|' -f1; }
+mode_row() { mode_rows | awk -F'|' -v m="$1" '$1 == m { print; found = 1 } END { exit !found }'; }
+state_value() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -1; }
+
+# The mode in force: the state file's, or the last row with none set or one no longer listed.
+current_mode() {
+  local m
+  m="$(state_value MACHINE_MODE)"
+  if [ -n "$m" ] && mode_row "$m" >/dev/null; then printf '%s' "$m"; else mode_names | tail -1; fi
+}
+
+next_mode() {
+  local names first
+  names="$(mode_names)"
+  first="${names%%$'\n'*}"
+  awk -v cur="$(current_mode)" -v first="$first" \
+    'found { print; done = 1; exit } $0 == cur { found = 1 } END { if (!done) print first }' <<< "$names"
+}
+
+# Who holds dispatch, empty when nobody does.
+dispatch_holder() { agent-hold list | awk -F'\t' '$1 == "dispatch" { print $3 }'; }
+
+set_hold() {
+  local mode="$1" want="$2" by
+  by="$(dispatch_holder)"
+  if [ "$want" = paused ]; then
+    if [ -z "$by" ]; then
+      agent-hold set dispatch --by "$HOLD_BY" "machine-mode $mode: the human needs this machine" >/dev/null
+    elif [ "$by" != "$HOLD_BY" ]; then
+      echo "machine-mode: dispatch is already held by $by, left as it is" >&2
+    fi
+  elif [ "$by" = "$HOLD_BY" ]; then
+    agent-hold release dispatch >/dev/null
+  elif [ -n "$by" ]; then
+    echo "machine-mode: dispatch is held by $by, left as it is" >&2
+  fi
+}
+
+kube() { kubectl --context "${CC_KUBE_CONTEXT:-}" --request-timeout=10s -n "$NAMESPACE" "$@"; }
+
+# Read, merge and apply the whole object: the ConfigMap may not exist yet, other hosts' keys
+# must survive, and this host's key may carry a power override beside the pin.
+pin_runners() {
+  local slots="$1" cm err
+  [ -n "${CC_KUBE_CONTEXT:-}" ] || { echo "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env" >&2; return 1; }
+  cm="$(kube get configmap "$CONFIGMAP" -o json --ignore-not-found)" || return 1
+  err="$(jq -n --argjson cm "${cm:-null}" --arg name "$CONFIGMAP" --arg ns "$NAMESPACE" \
+      --arg host "$HOST" --argjson slots "$slots" '
+    def object: (try fromjson catch {}) | if type == "object" then . else {} end;
+    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: $name, namespace: $ns},
+     data: (($cm.data // {}) + {($host): (((($cm.data[$host] // "{}") | object) + {slots: $slots}) | tojson)})}' \
+    | kube apply -f - 2>&1 >/dev/null)" || { printf '%s\n' "$err" >&2; return 1; }
+}
+
+write_state() {
+  local tmp
+  mkdir -p "$(dirname "$STATE")"
+  tmp="$(mktemp "$STATE.XXXXXX")" || return 1
+  printf 'MACHINE_MODE=%s\nUNITY_SLOTS=%s\nUNITY_BURST_SLOTS=%s\nRUNNERS_PINNED=%s\n' "$@" > "$tmp"
+  mv "$tmp" "$STATE"
+}
+
+runner_line() {
+  local want="$1" mode="$2" raw admitted registered
+  local q="{__name__=~\"ci_governor_(admitted|registered)\",host=\"$HOST\"}"
+  local pick='[.data.result[] | select(.metric.__name__ == $n) | .value[1] | tonumber] | max // empty'
+  if raw="$(prom_q "$q")"; then
+    admitted="$(jq -r --arg n ci_governor_admitted "$pick" <<< "$raw")"
+    registered="$(jq -r --arg n ci_governor_registered "$pick" <<< "$raw")"
+  fi
+  local line="runners: ${admitted:-?} of ${registered:-?} taking new jobs"
+  if [ "$(state_value RUNNERS_PINNED)" = no ]; then
+    line+=", $want was not applied: run machine-mode $mode again"
+  elif [ -z "${admitted:-}" ] || [ -z "${registered:-}" ]; then
+    line+=" (cannot read Prometheus), set to $want"
+  else
+    ((want > registered)) && want="$registered"
+    ((admitted != want)) && line+=", moving to $want"
+  fi
+  printf '%s\n' "$line"
+}
+
+dispatch_line() {
+  local want="$1" mode="$2" by
+  by="$(dispatch_holder)"
+  if [ "$by" = "$HOLD_BY" ]; then
+    echo "new agent sessions: paused"
+  elif [ -n "$by" ]; then
+    echo "new agent sessions: paused by $by"
+  elif [ "$want" = paused ]; then
+    echo "new agent sessions: as today, the hold was lifted: run machine-mode $mode to pause again"
+  else
+    echo "new agent sessions: as today"
+  fi
+}
+
+status() {
+  local mode runners slots burst dispatch
+  mode="$(current_mode)"
+  IFS='|' read -r _ runners slots burst dispatch <<< "$(mode_row "$mode")"
+  echo "mode: $mode"
+  runner_line "$runners" "$mode"
+  echo "local Unity runs: $slots, plus $burst when there is room"
+  dispatch_line "$dispatch" "$mode"
+}
+
+switch() {
+  local mode="$1" runners slots burst dispatch pinned=yes rc=0
+  IFS='|' read -r _ runners slots burst dispatch <<< "$(mode_row "$mode")"
+  set_hold "$mode" "$dispatch"
+  if ! pin_runners "$runners"; then
+    pinned=no rc=1
+    echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and agent sessions are set to $mode." >&2
+  fi
+  write_state "$mode" "$slots" "$burst" "$pinned" || die "could not write $STATE"
+  pkill -RTMIN+10 waybar 2>/dev/null
+  status
+  return "$rc"
+}
+
+compgen -G "$RUNNER_UNITS" >/dev/null || die "no pool runners on this machine, so there is nothing to set"
+
+case "${1:-}" in
+  '') status ;;
+  next) switch "$(next_mode)" ;;
+  -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)
+    mode_row "$1" >/dev/null || die "no mode '$1' (modes: $(mode_names | paste -sd' '))"
+    switch "$1"
+    ;;
+esac

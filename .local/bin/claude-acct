@@ -11,14 +11,18 @@
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
 #   claude-acct check usage|burn  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
-#   claude-acct move <tmux-session> [--server S] [--to <account>] [--stop-shells] [--dry-run]
-#                        # exit that session's claude and resume it on the account pick
+#   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
+#                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark
-#   claude-acct park <tmux-session> [--server S] [--stop-shells] [--dry-run]
-#                        # exit that session's claude so it costs nothing while it waits,
-#                        # keeping the pane; the resume goes to ~/.agent/parked/<tmux-session>
-#   claude-acct unpark <tmux-session>|--all
+#   claude-acct park <target> [--server S] [--stop-shells] [--dry-run]
+#                        # exit that target's claude so it costs nothing while it waits,
+#                        # keeping the pane; the resume goes to ~/.agent/parked/<key>
+#   claude-acct unpark <target>|--all
 #                        # resume a parked session in its pane, on the account pick returns now
+#                        # <target> is [server/]session[:window] or a pane id (%N). A session
+#                        # holds one claude; a window or pane picks one claude in a shared
+#                        # session (hub/dotfiles:2). The ledger <key> is the session, or
+#                        # session:window for a window or pane target.
 #   claude-acct trust <server> <pane> <ready text>
 #                        # wait for a claude just started in that pane to show <ready text>
 #                        # (its mode footer), answering the folder trust prompt on the way
@@ -563,19 +567,35 @@ tmux_servers() {
     return 0
 }
 
-# find_claude <server> <session> -> "pid US pane US pane_pid US registry file" for each live
-# claude in the session's panes: one whose registered pid is the pane's process or under it.
+# find_claude <server> <session> [window] [pane] -> "pid US pane US pane_pid US registry file US
+# window index" for each live claude in the session's panes (only that window's, by index or
+# name, or only that pane, when given): one whose registered pid is the pane's process or under it.
 find_claude() {
-    local pane ppid f pid
-    while read -r pane ppid; do
+    local pane ppid widx wname f pid
+    while read -r pane ppid widx wname; do
+        [[ -z "${4:-}" || "$pane" == "$4" ]] || continue
+        [[ -z "${3:-}" || "$widx" == "$3" || "$wname" == "$3" ]] || continue
         for f in "$REGISTRY"/*.json; do
             [[ -f "$f" ]] || continue
             pid=$(jq -r '.pid // empty' "$f" 2>/dev/null)
             [[ -n "$pid" && -d "$PROC/$pid" ]] || continue
             descends "$pid" "$ppid" || continue
-            printf '%s\037%s\037%s\037%s\n' "$pid" "$pane" "$ppid" "$f"
+            printf '%s\037%s\037%s\037%s\037%s\n' "$pid" "$pane" "$ppid" "$f" "$widx"
         done
-    done < <(tmux -L "$1" list-panes -s -t "=$2:" -F '#{pane_id} #{pane_pid}' 2>/dev/null)
+    done < <(tmux -L "$1" list-panes -s -t "=$2:" -F '#{pane_id} #{pane_pid} #{window_index} #{window_name}' 2>/dev/null)
+}
+
+# has_window <server> <session> <window> -- the session has that window, by index or name
+has_window() {
+    tmux -L "$1" list-windows -t "=$2:" -F '#{window_index} #{window_name}' 2>/dev/null |
+        awk -v w="$3" '{ i = $1; sub(/^[^ ]* /, ""); if (i == w || $0 == w) f = 1 } END { exit !f }'
+}
+
+# pane_session <server> <pane id> -> the tmux session that pane is in; fails when the server has
+# no such pane
+pane_session() {
+    local s
+    s=$(tmux -L "$1" display-message -p -t "$2" '#{session_name}' 2>/dev/null) && [[ -n "$s" ]] && printf '%s' "$s"
 }
 
 # await <what> <command...> -- run the command every MOVE_POLL seconds until it succeeds
@@ -687,8 +707,26 @@ record() {
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
 ledger_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }
 
-# refuse <why...> -- one line naming the caller's $verb and $session, exit 1
-refuse() { echo "claude-acct: $verb $session: $*" >&2; return 1; }
+# refuse <why...> -- one line naming the caller's $verb and its target ($what, else $session), exit 1
+refuse() { echo "claude-acct: $verb ${what:-$session}: $*" >&2; return 1; }
+
+# split_target <target> -> "server US session US window US pane" from [server/]session[:window]
+# or [server/]%pane; fails on anything else
+split_target() {
+    local t="$1" srv="" ses="" win="" pane=""
+    if [[ "$t" == */* ]]; then srv="${t%%/*}"; t="${t#*/}"; [[ -n "$srv" ]] || return 1; fi
+    [[ -n "$t" && "$t" != */* ]] || return 1
+    if [[ "$t" == %* ]]; then
+        [[ "$t" =~ ^%[0-9]+$ ]] || return 1
+        pane="$t"
+    elif [[ "$t" == *:* ]]; then
+        ses="${t%%:*}" win="${t#*:}"
+        [[ -n "$ses" && -n "$win" && "$win" != *:* ]] || return 1
+    else
+        ses="$t"
+    fi
+    printf '%s\037%s\037%s\037%s\n' "$srv" "$ses" "$win" "$pane"
+}
 
 # resume_prompt <move|park> <from name> <to name> <status> -> what the resumed session is told
 resume_prompt() {
@@ -715,9 +753,9 @@ resume_cmd() {
     printf '%s' "$c"
 }
 
-# park_flow <park|move> <tmux-session> [--server S] [--to <account>] [--stop-shells] [--dry-run]
+# park_flow <park|move> <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 park_flow() {
-    local verb="$1" session="" server="" dry=0 stop=0 to_name="" to_dir=""
+    local verb="$1" what="" session="" window="" pane_t="" key="" server="" dry=0 stop=0 to_name="" to_dir="" srv
     shift
     while (($#)); do
         case "$1" in
@@ -729,12 +767,18 @@ park_flow() {
             --dry-run) dry=1; shift ;;
             --stop-shells) stop=1; shift ;;
             -*) echo "claude-acct: $verb: unknown flag '$1'" >&2; return 2 ;;
-            *) [[ -z "$session" ]] || { echo "claude-acct: $verb: one session at a time" >&2; return 2; }
-               session="$1"; shift ;;
+            *) [[ -z "$what" ]] || { echo "claude-acct: $verb: one session at a time" >&2; return 2; }
+               what="$1"; shift ;;
         esac
     done
-    [[ -n "$session" ]] || { echo "claude-acct: $verb: name the tmux session to $verb" >&2; return 2; }
-    [[ "$session" != */* ]] || { echo "claude-acct: $verb: '$session' is not a tmux session name" >&2; return 2; }
+    [[ -n "$what" ]] || { echo "claude-acct: $verb: name the tmux session, window or pane to $verb" >&2; return 2; }
+    srv=$(split_target "$what") ||
+        { echo "claude-acct: $verb: '$what' is not [server/]session[:window] or a pane id" >&2; return 2; }
+    IFS=$'\037' read -r srv session window pane_t <<< "$srv"
+    if [[ -n "$srv" ]]; then
+        [[ -z "$server" || "$server" == "$srv" ]] || { echo "claude-acct: $verb: '$what' names server $srv, --server $server" >&2; return 2; }
+        server="$srv"
+    fi
     if [[ -n "$to_name" ]]; then
         local n d known=0
         while IFS=$'\037' read -r n d; do
@@ -746,24 +790,48 @@ park_flow() {
     if [[ -z "$server" ]]; then
         local s found=()
         while read -r s; do
-            tmux -L "$s" has-session -t "=$session" 2>/dev/null && found+=("$s")
+            if [[ -n "$pane_t" ]]; then pane_session "$s" "$pane_t" > /dev/null && found+=("$s")
+            else tmux -L "$s" has-session -t "=$session" 2>/dev/null && found+=("$s"); fi
         done < <(tmux_servers)
         case ${#found[@]} in
-            0) refuse "no tmux server has that session"; return ;;
+            0) [[ -n "$pane_t" ]] && { refuse "no tmux server has that pane"; return; }
+               refuse "no tmux server has that session"; return ;;
             1) server="${found[0]}" ;;
             *) refuse "on servers ${found[*]}; pass --server"; return ;;
         esac
     fi
+    if [[ -n "$pane_t" ]]; then
+        session=$(pane_session "$server" "$pane_t") || { refuse "no such pane on server $server"; return; }
+    fi
     tmux -L "$server" has-session -t "=$session" 2>/dev/null || { refuse "no such session on server $server"; return; }
+    if [[ -n "$window" ]] && ! has_window "$server" "$session" "$window"; then
+        refuse "no window $window in session $session on server $server"; return
+    fi
 
-    local hits pid pane pane_pid reg
-    hits=$(find_claude "$server" "$session")
+    # A session target's ledger is the session; a window or pane is one claude among others, so
+    # its ledger is session:window, and only that window or pane is searched.
+    local hits pid pane pane_pid reg win
+    hits=$(find_claude "$server" "$session" "$window" "$pane_t")
     if [[ -z "$hits" ]]; then
-        [[ -f "$PARKED/$session" ]] && { refuse "no live claude in its panes: it is parked (claude-acct unpark $session)"; return; }
+        if [[ -z "$window$pane_t" && -f "$PARKED/$session" ]]; then
+            refuse "no live claude in its panes: it is parked (claude-acct unpark $session)"; return
+        fi
         refuse "no live claude in its panes"; return
     fi
-    (( $(wc -l <<< "$hits") == 1 )) || { refuse "more than one claude in its panes"; return; }
-    IFS=$'\037' read -r pid pane pane_pid reg <<< "$hits"
+    if (( $(wc -l <<< "$hits") > 1 )); then
+        [[ -n "$window$pane_t" ]] && { refuse "more than one claude in that window; name the pane"; return; }
+        refuse "more than one claude in its panes; name the window (${session}:N) or the pane"; return
+    fi
+    IFS=$'\037' read -r pid pane pane_pid reg win <<< "$hits"
+    key="$session"
+    if [[ -n "$window$pane_t" ]]; then
+        [[ -n "$win" ]] || { refuse "cannot read the window index of pane $pane"; return; }
+        key="$session:$win"
+    fi
+    if [[ "$key" != "$session" && -f "$PARKED/$key" && "$(ledger_get "$PARKED/$key" pane)" != "$pane" ]]; then
+        refuse "window $key already holds a parked pane ($(ledger_get "$PARKED/$key" pane)); unpark it first"; return
+    fi
+    what="$key"
 
     local status sid cwd from b score name to note why shells=""
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
@@ -793,9 +861,9 @@ park_flow() {
     [[ "$pid" == "$pane_pid" ]] && direct=1
     base="claude $(carry_flags "$pid")--resume $(printf %q "$sid")"
     if [[ "$verb" == move ]]; then
-        echo "claude-acct: move $session ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
+        echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else
-        echo "claude-acct: park $session ($server $pane, claude $pid, $status) on $(name_of "$from")"
+        echo "claude-acct: park $key ($server $pane, claude $pid, $status) on $(name_of "$from")"
     fi
     if ((direct)); then
         echo "  claude is the pane's own process: keep the pane on exit, respawn it in $cwd"
@@ -809,7 +877,7 @@ park_flow() {
     if [[ "$verb" == move ]]; then
         echo "  then: $(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt move "$(name_of "$from")" "$name" "$status")")"
     else
-        echo "  then: write $PARKED/$session; claude-acct unpark $session resumes it with $base, on the account with room then"
+        echo "  then: write $PARKED/$key; claude-acct unpark $key resumes it with $base, on the account with room then"
     fi
     ((dry)) && return 0
     leave_mode "$server" "$pane" || { refuse "pane $pane is in a tmux mode that did not close; typed nothing"; return; }
@@ -817,8 +885,7 @@ park_flow() {
     # Written beside the ledger and renamed into place once the claude is gone, so a reader
     # never sees half of one, and a claude that would not exit leaves none.
     local tmp
-    if ! mkdir -p "$PARKED" || ! tmp=$(mktemp "$PARKED/.$session.XXXXXX"); then refuse "cannot write to $PARKED"; return; fi
-    win=$(tmux -L "$server" display-message -p -t "$pane" '#{window_index}' 2>/dev/null)
+    if ! mkdir -p "$PARKED" || ! tmp=$(mktemp "$PARKED/.$key.XXXXXX"); then refuse "cannot write to $PARKED"; return; fi
     printf '%s\n' "session=$session" "server=$server" "target=$server/$session${win:+:$win}" "pane=$pane" \
         "direct=$direct" "pid=$pid" "session_id=$sid" "cwd=$cwd" "from=$from" "status=$status" \
         "why=$verb" "parked=$(date +%s)" "resume=$base" > "$tmp"
@@ -835,22 +902,23 @@ park_flow() {
         ((direct)) && tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
         refuse "claude $pid did not exit; look at the pane"; return
     fi
-    mv -f "$tmp" "$PARKED/$session"
+    mv -f "$tmp" "$PARKED/$key"
     if [[ "$verb" == park ]]; then
-        echo "claude-acct: parked $session: $PARKED/$session; claude-acct unpark $session resumes it"
-        record "$session" "parked on $(name_of "$from") ($status)"
+        echo "claude-acct: parked $key: $PARKED/$key; claude-acct unpark $key resumes it"
+        record "$key" "parked on $(name_of "$from") ($status)"
         return 0
     fi
-    unpark_ledger move "$PARKED/$session" "$to" "$name" "$note"
+    unpark_ledger move "$PARKED/$key" "$to" "$name" "$note"
 }
 
 # unpark_ledger <verb> <ledger> [<to dir> <to name> <note>] -- resume the parked session in its
 # pane, on that account or else the one best() names now, await it, then delete the ledger.
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
-    local verb="$1" file="$2" session server pane direct pid sid cwd from status why base to name note b cmd got
-    session="${file##*/}"
+    local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base to name note b cmd got scope
+    what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
+    session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
     pid=$(ledger_get "$file" pid); sid=$(ledger_get "$file" session_id); cwd=$(ledger_get "$file" cwd)
     from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
@@ -865,8 +933,11 @@ unpark_ledger() {
     fi
     tmux -L "$server" has-session -t "=$session" 2>/dev/null ||
         { refuse "its tmux session is gone from server $server; resume it by hand in $cwd with $base"; return; }
-    [[ -z "$(find_claude "$server" "$session")" ]] ||
-        { refuse "a claude is already live in its panes; delete $file if it is this session"; return; }
+    # A session ledger owns the session's panes; a window ledger only its own pane, since the
+    # rest of a shared session runs other claudes.
+    scope=""; [[ "$what" == *:* ]] && scope="$pane"
+    [[ -z "$(find_claude "$server" "$session" "" "$scope")" ]] ||
+        { refuse "a claude is already live in ${scope:-its panes}; delete $file if it is this session"; return; }
     cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")")
 
     cmd_link
@@ -884,20 +955,21 @@ unpark_ledger() {
     rm -f "$file"
     got=$(resumed "$sid" "$pid" "$to")
     if [[ "$verb" == move ]]; then
-        echo "claude-acct: moved $session to $name: claude ${got% *}, ${got#* }"
-        record "$session" "moved from $(name_of "$from") to $name"
+        echo "claude-acct: moved $what to $name: claude ${got% *}, ${got#* }"
+        record "$what" "moved from $(name_of "$from") to $name"
     else
-        echo "claude-acct: unparked $session on $name ($note): claude ${got% *}, ${got#* }"
-        record "$session" "unparked on $name"
+        echo "claude-acct: unparked $what on $name ($note): claude ${got% *}, ${got#* }"
+        record "$what" "unparked on $name"
     fi
 }
 
 cmd_park() { park_flow park "$@"; }
 cmd_move() { park_flow move "$@"; }
 
-# unpark <tmux-session>|--all
+# unpark <target>|--all -- the target names its ledger: session, session:window, or a pane id,
+# which matches the ledger that holds that pane
 cmd_unpark() {
-    local verb=unpark session="" f rc=0 n=0
+    local verb=unpark session="" what="" f rc=0 n=0 srv win pane_t
     case "${1:-}" in
         "") echo "claude-acct: unpark: name the tmux session, or --all" >&2; return 2 ;;
         --all)
@@ -912,8 +984,24 @@ cmd_unpark() {
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
     (($# == 1)) || { echo "claude-acct: unpark: one session at a time" >&2; return 2; }
-    [[ "$1" != */* ]] || { echo "claude-acct: unpark: '$1' is not a tmux session name" >&2; return 2; }
-    unpark_ledger unpark "$PARKED/$1"
+    srv=$(split_target "$1") ||
+        { echo "claude-acct: unpark: '$1' is not [server/]session[:window] or a pane id" >&2; return 2; }
+    IFS=$'\037' read -r srv session win pane_t <<< "$srv"
+    if [[ -n "$pane_t" ]]; then
+        what="$1"
+        for f in "$PARKED"/*; do
+            [[ -f "$f" && "$(ledger_get "$f" pane)" == "$pane_t" ]] || continue
+            [[ -z "$srv" || "$(ledger_get "$f" server)" == "$srv" ]] || continue
+            ((n++)) && { refuse "more than one ledger holds that pane; unpark it by session:window"; return; }
+            session="${f##*/}"
+        done
+        ((n)) || { refuse "not parked: no ledger holds that pane"; return; }
+        win=""
+    fi
+    f="$PARKED/$session${win:+:$win}"
+    [[ -z "$srv" || ! -f "$f" || "$(ledger_get "$f" server)" == "$srv" ]] ||
+        { what="$1"; refuse "parked on server $(ledger_get "$f" server), not $srv"; return; }
+    unpark_ledger unpark "$f"
 }
 
 # Sourceable for tests; the dispatch runs only when executed.

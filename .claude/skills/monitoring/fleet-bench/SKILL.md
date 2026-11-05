@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
-  reviewed: 2026-11-04
+  reviewed: 2026-11-05
 ---
 
 # fleet-bench
@@ -16,7 +16,7 @@ Every number here is counted from samples. None is a model's grade, because mode
 
 ## Scope and triggers
 
-Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | throughput | flow | forecast | vs | queue | requests | report | eta | headline | scorecard | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "when will the fleet be done", "what order will the work land in", "how did today go against the forecast", "is work coming in faster than it gets done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "how long do queue items wait", "how many queue items reached a PR this week", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-pace) and not for what one session did after it ended (session-outcomes).
+Benchmark the agent fleet from counted facts: where every live session is in its plan, when it should finish, and afterwards how far off that prediction was. Verbs: findings | respond | loop | throughput | flow | forecast | vs | queue | requests | report | eta | headline | scorecard | sessions | stats | sample | review | asks | ledger | kpi | retro. Use when the user asks "how accurate are the ETAs", "when will agent-N be done", "when will the fleet be done", "what order will the work land in", "how did today go against the forecast", "is work coming in faster than it gets done", "benchmark the sessions", "how fast is the fleet moving", "show me the scorecard", "how often does CI go red before merge", "how long do queue items wait", "how many queue items reached a PR this week", "review a sample of merged PRs", "which asks are blocking", "what is waiting on me", "did anything act on that alert", or when the shepherd writes a "where are we" summary and needs an ETA per session. Model-free except `review`, which runs a non-Claude model (deepseek-v4-pro on the Lazer allowance) through the runner's route. Not for load or holds (fleet-pace) and not for what one session did after it ended (session-outcomes).
 
 ## Where to look
 
@@ -38,6 +38,7 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 - `accuracy --json`: one object per basis kind from `scores.jsonl`: `basis`, `n` (scored), `n_ratio` (scored with a ratio), `median_ratio`, `median_error_min`, `median_abs_error_min`, and `factor`, the calibration a new estimate of that kind gets now (null below the minimum). The same function makes the factor and the report's per-basis lines, so all three always agree. The watch board's ETA trust line reads it.
 - `headline`: the last `BENCH_WINDOW_H` (24) hours in one line: sessions, phases ticked, hours waiting on you, hours stalled, ETAs scored and their median raw ratio, and the calibrated ones' median ratio when any were scored.
 - `scorecard`: writes `<date>.md` and `latest.md` in `BENCH_SCORECARD_DIR` and prints the path. Sections: KPIs; Bottlenecks (hours lost per queue, on runs not passed, waiting on you and stalled, biggest first, then the branches behind the failed runs); Where the time went (per project and plan, with 24h spend and merges); Sessions; Agent depth (test runs, CI polls, tool errors and tokens past the last edit, from session-outcomes' `activity`); Session time (hours per project over `BENCH_TIME_DAYS` by what was running: work, gate, test, other jobs, you, parked, from session-outcomes' `time_use`); Queue (the `queue` line, what is active now, done per day, and outcomes by project and by source); ETA accuracy; Consolidation ledger. A source that cannot be read shows `?` or says so; it is never left out.
+- `stats --json [--since E]`: one object per session sampled, or merging a PR in `pr-ci.jsonl`, since epoch E (default: all of it), over its whole life rather than the 24h window: `minutes` per bucket (the same gap rule as the scorecard hours), `nudges`, `escalations` (each time the flag turns on), `ticked`, `peak_context`, `first_epoch` and `last_epoch`, and `merged` {prs, lines_added, lines_deleted, ci_runs, ci_reds}, null when it merged nothing. `sampled: false` marks a session only `pr-ci.jsonl` knows. `agentctl-session-outcomes` stores each row as its row's `delivery`, so `card` and `worst` read it there.
 - `review`: for every PR that session-outcomes lists as merged in the window and `pr-ci.jsonl` has not counted, one `gh pr view` and one `gh run list --branch` give its size and its CI runs from its first commit to merge. No model reads the diff: the model review was dropped on 2026-11-02 after 310 of 312 runs failed on the gateway key's budget. The agentctl runner `fleet-review` runs it at 02:45, after session-outcomes (02:30) and before the 06:45 scorecard.
 
 - `asks [--write|--page]`: every pending ask from `agent-ask list --all --pending`, joined to the newest sample of the session its `session` field names (a session id or a tmux session name). It prints the digest; `--write` also writes `asks.md` in `BENCH_SCORECARD_DIR` and prints the one-line summary (counts and the top three) with no page and no verdict, for the morning briefing to carry; `--page` writes `asks.md` and sends that line as one `agent-notify -p normal -t asks` page, which the briefing's 18:45 run does.
@@ -49,6 +50,10 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 - `retro`: for each KPI whose 7d value is past its threshold, keeps exactly one open row `kpi: <key> past threshold: 7d <v> (28d <v>, max <t>)` on the agent-runtime agent board (`now <v> (max <t>)` for a count taken now): it adds the row (`#high` when more than 2x past, else `#low`) or refreshes its numbers with `ptask edit`, and touches no other row. WORKED when it wrote, NOOP otherwise, and NOOP with no notes call when there is no thresholds file. The briefing runs it on Mondays.
 
 - `findings [--open|--json|--run]`: conclusions that want a decision, from rules over counted facts on every machine. It prints what is open, worst class first; `--json` gives the rows; `--run` evaluates and appends, and every `sample` does. See "Findings".
+
+- `respond '<rule> <scope> @<episode>' <actor> <action> [ref]`: appends one row to `responses.jsonl` saying what answered a finding, keyed by its `fact`. Actions: `paged` (written by `fleet-sessions escalate` when a finding goes to the human), `asked`, `filed-row`, `cancelled`, `fixed`. A bad fact or action exits 2.
+
+- `loop [--json|--firing]`: every finding episode of the last 7d seen on two samples or more, report class left out: minutes from the episode to its first response that is not a page, whether it still fires, and the responses in order. An episode that reached class human with only pages is `DARK`: the loop saw it and nothing acted. The header gives the counts and the median first response; `prom` publishes `agent_bench_loop_dark_episodes` and `agent_bench_loop_first_response_minutes`. `--firing` prints one sentence per dark episode still firing, which the daily briefing puts under Needs you.
 
 - `flow [--from T] [--to T] [--json] [--hourly]`: phases in against phases out over the window (default `BENCH_WINDOW_H`). It counts phases ticked, phases added and removed by plan edits, and plans started with their open phases, then the open phases at each end and those left by plans that ended or were switched away from. The last line says `draining N/h` or `not draining (in X/h, out Y/h)`. `--hourly` gives the burn-up: cumulative scope and done per hour.
 
@@ -87,11 +92,13 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `prs_per_session` | sum `prs_merged` / sessions |
 | `revert_rate` | sum `reverted_7d` / sum `prs_merged` |
 | `interrupts_per_session` | sum `corrections.interrupts` / sessions |
+| `plan_gate_deny_rate` | sum `plan_gate.denied` / sum `plan_gate.exits`. No threshold: near 1 means the posture is not landing, near 0 with thin sections means the gate is too easy |
 | `cost_per_pr` | sum `cost_usd` / sum `prs_merged` |
 | `ci_red_per_pr` | sum `ci_red` / rows in `pr-ci.jsonl` by `merged_epoch`, headless sessions' PRs left out |
 | `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
 | `asks_stale` (now) | the ledger's `asks_stale` |
 | `board_open` (now) | the ledger's `board_open` |
+| `loop_dark` (now) | finding episodes of the last 7d still firing that reached class human with no response but a page (`loop`) |
 
 Thresholds are data in `KPI_THRESHOLDS` (default `~/.config/agentctl/kpi-thresholds`, private overlay), one `<kpi>_max=` or `<kpi>_min=` line each. A KPI with no line has status `-`; a missing file leaves every status `-` and makes `retro` a NOOP.
 
@@ -110,6 +117,7 @@ State is in `~/.agent/bench/` (override with `FLEET_BENCH_DIR`).
 | `forecasts.jsonl` | frozen forecast | `label`, `made_epoch`, `last_p50`/`last_slow` (and median, p90), `drain`, `queue`, `schedule[]` (per session: `phases[]` with `name`, `p50`, `slow`) |
 | `forecast-scores.jsonl` | baseline once it resolved | `resolved_by`, `actual_last`, `bound`, `ratio_p50`, `ratio_slow`, `error_min`, `within_slow`, `in`, `in_per_h` against `in_per_h_frozen` |
 | `findings.jsonl` | firing finding per sample | `epoch`, `rule`, `scope`, `episode`, `decision_class`, `evidence`, `conclusion`, `cost`, `fact` |
+| `responses.jsonl` | act on a finding (`respond`) | `epoch`, `fact`, `actor`, `action` (paged, asked, filed-row, cancelled, fixed), `ref` |
 
 - **Phase time.** Each plan file is its own timeline, so a session that starts a new plan does not count the switch as a phase. A phase is measured only when the samples saw both its start and its end, so a session's first phase on the record is never measured (it may have started hours earlier). When one sample sees two phases tick at once, the gap is split evenly between them. The time includes waiting on the human.
 - **ETA** = now + phases left x per-phase minutes. Per-phase is the median measured phase time of that session (`basis: session-median(n)`), else of every session in its project (`project-median(n)`), else `BENCH_DEFAULT_PHASE_MIN`, 60 (`default`). A session or project needs `BENCH_BASIS_MIN_N` (3) measured phases before its median is used: on 2026-11-02 one measured phase predicted 3.5 days for a session that took 20 minutes. A new estimate is written only when the phase count changes, so one estimate stands for each step of a plan and is scored as it was made.

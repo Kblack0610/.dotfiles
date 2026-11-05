@@ -186,16 +186,16 @@ verdict() {
   assert_output ''
 }
 
-@test "candidates: the asks worker takes only #ask rows, only in its project, never tier 3" {
+@test "candidates: the requested worker takes only #requested rows, only in its project, never tier 3" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  echo '{"asks": {"max_tier": 9, "projects": ["game"], "only_tag": "ask"}}' > "$DISPATCH_WORKERS"
-  row game agent 'real ask' '- [ ] real ask #ask #worker/asks #tier/2'
-  row game agent 'tagged no ask' '- [ ] tagged no ask #worker/asks #tier/2'
-  row game agent 'lookalike' '- [ ] lookalike #asks #worker/asks #tier/2'
-  row game agent 'tier three' '- [ ] tier three #ask #worker/asks #tier/3'
-  row game agent 'other worker' '- [ ] other worker #ask #worker/fleet #tier/1'
-  row app agent 'wrong project' '- [ ] wrong project #ask #worker/asks #tier/2'
+  echo '{"requested": {"max_tier": 9, "projects": ["game"], "only_tag": "requested"}}' > "$DISPATCH_WORKERS"
+  row game agent 'real ask' '- [ ] real ask #requested #worker/requested #tier/2'
+  row game agent 'tagged no ask' '- [ ] tagged no ask #worker/requested #tier/2'
+  row game agent 'lookalike' '- [ ] lookalike #requests #worker/requested #tier/2'
+  row game agent 'tier three' '- [ ] tier three #requested #worker/requested #tier/3'
+  row game agent 'other worker' '- [ ] other worker #requested #worker/fleet #tier/1'
+  row app agent 'wrong project' '- [ ] wrong project #requested #worker/requested #tier/2'
 
   run cmd_candidates
   assert_success
@@ -242,7 +242,7 @@ verdict() {
 }
 
 board_workers() {
-  echo '{"asks": {"max_tier": 2, "projects": ["game"], "only_tag": "ask"},
+  echo '{"requested": {"max_tier": 2, "projects": ["game"], "only_tag": "requested"},
          "fleet": {"max_tier": 1},
          "board": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
 }
@@ -274,18 +274,18 @@ board_workers() {
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'assigned'
 }
 
-@test "the shipped registry: asks, then the human's assignments, then the game's agent board, never tier 3" {
+@test "the shipped registry: requested, then the human's assignments, then the game's agent board, never tier 3" {
   export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
   project unity-core-playground beta "$SANDBOX/repos/game"
   project platform prod "$SANDBOX/repos/app"
-  row unity-core-playground agent 'an ask' '- [ ] an ask #ask #worker/asks #tier/2'
+  row unity-core-playground agent 'an ask' '- [ ] an ask #requested #worker/requested #tier/2'
   row unity-core-playground agent 'assigned' "- [ ] assigned $T"
   row unity-core-playground agent 'plain' '- [ ] plain'
   row unity-core-playground agent 'tier three' '- [ ] tier three #tier/3'
   row unity-core-playground human 'human plain' '- [ ] human plain'
   row platform agent 'platform plain' '- [ ] platform plain'
   run cmd_candidates
-  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=asks,assigned=fleet,plain=board'
+  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=requested,assigned=fleet,plain=board'
 }
 
 # --- picks -------------------------------------------------------------------------------
@@ -695,7 +695,7 @@ refuses() {
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
-finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e}'; }
+finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --arg b "${4:-}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e} + (if $b == "" then {} else {bind: $b} end)'; }
 # findings <row>... -- fleet-bench reports exactly those rows
 findings() { printf '%s\n' "$@" > "$SANDBOX/findings.out"; stub fleet-bench "cat '$SANDBOX/findings.out'"; }
 
@@ -730,6 +730,75 @@ two_items() {
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
   [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+@test "a pool starved on labels holds nothing: a held session would not free it" {
+  two_items
+  # 2026-11-05: a frame sweep pinned to one host starved pool:other, and dispatch held the repo for 7h.
+  findings "$(finding starved pool:other '["game"]' labels)" "$(finding starved pool:unity '["game"]' labels)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-game'
+}
+
+@test "a pool starved on capacity still holds its repo's items" {
+  two_items
+  findings "$(finding starved pool:unity '["game"]' capacity)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+# held_game_app_row: a game queue item a starved unity pool holds, and an app board row it does not
+held_game_app_row() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project game --slug fix-game --priority high "fix the game"
+  row app human 'fix app crash' "- [ ] fix app crash #high $T"
+  verdict app human 'fix app crash' dispatch
+  findings "$(finding starved pool:unity '["game"]')"
+}
+
+# 2026-11-05: held unity items kept every pass off the board for 7h, so the rows filed to fix the
+# hold never started.
+@test "every queue item a finding holds sends the pass on to the board, and an unheld row starts" {
+  held_game_app_row
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
+  assert_output --partial 'queued app: '
+  assert_output --partial 'started game-agent-1: app: '
+  assert_equal "$(outcome)" WORKED
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+@test "a pass past held queue items that starts no board row either is BLOCKED by the hold, never NOOP" {
+  held_game_app_row
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits; the human is not away'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+  # No row qualifies: the hold still names the pass.
+  stub fleet-presence 'echo "away 45 tmux"'
+  : > "$NOTES_FIXTURE/rows.app.human"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+}
+
+@test "a held queue item whose board row is held too stays BLOCKED and starts nothing" {
+  held_game_app_row
+  findings "$(finding starved pool:unity '["game","app"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued app: '
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
 }
 
 @test "a throughput drop holds only the items on that project's repo, an alias included" {
@@ -1386,9 +1455,9 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
 }
 
-@test "night: only rows tier 3 alone holds back; asks, decisions, devices, the human's machine and lower tiers stay out" {
+@test "night: only rows tier 3 alone holds back; requested rows, decisions, devices, the human's machine and lower tiers stay out" {
   night_ready
-  row agent-runtime agent 'ask row' '- [ ] fix the ask row #ask #tier/3'
+  row agent-runtime agent 'ask row' '- [ ] fix the ask row #requested #tier/3'
   row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
   row agent-runtime agent 'typed decide' '- [ ] decide(board): fold it #tier/3'
   row agent-runtime agent 'pad run' '- [ ] fix the pad controller switch #tier/3'
@@ -1704,6 +1773,35 @@ queued_item() {
 board_item() {
   queued_item "$1" high "$2"
   sed -i "s/^from: human/from: board:game:$1/" "$AGENT_QUEUE_DIR/queued/20261103-100000-$1.md"
+}
+
+# 2026-11-05: 220 rows sat unjudged since 11-02 while every pass stopped at held queue items.
+@test "starved: board rows nobody judged while the human was away that long trip it; a recent judge or a short absence does not" {
+  game_ready
+  rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub fleet-presence 'echo "away 90 tmux"'
+  run cmd_starved
+  assert_failure
+  assert_output --partial '1 board rows unjudged, none judged since never'
+  # Away for less than the window: the first pass has not had its turn yet.
+  stub fleet-presence 'echo "away 10 tmux"'
+  run cmd_starved
+  assert_success
+  # The human is here: the board waits for them to leave, by design.
+  stub fleet-presence 'echo "here 0 tmux"'
+  run cmd_starved
+  assert_success
+  # A judge inside the window: the board is turning.
+  stub fleet-presence 'echo "away 90 tmux"'
+  verdict game human 'fix crash on load' dispatch
+  rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"; mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_starved
+  assert_success
+  # An old judge and an unjudged row: starved again.
+  touch -d '-2 hours' "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_starved
+  assert_failure
+  assert_output --partial '1 board rows unjudged, none judged since '"$(date -d '-2 hours' +%Y-%m-%d)"
 }
 
 @test "starved: a board item waits out the human's presence, and counts from when they left" {

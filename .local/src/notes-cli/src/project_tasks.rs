@@ -323,6 +323,10 @@ pub fn add(
         block.extend(md::detail_lines("", details));
         let path = inbox_put(p, &proj_dir, name, &block)?;
         log.info("ptask", &format!("inboxed in {} ({name})", path.display()));
+        crate::ingest::record(
+            p,
+            &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
+        );
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
@@ -330,6 +334,10 @@ pub fn add(
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
+    );
     for l in &block {
         println!("{l}");
     }
@@ -370,7 +378,7 @@ pub(crate) fn inbox_flag(p: &Profile) -> PathBuf {
 }
 
 /// Touch [`inbox_flag`]. Best effort: a missing state dir must not fail the write it follows.
-fn inbox_changed(p: &Profile) {
+pub(crate) fn inbox_changed(p: &Profile) {
     let flag = inbox_flag(p);
     if let Some(dir) = flag.parent() {
         let _ = fs::create_dir_all(dir);
@@ -383,7 +391,7 @@ fn is_typed(text: &str) -> bool {
     projects::row_type_area(&format!("- [ ] {text}")).is_some()
 }
 
-/// `new` plus each tag of `old` (`#ask`, `#tier/3`) whose name, the part before `/`, `new`
+/// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
 /// (`#1469`) are words, not tags, so they stay in the `was:` line only.
 fn carry_tags(old: &str, new: &str) -> String {
@@ -512,7 +520,8 @@ fn inbox_hit(pick: &Pick, l: &sheet::InboxLine) -> bool {
 /// `notes ptask <name> file <query> (--as "<type(area): title>"... | --dup <id>)` - take the
 /// first inbox line matching `<query>` off `## Inbox` and onto a board, in one write per
 /// sheet. `--as` files it as typed rows ([`new_rows`] stamps them, plus `filed:<today>`),
-/// on `--project`'s board and in `--lane`'s sheet when given; no `--as` files a line that is
+/// on `--project`'s board and in `--lane`'s sheet when given (an `#agent` word in the line picks
+/// the agent sheet and stays off the rows); no `--as` files a line that is
 /// typed already as written; `--dup` adds it to an open row. The human's words stay as a
 /// `was: <words>` detail line (none when filed as written), with the line's own detail lines
 /// after it. A row the grammar flags (a retired priority, two priorities, a retired tag) is
@@ -544,10 +553,13 @@ pub(crate) fn file(
         vec![format!("was: {}", line.text)]
     };
     details.extend(line.details.iter().cloned());
+    // An `#agent` word files the line's rows on the agent board, and stays off them.
+    let to_agent = matches!(how.how, How::Rows { .. }) && md::agent_tag(&line.text);
+    let dest_lane = if to_agent { Lane::Agent } else { how.lane };
     let dest_name = how.project.as_deref().unwrap_or(name);
     let dest_proj = projects::project_dir(p, dest_name)?;
-    let dest_dir = how.lane.dir(&dest_proj);
-    let dest = ensure_lane_sheet(p, &dest_proj, dest_name, how.lane)?;
+    let dest_dir = dest_lane.dir(&dest_proj);
+    let dest = ensure_lane_sheet(p, &dest_proj, dest_name, dest_lane)?;
     let same = same_sheet(&src, &dest);
     let base = if same {
         rest.clone()
@@ -560,14 +572,15 @@ pub(crate) fn file(
             to,
             details: extra,
         } => {
-            let texts = if as_is {
+            let texts: Vec<String> = if as_is {
                 if !is_typed(&line.text) {
                     bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
                 }
-                std::slice::from_ref(&line.text)
+                vec![line.text.clone()]
             } else {
-                &texts[..]
+                texts.clone()
             };
+            let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
             if let Some(bad) = texts.iter().find(|t| !is_typed(t)) {
                 bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
             }
@@ -581,7 +594,7 @@ pub(crate) fn file(
             let block = new_rows(
                 dest_name,
                 &dest_proj,
-                texts,
+                &texts,
                 to,
                 cur,
                 &[filed_token(today)],
@@ -625,6 +638,31 @@ pub(crate) fn file(
             dest.display()
         ),
     );
+    let mut ev = crate::ingest::Event::new(
+        if matches!(how.how, How::Dup(_)) {
+            "dup"
+        } else {
+            "filed"
+        },
+        name,
+        dest_name,
+        &line.text,
+    );
+    ev.lane = dest_lane.name().into();
+    ev.id = match &how.how {
+        How::Dup(id) => Some(id.clone()),
+        How::Rows { .. } => written
+            .iter()
+            .find_map(|l| md::marker_token(l, "id:"))
+            .map(str::to_string),
+    };
+    if matches!(how.how, How::Rows { .. }) {
+        ev.row = written
+            .iter()
+            .find(|l| md::row_id(l).is_some())
+            .map(|l| crate::ingest::row_words(l));
+    }
+    crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
     for l in &written {
         println!("  {l}");
@@ -705,6 +743,9 @@ pub fn move_task(
         "ptask",
         &format!("moved to {to_s} in {} ({name})", path.display()),
     );
+    let mut ev = crate::ingest::Event::row("placed", name, "", lane.name(), &line);
+    ev.why = Some(to_s.clone());
+    crate::ingest::record(p, &ev);
     println!("moved {}\n  -> {to_s}", line.trim());
     Ok(0)
 }
@@ -767,6 +808,10 @@ pub fn move_to_project(
             src_sheet.display(),
             dest_sheet.display()
         ),
+    );
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("rehomed", src, dest, lane.name(), &moved.line),
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
     Ok(0)
@@ -908,6 +953,9 @@ pub fn step(
         "ptask",
         &format!("{dir_word}d to {to_s} in {} ({name})", path.display()),
     );
+    let mut ev = crate::ingest::Event::row("placed", name, "", lane.name(), &line);
+    ev.why = Some(format!("{at_s} -> {to_s}"));
+    crate::ingest::record(p, &ev);
     println!("{} {}", dir_word, md::task_text(&line));
     println!("  {at_s} -> {to_s}");
     if let Some(n) = note {
@@ -942,10 +990,86 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
-    Ok(edit(p, log, name, pick, "done", lane, |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+    let on = done_token(chrono::Local::now().date_naive());
+    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+        let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
+        Some(md::add_marker(&ticked, &stamp))
     })?
     .0)
+}
+
+/// The marker token `done` stamps beside the proof: the day the row closed, what a project's
+/// pace counts (`notes projects --stats --json`). Before the proof, so a prose proof stays last.
+pub(crate) fn done_token(day: chrono::NaiveDate) -> String {
+    format!("done:{}", day.format("%Y-%m-%d"))
+}
+
+/// The day a closed row closed, from its `done:` marker token.
+pub(crate) fn done_on(line: &str) -> Option<chrono::NaiveDate> {
+    md::marker_token(line, "done:")
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+}
+
+/// `notes ptask <name> tag <query> [--add T]... [--remove T]...` - add or take hashtags off the
+/// first matching open task, before its marker. A version tag is refused: `move`, `promote`
+/// and `demote` own a row's release.
+pub fn tag(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    add: &[String],
+    remove: &[String],
+    lane: Lane,
+) -> Result<i32> {
+    let add: Vec<String> = add.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
+    let remove: Vec<String> = remove.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
+    if add.is_empty() && remove.is_empty() {
+        bail!("tag needs --add <tag> or --remove <tag>");
+    }
+    let change = add
+        .iter()
+        .map(|t| format!("+{t}"))
+        .chain(remove.iter().map(|t| format!("-{t}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(
+        edit(p, log, name, pick, "tagged", Some(&change), lane, |l| {
+            Some(retag(l, &add, &remove))
+        })?
+        .0,
+    )
+}
+
+/// `t` as the `#tag` a row carries, or why it is not one. A release tag is refused: moving a
+/// row between versions is `move`, which also clears what is only legal in the open version.
+pub(crate) fn tag_token(t: &str) -> Result<String> {
+    let t = t.trim().trim_start_matches('#');
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        bail!("not a tag: '{t}' (want one word, like size/s or requested)");
+    }
+    if md::is_version_tag(t) {
+        bail!("#{t} is a release: use move, promote or demote");
+    }
+    Ok(format!("#{t}"))
+}
+
+/// `line` with `remove` dropped and `add` added. A row has one size, so adding a
+/// `#size/<s>` replaces the size it had.
+pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
+    let sized = add.iter().any(|t| t.starts_with("#size/"));
+    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| a == t));
+    let l = old
+        .into_iter()
+        .chain(remove.iter().map(String::as_str))
+        .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+    add.iter().fold(l, |l, t| md::add_tag(&l, t))
+}
+
+/// The row's `#size/<s>` tag, read from its text before the marker comment.
+pub(crate) fn size_tag(line: &str) -> Option<&str> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().find(|w| w.starts_with("#size/"))
 }
 
 /// The marker text a `done` will stamp, or the error explaining that it needs one.
@@ -979,10 +1103,12 @@ pub fn drop(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
-    Ok(edit(p, log, name, pick, "dropped", lane, move |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
-    })?
-    .0)
+    Ok(
+        edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
+            Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+        })?
+        .0,
+    )
 }
 
 /// The marker a `drop` stamps, or the error saying it needs a reason.
@@ -1011,7 +1137,7 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
 /// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
-/// the old text's own tags (`#ask`, `#tier/3`, `#size/m`) carry over unless the new text
+/// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
@@ -1088,12 +1214,22 @@ pub fn retext(
             "ptask",
             &format!("detailed in {} ({name})", sheet.display()),
         );
+        let row = content.lines().find(|l| pick.hits(l));
+        let mut ev = crate::ingest::Event::row(
+            "detailed",
+            name,
+            "",
+            lane.name(),
+            row.unwrap_or(&pick.to_string()),
+        );
+        ev.why = Some(details.join("; "));
+        crate::ingest::record(p, &ev);
         if text.or(append).is_none_or(str::is_empty) {
             println!("detailed '{pick}'");
             return Ok(0);
         }
     }
-    Ok(edit(p, log, name, pick, "edited", lane, |l| {
+    Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
             (Some(t), _) => t.to_string(),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
@@ -1115,7 +1251,7 @@ pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> 
     let id = crate::registry::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
-    let (code, matched) = edit(p, log, name, pick, "toggled", lane, |l| {
+    let (code, matched) = edit(p, log, name, pick, "toggled", None, lane, |l| {
         Some(toggle_started(l, id.as_deref()))
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
@@ -1163,6 +1299,9 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
     }
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("swept {name}'s tasks"));
+    let mut ev = crate::ingest::Event::new("swept", name, "", &report.join("; "));
+    ev.lane = lane.name().into();
+    crate::ingest::record(p, &ev);
     println!("{}", sheet.display());
     Ok(0)
 }
@@ -1272,6 +1411,9 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         "ptask",
         &format!("archived {n} done rows ({name}) -> {}", note.display()),
     );
+    let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+    ev.lane = lane.name().into();
+    crate::ingest::record(p, &ev);
     println!("moved {n} done rows -> {}", note.display());
     Ok(0)
 }
@@ -1319,12 +1461,14 @@ pub(crate) fn archive_done_rows(
 /// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
 /// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
 /// "matched nothing").
+#[allow(clippy::too_many_arguments)]
 fn edit<F>(
     p: &Profile,
     log: &Logger,
     name: &str,
     pick: &Pick,
     verb: &str,
+    why: Option<&str>,
     lane: Lane,
     f: F,
 ) -> Result<(i32, Option<String>)>
@@ -1334,10 +1478,22 @@ where
     let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
-    match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), f) {
+    let after = std::cell::RefCell::new(None);
+    let write = |l: &str| {
+        let new = f(l);
+        after.borrow_mut().clone_from(&new);
+        new
+    };
+    match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), write) {
         Some((new, matched)) => {
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
+            let mut ev = crate::ingest::Event::row(verb, name, "", lane.name(), &matched);
+            ev.why = why.map(str::to_string);
+            if verb == "edited" {
+                ev.row = after.into_inner().map(|l| md::task_text(&l));
+            }
+            crate::ingest::record(p, &ev);
             println!("{verb} {}", matched.trim());
             Ok((0, Some(matched)))
         }
@@ -1618,6 +1774,37 @@ Version: v1.13.0
     }
 
     #[test]
+    fn a_tag_edit_adds_and_removes_whole_tags_and_keeps_one_size() {
+        let row = "- [ ] row #size/s #ai <!-- id:ar-1 -->";
+        let t = |v: &[&str]| v.iter().map(|t| tag_token(t).unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            retag(row, &t(&["requested"]), &t(&["#ai"])),
+            "- [ ] row #size/s #requested <!-- id:ar-1 -->"
+        );
+        assert_eq!(
+            retag(row, &t(&["size/l"]), &[]),
+            "- [ ] row #ai #size/l <!-- id:ar-1 -->",
+            "a new size replaces the old one"
+        );
+        assert_eq!(retag(row, &t(&["ai"]), &[]), row, "a tag it has is a no-op");
+        assert!(tag_token("v0.2.0")
+            .unwrap_err()
+            .to_string()
+            .contains("move"));
+        assert!(tag_token("two words").is_err());
+        assert!(tag_token("#").is_err());
+    }
+
+    #[test]
+    fn done_stamps_the_day_it_closed_and_reads_it_back() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let row = md::add_marker("- [x] shipped <!-- id:ar-1 -->", &done_token(day));
+        assert_eq!(row, "- [x] shipped <!-- id:ar-1 done:2026-11-05 -->");
+        assert_eq!(done_on(&row), Some(day));
+        assert_eq!(done_on("- [x] shipped <!-- done:soon -->"), None);
+    }
+
+    #[test]
     fn both_doors_produce_a_stamp_and_the_unverified_one_says_so() {
         assert_eq!(proof_stamp(Some("pr:1142"), None).unwrap(), "pr:1142");
         assert_eq!(
@@ -1632,7 +1819,10 @@ Version: v1.13.0
     fn the_stamp_merges_into_an_existing_marker() {
         let line = "- [ ] facility save 400 #ai <!-- id:pmp-602 -->";
         let out = md::add_marker(&md::set_checkbox(line, 'x'), "pr:1142");
-        assert_eq!(out, "- [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->");
+        assert_eq!(
+            out,
+            "- [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->"
+        );
         assert_eq!(out.matches("<!--").count(), 1);
     }
 
@@ -2024,6 +2214,91 @@ mod inbox_tests {
     }
 
     /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
+    #[test]
+    fn row_writes_leave_a_record_with_id_words_and_lane() {
+        let v = vault(
+            "record",
+            "",
+            "- [ ] fix(ui): the menu flickers #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): the sound is late #low <!-- id:sc-2 -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let new = Some("fix(ui): the menu blinks #high");
+        retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            new,
+            None,
+            &[],
+            false,
+            Lane::Human,
+        )
+        .unwrap();
+        let details = ["seen on the pause screen".to_string()];
+        retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            None,
+            None,
+            &details,
+            false,
+            Lane::Human,
+        )
+        .unwrap();
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            Some("pr:7"),
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let two = Pick::Id("sc-2".into());
+        drop(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            Some("stale"),
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let ev = crate::ingest::since(&v.p, 1);
+        let got: Vec<(&str, Option<&str>, &str)> = ev
+            .iter()
+            .map(|e| (e.action.as_str(), e.id.as_deref(), e.lane.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("edited", Some("sc-1"), "human"),
+                ("detailed", Some("sc-1"), "human"),
+                ("done", Some("sc-1"), "human"),
+                ("dropped", Some("sc-2"), "human"),
+            ]
+        );
+        assert!(
+            ev[0].text.contains("flickers"),
+            "the old words: {:?}",
+            ev[0]
+        );
+        assert!(
+            ev[0].row.as_deref().is_some_and(|r| r.contains("blinks")),
+            "the new words: {:?}",
+            ev[0]
+        );
+        assert_eq!(ev[1].why.as_deref(), Some("seen on the pause screen"));
+        assert_eq!(ev[2].why.as_deref(), Some("pr:7"));
+        assert_eq!(ev[3].why.as_deref(), Some("dropped: stale"));
+    }
+
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2127,6 +2402,17 @@ mod inbox_tests {
             tasks.contains("  was: the gun sound is off\n  - since the top-down patch\n"),
             "{s}"
         );
+        let ev = crate::ingest::on_day(&v.p, &today.format("%Y-%m-%d").to_string());
+        assert_eq!(ev.len(), 1, "one filing, one record");
+        assert_eq!(
+            (
+                ev[0].action.as_str(),
+                ev[0].to.as_str(),
+                ev[0].lane.as_str(),
+                ev[0].text.as_str()
+            ),
+            ("filed", "scratch", "human", "the gun sound is off")
+        );
         // the line is gone, so a second run finds nothing to file
         assert_eq!(
             file(
@@ -2182,6 +2468,41 @@ mod inbox_tests {
     }
 
     #[test]
+    fn an_agent_tag_files_on_the_agent_board_without_the_tag() {
+        let v = vault(
+            "agenttag",
+            "- [ ] chore(build): drop the old cache #agent #low\n- ci is slow on mac #agent\n",
+            "",
+        );
+        let pick = Pick::new("old cache", false).unwrap();
+        file(&v.p, &v.log, "scratch", &pick, &rows(&[]), Lane::Human).unwrap();
+        let pick = Pick::new("ci is slow", false).unwrap();
+        let as_rows = rows(&["perf(ci): the mac runs are slow #agent #size/s"]);
+        file(&v.p, &v.log, "scratch", &pick, &as_rows, Lane::Human).unwrap();
+        let human = v.read();
+        assert!(
+            !human.contains("old cache") && !human.contains("slow"),
+            "{human}"
+        );
+        let agent = fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap())
+            .unwrap();
+        let row = |w: &str| agent.lines().find(|l| l.contains(w)).unwrap().to_string();
+        assert!(
+            row("old cache").starts_with("- [ ] chore(build): drop the old cache "),
+            "{agent}"
+        );
+        assert!(
+            row("mac runs").starts_with("- [ ] perf(ci): the mac runs are slow "),
+            "{agent}"
+        );
+        assert!(agent.contains("was: ci is slow on mac #agent"), "{agent}");
+        assert!(
+            !row("old cache").contains("#agent") && !row("mac runs").contains("#agent"),
+            "{agent}"
+        );
+    }
+
+    #[test]
     fn a_typed_line_with_no_as_is_filed_as_written() {
         let v = vault(
             "asis",
@@ -2209,7 +2530,7 @@ mod inbox_tests {
         let v = vault(
             "was",
             "",
-            "- [ ] the menu flickers on resize #1469 #ask #tier/3 #size/m #high #c1026 <!-- id:sc-4 -->\n  - seen on the deck\n",
+            "- [ ] the menu flickers on resize #1469 #requested #tier/3 #size/m #high #c1026 <!-- id:sc-4 -->\n  - seen on the deck\n",
         );
         let before = v.read();
         let pick = Pick::new("sc-4", false).unwrap();
@@ -2243,13 +2564,15 @@ mod inbox_tests {
         let s = v.read();
         let row = s.lines().find(|l| l.contains("id:sc-4")).unwrap();
         assert!(
-            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #ask #tier/3"),
+            row.starts_with(
+                "- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"
+            ),
             "{row}"
         );
         assert!(!row.contains("#size/m") && !row.contains("#1469"), "{row}");
         assert!(row.contains("#high") && row.contains("#c1026"), "{row}");
         assert!(
-            s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #ask #tier/3 #size/m\n"),
+            s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #requested #tier/3 #size/m\n"),
             "{s}"
         );
 

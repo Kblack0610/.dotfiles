@@ -125,7 +125,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 
 @test "a declared window renamed after creation is still found, not rebuilt" {
   # The zsh prompt hook renamed declared windows to the git branch, so ensure's by-name
-  # lookup missed them and every Prefix o made another board. Identity is @tmx_window.
+  # lookup missed them and every Prefix i made another board. Identity is @tmx_window.
   manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" rename-window -t 'main:board' feat/x
@@ -362,6 +362,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   # the window, not just repeat its number.
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
   run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
   assert_success
   assert_output --regexp '(bash|sh|zsh)'
@@ -409,6 +410,129 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   assert_success
   assert_output --partial 'one'
   assert_output --partial 'two'
+}
+
+# ── rows: agent state and stranded sessions ──────────────────────────────────
+#
+# fleet_state writes the document fleet-sessions --write would: one session per target, all
+# NEEDS and 480 minutes idle. Call it AFTER making sessions, since one newer than the
+# document is not stranded yet.
+fleet_state() {
+  export FLEET_STATE_FILE="$BATS_TEST_TMPDIR/state.json"
+  local age="${FLEET_AGE:-0}" unreadable="${FLEET_UNREADABLE:-[]}"
+  printf '%s\n' "$@" | jq -R 'select(length > 0) | {target: ., bucket: "NEEDS", idle_min: 480}' \
+    | jq -s --argjson e "$(( $(date +%s) - age ))" --argjson u "$unreadable" \
+      '{generated_epoch: $e, unreadable: $u, sessions: .}' > "$FLEET_STATE_FILE"
+}
+
+@test "an undeclared session with no agent is stranded, and shows there only" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  fleet_state
+
+  run "$TMX" rows
+  assert_success
+  assert_output --partial 'STRANDED  1'
+  assert_line --index 0 --partial 'STRANDED'
+  assert_line --index 1 --partial 'loose'
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"loose\"' | wc -l"
+  assert_output '1'
+}
+
+@test "a declared session with no agent is not stranded" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+}
+
+@test "an undeclared session with an agent is not stranded, and reads as state and idle" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s worker
+  fleet_state "$SRV_A/worker:1" "$SRV_A/worker:0"
+
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --regexp 'worker +NEEDS +8h'
+  assert_output --partial '1 need you'
+}
+
+@test "a session newer than the fleet state is not stranded yet" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s fresh
+  FLEET_AGE=30 fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+}
+
+@test "stale fleet state marks nothing stranded, and says so" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  FLEET_AGE=3600 fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --partial 'fleet state is old'
+}
+
+@test "a pass that could not read agent-panel marks nothing stranded" {
+  # Its session list is empty rather than true, so every agent would read as stranded.
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  FLEET_UNREADABLE='["agent-panel"]' fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --partial 'fleet state is old'
+}
+
+@test "a live server with no manifest is stranded" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_B" new-session -d -s orphan
+  fleet_state "$SRV_A/one:1" "$SRV_A/one:0"
+  run "$TMX" rows
+  assert_success
+  assert_output --partial 'STRANDED'
+  assert_output --partial "$SRV_B  (no manifest)  stranded"
+}
+
+@test "a world that is down gets a row, targeting the server" {
+  manifest "$SRV_A" "one $MDIR"
+  run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\" {print \$4}'"
+  assert_success
+  assert_output --partial 'not running'
+}
+
+@test "a window with an empty name keeps its columns" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' -n ''
+  "${REAL_TMUX}" -L "$SRV_A" select-pane -t 'one:' -T 'the-title'
+  run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
+  assert_success
+  assert_output --regexp ' - +(bash|sh|zsh) +the-title'
+}
+
+@test "a long session name keeps its agent number and no row passes 80 columns" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s freqtrade_trading_attempt-agent-2
+  fleet_state "$SRV_A/one:1" "$SRV_A/one:0"
+  run "$TMX" rows
+  assert_success
+  assert_output --partial '~pt-agent-2'
+  run bash -c "'$TMX' rows | awk -F'\t' 'length(\$4) > 80' | wc -l"
+  assert_output '0'
 }
 
 # ── land with an explicit target ─────────────────────────────────────────────

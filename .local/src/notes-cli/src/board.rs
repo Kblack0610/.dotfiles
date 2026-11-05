@@ -576,8 +576,8 @@ struct FeedRow {
     tier: Option<u8>,
     /// `#worker/<name>`: the dispatch worker the row is assigned to.
     worker: Option<String>,
-    /// `#ask`: the row is a question for the human, never dispatched at night.
-    ask: bool,
+    /// `#requested`: the human asked for this row (their quote rides in it); never dispatched at night.
+    requested: bool,
     /// The row's own `#vX.Y.Z` tag: the release it is aimed at.
     /// `<!-- id:<code>-<n> -->`: the row's stable id, which every `ptask` verb takes as a query.
     id: Option<String>,
@@ -630,7 +630,7 @@ struct Origin<'a> {
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the default every
 /// task carries (`md::default_priority`). `tags` are the hashtags no other field already
-/// carries: not the priority, tier, worker, ask, size, release tag or created tag
+/// carries: not the priority, tier, worker, requested, size, release tag or created tag
 /// (`since`).
 fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate) -> FeedRow {
     let prio = md::task_priority(line).unwrap_or(md::default_priority());
@@ -645,7 +645,7 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
     let worker = all
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
-    let ask = all.iter().any(|t| t == "ask");
+    let requested = all.iter().any(|t| t == "requested");
     let size = all
         .iter()
         .find_map(|t| t.strip_prefix("size/").map(str::to_string));
@@ -659,7 +659,7 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
-                && t != "ask"
+                && t != "requested"
         })
         .collect();
     FeedRow {
@@ -676,7 +676,7 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         priority,
         tier,
         worker,
-        ask,
+        requested,
         id: md::row_id(line),
         r#type: ty,
         area,
@@ -1079,7 +1079,7 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n\
-             - [ ] fix(fleet): break it down #low #tier/2 #ask #worker/asks #keep #size/m \
+             - [ ] fix(fleet): break it down #low #tier/2 #requested #worker/requested #keep #size/m \
              <!-- id:dm-7 ask:Ab12 -->\n",
         );
         std::fs::write(
@@ -1109,7 +1109,7 @@ mod tests {
         );
         assert_eq!(r.since.as_deref(), Some("2026-11-02"));
         assert_eq!(r.version.as_deref(), Some("v0.3.0"));
-        assert_eq!((r.tier, r.ask), (None, false));
+        assert_eq!((r.tier, r.requested), (None, false));
         assert_eq!(r.raw, "- [ ] ship it #urgent #c1102 #v0.3.0 #due1110");
         assert_eq!(r.line, 5);
 
@@ -1124,15 +1124,15 @@ mod tests {
         assert_eq!(
             (r.priority, r.tags.clone()),
             ("low", vec!["keep".to_string()]),
-            "tier, ask, worker and size have their own fields"
+            "tier, requested, worker and size have their own fields"
         );
         assert_eq!(
             (r.id.as_deref(), r.r#type.as_deref(), r.area.as_deref()),
             (Some("dm-7"), Some("fix"), Some("fleet"))
         );
         assert_eq!(r.size.as_deref(), Some("m"));
-        assert_eq!((r.tier, r.ask), (Some(2), true));
-        assert_eq!(r.worker.as_deref(), Some("asks"));
+        assert_eq!((r.tier, r.requested), (Some(2), true));
+        assert_eq!(r.worker.as_deref(), Some("requested"));
         assert_eq!(r.project.as_deref(), Some("demo"));
         assert_eq!(r.marker.as_deref(), Some("id:dm-7 ask:Ab12"));
         assert!(r.sheet.ends_with("agent/README.md"), "{}", r.sheet);
@@ -1148,9 +1148,28 @@ mod tests {
         // The serialized names are the contract the UIs read.
         let v = serde_json::to_value(&rows[0]).unwrap();
         for k in [
-            "profile", "project", "lane", "version", "game", "state", "priority", "tier", "worker",
-            "ask", "id", "type", "area", "size", "text", "tags", "marker", "since", "filed",
-            "sheet", "line", "raw",
+            "profile",
+            "project",
+            "lane",
+            "version",
+            "game",
+            "state",
+            "priority",
+            "tier",
+            "worker",
+            "requested",
+            "id",
+            "type",
+            "area",
+            "size",
+            "text",
+            "tags",
+            "marker",
+            "since",
+            "filed",
+            "sheet",
+            "line",
+            "raw",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }

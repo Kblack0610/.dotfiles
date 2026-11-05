@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tokyo Night Theme Palette
 # Sourced by theme-switch to apply colors across all tools.
+# ANSI 1-15 are lifted to 4.5:1 on BG by lightness only, hue kept (tests/unit/theme_contrast.bats).
 
 THEME_NAME="tokyonight"
 THEME_WALLPAPER_PREFIX="tokyo-night"  # matches wallpapers/tokyo-night-*.{jpg,png,webp}
@@ -29,7 +30,7 @@ THEME_CYAN="#7dcfff"
 THEME_WHITE="#a9b1d6"
 
 # ── ANSI 8-15 (bright) ───────────────────────────────────────────────
-THEME_BRIGHT_BLACK="#414868"
+THEME_BRIGHT_BLACK="#7882ab"
 THEME_BRIGHT_RED="#f7768e"
 THEME_BRIGHT_GREEN="#9ece6a"
 THEME_BRIGHT_YELLOW="#e0af68"

@@ -18,6 +18,8 @@ setup() {
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
+  # The caller's Claude session stamps items and decides mine: a test sets it, never inherits it.
+  unset CLAUDE_CODE_SESSION_ID
 }
 
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
@@ -271,6 +273,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$f" note)" ]
 }
 
+@test "add --title writes one title line; an item without one has no title key" {
+  "$AQ" add --project game --slug t --title $'Fix the  thing\nnow' "the long task text"
+  [ "$(field "$(item queued t)" title)" = "Fix the thing now" ]
+  "$AQ" add --project game --slug u "no title given"
+  ! grep -q '^title:' "$(item queued u)"
+}
+
 @test "plan mode and --running are recorded; --running starts in running/" {
   "$AQ" add --project game --mode plan --slug p "plan this"
   [ "$(field "$(item queued p)" mode)" = plan ]
@@ -328,6 +337,57 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move second done --status ok
   run "$AQ" mine
   assert_failure 1
+}
+
+@test "mine: a waiting item of the same tmux session is not this one's; only a running one is" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug earlier "an earlier conversation"
+  "$AQ" move earlier waiting
+  run "$AQ" mine
+  assert_failure 1
+}
+
+@test "mine: the Claude session decides first, across tmux sessions and in waiting; none with a session id exits 1" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_success
+  assert_output ours
+  "$AQ" move ours waiting
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_output ours
+  unset TMUX
+  CLAUDE_CODE_SESSION_ID=sid-none run "$AQ" mine
+  assert_failure 1
+}
+
+@test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
+  f="$(item queued typed)"
+  [ "$(field "$f" sessions)" = sid-a ]
+  [ "$(field "$f" type)" = fix ]
+  [ "$(field "$f" area)" = agent-land ]
+  "$AQ" add --project game --slug untyped "Menu: pick sides"
+  [ -z "$(field "$(item queued untyped)" sessions)" ]
+  [ -z "$(field "$(item queued untyped)" type)" ]
+  "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
+  [ "$(field "$(item queued titled)" area)" = queue ]
+  run "$AQ" claim typed --sid sid-b
+  assert_success
+  CLAUDE_CODE_SESSION_ID=sid-b run "$AQ" claim typed
+  assert_output --partial "already claimed"
+  [ "$(field "$f" sessions)" = "sid-a sid-b" ]
+  run "$AQ" claim typed --sid 'x;rm'
+  assert_failure
+  run "$AQ" claim typed
+  assert_failure
+  assert_output --partial "no Claude session"
+  "$AQ" move typed done --status ok
+  run "$AQ" claim typed --sid sid-c
+  assert_failure
 }
 
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
@@ -423,10 +483,12 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = night ]
+  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   f="$(item queued my-plan-p4)"
   [ "$(field "$f" after)" = my-plan-p2 ]
   [ "$(field "$f" phases)" = "4 5" ]
+  [ "$(field "$f" title)" = "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4" ]
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
   [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
@@ -615,9 +677,44 @@ EOF
   assert_success
   assert_output --partial "done:"
   assert_output --partial "to PR:   median 90 min"
-  assert_output --partial "wait:    median 30 min, p90 30 min from queued to started, 1 started at once and not counted"
+  assert_output --partial "wait:    median 30 min, p90 30 min from ready to started, 1 started at once and not counted"
   assert_output --partial "sitting: 1 can start, oldest 2h (c), median 2h; 1 held (after 1)"
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
+}
+
+@test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
+  "$AQ" add --project game --slug p "p"
+  "$AQ" add --project game --slug f --after p "f"
+  "$AQ" move p running; "$AQ" move p done --status ok
+  "$AQ" set p finished=2026-11-03T12:00:00Z
+  f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  "$AQ" move f running; "$AQ" set f started=2026-11-03T12:10:00Z
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c '[.wait_minutes_median, .wait_minutes_p90]' <<<"$output")" '[10,10]'
+  # negative control: with its predecessor gone from the store, the wait runs from queued
+  rm "$AGENT_QUEUE_DIR"/done/*/*-p.md
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '250'
+}
+
+@test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
+  export TZ=America/Los_Angeles
+  "$AQ" add --project game --slug a "a"
+  "$AQ" move a running
+  "$AQ" set a started=2026-11-03T10:30:00Z
+  f="$(item running a)"; sed -i 's/^queued: .*/queued: 2026-11-03T10:00:00Z/' "$f"
+  "$AQ" move a done --status ok
+  "$AQ" set a finished=2026-11-03T11:30:00Z
+  "$AQ" add --project game --slug b "b"
+  f="$(item queued b)"; sed -i 's/^queued: .*/queued: 2026-11-04T02:00:00Z/' "$f"
+  "$AQ" move b done --status failed
+  "$AQ" set b finished=2026-11-04T03:00:00Z
+  run "$AQ" stats --json --flow --since 2026-11-03
+  assert_success
+  assert_equal "$(jq -c '.flow["2026-11-03"] | [.queued, .started, .done, .ok, .failed, .lead_minutes, .wait_minutes.p50, .run_minutes.p50]' <<<"$output")" '[2,1,2,1,1,{"n":2,"p50":90,"p90":90},30,60]'
+  run "$AQ" stats --json --flow --since 2026-11-04
+  [ "$(jq -c '.flow | has("2026-11-03")' <<<"$output")" = false ]
 }
 
 @test "stats counts the flow of the last 1, 6 and 24 hours: added by queued, started by started, done and failed by finished" {

@@ -1,46 +1,49 @@
 #!/usr/bin/env bash
-# projects.sh - Prefix+P, the projects switcher. Every profile's projects in one small list,
-# main ones first, with a count of their open work; Enter opens the hub's Board tab on that
-# project's rows, where tasks are added, moved, edited, rewaved and closed.
+# projects.sh - Prefix+p, the projects finder. Every profile's projects in one short list,
+# main ones first, each with its stage and open count; the selected project's card and open
+# rows show on the right. Enter opens the hub's Projects tab on that project, where tasks are
+# added, moved, edited, rewaved and closed; e opens the project's sheet in the hub notes editor.
 #
 # Usage: projects.sh [verb]
 #
 # Verbs:
 #   (no verb)              open the switcher
 #   --list [--drafts]      the project rows, TSV `profile name sheet label counts`, where
-#                          label is the number, name and profile, the part search reads. Sorted prod,
-#                          beta, alpha, unstaged, then by open count. Drafts only with --drafts.
-#   --board <prof> <name>  show the hub Board filtered to one project and go to its window
+#                          label is the number and name, the part search reads, and counts
+#                          the stage, open rows and urgent ones. Sorted prod, beta,
+#                          alpha, unstaged, then by open count. Drafts only with --drafts.
+#   --preview <prof> <name>  the project's card over its open rows, the hub Projects tab's own
+#                          text (`hub --once`), at the preview's width
+#   --board <prof> <name>  show the hub Projects tab on one project and go to its window
 #   --key <view> <key>     the fzf action a key runs in a view (list). The keys mean one
 #                          thing while you browse and type themselves while you search, so the
 #                          choice is made here at keypress time, where a test can see it.
 #   --help, -h             this text
 #
 # Keys, project list (it opens in hotkey mode, no input line):
-#   1-9 / Enter  hub Board  j k  move      /  search (Esc: leave the box, clear, quit)
-#   o  open the sheet       n  new project d  show/hide drafts
-#   s  set stage            x  archive     q / Esc  quit
+#   1-9 / Enter / o  hub Projects   j k  move   /  search (Esc: leave the box, clear, quit)
+#   e  the sheet in the hub notes editor   n  new project   d  show/hide drafts
+#   s  set stage   x  archive   ctrl-/  preview below, hidden, back   q / Esc  quit
 #
-# A project's tasks live on the hub Board tab (`hub tab board <profile>/<name>`, then the hub
-# window), the one task view with the board's keys: add, start, done, move, edit, a wave
-# sooner or later, open the sheet at the row.
+# The preview and the hub are one reader: the card, its progress and ETA and the rows all
+# come from hub-core, so the popup and the hub cannot disagree (docs/dashboards.md rule 8).
 #
 # Every write here is a `notes` CLI call, so the CLI stays the only writer of a sheet or an index.
-# The counts come from one `notes projects --stats` call. `o` opens in the nvim that opened
-# the popup when PROJECTS_NVIM names its server socket (`<leader>np` passes it), else in this
-# session's editor window (editor.sh open).
+# The counts come from one `notes projects --stats` call. `e` is `tmx open hub <sheet>`: the
+# hub world's landing nvim (~/.notes), wherever the popup was opened from.
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 
-PROJECTS_NVIM="${PROJECTS_NVIM:-}"
 PROJECTS_STAGES="${PROJECTS_STAGES:-draft alpha beta prod}"
 
 Q="$(printf '%q' "$SELF")"
 
 # --- Rows ---
-# One counts segment: "85 open  1 urgent  56 high  22 low  +1 planned  agent 228". A zero is
-# left out, so a quiet project reads quiet instead of as a row of zeros.
+# A row is the summary: number, name, stage, open count, and urgent in red when there is any.
+# The rest (profile, version, progress, ETA, high and low, the agent board) is the preview's
+# card, so a row fits the list's half of the popup at 144 columns.
+# A draft's name is dim, so with d on the drafts read as drafts.
 cmd_list() {
   local drafts=0
   [ "${1:-}" = --drafts ] && drafts=1
@@ -49,24 +52,30 @@ cmd_list() {
     $3 == "draft" && !drafts { next }
     { printf "%d\t%09d\t%s\n", rank($3), 999999999 - $5, $0 }
   ' | sort -t "$PANEL_TAB" -k1,1n -k2,2 | cut -f3- | awk -F'\t' \
-    -v H="$C_HEAD" -v D="$C_DIM" -v A="$C_ACC" -v E="$C_ERR" -v I="$C_INP" -v O="$C_OFF" '
-    # The profile is cut to 8 for DISPLAY only; column 1 stays whole because the writes
-    # and the Board search pass it on.
-    { row[NR] = $0; if (length($2) > w) w = length($2); if (length(substr($1, 1, 8)) > pw) pw = length(substr($1, 1, 8)) }
+    -v H="$C_HEAD" -v D="$C_DIM" -v A="$C_ACC" -v E="$C_ERR" -v O="$C_OFF" '
+    # Column 1, the profile, is not shown but stays: the writes and the hub request pass it on.
+    { row[NR] = $0; if (length($2) > w) w = length($2) }
     END {
       for (i = 1; i <= NR; i++) {
         split(row[i], f, "\t")
         n = (i <= 9) ? i : " "
         c = (f[5] > 0) ? sprintf("%d open", f[5]) : D "clear" O
         if (f[6] > 0) c = c sprintf("  %s%d urgent%s", E, f[6], O)
-        if (f[7] > 0) c = c sprintf("  %s%d high%s", I, f[7], O)
-        if (f[8] > 0) c = c sprintf("  %s%d low%s", D, f[8], O)
-        if (f[9] > 0) c = c sprintf("  +%d planned", f[9])
-        if (f[10] > 0) c = c sprintf("  %sagent %d%s", D, f[10], O)
-        printf "%s\t%s\t%s\t%s %s%-*s%s  %s%-*s%s\t%-8s %s%-5s%s  %s\n", f[1], f[2], f[11],
-          n, H, w, f[2], O, D, pw, substr(f[1], 1, 8), O, f[4], A, f[3], O, c
+        printf "%s\t%s\t%s\t%s %s%-*s%s\t %s%-5s%s  %s\n", f[1], f[2], f[11],
+          n, (f[3] == "draft" ? D : H), w, f[2], O, A, f[3], O, c
       }
     }'
+}
+
+# --- Preview ---
+# The hub Projects tab's text for one project: its card, then its open rows. fzf sets
+# FZF_PREVIEW_COLUMNS, so the card wraps to the pane. Without hub it says so instead of failing.
+cmd_preview() {
+  if ! panel_have hub; then
+    panel_hint 'hub not on PATH: no card to show'
+    return 0
+  fi
+  COLUMNS="${FZF_PREVIEW_COLUMNS:-80}" hub --once --tab "projects $1/$2"
 }
 
 # --- Keys ---
@@ -75,7 +84,7 @@ cmd_list() {
 # hotkey. Placeholders ({1}, {2}, {3}) are left for fzf to fill and quote, so a project's own
 # name never has to survive being spliced into an action string.
 #
-# The accept actions print a word (`enter` or `open`) above the row, which is what cmd_pick
+# The accept actions print a word (`enter` or `edit`) above the row, which is what cmd_pick
 # reads back to know what to do.
 cmd_key() {
   local view="$1" key="$2" typing=0 drafts='' state=main
@@ -116,7 +125,8 @@ cmd_key() {
   *:k) echo up ;;
   *:/) echo show-input ;;
   list:[1-9]) echo "pos($key)+print(enter)+accept" ;;
-  list:o) echo 'print(open)+accept' ;;
+  list:o) echo 'print(enter)+accept' ;;
+  list:e) echo 'print(edit)+accept' ;;
   list:q) echo abort ;;
   list:n) echo "execute($Q --new)+$relist" ;;
   list:s) echo "execute($Q --stage {1} {2})+$relist" ;;
@@ -197,21 +207,11 @@ cmd_archive() {
 }
 
 # --- Board ---
-# The hub's Board tab, searched to the project's group. `hub tab` reaches a running hub over
+# The hub's Projects tab, opened on the project's rows. `hub tab` reaches a running hub over
 # its socket, else the next hub to start takes the request.
 cmd_board() {
   panel_need hub tmx
-  hub tab board "$1/$2" && tmx goto hub hub:board
-}
-
-# --- Open ---
-_open() {
-  local file="$1" line="${2:-1}"
-  if [ -n "$PROJECTS_NVIM" ] && [ -S "$PROJECTS_NVIM" ]; then
-    nvim --server "$PROJECTS_NVIM" --remote-send "<C-\\><C-N>:e +$line ${file// /\\ }<CR>"
-  else
-    "$PANEL_DIR/editor.sh" open "$file" "$line"
-  fi
+  hub tab projects "$1/$2" && tmx goto hub hub:board
 }
 
 # --- Picker ---
@@ -228,16 +228,20 @@ cmd_pick() {
   panel_need fzf notes
   panel_fzf_opts
 
+  # side: the list is short and the popup wide, so the card sits right of it, full height.
+  panel_fzf_layout side
+
   local out profile name sheet
   local -a BINDS
-  _binds list j k / 1 2 3 4 5 6 7 8 9 o q n s x d esc enter
+  _binds list j k / 1 2 3 4 5 6 7 8 9 o e q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header='1-9 board  o open  n new  s stage  x archive  d drafts  / search  q quit' \
+    --header='1-9/o open  e sheet  n new  s stage  x archive  d drafts  / search  ctrl-/ preview  q quit' \
+    "${PANEL_FZF_LAYOUT[@]}" --preview="$Q --preview {1} {2}" \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"
   case "${out%%$'\n'*}" in
-  open) _open "$sheet" 1 ;;
+  edit) panel_need tmx && tmx open hub "$sheet" 1 ;;
   enter) cmd_board "$profile" "$name" ;;
   esac
 }
@@ -249,6 +253,7 @@ cmd_pick() {
 case "${1:-}" in
 '') cmd_pick ;;
 --list) cmd_list "${2:-}" ;;
+--preview) cmd_preview "${2:?profile}" "${3:?name}" ;;
 --board) cmd_board "${2:?profile}" "${3:?name}" ;;
 --key) cmd_key "${2:?view}" "${3:?key}" ;;
 --new) panel_fzf_opts && cmd_new ;;

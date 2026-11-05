@@ -4,8 +4,8 @@ The cross-tool session hooks. Claude Code is the main consumer, but nothing here
 
 | file | when it runs | what it does |
 | --- | --- | --- |
-| `session-preflight.sh` | SessionStart | The turn-1 context injection: holds, stranded sprints, then in priority order the anchor's key facts (decisions log as one pointer line), the agent board (6 rows), today's `## Focus`, the lessons digest, plans, recent commits and PRs, under one 9,000 B budget that names whatever it left out. Non-blocking. |
-| `focus-lib.sh` | sourced | The one parser for the daily note's `## Focus` section. Shared by the preflight and the reconcile gate. Read-only by contract. |
+| `session-preflight.sh` | SessionStart | The turn-1 context injection: holds, stranded sprints, then in priority order the anchor's key facts (decisions log as one pointer line), the agent board (6 rows), the lessons digest, plans, an app's commits (scoped to its subtree; a whole repo's are Claude Code's gitStatus) and PRs, under one 9,000 B budget that names whatever it left out. Non-blocking. |
+| `focus-lib.sh` | sourced | The one parser for the daily note's `## Focus` section. Used by the reconcile gate. Read-only by contract. |
 | `project-name.sh` | sourced | Resolves a directory to its canonical project name via `project-map.json`. |
 | `worktree-create.sh` / `worktree-remove.sh` | WorktreeCreate / WorktreeRemove | Put harness-made worktrees (Agent `isolation: "worktree"`, `--worktree`, background sessions) at `~/.worktrees/<repo>-<name>` instead of `<repo>/.claude/worktrees/`. Remove never forces, so a dirty tree survives. |
 | `compact-prep.sh` | PreCompact | Archives the transcript and drops the pending marker the `/compact-prep` skill reconciles against. |
@@ -24,6 +24,7 @@ That gap is real and has bitten this repo. #123 added `focus-lib.sh` and made th
 So, two rules for anything added here:
 
 - **Guard every optional sibling you source.** `if [ -r "$LIB" ]; then . "$LIB"; fi`, then gate the code that needs it on `declare -F <fn>`. A hook that dies takes the whole injection with it, and the symptom is silence.
+- **End no `$(...)` section on a bare `[ test ] && echo`.** When the test is false the subshell exits 1, and under `set -e` the assignment kills the hook. Use `if ...; then echo; fi`.
 - **After merging a new file, run `stow --no-folding .`** and verify the link exists, rather than assuming the merge deployed it. It is idempotent, so re-running it is always safe.
 
 Verify a deploy with:
@@ -38,19 +39,18 @@ An empty or truncated result means a partial deploy, not an empty project.
 
 ## The Focus loop
 
-Two ends, one parser, closing the loop on the daily note's `## Focus` list:
+`## Focus` is the human's list, so turn 1 does not carry it (it cost about 850 chars in nearly every session). An agent's own task goes on its agent-queue item.
 
-- **Turn 1** - `session-preflight.sh` surfaces what is open and what is in progress, and nudges you to check whether this session's work is on the list.
 - **End of turn** - `.claude/hooks/stop-post.d/86-focus-reconcile.sh` blocks **once per session** when a turn did real work (dirty tree, or HEAD moved) while nothing is marked `[/]` in progress and no `notes focus` write landed since the last run.
 
 Keep one item marked in progress and the gate never fires. That is the intended pressure: declare what you are on, and it disappears. Escape hatch: `CLAUDE_SKIP_FOCUS_GATE=1`.
 
-Both ends parse `## Focus` through `focus-lib.sh` on purpose. They used to parse it separately and drifted: the preflight matched only `- [ ]` and silently dropped every in-progress `- [/]` item, hiding exactly the task you were working on (#109).
+The gate parses `## Focus` through `focus-lib.sh`, the one parser; a second parser drifted once and dropped every in-progress `- [/]` item (#109).
 
 Writes are never done from a hook. `notes focus add|start|done` owns the vault; the hooks only read.
 
 ## Tests
 
-`tests/unit/focus_lib.bats` covers every checkbox state through the shared parser. `tests/integ/focus_gate.bats` covers the gate's quiet paths as well as its loud one - a gate that fires on idle turns gets trained away within a day. `tests/integ/preflight_focus.bats` covers the partial-deploy case above, and two of its tests fail against the unguarded version, which is what makes them worth keeping.
+`tests/unit/focus_lib.bats` covers every checkbox state through the shared parser. `tests/integ/focus_gate.bats` covers the gate's quiet paths as well as its loud one - a gate that fires on idle turns gets trained away within a day. `tests/integ/preflight_focus.bats` covers what turn 1 carries: the agent board, the byte budget, and that the Focus list and an unscoped commit list stay out.
 
 Run them with `make -C tests test-fast`. See the `shell-test-harness` skill before adding more.

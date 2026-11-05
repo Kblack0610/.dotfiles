@@ -15,7 +15,7 @@ phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skip
 phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
-Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to all `*.d/` children via stdin so they can self-loop-guard.
+Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to the `stop-post.d/` children via stdin so they can self-loop-guard. The `stop-checks.d/` children run with no stdin; they get the payload's session id as `STOP_SESSION_ID`.
 
 Anything that must fire on every Stop, including a pure Q&A turn with a clean tree, goes in `stop-post.d/`: it runs after the checks or after the clean-tree early exit.
 
@@ -32,7 +32,7 @@ Each `*.sh` is one independent check. The coordinator fans them out in parallel 
 
 Project-type detection lives **inside each check** (e.g. `[ -f package.json ] || exit 0`), so the coordinator stays project-agnostic. To add a check, drop `<NN>-<name>.sh` into `stop-checks.d/` and `chmod +x`. Checks run in parallel — order is informational only.
 
-Current checks: `10-git-workflow.sh` (unpushed commits, open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier).
+Current checks: `10-git-workflow.sh` (unpushed commits, which only warn while a background run of this session is live, read as a process holding its `tasks/<id>.output` open; open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier).
 
 The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<session_id>.txt` (`ci-result-<proj>-<date>.txt` only when the payload has no session id) and exports the path as `CI_RESULT_FILE` to the post scripts. `95-wind-down.sh` reads it from there and never build the name themselves. Files older than a week are pruned.
 
@@ -43,7 +43,7 @@ Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinat
 Current post-checks, in order:
 - `80-session-register.sh`: records the session in the session registry.
 - `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
-- `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked on a board.
+- `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), a board write, or a Focus item in progress.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. A fired request stays as `.fired`, which `fleet-dispatch restore` reads to leave that conversation closed, and the next prompt in that session clears it. It also deletes any request or `.fired` older than a day.
 
@@ -62,9 +62,11 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Matcher | File | Job |
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
+| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, and a foreground `until`/`while`/`for` loop that sleeps (a wait): it points at `run_in_background` and the completion notice. A background loop, a script file and quoted text are allowed |
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
+| ExitPlanMode | `~/.claude/hooks/plan-standard.sh` | Deny a plan that misses the sections `~/.local/src/docs/planning.md` requires for this project's type, naming each gap. The same hook on UserPromptSubmit injects those sections in plan mode. Fails open when the doc is missing |
 | Bash | `~/.claude/hooks/token-filter.sh` | Rewrite a command through the method in `~/.agent/token-filter/mode` so less output reaches the model. Never denies; see "Token filter" |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 
@@ -110,17 +112,17 @@ Checks: `token-filter doctor` (pinned rtk, jq, hook registered, a live rewrite, 
 
 ## Token usage tracking
 
-`agent-usage tokens snapshot` runs nightly (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the two counted tools and the token-filter replay:
+`agent-usage tokens snapshot` runs nightly as the first step of `day-log nightly` (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the two counted tools and the token-filter replay:
 
 | Number | Owner |
 |--------|-------|
 | Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, command head and method; `long_runs` | `claude-recall tool-output` |
-| Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model | `agent-usage burn` |
+| Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
 | The rtk replay, with a local skip added per failing shape (`--apply`) | `token-filter verify` |
 
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
 - `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
-- `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show.
+- `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show; `tokens json --date D` is the day's snapshot, which `day-log` copies into `.agents`.
 - `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 past 25% either way, and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
 
 | Symptom | Cause | Fix |

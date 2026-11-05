@@ -35,6 +35,16 @@ Bound in `~/.tmux.conf`:
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
   prompt (`!`) or holding a pending ask (`A`)
+- `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
+
+chooser preview prints the card above the pane tail.
+
+In the chooser:
+
+- The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
+- `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
+- The list is on top at full width and the preview below it. `C-/` switches the preview to the right of the list, then hides it, then brings it back, and the panel reopens in the layout `C-/` last showed. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its two fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
+- The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -64,6 +74,8 @@ string rather than `claude` (observed on macOS).
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
+| `agent-panel said <transcript> --around <ask id>` | JSON `{first, prompt, said}` for the turn whose tool result printed the ask id on its own line: the session's first typed prompt, the prompt that turn answered, and its own text. Exit 1 when no turn printed the id. The question card's story (`agent-ask card`) |
+| `agent-panel send --pane <server>/<pane> [--no-submit] <text>` | Type a message into a Claude pane: the one implementation (agent-web's send box and `agent-ask answer` both use it). Bracketed paste, Enter only once the pane has drawn the paste and held still, a second Enter if the pane did not move, exit 3 if it still did not (the text is in the input box) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 
 ## Multiple tmux servers
@@ -81,10 +93,10 @@ which owns the detach-and-attach hop and the Prefix+L way back.
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
-- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, recent-events for the preview
+- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
-- `fzf.rs` — spawn fzf with the rows + preview/next callbacks
+- `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`
 - `chooser.rs` — orchestration for the three entry points
 - `main.rs` — clap dispatch
 

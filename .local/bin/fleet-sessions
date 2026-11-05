@@ -18,6 +18,10 @@
 #                                     minute and on each ask change); the hub Fleet tab
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
+#   fleet-sessions stages [--from EPOCH] [--to EPOCH] [--json]  watch.log replayed over a window
+#                                     (default the last 24h): minutes and episodes per stage and
+#                                     reason, CI runs and reruns, PR open to merged, conflicts,
+#                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (queue the next phases, wind down),
 # STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
@@ -237,7 +241,15 @@ ledger_write() {
     && mv "$tmp" "$LEDGER/$sid"
 }
 mark()     { ledger_write "$1" fact "$2"; }
-escalate() { ledger_write "$1" escalated "$2"; }
+escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
+
+# finding_paged <sid> <key>: a fleet-bench finding (sid finding-*, key "<fact> <class>") that went to
+# the human is a page on that finding's episode, so `fleet-bench loop` can tell a page from an act.
+# Best effort: a bench that cannot record leaves the escalation standing.
+finding_paged() {
+  [[ "$1" == finding-* && "$2" == *" human" ]] || return 0
+  "${FLEET_BENCH:-fleet-bench}" respond "${2% human}" shepherd paged >/dev/null 2>&1 || true
+}
 
 # labels_of <sid> -> the session's labels, comma-joined in the order set, or "-".
 labels_of() {
@@ -603,17 +615,21 @@ git_facts() {
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
-# ledger whose tmux session has no live claude again, so a parked session's git, PR and main
-# facts are read like any other's. A ledger beside a live claude is stale: the live row wins.
+# ledger whose tmux session (a session:window ledger: whose window) has no live claude again, so a
+# parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
+# is stale: the live row wins. A window ledger is one claude of a shared session (hub/dotfiles),
+# whose other windows stay live.
 parked_lines() {
   local f live
-  live="$(jq -r '.target | sub(":[^:]*$"; "")' <<<"$1" 2>/dev/null)"
+  live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
     [ -f "$f" ] || continue
-    jq -cn --rawfile l "$f" --arg live "$live" '
+    jq -cn --rawfile l "$f" --arg live "$live" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
-      | select(($live | split("\n") | index($t | sub(":[^:]*$"; ""))) | not)
+      | (if ($key | contains(":")) then [$t, ($live | split("\n"))]
+         else [($t | sub(":[^:]*$"; "")), ($live | split("\n") | map(sub(":[^:]*$"; "")))] end) as [$me, $all]
+      | select($all | index($me) | not)
       | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
          session_id: $p.session_id, cwd: $p.cwd, idle_since: ($p.parked | tonumber? // 0),
          context_tokens: 0, plan_file: ""}' 2>/dev/null
@@ -637,17 +653,17 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob pq names
+          work jobs human parked compactions topic doing said gate test ojob acct pq names
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob < <(jq -r '
+    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
-       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text)]
+       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
@@ -695,12 +711,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")"
+      "$(plan_phase_list "$planf")" "${acct:--}"
   done
   main_rows
 }
@@ -725,7 +741,7 @@ main_rows() {
 }
 
 # --- tick: the stage cells and their changes -------------------------------------------------------------
-# eta_cells -> "sid <TAB> eta" for each session fleet-bench has an estimate for: the expected
+# eta_cells -> "sid <TAB> eta <TAB> epoch" for each session fleet-bench has an estimate for: the expected
 # finish (HH:MM today, else "Thu HH:MM") and its basis, short: "<word>-median(N)" as its first
 # letter and N ("21:30 s3" is the session's own median over 3 phases, "p16" the project's), its
 # calibration suffix dropped, anything else as it is. fleet-bench reads only its own files, so one call per tick is cheap; how
@@ -735,7 +751,7 @@ eta_cells() {
     select(type == "object" and .eta_epoch != null and (.finished | not))
     | .eta_epoch as $e
     | ($e | strflocaltime(if ($e | strflocaltime("%F")) == $today then "%H:%M" else "%a %H:%M" end)) as $at
-    | [.session_id, ([$at, (.basis // empty | sub("^(?<k>[a-z])[a-z]*-median\\((?<n>[0-9]+)\\)( .*)?$"; "\(.k)\(.n)"))] | join(" "))] | @tsv' 2>/dev/null
+    | [.session_id, ([$at, (.basis // empty | sub("^(?<k>[a-z])[a-z]*-median\\((?<n>[0-9]+)\\)( .*)?$"; "\(.k)\(.n)"))] | join(" ")), $e] | @tsv' 2>/dev/null
   return 0 # no bench, or a failed read, is no estimate: the column reads -
 }
 
@@ -898,7 +914,8 @@ json_rows() {
       doing: (if (.[39] // "-") == "-" then null else .[39] end),
       said: (if (.[40] // "-") == "-" then null else .[40] end),
       main_red: (if (.[43] // "-") == "RED" then true elif (.[43] // "-") == "OK" then false else null end),
-      phases: ((.[44] // "[]") | fromjson)}'
+      phases: ((.[44] // "[]") | fromjson),
+      account: (if (.[45] // "-") == "-" then null else .[45] end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
@@ -917,12 +934,12 @@ write_state() {
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
        --arg asks "$asks" --arg rows "$json" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
-      | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]})
+      | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          sessions: ($r | map(select(.bucket != "NIGHTLY")
-                     | if $e[.session_id] then .eta = $e[.session_id] else . end)),
+                     | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
@@ -990,7 +1007,8 @@ main() {
     label) shift; label "$@"; return ;;
     tick) tick; return ;;
     explain) shift; explain "$@"; return ;;
-    -h|--help) sed -n '2,21p' "$0"; return ;;
+    stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" "$@"; return ;;
+    -h|--help) sed -n '2,25p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows t0

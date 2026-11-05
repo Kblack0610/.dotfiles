@@ -422,13 +422,14 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(());
     }
 
-    let (jsonl_path, project, summary, repo_full) = lookup(map_file, &target);
+    let (jsonl_path, project, summary, repo_full, ask) = lookup(map_file, &target);
     render::preview(
         &target,
         jsonl_path.as_deref(),
         &project,
         &summary,
         &repo_full,
+        &ask,
     );
     Ok(())
 }
@@ -450,10 +451,11 @@ fn extract_target(row: &str) -> Option<String> {
 }
 
 /// Read the preview map file for a target row:
-/// `target \t jsonl \t project \t summary \t repo_full`.
-fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, String) {
+/// `target \t jsonl \t project \t summary \t repo_full \t ask`.
+type MapRow = (Option<PathBuf>, String, String, String, String);
+fn lookup(map_file: &Path, target: &str) -> MapRow {
     let Ok(text) = fs::read_to_string(map_file) else {
-        return (None, String::new(), String::new(), String::new());
+        return MapRow::default();
     };
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
@@ -464,10 +466,11 @@ fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, St
                 f.get(2).unwrap_or(&"").to_string(),
                 f.get(3).unwrap_or(&"").to_string(),
                 f.get(4).unwrap_or(&"").to_string(),
+                f.get(5).unwrap_or(&"").to_string(),
             );
         }
     }
-    (None, String::new(), String::new(), String::new())
+    MapRow::default()
 }
 
 #[cfg(test)]
@@ -503,6 +506,18 @@ mod tests {
             attached,
             ..Agent::default()
         }
+    }
+
+    #[test]
+    fn the_preview_map_carries_the_ask_id() {
+        let dir = std::env::temp_dir().join(format!("agent-panel-map-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("map");
+        fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
+        assert_eq!(lookup(&map, "hub/a:1").4, "JSVBgC");
+        assert_eq!(lookup(&map, "hub/b:1").4, "");
+        assert_eq!(lookup(&map, "hub/none:1").4, "");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -19,12 +19,14 @@ mod focus_move;
 mod focus_sweep;
 mod inbox;
 mod index;
+mod ingest;
 mod knowledge;
 mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
 mod migrate_rows;
+mod outbox;
 mod playtest;
 mod project_sweep;
 mod project_tasks;
@@ -180,6 +182,17 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
     },
+    /// The outbox (`<vault>/outbox.md`): drop work for any project; the inbox sweep routes
+    /// each line to its project's inbox. No subcommand = list.
+    Outbox {
+        #[command(subcommand)]
+        sub: Option<OutboxCmd>,
+    },
+    /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
+    Ingest {
+        #[command(subcommand)]
+        sub: IngestCmd,
+    },
     /// Compiled knowledge base under knowledge/ (written by the nightly engine)
     Knowledge {
         #[command(subcommand)]
@@ -334,6 +347,30 @@ enum Cmd {
         #[arg(long)]
         projects: bool,
     },
+    /// What was written to which row, and by whom: today, or `--day` / `--days`
+    Log {
+        /// One day, `YYYY-MM-DD`
+        #[arg(long, conflicts_with = "days")]
+        day: Option<String>,
+        /// The last N days, today included
+        #[arg(long)]
+        days: Option<i64>,
+        /// Only events from or to this project, or `focus` or `outbox`
+        #[arg(long)]
+        project: Option<String>,
+        /// Only this row, like ucp-79
+        #[arg(long)]
+        id: Option<String>,
+        /// Only this action, like `dropped`
+        #[arg(long)]
+        action: Option<String>,
+        /// Only this writer: `human`, a queue item or a session's first 8 characters
+        #[arg(long)]
+        by: Option<String>,
+        /// One JSON event per line
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the resolved profile + paths
     Config {
         /// List every configured profile name instead
@@ -469,6 +506,18 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Add or take hashtags off the first matching open task (before its marker). A release
+    /// tag is refused: move, promote and demote own it
+    Tag {
+        /// A tag to add (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        add: Vec<String>,
+        /// A tag to take off (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        remove: Vec<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
     Start {
         #[arg(required = true, num_args = 1..)]
@@ -503,7 +552,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
-        /// `was:` detail line, and the old row's own tags (#ask, #tier/N, #size/x) carry over
+        /// `was:` detail line, and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
         was: bool,
         #[arg(required = true, num_args = 1..)]
@@ -567,6 +616,50 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum OutboxCmd {
+    /// The lines waiting, oldest first (TSV `line<TAB>text`)
+    List {
+        /// One JSON array of `{line, raw, text, details, project}` instead
+        #[arg(long)]
+        json: bool,
+    },
+    /// Append a line and wake the inbox sweep
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Move the line that is RAW byte for byte into PROJECT's `## Inbox` (the sweep's write path)
+    Move {
+        #[arg(long, value_name = "PROJECT")]
+        project: String,
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
+    /// human, one whose write was `refused`, or a row the planner `planned`
+    Record {
+        #[arg(long, value_parser = ["left", "refused", "planned"])]
+        action: String,
+        /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        why: Option<String>,
+        /// The row's id, for `planned`
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Publish the inbox status page from the record and the outbox (the sweep runs it)
+    Page,
 }
 
 #[derive(Subcommand)]
@@ -796,6 +889,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
             if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
@@ -809,6 +903,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -916,6 +1011,9 @@ fn main() -> Result<()> {
                     };
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
+                Some(PtaskCmd::Tag { add, remove, query }) => {
+                    project_tasks::tag(&prof, &log, &name, &pick(&query)?, &add, &remove, lane)?
+                }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,
                     &log,
@@ -972,6 +1070,47 @@ fn main() -> Result<()> {
                 board::run(&log)?
             }
         }
+        Cmd::Outbox { sub } => match sub {
+            None => outbox::list(&prof, false)?,
+            Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
+            Some(OutboxCmd::Move { project, raw }) => {
+                outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            }
+        },
+        Cmd::Log {
+            day,
+            days,
+            project,
+            id,
+            action,
+            by,
+            json,
+        } => {
+            let filter = ingest::Filter {
+                project: project.map(|n| registry::canonical(&n)),
+                id,
+                action,
+                by,
+            };
+            ingest::log(&prof, day.as_deref(), days, &filter, json)?
+        }
+        Cmd::Ingest { sub } => match sub {
+            IngestCmd::Record {
+                action,
+                from,
+                why,
+                id,
+                text,
+            } => {
+                let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
+                ev.why = why;
+                ev.id = id;
+                ingest::record(&prof, &ev);
+                0
+            }
+            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
+        },
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,

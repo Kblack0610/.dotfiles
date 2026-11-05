@@ -59,6 +59,7 @@ Warm, short, technical. Sound like a competent peer talking to a peer. A memo or
 
 For a ticket comment, findings review, or status write-up the user posts as-is. Emit ONE clean version. Same Voice as above, applied to a longer artifact:
 
+- A status write-up uses the `comms-standard` status shape (Done, Doing, Next, Needs you) in this voice.
 - Open with the takeaway as a plain sentence. The first line is the single-sentence conclusion, before any setup or background, so the reader gets the point without scrolling. Put the headline finding in that sentence directly; skip announcing phrases like "the real story is" or "biggest concern:".
 - Use short headings only when the write-up genuinely has separate sections. Under a heading, write full-sentence bullets or a short paragraph. Do not open bullets or paragraphs with a bolded label.
 - Phrase findings as actions with the number attached. Write "64 stores down since 3/17 - treat as one incident" in place of "there are offline devices". Each point should imply a next step.

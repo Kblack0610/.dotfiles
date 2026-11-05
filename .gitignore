@@ -118,6 +118,8 @@ Media/Music
 !.claude/skills/memory/wind-down/
 !.claude/skills/messaging/fleet-comms/
 !.claude/skills/messaging/work-comms/
+!.claude/skills/messaging/comms-standard/
+!.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
 !.claude/skills/monitoring/fleet-dispatch/
@@ -134,6 +136,7 @@ Media/Music
 !.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/reaper-ops/
 !.claude/skills/ops/usage-cleanup/
+!.claude/skills/ops/pipeline-eval/
 !.claude/skills/reference/compliance/
 !.claude/skills/reference/hz-immersive-designer/
 !.claude/skills/reference/hz-perfetto-debug/

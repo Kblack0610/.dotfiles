@@ -102,6 +102,54 @@ pub fn clip_line(line: Line<'static>, w: usize) -> Line<'static> {
 impl Table {
     /// The header line (in `head` style) and one line per row, fitted to `w` (0: no limit).
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
+        let (on, wid) = self.layout(w);
+        let header: Vec<Cell> = self.header.iter().map(|h| cell(*h, head)).collect();
+        std::iter::once(&header)
+            .chain(&self.rows)
+            .map(|r| clip_line(self.line(r, &on, &wid, None), w))
+            .collect()
+    }
+
+    /// As [`Table::fit`], but the flex column wraps at word breaks onto lines of its own
+    /// instead of being clipped, so a row's whole text shows. Also returns the line each row
+    /// starts on (the header is line 0).
+    pub fn fit_wrapped(&self, w: usize, head: Style) -> (Vec<Line<'static>>, Vec<usize>) {
+        let (on, wid) = self.layout(w);
+        let header: Vec<Cell> = self.header.iter().map(|h| cell(*h, head)).collect();
+        let mut out = vec![clip_line(self.line(&header, &on, &wid, None), w)];
+        let mut starts = vec![];
+        let Some(f) = self.flex.filter(|f| on[*f] && w > 0) else {
+            for r in &self.rows {
+                starts.push(out.len());
+                out.push(clip_line(self.line(r, &on, &wid, None), w));
+            }
+            return (out, starts);
+        };
+        let indent: usize = (0..self.header.len())
+            .filter(|&j| on[j] && j != f)
+            .map(|j| wid[j] + GAP)
+            .sum();
+        let room = w.saturating_sub(indent).max(1);
+        for r in &self.rows {
+            starts.push(out.len());
+            let c = r.get(f).cloned().unwrap_or_default();
+            let words: Vec<&str> = c.text.split_whitespace().collect();
+            let mut parts = wrap(&words, " ", room).into_iter();
+            let first = parts.next().unwrap_or_default();
+            out.push(clip_line(self.line(r, &on, &wid, Some(first)), w));
+            for more in parts {
+                let l = Line::from(vec![
+                    Span::raw(" ".repeat(indent)),
+                    Span::styled(more, c.style),
+                ]);
+                out.push(clip_line(l, w));
+            }
+        }
+        (out, starts)
+    }
+
+    /// Which columns show, and each one's width.
+    fn layout(&self, w: usize) -> (Vec<bool>, Vec<usize>) {
         let ncol = self.header.len();
         let mut wid: Vec<usize> = self.header.iter().map(|h| len(h)).collect();
         for r in &self.rows {
@@ -134,34 +182,35 @@ impl Table {
                 || self.flexkeep
                 || w as isize - total - GAP as isize >= self.flexmin as isize;
         }
-        let header: Vec<Cell> = self.header.iter().map(|h| cell(*h, head)).collect();
-        std::iter::once(&header)
-            .chain(&self.rows)
-            .map(|r| {
-                let mut spans: Vec<Span<'static>> = vec![];
-                for j in (0..ncol).filter(|&j| on[j]) {
-                    let empty = Cell::default();
-                    let c = r.get(j).unwrap_or(&empty);
-                    if !spans.is_empty() {
-                        spans.push(Span::raw(" ".repeat(GAP)));
-                    }
-                    if Some(j) == self.flex {
-                        spans.push(Span::styled(c.text.clone(), c.style));
-                        continue;
-                    }
-                    let v = clip(&c.text, wid[j]);
-                    let pad = " ".repeat(wid[j] - len(&v));
-                    if self.right.contains(&j) {
-                        spans.push(Span::raw(pad));
-                        spans.push(Span::styled(v, c.style));
-                    } else {
-                        spans.push(Span::styled(v, c.style));
-                        spans.push(Span::raw(pad));
-                    }
-                }
-                clip_line(trim_end(spans), w)
-            })
-            .collect()
+        (on, wid)
+    }
+
+    /// One row's line, unclipped; `flex` replaces the flex column's text.
+    fn line(&self, r: &[Cell], on: &[bool], wid: &[usize], flex: Option<String>) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![];
+        let mut flex = flex;
+        for j in (0..self.header.len()).filter(|&j| on[j]) {
+            let empty = Cell::default();
+            let c = r.get(j).unwrap_or(&empty);
+            if !spans.is_empty() {
+                spans.push(Span::raw(" ".repeat(GAP)));
+            }
+            if Some(j) == self.flex {
+                let text = flex.take().unwrap_or_else(|| c.text.clone());
+                spans.push(Span::styled(text, c.style));
+                continue;
+            }
+            let v = clip(&c.text, wid[j]);
+            let pad = " ".repeat(wid[j] - len(&v));
+            if self.right.contains(&j) {
+                spans.push(Span::raw(pad));
+                spans.push(Span::styled(v, c.style));
+            } else {
+                spans.push(Span::styled(v, c.style));
+                spans.push(Span::raw(pad));
+            }
+        }
+        trim_end(spans)
     }
 }
 
@@ -284,6 +333,26 @@ mod tests {
             wrap(&items, "  ", 5),
             ["nodes 3/3", "heartbeats 7/8", "lazer $1/$5"]
         );
+    }
+
+    #[test]
+    fn a_wrapped_flex_column_shows_its_whole_text_under_itself() {
+        let mut tb = t(&[&["a", "1", "one two three four"], &["b", "2", "five"]]);
+        tb.flexkeep = true;
+        let (lines, starts) = tb.fit_wrapped(18, Style::new());
+        let got: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            got,
+            [
+                "NAME  N  NOTE",
+                "a     1  one two",
+                "         three",
+                "         four",
+                "b     2  five"
+            ]
+        );
+        assert_eq!(starts, [1, 4]);
+        assert!(got.iter().all(|l| len(l) <= 18 && !l.contains('~')));
     }
 
     #[test]

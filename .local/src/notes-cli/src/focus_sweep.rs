@@ -94,6 +94,7 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     }
     fs::write(&note, joined)?;
     log.info("focus", "toggled in-progress");
+    crate::ingest::record(p, &crate::ingest::Event::new("toggled", "focus", "", query));
     Ok(0)
 }
 
@@ -213,6 +214,17 @@ fn move_ideas(
             "focus",
             &format!("moved {n} #idea row(s) to {}", path.display()),
         );
+        let to = path
+            .parent()
+            .and_then(Path::file_name)
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for r in rows.iter().filter(|r| md::is_task(r)) {
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("rehomed", "focus", &to, "", r),
+            );
+        }
         println!("moved {n} idea(s) -> {}", path.display());
     }
     Ok(Some(rest))
@@ -251,6 +263,13 @@ fn move_to_inboxes(
             .unwrap_or_default();
         let lines: Vec<String> = rows.iter().map(|r| md::without_project_tag(r)).collect();
         let path = crate::project_tasks::inbox_put(p, dir, &name, &lines)?;
+        for r in lines.iter().filter(|r| !r.starts_with([' ', '\t'])) {
+            let text = crate::sheet::inbox_text(r);
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::new("moved", "focus", &name, &text),
+            );
+        }
         log.info(
             "focus",
             &format!(

@@ -18,6 +18,7 @@ mod feed;
 mod fleet;
 mod infra;
 mod jobs;
+mod projects;
 mod queue;
 mod shepherd;
 mod transcript;
@@ -105,12 +106,14 @@ async fn main() -> Result<()> {
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
+        .route("/api/home", get(home_board))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/projects", get(projects::get))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
@@ -301,7 +304,7 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines, the pass running now and the last
+    // fleet-shepherd's ledger: the Sessions tab's shepherd due lines, the pass running now and the last
     // one scored. Dotfiles have no extension, so this comes before the `ext` match.
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
@@ -498,6 +501,9 @@ struct AgentOut {
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
+    /// When a `waiting` agent started waiting, unix seconds: its transcript's last write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waiting_since: Option<u64>,
 }
 
 async fn collect() -> Vec<chooser::Agent> {
@@ -553,6 +559,14 @@ async fn agents() -> Json<Vec<AgentOut>> {
                     ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
                 },
+                waiting_since: match (a.status.as_str(), &a.jsonl) {
+                    ("waiting", Some(p)) => std::fs::metadata(p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()),
+                    _ => None,
+                },
                 target: a.target,
                 short: a.short_target,
                 project: a.project,
@@ -601,32 +615,6 @@ struct TargetQuery {
 async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
     let agent = find(&q.t).await?;
     capture(agent.pane).await
-}
-
-/// Sampling a pane while a paste renders. tmux has no event for "the program in this pane has
-/// read its input", so this is the one bounded loop on one cadence. 40 samples is 2s.
-const PASTE_POLL: Duration = Duration::from_millis(50);
-const PASTE_POLLS: u32 = 40;
-
-/// Wait until `capture` has moved away from `before` and then held still for one sample: the
-/// program has read the paste and drawn it. Claude Code drops an Enter that arrives on the heels
-/// of a paste, which leaves the message sitting unsent in its input box. False when the pane never
-/// settles, as under a running spinner; the caller presses Enter regardless, once.
-async fn paste_settled<F, Fut>(before: &str, mut capture: F, polls: u32, cadence: Duration) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = String>,
-{
-    let mut last: Option<String> = None;
-    for _ in 0..polls {
-        let now = capture().await;
-        if now != before && last.as_deref() == Some(now.as_str()) {
-            return true;
-        }
-        last = Some(now);
-        tokio::time::sleep(cadence).await;
-    }
-    false
 }
 
 async fn capture(pane: String) -> ApiResult<String> {
@@ -706,30 +694,19 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
 
     if !b.text.is_empty() {
-        let before = capture(agent.pane.clone()).await?;
-        // A bracketed paste, not send-keys -l: a newline inside the text stays part of
-        // the message instead of submitting it half-written.
-        run_tmux(
-            server,
-            &["load-buffer", "-b", "agent-web", "-"],
-            Some(&b.text),
-        )
-        .await?;
-        run_tmux(
-            server,
-            &["paste-buffer", "-p", "-d", "-b", "agent-web", "-t", pane],
-            None,
-        )
-        .await?;
-        if b.submit.unwrap_or(true) {
-            paste_settled(
-                &before,
-                || async { capture(agent.pane.clone()).await.unwrap_or_default() },
-                PASTE_POLLS,
-                PASTE_POLL,
-            )
-            .await;
-            run_tmux(server, &["send-keys", "-t", pane, "Enter"], None).await?;
+        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
+        // drawn before Enter, and the check that the Enter was taken.
+        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
+        let sent =
+            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
+                .await
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if sent == agent_panel::send::Sent::NotSubmitted {
+            return Err(bad(
+                StatusCode::CONFLICT,
+                "the session did not take the Enter; the text is in its input box",
+            ));
         }
     }
     if let Some(k) = b.key.as_deref() {
@@ -810,6 +787,13 @@ struct Ask {
     session: String,
     /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
     judge: String,
+    /// When it was filed, unix seconds.
+    created: Option<i64>,
+    /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
+    agent: String,
+    /// The question's first sentence, and the question after it (hub-core `text::headline`).
+    title: String,
+    body: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
@@ -819,19 +803,27 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            (f.len() >= 7 && !f[0].is_empty()).then(|| Ask {
-                id: f[0].into(),
-                project: f[1].into(),
-                kind: f[4].into(),
-                question: f[5].into(),
-                options: f[6]
-                    .split('|')
-                    .filter(|o| !o.is_empty())
-                    .map(String::from)
-                    .collect(),
-                recommend: f.get(10).copied().unwrap_or("").into(),
-                session: f.get(15).copied().unwrap_or("").into(),
-                judge: f.get(16).copied().unwrap_or("").into(),
+            let col = |i: usize| f.get(i).copied().unwrap_or("");
+            (f.len() >= 7 && !f[0].is_empty()).then(|| {
+                let (title, body) = hub_core::text::headline(f[5]);
+                Ask {
+                    id: f[0].into(),
+                    project: f[1].into(),
+                    kind: f[4].into(),
+                    question: f[5].into(),
+                    options: f[6]
+                        .split('|')
+                        .filter(|o| !o.is_empty())
+                        .map(String::from)
+                        .collect(),
+                    recommend: col(10).into(),
+                    session: col(15).into(),
+                    judge: col(16).into(),
+                    created: hub_core::fleet::ts(col(11)),
+                    agent: col(12).into(),
+                    title,
+                    body,
+                }
             })
         })
         .collect()
@@ -900,11 +892,14 @@ async fn log_day(Query(q): Query<LogQuery>) -> ApiResult<Json<serde_json::Value>
     if q.date.as_deref().is_some_and(|d| !boards::is_day(d)) {
         return Err(bad(StatusCode::BAD_REQUEST, "date is YYYY-MM-DD"));
     }
-    tokio::task::spawn_blocking(move || boards::record(&boards::daylog_dir(), q.date.as_deref()))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
+    tokio::task::spawn_blocking(move || {
+        boards::record(&boards::daylog_dir(), q.date.as_deref())
+            .map(|r| boards::log_view(r, &chrono::Local))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
 }
 
 #[derive(Deserialize)]
@@ -918,6 +913,23 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .await
         .map(Json)
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// The Home tab: hub_core::home over the fleet state, the queue and the cached Prometheus
+/// answer, the same join the hub TUI's Home draws.
+async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+    let infra = s.infra.infra().await;
+    tokio::task::spawn_blocking(move || {
+        let state = std::fs::read_to_string(boards::fleet_state())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let queue = hub_core::queue::Queue::read(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&infra))
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 async fn infra_board(State(s): State<Shared>) -> Response {
@@ -986,24 +998,6 @@ async fn events_stream(
 mod tests {
     use super::*;
 
-    /// Run `paste_settled` over scripted captures; returns its answer and how many it read.
-    async fn settle(script: &[&str], polls: u32) -> (bool, usize) {
-        let mut it = script.iter();
-        let mut read = 0;
-        let settled = paste_settled(
-            "before",
-            || {
-                read += 1;
-                let next = it.next().copied().unwrap_or("before").to_string();
-                async move { next }
-            },
-            polls,
-            Duration::ZERO,
-        )
-        .await;
-        (settled, read)
-    }
-
     #[test]
     fn only_a_dir_directly_under_projects_is_a_new_project() {
         use notify::event::{CreateKind, ModifyKind};
@@ -1017,24 +1011,6 @@ mod tests {
         ));
         let modify = EventKind::Modify(ModifyKind::Any);
         assert!(!is_new_project(&modify, &projects.join("-new"), projects));
-    }
-
-    #[tokio::test]
-    async fn settles_once_the_paste_is_drawn_and_still() {
-        let got = settle(&["before", "before", "pasted", "pasted", "unread"], 40).await;
-        assert_eq!(got, (true, 4));
-    }
-
-    #[tokio::test]
-    async fn a_pane_still_redrawing_has_not_settled() {
-        let got = settle(&["a", "b", "c", "c"], 40).await;
-        assert_eq!(got, (true, 4));
-        assert_eq!(settle(&["a", "b", "c", "d"], 4).await, (false, 4));
-    }
-
-    #[tokio::test]
-    async fn an_unchanged_pane_gives_up_at_the_bound() {
-        assert_eq!(settle(&[], 5).await, (false, 5));
     }
 
     /// A path that cannot be watched comes back as failed and does not stop the others; the
@@ -1180,6 +1156,17 @@ mod tests {
         let judged =
             "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
         assert_eq!(parse_asks(judged)[0].judge, "answer:b");
+        let full = "F1\tbnb\t\tpending\tquestion\tShip it? CI is green.\ta|b\t\t\t\ta\t2026-11-05T05:51:30-0800\tshepherd\t\t\tsid\t\t\n";
+        let a = &parse_asks(full)[0];
+        assert_eq!(
+            (a.title.as_str(), a.body.as_str()),
+            ("Ship it?", "CI is green.")
+        );
+        assert_eq!(
+            (a.created, a.agent.as_str()),
+            (Some(1_793_886_690), "shepherd")
+        );
+        assert_eq!(asks[0].created, None);
     }
 
     #[test]

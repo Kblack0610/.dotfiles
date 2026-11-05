@@ -34,6 +34,15 @@ setup() {
   export BENCH_TOKENS_CMD=tokens-stub TOKLINE="$SANDBOX/tokline"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$TOKLINE" > "$SANDBOX/bin/tokens-stub"
   chmod +x "$SANDBOX/bin/tokens-stub"
+  # day-log week --line, canned the same way
+  export BENCH_WEEK_CMD=week-stub WEEKLINE="$SANDBOX/weekline"
+  printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$WEEKLINE" > "$SANDBOX/bin/week-stub"
+  chmod +x "$SANDBOX/bin/week-stub"
+  # comms-lint line and kpi --json, canned: serve $COMMSLINE and $COMMSKPI when they exist, else fail like no snapshot
+  export BENCH_COMMS_CMD=comms-stub COMMSLINE="$SANDBOX/commsline" COMMSKPI="$SANDBOX/commskpi"
+  printf '#!/usr/bin/env bash\ncase "$*" in line) cat "%s" ;; "kpi --json") cat "%s" ;; *) exit 9 ;; esac 2>/dev/null\n' \
+    "$COMMSLINE" "$COMMSKPI" > "$SANDBOX/bin/comms-stub"
+  chmod +x "$SANDBOX/bin/comms-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -91,6 +100,8 @@ brow() {
     1 "$T0" 1.5 2 "$T0" 2.5 > "$FLEET_BENCH_DIR/scores.jsonl"
   printf '{"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
     > "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # one KPI past its limit and one inside it, so the phone can name what is over
+  printf '%s\n' ci_red_per_pr_max=1 runners_bad_max=2 > "$KPI_THRESHOLDS"
   run sample_at 1800
   assert_success
   run cat "$PROM_TEXTFILE_DIR/fleet_bench.prom"
@@ -109,6 +120,29 @@ agent_bench_eta_ratio{project="game"} 2
 # HELP agent_bench_ci_reds_before_merge CI reds on PRs merged in the last 24h, before they merged.
 # TYPE agent_bench_ci_reds_before_merge gauge
 agent_bench_ci_reds_before_merge{project="game"} 2
+# HELP agent_bench_loop_dark_episodes Finding episodes begun in the last 7d that reached the human with nothing but pages.
+# TYPE agent_bench_loop_dark_episodes gauge
+agent_bench_loop_dark_episodes 0
+# HELP agent_bench_loop_first_response_minutes Median minutes from a finding episode to its first response that is not a page, last 7d.
+# TYPE agent_bench_loop_first_response_minutes gauge
+# HELP agent_bench_kpi The KPIs `fleet-bench kpi` prints, by window.
+# TYPE agent_bench_kpi gauge
+agent_bench_kpi{kpi="sessions",window="7d"} 0
+agent_bench_kpi{kpi="sessions",window="28d"} 0
+agent_bench_kpi{kpi="ci_red_per_pr",window="7d"} 4.5
+agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
+agent_bench_kpi{kpi="runners_bad",window="7d"} 0
+agent_bench_kpi{kpi="asks_stale",window="7d"} 0
+agent_bench_kpi{kpi="board_open",window="7d"} 0
+agent_bench_kpi{kpi="loop_dark",window="7d"} 0
+# HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
+# TYPE agent_bench_kpi_limit gauge
+agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
+agent_bench_kpi_limit{kpi="runners_bad"} 2
+# HELP agent_bench_kpi_past 1 when a KPI is past its threshold, as fleet-bench judged it.
+# TYPE agent_bench_kpi_past gauge
+agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
+agent_bench_kpi_past{kpi="runners_bad"} 0
 PROM
 )"
 }
@@ -354,6 +388,29 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output 2
 }
 
+@test "stats: a session's whole life, past the 24h window, with escalations and its merged PRs" {
+  rowj 'bucket: "WORKING", escalated: false' > "$SNAP"; sample_at 0
+  rowj 'bucket: "NEEDS", escalated: true' > "$SNAP"; sample_at 600
+  rowj 'bucket: "WORKING", escalated: true' > "$SNAP"; sample_at 1200
+  rowj 'bucket: "WORKING", escalated: false' > "$SNAP"; sample_at 1800
+  rowj 'bucket: "STALLED", escalated: true' > "$SNAP"; sample_at 2400
+  printf '%s\n' \
+    '{"repo":"o/r","number":5,"session_id":"a","merged_epoch":1793160100,"additions":10,"deletions":2,"ci_runs":3,"ci_red":1}' \
+    '{"repo":"o/r","number":6,"session_id":"a","merged_epoch":1793160200,"additions":5,"deletions":0,"ci_runs":1,"ci_red":0}' \
+    '{"repo":"o/r","number":7,"session_id":"z","merged_epoch":1793160300,"additions":1,"deletions":1,"ci_runs":1,"ci_red":0}' \
+    >> "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json
+  assert_success
+  run jq -sc 'map({session_id, minutes, escalations, sampled,
+                   merged})' <<<"$output"
+  assert_output '[{"session_id":"a","minutes":{"NEEDS":10,"WORKING":30},"escalations":2,"sampled":null,"merged":{"prs":2,"lines_added":15,"lines_deleted":2,"ci_runs":4,"ci_reds":1}},{"session_id":"z","minutes":null,"escalations":null,"sampled":false,"merged":{"prs":1,"lines_added":1,"lines_deleted":1,"ci_runs":1,"ci_reds":0}}]'
+  BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json --since $((T0 + 250))
+  assert_output --partial '"session_id":"z"'
+  refute_output --partial '"number":5'
+  run "$SUBJECT" stats
+  assert_failure 2
+}
+
 @test "scorecard writes the dated file and latest.md, joining session-outcomes by session_id" {
   export BENCH_SCORECARD_DIR="$HOME/lab/bench" BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
@@ -531,7 +588,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   [ ! -e "$BENCH_SCORECARD_DIR/asks.md" ]        # the bare verb only prints
 }
 
-@test "asks --page writes asks.md, pages the top 3 with their recommendation, publishes under its own name" {
+@test "asks --page writes asks.md, pages the top 3 in plain words with their recommendation, publishes under its own name" {
   stub_asks
   rowj 'phases_done: 0' > "$SNAP"; sample_at 0
   { ask p a 1 go; ask q a 2; ask r a 3 hold gate; ask s a 4; ask old "" 72; } > "$SANDBOX/asks.tsv"
@@ -539,9 +596,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   assert_success
   [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
   run cat "$SANDBOX/pages"
-  assert_output --partial 'notify -p normal -t asks 5 asks pending: 4 block a live session, 1 have none (oldest 3d). 1) s lab/game-agent-1, 4h: s question. 2) r lab/game-agent-1, 3h: r question -> hold. 3) q '
-  refute_output --partial ' p question'
-  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  assert_output 'notify -p normal -t asks 5 questions wait on you, 4 holding up a session. Top: s question (4h); r question (3h, recommend hold); q question (2h). List: fleet-bench asks.'
   run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
   assert_output 1
   run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
@@ -549,18 +604,42 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
 }
 
-@test "asks --write writes asks.md and prints the line, with no page and no verdict of its own" {
+@test "asks --write writes asks.md and prints the top one, with no page and no verdict of its own" {
   stub_asks
   rowj 'phases_done: 0' > "$SNAP"; sample_at 0
   { ask p a 1 go; ask old "" 72; } > "$SANDBOX/asks.tsv"
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_success
-  assert_output --partial '2 asks pending: 1 block a live session, 1 have none (oldest 3d).'
-  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  assert_output '2 questions wait on you, 1 holding up a session. Top: p question (1h, recommend go). List: fleet-bench asks.'
   [ ! -e "$SANDBOX/pages" ]
   [ ! -e "$AGENTCTL_STATE_DIR/briefing/last-outcome" ]
   run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
   assert_output 1
+}
+
+@test "asks quotes a question's first sentence whole, and names one too long instead of cutting it" {
+  stub_asks
+  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
+  q() { printf '%s\tgame\t\tpending\tquestion\t%s\ta|b\t\t\t\t\t%s\t\n' "$1" "$2" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)"; }
+  q a 'Real money: which US state do you live in? It decides whether the bot may trade at all.' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: Real money: which US state do you live in? (2h). List: fleet-bench asks.'
+  q a 'Should the nightly retry every red shard on the spare runner pool before it pages anyone about it' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: a game question, ask a (2h). List: fleet-bench asks.'
+  q a 'Nightly retries: should the nightly retry every red shard on the spare runner pool before it pages anyone' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: Nightly retries, ask a (2h). List: fleet-bench asks.'
+  refute_output --partial '...'
+  # The page quotes only the questions that fit its 300 chars.
+  { for i in a b c; do q $i "Question $i: should the nightly retry every red shard on the spare runner pool before it pages?" 2; done; } > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  assert_success
+  run sed 's/^notify -p normal -t asks //' "$SANDBOX/pages"
+  [ "${#output}" -le 300 ]
+  assert_output --partial 'Top: Question a: should'
+  assert_output --partial 'Question b: should'
+  refute_output --partial 'Question c'
 }
 
 @test "asks rejects an unknown flag instead of printing (negative control)" {
@@ -619,8 +698,8 @@ ci_row() { jq -cn --argjson t "$T0" "$1" >> "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 # h1 inside 7d, h2 only inside 28d, h3 outside both; r1 and r2 are headless and never count
 kpi_fixture() {
   mkdir -p "$FLEET_BENCH_DIR"
-  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 4, reverted_7d: 1, cost_usd: 8, corrections: {interrupts: 2}}'
-  out_row game '{session_id: "h2", project: "game", updated_epoch: ($t - 864000), prs_merged: 1, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 0}}'
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 4, reverted_7d: 1, cost_usd: 8, corrections: {interrupts: 2}, plan_gate: {exits: 4, denied: 1}}'
+  out_row game '{session_id: "h2", project: "game", updated_epoch: ($t - 864000), prs_merged: 1, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 0}, plan_gate: {exits: 4, denied: 3}}'
   out_row game '{session_id: "h3", project: "game", updated_epoch: ($t - 3456000), prs_merged: 10, reverted_7d: 0, cost_usd: 1, corrections: {interrupts: 9}}'
   out_row game '{session_id: "r1", project: "game", runner: true, updated_epoch: ($t - 86400), prs_merged: 50, reverted_7d: 50, cost_usd: 100, corrections: null}'
   out_row _runner '{session_id: "r2", project: "_runner", updated_epoch: ($t - 86400), prs_merged: 30, reverted_7d: 30, cost_usd: 100, corrections: null}'
@@ -634,12 +713,30 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
   assert_line '| prs_per_session | 4 | 2.5 | min 1 | ok |'
   assert_line '| cost_per_pr | 2 | 2 | - | - |'
+}
+
+@test "kpi: the comms KPIs come from the comms snapshot, and retro files the one past its threshold" {
+  kpi_setup
+  printf '%s\n' buzzes_per_day_max=15 comms_pass_pct_min=60 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| buzzes_per_day | - | - | max 15 | - |'
+  echo '{"buzzes_per_day":{"7d":63.1,"28d":28.5},"comms_pass_pct":{"7d":61,"28d":40},"date":"2026-11-05"}' > "$COMMSKPI"
+  run "$SUBJECT" kpi
+  assert_line '| buzzes_per_day | 63.1 | 28.5 | max 15 | past |'
+  assert_line '| comms_pass_pct | 61 | 40 | min 60 | ok |'
+  assert_line '| rows_pass_pct | - | - | - | - |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'kpi: buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #high' "$BOARD"
+  assert_output 1
+  run grep -c 'kpi: comms_pass_pct' "$BOARD"
+  assert_output 0
 }
 
 @test "kpi: an empty window and zero merged PRs print - and null, never an error" {
@@ -672,6 +769,82 @@ kpi_fixture() {
   run "$SUBJECT" kpi
   assert_line '| runners_bad (now) | 1 | - | max 0 | past |'
   assert_line '| asks_stale (now) | 0 | - | - | - |'
+}
+
+# frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
+frow() {
+  mkdir -p "$FLEET_BENCH_DIR"
+  jq -cn --argjson t "$T0" --arg r "$1" --arg s "$2" --argjson e "$3" --argjson n "$4" --arg c "$5" \
+    '{epoch: ($t + $n), rule: $r, scope: $s, episode: ($t + $e), decision_class: $c,
+      fact: "\($r) \($s) @\($t + $e)"}' >> "$FLEET_BENCH_DIR/findings.jsonl"
+}
+
+# Two episodes past the hour, both on the human's list: pool:other only paged, pool:mac paged and
+# then a row filed 55 minutes in, recorded out of order. A third, shepherd-only, never reached the human.
+loop_fixture() {
+  frow starved pool:other -7200 -7200 shepherd; frow starved pool:other -7200 -3600 human; frow starved pool:other -7200 -600 human
+  frow starved pool:mac -7200 -7200 shepherd; frow starved pool:mac -7200 -4000 human
+  frow host-overload host:a -1800 -1800 shepherd; frow host-overload host:a -1800 -1200 shepherd
+  BENCH_NOW=$((T0 - 3500)) "$SUBJECT" respond "starved pool:other @$((T0 - 7200))" shepherd paged
+  BENCH_NOW=$((T0 - 3900)) "$SUBJECT" respond "starved pool:mac @$((T0 - 7200))" binks filed-row ar-9
+  BENCH_NOW=$((T0 - 4000)) "$SUBJECT" respond "starved pool:mac @$((T0 - 7200))" shepherd paged
+}
+
+@test "respond records one row per act on a finding, and refuses a fact or an action it does not know" {
+  kpi_setup
+  run "$SUBJECT" respond 'starved pool:other @1700000000' binks asked ask-3
+  assert_success
+  run jq -c '[.epoch, .fact, .actor, .action, .ref]' "$FLEET_BENCH_DIR/responses.jsonl"
+  assert_output "[$T0,\"starved pool:other @1700000000\",\"binks\",\"asked\",\"ask-3\"]"
+  run "$SUBJECT" respond 'starved pool:other @1700000000' binks held
+  assert_failure 2
+  run "$SUBJECT" respond 'starved pool:other' binks asked
+  assert_failure 2
+  run wc -l < "$FLEET_BENCH_DIR/responses.jsonl"
+  assert_output 1
+}
+
+@test "loop: an episode that reached the human with only pages is dark; one with a filed row is not" {
+  kpi_setup; loop_fixture
+  run "$SUBJECT" loop --json
+  assert_success
+  run jq -sc 'sort_by(.scope) | map([.scope, .dark, .open, .first_response_min, .human_at != null, .responses])' <<<"$output"
+  assert_output '[["host:a",false,true,null,false,[]],["pool:mac",false,false,55,true,["paged","filed-row"]],["pool:other",true,true,null,true,["paged"]]]'
+  run "$SUBJECT" loop
+  assert_line --index 0 'loop, 7d: 3 episodes, 1 dark (1 still firing), first response after 55m median'
+  assert_line --partial 'DARK   firing   starved pool:other'
+  assert_line --partial '55m    cleared  starved pool:mac'
+}
+
+@test "loop --firing: one sentence per dark episode still firing, and nothing when none fires" {
+  kpi_setup; loop_fixture
+  run "$SUBJECT" loop --firing
+  assert_success
+  assert_output "Finding starved pool:other @$((T0 - 7200)) has been yours for 60m and still fires, with nothing done but a page. Run fleet-bench loop."
+  BENCH_NOW=$((T0 - 3000)) "$SUBJECT" respond "starved pool:other @$((T0 - 7200))" binks asked ask-4
+  run "$SUBJECT" loop --firing
+  assert_success
+  assert_output ''
+}
+
+@test "loop: no findings is a line, never an error; a bad flag is a usage error" {
+  kpi_setup
+  run "$SUBJECT" loop
+  assert_success
+  assert_output 'loop: no finding episodes in 7d'
+  run "$SUBJECT" loop --text
+  assert_failure 2
+}
+
+@test "kpi: loop_dark counts dark episodes still firing, and retro files it past loop_dark_max" {
+  kpi_setup; loop_fixture
+  echo loop_dark_max=0 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| loop_dark (now) | 1 | - | max 0 | past |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'kpi: loop_dark past threshold' "$BOARD"
+  assert_output 1
 }
 
 @test "kpi: no thresholds file leaves every status -" {
@@ -900,6 +1073,21 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -c 'select(.scope == "pool:unity") | .repos' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output '["unity-core-playground"]'
+}
+
+@test "findings: a starved pool says what binds it; pool other is always labels" {
+  use_fixture
+  eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "capacity oldest job waited 1.1h with 5/6 slots busy: demand is over the pool's capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # 2026-11-05: jobs pinned to one host carry no pool label, so the exporter files them under other.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_oldest_wait_seconds\tother\t%s\t7200\ncc:pool_waiting\tother\t%s\t5\n' "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_busy\tother\t%s\t2\ncc:pool_slots\tother\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
 }
 
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
@@ -1627,9 +1815,35 @@ requests_setup() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- tokens: ? (`agent-usage tokens line` unreadable)'
+  assert_output --partial '- tokens: ? (`tokens-stub` unreadable)'
   echo 'tokens 2026-10-28: 3.3B context over 28,337 responses' > "$TOKLINE"
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- tokens 2026-10-28: 3.3B context over 28,337 responses'
+}
+
+@test "scorecard KPIs carry the comms snapshot row, and say so when there is none" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- comms: ? (`comms-stub line` unreadable)'
+  echo 'comms 2026-11-05: 7d 44% of 1,949 messages meet the standard' > "$COMMSLINE"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- comms 2026-11-05: 7d 44% of 1,949 messages meet the standard'
+}
+
+@test "scorecard KPIs carry what moved this week, and say so when day-log has none" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- week: ? (`week-stub` unreadable)'
+  echo 'week to 2026-10-27 (7 of 7 days): 14 merged (+7)' > "$WEEKLINE"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- week to 2026-10-27 (7 of 7 days): 14 merged (+7)'
 }

@@ -22,7 +22,12 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
-  *baseRefName*) printf '%s main\n' "$(cat "$NOTES_FIXTURE/state")" ;;
+  *baseRefName*) printf '%s main https://github.com/o/r/pull/42\n' "$(cat "$NOTES_FIXTURE/state")" ;;
+  *mergeable*)
+    # mergeable.seq: one answer per call, popped as read; then this head, mergeable
+    q="$NOTES_FIXTURE/mergeable.seq"
+    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
+  *body*) cat "$NOTES_FIXTURE/body" ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
@@ -42,17 +47,33 @@ EOF
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1" in
-rev-list) cat "$NOTES_FIXTURE/behind" ;;
+rev-list)
+  # behind.seq: one count per call, popped as read; then behind
+  q="$NOTES_FIXTURE/behind.seq"
+  if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) echo 0123456789abcdef ;;
+merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 esac
 EOF
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
+  # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
+  printf 'The change and why.\n' >"$NOTES_FIXTURE/body"
+  cat >"$SANDBOX/bin/comms-lint" <<'EOF'
+#!/usr/bin/env bash
+printf 'comms-lint %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat >"$NOTES_FIXTURE/linted.txt"
+[ ! -f "$NOTES_FIXTURE/lint.out" ] || cat "$NOTES_FIXTURE/lint.out"
+exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
-  unset AGENT_QUEUE_ITEM
+  unset CLAUDE_CODE_SESSION_ID
+
+  # The item most cases land: an agent-lane board row's. Every landing needs one.
+  item ship 'board:dotfiles:ship it' agent
 
   PLAN="$SANDBOX/plan.md"
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
@@ -72,7 +93,7 @@ item() {
 
 @test "behind main: stops before the checks and the merge with exit 3" {
   printf '2\n' >"$NOTES_FIXTURE/behind"
-  run "$LAND" 42 --project dotfiles --title "ship it"
+  run "$LAND" 42 --item ship
   assert_failure 3
   assert_output --partial 'behind origin/main by 2, merge it and re-run'
   refute_output --partial 're-gate'
@@ -80,9 +101,47 @@ item() {
   assert_output 0
 }
 
+@test "behind after a green gate: base is merged in and pushed, and that head lands with no second checks wait" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: merged origin/main (1 behind) into the green head and pushed it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks' "$LOG"
+  assert_output 1
+  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_line --index 1 'git push -q'
+  assert_line --index 2 'git rev-parse HEAD'
+  run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+}
+
+@test "a pushed catch-up head is merged only once GitHub reads that head with a known mergeable" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' 'fedcba9876543210 MERGEABLE' '0123456789abcdef UNKNOWN' >"$NOTES_FIXTURE/mergeable.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  run grep -c 'pr view 42 --json headRefOid,mergeable' "$LOG"
+  assert_output 3
+  # the merge comes after the last poll
+  [ "$(grep -n 'headRefOid,mergeable' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "behind after a green gate with a conflicting merge: aborted, exit 3, nothing pushed or merged" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  : >"$NOTES_FIXTURE/merge.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'behind origin/main by 1 and merging it conflicts'
+  run grep -c '^git merge --abort$' "$LOG"
+  assert_output 1
+  run grep -c 'git push\|pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
 @test "a merge that does not read MERGED stops before the board step" {
   printf 'OPEN\n' >"$NOTES_FIXTURE/merged.state"
-  run "$LAND" 42 --project dotfiles --title "ship it"
+  run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'merge failed: #42 reads OPEN, not MERGED'
   run grep -c '^notes' "$LOG"
@@ -90,19 +149,21 @@ item() {
 }
 
 @test "happy path: each step once, in order, one line each" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "6. agent-land"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land"
   assert_success
   assert_output - <<'EOF'
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
+body: passes comms-lint --channel pr-body
+item: ship done with pr:o/r#42
 board: closed "ship it" with pr:42
 plan: ticked "6. agent-land"
 landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
-gh pr view 42 --json state,baseRefName -q .state + " " + .baseRefName
+gh pr view 42 --json state,baseRefName,url -q .state + " " + .baseRefName + " " + .url
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 gh pr checks 42 --watch --fail-fast
@@ -111,14 +172,45 @@ git rev-list --count HEAD..origin/main
 git rev-parse HEAD
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
+gh pr view 42 --json body -q .body
+comms-lint --channel pr-body -
 notes ptask dotfiles --agent done ship it --proof pr:42
 EOF
+}
+
+@test "a body with findings is scored after the merge and the landing still finishes" {
+  printf '  lead-too-long: 170 chars before the first sentence ends, budget 140\n\n1 finding(s) for channel pr-body.\n' >"$NOTES_FIXTURE/lint.out"
+  echo 1 >"$NOTES_FIXTURE/lint.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'body: 1 finding(s) for channel pr-body. First: lead-too-long: 170 chars before the first sentence ends, budget 140'
+  assert_line 'landed #42'
+  run cat "$NOTES_FIXTURE/linted.txt"
+  assert_output 'The change and why.'
+}
+
+@test "a body that cannot be scored says why and does not fail the landing" {
+  printf 'comms-lint: prose checker not found: nope.py (set COMMS_PROSE_CHECK)\n' >"$NOTES_FIXTURE/lint.out"
+  echo 2 >"$NOTES_FIXTURE/lint.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'body: not scored (comms-lint: prose checker not found: nope.py (set COMMS_PROSE_CHECK))'
+  assert_line 'landed #42'
+}
+
+@test "a failing check never reaches the body score (negative control)" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  run grep -c 'comms-lint' "$LOG"
+  assert_output 0
 }
 
 @test "a failing PR check stops before the second fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
-  run "$LAND" 42 --project dotfiles --title "ship it"
+  run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: Checks'
   run grep -c 'pr merge\|^notes' "$LOG"
@@ -129,7 +221,7 @@ EOF
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
-  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --project dotfiles --title "ship it"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
   assert_success
   assert_line --index 0 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
@@ -139,7 +231,7 @@ EOF
 @test "no checks reported while an Actions run is queued: it keeps waiting past the bound" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   printf '1\n1\n1\n' >"$NOTES_FIXTURE/runs.queued"
-  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --project dotfiles --title "ship it"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
   assert_success
   # 3 polls see a queued run (the bound never counts), then 2 more see none
   run grep -c 'pr checks 42 --watch' "$LOG"
@@ -147,7 +239,7 @@ EOF
 }
 
 @test "--plan ticks exactly the named phase" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "6. agent-land"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land"
   assert_success
   run cat "$PLAN"
   assert_output - <<'EOF'
@@ -161,7 +253,7 @@ EOF
 }
 
 @test "a phase that matches no unchecked line is refused before anything runs" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "9. missing"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "9. missing"
   assert_failure 2
   assert_output --partial '0 unchecked lines'
   run cat "$LOG"
@@ -169,13 +261,15 @@ EOF
 }
 
 @test "--dry-run prints every step and runs nothing" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --plan "$PLAN" --phase "6. agent-land" --dry-run
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land" --dry-run
   assert_success
   assert_line --index 0 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 1 --partial 'fetch: git fetch origin'
   assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 3 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 4 --partial 'plan: tick'
+  assert_line --index 3 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 4 'item: agent-queue set ship pr=42 && agent-queue move ship done --status ok'
+  assert_line --index 5 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 6 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -184,35 +278,35 @@ EOF
 
 @test "an already merged PR is recorded without a second merge" {
   printf 'MERGED\n' >"$NOTES_FIXTURE/state"
-  run "$LAND" 42 --project dotfiles --title "ship it"
+  run "$LAND" 42 --item ship
   assert_success
   assert_line --index 0 'merge: #42 already MERGED, recording it'
   run grep -c 'pr merge\|pr checks\|^git' "$LOG"
   assert_output 0
 }
 
-@test "--item: the item gets the PR and moves to done; a human item closes no row and needs no --project" {
+@test "--item: the item gets the PR and moves to done; a human item closes no row" {
   item tidy-loader
-  run "$LAND" 42 --item tidy-loader
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 3 'item: tidy-loader done with pr:42'
-  assert_line --index 4 'landed #42'
+  assert_line --index 4 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 5 'landed #42'
   run grep -c '^notes' "$LOG"
   assert_output 0
   run agent-queue show tidy-loader --json
-  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr)"' <<<"$output")" 'done ok 42'
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
-@test "a hand-started session's own item is the record: no --item, no --project needed" {
+@test "a hand-started session's own item is the record: no --item needed" {
   printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
   export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
   item by-hand
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 3 'item: by-hand done with pr:42'
+  assert_line --index 4 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
-  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done 42'
+  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
 
 @test "two items recording this session are refused before the merge" {
@@ -222,7 +316,8 @@ EOF
   item two
   agent-queue set one session=default:dotfiles-agent-9
   agent-queue set two session=default:dotfiles-agent-9
-  run "$LAND" 42 --project dotfiles --title "ship it"
+  rm "$AGENT_QUEUE_DIR"/running/*-ship.md
+  run "$LAND" 42
   assert_failure
   assert_output --partial 'pass --item'
   run grep -c 'pr merge' "$LOG"
@@ -231,9 +326,9 @@ EOF
 
 @test "AGENT_QUEUE_ITEM is the default item; a board item closes its own row with lane and profile" {
   item fix-crash 'board:game:fix crash: on load' human bnb
-  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42 --project ignored --title ignored
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 4 'board: closed "fix crash: on load" with pr:42'
+  assert_line --index 5 'board: closed "fix crash: on load" with pr:42'
   run grep '^notes' "$LOG"
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42'
 }
@@ -242,8 +337,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 3 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
-  assert_line --index 4 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 4 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
+  assert_line --index 5 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -273,14 +368,31 @@ EOF
   run "$LAND" 42 --item fix
   assert_success
   assert_line --index 0 'merge: #42 already MERGED, recording it'
-  assert_line --index 2 'board: closed "fix it" with pr:42'
+  assert_line --index 3 'board: closed "fix it" with pr:42'
   run "$LAND" 43 --item fix
   assert_failure 2
   assert_output --partial 'queue item fix is done ok, not open'
 }
 
+@test "no queue item: refused before any gh or git call, naming how to add one" {
+  rm "$AGENT_QUEUE_DIR"/running/*-ship.md
+  run "$LAND" 42
+  assert_failure 2
+  assert_output --partial 'no queue item for this session: agent-queue add --running'
+  run cat "$LOG"
+  assert_output ''
+}
+
+@test "--project and --title are gone: the item is the record" {
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_failure 2
+  assert_output --partial '--project is gone'
+  run cat "$LOG"
+  assert_output ''
+}
+
 @test "--sheet is gone" {
-  run "$LAND" 42 --project dotfiles --title "ship it" --sheet
+  run "$LAND" 42 --item ship --sheet
   assert_failure 2
   assert_output --partial 'unknown flag: --sheet'
 }

@@ -10,7 +10,7 @@ Every view of the agent fleet (phone and Home Assistant, the shepherd, fleet-ben
 
 | Trigger | When | Why |
 | --- | --- | --- |
-| `fleet-state.timer` | `tick` every minute | git, gh and plan files have no change event; the hub Fleet tab and watch.log need a fresh pass |
+| `fleet-state.timer` | `tick` every minute | git, gh and plan files have no change event; the hub Sessions tab and watch.log need a fresh pass |
 | `fleet-state.path` | `tick` when `agent-ask` posts, answers or cancels an ask (it rewrites `~/.agent/asks/.changed`) | A new ask shows as NEEDS within seconds |
 | `fleet-bench sample`, `fleet-shepherd` | `--write`, every 10 minutes and on each shepherd pass | Each needs a pass of its own to act on |
 
@@ -80,7 +80,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | --- | --- |
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
-| `hub` Fleet tab, agent-web Watch tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
+| `hub` and agent-web Sessions tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
 | waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), and the file's age |
 
@@ -94,7 +94,7 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | --- | --- |
 | Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
 | See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, UNCLEAR amber, LANDED and DONE green, PARKED dim, labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
-| See how many sessions sit in each stage | The waybar agents chip: the bar is the robot coloured by fleet health, red with a stalled session or a stale `fleet_sessions.prom`, amber with an unclear one, green otherwise, then three totals: `~` working (amber), a check mark ready, landed or done (green), and `!` need you (red). The hover has the stage counts, then a section per tmux world (hub, lab) with a line per session. Click opens agent-panel, right-click `hub --tab fleet`; `modules.sh toggle agents` hides it |
+| See how many sessions sit in each stage | The waybar agents chip: the bar is the robot coloured by fleet health, red with a stalled session or a stale `fleet_sessions.prom`, amber with an unclear one, green otherwise, then three totals: `~` working (amber), a check mark ready, landed or done (green), and `!` need you (red). The hover has the stage counts, then a section per tmux world (hub, lab) with a line per session. Click opens agent-panel, right-click `hub --tab sessions`; `modules.sh toggle agents` hides it |
 | See the fleet on the phone | The Home Assistant Template widget shows `fleet-overview`: each waybar chip's `phone` lines (sessions with a glyph strip per project, queue and capacity, CI, red now), published as `summary/overview` by `agent-mqtt-publish`. To show another chip there, give it a `phone` argument to `emit` and add it to `CHIPS` in `fleet-overview`. Widget setup: home-config `apps/home-assistant/README.md` |
 | See a label change at once | `label` sets the window option itself; a session too new to be in the document gets it at the next tick |
 
