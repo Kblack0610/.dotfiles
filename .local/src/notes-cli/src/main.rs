@@ -326,7 +326,11 @@ enum Cmd {
         /// project's own profile (bnb, personal); `dev` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// The value to write, for --stage / --group. Omit to read.
+        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
+        /// normal (clears it). fleet-dispatch ranks the project's board rows by it first.
+        #[arg(long, value_name = "NAME")]
+        prio: Option<String>,
+        /// The value to write, for --stage / --group / --prio. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
         /// Print (creating if absent) the path to a version's agent note,
@@ -1204,6 +1208,7 @@ fn main() -> Result<()> {
             version,
             stage,
             group,
+            prio,
             set,
         } => {
             let level = if major {
@@ -1238,6 +1243,13 @@ fn main() -> Result<()> {
             }
             if let Some(n) = group {
                 projects::group(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
+                std::process::exit(0);
+            }
+            if let Some(n) = prio {
+                projects::prio(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {
                     lab_refresh::kick();
                 }

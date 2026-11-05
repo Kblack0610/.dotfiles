@@ -588,6 +588,22 @@ impl App {
         });
     }
 
+    /// Step one project's priority in a worker; the answer comes back like a board write.
+    fn prio_act(&mut self, profile: String, name: String, value: &'static str) {
+        let label = format!("{name} prio {value}");
+        self.tv.running = Some(label.clone());
+        self.tv.said = None;
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = said(
+                &label,
+                hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value),
+            );
+            let _ = tx.send(Msg::TasksActed(r));
+        });
+    }
+
     pub fn read_infra(&mut self) {
         if self.infra_read.want() {
             let tx = self.tx.clone();
@@ -917,6 +933,17 @@ impl App {
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         if !self.pv.open {
             let cards = self.cards().cards;
+            if k.code == KeyCode::Char('P') {
+                // Card 0 is All, so card i is cards[i - 1].
+                if let Some(c) = self.pv.card.checked_sub(1).and_then(|i| cards.get(i)) {
+                    self.prio_act(
+                        c.profile.clone(),
+                        c.name.clone(),
+                        hub_core::projects::next_prio(&c.prio),
+                    );
+                }
+                return true;
+            }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
         if self.tv.prompt.is_none() {
@@ -1424,7 +1451,7 @@ impl App {
                 "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open rows  / search all  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
@@ -2113,6 +2140,44 @@ mod tests {
     }
 
     #[test]
+    fn p_on_a_card_steps_its_priority_through_the_cli_and_all_writes_nothing() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.handle(key('0'));
+        settle(&mut a, &rx);
+        a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
+        let mut l = loaded();
+        if let Ok(st) = l.stats.as_mut() {
+            st[1].prio = "focus".into();
+        }
+        a.handle(Msg::Projects(Box::new(l)));
+        let s = screen(&mut a, 140, 30);
+        assert!(s.contains("DEMO  bnb, alpha, prio focus"), "{s}");
+        assert!(!s.contains("GARDEN  personal, alpha, prio"), "{s}");
+        assert!(s.lines().last().unwrap().contains("P priority"), "{s}");
+        fake.0.lock().unwrap().clear();
+        a.handle(key('P'));
+        assert!(fake.0.lock().unwrap().is_empty(), "All is not a project");
+        a.handle(key('j'));
+        a.handle(key('P'));
+        assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
+        loop {
+            if let Msg::TasksActed(r) = rx.recv().unwrap() {
+                a.handle(Msg::TasksActed(r));
+                break;
+            }
+        }
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.iter()
+                .any(|c| c == "notes projects --prio demo --profile bnb --set high"),
+            "{ran:?}"
+        );
+    }
+
+    #[test]
     fn the_projects_tab_lists_cards_then_opens_one_projects_rows_under_its_card() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
@@ -2137,7 +2202,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("ALL PROJECTS  5 open rows") < at("DEMO  bnb, alpha"),
+            at("ALL PROJECTS  4 open rows") < at("DEMO  bnb, alpha"),
             "{s}"
         );
         assert!(

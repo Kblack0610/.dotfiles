@@ -78,18 +78,18 @@
 # on as a board row nobody could answer. `stale` in old files is history; nothing writes it now.
 # cancel stamps `closed_at` and, when given, `closed_reason`.
 #
-# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one observe-role
-# model call with $AGENT_ASK_POLICY writes `judge: human | take-recommend | answer:<text>` and
-# `judge_reason` into the ask. It never answers: the human still does, and `judge-report`
-# scores its calls against their answers. A gate or approval is never sent to the model; it is
-# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it).
+# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one call to the
+# registered agent `ask-judge` (its conf sets role, model and the policy prompt) writes
+# `judge: human | take-recommend | answer:<text>` and `judge_reason` into the ask. It never
+# answers: the human still does, and `judge-report` scores its calls against their answers. A gate or approval is never sent to the model; it is
+# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it), and
+# AGENT_ASK_JUDGE_CMD replaces the call (tests).
 
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_QUESTION_MAX:=150}"
-: "${AGENT_ASK_POLICY:=$HOME/.config/agent-ask/policy.md}"
-: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --role observe}"
+: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 
 # --- helpers ---------------------------------------------------------------
@@ -890,11 +890,9 @@ cmd_judge() {
       set_field "$f" judged_at "$(now_iso)"
       return 0 ;;
   esac
-  [ -r "$AGENT_ASK_POLICY" ] || { echo "agent-ask: no policy at $AGENT_ASK_POLICY" >&2; return 1; }
   local prompt out wd rc verdict call
-  prompt="$(cat "$AGENT_ASK_POLICY")
-
-## The ask
+  # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
+  prompt="## The ask
 
 project: $(field "$f" project)
 agent: $(field "$f" agent)

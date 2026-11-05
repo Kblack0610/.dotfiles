@@ -140,6 +140,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | fill in a missing shape file | `notes --profile bnb projects --new <name>` |
 | check every project's shape | `notes doctor --projects` |
 | set where it shows in the Overview | `projects --stage <name> --set draft\|alpha\|beta\|prod` |
+| set which projects agents work first (`#prio/<word>` on the `Version:` line; fleet-dispatch ranks by it) | `projects --prio <name> --set focus\|high\|low\|normal` |
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |

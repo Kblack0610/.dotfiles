@@ -373,6 +373,29 @@ gate_t() {
   assert_blocks "$(gate_t s2)"
 }
 
+# filler <session> -- 1 MB of later calls, far past a pipe buffer (64 KB), so a grep that stops
+# at an earlier match always leaves its writer unwritten bytes. 100 KB a call: one argument's limit is 128 KB.
+filler() {
+  local i x
+  x=$(head -c 100000 /dev/zero | tr '\0' x)
+  for i in $(seq 10); do tcall "$1" Bash "echo $x"; done
+}
+
+@test "session: a long session's early PR and agent-land still count past a pipe buffer" {
+  # 2026-11-05 under pipefail `printf "$CALLS" | grep -q` read a match as no match once the
+  # calls passed 64 KB: grep exits on the match, printf takes SIGPIPE, the pipeline is 141.
+  # A session that landed with agent-land was blocked, and one with no item could pass.
+  tcall s1 Edit
+  tcall s1 Bash 'gh pr create --title t'
+  filler s1
+  assert_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  tcall s2 Bash 'gh pr create --title t'
+  tcall s2 Bash 'agent-land 42 --item fix-thing'
+  filler s2
+  refute_blocks "$(gate_t s2)"
+}
+
 @test "session: its own agent-queue claim is tracking" {
   tcall s1 Edit
   tcall s1 Bash 'agent-queue claim fix-thing'

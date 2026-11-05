@@ -71,5 +71,17 @@ harness_exec() {
     return 0
   fi
 
+  # A registered agent's print call is recorded (lib/calls.sh): the JSON result carries the
+  # session id, tokens and cost, and the caller still gets plain text. A caller that chose its
+  # own --output-format keeps it, unrecorded.
+  if [ -n "${AGENTCTL_AGENT:-}" ] && [ "$print" = 1 ]; then
+    local own=0
+    for a in "$@"; do case "$a" in --output-format|--output-format=*) own=1 ;; esac; done
+    if [ "$own" = 0 ]; then
+      calls_record claude claude --output-format json "${flags[@]}" "$@"
+      exit $?
+    fi
+  fi
+
   exec claude "${flags[@]}" "$@"
 }
