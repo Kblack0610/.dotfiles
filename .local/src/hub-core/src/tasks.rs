@@ -41,7 +41,6 @@ pub struct Row {
     pub tier: Option<u8>,
     pub worker: Option<String>,
     pub ask: bool,
-    pub target: Option<String>,
     pub text: String,
     pub tags: Vec<String>,
     pub marker: Option<String>,

@@ -41,11 +41,7 @@ use std::path::{Path, PathBuf};
 /// The lane model itself lives in `sweep`, shared with the project-sheet sweep. Focus
 /// offers all three lanes.
 fn sweep_content(content: &str) -> Option<String> {
-    sweep::sweep_section(
-        content,
-        |h| h.eq_ignore_ascii_case("Focus"),
-        &md::PRIORITIES,
-    )
+    sweep::sweep_section(content, |h| h.eq_ignore_ascii_case("Focus"))
 }
 
 /// notes focus start <query> — toggle the first matching authored `## Focus` task

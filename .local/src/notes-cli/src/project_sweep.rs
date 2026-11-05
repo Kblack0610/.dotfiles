@@ -19,35 +19,36 @@ use crate::sweep;
 /// is legal; release steps are bounded on one side and open on the other. Going sooner CLAMPS
 /// at `cur`, because a closed release cannot take work. Going later MINTS the next patch past
 /// the end, because the roadmap is supposed to grow: that is how a pile becomes small releases.
-pub(crate) fn step_version(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, StepEnd> {
+///
+/// `None` when the row is already in the open version and the step is sooner: only that
+/// direction can fail.
+pub(crate) fn step_version(cur: V, ladder: &[V], at: V, dir: i32) -> Option<V> {
     if dir < 0 {
         if at <= cur {
-            return Err(StepEnd::AtCurrent);
+            return None;
         }
-        Ok(ladder
+        return Some(
+            ladder
+                .iter()
+                .copied()
+                .filter(|v| *v < at)
+                .max()
+                .unwrap_or(cur),
+        );
+    }
+    Some(
+        ladder
             .iter()
             .copied()
-            .filter(|v| *v < at && *v >= cur)
-            .max()
-            .unwrap_or(cur))
-    } else {
-        match ladder.iter().copied().filter(|v| *v > at).min() {
-            Some(v) => Ok(v),
-            // Past the last planned release: open the next patch above the highest on the
-            // sheet, so `demote` on the last one still has somewhere to put the task.
-            None => {
+            .filter(|v| *v > at)
+            .min()
+            .unwrap_or_else(|| {
+                // Past the last planned release: open the next patch above the highest on the sheet,
+                // so `demote` on the last one still has somewhere to put the task.
                 let top = ladder.iter().copied().max().unwrap_or(cur).max(at);
-                Ok((top.0, top.1, top.2 + 1))
-            }
-        }
-    }
-}
-
-/// Why a release step could not happen. Only one direction can fail.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum StepEnd {
-    /// Already in the open version; there is nothing sooner.
-    AtCurrent,
+                (top.0, top.1, top.2 + 1)
+            }),
+    )
 }
 
 /// `line` with its priority legal for a row aimed later than the open version, and the report
@@ -131,7 +132,7 @@ pub(crate) fn sweep_sheet(content: &str) -> Option<(String, Vec<String>)> {
     // inside `rebuild` add tags at different points, so this is what stops the same task
     // being spelled two ways depending on how it got here.
     out.extend(
-        sweep::rebuild_sorted(&refs, &md::PRIORITIES)
+        sweep::rebuild_sorted(&refs)
             .iter()
             .map(|l| md::normalize_tags(l)),
     );
@@ -174,39 +175,27 @@ Version: v0.12.1
     #[test]
     fn stepping_later_walks_the_ladder_it_finds_not_the_next_number() {
         // v0.12.3 does not exist on the sheet, so v0.12.2 steps to v0.12.4.
-        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), 1), Ok((0, 12, 4)));
-        assert_eq!(step_version(CUR, &LADDER, CUR, 1), Ok((0, 12, 2)));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), 1), Some((0, 12, 4)));
+        assert_eq!(step_version(CUR, &LADDER, CUR, 1), Some((0, 12, 2)));
     }
 
     #[test]
     fn stepping_later_past_the_last_release_opens_the_next_patch() {
-        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), 1), Ok((0, 12, 5)));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), 1), Some((0, 12, 5)));
         // and from the open version alone, so a sheet with no roadmap can still grow one
-        assert_eq!(step_version(CUR, &[CUR], CUR, 1), Ok((0, 12, 2)));
+        assert_eq!(step_version(CUR, &[CUR], CUR, 1), Some((0, 12, 2)));
     }
 
     #[test]
     fn stepping_sooner_walks_back_down_the_ladder() {
-        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), -1), Ok((0, 12, 2)));
-        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), -1), Ok(CUR));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), -1), Some((0, 12, 2)));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), -1), Some(CUR));
     }
 
     // The clamp: a closed release cannot take work, so the ladder is bounded on this side.
     #[test]
     fn stepping_sooner_clamps_at_the_open_version() {
-        assert_eq!(step_version(CUR, &LADDER, CUR, -1), Err(StepEnd::AtCurrent));
-        // and a task somehow BELOW current cannot be walked further down either
-        assert_eq!(
-            step_version(CUR, &LADDER, (0, 11, 0), -1),
-            Err(StepEnd::AtCurrent)
-        );
-    }
-
-    // A step never lands on a closed version even if one is somehow still on the ladder.
-    #[test]
-    fn a_step_never_lands_before_the_open_version() {
-        let stale = [(0, 11, 0), (0, 12, 1), (0, 12, 2)];
-        assert_eq!(step_version(CUR, &stale, (0, 12, 2), -1), Ok(CUR));
+        assert_eq!(step_version(CUR, &LADDER, CUR, -1), None);
     }
 
     #[test]

@@ -965,7 +965,7 @@ pub(crate) const AGENT_BOARD_BUDGET: usize = 32 * 1024;
 
 /// Open rows whose [`md::task_key`] appears more than once on a sheet, with the count, in
 /// first-seen order.
-fn duplicate_open_rows(content: &str) -> Vec<(String, usize)> {
+pub(crate) fn duplicate_open_rows(content: &str) -> Vec<(String, usize)> {
     let mut seen: Vec<(String, usize)> = Vec::new();
     for line in content.lines().filter(|l| md::is_open_task(l)) {
         let key = md::task_key(line);
@@ -1464,10 +1464,9 @@ fn sheet_body(title: &str, ver: &str) -> String {
     format!("{title}\nVersion: {ver} #draft\n\n{}", sheet::skeleton())
 }
 
-/// The sheet's own `Version:` line as text, else `v0.0.1` for a sheet that has none yet.
-/// Keeps `Version:` the single source of truth for the open version.
-pub(crate) fn version_or_default(content: &str) -> String {
-    sheet_version(content).map_or_else(|| "v0.0.1".to_string(), fmt_version)
+/// An open version as text, else `v0.0.1` for a sheet that has none yet.
+pub(crate) fn version_or_default(cur: Option<V>) -> String {
+    cur.map_or_else(|| "v0.0.1".to_string(), fmt_version)
 }
 
 /// The sheet to release, ADOPTING a task sheet that never got a `Version:` line.
@@ -1646,9 +1645,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         let head = l.trim_start();
         if i < head_len && head.starts_with("Version:") {
             sheet.push(format!("Version: {next_s}{stage}"));
-        } else if !(i < head_len && head.starts_with("Agents: ")) {
-            // `Agents:` names the version that just closed; the head link is re-added for
-            // the next one.
+        } else {
             sheet.push(l.trim_end().to_string());
         }
     }
@@ -2395,8 +2392,12 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
     for (_, l) in md::section_numbered(content, sheet::TASKS) {
         if md::is_checked(l) {
             c.done += 1;
-        } else if !md::is_open_task(l) {
-        } else if sheet::is_later(l, cur) {
+            continue;
+        }
+        if !md::is_open_task(l) {
+            continue;
+        }
+        if sheet::is_later(l, cur) {
             c.planned += 1;
         } else {
             c.open += 1;
@@ -2462,8 +2463,9 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
             .unwrap_or_default()
     };
     let sheet = project_tasks::task_sheet(dir);
-    let cur = project_tasks::open_version_for(dir);
-    let c = sheet_counts(&read(sheet.clone()), cur);
+    let content = read(sheet.clone());
+    let cur = sheet_version(&content);
+    let c = sheet_counts(&content, cur);
     let summary = dir.join("summary.md");
     let (status_date, status) = status_line(&read(Some(summary.clone())))
         .map(|l| split_status_date(&l))
@@ -3421,8 +3423,7 @@ Some prose left on the board.
     }
 
     #[test]
-    fn a_release_does_not_keep_the_agents_link() {
-        // `agent_sheet::with_link` re-stamps the head line afterwards.
+    fn a_release_keeps_the_agents_link_in_the_head() {
         let sheet = "\
 # demo
 Version: v1.13.0
@@ -3433,10 +3434,10 @@ Agents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all
 - [ ] next thing #v1.14.0
 ";
         let (frozen, rolled) = rebuild_sheet(sheet, (1, 13, 0), (1, 14, 0));
-        assert_eq!(
-            rolled.matches("Agents: ").count(),
-            0,
-            "the stale link is dropped, not relocated:\n{rolled}"
+        assert_eq!(rolled.matches("Agents: ").count(), 1, "{rolled}");
+        assert!(
+            rolled.find("Agents: ") < rolled.find("## Tasks"),
+            "{rolled}"
         );
         assert!(rolled.contains("Version: v1.14.0"), "{rolled}");
         assert!(rolled.contains("## Tasks"), "{rolled}");

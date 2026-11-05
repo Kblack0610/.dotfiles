@@ -1971,11 +1971,7 @@ mod tests {
         let pass = || {
             ensure_footer(&p, &note).unwrap();
             let c = std::fs::read_to_string(&note).unwrap();
-            if let Some(s) = crate::sweep::sweep_section(
-                &c,
-                |h| h.eq_ignore_ascii_case("Focus"),
-                &md::PRIORITIES,
-            ) {
+            if let Some(s) = crate::sweep::sweep_section(&c, |h| h.eq_ignore_ascii_case("Focus")) {
                 std::fs::write(&note, s).unwrap();
             }
             std::fs::read_to_string(&note).unwrap()

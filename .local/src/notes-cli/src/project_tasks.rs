@@ -1,12 +1,12 @@
-//! `notes ptask <name> …` — a project's task list, living in the project SHEET's `## Tasks`
+//! `notes ptask <name> ...` - a project's task list, living in the project SHEET's `## Tasks`
 //! section. The project analog of `notes focus` (which is the daily note's `## Focus`):
-//! project tasks belong in the project `.md` — the template-driven, version-scoped source of
-//! truth — so `notes projects --release` freezes a REAL task list into `versions/`, and the
+//! project tasks belong in the project `.md` - the template-driven, version-scoped source of
+//! truth - so `notes projects --release` freezes a REAL task list into `versions/`, and the
 //! daily note keeps only the untagged main tasks.
 //!
 //! Mirrors `focus.rs` verb-for-verb but points the SAME generic `md` helpers at `## Tasks`
 //! instead of the hard-coded `## Focus`. The task SHEET is the README.md/tasks.md that carries
-//! a `## Tasks` — decoupled from the `Version:` line, so a release-managed project (version in
+//! a `## Tasks` - decoupled from the `Version:` line, so a release-managed project (version in
 //! `changelog/`) can hold a task sheet without owning its version there.
 
 use crate::agent_sheet::Lane;
@@ -23,14 +23,17 @@ use std::path::{Path, PathBuf};
 /// The version a directory's rows are read against: its own sheet's `Version:` line, else,
 /// for an agent board (which carries none), the human sheet's one level up.
 pub(crate) fn open_version_for(dir: &Path) -> Option<V> {
-    let own = |d: &Path| {
-        task_sheet(d)
-            .and_then(|s| fs::read_to_string(s).ok())
-            .and_then(|c| projects::sheet_version(&c))
-    };
-    own(dir).or_else(|| {
+    let content = task_sheet(dir)
+        .and_then(|s| fs::read_to_string(s).ok())
+        .unwrap_or_default();
+    version_in(dir, &content)
+}
+
+/// [`open_version_for`] for a caller already holding the sheet's text.
+fn version_in(dir: &Path, content: &str) -> Option<V> {
+    projects::sheet_version(content).or_else(|| {
         let parent = dir.parent().filter(|_| dir.ends_with("agent"))?;
-        own(parent)
+        open_version_for(parent)
     })
 }
 
@@ -89,18 +92,6 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(readme)
 }
 
-/// A project directory's open version: `(version, open_task_lines)`. `None` when the dir has
-/// no task sheet at all.
-///
-/// Keyed by DIRECTORY rather than profile+name, because the board walks
-/// `daily::discover_project_dirs` across every configured profile — it already holds the path
-/// and has no name to re-resolve. Same sheet, same section, same open-task predicate the
-/// cockpit and `ptask list` use, so the three cannot disagree about what is on a board.
-pub(crate) fn open_rows_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
-    let w = open_rows(dir)?;
-    Some((w.version, w.rows.into_iter().map(|(_, l)| l).collect()))
-}
-
 /// A sheet's open version as `notes board --json` reads it: where the sheet is, its version,
 /// and each open row of that version with its 1-based line number. Rows aimed at a later
 /// release are left out.
@@ -110,18 +101,23 @@ pub(crate) struct OpenRows {
     pub rows: Vec<(usize, String)>,
 }
 
-/// [`open_rows_for_dir`] with the sheet path and line numbers kept. The one reader both use,
-/// so the JSON feed and the rendered board cannot list different rows.
-pub(crate) fn open_rows(dir: &Path) -> Option<OpenRows> {
+/// A directory's open version, `None` when it has no task sheet at all. The one reader the
+/// JSON feed and the rendered board use, so they cannot list different rows.
+///
+/// Keyed by DIRECTORY rather than profile+name, because the board walks
+/// `daily::discover_project_dirs` across every configured profile: it already holds the path
+/// and has no name to re-resolve. Same sheet, same section, same open-task predicate the
+/// cockpit and `ptask list` use, so the three cannot disagree about what is on a board.
+pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
     let path = task_sheet(dir)?;
     let content = fs::read_to_string(&path).ok()?;
-    let cur = open_version_for(dir);
+    let cur = version_in(dir, &content);
     let rows = sheet::current_rows(&content, cur)
         .into_iter()
         .map(|(n, l)| (n, l.trim_end().to_string()))
         .collect();
     Some(OpenRows {
-        version: cur.map_or_else(|| "v0.0.1".to_string(), projects::fmt_version),
+        version: projects::version_or_default(cur),
         sheet: path,
         rows,
     })
@@ -146,7 +142,7 @@ fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(Path
     Ok(Some((sheet, content)))
 }
 
-/// An open task matching `query` (already lower-cased) — the shared predicate for
+/// An open task matching `query` (already lower-cased) - the shared predicate for
 /// `done`/`start`/`rm`, matching `focus.rs::is_match`.
 pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
@@ -229,9 +225,9 @@ impl std::fmt::Display for Pick {
     }
 }
 
-/// `notes ptask <name> list [--version vX.Y.Z | --all]` — TSV of OPEN tasks.
+/// `notes ptask <name> list [--version vX.Y.Z | --all]` - TSV of OPEN tasks.
 ///
-/// Bare `list` is the open version and emits exactly the four columns it always has —
+/// Bare `list` is the open version and emits exactly the four columns it always has -
 /// `path<TAB>line<TAB>key<TAB>text` - because the cockpit parses it. A version SELECTOR adds a
 /// fifth column (the row's version, `-` when the sheet has none) rather than changing the
 /// first four, so a reader that only wants `$1..$4` is unaffected either way.
@@ -242,7 +238,7 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
     };
     let content = fs::read_to_string(&path)?;
     let file = path.display();
-    let cur = open_version_for(&dir);
+    let cur = version_in(&dir, &content);
 
     if !all && version.is_none() {
         for (n, l) in sheet::current_rows(&content, cur) {
@@ -267,7 +263,7 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
     Ok(0)
 }
 
-/// `notes ptask <name> add <text> [--to vX.Y.Z]` — add `- [ ] <text>` to `## Tasks`, creating
+/// `notes ptask <name> add <text> [--to vX.Y.Z]` - add `- [ ] <text>` to `## Tasks`, creating
 /// the task sheet if the project has none. `--to` tags it for that release, which is the whole
 /// roadmap-forward loop: plan into `v1.14.0` while `v1.13.0` is still running.
 ///
@@ -356,7 +352,7 @@ pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
     format!("{code}-{}", max + 1)
 }
 
-/// `notes ptask <name> move <query> --to vX.Y.Z` — aim the first open task matching `<query>`
+/// `notes ptask <name> move <query> --to vX.Y.Z` - aim the first open task matching `<query>`
 /// at `<ver>`. The row stays where it is; only its tag changes.
 ///
 /// The verb that splits a pile into a roadmap, and the one the release gate points at: a
@@ -376,10 +372,10 @@ pub fn move_task(
     };
     let content = fs::read_to_string(&path)?;
     let to = parse_to(to)?;
-    let cur = open_version_for(&dir);
+    let cur = version_in(&dir, &content);
     refuse_behind(to, cur)?;
 
-    let Some((new, line)) = retarget(&content, pick, to, cur)? else {
+    let Some((new, line)) = retarget(&content, pick, to, cur) else {
         eprintln!(
             "no open task matches '{pick}' outside {} in {name}",
             projects::fmt_version(to)
@@ -399,26 +395,18 @@ pub fn move_task(
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
 /// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
 /// outside the target matches, so a move onto its own version is a clear no-op.
-fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Result<Option<(String, String)>> {
-    let aimed_elsewhere = |l: &str| pick.hits(l) && sheet::version_of(l, cur) != Some(to);
-    let Some((_, line)) = sheet::open_rows(content)
-        .into_iter()
-        .find(|(_, l)| aimed_elsewhere(l))
-    else {
-        return Ok(None);
-    };
-    let (line, _) = project_sweep::retag(line.trim_end(), to, Some(to) == cur);
-    let replacement = line.clone();
-    let Some((new, _)) = md::edit_first_in_section(content, sheet::TASKS, aimed_elsewhere, |_| {
-        Some(replacement)
-    }) else {
-        bail!("could not retag '{pick}'");
-    };
-    Ok(Some((new, line)))
+fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
+    let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let (new, matched) = md::edit_first_in_section(
+        content,
+        sheet::TASKS,
+        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| Some(aim(l)),
+    )?;
+    Some((new, aim(&matched)))
 }
 
-/// The first open row matching `pick`, in sheet order. The one search both forms of `move`
-/// and `step` use, so "which row does `move <query>` take" has a single answer.
+/// The first open row matching `pick`, in sheet order.
 fn find_open(content: &str, pick: &Pick) -> Option<String> {
     sheet::open_rows(content)
         .into_iter()
@@ -531,16 +519,15 @@ fn lift_into(
     if !sheet::has_tasks(dest) {
         bail!("no `## Tasks` section on the destination sheet");
     }
-    let Some(line) = find_open(src, pick) else {
+    let Some((cut, line)) =
+        md::edit_first_in_section(src, sheet::TASKS, |l| pick.hits(l), |_| None)
+    else {
         return Ok(None);
     };
-    let Some((cut, _)) = md::edit_first_in_section(src, sheet::TASKS, |l| pick.hits(l), |_| None)
-    else {
-        bail!("could not lift '{pick}' out of {}", sheet::TASKS);
-    };
+    let line = line.trim_end();
     let line = match to {
-        Some(v) => project_sweep::retag(&line, v, Some(v) == dest_cur).0,
-        None => md::split_version(&line).0,
+        Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
+        None => md::split_version(line).0,
     };
     let grown = md::insert_under_heading(dest, sheet::TASKS, std::slice::from_ref(&line));
     Ok(Some(Lifted {
@@ -574,7 +561,7 @@ pub fn step(
         bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
     };
     let content = fs::read_to_string(&path)?;
-    let cur = open_version_for(&dir_proj)
+    let cur = version_in(&dir_proj, &content)
         .ok_or_else(|| anyhow::anyhow!("{name}'s sheet has no `Version:` line"))?;
     let Some(line) = find_open(&content, pick) else {
         eprintln!("no open task matches '{pick}' in {name}");
@@ -583,16 +570,13 @@ pub fn step(
     let at = sheet::version_of(&line, Some(cur)).unwrap_or(cur);
     let ladder = sheet::later_versions(&content, Some(cur));
 
-    let to = match project_sweep::step_version(cur, &ladder, at, dir) {
-        Ok(v) => v,
-        Err(project_sweep::StepEnd::AtCurrent) => {
-            eprintln!(
-                "'{}' is already in {} - nothing sooner than the open version",
-                md::task_text(&line),
-                projects::fmt_version(cur)
-            );
-            return Ok(1);
-        }
+    let Some(to) = project_sweep::step_version(cur, &ladder, at, dir) else {
+        eprintln!(
+            "'{}' is already in {} - nothing sooner than the open version",
+            md::task_text(&line),
+            projects::fmt_version(cur)
+        );
+        return Ok(1);
     };
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
@@ -891,12 +875,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         println!("{name}: no done rows on the agent board");
         return Ok(0);
     }
-    let ver = task_sheet(&dir)
-        .and_then(|s| fs::read_to_string(s).ok())
-        .map_or_else(
-            || "v0.0.1".to_string(),
-            |c| projects::version_or_default(&c),
-        );
+    let ver = projects::version_or_default(open_version_for(&dir));
     let note = projects::agent_note_path(&dir, &ver);
     if dry_run {
         println!(
@@ -1064,7 +1043,7 @@ mod tests {
     #[test]
     fn a_stale_exact_pick_moves_nothing() {
         let stale = Pick::new("- [ ] spawn bug that was renamed since", true).unwrap();
-        assert!(retarget(SRC, &stale, (0, 5, 0), SRC_CUR).unwrap().is_none());
+        assert!(retarget(SRC, &stale, (0, 5, 0), SRC_CUR).is_none());
         assert!(lift(&stale, None).unwrap().is_none());
     }
 
@@ -1160,7 +1139,8 @@ Version: v1.13.0
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("README.md"), ROADMAP).unwrap();
 
-        let (ver, open) = open_rows_for_dir(&dir).unwrap();
+        let w = current_rows_for_dir(&dir).unwrap();
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
         assert_eq!(ver, "v1.13.0");
         assert_eq!(
             open,
@@ -1183,7 +1163,8 @@ Version: v1.13.0
         )
         .unwrap();
 
-        let (ver, open) = open_rows_for_dir(&dir.join("agent")).unwrap();
+        let w = current_rows_for_dir(&dir.join("agent")).unwrap();
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
         assert_eq!(ver, "v1.13.0");
         assert_eq!(open, vec!["- [ ] now"]);
         let _ = fs::remove_dir_all(&dir);
@@ -1192,9 +1173,7 @@ Version: v1.13.0
     #[test]
     fn a_move_retags_the_row_where_it_stands() {
         let pick = w("live one");
-        let (new, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR)
-            .unwrap()
-            .unwrap();
+        let (new, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
         assert_eq!(line, "- [ ] live one #v1.15.0");
         assert_eq!(
             new,
@@ -1205,14 +1184,8 @@ Version: v1.13.0
     // Moving a row to the release it is already aimed at matches nothing.
     #[test]
     fn a_move_onto_its_own_version_is_a_no_op() {
-        assert!(
-            retarget(ROADMAP, &w("planned one"), (1, 14, 0), ROADMAP_CUR)
-                .unwrap()
-                .is_none()
-        );
-        assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR)
-            .unwrap()
-            .is_none());
+        assert!(retarget(ROADMAP, &w("planned one"), (1, 14, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
     // `move --to` must retag, or the next `sweep` strips the row back to the open version.
@@ -1220,9 +1193,7 @@ Version: v1.13.0
     fn a_moved_row_takes_its_new_tag_and_survives_a_sweep() {
         let sheet =
             "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] stays\n- [ ] moved #v1.13.0 #urgent\n";
-        let (new, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR)
-            .unwrap()
-            .unwrap();
+        let (new, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
         assert!(
             line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
             "{line}"
@@ -1412,9 +1383,7 @@ Version: v1.2.0
 
     #[test]
     fn a_same_project_move_keeps_the_row_in_place() {
-        let (new, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR)
-            .unwrap()
-            .unwrap();
+        let (new, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
         assert_eq!(
             line,
             "- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->"

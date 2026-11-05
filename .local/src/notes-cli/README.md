@@ -204,7 +204,7 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
-- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `target` the row's own `#vX.Y.Z` tag. `version` is the release the row counts toward: `target` when that is above the open version, else the open version.
+- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `version` the open version every row on the feed belongs to.
 - `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
 - `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, version or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.

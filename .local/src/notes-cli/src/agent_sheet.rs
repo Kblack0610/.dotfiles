@@ -61,7 +61,7 @@ impl Lane {
 /// `Version:` line: the board follows its sheet, whose `Version:` an untagged row belongs to.
 ///
 /// Deliberately the same skeleton `projects::sheet_body` writes for the human, because every
-/// reader downstream (`sheet::open_rows`, `open_rows_for_dir`, the board, `ptask`) is the
+/// reader downstream (`sheet::open_rows`, `current_rows_for_dir`, the board, `ptask`) is the
 /// human sheet's reader. A different skeleton here would mean a second parser, and a second
 /// parser is a second set of bugs.
 fn body(project: &str, home: &str) -> String {
@@ -96,8 +96,7 @@ pub fn ensure(dir: &Path, project: &str, home: &str) -> Result<bool> {
 /// The `Agents:` line a human sheet carries, pointing at that project's agent board and at
 /// the cross-project one.
 ///
-/// Emitted by code and not hand-added: `release` rebuilds the head and drops this line, and
-/// the next `notes board` writes it back.
+/// Emitted by code and not hand-added: `notes board` writes it where it is missing.
 pub fn link_line(agent_home: &str) -> String {
     if agent_home.is_empty() {
         return String::new();
@@ -196,15 +195,13 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
-            // No task sheet means no version to track and nothing to link from. A prose
+            // No task sheet means nothing to link from. A prose
             // brief is not a project that has started; scaffolding into it would put an
             // agent board on something with no task section to put work in.
-            if crate::project_tasks::task_sheet(dir).is_none() {
+            let Some(human) = crate::project_tasks::task_sheet(dir) else {
                 continue;
-            }
-            let human_home = crate::project_tasks::task_sheet(dir)
-                .map(|s| vault_rel(&p.vault, &s))
-                .unwrap_or_default();
+            };
+            let human_home = vault_rel(&p.vault, &human);
             let agent_home = vault_rel(&p.vault, &sheet_path(dir));
             if ensure_pair(log, dir, &proj, &human_home, &agent_home).is_ok() {
                 n += 1;

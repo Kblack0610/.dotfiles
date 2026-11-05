@@ -173,7 +173,7 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # out of the human's own note. Same disease as the 45 `captain watch pass` lines the
 # CLAUDE_HEADLESS guard above fixed, contracted from interactive agents instead of timers.
 #
-# Project work belongs on the project's `## Tasks` (`notes ptask <project> …`), which is
+# Project work belongs on the project's `## Tasks` (`notes ptask <project> ...`), which is
 # what the cockpit and the generated board already read. Accepting it here means an agent
 # can declare its work on the board it actually works from and never touch the daily note.
 #

@@ -70,7 +70,7 @@ function bMatch(r) {
 function bRow(r, i) {
   const k = bKey(r);
   const focus = r.lane === "focus";
-  const tags = [r.version, r.target && "-> " + r.target, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
+  const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
     r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const meta = [

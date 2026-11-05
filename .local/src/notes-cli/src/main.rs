@@ -122,7 +122,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<FocusCmd>,
     },
-    /// Per-project task list — the `## Tasks` on a project's sheet (the project analog of
+    /// Per-project task list - the `## Tasks` on a project's sheet (the project analog of
     /// `focus`, which is the daily note's `## Focus`). Project tasks live in the project .md.
     Ptask {
         /// Project name (case-insensitive)
@@ -144,7 +144,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
-    /// Regenerate the project/agent board — every project's `## Tasks`, agent lane
+    /// Regenerate the project/agent board - every project's `## Tasks`, agent lane
     /// first, across every profile — and print its path. Also refreshed by `notes today`.
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
@@ -408,7 +408,7 @@ enum FocusCmd {
     Sweep,
 }
 
-/// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Tasks`.
+/// `notes ptask <name> ...` verbs - the project analog of `FocusCmd`, on the sheet's `## Tasks`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
     /// List the open version's rows (TSV: `path<TAB>line<TAB>key<TAB>text`;

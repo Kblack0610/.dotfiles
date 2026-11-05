@@ -10,9 +10,6 @@
 
 use crate::md;
 
-/// One lane: `(bare word, #hashtag, "### Heading")`. Always a slice of [`md::PRIORITIES`].
-pub(crate) type Lane = (&'static str, &'static str, &'static str);
-
 /// Which bucket a line landed in, so an indented follow-on line can land in the same one.
 #[derive(Clone, Copy)]
 enum Bucket {
@@ -20,35 +17,18 @@ enum Bucket {
     Done,
 }
 
-/// Lane index for an open task within `lanes`, else `lanes.len()` (untagged).
-fn lane_of(line: &str, lanes: &[Lane]) -> usize {
-    match md::task_priority(line) {
-        Some(tag) => lanes
-            .iter()
-            .position(|(_, hash, _)| *hash == tag)
-            // A tag naming a lane this list does not offer sorts into the most urgent lane that IS offered, rather than falling to
-            // the untagged bucket where it would read as unprioritized.
-            .unwrap_or(0),
-        None => lanes.len(),
-    }
-}
+/// The number of lanes: the index of the trailing untagged bucket.
+const LANES: usize = md::PRIORITIES.len();
 
-/// Index of the default lane within `lanes`, falling back to the most urgent one offered.
-///
-/// `lanes` can be a sub-slice, so the default has to be located by name rather than by the index it holds in `md::PRIORITIES`.
-fn default_lane(lanes: &[Lane]) -> usize {
-    lanes
-        .iter()
-        .position(|(_, hash, _)| *hash == md::default_priority())
-        .unwrap_or(0)
+/// Lane index for an open task, else [`LANES`] (untagged).
+fn lane_of(line: &str) -> usize {
+    md::task_priority(line)
+        .and_then(|tag| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == tag))
+        .unwrap_or(LANES)
 }
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
 /// puts it and an authored heading elsewhere survives as content.
-///
-/// Checks ALL of [`md::PRIORITIES`], not just `lanes`: a leftover `### Urgent` on a list that
-/// no longer offers that lane still has to be recognized and removed, or it would be treated
-/// as stray prose and pushed into the task list.
 fn is_scaffold(line: &str) -> bool {
     let t = line.trim();
     t == "---"
@@ -59,21 +39,12 @@ fn is_scaffold(line: &str) -> bool {
             .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
 }
 
-/// The lane a scaffold heading opens, expressed as an index into `lanes`. `None` for a
-/// non-lane scaffold (`---`, `### Done`). A heading naming a lane outside `lanes` clamps to
-/// the most urgent one offered, so a task dropped under it is tagged with a lane that
-/// actually exists and a second sweep leaves it alone.
-fn scaffold_lane(line: &str, lanes: &[Lane]) -> Option<usize> {
+/// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
+fn scaffold_lane(line: &str) -> Option<usize> {
     let t = line.trim();
-    let rank = md::PRIORITIES
+    md::PRIORITIES
         .iter()
-        .position(|(_, _, h)| t.eq_ignore_ascii_case(h))?;
-    Some(
-        lanes
-            .iter()
-            .position(|l| l.0 == md::PRIORITIES[rank].0)
-            .unwrap_or(0),
-    )
+        .position(|(_, _, h)| t.eq_ignore_ascii_case(h))
 }
 
 /// Everything one list body holds, sorted into buckets. The two layouts below differ only
@@ -89,8 +60,8 @@ struct Buckets {
 }
 
 impl Buckets {
-    fn any_tagged(&self, lanes: usize) -> bool {
-        self.open[..lanes].iter().any(|b| !b.is_empty())
+    fn any_tagged(&self) -> bool {
+        self.open[..LANES].iter().any(|b| !b.is_empty())
     }
 }
 
@@ -101,15 +72,15 @@ impl Buckets {
 /// `None` when there is nothing to organize - that shape is already the sorted form, and
 /// rewriting it would churn the file. It is what keeps a fresh daily note from being born
 /// full of empty headers.
-pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
-    let mut b = bucket(body, lanes);
-    if !b.any_tagged(lanes.len()) && b.done.is_empty() && !b.had_scaffold {
+fn rebuild(body: &[&str]) -> Option<Vec<String>> {
+    let mut b = bucket(body);
+    if !b.any_tagged() && b.done.is_empty() && !b.had_scaffold {
         return None;
     }
     let mut out: Vec<String> = Vec::new();
-    out.extend(b.open[lanes.len()].drain(..));
+    out.extend(b.open[LANES].drain(..));
     out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
-    for (i, (_, _, heading)) in lanes.iter().enumerate() {
+    for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
         out.push(String::new());
         out.push((*heading).to_string());
         out.extend(b.open[i].drain(..));
@@ -132,14 +103,14 @@ pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
 ///
 /// Always emits: the section's `### Done` is part of it, not something that appears once
 /// there is enough to organize.
-pub(crate) fn rebuild_sorted(body: &[&str], lanes: &[Lane]) -> Vec<String> {
-    let mut b = bucket(body, lanes);
+pub(crate) fn rebuild_sorted(body: &[&str]) -> Vec<String> {
+    let mut b = bucket(body);
     let mut out: Vec<String> = Vec::new();
     // Prose first, above the task list, where it reads as a note about the list.
-    out.extend(b.open[lanes.len()].drain(..));
+    out.extend(b.open[LANES].drain(..));
     // Then every open task, most urgent first. `drain` in lane order preserves file order
     // within a lane, so a sort never reshuffles two tasks of equal priority.
-    for i in 0..lanes.len() {
+    for i in 0..LANES {
         out.extend(b.open[i].drain(..));
     }
     out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
@@ -151,8 +122,8 @@ pub(crate) fn rebuild_sorted(body: &[&str], lanes: &[Lane]) -> Vec<String> {
 }
 
 /// Sort one list body into buckets. Shared by both layouts.
-fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
-    let mut open: Vec<Vec<String>> = vec![Vec::new(); lanes.len() + 1];
+fn bucket(body: &[&str]) -> Buckets {
+    let mut open: Vec<Vec<String>> = vec![Vec::new(); LANES + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
     let mut had_scaffold = false;
@@ -164,7 +135,7 @@ fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
         let t = l.trim();
         if is_scaffold(l) {
             had_scaffold = true;
-            cur_lane = scaffold_lane(l, lanes);
+            cur_lane = scaffold_lane(l);
             last = None;
             continue;
         }
@@ -188,14 +159,14 @@ fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
             last = None;
         } else if md::is_task(l) {
             let i = match md::task_priority(l) {
-                Some(_) => lane_of(l, lanes), // the tag is the source of truth
+                Some(_) => lane_of(l), // the tag is the source of truth
                 None => {
                     // Untagged: inherit the lane it was dropped under, else take the
                     // default. Either way it leaves here TAGGED - an open task with no
                     // stated priority used to sort above `### Urgent`, so a task nobody had
                     // thought about outranked one explicitly marked urgent.
-                    let i = cur_lane.unwrap_or_else(|| default_lane(lanes));
-                    open[i].push(md::add_tag(l, lanes[i].1));
+                    let i = cur_lane.unwrap_or(md::DEFAULT_PRIORITY);
+                    open[i].push(md::add_tag(l, md::PRIORITIES[i].1));
                     last = Some(Bucket::Open(i));
                     continue;
                 }
@@ -204,8 +175,8 @@ fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
             last = Some(Bucket::Open(i));
         } else if !t.is_empty() {
             // a stray prose line stays with the untagged bucket
-            open[lanes.len()].push((*l).to_string());
-            last = Some(Bucket::Open(lanes.len()));
+            open[LANES].push((*l).to_string());
+            last = Some(Bucket::Open(LANES));
         }
     }
     Buckets {
@@ -221,11 +192,7 @@ fn bucket(body: &[&str], lanes: &[Lane]) -> Buckets {
 ///
 /// The section ends at the next H2 OR at [`md::ROLLUP_START`]: the mirrored block after that
 /// sentinel is generated, not authored, so it is left in place.
-pub(crate) fn sweep_section(
-    content: &str,
-    pred: impl Fn(&str) -> bool,
-    lanes: &[Lane],
-) -> Option<String> {
+pub(crate) fn sweep_section(content: &str, pred: impl Fn(&str) -> bool) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.iter().position(|l| {
         l.strip_prefix("## ")
@@ -237,7 +204,7 @@ pub(crate) fn sweep_section(
     while body.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
         body.pop();
     }
-    let rebuilt = rebuild(&body, lanes)?;
+    let rebuilt = rebuild(&body)?;
 
     let mut out: Vec<String> = lines[..=start].iter().map(|s| s.to_string()).collect();
     out.extend(rebuilt);
@@ -256,7 +223,7 @@ mod tests {
     use super::*;
 
     fn focus(body: &str) -> String {
-        sweep_section(body, |h| h.eq_ignore_ascii_case("Focus"), &md::PRIORITIES).unwrap()
+        sweep_section(body, |h| h.eq_ignore_ascii_case("Focus")).unwrap()
     }
 
     // A tag written past the trailing marker is invisible to `task_text`, which truncates at
@@ -285,7 +252,7 @@ mod tests {
     fn add_tag_is_idempotent_through_a_re_sweep() {
         let once = focus("## Focus\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\n");
         assert!(
-            sweep_section(&once, |h| h.eq_ignore_ascii_case("Focus"), &md::PRIORITIES).is_none(),
+            sweep_section(&once, |h| h.eq_ignore_ascii_case("Focus")).is_none(),
             "a second sweep of swept content is a no-op:\n{once}"
         );
     }
@@ -336,41 +303,5 @@ mod tests {
         let note = "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] outlook integration #high\n      needs OAuth2 first\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\nafter\n";
         let expected = "## Focus\n- [ ] \n\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(focus(note), expected);
-    }
-
-    #[test]
-    fn a_shorter_lane_set_renders_only_those_lanes() {
-        let out = sweep_section(
-            "## Focus\n- [ ] a #high\n\n## Notes\n",
-            |h| h.eq_ignore_ascii_case("Focus"),
-            &md::PRIORITIES[1..],
-        )
-        .unwrap();
-        let body = out.split("## Notes").next().unwrap();
-        assert!(
-            !body.contains("### Urgent"),
-            "no illegal drop target:\n{out}"
-        );
-        assert!(body.contains("### High") && body.contains("### Low"));
-    }
-
-    // A leftover heading for a lane no longer offered still has to be recognised as scaffold
-    // and removed, and the task under it re-tagged to a lane that exists - otherwise it would
-    // be read as stray prose, and a second sweep would keep moving it.
-    #[test]
-    fn a_dropped_lane_heading_is_removed_and_its_task_re_tagged() {
-        let lanes = &md::PRIORITIES[1..];
-        let out = sweep_section(
-            "## Focus\n### Urgent\n- [ ] was urgent\n\n## Notes\n",
-            |h| h.eq_ignore_ascii_case("Focus"),
-            lanes,
-        )
-        .unwrap();
-        assert!(!out.contains("### Urgent"), "heading gone:\n{out}");
-        assert!(out.contains("- [ ] was urgent #high"), "re-tagged:\n{out}");
-        assert!(
-            sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus"), lanes).is_none(),
-            "and it settles:\n{out}"
-        );
     }
 }

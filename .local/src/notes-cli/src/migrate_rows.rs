@@ -18,7 +18,7 @@ use crate::registry::Registry;
 use crate::sheet::{self, V};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -97,7 +97,7 @@ struct Section {
 
 fn kind_of(line: &str) -> Option<Kind> {
     let h = line.strip_prefix("## ")?.trim();
-    if h == sheet::TASKS {
+    if h.eq_ignore_ascii_case(sheet::TASKS) {
         return Some(Kind::Tasks);
     }
     h.starts_with("Wave").then(|| Kind::Wave(version_in(h)))
@@ -298,8 +298,7 @@ fn restructure(content: &str, cur: Option<V>, t: &mut Tally) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let sections = scan(&lines);
     let has_wave = sections.iter().any(|s| matches!(s.kind, Kind::Wave(_)));
-    let inbox = format!("## {}", sheet::INBOX);
-    let has_inbox = lines.iter().any(|l| l.trim() == inbox);
+    let has_inbox = md::section_span(&lines, sheet::INBOX).is_some();
     if sections.is_empty() || (!has_wave && has_inbox) {
         return content.to_string();
     }
@@ -325,7 +324,7 @@ fn restructure(content: &str, cur: Option<V>, t: &mut Tally) -> String {
         out.push(String::new());
     }
     if !has_inbox {
-        out.extend([inbox, String::new()]);
+        out.extend([format!("## {}", sheet::INBOX), String::new()]);
     }
     out.push(format!("## {}", sheet::TASKS));
     out.extend(body);
@@ -439,11 +438,7 @@ fn migrate_file(
 /// Print exact duplicates among a project's open rows, both lanes together. Which copy goes is
 /// a reading job, so nothing here removes one.
 fn flag_duplicates(name: &str, open: &[String]) -> usize {
-    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-    for l in open {
-        *seen.entry(md::task_key(l)).or_default() += 1;
-    }
-    let dups: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).collect();
+    let dups = projects::duplicate_open_rows(&open.join("\n"));
     for (key, n) in &dups {
         println!("duplicate in {name} ({n}x): {key}");
     }
