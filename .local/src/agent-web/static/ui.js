@@ -73,6 +73,48 @@ const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" 
 // A headline number with its label, coloured by --c.
 const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
 
+// Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
+// quiet line, then folds for what the human rarely needs. Every argument named html is already
+// escaped; text arguments are escaped here.
+// A small label tinted by cls: waiting, running, ok, bad, or prio with urgent or high.
+const cchip = (cls, html, tip) => `<span class="cchip ${cls}"${tip ? ` title="${esc(tip)}"` : ""}>${html}</span>`;
+// The card's title (text) and its chips (html); tip is the title's tooltip.
+const cardHead = (title, chips, tip) =>
+  `<div class="chead"><span class="ctitle"${tip ? ` title="${esc(tip)}"` : ""}>${esc(title)}</span>${chips.join("")}</div>`;
+// One quiet line from the parts (html) that are there.
+function cardLine(parts) {
+  const p = parts.filter(Boolean);
+  return p.length ? `<div class="cline">${p.join(" &middot; ")}</div>` : "";
+}
+// A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
+const cfold = (k, summary, inner, open) =>
+  `<details class="cfold" data-k="${esc(k)}"${open && open[k] ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+// The facts (text) that have a value, as a name/value grid for a fold.
+function facts(rows) {
+  const r = rows.filter(([, v]) => v);
+  return r.length ? `<dl>${r.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : "";
+}
+// A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
+// or "overdue 2h" once it has passed. Empty without one.
+function etaText(p) {
+  if (!p || !p.eta_epoch) return "";
+  const late = (Date.now() / 1000 - p.eta_epoch) / 60;
+  return late > 0
+    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
+    : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
+}
+// Redraw answer cards (sel matches them) without eating a reply being typed into one: the
+// card is found again by its session target or ask id, and the text and focus go back.
+function keepTyping(sel, draw) {
+  const f = document.activeElement, card = f && f.closest && f.closest(sel);
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  draw();
+  if (!keep) return;
+  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const input = again && again.querySelector("[data-free]");
+  if (input) { input.value = keep.v; input.focus(); }
+}
+
 // Follow a scrolling log: is the reader at its end, and put them there.
 const atBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 const toBottom = (el) => { el.scrollTop = el.scrollHeight; };

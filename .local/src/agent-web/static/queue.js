@@ -57,10 +57,10 @@ function qChip(i) {
   if (i.state === "done") {
     const s = i.status || "ok";
     const [cls, word] = s === "ok" ? ["ok", "Done"] : s === "failed" ? ["bad", "Failed"] : ["off", "Cancelled"];
-    return `<span class="qchip ${cls}">${word}</span>`;
+    return cchip(cls, word);
   }
   const since = i.state === "waiting" ? i.waiting || i.started : i.state === "running" ? i.started : i.queued;
-  return `<span class="qchip ${i.state}">${Q_STATE[i.state] || esc(i.state)}${since ? ` ${ago(since)}` : ""}</span>`;
+  return cchip(esc(i.state), `${Q_STATE[i.state] || esc(i.state)}${since ? ` ${ago(since)}` : ""}`);
 }
 
 // When it will be done: the session's estimate (fleet-bench through fleet-sessions), late when
@@ -70,13 +70,8 @@ function qEta(i, a) {
     const m = (tms(i.finished) - tms(i.started)) / 60000;
     return m >= 0 ? `took ${dur(m)}` : "";
   }
-  const p = a && a.phases;
-  if (p && p.eta_epoch) {
-    const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-    return late > 0
-      ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
-      : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
-  }
+  const eta = etaText(a && a.phases);
+  if (eta) return eta;
   const run = qst.stats && qst.stats.run_minutes_median;
   return i.state === "queued" && run ? `usually ${dur(run)} once started` : "";
 }
@@ -92,34 +87,26 @@ function qItem(i) {
   const active = i.state !== "done";
   const a = qAgent(i);
   const p = a && a.phases;
-  const prio = i.priority && i.priority !== "low" ? `<span class="qchip prio ${esc(i.priority)}">${esc(i.priority)}</span>` : "";
+  const prio = i.priority && i.priority !== "low" ? cchip(`prio ${esc(i.priority)}`, esc(i.priority)) : "";
   const when = i.state === "done" ? `finished ${stamp(i.finished)}`
     : i.started ? `started ${stamp(i.started)}` : `queued ${stamp(i.queued)}`;
-  const line = [
-    esc(i.project), when,
-    p ? `phase ${p.done}/${p.total}` : "",
-    qEta(i, a),
-    qPr(i.pr),
-  ].filter(Boolean).join(" &middot; ");
+  const line = cardLine([esc(i.project), when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i.pr)]);
   const next = active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "";
   const hold = i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "";
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
-  const facts = [
+  const more = cfold(`task:${i.slug}`, "Full task and details", facts([
     ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags],
     ["from", i.from], ["session", i.session], ["queued", i.queued && stamp(i.queued)],
     ["started", i.started && stamp(i.started)], ["plan", i.plan], ["phases", i.phases],
-  ].filter(([, v]) => v).map(([k, v]) => `<dt>${k}</dt><dd>${k === "queued" || k === "started" ? v : esc(v)}</dd>`).join("");
-  const k = `task:${i.slug}`;
-  const more = `<details class="qmore" data-k="${esc(k)}"${qst.open[k] ? " open" : ""}><summary>Full task and details</summary>` +
-    `<dl>${facts}</dl><div class="q">${esc(i.task || "")}</div></details>`;
+  ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open);
   const prios = Q_PRIORITIES.map((x) => `<option${x === i.priority ? " selected" : ""}>${x}</option>`).join("");
   const acts = active
     ? `<div class="opts">${a && a.question && a.question.kind === "plan" ? "" : approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
       `<select data-bump="${esc(i.slug)}" title="priority">${prios}</select>` +
       `<button class="btn sm quiet" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
-  return `<div class="card qitem ${esc(i.state)}"><div class="qhead"><span class="qtitle">${esc(i.title || i.slug)}</span>${prio}${qChip(i)}</div>` +
-    `<div class="qline">${line}</div>${active ? qNeeds(i) : ""}${hold}${note}${next}${more}${acts}</div>`;
+  return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio, qChip(i)])}` +
+    `${line}${active ? qNeeds(i) : ""}${hold}${note}${next}${more}${acts}</div>`;
 }
 
 function qCompose() {
@@ -154,13 +141,7 @@ function renderQueueList() {
   const el = $("q-list");
   if (!el) return;
   // Keep a reply being typed into a row's answer card across the re-render.
-  const f = document.activeElement, card = f && f.closest && f.closest("#q-list .qneed .card");
-  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
-  drawQueueList(el);
-  if (!keep) return;
-  const again = [...el.querySelectorAll(".qneed .card")].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
-  const input = again && again.querySelector("[data-free]");
-  if (input) { input.value = keep.v; input.focus(); }
+  keepTyping("#q-list .qneed .card", () => drawQueueList(el));
 }
 
 // The counts at the top, one tile each, and the week's prose folded under them.
@@ -169,15 +150,13 @@ function qTiles() {
   const held = it.filter((i) => i.state === "queued" && i.hold).length;
   const failed = it.filter((i) => i.state === "done" && i.status === "failed").length;
   const s = qst.stats || {};
-  const tile = (num, label, sub) => `<div class="qtile"><b>${num}</b>${label}${sub ? `<span>${sub}</span>` : ""}</div>`;
-  const typical = [s.wait_minutes_median != null ? `wait ${dur(s.wait_minutes_median)}` : "",
-    s.to_pr_minutes_median != null ? `to PR ${dur(s.to_pr_minutes_median)}` : ""].filter(Boolean).join(", ");
   const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
   const k = "stats";
-  return `<div class="qtiles">${tile(n("waiting"), "waiting on you")}${tile(n("running"), "running")}` +
-    `${tile(n("queued"), "up next", held ? `${held} held` : "")}${tile(n("done"), "done in 7 days", failed ? `${failed} failed` : "")}` +
-    `${typical ? tile("", "typical", typical) : ""}</div>` +
-    (prose ? `<details class="qmore qstats" data-k="${k}"${qst.open[k] ? " open" : ""}><summary>Stats detail</summary><div class="muted">${prose}</div></details>` : "");
+  return `<div class="tiles qtiles">${tile("NEEDS YOU", n("waiting"), "var(--b-needs)")}${tile("RUNNING", n("running"), "var(--b-working)")}` +
+    `${tile("UP NEXT", n("queued"), "var(--c1)", held ? `${held} held` : "")}${tile("DONE, 7 DAYS", n("done"), "var(--b-done)", failed ? `${failed} failed` : "")}` +
+    `${s.wait_minutes_median != null ? tile("TYPICAL WAIT", dur(s.wait_minutes_median), "var(--c3)") : ""}` +
+    `${s.to_pr_minutes_median != null ? tile("TYPICAL TO PR", dur(s.to_pr_minutes_median), "var(--c3)") : ""}</div>` +
+    (prose ? cfold(k, "Stats detail", `<div class="muted">${prose}</div>`, qst.open) : "");
 }
 
 // Done items under a heading per day, newest day first.
@@ -219,7 +198,7 @@ function drawQueueList(el) {
     const failed = state === "done" ? rows.filter((i) => i.status === "failed").length : 0;
     const body = !rows.length ? `<div class="card muted">Nothing ${state === "done" ? "finished this week" : "here"}.</div>`
       : state === "done" ? qDoneDays(rows) : rows.map(qItem).join("");
-    html += `<details class="qsec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">${title} ` +
+    html += `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">${title} ` +
       `<span class="muted">${rows.length}${failed ? `, <span class="qbad">${failed} failed</span>` : ""}</span></h2></summary>${body}</details>`;
   }
   const y = $("queue").scrollTop;
