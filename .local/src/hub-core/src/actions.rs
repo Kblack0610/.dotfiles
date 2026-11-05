@@ -262,6 +262,26 @@ pub fn parse_dispatch<Tz: TimeZone>(text: &str, tz: &Tz) -> Vec<Action> {
         .collect()
 }
 
+/// What a Sentinel page reports, from the shapes watch-companion-loop writes: "<subject> back
+/// to normal", a reminder ending "for 5d now.", "<subject> watch cannot check (probe error ...)",
+/// and anything else is a trip, whose sentence comes from the manifest. Pages from before the
+/// plain wording lead with "[name]" and say TRIPPED or RECOVERED.
+fn sentinel_verb(msg: &str) -> &'static str {
+    if msg.contains("RECOVERED") || msg.contains(" back to normal") {
+        "recovered"
+    } else if msg.contains("TRIPPED") {
+        "tripped"
+    } else if msg.starts_with('[')
+        || msg.contains("cannot check (probe error")
+        || msg.ends_with(" now.")
+        || msg.contains(" now. ")
+    {
+        "page"
+    } else {
+        "tripped"
+    }
+}
+
 /// agent-notify's ledger: `<rfc3339>\t<priority>\t<title>\t<message>`. The title says who paged.
 pub fn parse_notify(text: &str) -> Vec<Action> {
     text.lines()
@@ -274,9 +294,7 @@ pub fn parse_notify(text: &str) -> Vec<Action> {
                 None => (title, None),
             };
             let (actor, verb) = match head {
-                "Sentinel" if msg.contains("TRIPPED") => ("sentinel".to_string(), "tripped"),
-                "Sentinel" if msg.contains("RECOVERED") => ("sentinel".to_string(), "recovered"),
-                "Sentinel" => ("sentinel".to_string(), "page"),
+                "Sentinel" => ("sentinel".to_string(), sentinel_verb(msg)),
                 "hold" => ("hold".to_string(), "hold"),
                 "go" => ("hold".to_string(), "go"),
                 "park" => ("park".to_string(), "park"),
@@ -285,7 +303,7 @@ pub fn parse_notify(text: &str) -> Vec<Action> {
                     (w.trim_end_matches(':').to_lowercase(), "page")
                 }
             };
-            // Sentinel's message names its watch already; anyone else's target leads the text.
+            // Sentinel's message names its subject already; anyone else's target leads the text.
             let text = match target {
                 Some(t) if head != "Sentinel" => format!("{t}: {msg}"),
                 _ => msg.to_string(),
@@ -547,6 +565,34 @@ not json
         assert_eq!(a[0].at, utc("2026-11-04T16:18:29Z"));
         assert_eq!(a[0].text, "[fleet-liveness] TRIPPED - exit 1");
         assert_eq!(a[4].text, "unity: HOLD set: gate running");
+    }
+
+    #[test]
+    fn plain_sentinel_pages_keep_their_verbs() {
+        let page = |m: &str| format!("2026-11-05T09:00:00-08:00\thigh\tSentinel: w\t{m}\n");
+        let text: String = [
+            "A home cluster node is not Ready. Run kubectl --context home-k3s get nodes.",
+            "AWS burst runner started.",
+            "Home cluster nodes back to normal after 2h.",
+            "Home cluster nodes back to normal.",
+            "Playground nightly tests failing, for 5d now. Read the failed run.",
+            "Agent runners watch cannot check (probe error: metrics fetch failed).",
+            "[x] STILL TRIP after 5d - exit 1 (want 0)",
+        ]
+        .map(page)
+        .concat();
+        assert_eq!(
+            verbs(&parse_notify(&text)),
+            [
+                "tripped",
+                "tripped",
+                "recovered",
+                "recovered",
+                "page",
+                "page",
+                "page"
+            ]
+        );
     }
 
     #[test]

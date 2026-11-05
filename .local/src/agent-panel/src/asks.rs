@@ -43,6 +43,16 @@ pub fn card(id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The `question:` line of ask `id` under `root()`; empty when there is no such ask.
+pub fn question(id: &str) -> String {
+    let Ok(projects) = fs::read_dir(root()) else { return String::new() };
+    projects
+        .flatten()
+        .find_map(|p| fs::read_to_string(p.path().join(format!("{id}.md"))).ok())
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("question: ").map(str::to_string)))
+        .unwrap_or_default()
+}
+
 /// Claude session id -> the id of a pending ask it owns under `root` (its `id:` line, else
 /// the file name). A session with several keeps the first one read.
 pub fn pending_sessions(root: &Path) -> HashMap<String, String> {

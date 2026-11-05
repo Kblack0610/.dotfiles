@@ -42,7 +42,7 @@ pub struct Row {
     pub priority: String,
     pub tier: Option<u8>,
     pub worker: Option<String>,
-    pub ask: bool,
+    pub requested: bool,
     /// The row's `<code>-<n>` id, when its project has a code.
     pub id: Option<String>,
     pub text: String,

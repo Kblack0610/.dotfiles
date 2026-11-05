@@ -42,7 +42,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --date 2026-10-30
   assert_success
-  assert_called 'ptask board --agent add finish stale: 2 phases left, next: two #ask #tier/2'
+  assert_called 'ptask board --agent add finish stale: 2 phases left, next: two #requested #tier/2'
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run --date 2026-10-30
   assert_success
@@ -80,10 +80,10 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
          '{"quote":"retune ci","row":"tune ci","tier":3,"size":"S","done_is_stated":true,"human_only":false}'
   run "$SWEEP" run --date 2026-10-30
   assert_success
-  assert_called 'gym: add a slide; asked 10-30 "add a slide" #ask #tier/2 #worker/asks'
-  assert_called 'build a town; asked 10-30 "new town" #ask #tier/2'
-  assert_not_called 'build a town; asked 10-30 "new town" #ask #tier/2 #worker'
-  assert_not_called 'tune ci; asked 10-30 "retune ci" #ask #tier/3 #worker'
+  assert_called 'gym: add a slide; asked 10-30 "add a slide" #requested #tier/2 #worker/requested'
+  assert_called 'build a town; asked 10-30 "new town" #requested #tier/2'
+  assert_not_called 'build a town; asked 10-30 "new town" #requested #tier/2 #worker'
+  assert_not_called 'tune ci; asked 10-30 "retune ci" #requested #tier/3 #worker'
 }
 
 @test "a human-only ask goes on the human sheet, never the agent board" {

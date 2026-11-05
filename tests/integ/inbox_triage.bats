@@ -121,7 +121,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 }
 
 @test "--backlog: open rows are rewritten, moved, dropped or joined as the model says, each through ptask" {
-  sheet '' '- [ ] the menu flickers on resize #ask #high <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] other needs a logo <!-- id:sc-6 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [/] the save is slow <!-- id:sc-8 -->\n'
+  sheet '' '- [ ] the menu flickers on resize #requested #high <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] other needs a logo <!-- id:sc-6 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [/] the save is slow <!-- id:sc-8 -->\n'
   # rows reach the model sorted by text: sc-5, sc-6, sc-7, sc-4, sc-8; a row in progress is never dropped
   answer '{"n": 1, "action": "dup", "id": "sc-4"}' '{"n": 2, "action": "rewrite", "row": "feat(brand): a logo #size/s", "project": "other"}' \
     '{"n": 3, "action": "drop", "why": "a header, not a task"}' \
@@ -132,8 +132,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'backlog: rewrote 2, moved 1, dropped 2, kept 1, refused 0'
   grep -qx '2. \[sc-6\] other needs a logo' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   run tasks
-  assert_output --regexp '- \[ \] fix\(ui\): the menu flickers on resize #size/s #ask .*#high.*id:sc-4'
-  assert_output --partial '  was: the menu flickers on resize #ask'
+  assert_output --regexp '- \[ \] fix\(ui\): the menu flickers on resize #size/s #requested .*#high.*id:sc-4'
+  assert_output --partial '  was: the menu flickers on resize #requested'
   assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
   assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
   assert_output --partial '- [/] the save is slow <!-- id:sc-8 -->'

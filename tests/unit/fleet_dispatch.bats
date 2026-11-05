@@ -186,16 +186,16 @@ verdict() {
   assert_output ''
 }
 
-@test "candidates: the asks worker takes only #ask rows, only in its project, never tier 3" {
+@test "candidates: the requested worker takes only #requested rows, only in its project, never tier 3" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  echo '{"asks": {"max_tier": 9, "projects": ["game"], "only_tag": "ask"}}' > "$DISPATCH_WORKERS"
-  row game agent 'real ask' '- [ ] real ask #ask #worker/asks #tier/2'
-  row game agent 'tagged no ask' '- [ ] tagged no ask #worker/asks #tier/2'
-  row game agent 'lookalike' '- [ ] lookalike #asks #worker/asks #tier/2'
-  row game agent 'tier three' '- [ ] tier three #ask #worker/asks #tier/3'
-  row game agent 'other worker' '- [ ] other worker #ask #worker/fleet #tier/1'
-  row app agent 'wrong project' '- [ ] wrong project #ask #worker/asks #tier/2'
+  echo '{"requested": {"max_tier": 9, "projects": ["game"], "only_tag": "requested"}}' > "$DISPATCH_WORKERS"
+  row game agent 'real ask' '- [ ] real ask #requested #worker/requested #tier/2'
+  row game agent 'tagged no ask' '- [ ] tagged no ask #worker/requested #tier/2'
+  row game agent 'lookalike' '- [ ] lookalike #requests #worker/requested #tier/2'
+  row game agent 'tier three' '- [ ] tier three #requested #worker/requested #tier/3'
+  row game agent 'other worker' '- [ ] other worker #requested #worker/fleet #tier/1'
+  row app agent 'wrong project' '- [ ] wrong project #requested #worker/requested #tier/2'
 
   run cmd_candidates
   assert_success
@@ -242,7 +242,7 @@ verdict() {
 }
 
 board_workers() {
-  echo '{"asks": {"max_tier": 2, "projects": ["game"], "only_tag": "ask"},
+  echo '{"requested": {"max_tier": 2, "projects": ["game"], "only_tag": "requested"},
          "fleet": {"max_tier": 1},
          "board": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
 }
@@ -274,18 +274,18 @@ board_workers() {
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'assigned'
 }
 
-@test "the shipped registry: asks, then the human's assignments, then the game's agent board, never tier 3" {
+@test "the shipped registry: requested, then the human's assignments, then the game's agent board, never tier 3" {
   export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
   project unity-core-playground beta "$SANDBOX/repos/game"
   project platform prod "$SANDBOX/repos/app"
-  row unity-core-playground agent 'an ask' '- [ ] an ask #ask #worker/asks #tier/2'
+  row unity-core-playground agent 'an ask' '- [ ] an ask #requested #worker/requested #tier/2'
   row unity-core-playground agent 'assigned' "- [ ] assigned $T"
   row unity-core-playground agent 'plain' '- [ ] plain'
   row unity-core-playground agent 'tier three' '- [ ] tier three #tier/3'
   row unity-core-playground human 'human plain' '- [ ] human plain'
   row platform agent 'platform plain' '- [ ] platform plain'
   run cmd_candidates
-  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=asks,assigned=fleet,plain=board'
+  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=requested,assigned=fleet,plain=board'
 }
 
 # --- picks -------------------------------------------------------------------------------
@@ -1455,9 +1455,9 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
 }
 
-@test "night: only rows tier 3 alone holds back; asks, decisions, devices, the human's machine and lower tiers stay out" {
+@test "night: only rows tier 3 alone holds back; requested rows, decisions, devices, the human's machine and lower tiers stay out" {
   night_ready
-  row agent-runtime agent 'ask row' '- [ ] fix the ask row #ask #tier/3'
+  row agent-runtime agent 'ask row' '- [ ] fix the ask row #requested #tier/3'
   row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
   row agent-runtime agent 'typed decide' '- [ ] decide(board): fold it #tier/3'
   row agent-runtime agent 'pad run' '- [ ] fix the pad controller switch #tier/3'

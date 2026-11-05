@@ -42,7 +42,7 @@ forbid = [
   ['\b[A-Z]{5,}\b', 'an all-caps status word: say the state in plain words'],
   ['-> do: ', 'a runbook hint: give one action'],
 ]
-quiet = ['\bRECOVERED\b', '\brecovered\b', 'all clear']
+quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
 source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
 # The morning briefing page (refs/<date>/briefing.md): headline plus what needs you.
