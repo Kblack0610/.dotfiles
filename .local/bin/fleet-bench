@@ -1158,7 +1158,8 @@ kpi_json() {
          revert_rate: ratio(($s | total(.reverted_7d)); $prs),
          interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
          cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
-         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length)};
+         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
+         plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits))};
     # older lines have no runner field; _runner is where headless runs are filed
     ($o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.)) as $bot
     | ($o | map(select($bot[.session_id] | not))) as $human
