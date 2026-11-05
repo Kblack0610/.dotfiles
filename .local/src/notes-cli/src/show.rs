@@ -8,8 +8,17 @@
 //! the profile root first, then the vault. The resolved file must sit inside one of those two
 //! roots once symlinks and `..` are taken out, so a caller that passes a target it got from a
 //! browser never reads past the notes.
+//!
+//! `notes put <target> --base <hash>` is the one way a viewer writes a note back: stdin replaces
+//! the file only when its hash (`md::fnv1a`, the `hash` that `show --json` gives) is still
+//! `base`, so a page that read the note before an editor, a sweep or a sync wrote it never
+//! overwrites them (the `notes outbox put` contract). It finds the file the way `show` does, so
+//! it never writes past the notes either.
 
 use crate::config::Profile;
+use crate::logging::Logger;
+use crate::md;
+use crate::outbox::Put;
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
 use serde_json::{json, Value};
@@ -191,6 +200,7 @@ pub fn note(p: &Profile, target: &str) -> Result<Value> {
         "date": date.map(|d| d.to_string()),
         "prev": prev,
         "next": next,
+        "hash": md::fnv1a(&markdown),
         "markdown": markdown,
         "links": links,
     }))
@@ -214,6 +224,66 @@ pub fn run(p: &Profile, target: &str, as_json: bool) -> Result<i32> {
         return Ok(1);
     }
     Ok(0)
+}
+
+/// Replace the note `target` names with `text` when its hash is still `base`; `Stale` carries the
+/// note as it is now and nothing is written. A note that does not exist is refused (an edit
+/// changes a note, it does not make one), and so is the outbox, whose one editor is
+/// `notes outbox put` under the outbox lock.
+pub(crate) fn put_note(p: &Profile, target: &str, base: &str, text: &str) -> Result<Put> {
+    let roots = roots(p);
+    let (file, _) = locate(p, &roots, target)?;
+    let Some(file) = confined(&file, &roots) else {
+        bail!(
+            "no note at '{}' to save into; an edit changes a note, it does not make one",
+            link_target(target)
+        );
+    };
+    if fs::canonicalize(&p.outbox).ok().as_deref() == Some(file.as_path()) {
+        bail!(
+            "the outbox is edited with `notes outbox put` (the Outbox tab), which holds its lock"
+        );
+    }
+    let content = fs::read_to_string(&file)?;
+    if md::fnv1a(&content) != base {
+        return Ok(Put::Stale(note(p, target)?));
+    }
+    let mut new = text.replace("\r\n", "\n");
+    if !new.is_empty() && !new.ends_with('\n') {
+        new.push('\n');
+    }
+    if new != content {
+        md::write_atomic(&file, &new)?;
+    }
+    Ok(Put::Written(note(p, target)?))
+}
+
+/// `notes put <target> --base <hash>`: the note replaced with stdin, then its `show --json`. Exit
+/// 3, with the current `show --json` printed and nothing written, when it changed since `base`.
+pub fn put(p: &Profile, log: &Logger, target: &str, base: &str, text: &str) -> Result<i32> {
+    match put_note(p, target, base, text) {
+        Ok(Put::Written(v)) => {
+            log.info(
+                "put",
+                &format!(
+                    "{} ({} bytes)",
+                    v["rel"].as_str().unwrap_or(target),
+                    text.len()
+                ),
+            );
+            println!("{v}");
+            Ok(0)
+        }
+        Ok(Put::Stale(v)) => {
+            println!("{v}");
+            eprintln!("{target} changed since {base}; nothing written");
+            Ok(3)
+        }
+        Err(e) => {
+            log.warn("put", &format!("{target}: {e}"));
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -316,6 +386,60 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("sneaky.md")).unwrap();
         assert_eq!(note(&p, "sneaky").unwrap()["exists"], false);
         assert_eq!(note(&p, "sneaky").unwrap()["markdown"], "");
+        fs::remove_file(outside).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn put_on_the_hash_it_read_writes_and_on_a_stale_one_writes_nothing() {
+        let (root, p) = vault("put");
+        let day = p.daily.join("2026-11-04.md");
+        let read = note(&p, "daily:2026-11-04").unwrap();
+        let base = read["hash"].as_str().unwrap().to_string();
+        let Put::Written(v) = put_note(&p, "daily:2026-11-04", &base, "# Wed\n- [x] a").unwrap()
+        else {
+            panic!("a put on the hash it read is written");
+        };
+        assert_eq!(fs::read_to_string(&day).unwrap(), "# Wed\n- [x] a\n");
+        assert_eq!(v["markdown"], "# Wed\n- [x] a\n");
+        // The page still holds the first hash; an editor wrote since, so nothing is written and
+        // the note as it is now comes back.
+        fs::write(&day, "# Wed\nfrom nvim\n").unwrap();
+        let Put::Stale(now) = put_note(&p, "daily:2026-11-04", &base, "mine").unwrap() else {
+            panic!("a stale hash writes nothing");
+        };
+        assert_eq!(now["markdown"], "# Wed\nfrom nvim\n");
+        assert_eq!(fs::read_to_string(&day).unwrap(), "# Wed\nfrom nvim\n");
+        // Saving over it takes the hash it just showed.
+        let fresh = now["hash"].as_str().unwrap();
+        assert!(matches!(
+            put_note(&p, "daily:2026-11-04", fresh, "mine\r\nover it\n").unwrap(),
+            Put::Written(_)
+        ));
+        assert_eq!(fs::read_to_string(&day).unwrap(), "mine\nover it\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn put_refuses_a_missing_note_the_outbox_and_a_path_out_of_the_notes() {
+        let (root, p) = vault("put-refuse");
+        let empty = md::fnv1a("");
+        assert!(put_note(&p, "gone", &empty, "x").is_err());
+        assert!(!root.join("gone.md").exists());
+        assert!(put_note(&p, "daily:2026-11-03", &empty, "x").is_err());
+        let ob = note(&p, "outbox").unwrap();
+        assert!(put_note(&p, "outbox", ob["hash"].as_str().unwrap(), "x").is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("outbox.md")).unwrap(),
+            "# Outbox\n"
+        );
+        let outside = root.with_extension("outside-put.md");
+        fs::write(&outside, "secret").unwrap();
+        let name = outside.file_stem().unwrap().to_string_lossy().into_owned();
+        assert!(put_note(&p, &format!("../{name}"), &md::fnv1a("secret"), "x").is_err());
+        std::os::unix::fs::symlink(&outside, root.join("sneaky.md")).unwrap();
+        assert!(put_note(&p, "sneaky", &md::fnv1a("secret"), "x").is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "secret");
         fs::remove_file(outside).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
