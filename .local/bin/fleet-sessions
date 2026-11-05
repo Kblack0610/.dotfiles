@@ -237,7 +237,15 @@ ledger_write() {
     && mv "$tmp" "$LEDGER/$sid"
 }
 mark()     { ledger_write "$1" fact "$2"; }
-escalate() { ledger_write "$1" escalated "$2"; }
+escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
+
+# finding_paged <sid> <key>: a fleet-bench finding (sid finding-*, key "<fact> <class>") that went to
+# the human is a page on that finding's episode, so `fleet-bench loop` can tell a page from an act.
+# Best effort: a bench that cannot record leaves the escalation standing.
+finding_paged() {
+  [[ "$1" == finding-* && "$2" == *" human" ]] || return 0
+  "${FLEET_BENCH:-fleet-bench}" respond "${2% human}" shepherd paged >/dev/null 2>&1 || true
+}
 
 # labels_of <sid> -> the session's labels, comma-joined in the order set, or "-".
 labels_of() {

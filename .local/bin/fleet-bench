@@ -23,6 +23,10 @@
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
+#   fleet-bench respond '<rule> <scope> @<episode>' <actor> <paged|asked|filed-row|cancelled|fixed> [ref]
+#                                record what answered a finding (its fact), in responses.jsonl
+#   fleet-bench loop [--json]    each finding episode of the last 7d: minutes to its first response
+#                                that is not a page, and DARK when it reached the human with only pages
 #   fleet-bench throughput [--from T] [--to T]
 #                                runs/h, failures, merges/h, pool wait and load on every host
 #   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
@@ -97,6 +101,7 @@ ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
+RESPONSES="$DIR/responses.jsonl"   # fleet-bench respond: what answered each finding
 FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
@@ -533,7 +538,7 @@ window_stats() {
 # in the window by a session of that project.
 bench_prom() {
   local t="$1"
-  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") \
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
      --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") \
      "$JQ_LIB$PROM_JQ"'
     def h: . / 60 * 100 | round / 100;
@@ -547,7 +552,11 @@ bench_prom() {
         $ps[] | . as $p | [{project: $p}, ($s | map(select(.project == $p) | .ratio // empty) | median)]),
       gauge("agent_bench_ci_reds_before_merge"; "CI reds on PRs merged in the last \($win)h, before they merged.";
         $c | map(. + {project: $proj[.session_id]}) | map(select(.project != null)) | group_by(.project)[]
-        | [{project: .[0].project}, (map(.ci_red) | add)])'
+        | [{project: .[0].project}, (map(.ci_red) | add)]),
+      gauge("agent_bench_loop_dark_episodes"; "Finding episodes begun in the last 7d that reached the human with nothing but pages.";
+        [{}, ($e | map(select(.dark)) | length)]),
+      gauge("agent_bench_loop_first_response_minutes"; "Median minutes from a finding episode to its first response that is not a page, last 7d.";
+        [{}, ($e | map(.first_response_min | numbers) | median)])'
 }
 
 # publish_window <now>: write bench_prom where node_exporter reads it.
@@ -1034,6 +1043,7 @@ ledger_counts() {
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
   echo "board_open=$(compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] ')"
+  echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
 }
 
 # ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
@@ -1070,7 +1080,7 @@ cmd_ledger() {
 # counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad asks_stale board_open"
+KPI_NOW="runners_bad asks_stale board_open loop_dark"
 
 # kpi_json <now> <ledger counts> -> one object keyed by KPI, in table order
 kpi_json() {
@@ -1546,6 +1556,62 @@ cmd_findings() {
     awk -F'\t' '{ printf "%-8s %-15s %-24s %-15s %s\n", $1, $2, $3, $4, $5 }'
 }
 
+# The loop: what answered each finding. A finding of class human goes on the human's page once (the
+# ledger's escalate records it as paged); what the fleet did about it is a response: asked,
+# filed-row, cancelled or fixed. An episode that reached class human with nothing but pages is dark:
+# the loop saw it and nothing acted. On 2026-11-05 starved pools paged from 23:31 to 06:07 and no
+# pass did anything else, which no number showed.
+RESPONSE_ACTIONS="paged asked filed-row cancelled fixed"
+LOOP_WINDOW_S=$((7 * 86400))   # the KPI table's 7d
+
+cmd_respond() {
+  local fact="${1:-}" actor="${2:-}" action="${3:-}" ref="${4:-}"
+  if ! [[ "$fact" =~ ^[a-z-]+\ [^\ ]+\ @[0-9]+$ ]] || [ -z "$actor" ] || [[ " $RESPONSE_ACTIONS " != *" $action "* ]]; then
+    say "usage: fleet-bench respond '<rule> <scope> @<episode>' <actor> <${RESPONSE_ACTIONS// /|}> [ref]"
+    return 2
+  fi
+  mkdir -p "$DIR"
+  jq -cn --argjson t "$(now)" --arg f "$fact" --arg a "$actor" --arg x "$action" --arg r "$ref" \
+    '{epoch: $t, fact: $f, actor: $a, action: $x, ref: $r}' >> "$RESPONSES"
+}
+
+# loop_episodes <now> <since> -> one object per finding episode begun since <since> and seen on two
+# samples or more (one is noise, as fleet-lead reads it), report class left out: when it reached class
+# human, its responses, minutes from the episode to its first response that is not a page, whether
+# it still fires, and dark.
+loop_episodes() {
+  local f=/dev/null r=/dev/null
+  [ -s "$FINDINGS" ] && f=$FINDINGS
+  [ -s "$RESPONSES" ] && r=$RESPONSES
+  jq -cn --argjson t "$1" --argjson since "$2" --argjson l "$(finding_limits)" --slurpfile f "$f" --slurpfile r "$r" '
+    ($r | map(select(.epoch <= $t)) | group_by(.fact) | map({key: .[0].fact, value: .}) | from_entries) as $resp
+    | $f | map(select(.decision_class != "report" and .episode >= $since and .epoch <= $t)) | group_by(.fact)[]
+    | select(length > 1)
+    | (map(select(.decision_class == "human")) | min_by(.epoch) | .epoch?) as $human
+    | ($resp[.[0].fact] // []) as $rs
+    | ($rs | map(select(.action != "paged")) | min_by(.epoch) | .epoch?) as $acted
+    | (max_by(.epoch) | .epoch) as $last
+    | {fact: .[0].fact, rule: .[0].rule, scope: .[0].scope, episode: .[0].episode, last: $last,
+       open: ($t - $last <= $l.finding_clear_min * 60), human_at: $human, responses: ($rs | sort_by(.epoch) | map(.action)),
+       first_response_min: (if $acted == null then null else ($acted - .[0].episode) / 60 | round end),
+       dark: ($human != null and $acted == null)}'
+}
+
+cmd_loop() {
+  local t rows
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench loop [--json]"; return 2 ;; esac
+  t=$(now)
+  rows=$(loop_episodes "$t" $((t - LOOP_WINDOW_S))) || return 1
+  if [ "${1:-}" = --json ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
+  [ -n "$rows" ] || { echo "loop: no finding episodes in 7d"; return 0; }
+  jq -rs "$JQ_LIB"'
+    "loop, 7d: \(length) episodes, \(map(select(.dark)) | length) dark (\(map(select(.dark and .open)) | length) still firing), first response after \(map(.first_response_min | numbers) | median // "-")m median",
+    (sort_by(.episode)[] | [(if .dark then "DARK" elif .first_response_min != null then "\(.first_response_min)m" else "-" end),
+       (if .open then "firing" else "cleared" end), .fact,
+       (.responses | if length == 0 then "no response" else join(",") end)] | @tsv)' <<<"$rows" |
+    awk -F'\t' 'NR == 1 { print; next } { printf "%-6s %-8s %-40s %s\n", $1, $2, $3, $4 }'
+}
+
 # throughput_epoch <text> -> an epoch, from an epoch or anything `date -d` reads
 throughput_epoch() { [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || date -d "$1" +%s; }
 
@@ -1832,14 +1898,16 @@ main() {
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
     findings) shift; cmd_findings "$@" ;;
+    respond) shift; cmd_respond "$@" ;;
+    loop) shift; cmd_loop "$@" ;;
     throughput) shift; cmd_throughput "$@" ;;
     flow) shift; cmd_flow "$@" ;;
     forecast) shift; cmd_forecast "$@" ;;
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
-    -h | --help) sed -n '2,47p' "$0" ;;
-    *) sed -n '2,41p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,51p' "$0" ;;
+    *) sed -n '2,45p' "$0" >&2; return 2 ;;
   esac
 }
 
