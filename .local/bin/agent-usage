@@ -178,11 +178,11 @@ _from_prom() { # $1=session id
     esac
   done <<< "$toks"
 
-  cost="$(prom "sum(claude_code_cost_usage_USD_total{session_id=\"$id\"})")"
   models="$(prom_by model "sum by (model) (claude_code_token_usage_tokens_total{session_id=\"$id\"})" \
             | cut -f1 | sort -u | paste -sd, -)"
-  by_model="$(prom_by model "sum by (model) (claude_code_cost_usage_USD_total{session_id=\"$id\"})" \
-              | awk -F'\t' '{ printf "%s%s=%s", (NR > 1 ? "," : ""), $1, $2 }')"
+  # The total is the sum of the per-model costs: one query for both.
+  read -r cost by_model < <(prom_by model "sum by (model) (claude_code_cost_usage_USD_total{session_id=\"$id\"})" \
+    | awk -F'\t' '{ s += $2; m = m (NR > 1 ? "," : "") $1 "=" $2 } END { if (NR) printf "%.10g %s\n", s, m }')
 
   printf '%s %s %s %s %s %s %s\n' "$i" "$o" "$cc" "$cr" "${cost:-0}" "${models:--}" "${by_model:--}"
 }

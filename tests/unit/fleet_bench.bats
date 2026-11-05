@@ -402,7 +402,7 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json
   assert_success
   run jq -sc 'map({session_id, minutes, escalations, sampled,
-                   merged: (.merged | if . then {prs: (.prs | length), lines_added, lines_deleted, ci_runs, ci_reds} else . end)})' <<<"$output"
+                   merged})' <<<"$output"
   assert_output '[{"session_id":"a","minutes":{"NEEDS":10,"WORKING":30},"escalations":2,"sampled":null,"merged":{"prs":2,"lines_added":15,"lines_deleted":2,"ci_runs":4,"ci_reds":1}},{"session_id":"z","minutes":null,"escalations":null,"sampled":false,"merged":{"prs":1,"lines_added":1,"lines_deleted":1,"ci_runs":1,"ci_reds":0}}]'
   BENCH_NOW=$((T0 + 30 * 86400)) run "$SUBJECT" stats --json --since $((T0 + 250))
   assert_output --partial '"session_id":"z"'

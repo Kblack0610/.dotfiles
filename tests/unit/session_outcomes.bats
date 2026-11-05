@@ -289,7 +289,7 @@ SH
 # a session the registry does not know, which must not become a row.
 bench_fx() {
   printf '%s\n' \
-    '{"session_id":"sess-a","project":"proj","target":"lab/proj-agent-1:1","plan":"p","phase":"1/1","ticked":1,"minutes":{"WORKING":90,"NEEDS":20},"nudges":2,"escalations":1,"peak_context":150000,"first_epoch":1,"last_epoch":2,"merged":{"prs":[{"repo":"o/r","number":10,"additions":25,"deletions":5,"ci_runs":3,"ci_red":1}],"lines_added":25,"lines_deleted":5,"ci_runs":3,"ci_reds":1}}' \
+    '{"session_id":"sess-a","project":"proj","target":"lab/proj-agent-1:1","plan":"p","phase":"1/1","ticked":1,"minutes":{"WORKING":90,"NEEDS":20},"nudges":2,"escalations":1,"peak_context":150000,"first_epoch":1,"last_epoch":2,"merged":{"prs":1,"lines_added":25,"lines_deleted":5,"ci_runs":3,"ci_reds":1}}' \
     '{"session_id":"sess-zz","project":"other","sampled":false,"merged":null}' > "$BENCH_FX"
 }
 

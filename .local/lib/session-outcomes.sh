@@ -176,35 +176,23 @@ so_latest() {
 # merge is friction (1): pipeline-eval found nudges and reds are rework worth scoring.
 # tool_errors stay out: failed commands are how work gets done. Minutes, cost and
 # escalations stay on the card and out of the sum: they measure size, not friction.
+# friction_terms is the one list of [weight, count, words]: friction sums it and why
+# reads it out (`worst`, `card`), so the words always add up to the number.
 so_friction_def() {
   cat <<'EOF'
-def friction:
-  5 * (.reverted_7d // 0)
-  + 2 * (.prs_closed_unmerged // 0)
-  + 2 * (.corrections.lessons_written // 0)
-  + (.corrections.interrupts // 0)
-  + (.hard_errors.denied // 0)
-  + (.hard_errors.api_error // 0)
-  + (.delivery.nudges // 0)
-  + (.delivery.merged.ci_reds // 0);
-EOF
-}
-
-# so_why_def - friction's terms as words, for the readers that say why a session ranks
-# where it does (`worst`, `card`). One term of so_friction_def per entry, in its order,
-# with its weight, so the words add up to the number.
-so_why_def() {
-  cat <<'EOF'
+def friction_terms:
+  [ [5, (.reverted_7d // 0), "reverted"],
+    [2, (.prs_closed_unmerged // 0), "closed unmerged"],
+    [2, (.corrections.lessons_written // 0), "lessons written"],
+    [1, (.corrections.interrupts // 0), "interrupts"],
+    [1, (.hard_errors.denied // 0), "denied"],
+    [1, (.hard_errors.api_error // 0), "API errors"],
+    [1, (.delivery.nudges // 0), "nudges"],
+    [1, (.delivery.merged.ci_reds // 0), "CI reds before merge"] ];
+def friction: friction_terms | map(.[0] * .[1]) | add;
 def why:
-  [ (if (.reverted_7d // 0) > 0 then "5 x \(.reverted_7d) reverted" else empty end),
-    (if (.prs_closed_unmerged // 0) > 0 then "2 x \(.prs_closed_unmerged) closed unmerged" else empty end),
-    (if (.corrections.lessons_written // 0) > 0 then "2 x \(.corrections.lessons_written) lessons written" else empty end),
-    (if (.corrections.interrupts // 0) > 0 then "\(.corrections.interrupts) interrupts" else empty end),
-    (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
-    (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API errors" else empty end),
-    (if (.delivery.nudges // 0) > 0 then "\(.delivery.nudges) nudges" else empty end),
-    (if (.delivery.merged.ci_reds // 0) > 0 then "\(.delivery.merged.ci_reds) CI reds before merge" else empty end)
-  ] | join(" + ");
+  friction_terms | map(select(.[1] > 0) | (if .[0] > 1 then "\(.[0]) x " else "" end) + "\(.[1]) \(.[2])")
+  | join(" + ");
 EOF
 }
 
@@ -227,7 +215,7 @@ so_langfuse_events() {
         ["denied", .hard_errors.denied],
         ["api_error", .hard_errors.api_error],
         ["tool_errors", .hard_errors.tool_errors],
-        ["compactions", (.activity.compactions | if . == null then null else .auto + .manual end)],
+        ["compactions", (.activity.compactions | values | .auto + .manual)],
         ["nudges", .delivery.nudges],
         ["ci_reds", .delivery.merged.ci_reds],
         ["lines_added", .delivery.merged.lines_added] ][]

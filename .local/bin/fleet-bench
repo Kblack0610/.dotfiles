@@ -525,16 +525,16 @@ window_stats() {
   local t="$1"
   jq -cn --argjson since "${2:-$(( t - BENCH_WINDOW_H * 3600 ))}" --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
      --slurpfile p "$PROGRESS" '
-    def mins($g; $b): [$g[] | select(.b == $b) | .m] | add // 0 | floor;
     $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
     | [range(0; length - 1) | {b: $r[.].bucket,
          m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
+    | ($gaps | group_by(.b) | map({key: .[0].b, value: (map(.m) | add | floor)}) | from_entries) as $minutes
     | {session_id: .[0].session_id, target: (last.target), project: (last.project),
      plan: (last.plan_file // "" | sub(".*/"; "") | sub("\\.md$"; "")),
      phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
      ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
-     working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
-     minutes: ($gaps | group_by(.b) | map({key: .[0].b, value: (map(.m) | add | floor)}) | from_entries),
+     working_min: ($minutes.WORKING // 0), waiting_min: ($minutes.NEEDS // 0), stalled_min: ($minutes.STALLED // 0),
+     minutes: $minutes,
      nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
      escalations: ([range(1; length) | select($r[.].escalated == true and $r[. - 1].escalated != true)] | length),
      peak_context: (map(.context_tokens // 0) | max), first_epoch: (.[0].epoch), last_epoch: (last.epoch)}'
@@ -591,10 +591,11 @@ outcomes_latest() {
   outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
-# in_window <file> <epoch field> <now> -> the file's rows whose field falls in the window
+# in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
+# <since> (default: the window)
 in_window() {
   [ -s "$1" ] || return 0
-  jq -c --arg f "$2" --argjson since $(( $3 - BENCH_WINDOW_H * 3600 )) 'select(.[$f] >= $since)' "$1"
+  jq -c --arg f "$2" --argjson since "${4:-$(( $3 - BENCH_WINDOW_H * 3600 ))}" 'select(.[$f] >= $since)' "$1"
 }
 
 cmd_headline() {
@@ -669,15 +670,12 @@ cmd_stats() {
     shift
   done
   { [ "$json" = 1 ] && [[ "$since" =~ ^[0-9]+$ ]]; } || { echo "usage: fleet-bench stats --json [--since <epoch>]" >&2; return 2; }
-  local ci=/dev/null
-  [ -s "$CI" ] && ci="$CI"
   jq -cn --slurpfile w <([ -s "$PROGRESS" ] && window_stats "$(now)" "$since") \
-     --slurpfile c <(jq -c --argjson s "$since" 'select(.merged_epoch >= $s)' "$ci") '
+     --slurpfile c <(in_window "$CI" merged_epoch 0 "$since") '
     ($w | map({key: .session_id, value: del(.working_min, .waiting_min, .stalled_min)}) | from_entries) as $ws
     | ($c | group_by(.session_id)
        | map({key: .[0].session_id,
-              value: {prs: (map({repo, number, additions, deletions, ci_runs, ci_red})),
-                      lines_added: (map(.additions // 0) | add), lines_deleted: (map(.deletions // 0) | add),
+              value: {prs: length, lines_added: (map(.additions // 0) | add), lines_deleted: (map(.deletions // 0) | add),
                       ci_runs: (map(.ci_runs // 0) | add), ci_reds: (map(.ci_red // 0) | add)}})
        | from_entries) as $ci
     | (($ws | keys) + ($ci | keys) | unique)[] as $k

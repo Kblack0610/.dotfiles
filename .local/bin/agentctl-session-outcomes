@@ -35,6 +35,8 @@ GH="${SO_GH:-gh}"
 RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
 BENCH="${SO_BENCH:-fleet-bench}"
+# Money as `worst` and `card` print it.
+FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
@@ -121,15 +123,17 @@ cmd_run() {
       "$work/index.json" > "$work/index.next" && mv "$work/index.next" "$work/index.json"
   done < "$work/repos"
 
-  # Delivery from the bench, keyed by session. An unreadable bench leaves delivery null and
-  # says so in the report: the rest of the row does not depend on it.
+  # Delivery from the bench, keyed by session and kept to the due ones, since each row's jq
+  # reads the whole map. An unreadable bench leaves delivery null and says so in the
+  # report: the rest of the row does not depend on it.
   local bench_note=""
   if ! "$BENCH" stats --json > "$work/bench.jsonl" 2>"$work/bench.err"; then
     bench_note="; fleet-bench stats failed: $(head -c 120 "$work/bench.err")"
     : > "$work/bench.jsonl"
   fi
-  jq -cs 'map({key: .session_id, value: del(.session_id, .project)}) | from_entries' \
-    "$work/bench.jsonl" > "$work/bench.json" 2>/dev/null \
+  jq -cn --slurpfile due "$work/due.jsonl" '($due | map({key: .session_id}) | from_entries) as $d
+      | [inputs | .session_id as $s | select($d | has($s)) | {key: .session_id, value: del(.session_id, .project)}]
+      | from_entries' "$work/bench.jsonl" > "$work/bench.json" 2>/dev/null \
     || { printf '{}' > "$work/bench.json"; bench_note="; fleet-bench stats unreadable"; }
 
   local observed
@@ -273,21 +277,21 @@ cmd_worst() {
     esac
   done
   so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" --argjson json "$json" \
-      --argjson days "$days" --argjson top "$top" "$(so_friction_def)$(so_why_def)"'
+      --argjson days "$days" --argjson top "$top" "$(so_friction_def)$FMT_DEF"'
     [inputs
      | select($p == "" or .project == $p)
      | select(.updated_epoch >= $now - $days * 86400)
-     | . + {f: friction}
-     | select(.f > 0)]
-    | sort_by(-.f, -(.cost_usd // 0)) | .[:$top]
-    | if $json then .[] | del(.f) + {friction: .f, why: why} | tojson
+     | . + {friction: friction}
+     | select(.friction > 0)]
+    | sort_by(-.friction, -(.cost_usd // 0)) | .[:$top]
+    | if $json then .[] | . + {why: why} | tojson
       elif length == 0 then "_(no session with friction in the last \($days) days)_"
       else
         (["| friction | session | project | title | why | cost | test runs | CI polls | spent after last edit |",
           "|---|---|---|---|---|---|---|---|---|"]
-         + map("| \(.f) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
+         + map("| \(.friction) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
                + why
-               + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end)"
+               + " | \(.cost_usd | usd)"
                + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
                + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0
                   then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) + " |"))
@@ -319,24 +323,23 @@ cmd_card() {
     jq -r '"  \(.session_id)  \(.project)  \(.title | .[0:60])"' <<<"$rows" >&2
     return 2
   fi
-  jq -r --argjson json "$json" "$(so_friction_def)$(so_why_def)"'
-    def hm: if . == null then "-" else (floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)" else "\($m)m" end end;
-    def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;
+  jq -r --argjson json "$json" "$(so_friction_def)$FMT_DEF"'
+    def dur: if . == null then "-" else (floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)" else "\($m)m" end end;
     def big: if . == null then "-" elif . >= 1e6 then "\(. / 1e5 | round / 10)M" elif . >= 1e3 then "\(. / 1e3 | round)k" else tostring end;
-    def counts: to_entries | sort_by(-.value) | map("\(.key) \(.value)") | join(", ");
+    def ranked(f): to_entries | sort_by(-.value) | map("\(.key) \(.value | f)") | join(", ");
     . + {friction: friction, why: why}
     | if $json then tojson else
       (.time_use // {}) as $t | (.delivery // {}) as $d | (.activity // {}) as $a
       | [ "\(.title | gsub("\n"; " ") | .[0:80]) (\(.session_id[0:8])), \(.project), updated \(.updated[0:16] | sub("T"; " ")): "
-          + "\(if .duration_s then .duration_s / 60 | hm else "-" end) wall, friction \(.friction), \(.cost_usd | usd), "
+          + "\(if .duration_s then .duration_s / 60 | dur else "-" end) wall, friction \(.friction), \(.cost_usd | usd), "
           + "\(.prs_merged) of \(.prs | length) PRs merged",
           "  Time      " + (if .time_use == null then "-" else
-            "work \($t.work_min | hm), gate \($t.gate_min | hm), tests \($t.test_min | hm), jobs \($t.jobs_min | hm), waiting on you \($t.human_min | hm), parked \($t.parked_min | hm)" end),
+            "work \($t.work_min | dur), gate \($t.gate_min | dur), tests \($t.test_min | dur), jobs \($t.jobs_min | dur), waiting on you \($t.human_min | dur), parked \($t.parked_min | dur)" end),
           "  Stages    " + (if .delivery == null or $d.sampled == false then "never sampled by fleet-bench" else
-            ($d.minutes | to_entries | sort_by(-.value) | map("\(.key) \(.value | hm)") | join(", ") | if . == "" then "-" else . end)
+            ($d.minutes | ranked(dur) | if . == "" then "-" else . end)
             + "; phases ticked \($d.ticked // 0); nudges \($d.nudges // 0), escalations \($d.escalations // 0); peak context \($d.peak_context | big)" end),
           "  Cost      \(.cost_usd | usd)"
-            + (if .cost_by_model then ": " + (.cost_by_model | to_entries | sort_by(-.value) | map("\(.key) \(.value | usd)") | join(", ")) else "" end)
+            + (if .cost_by_model then ": " + (.cost_by_model | ranked(usd)) else "" end)
             + "; account \(.account // "-"); \(.tokens_total | big) tokens",
           "  Delivery  " + (if (.prs | length) == 0 then "no PR" else
             "\(.prs_merged) merged, \(.prs_open) open, \(.prs_closed_unmerged) closed unmerged, \(.reverted_7d) reverted"
@@ -348,9 +351,9 @@ cmd_card() {
             + (if $a.compactions then ", \($a.compactions.auto + $a.compactions.manual) compactions (\($a.compactions.auto) auto)" else "" end)
             + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
           "  Uses      " + (if .uses == null then "-" else
-            ([ (.uses.skills | if length > 0 then "skills: " + counts else empty end),
-               (.uses.subagents | if length > 0 then "agents: " + counts else empty end),
-               (.uses.slash | if length > 0 then "commands: " + counts else empty end) ] | join("; ") | if . == "" then "nothing" else . end) end)
+            ([ (.uses.skills | if length > 0 then "skills: " + ranked(tostring) else empty end),
+               (.uses.subagents | if length > 0 then "agents: " + ranked(tostring) else empty end),
+               (.uses.slash | if length > 0 then "commands: " + ranked(tostring) else empty end) ] | join("; ") | if . == "" then "nothing" else . end) end)
         ] | join("\n")
       end' <<<"$rows"
 }

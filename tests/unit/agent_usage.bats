@@ -96,12 +96,13 @@ case "$q" in
   *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
   *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
   *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
-  *) echo '{"data":{"result":[{"metric":{},"value":[0,"1.73456"]}]}}' ;;
+  *) echo '{"data":{"result":[]}}' ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/curl"
   assert_equal "$(usage_field .usage_source)" 'otel'
   assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
+  assert_equal "$(usage_field .cost_usd)" '1.73456'
 }
 
 @test "without telemetry there is no per-model cost" {
