@@ -695,7 +695,7 @@ refuses() {
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
-finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e}'; }
+finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --arg b "${4:-}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e} + (if $b == "" then {} else {bind: $b} end)'; }
 # findings <row>... -- fleet-bench reports exactly those rows
 findings() { printf '%s\n' "$@" > "$SANDBOX/findings.out"; stub fleet-bench "cat '$SANDBOX/findings.out'"; }
 
@@ -726,6 +726,24 @@ two_items() {
 @test "a starved pool holds only the items whose repo waits in it, and the pass starts the next one" {
   two_items
   findings "$(finding starved pool:unity '["game"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+@test "a pool starved on labels holds nothing: a held session would not free it" {
+  two_items
+  # 2026-11-05: a frame sweep pinned to one host starved pool:other, and dispatch held the repo for 7h.
+  findings "$(finding starved pool:other '["game"]' labels)" "$(finding starved pool:unity '["game"]' labels)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-game'
+}
+
+@test "a pool starved on capacity still holds its repo's items" {
+  two_items
+  findings "$(finding starved pool:unity '["game"]' capacity)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
