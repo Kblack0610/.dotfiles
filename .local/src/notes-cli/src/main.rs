@@ -315,7 +315,7 @@ enum Cmd {
         version_of: Option<String>,
         /// Print a project's roadmap: the open version, then the releases rows are aimed at
         /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>open_weight<TAB>done_weight<TAB>
-        /// unsized`, both lanes' leaf rows; --json adds closes, scope growth and epics)
+        /// unsized_open`, both lanes' leaf rows; --json adds closes, scope growth and epics)
         #[arg(long, value_name = "NAME")]
         roadmap: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup

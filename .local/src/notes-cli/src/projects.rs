@@ -2506,7 +2506,7 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
 
 /// `notes projects --roadmap <name> [--json]`: the project's releases, the open version
 /// first, as TSV `version<TAB>state<TAB>open<TAB>done<TAB>open_weight<TAB>done_weight<TAB>
-/// unsized`, counted over both lanes' leaf rows. `state` is `current` or `planned`; a planned
+/// unsized_open`, counted over both lanes' leaf rows. `state` is `current` or `planned`; a planned
 /// line is a release some open row is aimed at. The first two columns are what
 /// `agentctl-wave-roll` reads. With `json`, one array of [`Release`], adding the closes,
 /// scope growth and the epics with work in each release.
