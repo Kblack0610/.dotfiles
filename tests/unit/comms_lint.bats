@@ -208,6 +208,18 @@ EOF
   assert_output --partial "source unreadable: gh search prs"
 }
 
+@test "report finds client updates under a job root at any depth" {
+  for d in acme/updates beta/client/updates; do
+    mkdir -p "$HOME/.notes/employment/jobs/$d"
+    printf 'Hey team!\n\n- Shipped the health check.\n' > "$HOME/.notes/employment/jobs/$d/2026-11-05-eod.md"
+  done
+  touch "$HOME/.notes/employment/jobs/acme/updates/2026-11-05-eod.sent.md"
+  run "$SUBJECT" report --since 1d --channel client-eod --json
+  assert_success
+  run python3 -c "import json,sys; print(json.loads(sys.argv[1])['channels']['client-eod']['messages'])" "$output"
+  assert_output 2
+}
+
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
