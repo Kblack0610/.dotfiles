@@ -34,8 +34,8 @@ pub const TABS: [Tab; 7] = [
         id: "projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &[],
-        landed: false,
+        sections: &["cards", "rows"],
+        landed: true,
     },
     Tab {
         id: "sessions",
@@ -74,6 +74,8 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("waiting", "home"),
     ("asks", "home"),
     ("overview", "home"),
+    // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
+    ("board", "projects"),
 ];
 
 /// The landed tabs, in order.
@@ -115,7 +117,8 @@ mod tests {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
-        assert_eq!(resolve("projects"), None, "not landed yet");
+        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
+        assert_eq!(resolve("sessions"), None, "not landed yet");
         assert_eq!(resolve("nope"), None);
     }
 }

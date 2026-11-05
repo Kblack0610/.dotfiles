@@ -137,16 +137,16 @@ mod tests {
     #[test]
     fn a_board_request_carries_its_search_on_one_line() {
         let d = Scratch::new("query");
-        request(&d.0, Tab::Board, Some(" bnb/demo \n extra ")).unwrap();
+        request(&d.0, Tab::Projects, Some(" bnb/demo \n extra ")).unwrap();
         assert_eq!(
             std::fs::read_to_string(d.0.join("tab")).unwrap(),
-            "board bnb/demo extra"
+            "projects bnb/demo extra"
         );
         assert_eq!(
             take(&d.0),
-            Some((Tab::Board, Some("bnb/demo extra".into())))
+            Some((Tab::Projects, Some("bnb/demo extra".into())))
         );
-        assert_eq!(parse("board  "), Some((Tab::Board, None)));
+        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
         assert_eq!(parse("nonsense bnb/demo"), None);
     }
 
@@ -162,7 +162,7 @@ mod tests {
         std::thread::spawn(move || serve(l, tx));
         for (t, q) in [
             (Tab::Fleet, None),
-            (Tab::Board, Some("bnb/demo")),
+            (Tab::Projects, Some("bnb/demo")),
             (Tab::Home, None),
         ] {
             request(&d.0, t, q).unwrap();

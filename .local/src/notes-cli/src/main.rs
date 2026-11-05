@@ -482,6 +482,18 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// Add or take hashtags off the first matching open task (before its marker). A release
+    /// tag is refused: move, promote and demote own it
+    Tag {
+        /// A tag to add (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        add: Vec<String>,
+        /// A tag to take off (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        remove: Vec<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
     Start {
         #[arg(required = true, num_args = 1..)]
@@ -972,6 +984,9 @@ fn main() -> Result<()> {
                         Pick::new(&q, false)?
                     };
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
+                }
+                Some(PtaskCmd::Tag { add, remove, query }) => {
+                    project_tasks::tag(&prof, &log, &name, &pick(&query)?, &add, &remove, lane)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,

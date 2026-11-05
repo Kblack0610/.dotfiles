@@ -1,5 +1,6 @@
-//! The Board tab: every project's open rows (human sheet, agent board, playtest, and each
-//! profile's Focus, read-only), and add, start, done and remove on them.
+//! The rows under the Projects tab: every project's open rows (human sheet, agent board,
+//! playtest, and each profile's Focus, read-only), and add, start, done, drop, move, edit and
+//! tag on them.
 //!
 //! `notes` is the sheets' only writer. The read and the writes go through `hub_core::tasks`,
 //! which the hub TUI uses too; a write passes the row's raw line to `notes ptask --exact`, so a
@@ -50,6 +51,15 @@ pub struct WriteBody {
     /// A move's destination project; blank keeps the row on its own sheet.
     #[serde(default)]
     dest: String,
+    /// A tag write's words, space separated, `#` optional.
+    #[serde(default)]
+    add: String,
+    #[serde(default)]
+    remove: String,
+}
+
+fn words(s: &str) -> Vec<String> {
+    s.split_whitespace().map(str::to_string).collect()
 }
 
 fn some(s: String) -> Option<String> {
@@ -90,7 +100,12 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             raw: b.raw,
             text: b.text,
         },
-        _ => return Err("the verb is add, done, start, drop, move, promote, demote or edit"),
+        "tag" => Verb::Tag {
+            raw: b.raw,
+            add: words(&b.add),
+            remove: words(&b.remove),
+        },
+        _ => return Err("the verb is add, done, start, drop, move, promote, demote, edit or tag"),
     };
     Ok(Write {
         profile: b.profile,
@@ -199,5 +214,31 @@ mod tests {
             tasks::argv(&w).unwrap()[5..],
             ["--agent", "--exact", "edit", "--text", "b", "--", "- [ ] a"]
         );
+    }
+
+    #[test]
+    fn a_tag_splits_its_words_and_one_that_is_not_a_tag_is_refused() {
+        let w = to_write(body(
+            r##"{"verb":"tag","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","add":"#size/s  requested","remove":"ai"}"##,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "tag",
+                "--add=size/s",
+                "--add=requested",
+                "--remove=ai",
+                "--",
+                "- [ ] a"
+            ]
+        );
+        let w = to_write(body(
+            r#"{"verb":"tag","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","add":"v0.2.0"}"#,
+        ))
+        .unwrap();
+        assert!(tasks::argv(&w).is_err(), "a release is move's");
     }
 }

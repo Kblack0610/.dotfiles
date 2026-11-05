@@ -149,11 +149,7 @@ pub async fn bump(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
 /// The projects a task may be queued for: the names in project-map.json, which is also what
 /// agent-queue checks `--project` against.
 pub async fn projects() -> Json<Vec<String>> {
-    let path = std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
-        std::path::PathBuf::from,
-    );
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
     Json(project_names(&text))
 }
 
