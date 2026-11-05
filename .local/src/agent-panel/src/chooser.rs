@@ -270,45 +270,6 @@ pub fn run_interactive() -> Result<()> {
     Ok(())
 }
 
-/// The agent whose ask to show a client that just arrived at `server/session:window`: the one in
-/// that window, else any in the same tmux session, and only one that holds a pending ask.
-pub fn ask_here<'a>(agents: &'a [Agent], server: &str, session: &str, window: &str) -> Option<&'a Agent> {
-    let here = tmux::qualify(server, session, window);
-    agents
-        .iter()
-        .filter(|a| a.ask.is_some() && a.server == server && a.tmux_session == session)
-        .min_by_key(|a| a.target != here)
-}
-
-/// `ask-here`: the tmux arrival hook runs it, and a session that is asking something gets a
-/// status-line notice on that client, never a popup: the human is working and their next
-/// keystroke belongs to the pane. Prefix y (the questions panel) is where it is answered.
-pub fn run_ask_here(socket: &str, client: &str, session: &str, window: &str) -> Result<()> {
-    let server = Path::new(socket)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let agents = collect();
-    if let Some(id) = ask_here(&agents, &server, session, window).and_then(|a| a.ask.clone()) {
-        tmux::notice(socket, client, &notice_text(&asks::question(&id)));
-    }
-    Ok(())
-}
-
-/// The status-line notice for a session asking `question`: the question, cut to fit, and the key.
-pub fn notice_text(question: &str) -> String {
-    const MAX: usize = 90;
-    let q: String = if question.chars().count() > MAX {
-        question.chars().take(MAX - 3).collect::<String>() + "..."
-    } else if question.is_empty() {
-        "a question".to_string()
-    } else {
-        question.to_string()
-    };
-    // display-message expands #; a literal one is ##.
-    format!("asking you: {} - Prefix y to answer", q.replace('#', "##"))
-}
-
 /// Render the rows and write the preview map file they need.
 fn write_rows(agents: &[Agent], map_file: &Path) -> Result<Vec<render::Row>> {
     let (rows, map_lines) = render::build(agents);
@@ -545,48 +506,6 @@ mod tests {
             attached,
             ..Agent::default()
         }
-    }
-
-    fn asking(server: &str, sess: &str, window: &str, ask: Option<&str>) -> Agent {
-        Agent {
-            target: tmux::qualify(server, sess, window),
-            server: server.into(),
-            tmux_session: sess.into(),
-            ask: ask.map(String::from),
-            ..Agent::default()
-        }
-    }
-
-    #[test]
-    fn ask_here_prefers_the_window_the_client_is_on() {
-        let agents = vec![
-            asking("hub", "dotfiles", "2", Some("other")),
-            asking("hub", "dotfiles", "5", Some("this")),
-            asking("lab", "dotfiles", "5", Some("other-server")),
-        ];
-        let got = ask_here(&agents, "hub", "dotfiles", "5").and_then(|a| a.ask.as_deref());
-        assert_eq!(got, Some("this"));
-        // Another window of the same session that asks: still shown.
-        let got = ask_here(&agents, "hub", "dotfiles", "9").and_then(|a| a.ask.as_deref());
-        assert_eq!(got, Some("other"));
-    }
-
-    #[test]
-    fn the_notice_is_the_question_cut_to_fit_and_the_key() {
-        assert_eq!(notice_text("ship #910 now?"), "asking you: ship ##910 now? - Prefix y to answer");
-        let long = notice_text(&"x".repeat(200));
-        assert!(long.contains(&format!("{}...", "x".repeat(87))), "{long}");
-        assert_eq!(notice_text(""), "asking you: a question - Prefix y to answer");
-    }
-
-    #[test]
-    fn ask_here_is_nothing_for_a_session_that_asks_nothing() {
-        let agents = vec![
-            asking("hub", "dotfiles", "1", None),
-            asking("hub", "notes", "1", Some("elsewhere")),
-            asking("lab", "dotfiles", "1", Some("other-server")),
-        ];
-        assert!(ask_here(&agents, "hub", "dotfiles", "1").is_none());
     }
 
     #[test]

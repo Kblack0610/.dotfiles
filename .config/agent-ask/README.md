@@ -19,7 +19,7 @@ An ask file is the only record that something waits on the human, for attended s
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone" and where the answer will go.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
-- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) shows a status-line notice with the question and "Prefix y to answer", never a popup. `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, the selected one's card under it, answered in place. The `Prefix g` preview shows the card above the pane.
+- On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, the selected one's card under it, answered in place. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
 

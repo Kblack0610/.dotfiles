@@ -40,21 +40,6 @@ enum Cmd {
     /// Print a transcript's closed time by what it waited on, as one JSON object. The nightly
     /// session-outcomes run reads this, so the rule lives only in `time_use`.
     TimeUse { transcript: PathBuf },
-    /// Tell a tmux client in its status line that the session it is on asks something, and that
-    /// Prefix y answers it. Run by the tmux arrival hooks; silent when the session asks nothing.
-    AskHere {
-        /// The server's socket (`#{socket_path}`).
-        #[arg(long)]
-        socket: String,
-        /// The client to show it on (`#{client_name}`).
-        #[arg(long)]
-        client: String,
-        /// The tmux session and window index the client is on.
-        #[arg(long)]
-        session: String,
-        #[arg(long)]
-        window: String,
-    },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
     /// Type a message into a pane (`list --json`'s `pane`, `<server>/<pane>`) and submit it once
@@ -95,9 +80,6 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::TimeUse { transcript }) => {
             println!("{}", serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?);
             Ok(())
-        }
-        Some(Cmd::AskHere { socket, client, session, window }) => {
-            chooser::run_ask_here(&socket, &client, &session, &window)
         }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
         Some(Cmd::Send { pane, no_submit, text }) => {
