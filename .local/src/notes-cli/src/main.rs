@@ -249,7 +249,7 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a draft or alpha project
+        /// `Version:` moves to the next one. Refused for a project below beta
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
@@ -319,9 +319,13 @@ enum Cmd {
         #[arg(long, requires = "stats")]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it.
-        /// One of: draft, alpha, beta, prod
+        /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,
+        /// Print the maturity ladder, least to most real, on one line. Shell readers take
+        /// the vocabulary from here instead of keeping a copy
+        #[arg(long)]
+        stages: bool,
         /// Print a project's index group; with --set, declare it. Unset means the
         /// project's own profile (bnb, personal); `dev` is the tooling lane.
         #[arg(long, value_name = "NAME")]
@@ -1224,6 +1228,7 @@ fn main() -> Result<()> {
             agent_note,
             version,
             stage,
+            stages,
             group,
             prio,
             set,
@@ -1251,6 +1256,10 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
+            if stages {
+                projects::stages();
+                std::process::exit(0);
+            }
             if let Some(n) = stage {
                 projects::stage(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {

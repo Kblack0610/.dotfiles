@@ -14,6 +14,7 @@ mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod outboxtab;
 mod projtab;
 mod queuetab;
 mod tabreq;
@@ -213,6 +214,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.fleet = Some(hub_core::fleet::collect());
         }
         a.tab = t;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    if tab == Some(Tab::Outbox) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.outbox = Some(hub_core::outbox::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.tab = Tab::Outbox;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

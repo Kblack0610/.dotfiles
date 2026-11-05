@@ -11,6 +11,7 @@ pub mod home;
 pub mod infra;
 pub mod jobs;
 pub mod layout;
+pub mod outbox;
 pub mod outcomes;
 pub mod phone;
 pub mod projects;

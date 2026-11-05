@@ -28,6 +28,9 @@
 # Public API:
 #   lab_feed_fields <path>   one TSV line, 8 fields (below)
 #   lab_feed_gist   <path>   the joined one-line summary a project row carries
+#   lab_head_tag <page> <vocab...>   the first head hashtag in a vocabulary
+#   lab_stages                the maturity ladder, from notes projects --stages
+#   lab_stage_at_least <s> <floor>  is stage s at floor or above
 #
 # <path> is either a project's `summary.md` or its working sheet (`README.md`);
 # both resolve to the same project. Both functions print nothing and succeed for a
@@ -270,4 +273,25 @@ lab_head_tag() {
       }
     }
   ' "$f"
+}
+
+# The maturity ladder, least to most real, from its one definition (`STAGES` in notes-cli,
+# printed by `notes projects --stages`). Set LAB_STAGES once in a caller that asks many
+# times; it is read before notes is asked. Empty when notes is not on PATH, and every
+# reader below then answers "no stage", which callers must treat as unknown, not draft.
+lab_stages() {
+  if [ -n "${LAB_STAGES:-}" ]; then printf '%s\n' "$LAB_STAGES"; else notes projects --stages 2>/dev/null; fi
+}
+
+# lab_stage_at_least <stage> <floor>: succeed when <stage> is on the ladder at <floor> or
+# above. An empty or unknown stage is never at least anything.
+lab_stage_at_least() {
+  local ladder below
+  ladder=" $(lab_stages) "
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  case "$ladder" in *" $1 "*) ;; *) return 1 ;; esac
+  case "$ladder" in *" $2 "*) ;; *) return 1 ;; esac
+  below="${ladder%% "$2" *} "
+  case "$below" in *" $1 "*) return 1 ;; esac
+  return 0
 }

@@ -19,6 +19,7 @@ mod fleet;
 mod focus;
 mod infra;
 mod jobs;
+mod outbox;
 mod outcomes;
 mod projects;
 mod queue;
@@ -117,7 +118,7 @@ async fn main() -> Result<()> {
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/focus", get(focus::get))
-        .route("/api/outbox", post(focus::outbox))
+        .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
@@ -268,6 +269,18 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let rundowns = boards::shepherd_dir().join("rundowns");
     std::fs::create_dir_all(&rundowns)?;
     targets.push((rundowns, flat));
+    // The Outbox tab: the outbox's directory, from the CLI that owns its path, and the notes
+    // state directory that holds ingest.jsonl. Both files are replaced by a rename.
+    if let Some(dir) = hub_core::outbox::doc(&hub_core::session_actions::System)
+        .ok()
+        .and_then(|d| PathBuf::from(d.path).parent().map(Path::to_path_buf))
+    {
+        targets.push((dir, flat));
+    }
+    let notes_state = session::home().join(".local/state/notes");
+    if notes_state.is_dir() {
+        targets.push((notes_state, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -319,6 +332,11 @@ fn classify(p: &Path) -> Option<String> {
     // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
     if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
         return Some(r#"{"kind":"actions"}"#.to_string());
+    }
+    // The Outbox tab: the doc and the ingest record of what intake did with its lines. Before
+    // `ext`, which reads any other `.jsonl` as a transcript.
+    if name == "outbox.md" || (parent == "notes" && name == "ingest.jsonl") {
+        return Some(r#"{"kind":"outbox"}"#.to_string());
     }
     let ext = p.extension()?.to_str()?;
     if (parent == "agentctl" && name == "runs.jsonl")
@@ -1141,6 +1159,14 @@ mod tests {
         );
         assert_eq!(classify(Path::new("/h/.agent/parked/.agent-3.Xy12")), None);
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
+        for p in ["/h/.notes/outbox.md", "/h/.local/state/notes/ingest.jsonl"] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"outbox"}"#),
+                "{p}"
+            );
+        }
+        assert_eq!(classify(Path::new("/h/.notes/.outbox.lock")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(
             classify(Path::new("/h/.claude/projects/-h-x/abc.json")),
