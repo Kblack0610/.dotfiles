@@ -47,6 +47,7 @@ In the chooser:
 
 - The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
+- The list is on top at full width and the preview below it. `C-/` switches the preview to the right of the list, then hides it, then brings it back. `PANEL_LAYOUT=side` (`set-environment -g PANEL_LAYOUT side` in `.tmux.conf`) opens it on the right instead, for this and every other panel: the layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, and `tests/shared_layout.rs` holds agent-panel to the same strings.
 - The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
 
 ## Why a binary (replacing the old bash scripts)
@@ -76,7 +77,7 @@ string rather than `claude` (observed on macOS).
 | `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
-| `agent-panel ask-here --socket S --client C --session S --window W [--key]` | Status-line notice with the question of the agent in that window, else in that session; silent when none asks. `--key`: a popup with every pending ask |
+| `agent-panel ask-here --socket S --client C --session S --window W` | Status-line notice with the question of the agent in that window, else in that session; silent when none asks |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 
@@ -95,7 +96,7 @@ which owns the detach-and-attach hop and the Prefix+L way back.
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
-- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, recent-events for the preview
+- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks
