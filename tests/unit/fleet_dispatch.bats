@@ -1661,6 +1661,11 @@ board_item() {
   run cmd_starved
   assert_failure
   assert_output --partial 'gm-1 (high'
+  # Nobody attached or logged in: away with no minutes, so the item counts from when it was queued.
+  stub fleet-presence 'echo "away - none"'
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'gm-1 (high'
 }
 
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {

@@ -254,9 +254,6 @@ row_line() {
   K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
 }
 
-# row_is <profile> <project> <lane> <key> <mark> -- is that row on the board as `- [<mark>]`?
-row_is() { [[ "$(row_line "$1" "$2" "$3" "$4")" == "- [$5]"* ]]; }
-
 # row_priority <raw line> -> the queue priority the row asks for: a bare row is high, the
 # default of the row grammar and of agent-queue alike.
 row_priority() {
@@ -557,7 +554,7 @@ settle_row() {
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
-  row_is "$prof" "$project" "$lane" "$key" / || return 0
+  [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
   np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
   jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
     '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
@@ -812,12 +809,14 @@ cmd_headroom() {
 # runnable -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
 # after:), one JSON object a line. A board item waits for the human to be away (run_queue's gate):
 # `waits` is true while they are not, and its t, the epoch it became runnable, is when they left if
-# it was queued before that; any other item's t is its queued epoch. Fails when the queue is unreadable.
+# it was queued before that; any other item's t is its queued epoch. Away with no minutes (`away -
+# none`: nobody attached or logged in) has no leaving time, so t stays the queued epoch. Presence is
+# read only when an item could wait on it. Fails when the queue is unreadable.
 runnable() {
-  local q state mins _s here=true left=0
+  local q state='' mins=- _s here=true left=0
   q=$(agent-queue list --json --state queued 2>/dev/null) || return 1
-  read -r state mins _s < <(fleet-presence 2>/dev/null)
-  [ "$state" != away ] || { here=false; left=$(( $(date +%s) - ${mins:-0} * 60 )); }
+  [[ "$q" != *board:* ]] || read -r state mins _s < <(fleet-presence 2>/dev/null)
+  [ "$state" != away ] || { here=false; [ "$mins" = - ] || left=$(( $(date +%s) - mins * 60 )); }
   jq -c --argjson here "$here" --argjson left "$left" '
     select(.hold == null) | (.from // "" | startswith("board:")) as $board
     | (.queued | try fromdateiso8601 catch null) as $t
