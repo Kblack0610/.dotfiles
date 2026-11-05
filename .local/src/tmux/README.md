@@ -274,6 +274,16 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
 
+#### When a world's server dies
+
+Every pane on it gets SIGHUP, so every conversation there stops. `fleet-dispatch record` keeps the map each minute and pages `tmux <server> server died`. Run `fleet-dispatch restore --dry-run` to see the list, then `fleet-dispatch restore`, which brings the world back and reopens each conversation as a window of its old session, in its last permission mode. What it skips and why: `fleet-dispatch` skill, "A world server died".
+
+| symptom | cause | fix |
+|---|---|---|
+| A whole server dies with SIGSEGV, `coredumpctl` shows `mode_tree_draw` | tmux 3.8 frees the pane under an in-pane prompt: `x y` in `Prefix+w` on the window it was opened from, or `t` then `X y` with that window tagged (tmux issue 5728) | run the patched package, `.local/src/tmux/patched/README.md`; a server is safe only once it has restarted on it |
+| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `session-registry` |
+| A restored window sits on a mode other than the one it died in | the mode comes from the transcript's last `permissionMode`, so a change with no turn after it is not seen | shift-tab in the window |
+
 ## Projects and worktrees (`Prefix+f`)
 
 `sessionizer.sh` builds its rows from three sources, in this order, deduped:
