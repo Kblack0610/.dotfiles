@@ -10,8 +10,14 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 
 async function api(path, opts) {
   const r = await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
-  if (r.status === 401) { location.reload(); throw new Error("unauthorized"); }
-  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
+  if (!r.ok) {
+    // What failed first, then the server's own words, then what to do (comms-standard, UI text).
+    const what = path.replace(/^\/api\//, "").split(/[/?]/)[0] || "the page";
+    const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
+    const verb = opts && opts.method && opts.method !== "GET" ? "send to" : "read";
+    throw new Error(`Could not ${verb} ${what} (HTTP ${r.status})${said ? ": " + said : ""}. Retry, or check the agent-web log.`);
+  }
   return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
 }
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -84,7 +90,7 @@ const cardHead = (title, chips, tip) =>
 // One quiet line from the parts (html) that are there.
 function cardLine(parts) {
   const p = parts.filter(Boolean);
-  return p.length ? `<div class="cline">${p.join(" &middot; ")}</div>` : "";
+  return p.length ? `<div class="cline">${p.join(", ")}</div>` : "";
 }
 // A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
 const cfold = (k, summary, inner, open) =>
