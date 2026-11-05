@@ -142,6 +142,8 @@ const JOBS_SHOWN: usize = 8;
 #[derive(Clone)]
 pub struct BoardFiles {
     pub state: PathBuf,
+    /// agent-ask's store: Home's asks are read live, so an ask filed or answered re-reads them.
+    pub asks: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
 }
@@ -150,6 +152,7 @@ impl BoardFiles {
     pub fn from_env() -> BoardFiles {
         BoardFiles {
             state: boards::fleet_state(),
+            asks: boards::asks_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
         }
@@ -161,6 +164,7 @@ impl BoardFiles {
     pub fn is_board_file(&self, p: &Path) -> bool {
         p == self.state
             || p == self.watch_log()
+            || p.starts_with(&self.asks) && p.extension().is_some_and(|e| e == "md")
             || p.parent() == Some(self.daylog.as_path())
                 && p.file_name()
                     .and_then(|n| n.to_str())
@@ -180,7 +184,7 @@ pub struct Boards {
 impl Boards {
     pub fn read(f: &BoardFiles, day: Option<&str>) -> Boards {
         Boards {
-            watch: boards::watch(&f.state, &f.watch_log()),
+            watch: boards::watch(&f.state, &f.watch_log(), &actions::System),
             days: boards::days(&f.daylog),
             rec: boards::record(&f.daylog, day),
             hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
@@ -389,6 +393,7 @@ impl App {
             (self.files.shepherd.clone(), false),
             (self.files.daylog.clone(), false),
             (self.queue_dir.clone(), true),
+            (self.files.asks.clone(), true),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
