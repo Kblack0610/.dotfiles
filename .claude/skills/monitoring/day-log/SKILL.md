@@ -14,7 +14,7 @@ Answers "what did the day produce" from one record per day, so a chat answer, th
 
 ## Scope and triggers
 
-What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub board's Today tab (Prefix O) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Sessions tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
+What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub board's Today tab (Prefix O) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
 
 ## When to Use
 
@@ -22,7 +22,7 @@ What a day shipped, from the day-log record: every PR merged in any repo grouped
 - The user asks for the week: read each day's record and add them up.
 - The user wants the day as a page to look at or share.
 
-Not for what sessions are doing right now (`shepherd status`, the hub Sessions tab) and not for how the scorecard is computed (`fleet-bench`).
+Not for what sessions are doing right now (`shepherd status`, the hub Fleet tab) and not for how the scorecard is computed (`fleet-bench`).
 
 ## Steps
 
