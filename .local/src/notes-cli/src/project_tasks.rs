@@ -383,6 +383,20 @@ fn is_typed(text: &str) -> bool {
     projects::row_type_area(&format!("- [ ] {text}")).is_some()
 }
 
+/// `new` plus each tag of `old` (`#ask`, `#tier/3`) whose name, the part before `/`, `new`
+/// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
+/// (`#1469`) are words, not tags, so they stay in the `was:` line only.
+fn carry_tags(old: &str, new: &str) -> String {
+    let name = |t: &str| t.split('/').next().unwrap_or(t).to_string();
+    let set: Vec<String> = md::find_hashtags(new).iter().map(|t| name(t)).collect();
+    md::find_hashtags(old)
+        .into_iter()
+        .filter(|t| t.starts_with(|c: char| c.is_ascii_lowercase()) && !set.contains(&name(t)))
+        .fold(new.trim().to_string(), |out, t| {
+            md::add_tag(&out, &format!("#{t}"))
+        })
+}
+
 /// The stamped rows for `texts` on `name`'s board, each followed by `details`: created tag,
 /// default priority, the `to` tag, `marker` tokens and an id per row when the registry gives
 /// the project a `code`. The ids run consecutively from [`next_id`], so rows written in one
@@ -818,17 +832,21 @@ fn lift_into(
     if !sheet::has_tasks(dest) {
         bail!("no `## Tasks` section on the destination sheet");
     }
-    let Some((cut, line)) =
-        md::edit_first_in_section(src, sheet::TASKS, |l| pick.hits(l), |_| None)
+    // The row's detail lines and child rows go with it: left behind, they would read as the
+    // row above's.
+    let Some((cut, line, block)) =
+        md::cut_first_block_in_section(src, sheet::TASKS, |l| pick.hits(l))
     else {
         return Ok(None);
     };
-    let line = line.trim_end();
+    let line = line.trim_end().trim_start();
     let line = match to {
         Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
         None => md::split_version(line).0,
     };
-    let grown = md::insert_under_heading(dest, sheet::TASKS, std::slice::from_ref(&line));
+    let mut landed = vec![line.clone()];
+    landed.extend(block);
+    let grown = md::insert_under_heading(dest, sheet::TASKS, &landed);
     Ok(Some(Lifted {
         src: cut,
         dest: grown,
@@ -990,6 +1008,11 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
+///
+/// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
+/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
+/// the old text's own tags (`#ask`, `#tier/3`, `#size/m`) carry over unless the new text
+/// sets one of the same name ([`carry_tags`]).
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
     p: &Profile,
@@ -999,9 +1022,38 @@ pub fn retext(
     text: Option<&str>,
     append: Option<&str>,
     details: &[String],
+    was: bool,
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
+    let rewrite;
+    let mut with_was = Vec::new();
+    let (text, details) = if was {
+        let Some(t) = text.filter(|t| !t.is_empty()) else {
+            bail!("--was rewrites a row, so it needs --text \"<type(area): title>\"");
+        };
+        if !is_typed(t) {
+            bail!(
+                "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
+            );
+        }
+        let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+            bail!("'{name}' has no task sheet yet");
+        };
+        let Some((_, line)) =
+            md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |l| Some(l.into()))
+        else {
+            eprintln!("no open task matches '{pick}' in {name}");
+            return Ok(1);
+        };
+        let old = md::task_text(&line);
+        rewrite = carry_tags(&old, t);
+        with_was.push(format!("was: {old}"));
+        with_was.extend(details.iter().cloned());
+        (Some(rewrite.as_str()), &with_was[..])
+    } else {
+        (text, details)
+    };
     let has_details = details.iter().any(|d| !d.trim().is_empty());
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
@@ -1611,6 +1663,35 @@ Version: v1.2.0
     }
 
     #[test]
+    fn a_cross_project_move_carries_the_rows_detail_lines_and_children() {
+        let src = SRC.replace(
+            "- [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->\n",
+            "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n",
+        );
+        let m = lift_into(&src, DEST, &w("spawn bug"), None, Some((1, 2, 0)))
+            .unwrap()
+            .unwrap();
+        assert!(
+            m.dest.contains(
+                "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n"
+            ),
+            "{}",
+            m.dest
+        );
+        assert!(
+            !m.src.contains("spawn") && !m.src.contains("child row"),
+            "{}",
+            m.src
+        );
+        assert!(
+            m.src
+                .contains("- [ ] playground thing #high\n- [ ] dodgeball menu polish #low\n"),
+            "{}",
+            m.src
+        );
+    }
+
+    #[test]
     fn a_cross_project_move_with_to_is_aimed_at_that_release() {
         let m = lift(&w("spawn"), Some((1, 3, 0))).unwrap().unwrap();
         // #urgent is only legal in the open version, the same rule the same-sheet move applies.
@@ -2091,5 +2172,48 @@ mod inbox_tests {
         );
         assert!(filed_on(row).is_some(), "{row}");
         assert!(!s.contains("was:"), "{s}");
+    }
+
+    #[test]
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_text() {
+        let v = vault(
+            "was",
+            "",
+            "- [ ] the menu flickers on resize #1469 #ask #tier/3 #size/m #high #c1026 <!-- id:sc-4 -->\n  - seen on the deck\n",
+        );
+        let before = v.read();
+        let pick = Pick::new("sc-4", false).unwrap();
+        let edit = |t: &str| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &pick,
+                Some(t),
+                None,
+                &[],
+                true,
+                Lane::Human,
+            )
+        };
+        assert!(edit("make the menu stop flickering").is_err());
+        assert_eq!(v.read(), before, "an untyped rewrite wrote nothing");
+
+        assert_eq!(
+            edit("fix(ui): the menu flickers on resize #size/s").unwrap(),
+            0
+        );
+        let s = v.read();
+        let row = s.lines().find(|l| l.contains("id:sc-4")).unwrap();
+        assert!(
+            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #ask #tier/3"),
+            "{row}"
+        );
+        assert!(!row.contains("#size/m") && !row.contains("#1469"), "{row}");
+        assert!(row.contains("#high") && row.contains("#c1026"), "{row}");
+        assert!(
+            s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #ask #tier/3 #size/m\n"),
+            "{s}"
+        );
     }
 }
