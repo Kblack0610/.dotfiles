@@ -47,7 +47,7 @@ test("a session card with no summary is titled by its plan, then its target; its
   const eta = now() + 3600;
   const html = sessionHtml(agent({ summary: "", plan: "big-plan", phases: { done: 1, total: 3, eta_epoch: eta } }));
   assert.match(html, /<span class="ctitle"[^>]*>big-plan<\/span>/);
-  assert.match(html, /phase 1\/3 &middot; <span title="estimate ">ETA /);
+  assert.match(html, /phase 1\/3, <span title="estimate ">ETA /);
   assert.match(sessionHtml(agent({ summary: "", short: "" })), /<span class="ctitle"[^>]*>lab:w-1<\/span>/);
 });
 
@@ -60,21 +60,21 @@ test("a session card on a queue row has no head of its own", () => {
 test("an ask card: first sentence as title, age, who filed it, then the rest of the question", () => {
   const html = askHtml(ask());
   assert.match(html, /<span class="ctitle">Ship it\?<\/span><span class="cchip waiting">question 3h<\/span>/);
-  assert.match(html, /<div class="cline">p &middot; from shepherd<\/div>/);
+  assert.match(html, /<div class="cline">p, from shepherd<\/div>/);
   assert.match(html, /<div class="q md">.*CI is green\..*<\/div>/s);
   assert.doesNotMatch(html, /<div class="q md">[^<]*<p>Ship it/, "the title sentence is not repeated");
-  assert.match(html, /class="btn rec" data-a="no">no \(rec\)/);
+  assert.match(html, /class="btn rec" data-a="no">no \(recommended\)/);
   assert.match(html, /<dt>id<\/dt><dd>a1<\/dd>/);
 });
 
 test("an ask names the live session that filed it, and says headless with neither", () => {
   assert.match(askHtml(ask({ session: "c1" }), [agent()]), /from w-1/);
-  assert.match(askHtml(ask({ agent: "" })), /<div class="cline">p &middot; headless<\/div>/);
+  assert.match(askHtml(ask({ agent: "" })), /<div class="cline">p, headless<\/div>/);
 });
 
 test("the judge's shadow call sits on the line, and only when it would act", () => {
   assert.doesNotMatch(askHtml(ask({ judge: "human" })), /judge would/);
-  assert.match(askHtml(ask({ judge: "take-recommend" })), /&middot; judge would take the recommendation \(no\)<\/div>/);
+  assert.match(askHtml(ask({ judge: "take-recommend" })), /, judge would take the recommendation \(no\)<\/div>/);
   assert.match(askHtml(ask({ judge: "answer:yes" })), /judge would answer "yes"<\/div>/);
 });
 

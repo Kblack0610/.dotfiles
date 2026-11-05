@@ -102,7 +102,7 @@ function card(s, maxCtx, now) {
     <div class="wcard" data-sid="${esc(s.session_id || "")}" data-t="${esc(s.target)}" style="--c:${bucketColor(s.bucket)}">
       <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span></div>
       ${s.topic ? `<div class="wtask">${esc(s.topic)}</div>` : ""}
-      <div class="wm">${esc(s.branch || "-")} &middot; ${pr}${git ? " &middot; " + git : ""}</div>
+      <div class="wm">${esc(s.branch || "-")}, ${pr}${git ? ", " + git : ""}</div>
       <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
       ${timeUse(s.time)}
       <div class="wk">
@@ -127,7 +127,7 @@ function feed(now) {
   if (!rows.length) return '<div class="empty">No changes in the last day.</div>';
   return rows.map((t) => {
     let what = esc(t.text);
-    if (t.kind === "change" && t.to) what = `<span class="chip sm" style="--c:${bucketColor(t.from)}">${esc(t.from)}</span> &rarr; <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/stage \S+ -> \S+,? ?/, ""))}`;
+    if (t.kind === "change" && t.to) what = `<span class="chip sm" style="--c:${bucketColor(t.from)}">${esc(t.from)}</span> -&gt; <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/stage \S+ -> \S+,? ?/, ""))}`;
     if (t.kind === "new") what = `new <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/^new: \S+ ?/, ""))}`;
     return `<div class="fr"><span class="ft">${esc(t.ts.slice(11))}</span><span class="fg" title="${esc(t.target)}">${esc(clip(t.target))}</span><span class="fw">${what}</span></div>`;
   }).join("");

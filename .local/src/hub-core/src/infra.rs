@@ -59,10 +59,13 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
+        // fleet-bench's window and KPIs, as it judged them: the phone's agent lines.
+        ("bench", r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past)"}"#.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
     "red",
+    "bench",
     "exporter_up",
     "rate_left",
     "cores",
@@ -252,6 +255,7 @@ mod tests {
             OPTIONAL,
             [
                 "red",
+                "bench",
                 "exporter_up",
                 "rate_left",
                 "cores",

@@ -31,9 +31,9 @@ function resultCell(j) {
 function jobRow(j) {
   const k = jobKey(j);
   const dur = j.state === "queued" ? `wait ${secs(j.secs)}` : secs(j.secs);
-  const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">x${j.runs}</a>` : "";
+  const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">${j.runs} runs</a>` : "";
   const next = j.next ? ` <span class="muted">next ${when(j.next)}</span>` : "";
-  const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">&rarr;</a>` : "";
+  const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="jr${k === jst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-key="${esc(k)}">` +
     `<td>${esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
     `<td class="n">${when(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +

@@ -40,7 +40,7 @@ function ccIndex(series) {
 }
 
 const grafanaBase = () => (ist.data && ist.data.grafana) || "";
-const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)} &rarr;</a>` : "";
+const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
 function kpis(cc) {

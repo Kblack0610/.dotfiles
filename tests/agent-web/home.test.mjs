@@ -39,7 +39,7 @@ test("an ask or an open dialog on Needs you is its answer card; a red nightly is
   }), [{ target: "lab/w:1", short: "w", session: "c1", project: "p", summary: "Wire the join", items: [], actions: [], question: { kind: "tool", text: "Run it?" } }],
   [{ id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 }]);
   assert.match(html, /<h2 class="sec">Needs you <span class="muted">3<\/span><\/h2>/);
-  assert.match(html, /data-id="a1".*data-a="yes".*data-t="lab\/w:1".*data-k="1".*cchip bad">nightly red<\/span>/s, html);
+  assert.match(html, /data-id="a1".*data-a="yes".*data-t="lab\/w:1".*data-k="1".*cchip bad">nightly failed<\/span>/s, html);
   assert.match(html, /PlayMode\.Lobby red.*<div class="cline">unity-core<\/div>/s, "the id that only repeats the project is not shown twice");
 });
 
@@ -54,7 +54,7 @@ test("a need whose session is gone has no Open button; a waiting queue item open
 
 test("running rows carry their phase and next phase; empty sections say so", () => {
   const html = draw(home({ running: [{ slug: "ar-1", title: "Queue cards", project: "agent-runtime", phases: { done: 3, total: 4, next: "docs" } }] }));
-  assert.match(html, /Queue cards<\/span><span class="cchip running">running<\/span>.*agent-runtime &middot; phase 3\/4 &middot; next: docs/s);
+  assert.match(html, /Queue cards<\/span><span class="cchip running">running<\/span>.*agent-runtime, phase 3\/4, next: docs/s);
   assert.match(html, /Nothing waits on you\./);
   assert.match(draw(home()), /Nothing running from the queue\./);
 });

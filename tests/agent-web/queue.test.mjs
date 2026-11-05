@@ -38,7 +38,7 @@ test("a waiting card shows the open ask, its options and the recommended one", (
   assert.match(html, /class="qneed"/);
   assert.match(html, /Ship it\?/);
   assert.match(html, /data-a="yes"/);
-  assert.match(html, /class="btn rec" data-a="no">no \(rec\)/);
+  assert.match(html, /class="btn rec" data-a="no">no \(recommended\)/);
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 
@@ -93,8 +93,8 @@ test("the card leads with the title, not the slug, and folds the task and its bo
 
 test("an ask on a queue card says it is a question for you, with its routing only in the tooltip", () => {
   const html = card([pane()], [ask({ judge: "human" })], item());
-  assert.match(html, /<div class="qask-h" title="p &middot; lab\/game-agent-2:c1 &middot; question &middot; a1">Question for you<\/div>/);
-  assert.doesNotMatch(html, /<div class="meta">p &middot;/);
+  assert.match(html, /<div class="qask-h" title="p, lab\/game-agent-2:c1, question, a1">Question for you<\/div>/);
+  assert.doesNotMatch(html, /<div class="meta">p, /);
   assert.doesNotMatch(html, /judge would/, "a judge that leaves it to you says nothing");
   assert.match(card([pane()], [ask({ judge: "take-recommend" })], item()), /judge would take the recommendation \(no\)/);
 });

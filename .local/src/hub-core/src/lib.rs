@@ -10,6 +10,7 @@ pub mod home;
 pub mod infra;
 pub mod jobs;
 pub mod layout;
+pub mod phone;
 pub mod projects;
 pub mod prom;
 pub mod queue;

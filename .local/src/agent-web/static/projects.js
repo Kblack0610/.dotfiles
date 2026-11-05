@@ -81,7 +81,7 @@ function renderProjects() {
     return;
   }
   const c = pst.open !== "all" && pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
-  $("p-head").innerHTML = `<div class="opts"><button class="btn sm" id="p-back">&larr; Projects</button></div>` +
+  $("p-head").innerHTML = `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pCard(c, true) : `<h2 class="sec">ALL PROJECTS</h2>`);
   renderBoard();
 }

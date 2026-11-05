@@ -67,11 +67,11 @@ function judgeText(a) {
 function askCard(a, inQueue) {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
   const from = owner ? owner.short || owner.target : a.agent;
-  const opts = a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (rec)" : ""}</button>`).join("") +
+  const opts = a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (recommended)" : ""}</button>`).join("") +
     `<input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>`;
   if (inQueue === true) {
     // The Queue card around it already names the project and session, so routing is a tooltip.
-    const route = `${esc(a.project)} &middot; ${owner ? esc(owner.target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}`;
+    const route = `${esc(a.project)}, ${owner ? esc(owner.target) : "headless"}, ${esc(a.kind)}, ${esc(a.id)}`;
     const judge = judgeText(a);
     return `<div class="card" data-id="${esc(a.id)}"><div class="qask-h" title="${route}">Question for you</div>` +
       `<div class="q md">${md(a.question)}</div>${judge ? `<div class="cline">${judge}</div>` : ""}<div class="opts">${opts}</div><div class="err"></div></div>`;
