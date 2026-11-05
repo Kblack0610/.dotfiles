@@ -22,6 +22,7 @@ return {
       { "<leader>c", group = "copy/cloak" },
       { "<leader>d", group = "debug" },
       { "<leader>g", group = "git" },
+      { "<leader>i", group = "agent request" },
       { "<leader>l", group = "lsp" },
       { "<leader>m", group = "markdown" },
       { "<leader>n", group = "notes" },
