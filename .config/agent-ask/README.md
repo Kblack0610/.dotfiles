@@ -38,7 +38,7 @@ SECONDARY convenience for an attended agent only; producers never use it.
 - `--context "<why, what it blocks>"` is the `why:` line under the question.
 - `--options 'now=ship it today|later=wait for review'` gives each option a meaning. The slugs alone stay in `options:`, which agent-web, settle matching and the judge read; the meanings go to `option_notes:`, pipe-aligned with them.
 
-`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. The questions panel shows that card for the selected ask: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `ctrl-/` moves the card beside the list or hides it, Esc closes. Answering or dropping needs Enter, so a stray key sends nothing.
+`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)` with its `because:` line, the why, and what the judge would answer. Under it, each only when it has data, the story of the asking session: `from` (queue item, runner, tmux session, Claude session live or ended), `request` (the registry title and the session's first typed prompt), `asked after` (the prompt the asking turn answered, when it is a later one), `in its words` (that turn's own text, from `agent-panel said`), and `telemetry` (the nightly `agentctl-session-outcomes` row: friction with its rank this week and its terms, cost, wall time, PRs, when observed). `post` prints the card alone into the asking pane: that session already holds the story. The questions panel shows that card for the selected ask: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `ctrl-/` moves the card beside the list or hides it, Esc closes. Answering or dropping needs Enter, so a stray key sends nothing.
 
 ## Verbs
 
@@ -52,6 +52,8 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --kind K        question | gate | approval  (gate/approval default options: approve|hold)
   --options a|b|c pipe-separated choices; a=meaning|b=meaning adds each option's meaning
   --context TEXT  why it is asked and what it blocks (the card's why: line)
+  --recommend O   the option you would pick; must be one of --options
+  --why TEXT      why you recommend it, one sentence (the card's because: line); needs --recommend
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
@@ -64,6 +66,7 @@ agent-ask answer [--by who] <id> <answer...> record answer; status->answered; ty
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
 agent-ask cancel <id>                        status->cancelled
+agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
 agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); an ask with options closes only when the text names exactly one of them, recorded as the answer
 ```
 
@@ -83,6 +86,8 @@ question: which auth provider should ledger use?
 options: oauth|magic
 option_notes: hosted, SSO later|email links, nothing to run   # optional, aligned with options
 context: the login screen is blocked on this                   # optional, the card's why: line
+recommend: oauth          # optional, one of options
+recommend_why: SSO is on the roadmap and oauth gets it free     # optional, the card's because: line
 answer:                   # filled by `answer`
 answered_at:
 answered_by:              # human | judge | shepherd

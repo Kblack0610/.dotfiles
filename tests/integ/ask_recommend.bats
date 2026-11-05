@@ -74,6 +74,39 @@ gate() { # [recommended]
   assert_failure
 }
 
+# The why travels with the option it argues for: it shows under that option on the card, a new
+# recommendation replaces or clears it, and a why with nothing recommended is refused.
+@test "post --why is stored and shown under the recommended option" {
+  local id; id="$("$AGENT_ASK" post --project alpha --options 'approve|hold' --recommend hold \
+    --why 'the release branch is frozen until Friday' 'Cut the branch?')"
+  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^recommend_why: //p"' _ "$id"
+  assert_output 'the release branch is frozen until Friday'
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_line --index 3 '  2  hold     (recommended)'
+  assert_line --index 4 '     because: the release branch is frozen until Friday'
+  # Negative control: no why, no because line.
+  run env COLUMNS=80 "$AGENT_ASK" card "$(gate approve)"
+  refute_output --partial 'because:'
+}
+
+@test "post refuses --why without --recommend, and files nothing" {
+  run "$AGENT_ASK" post --project alpha --options 'approve|hold' --why 'because' 'Cut the branch?'
+  assert_failure
+  assert_output --partial 'give --recommend too'
+  run bash -c 'find "$HOME/.agent/asks" -name "*.md" | wc -l'
+  assert_output '0'
+}
+
+@test "the recommend verb sets the why, and a later one without a why clears it" {
+  local id; id="$(gate approve)"
+  "$AGENT_ASK" recommend "$id" hold "the tickets need a second look" 2>/dev/null
+  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^recommend_why: //p"' _ "$id"
+  assert_output 'the tickets need a second look'
+  "$AGENT_ASK" recommend "$id" approve 2>/dev/null
+  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^recommend_why: //p"' _ "$id"
+  assert_output ''
+}
+
 @test "list carries recommend as the eleventh field" {
   # the field count is pinned in agent_ask.bats
   local id; id="$(gate approve)"

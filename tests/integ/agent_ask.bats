@@ -204,6 +204,70 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line --index 0 --partial 'gate - asking you  demo'
 }
 
+# The real agentctl-session-outcomes, reading its lib from the repo and its rows from the sandbox.
+outcomes_cli() {
+  printf '#!/bin/sh\nSO_LIB_DIR="%s/.local/lib" exec "%s/.local/bin/agentctl-session-outcomes" "$@"\n' \
+    "$REPO_ROOT" "$REPO_ROOT" > "$SANDBOX/bin/agentctl-session-outcomes"
+  chmod +x "$SANDBOX/bin/agentctl-session-outcomes"
+}
+
+# The story under the card: where the ask came from, the request, the asking turn's prompt and
+# words (agent-panel said, stubbed from a fixture), and the nightly outcome row, which the real
+# agentctl-session-outcomes reads from the sandbox.
+@test "card tells the story: source, request, the asking turn, its words, telemetry" {
+  mkdir -p "$HOME/.claude/sessions" "$HOME/.claude/projects/p" "$HOME/.agent/sessions/demo" "$HOME/.agent/outcomes/demo"
+  printf '{"pid":%d,"sessionId":"sid-s"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  : > "$HOME/.claude/projects/p/sid-s.jsonl"
+  printf '{"session_id":"sid-s","title":"merge-queue-review","first_prompt":"cut"}\n' > "$HOME/.agent/sessions/demo/sessions.jsonl"
+  printf '%s\n' '{"first":"review the merge queue","prompt":"should we keep it?","said":"Looked at the queue.\n\nKeep it? 1 keep 2 drop"}' \
+    > "$NOTES_FIXTURE/agent-panel.said"
+  local now iso; now="$(date +%s)"; iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  { printf '{"session_id":"sid-s","project":"demo","title":"t","updated":"%s","updated_epoch":%d,"observed":"%s","cost_usd":1.5,"duration_s":3720,"prs":[],"prs_merged":1,"prs_open":0,"corrections":{"lessons_written":1}}\n' "$iso" "$now" "$iso"
+    printf '{"session_id":"sid-o","project":"demo","title":"o","updated":"%s","updated_epoch":%d,"observed":"%s","prs":[],"corrections":{"interrupts":3}}\n' "$iso" "$now" "$iso"
+  } > "$HOME/.agent/outcomes/demo/2026-11.jsonl"
+  outcomes_cli
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo --session agent-3 --agent runner-x \
+    --task item-y --options 'keep|drop' 'keep the merge queue?')"
+  run env COLUMNS=110 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line '  queue item item-y, runner runner-x, tmux agent-3, claude sid-s (live)'
+  assert_line '  merge-queue-review: review the merge queue'
+  assert_line '  should we keep it?'
+  assert_line '  Looked at the queue.'
+  assert_line '  Keep it? 1 keep 2 drop'
+  assert_line --regexp '^  friction 2 \(#2 of 2 this week\): 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
+  grep -qx "agent-panel said $HOME/.claude/projects/p/sid-s.jsonl --around $id" "$NOTES_FIXTURE/calls.log"
+  # The asking pane's own copy is the card alone: that session already holds the story.
+  run env CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo 'again?'
+  refute_output --partial 'in its words'
+}
+
+@test "card leaves out each story block that has no data" {
+  mkdir -p "$HOME/.agent/sessions/demo"
+  printf '{"session_id":"sid-t","title":"only-a-title"}\n' > "$HOME/.agent/sessions/demo/sessions.jsonl"
+  # A session with a registry title but no transcript, no live process and no outcome row.
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-t "$AGENT_ASK" post --project demo --options 'a|b' 'which?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line '  claude sid-t (ended)'
+  assert_line '  only-a-title'
+  refute_output --partial 'asked after'
+  refute_output --partial 'in its words'
+  refute_output --partial 'telemetry'
+  refute_line --partial 'only-a-title:'
+  # A session with no friction has no rank; its row still gives the telemetry line.
+  mkdir -p "$HOME/.agent/outcomes/demo"; outcomes_cli
+  printf '{"session_id":"sid-t","project":"demo","title":"t","updated":"x","updated_epoch":%d,"observed":"%s","prs":[],"prs_merged":0}\n' \
+    "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOME/.agent/outcomes/demo/2026-11.jsonl"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_line '  friction 0 . 0 PRs merged . seen 0m ago'
+  # An ask no session owns, posted outside tmux, tells no story at all.
+  local loose; loose="$("$AGENT_ASK" post --project demo 'headless?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$loose"
+  refute_output --partial 'from'
+  refute_output --partial 'request'
+}
+
 @test "card of an old ask with bare options and no notes still lists the options" {
   mkdir -p "$HOME/.agent/asks/demo"
   printf 'id: old1\nproject: demo\nkind: question\nstatus: pending\nquestion: a long old paragraph\noptions: x|y\nrecommend: y\n' \
