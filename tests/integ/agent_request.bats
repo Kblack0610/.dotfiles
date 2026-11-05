@@ -132,8 +132,9 @@ pane_row() { # <cwd> <pane> [status]
 }
 
 # The nvim front end, headless, against the real CLI and the agent-queue stub above.
+# Call need_nvim before `run nvim_run`: a skip inside `run` ends only its subshell.
+need_nvim() { command -v nvim >/dev/null || skip "nvim not installed"; }
 nvim_run() {
-  command -v nvim >/dev/null || skip "nvim not installed"
   printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/t.lua"
   nvim --headless -u NONE -i NONE \
     --cmd "set rtp^=$REPO_ROOT/.config/nvim" "$REPO/cfg/a.json" \
@@ -141,6 +142,7 @@ nvim_run() {
 }
 
 @test "nvim: <leader>ia's add notes the cursor line, list fills quickfix, send queues it" {
+  need_nvim
   run nvim_run '
 local ar = require("kennethblack.agent_request")
 vim.ui.input = function(opts, cb) cb(opts.default or "bump spawn rate") end
@@ -160,6 +162,7 @@ ar.send_queue()
 }
 
 @test "nvim: a visual selection notes its line range" {
+  need_nvim
   run nvim_run '
 local ar = require("kennethblack.agent_request")
 vim.ui.input = function(_, cb) cb("both lines") end
