@@ -48,8 +48,10 @@ pub const TABS: [Tab; 7] = [
         id: "infra",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &[],
-        landed: false,
+        sections: &[
+            "health", "red", "machines", "ci", "jobs", "cloud", "governor",
+        ],
+        landed: true,
     },
     Tab {
         id: "log",
@@ -81,6 +83,11 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("forecast", "sessions"),
     ("watch", "sessions"),
     ("shepherd", "sessions"),
+    // The TUI's Jobs, CI and Machines tabs and agent-web's Jobs tab: sections of Infra now,
+    // one MACHINES table in place of POOLS, CI by machine and the Machines tab.
+    ("jobs", "infra"),
+    ("ci", "infra"),
+    ("machines", "infra"),
 ];
 
 /// The landed tabs, in order.
@@ -96,6 +103,17 @@ pub fn resolve(name: &str) -> Option<&'static Tab> {
         .find(|(old, _)| *old == n)
         .map_or(n.as_str(), |(_, new)| new);
     landed().find(|t| t.id == id || t.title.eq_ignore_ascii_case(id))
+}
+
+/// The section a retired name opens on its new tab, when that name is one of the tab's
+/// sections (`ci` -> Infra's CI section), so an old link lands where its content went.
+pub fn section(name: &str) -> Option<&'static str> {
+    let n = name.trim().to_ascii_lowercase();
+    let tab = resolve(&n)?;
+    tab.sections
+        .iter()
+        .copied()
+        .find(|s| *s == n && tab.id != n)
 }
 
 #[cfg(test)]
@@ -126,7 +144,21 @@ mod tests {
         assert_eq!(resolve("forecast").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));
-        assert_eq!(resolve("infra"), None, "not landed yet");
+        assert_eq!(resolve("jobs").map(|t| t.id), Some("infra"));
+        assert_eq!(resolve("CI").map(|t| t.id), Some("infra"));
+        assert_eq!(resolve("machines").map(|t| t.id), Some("infra"));
+        assert_eq!(resolve("log"), None, "not landed yet");
         assert_eq!(resolve("nope"), None);
+    }
+
+    #[test]
+    fn a_retired_name_that_became_a_section_opens_that_section() {
+        assert_eq!(section("ci"), Some("ci"));
+        assert_eq!(section("Machines"), Some("machines"));
+        assert_eq!(section("jobs"), Some("jobs"));
+        assert_eq!(section("shepherd"), Some("shepherd"));
+        assert_eq!(section("infra"), None, "a live tab is not a section");
+        assert_eq!(section("waiting"), None, "Home has no waiting section");
+        assert_eq!(section("nope"), None);
     }
 }

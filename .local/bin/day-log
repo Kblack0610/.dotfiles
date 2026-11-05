@@ -41,9 +41,10 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
                               # (the hub Today tab keeps its own OPEN_DAYS = 7)
 : "${DAYLOG_QUEUE_CMD:=agent-queue}"
+: "${DAYLOG_FLEET_CMD:=fleet-sessions}"
 : "${DAYLOG_NOTES_DIR:=$HOME/.notes}"
 : "${DAYLOG_CI:=$HOME/.config/agentctl/day-log-ci}"   # private overlay: it names private repos
-export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI
+export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI DAYLOG_FLEET_CMD
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }

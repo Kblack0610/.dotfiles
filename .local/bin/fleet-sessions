@@ -18,6 +18,10 @@
 #                                     minute and on each ask change); the hub Fleet tab
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
+#   fleet-sessions stages [--from EPOCH] [--to EPOCH] [--json]  watch.log replayed over a window
+#                                     (default the last 24h): minutes and episodes per stage and
+#                                     reason, CI runs and reruns, PR open to merged, conflicts,
+#                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
 # Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (queue the next phases, wind down),
 # STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
@@ -998,7 +1002,8 @@ main() {
     label) shift; label "$@"; return ;;
     tick) tick; return ;;
     explain) shift; explain "$@"; return ;;
-    -h|--help) sed -n '2,21p' "$0"; return ;;
+    stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" "$@"; return ;;
+    -h|--help) sed -n '2,25p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows t0

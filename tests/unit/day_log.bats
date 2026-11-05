@@ -45,6 +45,10 @@ EOF
   export DAYLOG_QUEUE_CMD=queue-stub
   printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/queue" > "$SANDBOX/bin/queue-stub"
   echo '{"flow":{"2026-10-28":{"queued":4,"started":3,"waiting":1,"done":2,"failed":1,"lead_minutes":{"n":2,"p50":30,"p90":50},"wait_minutes":{"n":1,"p50":10,"p90":10},"run_minutes":{"n":2,"p50":20,"p90":40}}}}' > "$SANDBOX/queue"
+  # fleet-stub: fleet-sessions stages --json serves $SANDBOX/stages and logs its args
+  export DAYLOG_FLEET_CMD=fleet-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec cat "%s"\n' "$SANDBOX/fleet-args" "$SANDBOX/stages" > "$SANDBOX/bin/fleet-stub"
+  echo '{"stages":{"NEEDS":{"minutes":90},"NEEDS:ask":{"minutes":60}},"ci":{"rerun_after_red":2},"ended_no_pr":3,"prs":{"open_to_merged":{"p50":16}}}' > "$SANDBOX/stages"
   # cif-stub: ci-failures --json serves $SANDBOX/cif and exits $SANDBOX/cif-rc
   export DAYLOG_CI_FAILURES_CMD=cif-stub DAYLOG_CI="$SANDBOX/ci" DAYLOG_CI_CACHE="$SANDBOX/ci-cache"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
@@ -347,7 +351,7 @@ PROM
   refute_output --partial 'tokens 2026-10-28'
 }
 
-@test "work: queue flow for the local day, merges per repo and area, plan phases from fleet-bench flow" {
+@test "work: queue flow for the local day, merges per repo and area, plan phases from fleet-bench flow, stages from fleet-sessions" {
   pr game 1 'feat(raiders): one' 2026-10-28T17:00:00Z > "$SANDBOX/p1"
   pr web 3 'docs: three' 2026-10-28T19:00:00Z > "$SANDBOX/p3"
   cat "$SANDBOX/p1" "$SANDBOX/p3" | merged
@@ -356,6 +360,10 @@ PROM
   assert_output '[2,[]]'
   run rec -c '.work | [.queue.queued, .queue.done, .queue.lead_minutes.p50, .merges.by_repo, .merges.by_area, .phases.ticked]' 2026-10-28
   assert_output '[4,2,30,{"game":1,"web":1},{"Games":1,"web":1},5]'
+  run rec -c '.work.stages | [.stages["NEEDS:ask"].minutes, .ended_no_pr]' 2026-10-28
+  assert_output '[60,3]'
+  run cat "$SANDBOX/fleet-args"
+  assert_output "stages --from $(date -d 2026-10-28 +%s) --to $(date -d 2026-10-29 +%s) --json"
   run "$SUBJECT" show --date 2026-10-28
   assert_output --partial '- Queue: 4 queued, 3 started, 1 moved to waiting, 2 done (1 failed); lead p50 30 min, wait p50 10 min'
   assert_output --partial '- Plan phases: 5 ticked, 2 added'
@@ -512,6 +520,7 @@ week_fixture() {
   done
   for d in 21 22 23 24 25 26 27; do
     day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
+      | .work.stages = {stages: {\"NEEDS:ask\": {minutes: 10}}, prs: {open_to_merged: {p50: $d}}}
       | .ci.repos[\"O/game\"] = {runs: 10, red: 1, workflows: {Tests: {runs: 10, red: 1}}}"
   done
   cat > "$SANDBOX/bin/usage-stub" <<EOF
@@ -536,6 +545,7 @@ EOF
   assert_equal "$(v '.metrics["board.open"] | [.value, .prev]')" '[27,3]'
   assert_equal "$(v '.metrics["ci.game.red_rate"] | [.value, .prev, .delta]')" '[0.1,0.5,-0.4]'
   assert_equal "$(v '.metrics["ci.game.pass.Tests"] | [.value, .prev]')" '[0.9,0.5]'
+  assert_equal "$(v '[.metrics["stages.ask_min"].value, .metrics["stages.pr_to_merge_p50_min"].value]')" '[70,24]'
   day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1}'
   run "$SUBJECT" week --date 2026-10-27 --line
   assert_output --partial 'dotfiles red 25%'
