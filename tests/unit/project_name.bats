@@ -636,3 +636,29 @@ EOF
   run resolve_project_name "$WT_ROOT/unrelated-name"
   assert_output 'mono-canon'
 }
+
+@test "project_type: a project's own type wins" {
+  write_map '{"mono": {"type": "game"}, "app": {"repo": "mono", "path": "apps/a", "type": "app"}}'
+  run project_type mono
+  assert_output game
+}
+
+@test "project_type: a repo with no type takes the one its projects share" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "infra"}}'
+  run project_type mono
+  assert_output infra
+}
+
+@test "project_type: a repo whose projects disagree has no type" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "game"}}'
+  run project_type mono
+  assert_success
+  assert_output ''
+}
+
+@test "project_type: an unknown project has no type" {
+  write_map '{}'
+  run project_type nothing
+  assert_success
+  assert_output ''
+}

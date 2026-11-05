@@ -218,6 +218,17 @@ project_lab_names() {
   ' "$map_file" 2>/dev/null || true
 }
 
+# project_type <repo or project> -> its `type`, else the one type shared by every project
+# under it, else "". `.dotfiles` has no type of its own, but both its projects are infra.
+project_type() {
+  local own name types
+  own="$(project_field "$1" type)"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  types="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" type; done | sort -u)"
+  [ -n "$types" ] && [ "$(wc -l <<<"$types")" -eq 1 ] && printf '%s\n' "$types"
+  return 0
+}
+
 # project_keys -> every registered project key, sorted, one per line: the `paths` names
 # plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
 # and a string-valued `_comment*` key is documentation. The one definition of "the
