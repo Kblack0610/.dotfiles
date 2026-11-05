@@ -57,10 +57,41 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$id"
   assert_line 'claude_session: sid-1'
   # agents pass their own tmux name as --session; the owner is still the poster
+  "$AGENT_ASK" cancel "$id" >/dev/null
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session agent-1 'merge it?')"
   run "$AGENT_ASK" show "$id"
   assert_line 'claude_session: sid-1'
   assert_line 'session: agent-1'
+}
+
+@test "a session with a pending ask cannot post a second one, and is told how to fold it" {
+  local first; first="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  CLAUDE_CODE_SESSION_ID=sid-1 run --separate-stderr post other 'ship it too?'
+  assert_failure 2
+  [[ "$stderr" == *"pending ask $first"* ]]
+  [[ "$stderr" == *'merge it?'* ]]
+  [[ "$stderr" == *"agent-ask cancel $first superseded"* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" '1'
+}
+
+@test "once its ask is answered or cancelled, the session can ask again" {
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  "$AGENT_ASK" answer "$id" yes 2>/dev/null
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'ship it?')"
+  [ -n "$id" ]
+  "$AGENT_ASK" cancel "$id" >/dev/null
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'tag it?'
+  assert_success
+}
+
+@test "another session, or a post with no session id, is not held by someone else's ask" {
+  CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
+  run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'
+  assert_success
+  run post demo 'tag it?'
+  assert_success
+  run post demo 'and this?'
+  assert_success
 }
 
 @test "an attended session files its ask and sees it in its pane, with no page per ask" {
@@ -106,10 +137,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 @test "settle-session closes only that session's pending asks" {
   local mine other done_
-  mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
-  other="$(CLAUDE_CODE_SESSION_ID=sid-2 post demo 'ship it?')"
   done_="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'old?')"
   "$AGENT_ASK" answer "$done_" yes 2>/dev/null
+  mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  other="$(CLAUDE_CODE_SESSION_ID=sid-2 post demo 'ship it?')"
   run "$AGENT_ASK" settle-session sid-1 answered "yes, go ahead"
   assert_success
   run "$AGENT_ASK" show "$mine"
@@ -518,11 +549,12 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   # A live session is a Claude process file naming it whose pid runs (this test's own pid).
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
-  # sid-9's file names a pid that is not running, so it is gone all the same.
+  # sid-9's and sid-8's files name pids that are not running, so they are gone all the same.
   printf '{"pid":999999999,"sessionId":"sid-9"}\n' > "$HOME/.claude/sessions/999999999.json"
+  printf '{"pid":999999998,"sessionId":"sid-8"}\n' > "$HOME/.claude/sessions/999999998.json"
   live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
   gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
-  resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
+  resumed="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
   loose="$(post demo 'headless?')"
   run "$AGENT_ASK" card "$gone"
   assert_output --partial 'session gone: the answer becomes a row on the demo board'

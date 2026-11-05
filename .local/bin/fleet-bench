@@ -1000,16 +1000,19 @@ asks_md() {
 asks_line() {
   jq -r --argjson k "$2" --argjson max "$3" '
     def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
-    # The first sentence is the question; the rest is context. Cut at a word only past 80.
-    def q: .question | gsub("\\s+"; " ") | ((capture("^(?<s>.*?[?.!])( |$)") | .s) // .)
-      | if length > 80 then (.[0:77] | sub(" [^ ]*$"; "")) + "..." else . end;
+    # The first sentence is the question; the rest is context. A question is never cut:
+    # one too long for the line is named by its "topic:" label (else its project) and id instead.
+    def name: ((.question | capture("^(?<t>[^:?.!]{3,60}): ") | .t) // "a \(.project) question") + ", ask \(.id)";
+    def q: .question | gsub("\\s+"; " ") | ((capture("^(?<s>.*?[?.!])( |$)") | .s) // .);
+    def meta: " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")";
     (map(select(.live)) | length) as $l
     | ((if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
       + (if $l == 0 then ", none holding up a session" else ", \($l) holding up a session" end)
       + ". Top: ") as $head
     | ". List: fleet-bench asks." as $tail
-    | [.[:$k][] | q + " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")"]
-    | reduce .[] as $i ([]; if length == 0 or ($head + ((. + [$i]) | join("; ")) + $tail | length) <= $max then . + [$i] else . end)
+    | def fits($l): ($head + ($l | join("; ")) + $tail | length) <= $max;
+      reduce (.[:$k][] | [q + meta, name + meta]) as [$full, $short] ([];
+        if fits(. + [$full]) then . + [$full] elif length == 0 or fits(. + [$short]) then . + [$short] else . end)
     | $head + join("; ") + $tail' <<<"$1"
 }
 

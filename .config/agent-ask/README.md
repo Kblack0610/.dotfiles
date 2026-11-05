@@ -40,6 +40,10 @@ SECONDARY convenience for an attended agent only; producers never use it.
 
 `agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)` with its `because:` line, the why, and what the judge would answer. Under it, each only when it has data, the story of the asking session: `from` (queue item, runner, tmux session, Claude session live or ended), `request` (the registry title and the session's first typed prompt), `asked after` (the prompt the asking turn answered, when it is a later one), `in its words` (that turn's own text, from `agent-panel said`), and `telemetry` (the nightly `agentctl-session-outcomes` row: friction with its rank this week and its terms, cost, wall time, PRs, when observed). `post` prints the card alone into the asking pane: that session already holds the story. The questions panel shows that card for the selected ask: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `ctrl-/` moves the card beside the list or hides it, Esc closes. Answering or dropping needs Enter, so a stray key sends nothing.
 
+## One open question per session
+
+`post` refuses a second pending ask from the same Claude session (`claude_session`), names the one already open, and exits 2. Several decisions become one question: options such as `take-all=<each recommendation>|one-by-one=go through them here`, with the per-decision detail in `--context`. To replace the open one, `agent-ask cancel <id> superseded` first. So every board reads one row per asking session. A post with no session id (a bare shell) is not checked. Why: by 2026-11-05, 22 sessions had posted bursts of 2 to 6 asks minutes apart, 54 extra rows, one trader session 6 in the same second. Test: `tests/integ/agent_ask.bats`.
+
 ## Verbs
 
 ```
