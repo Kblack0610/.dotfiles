@@ -29,7 +29,8 @@
 # as the reason, which by that point is full of unrelated check chatter.
 #
 # A session that opened or merged a PR is held to more: the PR is a unit of work, so only a
-# queue item satisfies it (`agent-queue add|claim`, `agent-land`, or $AGENT_QUEUE_ITEM); a
+# queue item satisfies it (`agent-queue add|claim`, `agent-land`, $AGENT_QUEUE_ITEM, or an item
+# whose `sessions:` lists this session); a
 # Focus item in progress or a board write does not, and it has its own once-per-session nudge.
 # Why: 2026-11-05 only 26% of merged PRs since 11-04 had an item, so the work ledger could not
 # answer what was done.
@@ -172,6 +173,13 @@ fi
 # Before this check the gate fired anyway and told those sessions to add a board row:
 # 2026-10-29..11-05, about half of its 223 blocks hit sessions already on a queue item.
 [ -n "${AGENT_QUEUE_ITEM:-}" ] && { save_state; exit 0; }
+# An item whose `sessions:` lists this one (add, claim, agent-land stamp it) is the same fact,
+# and survives a compaction that drops those calls from the transcript (2026-11-05). Exit 2 is
+# "more than one item": still on the ledger.
+if [ -n "$SESSION_ID" ] && command -v agent-queue >/dev/null 2>&1; then
+  agent-queue mine --sid "$SESSION_ID" >/dev/null 2>&1
+  case $? in 0 | 2) save_state; exit 0 ;; esac
+fi
 
 # --- 2b. is something already marked in progress? ---
 DAILY_NOTE=$(focus_daily_note)
@@ -205,7 +213,7 @@ if [ "$PR_WORK" -eq 1 ]; then
   fi
 elif [ "$SESSION_MODE" -eq 1 ]; then
   if printf '%s\n' "$CALLS" \
-     | grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|move|set)\b|\bagent-land\b)'; then
+     | grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)'; then
     save_state; exit 0
   fi
 elif [ -r "$NOTES_LOG" ]; then
