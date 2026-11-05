@@ -219,6 +219,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    if tab == Some(Tab::Outbox) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.outbox = Some(hub_core::outbox::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.tab = Tab::Outbox;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
         a.queue = Some(hub_core::queue::Queue::read(
