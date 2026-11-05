@@ -71,7 +71,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_success
   local id="$output"
   [ -f "$HOME/.agent/asks/demo/$id.md" ]
-  [[ "$stderr" == *"ASK $id (question) - waiting on you"* ]]
+  [[ "$stderr" == *"asking you  demo . "*"$id"* ]]
   [[ "$stderr" == *"merge it?"* ]]
   [[ "$stderr" == *"  1  now"* ]]
   [[ "$stderr" == *"  2  later  (recommended)"* ]]
@@ -181,14 +181,27 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   printf 'judge: take-recommend\njudge_reason: the policy says wait\n' >> "$HOME/.agent/asks/demo/$id.md"
   run env COLUMNS=80 "$AGENT_ASK" card "$id"
   assert_success
-  assert_line --partial "ASK $id (question) - waiting on you  demo . agent-1"
+  assert_line --partial "asking you  demo . agent-1 . "
   assert_line 'run the sweep?'
   assert_line '  1  go     run it now'
   assert_line '  2  later  after the release  (recommended)'
   assert_line 'why: the sweep is ready'
-  assert_line 'judge: would take the recommendation - the policy says wait'
+  assert_line 'the judge would take the recommendation - the policy says wait'
   # No colour off a terminal: the card lands in a session's tool output as plain text.
   ! grep -q $'\e' <<< "$output"
+}
+
+@test "card leaves out a session that repeats the project, a judge that only says needs you, and the kind of a question" {
+  local id; id="$("$AGENT_ASK" post --project demo --session demo --options 'a|b' 'which?')"
+  printf 'judge: human\njudge_reason: only you know\n' >> "$HOME/.agent/asks/demo/$id.md"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line --index 0 --regexp "^asking you  demo \. [0-9]+m ago \. $id\$"
+  refute_output --partial 'judge'
+  refute_output --partial 'only you know'
+  local g; g="$("$AGENT_ASK" post --project demo --kind gate 'ship it?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$g"
+  assert_line --index 0 --partial 'gate - asking you  demo'
 }
 
 @test "card of an old ask with bare options and no notes still lists the options" {
