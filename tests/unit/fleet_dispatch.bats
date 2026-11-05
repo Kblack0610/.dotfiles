@@ -730,18 +730,85 @@ refuses() {
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
 
-@test "run starts nothing while the human is here, and says who saw them" {
+@test "run while the human is here starts one board item an hour, and queues the rest for when they leave" {
   game_ready
+  row game human 'second row' "- [ ] second row #high $T"
+  verdict game human 'second row' dispatch S 1 other
   stub fleet-presence 'echo "here 3 desktop"'
-  refuses 'not away (here 3 desktop)'
+  export DISPATCH_PER_PASS=3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'present start: queue item' "$LOG")" 1
+  assert_equal "$(outcome)" WORKED
+  # The hour's start is used: the next pass starts nothing, and says why.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(outcome)" NOOP
+  # An hour on, the trickle has room again.
+  sed -i "s/^- [0-9-]* [0-9:]* present start:/- $(date -d '-61 min' '+%Y-%m-%d %H:%M') present start:/" "$LOG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
 }
 
-@test "run starts nothing while presence cannot be read" {
+@test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
   game_ready
-  stub fleet-presence 'echo "unread - hypridle"'
-  refuses 'not away (unread - hypridle)'
+  stub fleet-presence 'echo "here 3 desktop"'
+  export DISPATCH_PRESENT_PER_HOUR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1; the human is here'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued gm-1)" ] || fail "the row was not queued"
+  assert_equal "$(outcome)" NOOP
+  # Away, the same item starts.
+  stub fleet-presence 'echo "away 45 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_called 'wt new'
+}
+
+@test "run counts unreadable presence as here: the board starts at the trickle, not the away rate" {
+  game_ready
+  row game human 'second row' "- [ ] second row #high $T"
+  verdict game human 'second row' dispatch S 1 other
+  export DISPATCH_PER_PASS=3
   stub fleet-presence 'exit 2'
-  refuses 'not away (fleet-presence unreadable)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "run tops the queue up from the board while fewer than DISPATCH_LOW_WATER items are runnable" {
+  game_ready
+  row game human 'second row' "- [ ] second row #high $T"
+  verdict game human 'second row' dispatch S 1 other
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=3
+  agent-queue add --project game --slug mine "mine"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: mine'
+  assert_output --partial 'runnable 0 is under the low water 3'
+  # Both rows queued to reach the mark; the pass's one start went to the human's item.
+  [ -n "$(qitem queued gm-1)" ] && [ -n "$(qitem queued gm-2)" ] || fail "the board did not top the queue up"
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "run at or over DISPATCH_LOW_WATER does not read the board, and 0 reads it only for an empty queue" {
+  game_ready
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  agent-queue add --project game --slug one "one"
+  agent-queue add --project game --slug two "two"
+  agent-queue add --project game --slug three "three"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'low water'
+  assert_not_called 'judge called'
+  [ -z "$(qitem queued gm-1)" ] || fail "the board was read over the low water"
+  export DISPATCH_LOW_WATER=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -z "$(qitem queued gm-1)" ] || fail "low water 0 read the board with items runnable"
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
@@ -826,12 +893,14 @@ held_game_app_row() {
 @test "a pass past held queue items that starts no board row either is BLOCKED by the hold, never NOOP" {
   held_game_app_row
   stub fleet-presence 'echo "here 0 tmux"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  DISPATCH_PRESENT_PER_HOUR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits; the human is not away'
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
+  assert_output --partial 'queued app: gm-1'
   assert_not_called 'wt new'
   assert_equal "$(outcome)" BLOCKED
-  # No row qualifies: the hold still names the pass.
+  # No row qualifies: the hold still names the pass. (The row the first pass queued is closed first.)
+  agent-queue move gm-1 done --status cancelled >/dev/null
   stub fleet-presence 'echo "away 45 tmux"'
   : > "$NOTES_FIXTURE/rows.app.human"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -1061,10 +1130,10 @@ held_game_app_row() {
 
 @test "run --dry-run names what would stop a real pass and still lists the picks" {
   game_ready
-  stub fleet-presence 'echo "here 0 tmux"'
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
-  assert_output --partial 'not away (here 0 tmux)'
+  assert_output --partial 'load 30.00 on'
   assert_output --partial 'would queue: game'
   assert_not_called 'wt new'
 }
@@ -1081,9 +1150,10 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 @test "run publishes NOOP when a gate stops it or no row qualifies" {
   game_ready
-  stub fleet-presence 'echo "here 0 tmux"'
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(outcome)" NOOP
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
   rm -f "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome"
   stub fleet-presence 'echo "away 45 tmux"'
   : > "$NOTES_FIXTURE/rows.game.human"
@@ -1684,12 +1754,12 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'no queue item: nope'
 }
 
-@test "the human's queue item starts while the human is here, past a board-filled one that waits for away" {
+@test "the human's queue item starts while the human is here, past a board-filled one the spent trickle holds" {
   game_ready
   stub fleet-presence 'echo "here 0 tmux"'
+  export DISPATCH_PRESENT_PER_HOUR=0
   agent-queue add --project game --slug from-board --from board:game:x "x"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'the human is not away'
   assert_not_called 'wt new'
   agent-queue add --project game --slug mine "mine"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -1969,14 +2039,18 @@ board_item() {
   assert_output --partial '1 board rows unjudged, none judged since '"$(date -d '-2 hours' +%Y-%m-%d)"
 }
 
-@test "starved: a board item waits out the human's presence, and counts from when they left" {
+@test "starved: a board item waits out the human's presence once the trickle is spent, and counts from when they left" {
   local old
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   board_item gm-1 "$old"
   stub fleet-presence 'echo "here 0 tmux"'
-  run cmd_starved
+  DISPATCH_PRESENT_PER_HOUR=0 run cmd_starved
   assert_success
   assert_output ''
+  # With the trickle open the item could start while they are here, so two hours unstarted is starved.
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'gm-1 (high'
   stub fleet-presence 'echo "away 5 tmux"'
   run cmd_starved
   assert_success
