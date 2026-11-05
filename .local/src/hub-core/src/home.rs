@@ -25,6 +25,9 @@ pub const DOMAINS: [&str; 11] = [
 const ALWAYS: [&str; 2] = ["k3s", "ci"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
+/// How many rows of a list Home shows before the rest fold under "+N older" (dashboards rule: a
+/// long list is capped, never unbounded at top level).
+pub const SHOWN: usize = 8;
 
 /// What a row is. The order here is the order Home lists them in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -115,6 +118,8 @@ pub struct Home {
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
+    /// How many rows of each list show before the rest fold (`SHOWN`), sent so the web reads it.
+    pub shown: usize,
 }
 
 impl Home {
@@ -186,9 +191,12 @@ fn cc_values(infra: &Infra) -> HashMap<String, f64> {
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
 /// read). Needs come asks first, then sessions, queue items, nightly reds and red-now items,
-/// each oldest first.
+/// each newest first.
 pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Home {
-    let mut h = Home::default();
+    let mut h = Home {
+        shown: SHOWN,
+        ..Home::default()
+    };
     let generated = state["generated_epoch"].as_i64();
     let sessions: Vec<&Value> = state["sessions"]
         .as_array()
@@ -296,9 +304,14 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
             });
         }
     }
-    // Stable: same kind keeps its oldest first, unknown ages last.
-    h.needs
-        .sort_by_key(|n| (n.kind, n.since.is_none(), n.since.unwrap_or(0)));
+    // Stable: same kind keeps its newest first, unknown ages last, so the fold holds the oldest.
+    h.needs.sort_by_key(|n| {
+        (
+            n.kind,
+            n.since.is_none(),
+            std::cmp::Reverse(n.since.unwrap_or(0)),
+        )
+    });
 
     let phases = boards::phases(state);
     if let Some(q) = queue {
@@ -463,6 +476,25 @@ mod tests {
         assert_eq!((p.done, p.total), (2, 4));
         assert_eq!(h.numbers[0].value, "1 running, 0 up next");
         assert_eq!(h.errors, ["Prometheus: reading"]);
+    }
+
+    #[test]
+    fn asks_list_newest_first_so_the_fold_holds_the_oldest() {
+        let mut st = state();
+        st["asks"] = json!([
+            {"id": "old", "question": "q", "created": "2026-11-05T08:00:00-0800"},
+            {"id": "new", "question": "q", "created": "2026-11-05T09:00:00-0800"},
+            {"id": "undated", "question": "q"},
+        ]);
+        let h = build(&st, None, None);
+        let ids: Vec<&str> = h
+            .needs
+            .iter()
+            .filter(|n| n.kind == Kind::Ask)
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(ids, ["new", "old", "undated"]);
+        assert_eq!(h.shown, SHOWN);
     }
 
     #[test]

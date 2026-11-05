@@ -1,8 +1,9 @@
 "use strict";
-// The Waiting tab: every live session with a dialog or permission prompt open (read from its
-// transcript by the server), then every pending ask, the one record of a question to the human.
-// An ask from a live session names that session; answering it types the answer into its pane.
-// The same two cards answer in place on a Queue row (queue.js, inQueue), without their head.
+// The answer cards for what waits on you: a live session's open dialog or permission prompt
+// (read from its transcript by the server) and a pending ask, the one record of a question to
+// the human. Home (home.js) draws them on its Needs you rows; the same two cards answer in place
+// on a Queue row (queue.js, inQueue), without their head. Answering a session's card types the
+// answer into its pane.
 
 // Which folds are open, by data-k: a section (`sec:<name>`) or a card's details.
 const askst = { open: {} };
@@ -10,7 +11,7 @@ const askst = { open: {} };
 const refreshAsks = coalesce(async () => {
   st.asks = await api("/api/asks");
   renderBadge();
-  if (st.tab === "asks") renderAsks();
+  if (st.tab === "home") renderHome();
   if (st.tab === "queue") renderQueueList();
 });
 
@@ -84,23 +85,6 @@ function askCard(a, inQueue) {
     `<div class="opts">${opts}</div>${more}<div class="err"></div></div>`;
 }
 
-// Session events re-render this often; keep a reply that is being typed.
-const renderAsks = () => keepTyping("#asks .card", drawAsks);
-
-// Two folding sections, each longest-waiting first.
-function drawAsks() {
-  const since = (t) => (t ? tms(t) : Infinity);
-  const live = asking().sort((a, b) => since(a.waiting_since) - since(b.waiting_since));
-  const asks = [...st.asks].sort((a, b) => since(a.created) - since(b.created));
-  if (!live.length && !asks.length) { paint($("asks"), '<div class="empty">Nothing is waiting on you.</div>', askst.open); return; }
-  const sec = (k, title, cards) => {
-    if (!cards.length) return "";
-    const key = `sec:${k}`, open = askst.open[key] !== false;
-    return `<details class="csec" data-k="${key}"${open ? " open" : ""}><summary><h2 class="sec">${title} <span class="muted">${cards.length}</span></h2></summary>${cards.join("")}</details>`;
-  };
-  paint($("asks"), sec("sessions", "Sessions", live.map((a) => sessionCard(a))) + sec("asks", "Asks", asks.map((a) => askCard(a))), askst.open);
-}
-
 // A session card answers through the session's own pane, so the answer lands in that
 // conversation. A typed reply to a dialog first closes it with Escape; the text then
 // arrives as the human's next message.
@@ -122,7 +106,7 @@ async function answerSession(card, e) {
   card.querySelector("[data-free]").value = "";
 }
 
-// A click inside a session card or an ask card, on the Waiting tab or a queue row.
+// A click inside a session card or an ask card, on Home or a queue row.
 async function answerCard(card, e) {
   if (card.dataset.t) {
     try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
@@ -135,12 +119,6 @@ async function answerCard(card, e) {
   try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
   catch (err) { card.querySelector(".err").textContent = err.message; }
 }
-$("asks").addEventListener("click", (e) => {
-  // A fold's summary opens the fold; it is not an answer.
-  if (e.target.closest("summary")) return;
-  const card = e.target.closest(".card");
-  if (card) answerCard(card, e);
-});
 
 function answerOnEnter(e) {
   if (e.key !== "Enter" || !e.target.matches("[data-free]")) return;
@@ -148,7 +126,3 @@ function answerOnEnter(e) {
   const btn = e.target.parentElement.querySelector("[data-reply], [data-send]");
   if (btn) btn.click();
 }
-$("asks").addEventListener("keydown", answerOnEnter);
-$("asks").addEventListener("toggle", (e) => {
-  if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;
-}, true);

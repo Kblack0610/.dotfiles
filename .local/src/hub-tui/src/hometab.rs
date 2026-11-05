@@ -23,103 +23,20 @@ fn age(since: Option<i64>, now: i64) -> String {
 }
 
 /// The Home sections, top to bottom; the caller adds the infra body under them.
+/// The "+N ..." line under a capped list, when rows were left out.
+fn more(out: &mut Vec<Line<'static>>, len: usize, shown: usize, what: &str, p: Palette) {
+    if len > shown {
+        out.push(Line::styled(format!("+{} {what}", len - shown), p.dim()));
+    }
+}
+
 pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &h.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
 
-    if h.needs.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("NEEDS YOU  ", p.head()),
-            Span::styled("nothing waits on you", p.dim()),
-        ]));
-    } else {
-        out.push(Line::styled(
-            format!("NEEDS YOU ({})", h.needs.len()),
-            p.head(),
-        ));
-        let t = Table {
-            header: vec!["KIND", "PROJECT", "AGE", "WHAT", "ID"],
-            rows: h
-                .needs
-                .iter()
-                .map(|n| {
-                    let style = match n.kind {
-                        Kind::Nightly | Kind::Red => p.bad(),
-                        _ => ratatui::style::Style::new(),
-                    };
-                    vec![
-                        cell(kind(n.kind), style),
-                        n.project.clone().into(),
-                        age(n.since, now).into(),
-                        n.text.clone().into(),
-                        // A red or nightly row is its own id: say it once.
-                        if n.id == n.text {
-                            "".into()
-                        } else {
-                            n.id.clone().into()
-                        },
-                    ]
-                })
-                .collect(),
-            keep: vec![0, 3, 1, 2, 4],
-            flex: Some(3),
-            flexmin: 20,
-            flexkeep: true,
-            right: vec![2],
-            cap: vec![(1, 22), (4, 34)],
-        };
-        out.extend(t.fit(w, p.dim()));
-    }
-
-    out.push(Line::raw(""));
-    if h.running.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("RUNNING  ", p.head()),
-            Span::styled("nothing running from the queue", p.dim()),
-        ]));
-    } else {
-        out.push(Line::styled(
-            format!("RUNNING ({})", h.running.len()),
-            p.head(),
-        ));
-        let t = Table {
-            header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
-            rows: h
-                .running
-                .iter()
-                .map(|r| {
-                    let ph = r.phases.as_ref();
-                    let eta = ph.and_then(|x| x.eta_epoch).map_or("-".into(), |e| {
-                        let s = clock(e, now);
-                        if e < now {
-                            cell(format!("{s} late"), p.warn())
-                        } else {
-                            s.into()
-                        }
-                    });
-                    vec![
-                        r.title.clone().into(),
-                        r.project.clone().into(),
-                        ph.map_or("-".into(), |x| format!("{}/{}", x.done, x.total))
-                            .into(),
-                        ph.and_then(|x| x.next.clone()).unwrap_or("-".into()).into(),
-                        eta,
-                    ]
-                })
-                .collect(),
-            keep: vec![0, 2, 4, 1, 3],
-            flex: Some(0),
-            flexmin: 20,
-            flexkeep: true,
-            right: vec![2],
-            cap: vec![(1, 22), (3, 40)],
-        };
-        out.extend(t.fit(w, p.dim()));
-    }
-
-    out.push(Line::raw(""));
+    // The summary leads (dashboards rule 3): two lines, so a long list never buries them.
     let nums: Vec<String> = h
         .numbers
         .iter()
@@ -158,6 +75,108 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         strip.push(Span::styled(format!("{ok} green"), p.dim()));
     }
     out.push(clip_line(Line::from(strip), w));
+    out.push(Line::raw(""));
+
+    if h.needs.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("NEEDS YOU  ", p.head()),
+            Span::styled("nothing waits on you", p.dim()),
+        ]));
+    } else {
+        out.push(Line::styled(
+            format!("NEEDS YOU ({})", h.needs.len()),
+            p.head(),
+        ));
+        let t = Table {
+            header: vec!["KIND", "PROJECT", "AGE", "WHAT", "ID"],
+            rows: h
+                .needs
+                .iter()
+                .take(h.shown)
+                .map(|n| {
+                    let style = match n.kind {
+                        Kind::Nightly | Kind::Red => p.bad(),
+                        _ => ratatui::style::Style::new(),
+                    };
+                    vec![
+                        cell(kind(n.kind), style),
+                        n.project.clone().into(),
+                        age(n.since, now).into(),
+                        n.text.clone().into(),
+                        // A red or nightly row is its own id: say it once.
+                        if n.id == n.text {
+                            "".into()
+                        } else {
+                            n.id.clone().into()
+                        },
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 3, 1, 2, 4],
+            flex: Some(3),
+            flexmin: 20,
+            flexkeep: true,
+            right: vec![2],
+            cap: vec![(1, 22), (4, 34)],
+        };
+        out.extend(t.fit(w, p.dim()));
+        more(&mut out, h.needs.len(), h.shown, "older", p);
+    }
+
+    out.push(Line::raw(""));
+    if h.running.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("RUNNING  ", p.head()),
+            Span::styled("nothing running from the queue", p.dim()),
+        ]));
+    } else {
+        out.push(Line::styled(
+            format!("RUNNING ({})", h.running.len()),
+            p.head(),
+        ));
+        let t = Table {
+            header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
+            rows: h
+                .running
+                .iter()
+                .take(h.shown)
+                .map(|r| {
+                    let ph = r.phases.as_ref();
+                    let eta = ph.and_then(|x| x.eta_epoch).map_or("-".into(), |e| {
+                        let s = clock(e, now);
+                        if e < now {
+                            cell(format!("{s} late"), p.warn())
+                        } else {
+                            s.into()
+                        }
+                    });
+                    vec![
+                        r.title.clone().into(),
+                        r.project.clone().into(),
+                        ph.map_or("-".into(), |x| format!("{}/{}", x.done, x.total))
+                            .into(),
+                        ph.and_then(|x| x.next.clone()).unwrap_or("-".into()).into(),
+                        eta,
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 2, 4, 1, 3],
+            flex: Some(0),
+            flexmin: 20,
+            flexkeep: true,
+            right: vec![2],
+            cap: vec![(1, 22), (3, 40)],
+        };
+        out.extend(t.fit(w, p.dim()));
+        more(
+            &mut out,
+            h.running.len(),
+            h.shown,
+            "more on the Queue tab",
+            p,
+        );
+    }
+
     out
 }
 
@@ -191,6 +210,7 @@ mod tests {
                     level: Level::Warn,
                 },
             ],
+            shown: hub_core::home::SHOWN,
             ..Default::default()
         }
     }
@@ -204,9 +224,17 @@ mod tests {
     }
 
     #[test]
-    fn needs_come_first_and_only_the_chips_that_are_not_green_are_drawn() {
+    fn the_summary_leads_and_only_the_chips_that_are_not_green_are_drawn() {
         let out = text(&home());
-        assert!(out.starts_with("NEEDS YOU (1)"), "{out}");
+        assert!(
+            out.starts_with("NUMBERS  queue 1 running, 2 up next"),
+            "{out}"
+        );
+        let (num, need) = (
+            out.find("HEALTH").unwrap(),
+            out.find("NEEDS YOU (1)").unwrap(),
+        );
+        assert!(num < need, "health sits above the lists: {out}");
         assert!(out.contains("ask") && out.contains("dodginballs") && out.contains("2m"));
         assert!(out.contains("RUNNING  nothing running from the queue"));
         assert!(out.contains("NUMBERS  queue 1 running, 2 up next"));
@@ -225,5 +253,15 @@ mod tests {
         let out = text(&h);
         assert!(out.contains("NEEDS YOU  nothing waits on you"));
         assert!(out.contains("HEALTH   all green (1)"));
+    }
+
+    #[test]
+    fn a_long_needs_list_shows_the_cap_and_counts_the_rest() {
+        let mut h = home();
+        let one = h.needs[0].clone();
+        h.needs = (0..h.shown + 3).map(|_| one.clone()).collect();
+        let out = text(&h);
+        assert_eq!(out.matches("Which lobby?").count(), h.shown, "{out}");
+        assert!(out.contains("+3 older"), "{out}");
     }
 }
