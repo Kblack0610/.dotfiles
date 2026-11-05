@@ -150,14 +150,26 @@ fn is_placeholder(t: &str) -> bool {
 // What a person CHANGES does not belong in an HTML comment either. See the stage/group
 // section below: that is a hashtag on the sheet, where every other per-project fact is.
 
-/// The maturity ladder, least to most real. A project's `stage=` must be one of these.
+/// The maturity ladder, least to most real: the ONE definition. Shell readers ask for it
+/// with `notes projects --stages` rather than keeping a copy, and what each rung requires is
+/// `~/.local/src/docs/stages.md`.
 ///
 /// This is a JUDGEMENT, not a derivation: a toy app and a load-bearing one both ship real
 /// git tags at similar version numbers, and only a human knows that breaking one is a
 /// shrug and breaking the other is an incident. What IS checkable is the floor: a project
 /// claiming the top rung while nothing has ever shipped. `project-map-doctor` checks that
 /// against git, and leaves the ranking alone.
-pub(crate) const STAGES: [&str; 4] = ["draft", "alpha", "beta", "prod"];
+pub(crate) const STAGES: [&str; 5] = ["draft", "dev", "alpha", "beta", "prod"];
+
+/// Where a stage sits on the ladder, `None` for anything that is not a stage.
+pub(crate) fn stage_rank(stage: &str) -> Option<usize> {
+    STAGES.iter().position(|s| *s == stage)
+}
+
+/// `notes projects --stages`: the ladder, least to most real, one line.
+pub fn stages() {
+    println!("{}", STAGES.join(" "));
+}
 
 /// A project's priority, the human's call on which projects agents should work first.
 /// Unset is normal. `fleet-dispatch` ranks a project's board rows by it before anything
@@ -309,8 +321,8 @@ pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
 
 /// `notes projects --group <name> [--set <value>]`: read or set a project's index group.
 ///
-/// The vocabulary is the configured profile names plus `dev`, so a bare `#dev` in the head
-/// is unambiguous against a stage tag. An unrecognised hashtag in the head is ignored
+/// The vocabulary is the configured profile names plus `tooling`, none of which is a stage
+/// name, so a group tag never reads as a stage. An unrecognised hashtag in the head is ignored
 /// rather than guessed at, which is what keeps a `#urgent` in the prose from inventing a
 /// section on the index.
 pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
@@ -363,11 +375,11 @@ pub(crate) fn prio_of(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Every name that may act as an index group: the configured orgs, plus the `dev` lane for
-/// tooling that belongs to no org.
+/// Every name that may act as an index group: the configured orgs, plus the `tooling` lane for
+/// tools that belong to no org. It was `dev` until `dev` became a stage.
 pub(crate) fn group_vocab() -> Vec<String> {
     let mut v = config::all_profile_names().unwrap_or_default();
-    v.push("dev".to_string());
+    v.push("tooling".to_string());
     v
 }
 
@@ -1797,14 +1809,14 @@ fn align_agent_board(dir: &Path) -> Result<Option<String>> {
 
 /// Why a project's stage keeps it from a release, or `None` when it may release.
 ///
-/// A draft or alpha project has no released versions to close, so it keeps one working
+/// A project below beta has no released versions to close, so it keeps one working
 /// list. Versions start at beta. `--force` does not override this: it is about the open
 /// work of one version, and this is about whether the project has versions at all.
 fn stage_blocks_release(dir: &Path, name: &str) -> Option<String> {
     let stage = stage_of(dir)?;
-    matches!(stage.as_str(), "draft" | "alpha").then(|| {
+    (stage_rank(&stage) < stage_rank("beta")).then(|| {
         format!(
-            "{name} is #{stage}: a draft or alpha project keeps one working list and has no \
+            "{name} is #{stage}: a project below beta keeps one working list and has no \
 releases. Declare it beta first: notes projects --stage {name} --set beta"
         )
     })
@@ -3409,9 +3421,9 @@ mod stage_tag_tests {
 
     #[test]
     fn a_prio_is_set_replaced_and_cleared_beside_the_stage() {
-        let s = "# demo\nVersion: v1.0.0 #alpha #dev\n\n## Tasks\n- [ ] a row #high\n";
+        let s = "# demo\nVersion: v1.0.0 #alpha #tooling\n\n## Tasks\n- [ ] a row #high\n";
         let one = replace_head_tag(s, &PRIOS, Some("prio/focus")).unwrap();
-        assert!(one.contains("Version: v1.0.0 #alpha #dev #prio/focus\n"), "{one}");
+        assert!(one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"), "{one}");
         assert_eq!(prio_of_str(&one), "focus");
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
@@ -3421,7 +3433,7 @@ mod stage_tag_tests {
         assert_eq!(prio_of_str(&cleared), "");
         // the stage and group still read, and the row's #high is not the project's prio
         assert_eq!(head_tag(&two, &STAGES).as_deref(), Some("alpha"));
-        assert_eq!(head_tag(&two, &["dev"]).as_deref(), Some("dev"));
+        assert_eq!(head_tag(&two, &["tooling"]).as_deref(), Some("tooling"));
         assert_eq!(prio_of_str(s), "");
     }
 
@@ -3437,9 +3449,26 @@ mod stage_tag_tests {
 
     #[test]
     fn a_group_tag_and_a_stage_tag_coexist_without_reading_each_other() {
-        let s = "# demo\nVersion: v1.0.0 #alpha #dev\n";
+        let s = "# demo\nVersion: v1.0.0 #alpha #tooling\n";
         assert_eq!(head_tag(s, &STAGES).as_deref(), Some("alpha"));
-        assert_eq!(head_tag(s, &["dev", "bnb"]).as_deref(), Some("dev"));
+        assert_eq!(head_tag(s, &["tooling", "bnb"]).as_deref(), Some("tooling"));
+        // the dev stage alone is a stage, and never a group
+        let d = "# demo\nVersion: v0.1.0 #dev\n";
+        assert_eq!(head_tag(d, &STAGES).as_deref(), Some("dev"));
+        assert_eq!(head_tag(d, &["tooling", "bnb"]), None);
+    }
+
+    /// The group lane was `dev` until `dev` became a stage; nothing may sit in both lists.
+    #[test]
+    fn no_group_name_is_a_stage_name() {
+        assert!(!group_vocab().iter().any(|g| STAGES.contains(&g.as_str())));
+    }
+
+    #[test]
+    fn the_ladder_ranks_least_to_most_real() {
+        assert_eq!(STAGES, ["draft", "dev", "alpha", "beta", "prod"]);
+        assert!(stage_rank("dev") < stage_rank("alpha"));
+        assert_eq!(stage_rank("released"), None);
     }
 
     /// An unrecognised hashtag in the prose must not invent a stage or a section.
@@ -3447,7 +3476,7 @@ mod stage_tag_tests {
     fn an_unknown_head_tag_is_ignored() {
         let s = "# demo\nVersion: v1.0.0\n\nblocked on #urgent review\n";
         assert_eq!(head_tag(s, &STAGES), None);
-        assert_eq!(head_tag(s, &["dev", "bnb"]), None);
+        assert_eq!(head_tag(s, &["tooling", "bnb"]), None);
     }
 
     fn stage_of_str(content: &str) -> Option<String> {
@@ -4984,6 +5013,7 @@ mod shape_tests {
         let sheet = |stage: &str| format!("# d\nVersion: v0.1.0 #{stage}\n\n## Tasks\n- [ ] x\n");
         for (stage, blocked) in [
             ("draft", true),
+            ("dev", true),
             ("alpha", true),
             ("beta", false),
             ("prod", false),

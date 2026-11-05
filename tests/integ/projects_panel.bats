@@ -38,6 +38,12 @@ setup() {
   assert_output $'site\nbig-alpha\nsmall-alpha\nwork'
 }
 
+@test "--list puts a dev project after alpha and before unstaged, in the ladder's order" {
+  printf '%s\n' $'personal\tbuild\tdev\tv0.1.0\t50\t0\t0\t0\t0\t0\t/v/build/README.md' >>"$NOTES_FIXTURE/stats"
+  run bash -c "'$PROJECTS_SH' --list | cut -f2"
+  assert_output $'site\nbig-alpha\nsmall-alpha\nbuild\nwork'
+}
+
 @test "--list --drafts adds the draft last" {
   run bash -c "'$PROJECTS_SH' --list --drafts | cut -f2"
   assert_output $'site\nbig-alpha\nsmall-alpha\nwork\nidea'
