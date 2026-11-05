@@ -163,7 +163,7 @@ mod tests {
         for (t, q) in [
             (Tab::Fleet, None),
             (Tab::Board, Some("bnb/demo")),
-            (Tab::Overview, None),
+            (Tab::Home, None),
         ] {
             request(&d.0, t, q).unwrap();
             match rx.recv_timeout(Duration::from_secs(5)) {

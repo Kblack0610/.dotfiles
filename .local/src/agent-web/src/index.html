@@ -13,10 +13,10 @@
   <h1>Agents</h1>
   <span class="live-off" id="live-off" hidden>live updates off, reload to refresh</span>
   <div class="tabs">
-    <button id="tab-queue" class="on">Queue<span id="queue-badge"></span></button>
+    <button id="tab-home" class="on">Home<span id="ask-badge"></span></button>
+    <button id="tab-queue">Queue<span id="queue-badge"></span></button>
     <button id="tab-board">Board</button>
     <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
-    <button id="tab-asks">Waiting<span id="ask-badge"></span></button>
     <button id="tab-shepherd">Shepherd</button>
     <button id="tab-actions">Actions</button>
     <button id="tab-watch">Watch</button>
@@ -50,9 +50,9 @@
       <div class="err" id="err"></div>
     </div>
   </section>
-  <section id="queue" class="board"></section>
+  <section id="home" class="board"></section>
+  <section id="queue" class="board" hidden></section>
   <section id="board" class="board" hidden></section>
-  <section id="asks" hidden></section>
   <section id="shepherd" class="board" hidden></section>
   <section id="actions" class="board" hidden></section>
   <section id="watch" class="board" hidden></section>
@@ -66,6 +66,7 @@
 <script src="/static/charts.js?v={{v}}"></script>
 <script src="/static/app.js?v={{v}}"></script>
 <script src="/static/waiting.js?v={{v}}"></script>
+<script src="/static/home.js?v={{v}}"></script>
 <script src="/static/watch.js?v={{v}}"></script>
 <script src="/static/log.js?v={{v}}"></script>
 <script src="/static/infra.js?v={{v}}"></script>

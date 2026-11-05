@@ -113,6 +113,11 @@ agent_bench_eta_ratio{project="game"} 2
 # HELP agent_bench_ci_reds_before_merge CI reds on PRs merged in the last 24h, before they merged.
 # TYPE agent_bench_ci_reds_before_merge gauge
 agent_bench_ci_reds_before_merge{project="game"} 2
+# HELP agent_bench_loop_dark_episodes Finding episodes begun in the last 7d that reached the human with nothing but pages.
+# TYPE agent_bench_loop_dark_episodes gauge
+agent_bench_loop_dark_episodes 0
+# HELP agent_bench_loop_first_response_minutes Median minutes from a finding episode to its first response that is not a page, last 7d.
+# TYPE agent_bench_loop_first_response_minutes gauge
 PROM
 )"
 }
@@ -676,6 +681,71 @@ kpi_fixture() {
   run "$SUBJECT" kpi
   assert_line '| runners_bad (now) | 1 | - | max 0 | past |'
   assert_line '| asks_stale (now) | 0 | - | - | - |'
+}
+
+# frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
+frow() {
+  mkdir -p "$FLEET_BENCH_DIR"
+  jq -cn --argjson t "$T0" --arg r "$1" --arg s "$2" --argjson e "$3" --argjson n "$4" --arg c "$5" \
+    '{epoch: ($t + $n), rule: $r, scope: $s, episode: ($t + $e), decision_class: $c,
+      fact: "\($r) \($s) @\($t + $e)"}' >> "$FLEET_BENCH_DIR/findings.jsonl"
+}
+
+# Two episodes past the hour, both on the human's list: pool:other only paged, pool:mac paged and
+# then a row filed 55 minutes in, recorded out of order. A third, shepherd-only, never reached the human.
+loop_fixture() {
+  frow starved pool:other -7200 -7200 shepherd; frow starved pool:other -7200 -3600 human; frow starved pool:other -7200 -600 human
+  frow starved pool:mac -7200 -7200 shepherd; frow starved pool:mac -7200 -4000 human
+  frow host-overload host:a -1800 -1800 shepherd; frow host-overload host:a -1800 -1200 shepherd
+  BENCH_NOW=$((T0 - 3500)) "$SUBJECT" respond "starved pool:other @$((T0 - 7200))" shepherd paged
+  BENCH_NOW=$((T0 - 3900)) "$SUBJECT" respond "starved pool:mac @$((T0 - 7200))" binks filed-row ar-9
+  BENCH_NOW=$((T0 - 4000)) "$SUBJECT" respond "starved pool:mac @$((T0 - 7200))" shepherd paged
+}
+
+@test "respond records one row per act on a finding, and refuses a fact or an action it does not know" {
+  kpi_setup
+  run "$SUBJECT" respond 'starved pool:other @1700000000' binks asked ask-3
+  assert_success
+  run jq -c '[.epoch, .fact, .actor, .action, .ref]' "$FLEET_BENCH_DIR/responses.jsonl"
+  assert_output "[$T0,\"starved pool:other @1700000000\",\"binks\",\"asked\",\"ask-3\"]"
+  run "$SUBJECT" respond 'starved pool:other @1700000000' binks held
+  assert_failure 2
+  run "$SUBJECT" respond 'starved pool:other' binks asked
+  assert_failure 2
+  run wc -l < "$FLEET_BENCH_DIR/responses.jsonl"
+  assert_output 1
+}
+
+@test "loop: an episode that reached the human with only pages is dark; one with a filed row is not" {
+  kpi_setup; loop_fixture
+  run "$SUBJECT" loop --json
+  assert_success
+  run jq -sc 'sort_by(.scope) | map([.scope, .dark, .open, .first_response_min, .human_at != null, .responses])' <<<"$output"
+  assert_output '[["host:a",false,true,null,false,[]],["pool:mac",false,false,55,true,["paged","filed-row"]],["pool:other",true,true,null,true,["paged"]]]'
+  run "$SUBJECT" loop
+  assert_line --index 0 'loop, 7d: 3 episodes, 1 dark (1 still firing), first response after 55m median'
+  assert_line --partial 'DARK   firing   starved pool:other'
+  assert_line --partial '55m    cleared  starved pool:mac'
+}
+
+@test "loop: no findings is a line, never an error; a bad flag is a usage error" {
+  kpi_setup
+  run "$SUBJECT" loop
+  assert_success
+  assert_output 'loop: no finding episodes in 7d'
+  run "$SUBJECT" loop --text
+  assert_failure 2
+}
+
+@test "kpi: loop_dark counts dark episodes still firing, and retro files it past loop_dark_max" {
+  kpi_setup; loop_fixture
+  echo loop_dark_max=0 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| loop_dark (now) | 1 | - | max 0 | past |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'kpi: loop_dark past threshold' "$BOARD"
+  assert_output 1
 }
 
 @test "kpi: no thresholds file leaves every status -" {

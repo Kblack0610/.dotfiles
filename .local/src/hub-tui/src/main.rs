@@ -1,5 +1,5 @@
 //! `hub`: the hub boards as terminal tabs, in one tmux window (hub:board, hub.conf). tmux
-//! Prefix i and O land on Overview and Today through `hub tab`. Usage, keys and
+//! Prefix i and O land on Home and Today through `hub tab`. Usage, keys and
 //! troubleshooting: README.md.
 
 mod app;
@@ -11,6 +11,7 @@ mod fleet;
 mod fleettab;
 mod fmt;
 mod forecast;
+mod hometab;
 mod jobs;
 mod queuetab;
 mod tabreq;
@@ -27,7 +28,8 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
        hub tab board [SEARCH]
        hub actions --since WHEN [--json]
-  TAB     overview|jobs|ci|machines|sessions|forecast|today|history|fleet|queue|board
+  TAB     home|queue|jobs|ci|machines|forecast|today|history|fleet|board, or a retired
+          name (overview, waiting, asks) that lands on its new tab
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
@@ -80,7 +82,7 @@ fn main() {
     // A request left while no hub ran (the binding that started this window) wins over --tab.
     let start = tabreq::take(&tabreq::dir())
         .or(tab.map(|t| (t, None)))
-        .unwrap_or((Tab::Overview, None));
+        .unwrap_or((Tab::Home, None));
     if let Err(e) = run(start) {
         die(&format!("hub: {e}"));
     }
@@ -138,7 +140,7 @@ fn print_once(tab: Option<Tab>) -> i32 {
         })
         .unwrap_or(80);
     let (tx, _rx) = mpsc::channel();
-    let mut a = App::new(tab.unwrap_or(Tab::Overview), tx);
+    let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
     if let Some(t @ (Tab::Fleet | Tab::Today | Tab::History)) = tab {
@@ -155,8 +157,8 @@ fn print_once(tab: Option<Tab>) -> i32 {
         }
         return 0;
     }
-    // The Overview counts the queue too, so it is read for the default pages as well.
-    if matches!(tab, None | Some(Tab::Overview | Tab::Queue)) {
+    // Home counts the queue too, so it is read for the default pages as well.
+    if matches!(tab, None | Some(Tab::Home | Tab::Queue)) {
         a.queue = Some(hub_core::queue::Queue::read(
             &hub_core::session_actions::System,
         ));
@@ -200,7 +202,7 @@ fn print_once(tab: Option<Tab>) -> i32 {
     a.infra = Some(infra);
     let tabs = match tab {
         Some(t) => vec![t],
-        None => vec![Tab::Overview, Tab::Machines, Tab::Ci],
+        None => vec![Tab::Home, Tab::Machines, Tab::Ci],
     };
     for (n, t) in tabs.into_iter().enumerate() {
         if n > 0 {

@@ -260,13 +260,13 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   conf_tmux kill-server 2>/dev/null || true
 }
 
-@test "infra is still on prefix+i, per tmux itself" {
+@test "home is still on prefix+i, per tmux itself" {
   # The feature took a free key rather than rekeying anything. Asserted against the live
   # binding table, not the file, because that is what actually decides what your finger does.
   conf_server
   local e
   e="$(conf_tmux list-keys -T prefix | awk '$4 == "i" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  grep -qF 'hub tab overview' <<< "$e" || fail "prefix+i is not infra: [$e]"
+  grep -qF 'hub tab home' <<< "$e" || fail "prefix+i is not home: [$e]"
   conf_tmux kill-server 2>/dev/null || true
 }
 
