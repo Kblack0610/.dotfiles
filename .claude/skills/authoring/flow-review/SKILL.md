@@ -62,7 +62,7 @@ Not for every screen in the app (`ui-audit`) or for fixing what you find (`delta
 ~/.claude/skills/flow-review/scripts/extract-artifact.py <artifact.html> <lab dir>/docs/reviews/<date>-<slug>
 ```
 
-Get the HTML with the Artifact tool's `read` action; it saves the full page to a local file. The script expects the flow-review markup (h1, `.lede`, `.meta`, `.tally`, `h2` per surface, `article.step` with `li.sev-*` notes and `figure` images, `#caveats` footer). Then do steps 7 and 8. Check that every `shots/` link in the output resolves and the count matches the figures in the page.
+Get the HTML with the Artifact tool's `read` action (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it); it saves the full page to a local file. The script expects the flow-review markup (h1, `.lede`, `.meta`, `.tally`, `h2` per surface, `article.step` with `li.sev-*` notes and `figure` images, `#caveats` footer). Then do steps 7 and 8. Check that every `shots/` link in the output resolves and the count matches the figures in the page.
 
 ## Viewing in the terminal
 
