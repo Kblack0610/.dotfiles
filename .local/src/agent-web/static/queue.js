@@ -25,19 +25,44 @@ function renderQueueBadge() {
   $("queue-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-// What the item's session needs from the human now: the dialog its pane shows, and the asks
-// it filed. Answered in place, through the same cards the Waiting tab uses.
-function qNeeds(a) {
-  if (!a) return "";
-  const cards = (a.question ? sessionCard(a) : "") +
-    st.asks.filter((k) => k.session && k.session === a.session).map(askCard).join("");
-  return cards ? `<div class="qneed">${cards}</div>` : "";
+// The panes agent-panel lists in this item's tmux session. `session` is <server>:<session>, or a
+// bare session on agent-queue's server (hub-core `with_items` reads it the same way). A
+// hand-started item can share a session with other windows and no field names its own, so
+// this can be several.
+function qPanes(i) {
+  const s = i.session;
+  if (!s) return [];
+  return st.agents.filter((a) => s.includes(":")
+    ? a.target.startsWith(s.replace(":", "/") + ":")
+    : a.target.slice(a.target.indexOf("/") + 1).startsWith(s + ":"));
 }
 
-// The tmux pane agent-panel lists for this item's session, if it is still live.
+// The one pane that is this item's, when its session has exactly one.
 function qAgent(i) {
-  if (!i.session) return null;
-  return st.agents.find((a) => a.target.slice(a.target.indexOf("/") + 1).startsWith(i.session + ":")) || null;
+  const p = qPanes(i);
+  return p.length === 1 ? p[0] : null;
+}
+
+// The pending asks filed from this item's session: by the Claude session while a pane owns the
+// ask, else by the tmux session it recorded, which outlives the pane.
+function qAsks(i) {
+  const panes = qPanes(i), name = (i.session || "").split(":").pop();
+  return st.asks.filter((k) => {
+    const owner = st.agents.find((x) => k.session && x.session === k.session);
+    return owner ? panes.includes(owner) : !!name && k.tmux === name;
+  });
+}
+
+// What the item's session needs from the human now: the dialogs its panes show and the asks it
+// filed, answered in place through the same cards the Waiting tab uses. A waiting item with
+// neither says where the human has to look instead.
+function qNeeds(i) {
+  const panes = qPanes(i);
+  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p)).join("") +
+    qAsks(i).map((k) => askCard(k)).join("");
+  if (cards) return `<div class="qneed">${cards}</div>`;
+  if (i.state !== "waiting" || !i.session) return "";
+  return `<div class="qhold">${panes.length ? "Waiting on a prompt in its window" : "No live window"}: tmux session ${esc(i.session)}</div>`;
 }
 
 function qPr(pr) {
@@ -66,10 +91,10 @@ function qItem(i) {
   const acts = active
     ? `<div class="opts">${a && a.question && a.question.kind === "plan" ? "" : approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
       `<select data-bump="${esc(i.slug)}" title="priority">${prio}</select>` +
-      `<button class="btn sm" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
+      `<button class="btn sm quiet" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
   return `<div class="card qitem"><div class="meta">${esc(i.slug)} ${tags}</div><div class="meta">${meta}</div>` +
-    `<div class="q">${esc(i.task || "")}</div>${hold}${note}${active ? qNeeds(a) : ""}${acts}</div>`;
+    `<div class="q">${esc(i.task || "")}</div>${hold}${note}${active ? qNeeds(i) : ""}${acts}</div>`;
 }
 
 function qCompose() {
