@@ -25,11 +25,11 @@ function renderQueueBadge() {
   $("queue-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-// The panes in this item's tmux session; hub-core `with_items` makes that join. A hand-started
-// item can share a session with other windows and none names its own, so this can be several.
+// This item's panes; hub-core `with_items` makes that join. An item that recorded its window has
+// that one pane. One that recorded only a shared tmux session has every pane in it.
 const qPanes = (i) => st.agents.filter((a) => a.items.includes(i.slug));
 
-// The one pane that is this item's, when its session has exactly one.
+// The one pane that is this item's, when the join found exactly one.
 function qAgent(i) {
   const p = qPanes(i);
   return p.length === 1 ? p[0] : null;

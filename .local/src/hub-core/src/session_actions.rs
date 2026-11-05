@@ -96,8 +96,8 @@ pub struct Session {
     pub parked: bool,
     pub attached: bool,
     pub account: String,
-    /// The slugs of the agent-queue items that record this tmux session, in queue order. A
-    /// hand-started item can share a session with others, and none names its window.
+    /// The slugs of the agent-queue items in this pane, in queue order: those that record its
+    /// window, and those that record only its tmux session, which can share it with others.
     pub items: Vec<String>,
     /// The digit that accepts the plan, while its pane shows the plan dialog.
     pub approve_key: Option<char>,
@@ -365,8 +365,10 @@ pub fn with_items(sessions: &mut [Session], items: &[queue::Item], server: &str)
             continue;
         }
         let (srv, sess) = sess.split_once(':').unwrap_or((server, sess));
+        let window = i.window.as_deref().filter(|w| !w.is_empty());
         for s in sessions.iter_mut() {
-            if s.server == srv && s.tmux_session == sess && !s.parked {
+            let here = s.server == srv && s.tmux_session == sess && !s.parked;
+            if here && window.is_none_or(|w| w == s.window_id) {
                 s.items.push(i.slug.clone());
             }
         }
@@ -629,6 +631,23 @@ mod tests {
         );
         assert_eq!(s[0].items, ["a", "b"]);
         assert_eq!(s[0].items.last().map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn an_item_that_recorded_its_window_joins_only_that_pane() {
+        let mut other = live();
+        other.window_id = "@8".into();
+        let mut s = vec![live(), other];
+        with_items(
+            &mut s,
+            &queue::parse(
+                "{\"slug\":\"a\",\"session\":\"lab:dotfiles-agent-3\",\"window\":\"@8\",\"state\":\"waiting\"}\n\
+                 {\"slug\":\"b\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"waiting\"}\n",
+            ),
+            "lab",
+        );
+        assert_eq!(s[0].items, ["b"], "no window recorded: every pane of the session");
+        assert_eq!(s[1].items, ["a", "b"]);
     }
 
     #[test]

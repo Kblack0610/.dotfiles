@@ -491,7 +491,7 @@ struct AgentOut {
     ask: Option<String>,
     /// What `POST /api/session/<target>/<action>` accepts for it.
     actions: Vec<&'static str>,
-    /// The agent-queue items that record its tmux session.
+    /// The agent-queue items in this pane (hub-core `with_items`).
     items: Vec<String>,
     /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
     /// question asked in the conversation is not read here: the session files it as an ask
