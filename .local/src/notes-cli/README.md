@@ -89,18 +89,18 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
 
 Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
 
-Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's current wave, read-only (`notes board`).
+Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's rows for its open version, read-only (`notes board`).
 
 ### A project directory
 
 ```
 current/<name>/
-  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Wave:` blocks
+  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Inbox` and `## Tasks`
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
-  agent/README.md          the agent board (`ptask --agent`): the same `## Wave:` blocks, no `Version:` line (it follows the sheet)
+  agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
-  agent/versions/vX.Y.Z.md notes for a version, and the done rows `ptask --agent archive` or a roll moves off the board
+  agent/versions/vX.Y.Z.md notes for a version, and the done rows `ptask --agent archive` or a release moves off the board
   versions/vX.Y.Z.md       frozen sheet of a closed version
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
@@ -116,11 +116,11 @@ A project's `type` in `project-map.json` can add to the core through its `[proje
 | Fact | Its one home | Written by |
 |---|---|---|
 | Name, lab profile, type, repo, path in the repo, branch, tracker, release epic, tag glob | `project-map.json` (private dotfiles) `trackers.<name>` | a PR there |
-| Stage, version in progress, current and planned waves | the sheet `README.md` | human, `notes ptask` / `projects` |
+| Stage, version in progress, open rows and rows aimed at a later release | the sheet `README.md` | human, `notes ptask` / `projects` |
 | Where we are | `summary.md` STATUS | `lab-status` |
 | Shipped version | the git tag | the release |
 | What shipped, for users | the repo's `CHANGELOG.md` | the release |
-| What each closed wave did | `versions/vX.Y.Z.md` | `projects --roll` |
+| What each closed version did | `versions/vX.Y.Z.md` | `projects --release` |
 | How it works: stack, build, ship, runbooks, architecture decisions | the repo's `docs/` | docs-write |
 | Pitch, product briefs, research, reviews | the project's `docs/` here | human, skills |
 | Agent plans, lessons, sessions, asks, queue | `~/.agent/<kind>/<name>` | agents |
@@ -128,7 +128,7 @@ A project's `type` in `project-map.json` can add to the core through its `[proje
 
 The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->`, `<!-- cockpit: -->` and `<!-- tagglob: -->` markers are retired (wiring is the registry entry); to ask an agent for something, add a row to the board.
 
-After creating, staging, rolling or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
+After creating, staging, releasing or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
 
 Every command takes `--profile <p>`. Without it, the active profile is used (`notes config`).
 
@@ -142,13 +142,13 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | show it under another group heading | `projects --group <name> --set <profile>\|dev` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
-| close a version | `projects --roll <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list. The agent board rolls with the sheet: done rows to `agent/versions/<old>.md`, open rows carried to the new wave. `agentctl-wave-roll` runs it when a release tag reaches the sheet, and `project-map-doctor` fails a shipping app whose sheet is behind its newest tag |
+| close a version | `projects --release <name>` (`--minor`, `--major`, `--next vX.Y.Z`, `--carry`); refused for a `#draft` or `#alpha` project, which keeps one working list. The agent board follows the sheet: done rows go to `agent/versions/<old>.md`, open rows stay. `agentctl-wave-roll` runs it when a release tag reaches the sheet, and `project-map-doctor` fails a shipping app whose sheet is behind its newest tag |
 | fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment, and aligns a stale agent board to the sheet's version |
-| see the roadmap | `projects --waves <name>`, `projects --version-of <name>` |
-| every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, current wave, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
-| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` for a planned wave; `--detail "<line>"` (repeatable) adds an indented detail line under it |
+| see the roadmap | `projects --roadmap <name>`, `projects --version-of <name>` |
+| every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, open version, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
+| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` to aim it at a later release; `--detail "<line>"` (repeatable) adds an indented detail line under it |
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
-| move a task between waves | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
+| aim a task at another release | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>` |
 | change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either |
 | drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
@@ -161,7 +161,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | regenerate the boards | `notes board` |
 | feed a board UI | `notes board --json` (read-only, below); act on a row with `ptask <name> [--agent\|--playtest] --exact <verb> -- "<raw>"` |
 
-The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It lists every profile's projects, main ones first (drafts behind `d`), each with its open work by priority and wave. `1`-`9` or Enter opens a project's tasks, where `a` adds, `m` moves a task to another project, `x` checks it off (asks for a proof), `+`/`-` change its wave and `o` opens the sheet at that row. On the project list, `n` is new, `s` stage, `x` archive and `o` open. `/` searches; Esc steps out of the search, then the filter, then the view. Moving a project between profiles and changing its group stay CLI-only (the table above).
+The quick way in is the tmux popup: `Prefix+P`, or `<leader>np` from nvim. It lists every profile's projects, main ones first (drafts behind `d`), each with its open work by priority and version. `1`-`9` or Enter opens a project's tasks, where `a` adds, `m` moves a task to another project, `x` checks it off (asks for a proof), `+`/`-` move it a release sooner or later and `o` opens the sheet at that row. On the project list, `n` is new, `s` stage, `x` archive and `o` open. `/` searches; Esc steps out of the search, then the filter, then the view. Moving a project between profiles and changing its group stay CLI-only (the table above).
 
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
@@ -191,7 +191,7 @@ No assignee field: the lane is the assignee. No comment thread: detail lines plu
 
 Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
 
-Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or roll. A board row that runs as a session goes row -> `fleet-dispatch promote` -> queue item (its slug and `from` are the row's id, its priority the row's, high on a bare row) -> session -> PR carrying `Task: <id>` -> `agent-land` closes the queue item and, by id, the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
+Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or release. A board row that runs as a session goes row -> `fleet-dispatch promote` -> queue item (its slug and `from` are the row's id, its priority the row's, high on a bare row) -> session -> PR carrying `Task: <id>` -> `agent-land` closes the queue item and, by id, the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --release` into `versions/`. The proof lives on the row and travels with it.
 
 `notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker (an `id:` alone is not proof). On the agent board it also counts the open rows not in `type(area): title` form, those with a title over 80 chars and those with no id, one line each. Human sheet rows are free text and closed by hand, so those checks skip them.
 
@@ -200,15 +200,15 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 `notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
 - A project is `{profile, project, dir, version, open, agent_open, playtest_open}`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's current wave (`lane: "human"`), the agent sheet's current wave (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, wave, game, state, priority, tier, worker, ask, target, id, type, area, size, text, tags, marker, since, sheet, line, raw}`.
+- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, ask, target, id, type, area, size, text, tags, marker, since, sheet, line, raw}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
-- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `target` the row's own `#vX.Y.Z` tag. `wave` is the section the row sits in; `target` is where it is aimed, which can differ.
+- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `version` the open version every row on the feed belongs to.
 - `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
-- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, wave or created tags.
+- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, version or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
-- `wave` is null for a playtest row, and `game` is null for a sheet row.
+- `version` is null for a playtest row, and `game` is null for a sheet row.
 
 To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or dropped the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control, which is why a UI writes by `raw` and not by `id`: the id names the row, not the version of it the UI showed. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.
 

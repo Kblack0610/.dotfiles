@@ -122,7 +122,7 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   # The daily note is ONE human's list. This gate used to accept only a write to it, so
   # every agent session satisfied it the only way it could and dumped its own item there:
   # 2026-08-05 opened with six Focus items, five of them agent sessions'. Project work
-  # tracked on the project's `## Wave` must count, or the note keeps getting crowded out.
+  # tracked on the project's `## Tasks` must count, or the note keeps getting crowded out.
   dirty
   gate s1 >/dev/null                       # stamp last_run
   sleep 1

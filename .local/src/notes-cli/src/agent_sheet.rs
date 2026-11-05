@@ -2,7 +2,7 @@
 //!
 //! A WORKING BOARD, NOT A SECOND QUEUE. The project's own `README.md` is the queue - every
 //! open item, whoever does it, and where done-ness is recorded. This is what the agents
-//! write underneath it: the subtasks and in-flight state below a queue row, so a wave
+//! write underneath it: the subtasks and in-flight state below a queue row, so work
 //! interrupted halfway can be picked up by a session that was not there for the first half.
 //!
 //! Nothing is handed over and nothing is filtered. A row is not routed here; it is either
@@ -37,7 +37,7 @@ pub fn sheet_path(dir: &Path) -> PathBuf {
 ///
 /// The two are not symmetric. `Human` is the QUEUE - every open item, whoever does it, and
 /// where done-ness is recorded. `Agent` is the WORKING board - subtasks and state under a
-/// queue row, so an interrupted wave can be resumed. Neither is a filtered view of the other.
+/// queue row, so interrupted work can be resumed. Neither is a filtered view of the other.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Lane {
     Human,
@@ -48,7 +48,7 @@ impl Lane {
     /// The directory whose task sheet this lane reads and writes.
     ///
     /// One parser, two paths: `project_tasks::task_sheet` resolves any dir carrying a
-    /// `## Wave`, and the agent scaffold carries one deliberately for this reason.
+    /// `## Tasks`, and the agent scaffold carries one deliberately for this reason.
     pub(crate) fn dir(self, project: &Path) -> PathBuf {
         match self {
             Lane::Human => project.to_path_buf(),
@@ -57,23 +57,22 @@ impl Lane {
     }
 }
 
-/// The body a fresh agent sheet starts with: title, a link home, and an empty current wave
-/// named for the sheet's open version. No `Version:` line: the board follows its sheet, and
-/// `notes projects --roll` moves both together.
+/// The body a fresh agent sheet starts with: title, a link home, and the empty sections. No
+/// `Version:` line: the board follows its sheet, whose `Version:` an untagged row belongs to.
 ///
 /// Deliberately the same skeleton `projects::sheet_body` writes for the human, because every
-/// reader downstream (`waves::sections`, `open_wave_for_dir`, the board, `ptask`) is the
+/// reader downstream (`sheet::open_rows`, `current_rows_for_dir`, the board, `ptask`) is the
 /// human sheet's reader. A different skeleton here would mean a second parser, and a second
 /// parser is a second set of bugs.
-fn body(project: &str, ver: &str, home: &str) -> String {
+fn body(project: &str, home: &str) -> String {
     let link = if home.is_empty() {
         String::new()
     } else {
         format!("Human sheet: [[{home}|{project}]]\n")
     };
     format!(
-        "# {project} - agent board\n{link}\n## {}\n- [ ] \n",
-        crate::waves::heading_current(ver)
+        "# {project} - agent board\n{link}\n{}",
+        crate::sheet::skeleton()
     )
 }
 
@@ -81,42 +80,23 @@ fn body(project: &str, ver: &str, home: &str) -> String {
 ///
 /// Never touches an existing sheet: this runs from `notes board` and `notes today`, so it
 /// fires several times a day against every project. Anything it rewrote, it would rewrite
-/// under the agents mid-wave.
-pub fn ensure(dir: &Path, project: &str, ver: &str, home: &str) -> Result<bool> {
+/// under the agents mid-task.
+pub fn ensure(dir: &Path, project: &str, home: &str) -> Result<bool> {
     let path = sheet_path(dir);
-    let fresh = body(project, ver, home);
-    if let Ok(existing) = fs::read_to_string(&path) {
-        // An UNTOUCHED scaffold is re-seeded when the human's version moves on, so a
-        // brand-new agent board never shows a version the project left behind. The moment
-        // it holds real work that stops: promoting a wave with tasks in it is a roll, and a
-        // roll is not something a `notes today` may do behind the agents' backs.
-        if is_untouched(&existing) && existing != fresh {
-            md::write_atomic(&path, &fresh)?;
-        }
+    if path.exists() {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    md::write_atomic(&path, &fresh)?;
+    md::write_atomic(&path, &body(project, home))?;
     Ok(true)
-}
-
-/// Does this sheet still hold nothing but its scaffold? True when no line is a task with
-/// any text in it - the empty `- [ ] ` placeholder every fresh wave carries does not count.
-fn is_untouched(content: &str) -> bool {
-    !content
-        .lines()
-        .any(|l| md::is_task(l) && !md::task_text(l).trim().is_empty())
 }
 
 /// The `Agents:` line a human sheet carries, pointing at that project's agent board and at
 /// the cross-project one.
 ///
-/// DERIVED from the sheet's own `Version:` line rather than stored, so it cannot go stale:
-/// a roll rewrites the head, and a link naming last version's note would be wrong from the
-/// moment the roll finished. This is also why it is emitted by code and not hand-added -
-/// `roll` rebuilds the head from `sheet_body` and would drop anything typed there.
+/// Emitted by code and not hand-added: `notes board` writes it where it is missing.
 pub fn link_line(agent_home: &str) -> String {
     if agent_home.is_empty() {
         return String::new();
@@ -153,11 +133,10 @@ pub fn ensure_pair(
     log: &Logger,
     dir: &Path,
     project: &str,
-    ver: &str,
     human_home: &str,
     agent_home: &str,
 ) -> Result<()> {
-    if ensure(dir, project, ver, human_home)? {
+    if ensure(dir, project, human_home)? {
         log.info("agent", &format!("created {}", sheet_path(dir).display()));
     }
     let Some(sheet) = crate::project_tasks::task_sheet(dir) else {
@@ -185,18 +164,16 @@ fn vault_rel(vault: &Path, file: &Path) -> String {
     t
 }
 
-/// One project's agent sheet, created if absent, with the same version and home link
-/// `ensure_all` would give it.
+/// One project's agent sheet, created if absent, with the home link `ensure_all` would give
+/// it.
 ///
 /// The on-demand path for `ptask --agent`, and it goes through `ensure` rather than
-/// `project_tasks::ensure_task_sheet`: that one scaffolds a bare sheet with no `Version:`
-/// and no link home, which is a sheet the board can read but nothing can re-seed.
+/// `project_tasks::ensure_task_sheet`: that one scaffolds a bare sheet with no link home.
 pub fn ensure_for(p: &crate::config::Profile, dir: &Path, project: &str) -> Result<PathBuf> {
-    let ver = projects::fmt_version(projects::open_version(dir).unwrap_or((0, 0, 1)));
     let home = crate::project_tasks::task_sheet(dir)
         .map(|s| vault_rel(&p.vault, &s))
         .unwrap_or_default();
-    ensure(dir, project, &ver, &home)?;
+    ensure(dir, project, &home)?;
     Ok(sheet_path(dir))
 }
 
@@ -215,19 +192,18 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             continue;
         };
         for (proj, summary) in crate::daily::discover_project_dirs(&p) {
-            let Some(dir) = summary.parent() else { continue };
-            // No task sheet means no version to track and nothing to link from. A prose
-            // brief is not a project that has started; scaffolding into it would put an
-            // agent board on something with no wave to put work in.
-            if crate::project_tasks::task_sheet(dir).is_none() {
+            let Some(dir) = summary.parent() else {
                 continue;
-            }
-            let ver = projects::fmt_version(projects::open_version(dir).unwrap_or((0, 0, 1)));
-            let human_home = crate::project_tasks::task_sheet(dir)
-                .map(|s| vault_rel(&p.vault, &s))
-                .unwrap_or_default();
+            };
+            // No task sheet means nothing to link from. A prose
+            // brief is not a project that has started; scaffolding into it would put an
+            // agent board on something with no task section to put work in.
+            let Some(human) = crate::project_tasks::task_sheet(dir) else {
+                continue;
+            };
+            let human_home = vault_rel(&p.vault, &human);
             let agent_home = vault_rel(&p.vault, &sheet_path(dir));
-            if ensure_pair(log, dir, &proj, &ver, &human_home, &agent_home).is_ok() {
+            if ensure_pair(log, dir, &proj, &human_home, &agent_home).is_ok() {
                 n += 1;
             }
         }
@@ -251,51 +227,64 @@ mod tests {
 
     #[test]
     fn a_fresh_sheet_is_the_same_skeleton_the_human_gets() {
-        let b = body("notes-cockpit", "v0.0.2", "lab/projects/current/notes-cockpit/README");
-        assert!(b.starts_with("# notes-cockpit - agent board\nHuman sheet: "), "{b}");
-        assert!(!b.contains("Version:"), "the board follows its sheet's version:\n{b}");
-        assert!(b.contains("## Wave: v0.0.2 (current)"), "{b}");
-        assert!(b.contains("- [ ] "), "{b}");
-        // The human's reader must find the wave, or nothing downstream sees this file.
-        assert_eq!(crate::waves::sections(&b).len(), 1, "{b}");
+        let b = body("notes-cockpit", "lab/projects/current/notes-cockpit/README");
+        assert!(
+            b.starts_with("# notes-cockpit - agent board\nHuman sheet: "),
+            "{b}"
+        );
+        assert!(
+            !b.contains("Version:"),
+            "the board follows its sheet's version:\n{b}"
+        );
+        assert!(b.ends_with(&crate::sheet::skeleton()), "{b}");
+        // The human's reader must find the section, or nothing downstream sees this file.
+        assert!(crate::sheet::has_tasks(&b), "{b}");
     }
 
     #[test]
     fn a_sheet_outside_the_vault_gets_no_dangling_link() {
         // Same rule `board::link_for` follows: an unlinked heading is a cosmetic loss, a
         // dangling wikilink is a broken promise.
-        let b = body("stray", "v1.0.0", "");
+        let b = body("stray", "");
         assert!(!b.contains("Human sheet:"), "{b}");
-        assert!(b.contains("## Wave: v1.0.0 (current)"), "{b}");
+        assert!(crate::sheet::has_tasks(&b), "{b}");
     }
 
     #[test]
     fn the_link_lands_directly_under_the_version_line() {
-        let sheet = "# demo\nVersion: v0.0.2\n\n## Wave: v0.0.2 (current)\n- [ ] a\n";
+        let sheet = "# demo\nVersion: v0.0.2\n\n## Tasks\n- [ ] a\n";
         let out = with_link(sheet, &link_line("lab/p/demo/agent/README")).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "# demo");
         assert_eq!(lines[1], "Version: v0.0.2");
-        assert!(lines[2].starts_with("Agents: [[lab/p/demo/agent/README|agent board]]"), "{out}");
-        assert!(lines[2].contains("[[lab/projects/agent-board|all projects]]"), "{out}");
-        // and the wave is untouched below it
-        assert!(out.contains("## Wave: v0.0.2 (current)\n- [ ] a\n"), "{out}");
+        assert!(
+            lines[2].starts_with("Agents: [[lab/p/demo/agent/README|agent board]]"),
+            "{out}"
+        );
+        assert!(
+            lines[2].contains("[[lab/projects/agent-board|all projects]]"),
+            "{out}"
+        );
+        // and the section is untouched below it
+        assert!(out.contains("## Tasks\n- [ ] a\n"), "{out}");
     }
 
     #[test]
     fn re_linking_replaces_rather_than_stacks() {
         // This runs on every `notes today`. An append would grow the head without bound.
-        let sheet = "# demo\nVersion: v0.0.2\n\n## Wave: v0.0.2 (current)\n";
+        let sheet = "# demo\nVersion: v0.0.2\n\n## Tasks\n";
         let once = with_link(sheet, &link_line("lab/p/demo/agent/README")).unwrap();
-        assert!(with_link(&once, &link_line("lab/p/demo/agent/README")).is_none(), "no rewrite");
+        assert!(
+            with_link(&once, &link_line("lab/p/demo/agent/README")).is_none(),
+            "no rewrite"
+        );
         assert_eq!(once.matches("Agents: ").count(), 1, "{once}");
     }
 
     #[test]
-    fn a_rolled_version_moves_the_link_with_it() {
-        // The link is derived, so a roll's new `Version:` produces a new target and the old
-        // line is replaced, never left pointing at last version's note.
-        let rolled = "# demo\nVersion: v0.0.3\nAgents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all projects]]\n\n## Wave: v0.0.3 (current)\n";
+    fn a_moved_board_moves_the_link_with_it() {
+        // The old line is replaced, never left pointing at a board that is gone.
+        let rolled = "# demo\nVersion: v0.0.3\nAgents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all projects]]\n\n## Tasks\n";
         let out = with_link(rolled, &link_line("lab/p/demo/agent/README"));
         assert!(out.is_none(), "same target, so no write: {out:?}");
 
@@ -315,60 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_scaffold_follows_the_human_version_forward() {
-        // Otherwise a project that rolled before any agent touched it shows a brand-new
-        // board stamped with the version the project already left behind.
-        let dir = scratch("resync");
-        assert!(ensure(&dir, "demo", "v0.0.1", "lab/p/demo/README").unwrap());
-
-        assert!(!ensure(&dir, "demo", "v0.0.2", "lab/p/demo/README").unwrap());
-        let got = fs::read_to_string(sheet_path(&dir)).unwrap();
-        assert!(got.contains("## Wave: v0.0.2 (current)"), "{got}");
-        assert!(!got.contains("v0.0.1"), "no trace of the old version:\n{got}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    // THE NEGATIVE CONTROL for the re-seed. Promoting a wave that holds real work is a
-    // ROLL, and a roll is not something `notes today` may do behind the agents' backs.
-    #[test]
-    fn a_sheet_holding_real_work_is_never_re_seeded() {
-        let dir = scratch("keepwork");
-        assert!(ensure(&dir, "demo", "v0.0.1", "lab/p/demo/README").unwrap());
-        let path = sheet_path(&dir);
-        let worked = "# demo - agent board\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n- [/] half-finished thing\n";
-        fs::write(&path, worked).unwrap();
-
-        assert!(!ensure(&dir, "demo", "v0.0.9", "lab/p/demo/README").unwrap());
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            worked,
-            "work in flight is never rewritten by a version bump"
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_empty_placeholder_row_does_not_count_as_work() {
-        // Every fresh wave carries `- [ ] `. Counting it would freeze the scaffold at the
-        // version it was created with, which is the bug this whole path exists to avoid.
-        assert!(is_untouched("# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] \n"));
-        assert!(!is_untouched("# d - agent board\nVersion: v1\n\n## Wave: v1 (current)\n- [ ] real\n"));
-        assert!(!is_untouched("# d\n\n## Wave: v1 (current)\n- [x] done work\n"));
-    }
-
-    /// A scratch project dir, unique per test and per thread.
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "agent-sheet-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
     fn ensure_creates_once_and_then_leaves_it_alone() {
         let dir = std::env::temp_dir().join(format!(
             "agent-sheet-{}-{:?}",
@@ -378,13 +313,19 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        assert!(ensure(&dir, "demo", "v0.1.0", "lab/p/demo/README").unwrap());
+        assert!(ensure(&dir, "demo", "lab/p/demo/README").unwrap());
         let path = sheet_path(&dir);
         // Whatever the agents put here must survive every later `notes board`.
-        fs::write(&path, "# demo - agent board\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] mid-wave work\n").unwrap();
-        assert!(!ensure(&dir, "demo", "v0.1.0", "lab/p/demo/README").unwrap());
+        fs::write(
+            &path,
+            "# demo - agent board\n\n## Tasks\n- [ ] work in flight\n",
+        )
+        .unwrap();
+        assert!(!ensure(&dir, "demo", "lab/p/demo/README").unwrap());
         assert!(
-            fs::read_to_string(&path).unwrap().contains("mid-wave work"),
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("work in flight"),
             "an existing sheet is never rewritten"
         );
         let _ = fs::remove_dir_all(&dir);

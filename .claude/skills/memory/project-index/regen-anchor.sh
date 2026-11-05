@@ -130,7 +130,7 @@ if [ -n "$ADR_DIR" ]; then
     | paste -sd, - | sed 's/,/, /g' || true)"
 fi
 
-# The `## Lab` section: one line per lab project (profile, stage, open version, current-wave
+# The `## Lab` section: one line per lab project (profile, stage, open version, its
 # counts, agent board, dir) and, when the key owns exactly one, its STATUS line. A beta or
 # prod project whose status is missing or older than 14 days is flagged STALE: a shipped
 # project with a month-old "where we are" reads as current to every session.
@@ -151,7 +151,7 @@ lab_section() {
        and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
     | "- **\(.name)** (\([.profile, .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
-      + ": \(.open) open, \(.done) done this wave, \(.agent) on the agent board"
+      + ": \(.open) open, \(.done) done, \(.agent) on the agent board"
       + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
       + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
       + "; `\(.dir | tilde)/`"

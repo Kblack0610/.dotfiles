@@ -167,6 +167,9 @@ verdict() {
   echo '{"fleet": {"max_tier": 9}}' > "$DISPATCH_WORKERS"   # even a registry that asks for everything
   row game agent 'ci: suite.sh retries a batch' "- [ ] ci: suite.sh retries a batch $T"
   row game agent 'infra: bump the runner' "- [ ] INFRA: bump the runner $T"
+  row game agent 'typed ci' "- [ ] ci(runner): retry the batch $T"
+  row game agent 'typed infra' "- [ ] infra(k3s): bump the runner $T"
+  row game agent 'scoped ci' "- [ ] fix(ci): the gate times out $T"
   row game agent 'gate row' '- [ ] gate row #worker/fleet #tier/3'
   row game agent 'tier two' '- [ ] tier two #worker/fleet #tier/2'
 
@@ -1387,13 +1390,14 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   night_ready
   row agent-runtime agent 'ask row' '- [ ] fix the ask row #ask #tier/3'
   row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
+  row agent-runtime agent 'typed decide' '- [ ] decide(board): fold it #tier/3'
   row agent-runtime agent 'pad run' '- [ ] fix the pad controller switch #tier/3'
   row agent-runtime agent 'waybar row' '- [ ] waybar: fix pulse colours #tier/3'
   row agent-runtime agent 'tier two' '- [ ] fix the tier two row #tier/2'
   row agent-runtime agent 'unclear' '- [ ] fix something somewhere #tier/3'
   row agent-runtime agent 'started' '- [/] fix the started row #tier/3'
   row agent-runtime agent 'untagged' '- [ ] fix the untagged row'
-  for k in 'ask row' 'decide: fold it' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
+  for k in 'ask row' 'decide: fold it' 'typed decide' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
   night_verdict unclear unclear false
 
   run night_rows ''

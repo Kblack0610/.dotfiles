@@ -38,14 +38,10 @@ use std::path::{Path, PathBuf};
 /// Pure core: reorganize the ## Focus section of `content` by status. `None` when the
 /// section is absent or already organized (no change).
 ///
-/// The lane model itself lives in `sweep`, shared with the project-sheet wave sweep. Focus
+/// The lane model itself lives in `sweep`, shared with the project-sheet sweep. Focus
 /// offers all three lanes.
 fn sweep_content(content: &str) -> Option<String> {
-    sweep::sweep_section(
-        content,
-        |h| h.eq_ignore_ascii_case("Focus"),
-        &md::PRIORITIES,
-    )
+    sweep::sweep_section(content, |h| h.eq_ignore_ascii_case("Focus"))
 }
 
 /// notes focus start <query> — toggle the first matching authored `## Focus` task
@@ -263,12 +259,24 @@ after
         let done = focus.find("### Done").unwrap();
         // an untagged task takes the default and lands in High, not above the lanes
         let untagged = focus.find("untagged one").unwrap();
-        assert!(out.contains("- [ ] untagged one #high"), "defaulted:\n{out}");
-        assert!(untagged > high && untagged < low, "in the High lane:\n{out}");
-        assert!(urgent < high && high < low, "lanes ordered urgent > high > low");
+        assert!(
+            out.contains("- [ ] untagged one #high"),
+            "defaulted:\n{out}"
+        );
+        assert!(
+            untagged > high && untagged < low,
+            "in the High lane:\n{out}"
+        );
+        assert!(
+            urgent < high && high < low,
+            "lanes ordered urgent > high > low"
+        );
         assert!(focus.find("fire").unwrap() > urgent && focus.find("fire").unwrap() < high);
         assert!(low < done, "Done is last");
-        assert!(focus.find("finished it").unwrap() > done, "checked task under Done");
+        assert!(
+            focus.find("finished it").unwrap() > done,
+            "checked task under Done"
+        );
         assert!(out.contains("## Notes\nafter"), "later sections untouched");
     }
 
@@ -278,8 +286,14 @@ after
         let note = "## Focus\n- [x] shipped it #high\n- [ ] open #high\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
         let done = out.find("### Done").unwrap();
-        assert!(out.find("shipped it").unwrap() > done, "checked+tagged under Done");
-        assert!(out.find("open").unwrap() < done, "open task stays in its High lane");
+        assert!(
+            out.find("shipped it").unwrap() > done,
+            "checked+tagged under Done"
+        );
+        assert!(
+            out.find("open").unwrap() < done,
+            "open task stays in its High lane"
+        );
     }
 
     #[test]
@@ -323,7 +337,10 @@ after
     fn untagged_todos_take_the_default_and_open_the_lanes() {
         let note = "## Focus\n- [ ] a\n- [ ] b\n- [ ] \n\n## Notes\n";
         let out = sweep_content(note).expect("defaulting is a change");
-        assert!(out.contains("- [ ] a #high") && out.contains("- [ ] b #high"), "{out}");
+        assert!(
+            out.contains("- [ ] a #high") && out.contains("- [ ] b #high"),
+            "{out}"
+        );
         assert!(out.contains("### High"), "{out}");
     }
 
@@ -333,7 +350,10 @@ after
         // organizing once, then sweeping the result, produces no further change
         let once = sweep_content(note).expect("first sweep organizes");
         let twice = sweep_content(&once);
-        assert!(twice.is_none(), "a second sweep of swept content is a no-op");
+        assert!(
+            twice.is_none(),
+            "a second sweep of swept content is a no-op"
+        );
     }
 
     #[test]
@@ -351,7 +371,10 @@ after
         let note = "## Focus\n- [ ] task #high\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
         let focus = out.split("## Notes").next().unwrap();
-        assert!(focus.contains("### Urgent"), "empty Urgent lane kept as a column");
+        assert!(
+            focus.contains("### Urgent"),
+            "empty Urgent lane kept as a column"
+        );
         assert!(focus.contains("### High"), "High lane present");
         assert!(focus.contains("### Low"), "empty Low lane kept as a column");
         assert!(focus.contains("### Done"), "empty Done kept");
@@ -362,7 +385,10 @@ after
         // a plain task physically under ### Urgent gets #urgent (drop-to-tag), and stays put
         let note = "## Focus\n### Urgent\n- [ ] dropped here\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
-        assert!(out.contains("- [ ] dropped here #urgent"), "inherited the lane's tag");
+        assert!(
+            out.contains("- [ ] dropped here #urgent"),
+            "inherited the lane's tag"
+        );
         let focus = out.split("## Notes").next().unwrap();
         let urgent = focus.find("### Urgent").unwrap();
         let task = focus.find("dropped here").unwrap();

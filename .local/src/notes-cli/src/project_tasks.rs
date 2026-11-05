@@ -1,13 +1,13 @@
-//! `notes ptask <name> …` — a project's task list, living on the project SHEET's current
-//! `## Wave` section (the first `## Wave…` heading). The project analog of `notes focus`
-//! (which is the daily note's `## Focus`): project tasks belong in the project `.md` — the
-//! template-driven, version-scoped source of truth — so `notes projects --roll` freezes a
-//! REAL task list into `versions/`, and the daily note keeps only the untagged main tasks.
+//! `notes ptask <name> ...` - a project's task list, living in the project SHEET's `## Tasks`
+//! section. The project analog of `notes focus` (which is the daily note's `## Focus`):
+//! project tasks belong in the project `.md` - the template-driven, version-scoped source of
+//! truth - so `notes projects --release` freezes a REAL task list into `versions/`, and the
+//! daily note keeps only the untagged main tasks.
 //!
-//! Mirrors `focus.rs` verb-for-verb but points the SAME generic `md` helpers at a resolved
-//! wave heading instead of the hard-coded `## Focus`. The task SHEET is README.md/tasks.md
-//! that carries a `## Wave` — decoupled from the `Version:` line, so a release-managed
-//! project (version in `changelog/`) can hold a task sheet without owning its version there.
+//! Mirrors `focus.rs` verb-for-verb but points the SAME generic `md` helpers at `## Tasks`
+//! instead of the hard-coded `## Focus`. The task SHEET is the README.md/tasks.md that carries
+//! a `## Tasks` - decoupled from the `Version:` line, so a release-managed project (version in
+//! `changelog/`) can hold a task sheet without owning its version there.
 
 use crate::agent_sheet::Lane;
 use crate::config::Profile;
@@ -15,50 +15,47 @@ use crate::logging::Logger;
 use crate::md;
 use crate::project_sweep;
 use crate::projects;
-use crate::waves;
+use crate::sheet::{self, V};
 use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The current wave's heading TEXT — the FIRST `## Wave…` line's text (e.g.
-/// `"Wave: v1.13.0 (current)"`). `md::section_span` matches a heading exactly, so callers
-/// resolve the live text rather than assuming a fixed string.
-///
-/// First, not `(current)`-suffixed: position is the invariant, and it is what makes the
-/// planned waves below it invisible to every reader here.
-fn current_wave(content: &str) -> Option<String> {
-    waves::sections(content).first().map(|s| s.heading.clone())
+/// The version a directory's rows are read against: its own sheet's `Version:` line, else,
+/// for an agent board (which carries none), the human sheet's one level up.
+pub(crate) fn open_version_for(dir: &Path) -> Option<V> {
+    let content = task_sheet(dir)
+        .and_then(|s| fs::read_to_string(s).ok())
+        .unwrap_or_default();
+    version_in(dir, &content)
 }
 
-/// The heading of the wave a verb should act on: the named one for `--to/--wave <ver>`,
-/// else the current wave. Minting a planned section when `--to` names a version the
-/// roadmap does not have yet is the point — that is how you plan forward.
-fn target_wave(content: &str, want: Option<&str>, mint: bool) -> Result<(String, Option<String>)> {
-    let Some(want) = want else {
-        let h = current_wave(content)
-            .ok_or_else(|| anyhow::anyhow!("no `## Wave` section on the sheet"))?;
-        return Ok((h, None));
-    };
-    let ver = waves::parse(want.trim())
-        .ok_or_else(|| anyhow::anyhow!("not a version: '{want}' (want vX.Y.Z)"))?;
-    if let Some(s) = waves::find(content, ver) {
-        return Ok((s.heading, None));
-    }
-    if !mint {
-        bail!(
-            "no wave {} on the sheet — plan it first with `add --to {}`",
-            waves::fmt(ver),
-            waves::fmt(ver)
-        );
-    }
-    let grown = waves::insert_planned(content, ver);
-    let heading = waves::find(&grown, ver)
-        .map(|s| s.heading)
-        .ok_or_else(|| anyhow::anyhow!("could not open wave {}", waves::fmt(ver)))?;
-    Ok((heading, Some(grown)))
+/// [`open_version_for`] for a caller already holding the sheet's text.
+fn version_in(dir: &Path, content: &str) -> Option<V> {
+    projects::sheet_version(content).or_else(|| {
+        let parent = dir.parent().filter(|_| dir.ends_with("agent"))?;
+        open_version_for(parent)
+    })
 }
 
-/// The project's TASK sheet: `README.md` then `tasks.md`, whichever carries a `## Wave`.
+/// A `--to`/`--version` argument as a version.
+fn parse_to(to: &str) -> Result<V> {
+    projects::parse_version(to.trim())
+        .ok_or_else(|| anyhow::anyhow!("not a version: '{to}' (want vX.Y.Z)"))
+}
+
+/// Refuse a target behind the open version: a tag there is stale the moment it is written.
+fn refuse_behind(to: V, cur: Option<V>) -> Result<()> {
+    match cur.filter(|c| to < *c) {
+        Some(c) => bail!(
+            "{} is behind the open version {}",
+            projects::fmt_version(to),
+            projects::fmt_version(c)
+        ),
+        None => Ok(()),
+    }
+}
+
+/// The project's TASK sheet: `README.md` then `tasks.md`, whichever carries a `## Tasks`.
 ///
 /// `pub(crate)` because carrying a live sheet is also how cross-org name resolution picks
 /// between two orgs holding the same slug (`projects::project_dir`) — the same rule
@@ -69,20 +66,14 @@ pub(crate) fn task_sheet(dir: &Path) -> Option<PathBuf> {
         let p = dir.join(n);
         fs::read_to_string(&p)
             .ok()
-            .filter(|c| current_wave(c).is_some())
+            .filter(|c| sheet::has_tasks(c))
             .map(|_| p)
     })
 }
 
-/// Resolve (or create) a project's task sheet. Prefers an existing `## Wave` sheet; else
-/// appends a wave to an existing `README.md`; else scaffolds a fresh `README.md` task
+/// Resolve (or create) a project's task sheet. Prefers an existing `## Tasks` sheet; else
+/// appends the sections to an existing `README.md`; else scaffolds a fresh `README.md` task
 /// sheet. `name` seeds the title of a fresh sheet.
-///
-/// The wave is NAMED for the sheet's `Version:` line via `waves::heading_current` — the
-/// same minter `projects::sheet_body` uses. This path used to hardcode the literal string
-/// `new`, which is how a sheet could read `## Wave: new (current)` directly under
-/// `Version: v0.0.2`: the version is meant to be the wave's only id, and a wave created
-/// through here had no id at all.
 fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
     if let Some(s) = task_sheet(dir) {
         return Ok(s);
@@ -92,53 +83,42 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
         if !c.ends_with('\n') {
             c.push('\n');
         }
-        let heading = waves::heading_current(&projects::wave_version_of(&c));
-        c.push_str(&format!("\n## {heading}\n- [ ] \n"));
+        c.push('\n');
+        c.push_str(&sheet::skeleton());
         md::write_atomic(&readme, &c)?;
     } else {
-        // No sheet at all, so no `Version:` line to read: a fresh sheet opens at v0.0.1,
-        // matching what `projects --new` seeds.
-        let heading = waves::heading_current("v0.0.1");
-        fs::write(&readme, format!("# {name}\n\n## {heading}\n- [ ] \n"))?;
+        fs::write(&readme, format!("# {name}\n\n{}", sheet::skeleton()))?;
     }
     Ok(readme)
 }
 
-/// A project directory's current wave: `(version, open_task_lines)`. `None` when the dir
-/// has no task sheet at all.
-///
-/// Keyed by DIRECTORY rather than profile+name, unlike `sheet_and_wave` below, because the
-/// board walks `daily::discover_project_dirs` across every configured profile — it already
-/// holds the path and has no name to re-resolve. Same sheet, same `## Wave`, same open-task
-/// predicate the cockpit and `ptask list` use, so the three cannot disagree about what is
-/// on a board.
-pub(crate) fn open_wave_for_dir(dir: &Path) -> Option<(String, Vec<String>)> {
-    let w = open_wave_rows(dir)?;
-    Some((w.version, w.rows.into_iter().map(|(_, l)| l).collect()))
-}
-
-/// A sheet's current wave as `notes board --json` reads it: where the sheet is, its version,
-/// and each open row with its 1-based line number.
-pub(crate) struct OpenWave {
+/// A sheet's open version as `notes board --json` reads it: where the sheet is, its version,
+/// and each open row of that version with its 1-based line number. Rows aimed at a later
+/// release are left out.
+pub(crate) struct OpenRows {
     pub sheet: PathBuf,
     pub version: String,
     pub rows: Vec<(usize, String)>,
 }
 
-/// [`open_wave_for_dir`] with the sheet path and line numbers kept. The one reader both use,
-/// so the JSON feed and the rendered board cannot list different rows.
-pub(crate) fn open_wave_rows(dir: &Path) -> Option<OpenWave> {
-    let sheet = task_sheet(dir)?;
-    let content = fs::read_to_string(&sheet).ok()?;
-    let heading = current_wave(&content)?;
-    let rows = md::section_numbered(&content, &heading)
+/// A directory's open version, `None` when it has no task sheet at all. The one reader the
+/// JSON feed and the rendered board use, so they cannot list different rows.
+///
+/// Keyed by DIRECTORY rather than profile+name, because the board walks
+/// `daily::discover_project_dirs` across every configured profile: it already holds the path
+/// and has no name to re-resolve. Same sheet, same section, same open-task predicate the
+/// cockpit and `ptask list` use, so the three cannot disagree about what is on a board.
+pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
+    let path = task_sheet(dir)?;
+    let content = fs::read_to_string(&path).ok()?;
+    let cur = version_in(dir, &content);
+    let rows = sheet::current_rows(&content, cur)
         .into_iter()
-        .filter(|(_, l)| md::is_open_task(l))
         .map(|(n, l)| (n, l.trim_end().to_string()))
         .collect();
-    Some(OpenWave {
-        version: projects::wave_version_of(&content),
-        sheet,
+    Some(OpenRows {
+        version: projects::version_or_default(cur),
+        sheet: path,
         rows,
     })
 }
@@ -151,25 +131,18 @@ fn lane_dir(p: &Profile, name: &str, lane: Lane) -> Result<PathBuf> {
     Ok(lane.dir(&projects::project_dir(p, name)?))
 }
 
-/// The sheet + its resolved current-wave heading, for a named project. `None` when the
-/// project has no task sheet yet (a read verb then lists nothing).
-fn sheet_and_wave(
-    p: &Profile,
-    name: &str,
-    lane: Lane,
-) -> Result<Option<(PathBuf, String, String)>> {
+/// The sheet and its text, for a named project. `None` when the project has no task sheet yet
+/// (a read verb then lists nothing).
+fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(PathBuf, String)>> {
     let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
         return Ok(None);
     };
     let content = fs::read_to_string(&sheet)?;
-    match current_wave(&content) {
-        Some(h) => Ok(Some((sheet, h, content))),
-        None => Ok(None),
-    }
+    Ok(Some((sheet, content)))
 }
 
-/// An open wave task matching `query` (already lower-cased) — the shared predicate for
+/// An open task matching `query` (already lower-cased) - the shared predicate for
 /// `done`/`start`/`rm`, matching `focus.rs::is_match`.
 pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
@@ -221,8 +194,8 @@ impl Pick {
 
     /// Refuse an exact pick whose line is on `sheet` more than once. Twin rows cannot be
     /// told apart by their text, and the verb would act on whichever comes first, which may
-    /// sit in another wave than the one the UI showed. A missing sheet passes: the verb
-    /// itself reports that.
+    /// be aimed at another release than the one the UI showed. A missing sheet passes: the
+    /// verb itself reports that.
     pub(crate) fn sole_in(&self, sheet: &Path) -> Result<()> {
         if let Pick::Exact(raw) = self {
             let n = fs::read_to_string(sheet)
@@ -252,64 +225,47 @@ impl std::fmt::Display for Pick {
     }
 }
 
-/// `notes ptask <name> list [--wave vX.Y.Z | --all]` — TSV of OPEN tasks.
+/// `notes ptask <name> list [--version vX.Y.Z | --all]` - TSV of OPEN tasks.
 ///
-/// Bare `list` is the current wave and emits exactly the four columns it always has —
-/// `path<TAB>line<TAB>key<TAB>text` - because the cockpit parses it. A
-/// wave SELECTOR adds a fifth column (the wave's version) rather than changing the first
-/// four, so a reader that only wants `$1..$4` is unaffected either way.
-pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool, lane: Lane) -> Result<i32> {
+/// Bare `list` is the open version and emits exactly the four columns it always has -
+/// `path<TAB>line<TAB>key<TAB>text` - because the cockpit parses it. A version SELECTOR adds a
+/// fifth column (the row's version, `-` when the sheet has none) rather than changing the
+/// first four, so a reader that only wants `$1..$4` is unaffected either way.
+pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lane) -> Result<i32> {
     let dir = lane_dir(p, name, lane)?;
-    let Some(sheet) = task_sheet(&dir) else {
+    let Some(path) = task_sheet(&dir) else {
         return Ok(0);
     };
-    let content = fs::read_to_string(&sheet)?;
-    let file = sheet.display();
+    let content = fs::read_to_string(&path)?;
+    let file = path.display();
+    let cur = version_in(&dir, &content);
 
-    if !all && wave.is_none() {
-        let Some(heading) = current_wave(&content) else {
-            return Ok(0);
-        };
-        for (n, l) in md::section_numbered(&content, &heading) {
-            if md::is_open_task(l) {
-                println!("{file}\t{n}\t{}\t{}", md::task_key(l), l.trim_end());
-            }
+    if !all && version.is_none() {
+        for (n, l) in sheet::current_rows(&content, cur) {
+            println!("{file}\t{n}\t{}\t{}", md::task_key(l), l.trim_end());
         }
         return Ok(0);
     }
 
-    let want = match wave {
-        Some(w) => Some(
-            waves::parse(w.trim())
-                .ok_or_else(|| anyhow::anyhow!("not a version: '{w}' (want vX.Y.Z)"))?,
-        ),
-        None => None,
-    };
-    for s in waves::sections(&content) {
-        if want.is_some() && s.version != want {
+    let want = version.map(parse_to).transpose()?;
+    for (n, l) in sheet::open_rows(&content) {
+        let v = sheet::version_of(l, cur);
+        if want.is_some() && v != want {
             continue;
         }
-        for (n, l) in md::section_numbered(&content, &s.heading) {
-            if md::is_open_task(l) {
-                println!(
-                    "{file}\t{n}\t{}\t{}\t{}",
-                    md::task_key(l),
-                    l.trim_end(),
-                    s.label()
-                );
-            }
-        }
+        println!(
+            "{file}\t{n}\t{}\t{}\t{}",
+            md::task_key(l),
+            l.trim_end(),
+            v.map_or_else(|| "-".to_string(), projects::fmt_version)
+        );
     }
     Ok(0)
 }
 
-/// `notes ptask <name> add <text> [--to vX.Y.Z]` — add `- [ ] <text>` to a wave, creating
-/// the task sheet if the project has none.
-///
-/// Without `--to` this is the current wave, exactly as before. With it, the task goes to a
-/// PLANNED wave — minted in version order below the current one if the roadmap does not
-/// hold it yet. That is the whole roadmap-forward loop: plan into `v1.14.0` while `v1.13.0`
-/// is still running, and the roll promotes it when v1.13.0 closes.
+/// `notes ptask <name> add <text> [--to vX.Y.Z]` - add `- [ ] <text>` to `## Tasks`, creating
+/// the task sheet if the project has none. `--to` tags it for that release, which is the whole
+/// roadmap-forward loop: plan into `v1.14.0` while `v1.13.0` is still running.
 ///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
@@ -328,19 +284,25 @@ pub fn add(
         bail!("nothing to add (provide task text)");
     }
     let proj_dir = projects::project_dir(p, name)?;
-    let sheet = match lane {
+    let to = to.map(parse_to).transpose()?;
+    let cur = open_version_for(&lane.dir(&proj_dir));
+    if let Some(v) = to {
+        refuse_behind(v, cur)?;
+    }
+    let path = match lane {
         Lane::Human => ensure_task_sheet(&proj_dir, name)?,
         Lane::Agent => crate::agent_sheet::ensure_for(p, &proj_dir, name)?,
     };
-    let content = fs::read_to_string(&sheet)?;
-    let (heading, grown) = target_wave(&content, to, true)?;
-    let base = grown.unwrap_or(content);
+    let content = fs::read_to_string(&path)?;
     let today = chrono::Local::now().date_naive();
     let mut line = md::stamp_line(
         &md::with_default_priority(&format!("- [ ] {text}")),
         today,
         today,
     );
+    if let Some(v) = to {
+        line = project_sweep::retag(&line, v, Some(v) == cur).0;
+    }
     match crate::registry::Registry::load().and_then(|r| r.code(name)) {
         Some(code) => line = md::add_marker(&line, &format!("id:{}", next_id(&proj_dir, &code))),
         None => eprintln!(
@@ -349,14 +311,11 @@ pub fn add(
     }
     let mut block = vec![line.clone()];
     block.extend(md::detail_lines("", details));
-    let new = md::insert_under_heading(&base, &heading, &block);
-    md::write_atomic(&sheet, &new)?;
-    log.info("ptask", &format!("added to {} ({name})", sheet.display()));
+    let new = md::insert_under_heading(&content, sheet::TASKS, &block);
+    md::write_atomic(&path, &new)?;
+    log.info("ptask", &format!("added to {} ({name})", path.display()));
     for l in &block {
         println!("{l}");
-    }
-    if to.is_some() {
-        println!("  -> {heading}");
     }
     Ok(0)
 }
@@ -393,10 +352,10 @@ pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
     format!("{code}-{}", max + 1)
 }
 
-/// `notes ptask <name> move <query> --to vX.Y.Z` — move the first open task matching
-/// `<query>` from whatever wave holds it into `<ver>`, minting that wave if it is new.
+/// `notes ptask <name> move <query> --to vX.Y.Z` - aim the first open task matching `<query>`
+/// at `<ver>`. The row stays where it is; only its tag changes.
 ///
-/// The verb that splits a pile into a roadmap, and the one the roll gate points at: a
+/// The verb that splits a pile into a roadmap, and the one the release gate points at: a
 /// version that still has open work does not close, so either finish the task or say
 /// explicitly which version it belongs to instead.
 pub fn move_task(
@@ -408,79 +367,60 @@ pub fn move_task(
     lane: Lane,
 ) -> Result<i32> {
     let dir = lane_dir(p, name, lane)?;
-    let Some(sheet) = task_sheet(&dir) else {
+    let Some(path) = task_sheet(&dir) else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
-    let content = fs::read_to_string(&sheet)?;
-    let (heading, grown) = target_wave(&content, Some(to), true)?;
-    let content = grown.unwrap_or(content);
+    let content = fs::read_to_string(&path)?;
+    let to = parse_to(to)?;
+    let cur = version_in(&dir, &content);
+    refuse_behind(to, cur)?;
 
-    let Some((new, line, from)) = move_within(&content, pick, &heading, to)? else {
-        eprintln!("no open task matches '{pick}' outside {heading} in {name}");
+    let Some((new, line)) = retarget(&content, pick, to, cur) else {
+        eprintln!(
+            "no open task matches '{pick}' outside {} in {name}",
+            projects::fmt_version(to)
+        );
         return Ok(1);
     };
-    md::write_atomic(&sheet, &new)?;
+    md::write_atomic(&path, &new)?;
+    let to_s = projects::fmt_version(to);
     log.info(
         "ptask",
-        &format!("moved to {heading} in {} ({name})", sheet.display()),
+        &format!("moved to {to_s} in {} ({name})", path.display()),
     );
-    println!("moved {}\n  {from} -> {heading}", line.trim());
+    println!("moved {}\n  -> {to_s}", line.trim());
     Ok(0)
 }
 
-/// Pure core of the same-sheet `move`: lift the first open row matching `query` out of any
-/// wave other than `heading` and insert it, retagged for `to`, under `heading`. Returns
-/// `(new_content, moved_line, source_heading)`, or `None` when nothing outside the target
-/// matches.
-fn move_within(
-    content: &str,
-    pick: &Pick,
-    heading: &str,
-    to: &str,
-) -> Result<Option<(String, String, String)>> {
-    // Find it in any wave EXCEPT the target, so a move onto its own wave is a clear no-op
-    // rather than a silent delete-and-reinsert.
-    let Some((from, line)) = find_open(content, pick, Some(heading)) else {
-        return Ok(None);
-    };
-    let Some((cut, _)) = md::edit_first_in_section(content, &from, |l| pick.hits(l), |_| None)
-    else {
-        bail!("could not lift '{pick}' out of {from}");
-    };
-    // Retag to the target, as `demote` does. The row keeping its old `#v` tag is how a moved
-    // task got dragged straight back by the next `sweep`, which buckets by tag.
-    let line = retag_for(&cut, &line, to);
-    let new = md::insert_under_heading(&cut, heading, std::slice::from_ref(&line));
-    Ok(Some((new, line, from)))
+/// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
+/// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
+/// outside the target matches, so a move onto its own version is a clear no-op.
+fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
+    let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let (new, matched) = md::edit_first_in_section(
+        content,
+        sheet::TASKS,
+        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| Some(aim(l)),
+    )?;
+    Some((new, aim(&matched)))
 }
 
-/// The first open row matching `query` (lower-cased) in wave order, skipping the wave
-/// headed `skip`: `(source heading, line)`. The one search both forms of `move` use, so
-/// "which row does `move <query>` take" has a single answer.
-fn find_open(content: &str, pick: &Pick, skip: Option<&str>) -> Option<(String, String)> {
-    for s in waves::sections(content) {
-        if Some(s.heading.as_str()) == skip {
-            continue;
-        }
-        if let Some((_, l)) = md::section_numbered(content, &s.heading)
-            .into_iter()
-            .find(|(_, l)| pick.hits(l))
-        {
-            return Some((s.heading.clone(), l.trim_end().to_string()));
-        }
-    }
-    None
+/// The first open row matching `pick`, in sheet order.
+fn find_open(content: &str, pick: &Pick) -> Option<String> {
+    sheet::open_rows(content)
+        .into_iter()
+        .find(|(_, l)| pick.hits(l))
+        .map(|(_, l)| l.trim_end().to_string())
 }
 
 /// `notes ptask <src> move <query> --project <dest> [--to vX.Y.Z]` - move the first open
-/// row matching `<query>` off SRC's sheet and onto DEST's: its current wave, or the wave
-/// `--to` names. How a catch-all sheet gets split into per-project ones without hand-editing.
+/// row matching `<query>` off SRC's sheet and onto DEST's, aimed at the release `--to` names.
+/// How a catch-all sheet gets split into per-project ones without hand-editing.
 ///
 /// DEST resolves through `projects::project_dir` like every other name here, so it may live
-/// in another profile. Unlike the same-project form this never MINTS a wave: which version
-/// something ships in on another project's roadmap is that project's call, so a `--to` the
-/// dest sheet does not already hold is refused. `--agent` works because both ends go through
-/// the same `lane_dir`: agent sheet to agent sheet.
+/// in another profile. `--agent` works because both ends go through the same `lane_dir`:
+/// agent sheet to agent sheet.
 pub fn move_to_project(
     p: &Profile,
     log: &Logger,
@@ -497,7 +437,7 @@ pub fn move_to_project(
     };
     let Some(dest_sheet) = task_sheet(&dest_dir) else {
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
-        bail!("'{dest}' has no task sheet with a `## Wave` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
+        bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to)? else {
         eprintln!("no open task matches '{pick}' in {src}");
@@ -506,30 +446,21 @@ pub fn move_to_project(
     log.info(
         "ptask",
         &format!(
-            "moved from {} ({src}) to {} in {} ({dest})",
+            "moved from {} ({src}) to {} ({dest})",
             src_sheet.display(),
-            moved.into,
             dest_sheet.display()
         ),
     );
-    println!(
-        "moved {}\n  {src}: {} -> {dest}: {}",
-        moved.line.trim(),
-        moved.from,
-        moved.into
-    );
+    println!("moved {}\n  {src} -> {dest}", moved.line.trim());
     Ok(0)
 }
 
-/// What a cross-project move did: both sheets' new text, the row as it landed, and the
-/// wave headings it left and joined.
+/// What a cross-project move did: both sheets' new text and the row as it landed.
 #[derive(Debug)]
 struct Lifted {
     src: String,
     dest: String,
     line: String,
-    from: String,
-    into: String,
 }
 
 /// File half of `move_to_project`: read both sheets, compute both edits, then write.
@@ -549,12 +480,17 @@ fn transfer(
     };
     if same {
         bail!(
-            "source and destination are the same sheet - use `move --to <VERSION>` to change waves"
+            "source and destination are the same sheet - use `move --to <VERSION>` to change release"
         );
     }
     let src = fs::read_to_string(src_sheet)?;
     let dest = fs::read_to_string(dest_sheet)?;
-    let Some(moved) = lift_into(&src, &dest, pick, to)? else {
+    let to = to.map(parse_to).transpose()?;
+    let dest_cur = dest_sheet.parent().and_then(open_version_for);
+    if let Some(v) = to {
+        refuse_behind(v, dest_cur)?;
+    }
+    let Some(moved) = lift_into(&src, &dest, pick, to, dest_cur)? else {
         return Ok(None);
     };
     md::write_atomic(dest_sheet, &moved.dest)?;
@@ -568,65 +504,47 @@ fn transfer(
     Ok(Some(moved))
 }
 
-/// Pure core of a cross-project move: the first open row matching `query` in `src` (any
-/// wave, in order - the same search the same-sheet `move` runs), cut from `src` and
-/// inserted into `dest`'s current wave or its existing wave `to`. `None` on no match.
-fn lift_into(src: &str, dest: &str, pick: &Pick, to: Option<&str>) -> Result<Option<Lifted>> {
-    // Resolve the destination before looking at the source: a dest with no wave to land
-    // in is the refusal, whether or not the query would have matched.
-    let (into, _) = target_wave(dest, to, false)?;
-    let Some((from, line)) = find_open(src, pick, None) else {
+/// Pure core of a cross-project move: the first open row matching `query` in `src`, cut from
+/// `src` and inserted into `dest`'s `## Tasks`. The source's `#v` tag means nothing on another
+/// project's roadmap, so it goes unless `to` names one. `None` on no match.
+fn lift_into(
+    src: &str,
+    dest: &str,
+    pick: &Pick,
+    to: Option<V>,
+    dest_cur: Option<V>,
+) -> Result<Option<Lifted>> {
+    // Refuse before looking at the source: a dest with no section to land in is the refusal,
+    // whether or not the query would have matched.
+    if !sheet::has_tasks(dest) {
+        bail!("no `## Tasks` section on the destination sheet");
+    }
+    let Some((cut, line)) =
+        md::edit_first_in_section(src, sheet::TASKS, |l| pick.hits(l), |_| None)
+    else {
         return Ok(None);
     };
-    let Some((cut, _)) = md::edit_first_in_section(src, &from, |l| pick.hits(l), |_| None) else {
-        bail!("could not lift '{pick}' out of {from}");
+    let line = line.trim_end();
+    let line = match to {
+        Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
+        None => md::split_version(line).0,
     };
-    let line = retag_into(dest, &into, &line);
-    let grown = md::insert_under_heading(dest, &into, std::slice::from_ref(&line));
+    let grown = md::insert_under_heading(dest, sheet::TASKS, std::slice::from_ref(&line));
     Ok(Some(Lifted {
         src: cut,
         dest: grown,
         line,
-        from,
-        into,
     }))
 }
 
-/// `line` retagged for the wave headed `heading` on `dest`. The source project's `#v` tag
-/// means nothing on another project's roadmap, so a dest wave with no parseable version
-/// strips it rather than keeping it.
-fn retag_into(dest: &str, heading: &str, line: &str) -> String {
-    match waves::sections(dest)
-        .into_iter()
-        .find(|s| s.heading == heading)
-        .and_then(|s| s.version)
-    {
-        Some(v) => retag_for(dest, line, &waves::fmt(v)),
-        None => md::split_wave(line).0,
-    }
-}
-
-/// `line` retagged for the wave `to` on `content`, keeping `#urgent` only when `to` is the
-/// current wave. Unchanged when `to` is not a version.
-fn retag_for(content: &str, line: &str, to: &str) -> String {
-    let Some(v) = waves::parse(to.trim()) else {
-        return line.to_string();
-    };
-    let is_cur = waves::current_of(content, projects::sheet_version(content))
-        .and_then(|s| s.version)
-        == Some(v);
-    project_sweep::retag_wave(line, v, is_cur).0
-}
-
-/// `notes ptask <name> promote|demote <query>` - step the first matching task one wave
+/// `notes ptask <name> promote|demote <query>` - step the first matching task one release
 /// sooner or later, the way `<leader>tP`/`tp` steps a priority.
 ///
-/// This is the verb the roadmap was missing. `move --to vX.Y.Z` needs an absolute version
-/// typed out, so in practice nothing ever left the current wave and 13 of 14 sheets have no
-/// planned wave at all. A relative step costs nothing to reach for, which is what makes
-/// splitting a pile into small waves something you actually do.
+/// `move --to vX.Y.Z` needs an absolute version typed out; a relative step costs nothing to
+/// reach for, which is what makes splitting a pile across releases something you actually do.
+/// The rungs are the open version and every release an open row is aimed at.
 ///
-/// `promote` clamps at the current wave and exits NON-ZERO there: the cockpit drives these
+/// `promote` clamps at the open version and exits NON-ZERO there: the cockpit drives these
 /// through fzf `execute-silent`, which discards stdout, so a zero exit would render "there is
 /// nothing sooner" as silence.
 pub fn step(
@@ -639,72 +557,42 @@ pub fn step(
 ) -> Result<i32> {
     let dir_word = if dir < 0 { "promote" } else { "demote" };
     let dir_proj = lane_dir(p, name, lane)?;
-    let Some(sheet) = task_sheet(&dir_proj) else {
+    let Some(path) = task_sheet(&dir_proj) else {
         bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
     };
-    let content = fs::read_to_string(&sheet)?;
-    let secs = waves::sections(&content);
-    let cur = waves::current_of(&content, projects::sheet_version(&content))
-        .and_then(|s| s.version)
-        .ok_or_else(|| anyhow::anyhow!("{name}'s sheet has no versioned `## Wave` section"))?;
-    let ladder: Vec<(u32, u32, u32)> = secs.iter().filter_map(|s| s.version).collect();
-
-    // Which wave holds it now: the tag if it has one, else the section it sits in.
-    let mut at: Option<((u32, u32, u32), String, String)> = None; // (version, heading, line)
-    for s in &secs {
-        let Some(sv) = s.version else { continue };
-        if let Some((_, l)) = md::section_numbered(&content, &s.heading)
-            .into_iter()
-            .find(|(_, l)| pick.hits(l))
-        {
-            let tagged = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
-            at = Some((
-                tagged.unwrap_or(sv),
-                s.heading.clone(),
-                l.trim_end().to_string(),
-            ));
-            break;
-        }
-    }
-    let Some((at_v, from, line)) = at else {
+    let content = fs::read_to_string(&path)?;
+    let cur = version_in(&dir_proj, &content)
+        .ok_or_else(|| anyhow::anyhow!("{name}'s sheet has no `Version:` line"))?;
+    let Some(line) = find_open(&content, pick) else {
         eprintln!("no open task matches '{pick}' in {name}");
         return Ok(1);
     };
+    let at = sheet::version_of(&line, Some(cur)).unwrap_or(cur);
+    let ladder = sheet::later_versions(&content, Some(cur));
 
-    let to = match project_sweep::step_wave(cur, &ladder, at_v, dir) {
-        Ok(v) => v,
-        Err(project_sweep::StepEnd::AtCurrent) => {
-            eprintln!(
-                "'{}' is already in {} - nothing sooner than the current wave",
-                md::task_text(&line),
-                waves::fmt(cur)
-            );
-            return Ok(1);
-        }
+    let Some(to) = project_sweep::step_version(cur, &ladder, at, dir) else {
+        eprintln!(
+            "'{}' is already in {} - nothing sooner than the open version",
+            md::task_text(&line),
+            projects::fmt_version(cur)
+        );
+        return Ok(1);
     };
 
-    let (retagged, note) = project_sweep::retag_wave(&line, to, to == cur);
-    let heading = waves::heading_current(&waves::fmt(to));
-    let (content, heading) = match waves::find(&content, to) {
-        Some(s) => (content, s.heading),
-        // The wave does not exist yet: open it as PLANNED, below the current one.
-        None => (waves::insert_planned(&content, to), {
-            let _ = heading;
-            waves::heading_planned(&waves::fmt(to))
-        }),
-    };
-    let Some((cut, _)) = md::edit_first_in_section(&content, &from, |l| pick.hits(l), |_| None)
+    let (retagged, note) = project_sweep::retag(&line, to, to == cur);
+    let Some((new, _)) =
+        md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |_| Some(retagged))
     else {
-        bail!("could not lift '{pick}' out of {from}");
+        bail!("could not retag '{pick}'");
     };
-    let new = md::insert_under_heading(&cut, &heading, std::slice::from_ref(&retagged));
-    md::write_atomic(&sheet, &new)?;
+    md::write_atomic(&path, &new)?;
+    let (at_s, to_s) = (projects::fmt_version(at), projects::fmt_version(to));
     log.info(
         "ptask",
-        &format!("{dir_word}d to {heading} in {} ({name})", sheet.display()),
+        &format!("{dir_word}d to {to_s} in {} ({name})", path.display()),
     );
     println!("{} {}", dir_word, md::task_text(&line));
-    println!("  {} -> {}", waves::fmt(at_v), waves::fmt(to));
+    println!("  {at_s} -> {to_s}");
     if let Some(n) = note {
         println!("  {n}");
     }
@@ -712,7 +600,7 @@ pub fn step(
 }
 
 /// `notes ptask <name> done <query> (--proof <ref> | --unverified "<why>")` — check off the
-/// first open wave task matching `<query>`, and record WHY it counts as done.
+/// first open task matching `<query>`, and record WHY it counts as done.
 ///
 /// Done needs evidence. A bare `done` is rejected because "closed" and "finished" drifted
 /// apart everywhere they were allowed to: the roll gate above only means something if the
@@ -761,7 +649,7 @@ pub(crate) fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Resu
 }
 
 /// `notes ptask <name> drop --why "<why>" | --dup <id> <query>` - close the first matching open
-/// wave task undelivered. The row stays, ticked, with `dropped: <why>` or `dup:<id>` in its
+/// task undelivered. The row stays, ticked, with `dropped: <why>` or `dup:<id>` in its
 /// marker, so its id is never reused, its detail lines stay under it, and the sweep and roll
 /// treat it as any closed row. There is no delete.
 pub fn drop(
@@ -797,7 +685,7 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
     }
 }
 
-/// `notes ptask <name> edit <query> --text|--append` - change the first matching wave task's
+/// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
 /// checkbox state and its tags stay as they were ([`md::retext_task`]).
 ///
@@ -820,10 +708,11 @@ pub fn retext(
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
     }
     if has_details {
-        let Some((sheet, heading, content)) = sheet_and_wave(p, name, lane)? else {
+        let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
         };
-        let Some(new) = md::append_details(&content, &heading, |l| pick.hits(l), details) else {
+        let Some(new) = md::append_details(&content, sheet::TASKS, |l| pick.hits(l), details)
+        else {
             eprintln!("no open task matches '{pick}' in {name}");
             return Ok(1);
         };
@@ -848,7 +737,7 @@ pub fn retext(
     .0)
 }
 
-/// `notes ptask <name> start <query>` - toggle the first matching wave task between todo
+/// `notes ptask <name> start <query>` - toggle the first matching task between todo
 /// (`[ ]`) and in-progress (`[/]`).
 ///
 /// A row going to `[/]` with no id gets one, as [`add`] would have given it: a started row has
@@ -883,7 +772,7 @@ fn toggle_started(line: &str, id: Option<&str>) -> String {
     }
 }
 
-/// `notes ptask <name> sweep [--dry-run]` - reorganize the sheet's wave roadmap.
+/// `notes ptask <name> sweep [--dry-run]` - reorganize the sheet's `## Tasks` section.
 ///
 /// Logs under `ptask:` like every other verb here, because the Stop gate greps the notes log
 /// for `(focus|ptask):` to decide a turn made progress; a verb logged under anything else is
@@ -891,14 +780,11 @@ fn toggle_started(line: &str, id: Option<&str>) -> String {
 pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
     let dir = lane_dir(p, name, lane)?;
     let Some(sheet) = task_sheet(&dir) else {
-        bail!("{name} has no task sheet with a `## Wave` section");
+        bail!("{name} has no task sheet with a `## Tasks` section");
     };
     let content = fs::read_to_string(&sheet)?;
     let Some((new, report)) = project_sweep::sweep_sheet(&content) else {
-        println!(
-            "{}: already swept (or no `Version:` / an unversioned wave heading)",
-            name
-        );
+        println!("{name}: already swept");
         return Ok(0);
     };
     for r in &report {
@@ -909,7 +795,7 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
         return Ok(0);
     }
     md::write_atomic(&sheet, &new)?;
-    log.info("ptask", &format!("swept {name}'s waves"));
+    log.info("ptask", &format!("swept {name}'s tasks"));
     println!("{}", sheet.display());
     Ok(0)
 }
@@ -972,11 +858,11 @@ fn append_done_rows(content: &str, rows: &[String]) -> String {
 /// and in board order, each with the proof stamp `done` put on it.
 ///
 /// What keeps an agent board inside its budget (`notes doctor --projects`). The human
-/// sheet has no archive: its done rows freeze with its version in `notes projects --roll`.
+/// sheet has no archive: its done rows freeze with its version in `notes projects --release`.
 pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
     if lane == Lane::Human {
         bail!(
-            "archive moves the agent board's done rows (--agent); the human sheet's done rows freeze with `notes projects --roll`"
+            "archive moves the agent board's done rows (--agent); the human sheet's done rows freeze with `notes projects --release`"
         );
     }
     let dir = projects::project_dir(p, name)?;
@@ -989,9 +875,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         println!("{name}: no done rows on the agent board");
         return Ok(0);
     }
-    let ver = task_sheet(&dir)
-        .and_then(|s| fs::read_to_string(s).ok())
-        .map_or_else(|| "v0.0.1".to_string(), |c| projects::wave_version_of(&c));
+    let ver = projects::version_or_default(open_version_for(&dir));
     let note = projects::agent_note_path(&dir, &ver);
     if dry_run {
         println!(
@@ -1018,7 +902,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
 /// the board without them, plus how many moved. Writes the note only; the caller writes the
 /// board after, so a failure between the two leaves rows in both, never neither.
 ///
-/// Shared by `ptask --agent archive` and `notes projects --roll`, which closes a version's
+/// Shared by `ptask --agent archive` and `notes projects --release`, which closes a version's
 /// agent board with it.
 pub(crate) fn archive_done_rows(
     dir: &Path,
@@ -1051,7 +935,7 @@ pub(crate) fn archive_done_rows(
     Ok((format!("{}\n", kept.join("\n")), ranges.len()))
 }
 
-/// Shared body for `done`/`rm`/`start`: apply `f` to the first open wave task matching
+/// Shared body for `done`/`rm`/`start`: apply `f` to the first open task matching
 /// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
 /// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
 /// "matched nothing").
@@ -1067,10 +951,10 @@ fn edit<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let Some((sheet, heading, content)) = sheet_and_wave(p, name, lane)? else {
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
-    match md::edit_first_in_section(&content, &heading, |l| pick.hits(l), f) {
+    match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), f) {
         Some((new, matched)) => {
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
@@ -1141,17 +1025,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let sheet = dir.join("README.md");
         let row = "- [ ] Same row #high";
-        fs::write(
-            &sheet,
-            format!("## Wave: v0.1.0 (current)\n{row}\n- [ ] other\n"),
-        )
-        .unwrap();
+        fs::write(&sheet, format!("## Tasks\n{row}\n- [ ] other\n")).unwrap();
         let pick = Pick::new(row, true).unwrap();
         assert!(pick.sole_in(&sheet).is_ok(), "one copy is fine");
         // NEGATIVE CONTROL: a second identical line anywhere on the sheet is refused.
         fs::write(
             &sheet,
-            format!("## Wave: v0.1.0 (current)\n{row}\n## Wave: v0.2.0\n{row}\n"),
+            format!("## Tasks\n{row}\n\n---\n### Done\n\n## Backlog\n{row}\n"),
         )
         .unwrap();
         assert!(pick.sole_in(&sheet).is_err());
@@ -1162,17 +1042,16 @@ mod tests {
 
     #[test]
     fn a_stale_exact_pick_moves_nothing() {
-        let h = waves::sections(SRC)[0].heading.clone();
         let stale = Pick::new("- [ ] spawn bug that was renamed since", true).unwrap();
-        assert!(move_within(SRC, &stale, &h, "v0.5.0").unwrap().is_none());
-        assert!(lift_into(SRC, DEST, &stale, None).unwrap().is_none());
+        assert!(retarget(SRC, &stale, (0, 5, 0), SRC_CUR).is_none());
+        assert!(lift(&stale, None).unwrap().is_none());
     }
 
     const SHEET: &str = "\
 # demo
 Version: v0.1.0
 
-## Wave: new (current)
+## Tasks
 - [ ] first task
 - [x] done task
 - [/] doing this
@@ -1182,64 +1061,41 @@ Version: v0.1.0
 - [ ] later
 ";
 
-    // Negative control for the two-minter bug: before `ensure_task_sheet` routed through
-    // `projects::wave_heading`, this appended the literal `## Wave: new (current)` to a
-    // sheet declaring `Version: v0.2.0`, and both assertions below failed. A sheet must
-    // never name a wave anything other than the version it already declares.
     #[test]
-    fn appended_wave_is_named_for_the_sheets_version_not_the_literal_new() {
-        let dir = std::env::temp_dir().join(format!("ptask-wave-{}", std::process::id()));
+    fn a_prose_readme_grows_the_sections_at_its_end() {
+        let dir = std::env::temp_dir().join(format!("ptask-prose-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let readme = dir.join("README.md");
-        // A prose README carrying a version but no wave — the path that used to hardcode.
-        fs::write(&readme, "# demo\nVersion: v0.2.0\n\nsome prose\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.2.0\n\nsome prose\n",
+        )
+        .unwrap();
 
-        let sheet = ensure_task_sheet(&dir, "demo").unwrap();
-        let body = fs::read_to_string(&sheet).unwrap();
-
-        assert_eq!(
-            current_wave(&body).as_deref(),
-            Some("Wave: v0.2.0 (current)"),
-            "the appended wave must carry the sheet's declared version"
-        );
+        let body = fs::read_to_string(ensure_task_sheet(&dir, "demo").unwrap()).unwrap();
         assert!(
-            !body.contains("Wave: new"),
-            "the literal `new` must never be minted as a wave id: {body}"
+            body.starts_with("# demo\nVersion: v0.2.0\n\nsome prose\n"),
+            "{body}"
         );
+        assert!(body.ends_with(&sheet::skeleton()), "{body}");
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // A sheet with no `Version:` line has nothing to inherit, so it opens at v0.0.1 —
-    // the same seed `projects --new` uses. Guards the fallback from drifting back to `new`.
     #[test]
-    fn a_versionless_fresh_sheet_opens_at_v0_0_1() {
+    fn a_fresh_sheet_carries_the_sections_and_no_version() {
         let dir = std::env::temp_dir().join(format!("ptask-fresh-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let sheet = ensure_task_sheet(&dir, "demo").unwrap();
-        let body = fs::read_to_string(&sheet).unwrap();
-
-        assert_eq!(
-            current_wave(&body).as_deref(),
-            Some("Wave: v0.0.1 (current)")
-        );
+        let body = fs::read_to_string(ensure_task_sheet(&dir, "demo").unwrap()).unwrap();
+        assert_eq!(body, format!("# demo\n\n{}", sheet::skeleton()));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn current_wave_finds_the_first_wave_heading() {
-        assert_eq!(current_wave(SHEET).as_deref(), Some("Wave: new (current)"));
-        assert_eq!(current_wave("# x\n\n## Notes\n- [ ] a\n"), None);
-    }
-
-    #[test]
-    fn list_positions_cover_only_open_wave_tasks() {
-        let h = current_wave(SHEET).unwrap();
-        let open: Vec<_> = md::section_numbered(SHEET, &h)
+    fn list_positions_cover_only_open_tasks() {
+        let open: Vec<_> = sheet::open_rows(SHEET)
             .into_iter()
-            .filter(|(_, l)| md::is_open_task(l))
             .map(|(_, l)| md::task_key(l))
             .collect();
         // the two todos + the in-progress task; NOT the checked one, NOT the backlog item
@@ -1247,11 +1103,10 @@ Version: v0.1.0
     }
 
     #[test]
-    fn edit_first_ticks_only_the_matching_wave_task() {
-        let h = current_wave(SHEET).unwrap();
+    fn edit_first_ticks_only_the_matching_task() {
         let (out, matched) = md::edit_first_in_section(
             SHEET,
-            &h,
+            sheet::TASKS,
             |l| is_match(l, "second"),
             |l| Some(md::set_checkbox(l, 'x')),
         )
@@ -1262,33 +1117,30 @@ Version: v0.1.0
         assert!(out.contains("## Backlog\n- [ ] later"));
     }
 
-    // A sheet with a roadmap: current wave plus two planned ones.
+    // A sheet with a roadmap: the open version plus rows aimed at two later ones.
     const ROADMAP: &str = "\
 # demo
 Version: v1.13.0
 
-## Wave: v1.13.0 (current)
+## Tasks
 - [ ] live one
-
-## Wave: v1.14.0 (planned)
-- [ ] planned one #ai
-
-## Wave: v1.16.0 (planned)
-- [ ] much later
+- [ ] planned one #ai #v1.14.0
+- [ ] much later #v1.16.0
 ";
+    const ROADMAP_CUR: Option<V> = Some((1, 13, 0));
 
-    // THE invariant the whole roadmap rests on. Everything that predates planned waves -
-    // `notes board`, `notes ptask list`, the cockpit - reads the CURRENT wave via
-    // this one function. If a planned task ever shows up here, the board starts advertising
-    // work that has not started.
+    // THE invariant the whole roadmap rests on. `notes board`, `notes ptask list` and the
+    // cockpit read the open version through this one function. If a row aimed later ever shows
+    // up here, the board starts advertising work that has not started.
     #[test]
-    fn the_board_sees_the_current_wave_and_none_of_the_roadmap() {
+    fn the_board_sees_the_open_version_and_none_of_the_roadmap() {
         let dir = std::env::temp_dir().join(format!("ptask-roadmap-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("README.md"), ROADMAP).unwrap();
 
-        let (ver, open) = open_wave_for_dir(&dir).unwrap();
+        let w = current_rows_for_dir(&dir).unwrap();
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
         assert_eq!(ver, "v1.13.0");
         assert_eq!(
             open,
@@ -1298,71 +1150,77 @@ Version: v1.13.0
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // An agent board has no `Version:` line: its rows are read against the human sheet's.
     #[test]
-    fn current_wave_is_the_first_section_even_with_a_roadmap_below_it() {
+    fn an_agent_board_reads_the_parents_version() {
+        let dir = std::env::temp_dir().join(format!("ptask-board-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        fs::write(dir.join("README.md"), ROADMAP).unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo\n\n## Tasks\n- [ ] now\n- [ ] after #v1.14.0\n",
+        )
+        .unwrap();
+
+        let w = current_rows_for_dir(&dir.join("agent")).unwrap();
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
+        assert_eq!(ver, "v1.13.0");
+        assert_eq!(open, vec!["- [ ] now"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_move_retags_the_row_where_it_stands() {
+        let pick = w("live one");
+        let (new, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
+        assert_eq!(line, "- [ ] live one #v1.15.0");
         assert_eq!(
-            current_wave(ROADMAP).as_deref(),
-            Some("Wave: v1.13.0 (current)")
+            new,
+            ROADMAP.replace("- [ ] live one\n", "- [ ] live one #v1.15.0\n")
         );
     }
 
-    // `--to` on a version the roadmap does not hold yet opens it, in order, below current.
+    // Moving a row to the release it is already aimed at matches nothing.
     #[test]
-    fn target_wave_mints_a_planned_section_for_an_unknown_version() {
-        let (heading, grown) = target_wave(ROADMAP, Some("v1.15.0"), true).unwrap();
-        assert_eq!(heading, "Wave: v1.15.0 (planned)");
-        let grown = grown.expect("the sheet had to grow a section");
-        let got: Vec<_> = waves::sections(&grown)
-            .iter()
-            .map(|s| s.version.unwrap())
-            .collect();
-        assert_eq!(got, vec![(1, 13, 0), (1, 14, 0), (1, 15, 0), (1, 16, 0)]);
+    fn a_move_onto_its_own_version_is_a_no_op() {
+        assert!(retarget(ROADMAP, &w("planned one"), (1, 14, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
+    // `move --to` must retag, or the next `sweep` strips the row back to the open version.
     #[test]
-    fn target_wave_reuses_a_section_that_already_exists() {
-        let (heading, grown) = target_wave(ROADMAP, Some("v1.14.0"), true).unwrap();
-        assert_eq!(heading, "Wave: v1.14.0 (planned)");
-        assert!(grown.is_none(), "an existing wave must not be re-minted");
-    }
-
-    // `move --to` must retag, or the next `sweep` (which buckets by tag) drags the row back.
-    #[test]
-    fn a_moved_row_takes_its_new_wave_tag_and_survives_a_sweep() {
-        let sheet = "# demo\nVersion: v1.13.0\n\n## Wave: v1.13.0 (current)\n- [ ] stays\n\n## Wave: v1.14.0 (planned)\n- [ ] later #v1.14.0\n";
-        let line = retag_for(sheet, "- [ ] moved #v1.13.0 #urgent", "v1.14.0");
+    fn a_moved_row_takes_its_new_tag_and_survives_a_sweep() {
+        let sheet =
+            "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] stays\n- [ ] moved #v1.13.0 #urgent\n";
+        let (new, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
         assert!(
             line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
             "{line}"
         );
         assert!(
             !line.contains("#urgent"),
-            "urgent is only legal in the current wave: {line}"
+            "urgent is only legal in the open version: {line}"
         );
-        let placed = md::insert_under_heading(sheet, "Wave: v1.14.0 (planned)", &[line]);
-        let swept = project_sweep::sweep_sheet(&placed).map_or(placed.clone(), |(c, _)| c);
-        let later = waves::find(&swept, (1, 14, 0)).unwrap();
-        let in_later = swept
-            .lines()
-            .skip(later.start)
-            .take(later.end - later.start)
-            .any(|l| l.contains("moved"));
-        assert!(in_later, "sweep pulled it back:\n{swept}");
+        let swept = project_sweep::sweep_sheet(&new).map_or(new.clone(), |(c, _)| c);
+        assert!(
+            swept
+                .lines()
+                .any(|l| l.contains("moved") && l.contains("#v1.14.0")),
+            "{swept}"
+        );
     }
 
     #[test]
-    fn target_wave_rejects_a_non_version() {
-        assert!(target_wave(ROADMAP, Some("next"), true).is_err());
-        assert!(target_wave(ROADMAP, Some("v1.14"), true).is_err());
-    }
-
-    // `move` without a mint (the read-only path) must refuse rather than invent a wave.
-    #[test]
-    fn target_wave_without_mint_refuses_an_unknown_version() {
-        let e = target_wave(ROADMAP, Some("v9.9.9"), false)
+    fn a_target_must_be_a_version_and_not_behind_the_open_one() {
+        assert!(parse_to("next").is_err());
+        assert!(parse_to("v1.14").is_err());
+        let e = refuse_behind((1, 12, 0), ROADMAP_CUR)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("no wave v9.9.9"), "{e}");
+        assert!(e.contains("behind the open version v1.13.0"), "{e}");
+        assert!(refuse_behind((1, 13, 0), ROADMAP_CUR).is_ok());
+        assert!(refuse_behind((0, 0, 1), None).is_ok());
     }
 
     // THE proof gate. A bare `done` must be refused - if this ever passes, "closed" and
@@ -1409,12 +1267,10 @@ Version: v1.13.0
 # unity-playground
 Version: v0.4.0
 
-## Wave: v0.4.0 (current)
+## Tasks
 - [ ] playground thing #high
 - [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->
 - [ ] dodgeball menu polish #low
-
-## Wave: v0.5.0 (planned)
 - [ ] dodgeball netcode #v0.5.0 #high
 ";
 
@@ -1422,24 +1278,24 @@ Version: v0.4.0
 # dodginballs
 Version: v1.2.0
 
-## Wave: v1.2.0 (current)
+## Tasks
 - [ ] existing row #high
-
-## Wave: v1.3.0 (planned)
 - [ ] later row #v1.3.0 #high
 ";
 
+    const SRC_CUR: Option<V> = Some((0, 4, 0));
+
+    fn lift(pick: &Pick, to: Option<V>) -> Result<Option<Lifted>> {
+        lift_into(SRC, DEST, pick, to, Some((1, 2, 0)))
+    }
+
     #[test]
-    fn a_cross_project_move_lands_in_the_dest_current_wave_retagged() {
-        let m = lift_into(SRC, DEST, &w("spawn bug"), None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(m.from, "Wave: v0.4.0 (current)");
-        assert_eq!(m.into, "Wave: v1.2.0 (current)");
-        // Source tag swapped for the dest's; priority, other tags and the marker kept.
+    fn a_cross_project_move_lands_on_the_dest_with_no_tag() {
+        let m = lift(&w("spawn bug"), None).unwrap().unwrap();
+        // The source's tag goes; priority, other tags and the marker stay.
         assert_eq!(
             m.line,
-            "- [ ] dodgeball spawn bug #urgent #game #v1.2.0 <!-- since:2026-10-01 carried:2 -->"
+            "- [ ] dodgeball spawn bug #urgent #game <!-- since:2026-10-01 carried:2 -->"
         );
         assert!(
             !m.src.contains("spawn bug"),
@@ -1447,78 +1303,46 @@ Version: v1.2.0
             m.src
         );
         assert!(m.src.contains("- [ ] dodgeball menu polish #low"));
-        let cur = waves::find(&m.dest, (1, 2, 0)).unwrap();
-        let in_cur: Vec<&str> = m
-            .dest
-            .lines()
-            .skip(cur.start)
-            .take(cur.end - cur.start)
+        let open: Vec<_> = sheet::open_rows(&m.dest)
+            .into_iter()
+            .map(|(_, l)| l)
             .collect();
-        assert!(in_cur.contains(&m.line.as_str()), "{}", m.dest);
+        assert!(open.contains(&m.line.as_str()), "{}", m.dest);
         assert!(m.dest.contains("- [ ] existing row #high"));
     }
 
     #[test]
-    fn a_cross_project_move_with_to_lands_in_an_existing_planned_wave() {
-        let m = lift_into(SRC, DEST, &w("spawn"), Some("v1.3.0"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(m.into, "Wave: v1.3.0 (planned)");
-        // #urgent is only legal in a current wave, the same rule the same-sheet move applies.
+    fn a_cross_project_move_with_to_is_aimed_at_that_release() {
+        let m = lift(&w("spawn"), Some((1, 3, 0))).unwrap().unwrap();
+        // #urgent is only legal in the open version, the same rule the same-sheet move applies.
         assert_eq!(
             m.line,
             "- [ ] dodgeball spawn bug #game #high #v1.3.0 <!-- since:2026-10-01 carried:2 -->"
         );
-        let later = waves::find(&m.dest, (1, 3, 0)).unwrap();
-        assert!(m
-            .dest
-            .lines()
-            .skip(later.start)
-            .take(later.end - later.start)
-            .any(|l| l == m.line));
+        assert!(m.dest.lines().any(|l| l == m.line), "{}", m.dest);
     }
 
-    // The source search spans every wave, as the same-sheet move's does.
+    // The source search spans every release, as the same-sheet move's does.
     #[test]
-    fn a_cross_project_move_finds_a_row_in_a_planned_source_wave() {
-        let m = lift_into(SRC, DEST, &w("netcode"), None).unwrap().unwrap();
-        assert_eq!(m.from, "Wave: v0.5.0 (planned)");
-        assert_eq!(m.line, "- [ ] dodgeball netcode #high #v1.2.0");
-    }
-
-    // Agents may not create planned waves on another project's roadmap.
-    #[test]
-    fn a_cross_project_move_refuses_a_dest_wave_that_does_not_exist() {
-        let e = lift_into(SRC, DEST, &w("spawn"), Some("v9.0.0"))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("no wave v9.0.0"), "{e}");
+    fn a_cross_project_move_finds_a_row_aimed_later_on_the_source() {
+        let m = lift(&w("netcode"), None).unwrap().unwrap();
+        assert_eq!(m.line, "- [ ] dodgeball netcode #high");
     }
 
     #[test]
-    fn a_cross_project_move_refuses_a_dest_with_no_wave() {
-        assert!(lift_into(SRC, "# prose only\n\nnothing here\n", &w("spawn"), None).is_err());
+    fn a_cross_project_move_refuses_a_dest_with_no_section() {
+        let prose = "# prose only\n\nnothing here\n";
+        assert!(lift_into(SRC, prose, &w("spawn"), None, None).is_err());
     }
 
     #[test]
     fn a_cross_project_move_with_no_match_is_none() {
-        assert!(lift_into(SRC, DEST, &w("no such row"), None)
-            .unwrap()
-            .is_none());
+        assert!(lift(&w("no such row"), None).unwrap().is_none());
         // A closed row is not movable.
         let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
-        assert!(lift_into(&closed, DEST, &w("menu polish"), None)
+        assert!(lift_into(&closed, DEST, &w("menu polish"), None, None)
             .unwrap()
             .is_none());
-    }
-
-    // A dest wave with no parseable version gets no tag, never the source's stale one.
-    #[test]
-    fn a_cross_project_move_into_an_unversioned_wave_drops_the_source_tag() {
-        let dest = "# legacy\n\n## Wave: new (current)\n- [ ] x\n";
-        let m = lift_into(SRC, dest, &w("spawn"), None).unwrap().unwrap();
-        assert!(!m.line.contains("#v0.4.0"), "{}", m.line);
-        assert!(m.line.contains("<!-- since:2026-10-01 carried:2 -->"));
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -1550,42 +1374,31 @@ Version: v1.2.0
         fs::write(&t, DEST).unwrap();
         let same = transfer(&s, &s, &w("spawn"), None).unwrap_err().to_string();
         assert!(same.contains("same sheet"), "{same}");
-        assert!(transfer(&s, &t, &w("spawn"), Some("v9.0.0")).is_err());
+        assert!(transfer(&s, &t, &w("spawn"), Some("next")).is_err());
         assert!(transfer(&s, &t, &w("no such row"), None).unwrap().is_none());
         assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
         assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
         let _ = fs::remove_dir_all(&d);
     }
 
-    // The same-sheet move, pinned through its refactor into `move_within`: same row, same
-    // retag, same placement, and a move onto the row's own wave still matches nothing.
     #[test]
-    fn the_same_project_move_is_unchanged() {
-        let (h, grown) = target_wave(SRC, Some("v0.5.0"), true).unwrap();
-        assert!(grown.is_none());
-        let (new, line, from) = move_within(SRC, &w("spawn"), &h, "v0.5.0")
-            .unwrap()
-            .unwrap();
-        assert_eq!(from, "Wave: v0.4.0 (current)");
+    fn a_same_project_move_keeps_the_row_in_place() {
+        let (new, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
         assert_eq!(
             line,
             "- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->"
         );
         assert_eq!(
             new,
-            "# unity-playground\nVersion: v0.4.0\n\n## Wave: v0.4.0 (current)\n- [ ] playground thing #high\n- [ ] dodgeball menu polish #low\n\n## Wave: v0.5.0 (planned)\n- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->\n- [ ] dodgeball netcode #v0.5.0 #high\n"
+            "# unity-playground\nVersion: v0.4.0\n\n## Tasks\n- [ ] playground thing #high\n- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->\n- [ ] dodgeball menu polish #low\n- [ ] dodgeball netcode #v0.5.0 #high\n"
         );
-        assert!(move_within(SRC, &w("netcode"), &h, "v0.5.0")
-            .unwrap()
-            .is_none());
     }
 
     #[test]
     fn start_toggles_todo_and_in_progress() {
-        let h = current_wave(SHEET).unwrap();
         let (out, _) = md::edit_first_in_section(
             SHEET,
-            &h,
+            sheet::TASKS,
             |l| is_match(l, "first"),
             |l| Some(toggle_started(l, None)),
         )
@@ -1617,7 +1430,7 @@ Version: v1.2.0
 # demo - agent board
 Version: v0.0.1
 
-## Wave: v0.0.1 (current)
+## Tasks
 - [ ] open row #high
 - [x] shipped row #high <!-- pr:12 -->
   - with a note under it
@@ -1677,7 +1490,7 @@ Version: v0.0.1
         fs::write(dir.join("summary.md"), "# demo\n").unwrap();
         fs::write(
             dir.join("README.md"),
-            "# demo\nVersion: v0.3.0 #beta\n\n## Wave: v0.3.0 (current)\n- [ ] human row\n",
+            "# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n- [ ] human row\n",
         )
         .unwrap();
         fs::write(dir.join("agent/README.md"), BOARD).unwrap();
@@ -1696,7 +1509,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n"
+            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
         assert!(

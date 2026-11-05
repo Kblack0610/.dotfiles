@@ -2,8 +2,8 @@
 //! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
 //! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
 //! row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m, e, + and - add, start,
-//! finish, drop (with why, or the id it duplicates), move (to a project or a wave), edit, and
-//! step a row a wave sooner or later through `notes ptask --exact`; `o` opens the sheet at the
+//! finish, drop (with why, or the id it duplicates), move (to a project or a version), edit, and
+//! step a row a release sooner or later through `notes ptask --exact`; `o` opens the sheet at the
 //! row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
 //! the read fails in `notes` and the page re-reads.
 
@@ -137,7 +137,7 @@ impl TaskView {
                 "a Focus row is read-only here: notes focus owns the daily note"
             }
             Some(r) if r.lane == "playtest" && !playtest_ok => {
-                "a playtest check has no state, waves or edit: d done, x drop"
+                "a playtest check has no state, version or edit: d done, x drop"
             }
             Some(r) => {
                 self.said = None;
@@ -179,7 +179,7 @@ impl TaskView {
                 },
             ),
             Kind::Move => {
-                // Words: a vX.Y.Z is the wave, anything else the project; `notes` checks both.
+                // Words: a vX.Y.Z is the version, anything else the project; `notes` checks both.
                 let (mut project, mut to) = (None, None);
                 for word in p.text.split_whitespace() {
                     let slot = if word.starts_with('v')
@@ -347,7 +347,7 @@ impl TaskView {
                     } else {
                         ("later", Verb::Demote { raw: r.raw.clone() })
                     };
-                    return self.ask(format!("a wave {word} in {}", group(&r)), on(&r, verb));
+                    return self.ask(format!("a release {word} in {}", group(&r)), on(&r, verb));
                 }
             }
             KeyCode::Char('o') => {
@@ -375,10 +375,10 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         "high" => p.warn(),
         _ => p.dim(),
     };
-    let wave = if r.lane == "playtest" {
+    let version = if r.lane == "playtest" {
         r.game.clone()
     } else {
-        r.wave.clone()
+        r.version.clone()
     };
     let state = if r.state == "doing" {
         cell("doing", p.good())
@@ -392,7 +392,7 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
     vec![
         cell(r.priority.clone(), prio),
         r.lane.clone().into(),
-        wave.unwrap_or_default().into(),
+        version.unwrap_or_default().into(),
         state,
         text.into(),
     ]
@@ -439,7 +439,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         }
         out.push(clip_line(heading(&title.to_uppercase(), rest, p), w));
         let mut t = Table {
-            header: vec!["PRIO", "LANE", "WAVE", "STATE", "TEXT"],
+            header: vec!["PRIO", "LANE", "VERSION", "STATE", "TEXT"],
             rows: rows.iter().map(|r| row(r, p)).collect(),
             keep: vec![0, 3, 1, 2],
             flex: Some(4),
@@ -474,7 +474,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             (Kind::Unverified, _) => "Done unverified, because: ".into(),
             (Kind::Why, _) => "Drop it, because: ".into(),
             (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
-            (Kind::Move, _) => "Move to a project, a wave vX.Y.Z, or both: ".into(),
+            (Kind::Move, _) => "Move to a project, a version vX.Y.Z, or both: ".into(),
             (Kind::Edit, _) => "New text (tags stay): ".into(),
             (_, None) => String::new(),
         };
@@ -501,7 +501,7 @@ pub(crate) mod tests {
             profile: profile.into(),
             project: project.map(String::from),
             lane: lane.into(),
-            wave: Some("v0.1.0".into()).filter(|_| lane != "focus" && lane != "playtest"),
+            version: Some("v0.1.0".into()).filter(|_| lane != "focus" && lane != "playtest"),
             game: Some("demo".into()).filter(|_| lane == "playtest"),
             state: "open".into(),
             priority: prio.into(),
@@ -700,7 +700,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn move_edit_and_the_wave_keys_carry_the_rows_raw_line() {
+    fn move_edit_and_the_version_keys_carry_the_rows_raw_line() {
         let f = fixture();
         let mut v = TaskView::default();
         v.key(key('j'), Some(&f), 10);
@@ -750,7 +750,7 @@ pub(crate) mod tests {
         let Ask::Write(label, w) = v.key(key('+'), Some(&f), 10) else {
             panic!("+ runs")
         };
-        assert_eq!(label, "a wave sooner in bnb/demo");
+        assert_eq!(label, "a release sooner in bnb/demo");
         assert_eq!(
             w.verb,
             Verb::Promote {
@@ -772,7 +772,7 @@ pub(crate) mod tests {
             Ask::Open("/v/bnb/demo/human.md".into(), 0)
         );
 
-        // The playtest row and the focus row refuse the wave keys before anything runs.
+        // The playtest row and the focus row refuse the version keys before anything runs.
         for _ in 0..2 {
             v.key(key('j'), Some(&f), 10);
         }

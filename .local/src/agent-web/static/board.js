@@ -1,7 +1,7 @@
 "use strict";
 // The Board tab: every project's open rows from `notes board --json` (/api/board): the human
 // sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done,
-// remove, move (to a project or a wave), a wave sooner or later, and edit go through
+// remove, move (to a project or a version), a release sooner or later, and edit go through
 // `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
@@ -43,7 +43,7 @@ function bControls() {
     `<select id="b-prio">${bOpt(B_PRIORITIES, d.priority)}</select>` +
     (playtest
       ? `<input id="b-game" placeholder="game (optional)" value="${esc(d.game)}">`
-      : `<input id="b-to" placeholder="wave vX.Y.Z (optional)" value="${esc(d.to)}">`) +
+      : `<input id="b-to" placeholder="version vX.Y.Z (optional)" value="${esc(d.to)}">`) +
     `<button class="btn primary" id="b-add"${bst.busy ? " disabled" : ""}>${bst.busy ? "Adding..." : "Add"}</button>` +
     `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>` +
     `<div class="card bfilter"><div class="opts">` +
@@ -70,7 +70,7 @@ function bMatch(r) {
 function bRow(r, i) {
   const k = bKey(r);
   const focus = r.lane === "focus";
-  const tags = [r.wave, r.target && "-> " + r.target, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
+  const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
     r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const meta = [
@@ -97,7 +97,7 @@ function bRow(r, i) {
       const names = [...new Set(bst.feed.projects.map((p) => p.project))].filter((p) => p !== r.project).sort();
       acts = `<div class="opts">` +
         `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
-        `<input data-forminput="${i}" placeholder="wave vX.Y.Z (optional with a project)">` +
+        `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
         `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
     } else {
       acts = `<div class="opts">` +
@@ -105,13 +105,13 @@ function bRow(r, i) {
         `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
     }
   } else {
-    // A playtest check has no waves and no edit: notes takes add, done and drop there.
-    const waves = r.lane !== "playtest";
+    // A playtest check has no version and no edit: notes takes add, done and drop there.
+    const versioned = r.lane !== "playtest";
     acts = `<div class="opts">` +
-      (waves && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
+      (versioned && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
       `<button class="btn sm" data-done="${i}">Done...</button>` +
-      (waves ? `<button class="btn sm" data-promote="${i}" title="one wave sooner">Sooner</button>` +
-        `<button class="btn sm" data-demote="${i}" title="one wave later">Later</button>` +
+      (versioned ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` +
+        `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
         `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
@@ -232,7 +232,7 @@ $("board").addEventListener("click", (e) => {
   if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
   if (d.promote || d.demote) {
     const verb = d.promote ? "promote" : "demote";
-    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One wave sooner." : "One wave later.");
+    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
   const opened = d.done || d.drop || d.move || d.edit;
@@ -255,7 +255,7 @@ $("board").addEventListener("click", (e) => {
       body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
     } else if (kind === "move") {
       const dest = q("movedest").value;
-      if (!dest && !v) { bst.msg = "Pick a project, a wave, or both."; renderBoard(); return; }
+      if (!dest && !v) { bst.msg = "Pick a project, a version, or both."; renderBoard(); return; }
       body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
     } else {
       if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }

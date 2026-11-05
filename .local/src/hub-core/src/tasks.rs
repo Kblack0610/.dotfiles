@@ -34,14 +34,13 @@ pub struct Row {
     /// None on a focus row.
     pub project: Option<String>,
     pub lane: String,
-    pub wave: Option<String>,
+    pub version: Option<String>,
     pub game: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,
     pub worker: Option<String>,
     pub ask: bool,
-    pub target: Option<String>,
     pub text: String,
     pub tags: Vec<String>,
     pub marker: Option<String>,
@@ -66,7 +65,7 @@ pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
 /// What a write does to one row, or the row it adds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verb {
-    /// `to` plans it into a later wave (`vX.Y.Z`); `game` is the playtest heading.
+    /// `to` aims it at a later release (`vX.Y.Z`); `game` is the playtest heading.
     Add {
         text: String,
         priority: String,
@@ -89,16 +88,16 @@ pub enum Verb {
         why: Option<String>,
         dup: Option<String>,
     },
-    /// Onto another project's sheet (its current wave, or the existing wave `to`), or with no
-    /// project into the wave `to` on its own sheet. At least one of the two.
+    /// Onto another project's sheet (aimed at release `to` if given), or with no project aimed
+    /// at release `to` on its own sheet. At least one of the two.
     Move {
         raw: String,
         project: Option<String>,
         to: Option<String>,
     },
-    /// One wave sooner (clamped at the current wave).
+    /// One release sooner (clamped at the open version).
     Promote { raw: String },
-    /// One wave later (opens the next patch wave past the last).
+    /// One release later (the next patch past the last).
     Demote { raw: String },
     /// New text; the checkbox, place and tags stay.
     Edit { raw: String, text: String },
@@ -186,7 +185,7 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             a.push("add".into());
             if let Some(v) = to.as_deref().filter(|v| !v.is_empty()) {
                 if playtest || !is_version(v) {
-                    return Err("a wave is vX.Y.Z, and a playtest check has none".into());
+                    return Err("a version is vX.Y.Z, and a playtest check has none".into());
                 }
                 a.extend(["--to".into(), v.into()]);
             }
@@ -255,14 +254,14 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             if playtest =>
         {
             return Err(
-                "a playtest check has no waves and no edit: drop it and add it again".into(),
+                "a playtest check has no version and no edit: drop it and add it again".into(),
             );
         }
         Verb::Move { raw, project, to } => {
             let project = project.as_deref().map(str::trim).filter(|s| !s.is_empty());
             let to = to.as_deref().map(str::trim).filter(|s| !s.is_empty());
             if project.is_none() && to.is_none() {
-                return Err("move to a project, a wave (vX.Y.Z), or both".into());
+                return Err("move to a project, a version (vX.Y.Z), or both".into());
             }
             a.extend(["--exact".into(), "move".into()]);
             if let Some(p) = project {
@@ -273,7 +272,7 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             }
             if let Some(v) = to {
                 if !is_version(v) {
-                    return Err("a wave is vX.Y.Z".into());
+                    return Err("a version is vX.Y.Z".into());
                 }
                 a.extend(["--to".into(), v.into()]);
             }
@@ -473,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn move_wave_and_edit_pass_the_row_after_the_separator() {
+    fn move_version_and_edit_pass_the_row_after_the_separator() {
         let mv = |project: Option<&str>, to: Option<&str>| Verb::Move {
             raw: RAW.into(),
             project: project.map(String::from),
