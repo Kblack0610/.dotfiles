@@ -55,8 +55,10 @@ unset _k _v
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
-: "${DISPATCH_JUDGE_CMD:=agentctl-run --role observe}"
-: "${DISPATCH_POLICY:=$HOME/.config/fleet-dispatch/policy.md}"
+: "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
+# The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
+# here only so a policy edit re-judges every row (policy_sig).
+: "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
@@ -320,9 +322,7 @@ judge() {
   cands=$(jq -sc 'sort_by(.wrank, (.stage | {prod: 0, beta: 1}[.] // 2), .prio)[]' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
-  prompt="$(cat "$DISPATCH_POLICY")
-
-## Rows to judge
+  prompt="## Rows to judge
 
 $(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
 
