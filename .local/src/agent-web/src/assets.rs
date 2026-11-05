@@ -21,13 +21,14 @@ const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
 /// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the Sessions/Waiting tabs and the event stream; each other script is one board tab.
+/// app.js the Sessions tab and the event stream, waiting.js the Waiting tab; each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
     ("charts.js", JS, include_bytes!("../static/charts.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
+    ("waiting.js", JS, include_bytes!("../static/waiting.js")),
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
     ("infra.js", JS, include_bytes!("../static/infra.js")),
