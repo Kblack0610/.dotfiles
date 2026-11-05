@@ -105,14 +105,17 @@ item() {
   assert_output 0
 }
 
-@test "behind after a green gate: base is merged in and pushed, and that head lands with no second checks wait" {
+@test "behind after a green gate: base is merged in and pushed, and that head lands once its checks pass again" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   run "$LAND" 42 --item ship
   assert_success
   assert_line 'fetch: merged origin/main (1 behind) into the green head and pushed it'
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
-  assert_output 1
+  assert_output 2
+  # the second wait comes after the push and before the merge
+  [ "$(grep -n '^git push -q$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
   run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
   assert_line --index 1 'git push -q'
   assert_line --index 2 'git rev-parse HEAD'
