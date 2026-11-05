@@ -160,8 +160,8 @@ seed_tracker_map() {
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a STRING value; an unguarded .value.repo dies on this",
-    "notes-cockpit": { "system": "vikunja", "repo": "toolrepo" },
-    "agent-runtime": { "system": "vikunja", "repo": "toolrepo" }
+    "notes-cockpit": { "system": "board", "repo": "toolrepo" },
+    "agent-runtime": { "system": "board", "repo": "toolrepo" }
   }
 }
 EOF
@@ -252,9 +252,9 @@ EOF
   refute_output --partial 'Cannot index string'
 }
 
-@test "an app session gets its REPO's lessons as parent, not its ticket inherits" {
-  # `inherits` only merges ticket config and may name another tracker; the corpus that
-  # binds an app is its repo's. NEGATIVE CONTROL: the inherits target's lessons stay out.
+@test "an app session gets its REPO's lessons as parent, and no other tracker's" {
+  # The corpus that binds an app is its repo's. NEGATIVE CONTROL: another registered
+  # tracker's lessons stay out.
   export PROJECT_MAP_FILE="$SANDBOX/map.json"
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
@@ -262,8 +262,8 @@ EOF
   "aliases": {},
   "trackers": {
     "_comment": "a string value",
-    "ticket-parent": { "system": "vikunja" },
-    "shop": { "repo": "toolrepo", "path": "apps/shop", "inherits": "ticket-parent" }
+    "ticket-parent": { "system": "board" },
+    "shop": { "repo": "toolrepo", "path": "apps/shop" }
   }
 }
 EOF

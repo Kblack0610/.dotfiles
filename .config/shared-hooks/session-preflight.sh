@@ -35,8 +35,7 @@ COMPACT_MARKER="$HOME/.agent/compact/${PROJECT_NAME}.pending"
 
 # An APP inside a repo (a tracker entry with `repo` + `path`) is part of that repo. Two
 # things follow: the repo's lessons/plans still apply to it, and its git/PR rows must be
-# scoped to the app's own subtree or they show all 12 apps. The parent is the `repo`, not
-# `inherits`: that one only merges ticket config and can name a different tracker.
+# scoped to the app's own subtree or they show all 12 apps. The parent is the `repo`.
 PROJECT_MAP="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 PARENT_NAME=""; PROJECT_PATHFILTER=""; PROJECT_PRFILTER=""
 if [ -f "$PROJECT_MAP" ] && command -v jq >/dev/null 2>&1; then
