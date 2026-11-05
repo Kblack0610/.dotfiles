@@ -640,6 +640,17 @@ enum OutboxCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The items as the Outbox tab edits them (`--json`: `{hash, text, waiting}`)
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the items with stdin when the file's hash is still BASE; exit 3 and write
+    /// nothing when it changed since
+    Put {
+        #[arg(long, value_name = "BASE")]
+        base: String,
+    },
     /// Append a line and wake the inbox sweep
     Add {
         #[arg(required = true, num_args = 1..)]
@@ -1088,6 +1099,12 @@ fn main() -> Result<()> {
         Cmd::Outbox { sub } => match sub {
             None => outbox::list(&prof, false)?,
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
+            Some(OutboxCmd::Put { base }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::put(&prof, &log, &base, &text)?
+            }
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
