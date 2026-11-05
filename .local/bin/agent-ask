@@ -292,6 +292,19 @@ cmd_post() {
   if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
     session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
   fi
+  # One open question per session: the board is then one row per session, and a session with
+  # several decisions asks them as one. 2026-11-05: 22 sessions had posted bursts of 2 to 6 asks
+  # minutes apart (54 extra rows), one trader session 6 in the same second.
+  if [ -n "$owner" ]; then
+    local f mine
+    while IFS= read -r f; do
+      [ "$(field "$f" status)" = pending ] || continue
+      mine="$(basename "$f" .md)"
+      echo "agent-ask post: this session already has pending ask $mine: \"$(field "$f" question)\"" >&2
+      echo "One open question per session. Fold this decision into that one: agent-ask cancel $mine superseded, then post one question that covers both (several decisions -> options like 'take-all=<each recommendation>|one-by-one=go through them here', the per-decision detail in --context). If $mine is moot, cancel it and post this one." >&2
+      return 2
+    done < <(grep -lx "claude_session: $owner" "$ASKS_ROOT"/*/*.md 2>/dev/null)
+  fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
