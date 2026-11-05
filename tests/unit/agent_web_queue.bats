@@ -33,6 +33,11 @@ setup() {
   assert_success
 }
 
+@test "agent-web outbox.js: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/outbox.test.mjs"
+  assert_success
+}
+
 @test "agent-web log.js: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/log.test.mjs"
   assert_success

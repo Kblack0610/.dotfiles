@@ -249,7 +249,7 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a draft or alpha project
+        /// `Version:` moves to the next one. Refused for a project below beta
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
@@ -319,11 +319,15 @@ enum Cmd {
         #[arg(long, requires = "stats")]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it.
-        /// One of: draft, alpha, beta, prod
+        /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,
+        /// Print the maturity ladder, least to most real, on one line. Shell readers take
+        /// the vocabulary from here instead of keeping a copy
+        #[arg(long)]
+        stages: bool,
         /// Print a project's index group; with --set, declare it. Unset means the
-        /// project's own profile (bnb, personal); `dev` is the tooling lane.
+        /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
         /// Print a project's priority; with --set, declare it. One of: focus, high, low,
@@ -639,6 +643,17 @@ enum OutboxCmd {
         /// One JSON array of `{line, raw, text, details, project}` instead
         #[arg(long)]
         json: bool,
+    },
+    /// The items as the Outbox tab edits them (`--json`: `{path, hash, text, waiting}`)
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the items with stdin when the file's hash is still BASE; exit 3 and write
+    /// nothing when it changed since
+    Put {
+        #[arg(long, value_name = "BASE")]
+        base: String,
     },
     /// Append a line and wake the inbox sweep
     Add {
@@ -1088,6 +1103,12 @@ fn main() -> Result<()> {
         Cmd::Outbox { sub } => match sub {
             None => outbox::list(&prof, false)?,
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
+            Some(OutboxCmd::Put { base }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::put(&prof, &log, &base, &text)?
+            }
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
@@ -1207,6 +1228,7 @@ fn main() -> Result<()> {
             agent_note,
             version,
             stage,
+            stages,
             group,
             prio,
             set,
@@ -1234,6 +1256,10 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
+            if stages {
+                projects::stages();
+                std::process::exit(0);
+            }
             if let Some(n) = stage {
                 projects::stage(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {

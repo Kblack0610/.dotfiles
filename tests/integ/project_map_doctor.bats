@@ -365,6 +365,57 @@ anchors_for() {
   assert_output --partial 'bytes of key facts'
 }
 
+# -- 6d. a game project's lab stage agrees with its game's status --
+# A real git repo whose origin/main holds the game JSON, so the doctor reads the same ref
+# production does; the checkout is left on a different status to prove it is not read.
+
+staged_game() { # $1=lab stage $2=game status on origin/main ("" for no Game JSON)
+  local repo="$HOME/games" r
+  cat > "$MAP" <<'JSON'
+{
+  "trackers": {
+    "games-canon": { "system": "board" },
+    "shooter":     { "repo": "games-canon", "path": "Assets/Games/Shooter", "lab": "personal", "type": "game" },
+    "default":     { "system": "board" }
+  }
+}
+JSON
+  jq --arg r "$repo" '.paths = {($r): "games-canon"}' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  mkdir -p "$repo/Assets/Games/Shooter/Resources/Games"
+  git init -q "$repo"
+  [ -z "$2" ] || printf '{"category":"Game","status":"%s"}\n' "$2" > "$repo/Assets/Games/Shooter/Resources/Games/shooter.json"
+  git -C "$repo" add -A
+  git -C "$repo" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+  git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  [ -z "$2" ] || printf '{"category":"Game","status":"Draft"}\n' > "$repo/Assets/Games/Shooter/Resources/Games/shooter.json"
+  r="$(lab_root personal)/shooter"
+  mkdir -p "$r"
+  printf '# shooter\nVersion: v0.1.0 #%s\n\n## Inbox\n' "$1" > "$r/summary.md"
+  printf 'draft dev alpha beta prod\n' > "$NOTES_FIXTURE/stages"
+  printf 'lab_roots() { printf "%%s\\n" "%s"; }\n' "$HOME/vault/personal/projects/current" > "$HOME/lab-roots.sh"
+  export LAB_ROOTS_LIB="$HOME/lab-roots.sh" LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
+}
+
+@test "game stage: a lab tag equal to the game status on origin/main passes" {
+  staged_game alpha Alpha
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  1 game project(s): lab stage agrees with the game status'
+}
+
+@test "game stage: a lab tag that differs from the game status fails, and names both fixes" {
+  staged_game beta Dev
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'game project "shooter" is #beta on its lab sheet but its game status is dev on origin/main'
+  assert_output --partial 'notes projects --stage shooter --set dev'
+}
+
+@test "game stage: a game path with no Game JSON warns that it cannot be checked" {
+  staged_game dev ''
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'game project "shooter" has no Game-category JSON under Assets/Games/Shooter on origin/main'
+}
+
 # -- 7b. a shipping app's sheet is ahead of its newest release tag --
 # A real git repo with a product tag, so the doctor runs the same tag ladder production does.
 

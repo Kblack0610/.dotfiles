@@ -84,11 +84,12 @@ test("the summary leads, and a long list shows the cap with the rest folded", ()
   assert.doesNotMatch(draw(home({ needs: needs.slice(0, 8) })), /cfold" data-k="home-needs/);
 });
 
-test("a retired tab name lands on its new tab, and anything unknown on Home", () => {
+test("a retired tab name lands on its new tab, and anything unknown on the landing tab, Outbox", () => {
   const of = (n) => vm.runInContext(`tabOf(${JSON.stringify(n)})`, ctx);
   assert.equal(of("waiting"), "home");
   assert.equal(of("asks"), "home");
   assert.equal(of("queue"), "queue");
-  assert.equal(of(""), "home");
-  assert.equal(of("nope"), "home");
+  assert.equal(of("home"), "home");
+  assert.equal(of(""), "outbox");
+  assert.equal(of("nope"), "outbox");
 });

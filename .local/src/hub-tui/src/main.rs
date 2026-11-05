@@ -14,6 +14,7 @@ mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod outboxtab;
 mod projtab;
 mod queuetab;
 mod tabreq;
@@ -142,10 +143,10 @@ fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let state = std::fs::read_to_string(hub_core::boards::fleet_state())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(serde_json::Value::Null);
+    let state = hub_core::boards::state(
+        &hub_core::boards::fleet_state(),
+        &hub_core::session_actions::System,
+    );
     let (queue, infra) = std::thread::scope(|s| {
         let infra = s.spawn(hub_core::infra::gather);
         let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
@@ -213,6 +214,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.fleet = Some(hub_core::fleet::collect());
         }
         a.tab = t;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    if tab == Some(Tab::Outbox) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.outbox = Some(hub_core::outbox::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.tab = Tab::Outbox;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

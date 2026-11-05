@@ -87,7 +87,7 @@ PANEL_TAB=$'\t'
 # for free. Pinning a hex value would stop the surface tracking the terminal -- a regression
 # dressed as a feature. tests/integ/panel_conformance.bats enforces it.
 if [ -n "${PANEL_NO_COLOR:-${NO_COLOR:-}}" ]; then
-  C_HEAD='' C_SEL='' C_INP='' C_ERR='' C_DIM='' C_BOX='' C_PROJ='' C_ACC='' C_OFF=''
+  C_HEAD='' C_SEL='' C_INP='' C_ERR='' C_DIM='' C_BOX='' C_PROJ='' C_ACC='' C_BOLD='' C_FAINT='' C_OFF=''
 else
   C_HEAD=$'\033[1;37m' # section header (bold white)
   C_SEL=$'\033[1;32m'  # healthy / active / selected (bold green)
@@ -97,6 +97,10 @@ else
   C_BOX=$'\033[36m'    # checkbox / accent (cyan)
   C_PROJ=$'\033[1;35m' # project sub-header (magenta)
   C_ACC=$'\033[1;34m'  # blue accent
+  # Attributes with no colour: on fzf's selected row they take its fg+ white, so they still
+  # read on the selection bar (colour 8, the same grey as C_DIM, which vanishes there).
+  C_BOLD=$'\033[1m'
+  C_FAINT=$'\033[2m'
   C_OFF=$'\033[0m'
 fi
 

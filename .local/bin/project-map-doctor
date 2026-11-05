@@ -258,8 +258,11 @@ fi
 # `prod` with a repo and no tag is a FAIL: the claim is refutable and refuted. `prod` with
 # no repo at all is a WARN, because agent-runtime and notes-cockpit are notes-only by
 # design and have no product tag to find.
-STAGE_VOCAB="draft alpha beta prod"
-if declare -F lab_roots >/dev/null 2>&1; then
+# The ladder comes from its one definition (notes-cli STAGES), never a copy kept here.
+STAGE_VOCAB="$(notes projects --stages 2>/dev/null)"
+if [ -z "$STAGE_VOCAB" ]; then
+  skip "notes projects --stages printed nothing; cannot check project stages"
+elif declare -F lab_roots >/dev/null 2>&1; then
   # Overridable like PROJECT_NAME_LIB above, for the same worktree reason.
   # shellcheck source=/dev/null
   [ -r "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}" ] \
@@ -307,6 +310,48 @@ if declare -F lab_roots >/dev/null 2>&1; then
   fi
 else
   skip "lab-roots.sh unavailable (private overlay); cannot check project stages"
+fi
+
+# --- 6d. a game project's lab stage agrees with its game's status ----------------------
+# The playground's per-game `status` (GameStatus in GameDefinition.cs) uses the SAME ladder
+# as the lab tag: one vocabulary, two places it has to be written (the JSON ships in the
+# build; the tag drives the fleet). This turns the two writers into one checked fact. The
+# JSON is read from the repo's remote branch, not the checkout: a clone on a feature branch
+# or behind main must not decide whether the two agree.
+if [ -n "$STAGE_VOCAB" ] && declare -F lab_roots >/dev/null 2>&1 && declare -F lab_head_tag >/dev/null 2>&1; then
+  gchecked=0; gbad=0
+  while IFS=$'\t' read -r name _ path branch; do
+    repo="$(project_repo_path "$name" 2>/dev/null || true)"
+    [ -n "$repo" ] && [ -e "$repo/.git" ] || continue
+    labdir=""
+    while IFS= read -r root; do
+      [ -f "$root/$name/summary.md" ] && { labdir="$root/$name"; break; }
+    done < <(lab_roots)
+    [ -n "$labdir" ] || continue
+    # shellcheck disable=SC2086 # the ladder is a word list on purpose
+    stage="$(lab_head_tag "$(lab_front_page "$labdir")" $STAGE_VOCAB)"
+    ref="origin/${branch:-main}"
+    statuses="$(git -C "$repo" ls-tree -r --name-only "$ref" -- "$path" 2>/dev/null \
+      | grep '/Resources/Games/[^/]*\.json$' \
+      | while IFS= read -r f; do git -C "$repo" show "$ref:$f" 2>/dev/null \
+          | jq -r 'select(.category == "Game") | (.status // "Draft") | ascii_downcase' 2>/dev/null; done \
+      | sort -u)"
+    if [ -z "$statuses" ]; then
+      warn "game project \"$name\" has no Game-category JSON under $path on $ref, so its #${stage:-unset} cannot be checked against a game status"
+      continue
+    fi
+    gchecked=$((gchecked + 1))
+    while IFS= read -r st; do
+      if [ "$st" != "$stage" ]; then
+        fail "game project \"$name\" is #${stage:-unset} on its lab sheet but its game status is ${st} on $ref; move one (notes projects --stage $name --set $st, or the game's status on the admin site, then Save to repo)"
+        gbad=$((gbad + 1))
+      fi
+    done <<<"$statuses"
+  done < <(jq -r '.trackers | to_entries[] | select((.value | type) == "object" and .value.type == "game" and (.value.path // "") != "")
+      | [.key, .value.repo, .value.path, (.value.branch // "main")] | @tsv' "$MAP_FILE")
+  [ "$gchecked" -gt 0 ] && [ "$gbad" -eq 0 ] && pass "$gchecked game project(s): lab stage agrees with the game status"
+else
+  skip "no ladder or lab roots; cannot compare game statuses with lab stages"
 fi
 
 # --- 7. lab and type: the schema, and lab dirs match the registry both ways ----------

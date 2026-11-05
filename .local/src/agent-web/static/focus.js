@@ -4,9 +4,9 @@
 // same view: a day (`daily:2026-11-04`) or a `[[wikilink]]` target (`outbox`, `status/inbox`),
 // which the notes CLI resolves and keeps inside the notes. Links in a note are plain `href="#..."`,
 // so the browser's Back returns from one. Rendered draws the note; Raw is its markdown, to copy.
-// Add to outbox sends one line through POST /api/outbox (`notes outbox add`); the triager files it.
+// Writing to the outbox is the Outbox tab (outbox.js); the head links there.
 
-const fcs = { data: null, err: null, raw: false, open: {}, copied: false, draft: "", sending: false, said: null };
+const fcs = { data: null, err: null, raw: false, open: {}, copied: false };
 
 const focusTarget = () => st.arg || "daily";
 const focusHref = (t) => "#focus/" + t.split("/").map(encodeURIComponent).join("/");
@@ -49,6 +49,7 @@ function focusHead(v) {
     n.next ? `<a class="btn sm" href="${focusHref("daily:" + n.next)}" title="${esc(n.next)}">day &gt;</a>` : "",
     st.arg ? `<button class="btn sm" data-f="back">Back</button><a class="btn sm" href="#focus">Today</a>` : "",
     `<button class="btn sm" data-f="refresh">Refresh</button>`,
+    `<a class="btn sm" href="#outbox">Outbox</a>`,
   ].join("");
   const seg = `<div class="seg"><button data-f="rendered"${fcs.raw ? "" : ` class="on"`}>Rendered</button><button data-f="raw"${fcs.raw ? ` class="on"` : ""}>Raw</button></div>`;
   return `<div class="bhead"><span>FOCUS ${day}${counts}</span><span class="opts">${nav}${seg}</span></div>`;
@@ -74,7 +75,6 @@ function focusBody(v) {
     else html += sectionFold(s, !f);
   }
   if (!html) html = `<div class="empty">This note is empty.</div>`;
-  html += outboxBox();
   const links = n.links || [];
   if (links.length) {
     html += `<h2 class="sec">Links in this note</h2><div class="opts">${links.map((l) =>
@@ -83,37 +83,13 @@ function focusBody(v) {
   return html;
 }
 
-function outboxBox() {
-  const s = fcs.said;
-  const said = !s ? "" : s.ok
-    ? `<div class="muted">Sent "${esc(s.text)}". The triager files it from the <a class="wl" href="${focusHref("outbox")}">outbox</a>.</div>`
-    : `<div class="err">${esc(s.text)}</div>`;
-  return `<h2 class="sec">Add to outbox</h2><div class="opts">` +
-    `<input id="f-out" placeholder="one line; the triager files it" value="${esc(fcs.draft)}">` +
-    `<button class="btn sm primary" data-f="send"${fcs.sending ? " disabled" : ""}>${fcs.sending ? "Sending..." : "Send"}</button></div>${said}`;
-}
-
-async function sendOutbox() {
-  const text = fcs.draft.trim();
-  if (!text || fcs.sending) return;
-  fcs.sending = true; renderFocus();
-  try { await post("/api/outbox", { text }); fcs.draft = ""; fcs.said = { ok: true, text }; }
-  catch (e) { fcs.said = { ok: false, text: e.message }; }
-  fcs.sending = false; renderFocus();
-  if (fcs.said.ok && focusTarget() === "outbox") refreshFocus();
-}
-
 function renderFocus() {
   const el = $("focus");
   const v = fcs.data;
   if (!v) { el.innerHTML = `<div class="empty">${fcs.err ? esc(fcs.err) : "Reading the note..."}</div>`; return; }
   let html = focusHead(v);
   if (fcs.err) html += `<div class="panel down">${esc(fcs.err)}</div>`;
-  // A re-read while the line is being typed keeps the cursor in it.
-  const typing = document.activeElement && document.activeElement.id === "f-out" ? document.activeElement.selectionStart : null;
   paint(el, html + focusBody(v), fcs.open);
-  const i = typing == null ? null : $("f-out");
-  if (i) { i.focus(); i.setSelectionRange(typing, typing); }
 }
 
 $("focus").addEventListener("click", (e) => {
@@ -122,14 +98,11 @@ $("focus").addEventListener("click", (e) => {
   const f = b.dataset.f;
   if (f === "back") history.back();
   else if (f === "refresh") refreshFocus();
-  else if (f === "send") sendOutbox();
   else if (f === "rendered" || f === "raw") { fcs.raw = f === "raw"; fcs.copied = false; renderFocus(); }
   else if (f === "copy" && fcs.data) {
     navigator.clipboard.writeText(fcs.data.note.markdown).then(() => { fcs.copied = true; renderFocus(); }, (err) => { fcs.err = "copy: " + err.message; renderFocus(); });
   }
 });
-$("focus").addEventListener("input", (e) => { if (e.target.id === "f-out") fcs.draft = e.target.value; });
-$("focus").addEventListener("keydown", (e) => { if (e.target.id === "f-out" && e.key === "Enter") sendOutbox(); });
 $("focus").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) fcs.open[e.target.dataset.k] = e.target.open;
 }, true);

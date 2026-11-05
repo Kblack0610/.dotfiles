@@ -26,7 +26,7 @@ use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
-use crate::{board, day, fleet, fleettab, focustab, hometab};
+use crate::{board, day, fleet, fleettab, focustab, hometab, outboxtab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -37,6 +37,7 @@ const PREVIEW_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
+    Outbox,
     Home,
     Infra,
     Sessions,
@@ -49,7 +50,10 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
+        // The layout's first tab (hub_core::layout). No digit is free until the layout
+        // renumbers once (dashboards.md): Tab, BackTab and `hub --tab outbox` reach it.
+        Tab::Outbox,
         Tab::Home,
         Tab::Queue,
         // Jobs' slot and key 3; `jobs`, `ci` and `machines` resolve here and 4 and 5 open its CI
@@ -68,6 +72,7 @@ impl Tab {
     ];
     pub fn title(self) -> &'static str {
         match self {
+            Tab::Outbox => "Outbox",
             Tab::Home => "Home",
             Tab::Infra => "Infra",
             Tab::Sessions => "Sessions",
@@ -104,7 +109,8 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Sessions
+            Tab::Outbox
+            | Tab::Sessions
             | Tab::Today
             | Tab::History
             | Tab::Fleet
@@ -136,6 +142,8 @@ const JOBS_SHOWN: usize = 8;
 #[derive(Clone)]
 pub struct BoardFiles {
     pub state: PathBuf,
+    /// agent-ask's store: Home's asks are read live, so an ask filed or answered re-reads them.
+    pub asks: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
 }
@@ -144,6 +152,7 @@ impl BoardFiles {
     pub fn from_env() -> BoardFiles {
         BoardFiles {
             state: boards::fleet_state(),
+            asks: boards::asks_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
         }
@@ -155,6 +164,7 @@ impl BoardFiles {
     pub fn is_board_file(&self, p: &Path) -> bool {
         p == self.state
             || p == self.watch_log()
+            || p.starts_with(&self.asks) && p.extension().is_some_and(|e| e == "md")
             || p.parent() == Some(self.daylog.as_path())
                 && p.file_name()
                     .and_then(|n| n.to_str())
@@ -174,7 +184,7 @@ pub struct Boards {
 impl Boards {
     pub fn read(f: &BoardFiles, day: Option<&str>) -> Boards {
         Boards {
-            watch: boards::watch(&f.state, &f.watch_log()),
+            watch: boards::watch(&f.state, &f.watch_log(), &actions::System),
             days: boards::days(&f.daylog),
             rec: boards::record(&f.daylog, day),
             hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
@@ -200,6 +210,8 @@ pub enum Msg {
     Fleet(Box<hub_core::fleet::Fleet>),
     /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
     Focus(Box<Result<hub_core::focus::View, String>>),
+    /// The outbox and today's intake steps (hub_core::outbox), or why the read failed.
+    Outbox(Box<Result<hub_core::outbox::View, String>>),
     Log(u64, Result<String, String>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
@@ -258,6 +270,10 @@ pub struct App {
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Focus tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
+    /// The Outbox tab's view; None until the first read.
+    pub outbox: Option<Result<hub_core::outbox::View, String>>,
+    /// What Enter on the Outbox tab did: the editor opened, or why it did not.
+    pub outbox_said: Option<Result<String, String>>,
     /// The day the Focus tab shows (`YYYY-MM-DD`); None is today.
     pub focus_day: Option<String>,
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
@@ -299,6 +315,7 @@ pub struct App {
     ranked_read: Read,
     fleet_read: Read,
     focus_read: Read,
+    outbox_read: Read,
     sessions_read: Read,
     queue_read: Read,
     tasks_read: Read,
@@ -328,6 +345,8 @@ impl App {
             ranked: None,
             fleet: None,
             focus: None,
+            outbox: None,
+            outbox_said: None,
             focus_day: None,
             queue: None,
             qv: QueueView::default(),
@@ -354,6 +373,7 @@ impl App {
             ranked_read: Read::default(),
             fleet_read: Read::default(),
             focus_read: Read::default(),
+            outbox_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
             tasks_read: Read::default(),
@@ -373,6 +393,7 @@ impl App {
             (self.files.shepherd.clone(), false),
             (self.files.daylog.clone(), false),
             (self.queue_dir.clone(), true),
+            (self.files.asks.clone(), true),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -441,6 +462,21 @@ impl App {
                 let _ = tx.send(Msg::Focus(Box::new(hub_core::focus::read(
                     runner.as_ref(),
                     &target,
+                ))));
+            });
+        }
+    }
+
+    /// The outbox has no watch here: the tab reads it on entering, on `r` and on the tick.
+    pub fn read_outbox(&mut self) {
+        if self.outbox_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Outbox(Box::new(hub_core::outbox::read(
+                    runner.as_ref(),
+                    &today,
                 ))));
             });
         }
@@ -656,6 +692,9 @@ impl App {
                 if self.tab == Tab::Focus {
                     self.read_focus();
                 }
+                if self.tab == Tab::Outbox {
+                    self.read_outbox();
+                }
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
@@ -702,6 +741,12 @@ impl App {
                 self.focus = Some(*v);
                 if self.focus_read.done() {
                     self.read_focus();
+                }
+            }
+            Msg::Outbox(v) => {
+                self.outbox = Some(*v);
+                if self.outbox_read.done() {
+                    self.read_outbox();
                 }
             }
             Msg::Infra(i) => {
@@ -807,6 +852,17 @@ impl App {
         if self.tab == Tab::Focus && self.focus_key(k) {
             return;
         }
+        if self.tab == Tab::Outbox && k.code == KeyCode::Enter {
+            let path = match &self.outbox {
+                Some(Ok(v)) if !v.doc.path.is_empty() => Some(v.doc.path.clone()),
+                _ => None,
+            };
+            self.outbox_said = Some(match path {
+                Some(p) => edit_in_tmux(&p, 1),
+                None => Err("the outbox has not been read yet: press r".into()),
+            });
+            return;
+        }
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
@@ -851,6 +907,9 @@ impl App {
                 }
                 if self.tab == Tab::Focus {
                     self.read_focus();
+                }
+                if self.tab == Tab::Outbox {
+                    self.read_outbox();
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
@@ -919,6 +978,10 @@ impl App {
         }
         if t == Tab::Focus {
             self.read_focus();
+        }
+        if t == Tab::Outbox {
+            self.outbox_said = None;
+            self.read_outbox();
         }
         if t == Tab::Queue {
             self.read_queue();
@@ -1435,6 +1498,9 @@ impl App {
                 "[ ] day  t today  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Focus => "[ ] day  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into(),
+            Tab::Outbox => {
+                "Enter edit in $EDITOR  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            }
             Tab::Today if self.day.is_some() => {
                 format!("[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit")
             }
@@ -1579,6 +1645,20 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
+            },
+            // The outbox and today's intake steps (outboxtab.rs); Enter edits the file.
+            (Tab::Outbox, ..) => match &self.outbox {
+                None => reading("the outbox"),
+                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                Some(Ok(v)) => {
+                    let mut l = match &self.outbox_said {
+                        Some(Ok(m)) => vec![Line::styled(m.clone(), self.p.dim())],
+                        Some(Err(e)) => vec![Line::styled(e.clone(), self.p.warn())],
+                        None => vec![],
+                    };
+                    l.extend(outboxtab::page(v, self.p, w));
+                    (l, vec![])
+                }
             },
             // A day's Focus lanes, read-only (focustab.rs).
             (Tab::Focus, ..) => match &self.focus {
