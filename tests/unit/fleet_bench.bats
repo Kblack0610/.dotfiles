@@ -540,7 +540,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   [ ! -e "$BENCH_SCORECARD_DIR/asks.md" ]        # the bare verb only prints
 }
 
-@test "asks --page writes asks.md, pages the top 3 with their recommendation, publishes under its own name" {
+@test "asks --page writes asks.md, pages the top 3 in plain words with their recommendation, publishes under its own name" {
   stub_asks
   rowj 'phases_done: 0' > "$SNAP"; sample_at 0
   { ask p a 1 go; ask q a 2; ask r a 3 hold gate; ask s a 4; ask old "" 72; } > "$SANDBOX/asks.tsv"
@@ -548,9 +548,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   assert_success
   [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
   run cat "$SANDBOX/pages"
-  assert_output --partial 'notify -p normal -t asks 5 asks pending: 4 block a live session, 1 have none (oldest 3d). 1) s lab/game-agent-1, 4h: s question. 2) r lab/game-agent-1, 3h: r question -> hold. 3) q '
-  refute_output --partial ' p question'
-  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  assert_output 'notify -p normal -t asks 5 questions wait on you, 4 holding up a session. Top: s question (4h); r question (3h, recommend hold); q question (2h). List: fleet-bench asks.'
   run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
   assert_output 1
   run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
@@ -558,14 +556,13 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
 }
 
-@test "asks --write writes asks.md and prints the line, with no page and no verdict of its own" {
+@test "asks --write writes asks.md and prints the top one, with no page and no verdict of its own" {
   stub_asks
   rowj 'phases_done: 0' > "$SNAP"; sample_at 0
   { ask p a 1 go; ask old "" 72; } > "$SANDBOX/asks.tsv"
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_success
-  assert_output --partial '2 asks pending: 1 block a live session, 1 have none (oldest 3d).'
-  assert_output --partial "Full list: $BENCH_SCORECARD_DIR/asks.md"
+  assert_output '2 questions wait on you, 1 holding up a session. Top: p question (1h, recommend go). List: fleet-bench asks.'
   [ ! -e "$SANDBOX/pages" ]
   [ ! -e "$AGENTCTL_STATE_DIR/briefing/last-outcome" ]
   run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
