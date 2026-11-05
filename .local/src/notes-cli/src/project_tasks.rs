@@ -1037,6 +1037,12 @@ pub fn retext(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );
         }
+        if projects::row_title(&format!("- [ ] {t}")).chars().count() > projects::TITLE_MAX {
+            bail!(
+                "'{t}': the title is over {} chars, so nothing was edited; the rest goes on a detail line",
+                projects::TITLE_MAX
+            );
+        }
         let Some((_, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
         };
@@ -2175,7 +2181,7 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_text() {
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_or_long_text() {
         let v = vault(
             "was",
             "",
@@ -2198,6 +2204,13 @@ mod inbox_tests {
         };
         assert!(edit("make the menu stop flickering").is_err());
         assert_eq!(v.read(), before, "an untyped rewrite wrote nothing");
+        let long = format!("fix(ui): {} #size/s", "x".repeat(81));
+        assert!(edit(&long).is_err());
+        assert_eq!(
+            v.read(),
+            before,
+            "a rewrite with a title over 80 chars wrote nothing"
+        );
 
         assert_eq!(
             edit("fix(ui): the menu flickers on resize #size/s").unwrap(),

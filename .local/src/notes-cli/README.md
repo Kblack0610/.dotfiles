@@ -153,7 +153,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
 | aim a task at another release | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>`; its detail lines and child rows go with it |
-| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either. `--was` with `--text` is the triager's rewrite: the text must be `type(area): title`, the old words become a `was:` detail line, and the old row's own tags (`#ask`, `#tier/N`, `#size/x`) carry over unless the new text sets one of the same name |
+| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either. `--was` with `--text` is the triager's rewrite: the text must be `type(area): title` with a title of 80 chars or fewer, the old words become a `was:` detail line, and the old row's own tags (`#ask`, `#tier/N`, `#size/x`) carry over unless the new text sets one of the same name |
 | drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
 | name a row exactly | any verb's `<query>` can be the row's id (`ar-142`) |
 | tidy a sheet | `ptask <name> sweep` |
