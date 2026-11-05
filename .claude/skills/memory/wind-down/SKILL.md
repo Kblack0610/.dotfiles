@@ -1,7 +1,7 @@
 ---
 name: wind-down
 description: >-
-  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session.
+  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
 metadata:
   category: memory
   tags: [session, teardown, tmux]
@@ -17,7 +17,7 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 
@@ -228,7 +228,7 @@ If the session produced nothing to commit (pure Q&A / read-only), say so and ski
 
 ```bash
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm            # close just Claude's window (default)
-~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session
+~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session (a world session: this window only)
 ```
 
 **Arm against the session's ORIGINAL project dir.** The Stop hook resolves the sentinel name from the `CLAUDE_PROJECT_DIR` the session started with, not from your current shell. If step 2 already released this session's worktree, a plain `arm` run from somewhere else (the main checkout, `$HOME`) writes `<other-project>__<sid>.request`, the hook never finds it, and the window silently stays open. Pass the original path explicitly: `CLAUDE_PROJECT_DIR=~/.worktrees/<repo>-<slug> wind-down.sh arm`. Why: 2026-09-30, unity-core-playground-agent-15 reaped its worktree, then armed from the main checkout, and the window never closed.
