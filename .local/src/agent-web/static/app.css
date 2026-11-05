@@ -274,6 +274,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
 .cores { display: flex; gap: 1px; width: 100%; height: 16px; }
