@@ -1,9 +1,10 @@
 "use strict";
 // The Sessions tab, the tab switch and the live-update stream. Shared helpers are in ui.js; the
-// Waiting tab is waiting.js, and each board tab is its own static/*.js and registers in TABS.
+// answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
+// registers in TABS.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "queue", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 
@@ -11,7 +12,7 @@ const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
   renderList();
   renderBadge();
-  if (st.tab === "asks") renderAsks();
+  if (st.tab === "home") renderHome();
   // A session coming or going changes which queue rows have an Open button.
   if (st.tab === "queue") renderQueueList();
   if (st.sel) {
@@ -66,7 +67,7 @@ function approveButtons(a) {
     : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
 }
 function rerenderApprove() {
-  if (st.tab === "asks") renderAsks();
+  if (st.tab === "home") renderHome();
   if (st.tab === "queue") renderQueueList();
 }
 document.addEventListener("click", async (e) => {
@@ -260,7 +261,12 @@ async function sendText() {
 $("send").onclick = sendText;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendText(); } });
 
-const TAB_NAMES = ["queue", "board", "sessions", "asks", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
+// hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
+// lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
+// test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
+const TAB_NAMES = ["home", "queue", "board", "sessions", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home" };
+const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
 function setTab(t) {
   st.tab = t;
   for (const n of TAB_NAMES) {
@@ -269,9 +275,8 @@ function setTab(t) {
   }
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
-  if (t === "asks") renderAsks();
   if (TABS[t]) TABS[t].show();
-  try { history.replaceState(null, "", t === "queue" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
+  try { history.replaceState(null, "", t === "home" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -317,6 +322,6 @@ function connect() {
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
 document.addEventListener("DOMContentLoaded", () => {
-  setTab(TAB_NAMES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "queue");
+  setTab(tabOf(location.hash.slice(1)));
   connect();
 });

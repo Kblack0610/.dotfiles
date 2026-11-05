@@ -112,24 +112,6 @@ fn when(t: Option<&str>, now: i64) -> String {
         .map_or(String::new(), |d| clock(d.timestamp(), now))
 }
 
-/// The Overview's one line: what waits on you, what runs, what is next, what finished today.
-pub fn counts(q: &Queue) -> String {
-    let held = q
-        .in_state(State::Queued)
-        .filter(|i| i.hold.is_some())
-        .count();
-    let mut s = format!(
-        "{} waiting for you, {} running, {} up next",
-        q.count(State::Waiting),
-        q.count(State::Running),
-        q.count(State::Queued)
-    );
-    if held > 0 {
-        s += &format!(" ({held} held)");
-    }
-    s + &format!(", {} done today", q.count(State::Done))
-}
-
 fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     Line::from(vec![
         Span::styled(title.to_string(), p.head()),
@@ -337,14 +319,6 @@ pub(crate) mod tests {
         assert!(
             s.contains("Nothing here.") && s.contains("Nothing finished today."),
             "{s}"
-        );
-    }
-
-    #[test]
-    fn the_overview_line_counts_each_state_and_the_held_ones() {
-        assert_eq!(
-            counts(&fixture()),
-            "1 waiting for you, 1 running, 2 up next (1 held), 1 done today"
         );
     }
 

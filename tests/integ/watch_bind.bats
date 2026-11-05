@@ -16,8 +16,8 @@ setup() {
   HUB_CONF="$REPO_ROOT/.config/tmux-servers/hub.conf"
 }
 
-@test "prefix+i and O ask the hub for overview and today, then go to its window; o opens the shepherd pass" {
-  assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab overview; tmx goto hub hub:board"'
+@test "prefix+i and O ask the hub for home and today, then go to its window; o opens the shepherd pass" {
+  assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab home; tmx goto hub hub:board"'
   assert_equal "$(bind_for o)" "run-shell \"\$HOME/.local/bin/fleet-shepherd open >/dev/null 2>&1 || tmux display-message 'no shepherd pass running (fleet-shepherd passes)'\""
   assert_equal "$(bind_for O)" 'run-shell "$HOME/.local/bin/hub tab today; tmx goto hub hub:board"'
 }

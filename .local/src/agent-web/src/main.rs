@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
+        .route("/api/home", get(home_board))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
@@ -944,6 +945,23 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .await
         .map(Json)
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// The Home tab: hub_core::home over the fleet state, the queue and the cached Prometheus
+/// answer, the same join the hub TUI's Home draws.
+async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+    let infra = s.infra.infra().await;
+    tokio::task::spawn_blocking(move || {
+        let state = std::fs::read_to_string(boards::fleet_state())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let queue = hub_core::queue::Queue::read(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&infra))
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 async fn infra_board(State(s): State<Shared>) -> Response {
