@@ -491,8 +491,8 @@ struct AgentOut {
     ask: Option<String>,
     /// What `POST /api/session/<target>/<action>` accepts for it.
     actions: Vec<&'static str>,
-    /// The agent-queue item that started it.
-    item: Option<String>,
+    /// The agent-queue items in this pane (hub-core `with_items`).
+    items: Vec<String>,
     /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
     /// question asked in the conversation is not read here: the session files it as an ask
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
@@ -543,7 +543,7 @@ async fn agents() -> Json<Vec<AgentOut>> {
                     .into_iter()
                     .map(Action::name)
                     .collect(),
-                item: s.item,
+                items: s.items,
                 account: a.account,
                 attached: a.attached,
                 parked: a.parked,
