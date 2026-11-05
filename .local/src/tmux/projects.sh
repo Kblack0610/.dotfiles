@@ -35,7 +35,8 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 
-PROJECTS_STAGES="${PROJECTS_STAGES:-draft alpha beta prod}"
+# The ladder, least to most real, from its one definition in notes-cli.
+PROJECTS_STAGES="${PROJECTS_STAGES:-$(notes projects --stages 2>/dev/null)}"
 
 Q="$(printf '%q' "$SELF")"
 
@@ -47,8 +48,10 @@ Q="$(printf '%q' "$SELF")"
 cmd_list() {
   local drafts=0
   [ "${1:-}" = --drafts ] && drafts=1
-  notes projects --stats | awk -F'\t' -v drafts="$drafts" '
-    function rank(s) { return s == "prod" ? 0 : s == "beta" ? 1 : s == "alpha" ? 2 : s == "" ? 3 : 4 }
+  # Most real first, then no stage (a question), then draft last.
+  notes projects --stats | awk -F'\t' -v drafts="$drafts" -v ladder="$PROJECTS_STAGES" '
+    BEGIN { n = split(ladder, L, " "); for (i = 1; i <= n; i++) at[L[i]] = i }
+    function rank(s) { return s == "draft" ? n : s == "" || !(s in at) ? n - 1 : n - at[s] }
     $3 == "draft" && !drafts { next }
     { printf "%d\t%09d\t%s\n", rank($3), 999999999 - $5, $0 }
   ' | sort -t "$PANEL_TAB" -k1,1n -k2,2 | cut -f3- | awk -F'\t' \
