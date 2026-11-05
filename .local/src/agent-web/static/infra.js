@@ -7,7 +7,7 @@
 const INFRA_REFRESH_MS = 60e3;
 // A job running past this shows amber: playground ci.md calls a gate past about an hour a bug.
 const LONG_RUN_SECS = 3600;
-const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "other"];
+const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other"];
 // A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
 const FAILED_OPEN = 25;
 // Each failed group's folded state, which outlives the re-render on every refresh.

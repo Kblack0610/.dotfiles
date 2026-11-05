@@ -18,8 +18,8 @@ pub const LONG_RUN_SECS: f64 = 3600.0;
 pub const QUEUE_ROWS: usize = 8;
 /// Recent runs the CI page lists before it counts the rest (Grafana keeps them all).
 pub const RECENT_ROWS: usize = 60;
-const DOMAINS: [&str; 9] = [
-    "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "other",
+const DOMAINS: [&str; 11] = [
+    "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
 ];
 
 /// A label as a cell shows it: - when the series has none.

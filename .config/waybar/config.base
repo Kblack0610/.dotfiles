@@ -115,6 +115,7 @@
         "orientation": "horizontal",
         "modules": [
             "custom/timebox",
+            "custom/health",
             "custom/ai-agents",
             "custom/dispatch",
             "custom/fleet",
@@ -190,6 +191,18 @@
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab ci",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
+        "tooltip": true
+    },
+    // System health: a pulse and one dot per system, worst first; the hover says what is down
+    // and what is up (health.sh). Click opens the hub board on Overview.
+    "custom/health": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/health $HOME/.config/waybar/health.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab overview",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
