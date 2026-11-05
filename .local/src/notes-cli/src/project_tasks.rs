@@ -1141,7 +1141,7 @@ pub fn drop(
 /// one as a session. `add` and `file` both write rows, so both ask here.
 fn refuse_epic_on_board(lane: Lane, texts: &[&str]) -> Result<()> {
     if lane == Lane::Agent && texts.iter().any(|t| crate::epics::is_epic(t)) {
-        bail!("an epic belongs on the human sheet: file it without --agent");
+        bail!("an epic belongs on the human sheet: file it on the human lane, not the agent board");
     }
     Ok(())
 }
