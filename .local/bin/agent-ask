@@ -4,13 +4,12 @@
 #
 #   agent-ask post [opts] "question?"   create a pending ask; print its id
 #     --options a|b|c   the fixed answer vocabulary; `a=what a means|b=...` adds each meaning
-#     --recommend b     which of them YOU recommend; shown marked in the picker
+#     --recommend b     which of them YOU recommend; shown marked on the card
 #     --context "why"   the background the human needs; the question itself stays one line
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, judge
-#   agent-ask pick [<id>]               card + one-key answer (the tmux popup); no id lists
-#                                       every pending ask first
+#   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
@@ -169,7 +168,7 @@ wrap() {
 }
 
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
-# (post), the tmux popup (pick) and the agent-panel preview (card). Colour only on a terminal
+# (post), the questions panel and the agent-panel preview (card). Colour only on a terminal
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""
@@ -543,6 +542,18 @@ session_alive() {
   return 1
 }
 
+# live_sessions: every Claude session id with a running process, one per line; the questions
+# panel marks the rest gone. Same source as session_alive.
+live_sessions() {
+  local f pid live=()
+  for f in "$HOME"/.claude*/sessions/*.json; do
+    pid="${f##*/}"; pid="${pid%.json}"
+    [ -d "/proc/$pid" ] && live+=("$f")
+  done
+  [ "${#live[@]}" -gt 0 ] || return 0
+  grep -ho '"sessionId":"[^"]*"' "${live[@]}" | cut -d'"' -f4 | sort -u
+}
+
 # session_gone_note <ask file>: a pending ask whose session has ended is still the question;
 # say where its answer will go, since nothing will type it into a session.
 session_gone_note() {
@@ -557,72 +568,6 @@ session_gone_note() {
   else
     echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
   fi
-}
-
-# pick_pending: choose one pending ask (fzf with the card as preview); prints its id.
-pick_pending() {
-  local rows
-  rows="$(cmd_list --all --pending | awk -F'\t' '{ printf "%s\t%s . %s\t%s\n", $1, $2, $13, $6 }')"
-  [ -n "$rows" ] || { echo "no pending questions" >&2; return 1; }
-  command -v fzf >/dev/null 2>&1 || { echo "agent-ask pick: fzf is not installed; pass an id" >&2; return 1; }
-  fzf --delimiter='\t' --with-nth=2.. --no-sort --layout=reverse --prompt='question> ' \
-      --preview "AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS '${BASH_SOURCE[0]}' card {1}" \
-      --preview-window='down,60%,wrap' <<< "$rows" | cut -f1
-}
-
-# pick [<id>]: the card and a one-key answer. An option or a drop needs Enter, so a stray key
-# sends nothing. No id is Prefix y (`agent-panel ask-here --key`): the list of every pending ask,
-# back to the list after each card, until Esc on the list or no question is left.
-cmd_pick() {
-  [ -z "${1:-}" ] || { pick_one "$1"; return; }
-  local id
-  # Nothing asked: say so and wait for a key, or the popup would close before it is read.
-  [ -n "$(cmd_list --all --pending)" ] || { echo "no questions waiting; any key closes"; read -rsn1 _ || true; return 0; }
-  while id="$(pick_pending)" && [ -n "$id" ]; do
-    pick_one "$id" || return 0
-    echo
-  done
-  return 0
-}
-
-# pick_one <id>: one card and its keys. Non-zero only when the keyboard input ended.
-pick_one() {
-  local id="$1" f k c n opts=()
-  f="$(find_ask "$id")"
-  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
-  render_ask "$f"
-  session_gone_note "$f"
-  echo
-  if [ "$(field "$f" status)" != pending ]; then
-    echo "no longer pending; any key closes"; read -rsn1 _ || true; return 0
-  fi
-  IFS='|' read -r -a opts <<< "$(field "$f" options)"
-  n="${#opts[@]}"
-  if [ "$n" -gt 0 ]; then
-    printf 'keys: 1-%d answer . t type an answer . d drop the question . q close\n' "$n"
-  else
-    printf 'keys: t type an answer . d drop the question . q close\n'
-  fi
-  while IFS= read -rsn1 k; do
-    case "$k" in
-      [1-9])
-        [ "$k" -le "$n" ] || continue
-        printf 'send "%s"? enter sends, any other key goes back\n' "${opts[k-1]}"
-        IFS= read -rsn1 c || return 1
-        [ -z "$c" ] && { cmd_answer "$id" "${opts[k-1]}"; return; }
-        echo "not sent" ;;
-      t)
-        local text; IFS= read -e -r -p 'answer: ' text || return 1
-        [ -n "$text" ] && { cmd_answer "$id" "$text"; return; } ;;
-      d)
-        printf 'drop this question unanswered? enter drops it, any other key goes back\n'
-        IFS= read -rsn1 c || return 1
-        [ -z "$c" ] && { close_ask cancelled "$id" "dropped by the human"; return; }
-        echo "kept" ;;
-      q|$'\e') return 0 ;;
-    esac
-  done
-  return 1
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
@@ -669,7 +614,7 @@ cmd_settle_session() {
   return 0
 }
 
-# close_ask <status> <id> [reason...]: cancel, from the CLI or pick's drop.
+# close_ask <status> <id> [reason...]: cancel, from the CLI or the questions panel's drop.
 close_ask() {
   local to="$1" id="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$id" ] || { echo "usage: agent-ask cancel <id> [reason...]" >&2; return 2; }
@@ -843,7 +788,7 @@ case "$sub" in
   count)  cmd_count "$@" ;;
   show)   cmd_show "$@" ;;
   card)   cmd_card "$@" ;;
-  pick)   cmd_pick "$@" ;;
+  live-sessions) live_sessions ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   recommend)    cmd_recommend "$@" ;;

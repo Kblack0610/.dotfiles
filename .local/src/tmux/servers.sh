@@ -664,11 +664,11 @@ cmd_back() {
 cmd_pick() {
   command -v fzf >/dev/null 2>&1 || die "fzf not installed"
   local choice
-  choice="$(cmd_ls | fzf --reverse --border \
+  panel_fzf_layout
+  choice="$(cmd_ls | fzf --reverse --border "${PANEL_FZF_LAYOUT[@]}" \
     --prompt='server > ' \
     --header='Enter: hop to server · Esc: cancel' \
-    --preview='tmux -L {1} list-sessions 2>/dev/null || echo "(not running - Enter starts it)"' \
-    --preview-window=right,55%)" || return 0
+    --preview='tmux -L {1} list-sessions 2>/dev/null || echo "(not running - Enter starts it)"')" || return 0
   [ -n "$choice" ] || return 0
   cmd_hop "${choice%% *}"
 }
