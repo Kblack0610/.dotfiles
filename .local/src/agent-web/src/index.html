@@ -17,9 +17,7 @@
     <button id="tab-queue">Queue<span id="queue-badge"></span></button>
     <button id="tab-projects">Projects</button>
     <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
-    <button id="tab-shepherd">Shepherd</button>
     <button id="tab-actions">Actions</button>
-    <button id="tab-watch">Watch</button>
     <button id="tab-log">Log</button>
     <button id="tab-infra">Infra</button>
     <button id="tab-jobs">Jobs</button>
@@ -34,13 +32,14 @@
       <button class="btn" id="back">&larr;</button>
       <span class="dot" id="d-dot"></span>
       <span class="name" id="d-name">Pick an agent</span>
-      <div class="seg">
+      <div class="seg" id="v-seg">
         <button id="v-transcript" class="on">Transcript</button>
         <button id="v-screen">Screen</button>
       </div>
     </div>
     <div class="acts" id="acts" hidden></div>
-    <div id="scroll"><div class="empty">Select an agent on the left.</div></div>
+    <div id="facts" hidden></div>
+    <div id="scroll"><div class="empty">Loading the overview.</div></div>
     <div class="compose" id="compose" hidden>
       <div class="keys" id="keys"></div>
       <div class="send">
@@ -53,9 +52,7 @@
   <section id="home" class="board"></section>
   <section id="queue" class="board" hidden></section>
   <section id="projects" class="board" hidden><div id="p-cards"></div><div id="p-rows" hidden><div id="p-head"></div><div id="board"></div></div></section>
-  <section id="shepherd" class="board" hidden></section>
   <section id="actions" class="board" hidden></section>
-  <section id="watch" class="board" hidden></section>
   <section id="log" class="board" hidden></section>
   <section id="infra" class="board" hidden></section>
   <section id="jobs" class="board" hidden></section>
