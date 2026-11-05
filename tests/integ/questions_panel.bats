@@ -198,11 +198,62 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   run "$Q" key g "$live"
   assert_output 'execute-silent(agent-panel jump hub/demo:2)+abort'
   run "$Q" key g "$gone"
-  assert_output 'change-footer~session ended; resume with claude --resume sid-gone~'
+  assert_output 'change-footer~session ended and its directory is gone; resume with claude --resume sid-gone~'
   run "$Q" key g "$loose"
   assert_output 'change-footer~no Claude session owns this ask~'
   # Going nowhere answers nothing.
   assert_equal "$(status_of "$live")$(status_of "$gone")" pendingpending
+}
+
+# transcript <claude session> <cwd>: the conversation's transcript, first line naming its cwd.
+transcript() {
+  mkdir -p "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$2" "$1" >"$HOME/.claude/projects/p/$1.jsonl"
+}
+
+@test "g reopens an ended session through fleet-dispatch in its first directory and world, then jumps there" {
+  local gone here alive lost
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$BATS_TEST_TMPDIR/plain"
+  # fleet-dispatch is the one path that opens sessions; the stub records the call and opens nothing.
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n[ -f "$NOTES_FIXTURE/dispatch.fail" ] && { echo "start: session busy"; exit 1; }\necho "started $6"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo dotfiles 'go|later' 'gone?')"
+  transcript sid-gone "$HOME/.dotfiles"
+  run "$Q" key g "$gone"
+  assert_output "execute-silent(agent-panel jump hub/dotfiles:ask-$gone)+abort"
+  assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$gone --cwd $HOME/.dotfiles --resume sid-gone"
+  # A directory no manifest claims reopens in the panel's own world.
+  here="$(CLAUDE_CODE_SESSION_ID=sid-here ask demo agent-4 'go|later' 'here?')"
+  transcript sid-here "$BATS_TEST_TMPDIR/plain"
+  TMUX=/tmp/tmux-1000/lab,1,0 run "$Q" key g "$here"
+  assert_output --regexp "^execute-silent\(agent-panel jump lab/[^:]+:ask-$here\)\+abort$"
+  # Negative controls. A start that fails says why and jumps nowhere.
+  : >"$NOTES_FIXTURE/dispatch.fail"
+  run "$Q" key g "$gone"
+  assert_output 'change-footer~could not reopen: start: session busy~'
+  rm "$NOTES_FIXTURE/dispatch.fail"
+  # A conversation still running outside tmux is not resumed a second time.
+  alive="$(CLAUDE_CODE_SESSION_ID=sid-alive ask demo agent-5 'go|later' 'alive?')"
+  transcript sid-alive "$HOME/.dotfiles"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-alive"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
+  run "$Q" key g "$alive"
+  assert_output 'change-footer~session sid-alive still runs outside tmux; nothing to go to~'
+  assert_not_called "--resume sid-alive"
+  # A directory that is gone has nowhere to resume from.
+  lost="$(CLAUDE_CODE_SESSION_ID=sid-lost ask demo agent-6 'go|later' 'lost?')"
+  transcript sid-lost "$BATS_TEST_TMPDIR/deleted"
+  run "$Q" key g "$lost"
+  assert_output "change-footer~session ended and its directory $BATS_TEST_TMPDIR/deleted is gone; resume with claude --resume sid-lost~"
+  assert_not_called "--resume sid-lost"
+  # Plain target only reports; it never starts anything.
+  run "$AGENT_ASK" target "$gone"
+  assert_failure
+  assert_output 'session ended; target --reopen starts it again (claude --resume sid-gone)'
+  assert_equal "$(grep -c '^fleet-dispatch' "$NOTES_FIXTURE/calls.log")" 3
+  # Going to a session answers nothing.
+  assert_equal "$(status_of "$gone")" pending
 }
 
 @test "d then enter drops the question; d then esc keeps it" {

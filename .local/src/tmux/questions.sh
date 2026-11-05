@@ -2,8 +2,8 @@
 # questions.sh - every question an agent is waiting on you for, answered from one screen
 # (Prefix y): the list, the selected card beside it (ctrl-/ moves it under, then hides it),
 # and the answer right there: a number then enter sends that option, t types an answer,
-# d then enter drops it, g goes to the asking session. Data and delivery are agent-ask's
-# (list, card, answer, cancel, target).
+# d then enter drops it, g goes to the asking session (reopening it when it has ended). Data
+# and delivery are agent-ask's (list, card, answer, cancel, target).
 #
 # Usage: questions.sh [verb]
 #
@@ -171,9 +171,10 @@ cmd_key() {
   g)
     if [ "$mode" = typing ]; then printf 'put(g)'; return 0; fi
     [ -n "$id" ] || return 0
-    # agent-ask resolves the session (its live_row); agent-panel owns the cross-server hop.
+    # agent-ask resolves the session (its live_row) and reopens an ended one through
+    # fleet-dispatch; agent-panel owns the cross-server hop.
     local to
-    if to="$("$QUESTIONS_ASK" target "$id" 2>&1)"; then
+    if to="$("$QUESTIONS_ASK" target --reopen "$id" 2>&1)"; then
       printf 'execute-silent(agent-panel jump %s)+abort' "$(printf '%q' "$to")"
     else footer "${to:-no session to go to}"; fi
     ;;
