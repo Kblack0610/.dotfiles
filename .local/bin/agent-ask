@@ -401,20 +401,44 @@ file_stale_row() {
     "unanswered ask $(field "$f" id): $q" >/dev/null 2>&1 || true
 }
 
+# named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
+# insensitive; nothing when it names none or more than one.
+named_option() {
+  local opt hit="" n=0
+  local IFS='|'
+  for opt in $1; do
+    [ -n "$opt" ] || continue
+    if grep -qiwF -- "$opt" <<< "$2"; then hit="$opt"; n=$((n + 1)); fi
+  done
+  [ "$n" -eq 1 ] && printf '%s' "$hit"
+}
+
 # settle-session <claude_session> answered|stale [text...]: close every pending ask that session
-# owns. The UserPromptSubmit hook calls it with `answered` (the human typed into the session,
-# which is the answer) and the SessionEnd hook with `stale` (nobody is left to act on it).
+# owns. The UserPromptSubmit hook calls it with `answered` (the human typed into the session)
+# and the SessionEnd hook with `stale` (nobody is left to act on it). An ask with --options is
+# answered only by a message that names exactly one of them, and records that option; any other
+# message leaves it pending, because it was about something else. 2026-11-04: three go|later asks
+# about the sheet cleanup closed on "whats going on here?" and "ok how many phases left?", so the
+# cleanup never started. An ask with no options takes the message as its free-text answer.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && { [ "$to" = answered ] || [ "$to" = stale ]; } ||
     { echo "usage: agent-ask settle-session <claude_session> answered|stale [text...]" >&2; return 2; }
-  local text f n=0; text="$(oneline "$*" | cut -c1-200)"
+  local text f opts pick n=0; text="$(oneline "$*" | cut -c1-200)"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ "$(field "$f" status)" = pending ] && [ "$(field "$f" claude_session)" = "$owner" ] || continue
     if [ "$to" = answered ]; then
+      opts="$(field "$f" options)"
+      if [ -n "$opts" ]; then
+        pick="$(named_option "$opts" "$text")"
+        [ -n "$pick" ] || continue
+        set_field "$f" answer "$pick"
+        set_field "$f" answer_note "in session: $text"
+      else
+        set_field "$f" answer "in session: ${text:-(no text)}"
+      fi
       set_field "$f" status answered
-      set_field "$f" answer "in session: ${text:-(no text)}"
       set_field "$f" answered_at "$(now_iso)"
       set_field "$f" answered_by human
     else
