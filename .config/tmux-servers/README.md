@@ -53,4 +53,4 @@ An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and th
 | `fleet-dispatch: start: no world declares @agents` | the `@agents` world is in `hidden`, or the line is gone | put it back or unhide that world; dispatch will not guess |
 | `tmux-world: command not found` after a pull | the link in `~/.local/bin` is per file | `dotfiles-deploy --apply` |
 | A work repo opens on hub | the catch-all took it | add `@repos <dir>` to the work world's manifest |
-| A `shepherd` session still on hub | made before passes moved to their own world (2026-11-04) | close it once no pass in it is talking to you; nothing reads it, and Prefix o goes to `-L shepherd` |
+| A `shepherd` session still on hub | made before passes moved to their own world (2026-11-04) | close it once no pass in it is talking to you; nothing reads it, and `fleet-shepherd open` goes to `-L shepherd` |

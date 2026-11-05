@@ -125,7 +125,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 
 @test "a declared window renamed after creation is still found, not rebuilt" {
   # The zsh prompt hook renamed declared windows to the git branch, so ensure's by-name
-  # lookup missed them and every Prefix o made another board. Identity is @tmx_window.
+  # lookup missed them and every Prefix i made another board. Identity is @tmx_window.
   manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" rename-window -t 'main:board' feat/x

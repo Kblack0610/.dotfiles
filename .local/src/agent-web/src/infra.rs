@@ -1,4 +1,4 @@
-//! The Infra tab: the hub board's Overview (`hub`, Prefix i) for the browser. The questions
+//! The Infra tab: the hub board's Overview (`hub`, its tab 1) for the browser. The questions
 //! and the judging of the answer are hub-core's `infra::gather`, shared with the TUI; this
 //! module only caches the answer as JSON.
 

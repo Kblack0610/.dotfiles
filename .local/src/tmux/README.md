@@ -19,33 +19,50 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `harpoon.sh` | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Harpoon for windows: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
-| `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens the hub Board searched to that project (`hub tab board <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `o` opens the sheet, `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
+| `projects.sh` | `Prefix+p` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9`, Enter or `o` opens the hub Board searched to that project (`hub tab board <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`), `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
-| `hub` | `Prefix+i` / `Prefix+O`, window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board: Overview (pools, running, queue, down, red now), Jobs (every agentctl, timer, Unity, CI and k8s job, queued/running/done, with its log), CI, Machines, Forecast (all-done-by, phase timeline, burn-up and baseline vs actual from `fleet-bench`), Today (what the day shipped and what waits on you), History, and Fleet (each agent session's controls, stages and what just changed, then the accounts, runners and judges). `Prefix+i` lands on Overview, `Prefix+O` on Today: each runs `hub tab <name>; tmx goto hub hub:board`, which rebuilds the window if it was killed. `Prefix+L` comes back to the window you left, the daily note included, and never returns TO the board: when the last session is sitting on it, L goes to the session you worked in before it. `q` in hub closes the window and shows the one before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
+| `hub` | `Prefix+i` (Board tab), window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board: Overview (pools, running, queue, down, red now), Jobs (every agentctl, timer, Unity, CI and k8s job, queued/running/done, with its log), CI, Machines, Forecast (all-done-by, phase timeline, burn-up and baseline vs actual from `fleet-bench`), Today (what the day shipped and what waits on you), History, and Fleet (each agent session's controls, stages and what just changed, then the accounts, runners and judges). `Prefix+i` lands on the Board tab and is the one key that goes there: it runs `hub tab board; tmx goto hub hub:board`, which rebuilds the window if it was killed. Digits inside reach the other tabs. `Prefix+L` comes back to the window you left, the daily note included, and never returns TO the board: when the last session is sitting on it, L goes to the session you worked in before it. `q` in hub closes the window and shows the one before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
-## Usage
+## Keys
 
-All scripts are bound to tmux keybindings via `~/.tmux.conf`.
+Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc.bats` fails when a bind has no row here or a row names a key that is unbound. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
 
-### Quick Reference
-
-- **The editor**: `Prefix+Space` → this session's editor; again → back where you were
-- **Which world**: `Prefix+C-s` (or bare `tmx`) → the worlds, sessions in the preview
-- **Everything, everywhere**: `Prefix+A` → every session and window on every server
-- **Resume a world**: `Prefix+C-h` lab · `Prefix+C-n` hub (back where you left off)
-- **Root of a world**: `Prefix+H` lab · `Prefix+N` hub (projects overview / daily)
-- **Switch session**: `Prefix+S` → sessions of the current world only
-- **Switch projects**: `Prefix+f` → fuzzy find a repo or a worktree
-- **Project work**: `Prefix+P` → projects with their open counts; Enter for its rows on the hub Board
-- **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
-- **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
-- **View agents**: `Prefix+g` → choose active agent windows
-- **Fleet watch**: every session's stages and what just changed (the Fleet tab of the `hub:board` window, key 8; the same board with charts is the Watch tab of agent-web)
-- **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
-- **Tag a window**: `Prefix+t` then `i`/`p`/`a`/`g` → important / pinned / agent / group
-- **Pin a window**: `Prefix+a` pins it (again unpins), `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
-- **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
+| Key | What it does |
+|-----|--------------|
+| `Prefix+p` | Projects finder: every project with its open counts. Enter, `o` or a digit opens it on the hub Board, `e` opens its sheet in the hub notes editor |
+| `Prefix+i` | The hub board (`hub:board`), on its Board tab. Digits inside reach the other tabs |
+| `Prefix+o` | The shepherd pass running now, on the shepherd server. Never starts one |
+| `Prefix+P` | Open PRs from the configured repos, with their status |
+| `Prefix+L` | Back to the window you left, across worlds; never back to the board |
+| `Prefix+Space` | This session's editor (window 1); again goes back where you were |
+| `Prefix+f` | Find a repo or a worktree and open it as a session |
+| `Prefix+F` | Cut a fresh worktree off this repo, in its own session |
+| `Prefix+X` | Kill this session and reap its worktree, from inside it |
+| `Prefix+S` | Sessions of the current world |
+| `Prefix+C-s` | The worlds, sessions in the preview (bare `tmx` too) |
+| `Prefix+A` | Every session and window on every server |
+| `Prefix+C-h` / `Prefix+C-n` | Resume lab / hub, back where you left off |
+| `Prefix+H` / `Prefix+N` | Root of lab / hub: its landing page (projects index / today's daily) |
+| `Prefix+g` | Agent windows (`agent-panel`) |
+| `Prefix+G` | Jump to the next agent that needs you |
+| `Prefix+C-g` | Fleet: runners, watches, asks, agents in other sessions |
+| `Prefix+R` | Search every Claude session ever run; Enter resumes it |
+| `Prefix+C-y` | Copy the latest Claude compact summary to the clipboard |
+| `Prefix+C-r` | Today's refs in nvim |
+| `Prefix+w` / `Prefix+C-w` | Window chooser with a tag column / tagged windows only |
+| `Prefix+W` | fzf over every window, tag the row under the cursor |
+| `Prefix+t` / `Prefix+C-t` | Tag this window: then `i` important, `p` pinned, `a` agent, `g` group, `x` clear, `l` list, `Escape` cancel |
+| `Prefix+a` / `Prefix+C-a` | Pin this window to the next harpoon slot (again unpins) |
+| `Prefix+e` | Edit the harpoon list |
+| `M-1` `M-2` `M-3` `M-4` | Jump to harpoon slot 1-4, on any server |
+| `Prefix+m` | Move this window to another session |
+| `Prefix+u` / `Prefix+U` | Images in yazi: `~/Media/Pictures` / this pane's directory |
+| `Prefix+r` | Reload the config on every world |
+| `Prefix+C-b` | Send a literal `C-b` to the pane |
+| `M-h` `M-j` `M-k` `M-l` | Move between panes, no prefix |
+| `M-H` `M-J` `M-K` `M-L` | Resize the pane by 5, no prefix |
+| copy mode `v` / `y` / `Y` | Start a selection / copy it / copy it and leave copy mode |
 
 ## Window Tags
 
@@ -166,7 +183,7 @@ containing a space cannot be expressed there (such a line is skipped).
 |---|---|---|
 | `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
-| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (Prefix o goes to the pass running now) |
+| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (`fleet-shepherd open` goes to the pass running now) |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -496,7 +513,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 |---|---|---|
 | `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
 | `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
-| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (Prefix o goes to the pass running now) |
+| `shepherd` - the fleet lead | **shepherd**: one window per `fleet-shepherd` pass, booted by the run that needs it | the pass session (`fleet-shepherd open` goes to the pass running now) |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the

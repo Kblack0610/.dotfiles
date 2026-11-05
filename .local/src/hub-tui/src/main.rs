@@ -1,5 +1,5 @@
 //! `hub`: the hub boards as terminal tabs, in one tmux window (hub:board, hub.conf). tmux
-//! Prefix i and O land on Overview and Today through `hub tab`. Usage, keys and
+//! Prefix i lands on the Board tab through `hub tab`. Usage, keys and
 //! troubleshooting: README.md.
 
 mod app;

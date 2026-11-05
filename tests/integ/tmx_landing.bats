@@ -179,7 +179,7 @@ in_landing() {
 # --- the page's window, not a board beside it ---
 #
 # The board (hub:board) is a declared window of the landing session, and a session remembers
-# its last-selected window. Prefix+O leaves hub on hub:board, so a root that only attached to
+# its last-selected window. Prefix+i leaves hub on hub:board, so a root that only attached to
 # the session landed on the board instead of the daily, and the shell branch typed the
 # daily's startup command into the board.
 
@@ -222,4 +222,45 @@ boards_declared() {
   sel=$(printf '%s\n' "$output" | grep -n 'select-window' | head -1 | cut -d: -f1)
   send=$(printf '%s\n' "$output" | grep -n 'send-keys -t hub:' | head -1 | cut -d: -f1)
   [ -n "$sel" ] && [ -n "$send" ] && [ "$sel" -lt "$send" ]
+}
+
+# --- tmx open: a file in the world's landing editor (projects popup `e`) ---
+
+@test "open types the file into the landing editor's window, never the board's" {
+  boards_declared
+  windows "1 board" "2 master"
+  in_landing hub hub
+  STUB_PANE_CMD=nvim run "$TMX" open hub "$LAB_PAGE" 7
+  assert_success
+  run calls
+  assert_output --partial "send-keys -t hub:2 :e +7 $(vim_path "$LAB_PAGE") Enter"
+  refute_output --partial "send-keys -t hub:1"
+  assert_output --partial "select-window -t hub:2"
+}
+
+@test "open at a shell starts nvim on the file" {
+  in_landing hub hub
+  windows "1 master"
+  STUB_PANE_CMD=bash run "$TMX" open hub "$LAB_PAGE"
+  assert_success
+  run calls
+  assert_output --partial "nvim +1 $(printf '%q' "$LAB_PAGE")"
+  refute_output --partial ':e '
+}
+
+@test "open leaves a pane running something else alone, and says so" {
+  in_landing hub hub
+  windows "1 master"
+  STUB_PANE_CMD=htop run "$TMX" open hub "$LAB_PAGE"
+  assert_failure
+  assert_output --partial 'not nvim or a shell'
+  run bash -c "grep -c 'send-keys' '$NOTES_FIXTURE/calls.log' || true"
+  assert_output "0"
+}
+
+@test "open refuses a file that does not exist" {
+  in_landing hub hub
+  run "$TMX" open hub "$BASE/nope.md"
+  assert_failure
+  assert_output --partial 'no such file'
 }

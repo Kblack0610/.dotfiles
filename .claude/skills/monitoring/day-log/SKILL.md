@@ -45,7 +45,7 @@ The data feed for pipeline evaluation (queue item session-pipeline-eval): read t
 
 ETA accuracy stays in fleet-bench; the record copies its headline.
 
-The board is the hub's Today tab (Prefix O, `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; the History tab (7) lists every recorded day. `hub --once --tab today` prints it as text. `day-log show` prints the same record as markdown.
+The board is the hub's Today tab (Prefix i, then its digit; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; the History tab (7) lists every recorded day. `hub --once --tab today` prints it as text. `day-log show` prints the same record as markdown.
 
 ## Do NOT
 
