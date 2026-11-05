@@ -37,7 +37,8 @@ say() { printf 'ask-sweep: %s\n' "$*" >&2; }
 ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
 sig() { sha256sum | cut -c1-12; }
 
-# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed.
+# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed;
+# an open twin already on the board (`ptask add` exit 3) counts as filed.
 file_row() {
   local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
   local board="$1" text="$2"
@@ -45,6 +46,8 @@ file_row() {
   FILED=$((FILED + 1))
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
   notes ptask "$board" "${lane[@]}" add "$text" >/dev/null 2>&1
+  local rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
 
 board_of() {
