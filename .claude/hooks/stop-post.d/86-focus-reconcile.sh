@@ -131,6 +131,8 @@ save_state() {
   } > "$STATE_FILE" 2>/dev/null || true
 }
 
+# A check reads $CALLS as a here-string, never `printf | grep -q`: under pipefail, once the calls
+# outgrow a pipe buffer, grep's early exit SIGPIPEs printf and a match reads as 141 (2026-11-05).
 # This session's tool calls, one per line: `TOOL <name>` for every call and `BASH <command>`
 # for Bash ones (newlines folded). The grep prefilter keeps a large transcript cheap; jq
 # then reads only real tool_use blocks, so a tool name quoted in prose cannot count.
@@ -146,8 +148,8 @@ session_calls() {
 DID_WORK=0
 if [ "$SESSION_MODE" -eq 1 ]; then
   CALLS=$(session_calls)
-  if printf '%s\n' "$CALLS" | grep -qE '^TOOL (Edit|Write|MultiEdit|NotebookEdit)$' \
-     || printf '%s\n' "$CALLS" | grep -qE '^BASH .*\b(git (commit|push)|gh pr (create|merge))\b'; then
+  if grep -qE '^TOOL (Edit|Write|MultiEdit|NotebookEdit)$' <<<"$CALLS" \
+     || grep -qE '^BASH .*\b(git (commit|push)|gh pr (create|merge))\b' <<<"$CALLS"; then
     DID_WORK=1
   fi
 else
@@ -163,7 +165,7 @@ fi
 [ "$DID_WORK" -eq 1 ] || { save_state; exit 0; }
 # Did this session open or merge a PR? Then only a queue item tracks it (header).
 PR_WORK=0
-if [ "$SESSION_MODE" -eq 1 ] && printf '%s\n' "$CALLS" | grep -qE '^BASH .*\bgh +pr +(create|merge)\b'; then
+if [ "$SESSION_MODE" -eq 1 ] && grep -qE '^BASH .*\bgh +pr +(create|merge)\b' <<<"$CALLS"; then
   PR_WORK=1 MARKER="$MARKER.pr"
 fi
 
@@ -208,12 +210,11 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # a concurrent session's Stop nor its writes can change the answer. Read-only verbs
 # (`notes ptask x list`, `notes today`) do not count.
 if [ "$PR_WORK" -eq 1 ]; then
-  if printf '%s\n' "$CALLS" | grep -qE '^BASH .*(\bagent-queue +(add|claim)\b|\bagent-land\b)'; then
+  if grep -qE '^BASH .*(\bagent-queue +(add|claim)\b|\bagent-land\b)' <<<"$CALLS"; then
     save_state; exit 0
   fi
 elif [ "$SESSION_MODE" -eq 1 ]; then
-  if printf '%s\n' "$CALLS" \
-     | grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)'; then
+  if grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)' <<<"$CALLS"; then
     save_state; exit 0
   fi
 elif [ -r "$NOTES_LOG" ]; then
