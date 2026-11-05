@@ -617,7 +617,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   assert_output 1
 }
 
-@test "asks quotes a question's first sentence whole, and cuts a long one at a word" {
+@test "asks quotes a question's first sentence whole, and names one too long instead of cutting it" {
   stub_asks
   rowj 'phases_done: 0' > "$SNAP"; sample_at 0
   q() { printf '%s\tgame\t\tpending\tquestion\t%s\ta|b\t\t\t\t\t%s\t\n' "$1" "$2" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)"; }
@@ -626,7 +626,11 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
   assert_output '1 question waits on you, none holding up a session. Top: Real money: which US state do you live in? (2h). List: fleet-bench asks.'
   q a 'Should the nightly retry every red shard on the spare runner pool before it pages anyone about it' 2 > "$SANDBOX/asks.tsv"
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
-  assert_output '1 question waits on you, none holding up a session. Top: Should the nightly retry every red shard on the spare runner pool before it... (2h). List: fleet-bench asks.'
+  assert_output '1 question waits on you, none holding up a session. Top: a game question, ask a (2h). List: fleet-bench asks.'
+  q a 'Nightly retries: should the nightly retry every red shard on the spare runner pool before it pages anyone' 2 > "$SANDBOX/asks.tsv"
+  AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_output '1 question waits on you, none holding up a session. Top: Nightly retries, ask a (2h). List: fleet-bench asks.'
+  refute_output --partial '...'
   # The page quotes only the questions that fit its 300 chars.
   { for i in a b c; do q $i "Question $i: should the nightly retry every red shard on the spare runner pool before it pages?" 2; done; } > "$SANDBOX/asks.tsv"
   AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
