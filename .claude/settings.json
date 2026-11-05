@@ -112,7 +112,7 @@
     "defaultMode": "plan",
     "disableAutoMode": "disable"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "autoCompactWindow": 200000,
   "subagentPromptCacheTtl": "1h",
   "fallbackModel": [
@@ -323,6 +323,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "tui": "default",
   "cleanupPeriodDays": 365,
   "remoteControlAtStartup": true,
   "additionalDirectories": [
