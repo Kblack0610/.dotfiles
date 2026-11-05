@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # Tier 3: Prefix y, the questions panel, through real fzf on a real tmux server at a laptop
 # size and a desk size. The list and the card share one screen, the card beside the list by
-# default; ctrl-/ moves it under the list, then hides it, and an answer is given without
-# leaving. Container only.
+# default; ctrl-/ moves it under the list, then hides it, pgup/pgdn scroll it, and an answer is
+# given without leaving. Container only.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -85,6 +85,30 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   screen_lacks 'step 7'
   screen_lacks '| job'
   screen_has 'runner-pool-tonight: please sort out'
+}
+
+# The rows read beside the card (human, 2026-11-05): what each session is, under its question,
+# and ended once it has; the selected row's name in fzf's selected white, not a colour that
+# vanishes on the selection bar; and a key that scrolls a card longer than the screen.
+@test "at 144x33 a row names its session under the question, the selected name reads, pgdn scrolls the card" {
+  mkdir -p "$HOME/.agent/sessions/delta"
+  printf '{"session_id":"sid-r","title":"runner-pool-tonight"}\n' >"$HOME/.agent/sessions/delta/sessions.jsonl"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" post --project delta --session delta-agent-4 --options 'a|b' \
+    --context "$(printf 'Context sentence %d of a card longer than the screen. ' $(seq 1 60))" 'Which goes first?')"
+  sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'side_by_side && screen_has "ended . runner-pool-tonight"'
+  screen_has 'pgup/pgdn scroll card'
+  keep_screen rows_144x33
+  # The selected row is the oldest, delta:4: its name is drawn in bright white (97).
+  _tm capture-pane -e -p -t "$TM_TARGET" | grep -o $'\033\\[[0-9;]*m[^\033]*delta:4' | grep -q $'^\033\\[97m' ||
+    { _tm capture-pane -e -p -t "$TM_TARGET" | grep 'delta:4' | cat -v; false; }
+  screen_has 'asking you'
+  tmux_keys NPage
+  wait_until 'screen_lacks "asking you"'
+  screen_has 'Which goes first?'
+  tmux_keys PPage
+  wait_until 'screen_has "asking you"'
 }
 
 @test "ctrl-/ puts the card under the list, then hides it" {

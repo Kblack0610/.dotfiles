@@ -19,7 +19,7 @@ An ask file is the only record that something waits on the human, for attended s
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone" and where the answer will go.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
-- On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, the selected one's card beside it, answered in place. The `Prefix g` preview shows the card above the pane.
+- On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, each row its question with the session's registry title under it (and `ended` once that session has), the selected one's card beside it (pgup/pgdn scroll it), answered in place. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
 
@@ -66,7 +66,8 @@ agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask target <id>                        the live asking session as an agent-panel jump target; fails saying why
-agent-ask live-sessions                      the Claude session ids running now; the questions panel marks the rest gone
+agent-ask live-sessions                      the Claude session ids running now; the questions panel marks the rest ended
+agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
