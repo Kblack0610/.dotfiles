@@ -195,6 +195,10 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .lane.axis .ticks span { position: absolute; transform: translateX(-50%); top: 2px; }
 .legend { text-transform: none; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; font-weight: normal; letter-spacing: 0; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.legend button.lg { all: unset; cursor: pointer; }
+.sec .only { text-transform: none; letter-spacing: 0; font-weight: normal; }
+.legend button.lg.on { font-weight: 600; text-decoration: underline; }
+.legend button.lg:focus-visible { outline: 1px solid var(--accent); }
 .meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 3px; }
 .pcard[data-open] { cursor: pointer; }
@@ -273,6 +277,7 @@ details.area summary { cursor: pointer; font-weight: 600; display: flex; gap: 8p
 .pr .ft { flex: none; width: 40px; font: 12px var(--mono); color: var(--muted); }
 .pr a { flex: none; color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 12px; }
 .pr .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr .lbl { flex: none; max-width: 28%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
 .pr .by { flex: none; font: 12px var(--mono); color: var(--muted); }
 .pr a.by { color: var(--accent); }
 details.sec-d summary { list-style: none; cursor: pointer; }

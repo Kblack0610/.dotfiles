@@ -23,6 +23,8 @@ set -uo pipefail
 # shellcheck source=/dev/null
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/prom-textfile.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 
 : "${DAYLOG_DIR:=$HOME/.agent/daylog}"
@@ -105,6 +107,9 @@ gather() {
   $DAYLOG_USAGE_CMD tokens line --date "$day" 2>/dev/null | jq -Rs 'rtrimstr("\n") | if . == "" then null else . end' > "$tmp/tokens"
   outcome_prs "$day" > "$tmp/outcomes"
   groups_json > "$tmp/groups"
+  # the project each PR's repo belongs to (the project registry), merged and open alike
+  mapfile -t repos < <(cat "$tmp/merged" "$tmp/open" 2>/dev/null | jq -r '.[]?.repository.name' | sort -u)
+  project_of_repos_json "${repos[@]}" > "$tmp/projects" 2>/dev/null || echo '{}' > "$tmp/projects"
 
   jq -n --arg day "$day" --argjson live "$live" --arg at "$(date -d "@$(now)" +%FT%T%z)" \
      --slurpfile prev <(cat "$prev" 2>/dev/null || echo '{}') \
@@ -116,9 +121,11 @@ gather() {
      --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
-     --slurpfile outcomes "$tmp/outcomes" --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" '
-    ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st
-    | def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
+     --slurpfile outcomes "$tmp/outcomes" --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
+     --slurpfile projects "$tmp/projects" '
+    ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st | $projects[0] as $pm
+    | def project($r): $pm[$r] // ($r | ltrimstr("."));
+      def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
       def who($repo): (.target // "" | sub("^[^/]*/"; "") | sub(":1$"; "")) as $t
         | ($t | ltrimstr($repo + "-")) as $l | if $l == "" then $t else $l end;
     # the session that landed each PR: what the live sessions say now, then earlier passes, then outcomes
@@ -136,13 +143,13 @@ gather() {
        landed_by: $by,
        merged: (if $m == null then ($p.merged // [])
          else [$m[] | (scope) as $sc | .repository.name as $r
-           | {repo: $r, number, title, url, merged_at: .closedAt, scope: $sc,
+           | {repo: $r, project: project($r), number, title, url, merged_at: .closedAt, scope: $sc,
               group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $by["\($r)#\(.number)"]}]
            | sort_by(.merged_at) end),
        open: (if $live and $open[0] != null then
            [$open[0][] | .repository.name as $r | (.number | tostring) as $n
             | ([$st.sessions[]? | select(.pr == $n and ((.cwd // "") | sub(".*/"; "") | . == $r or startswith($r + "-")))] | first) as $x
-            | {repo: $r, number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
+            | {repo: $r, project: project($r), number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
                area: ($g.repos[$r] // $r), ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
          else ($p.open // null) end),
        next: (if $live and $st != null then
