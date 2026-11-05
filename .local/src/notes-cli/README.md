@@ -49,6 +49,7 @@ keeps it.
 |---|---|
 | `notes today` | Idempotent daily note. Carries unfinished **Focus** forward (day-stamped), surfaces anything the schedule fires, adds `## Projects`, links refs, regenerates the footer, publishes the status pages, and conforms a note an older build left behind. |
 | `notes path` | Print today's note path (for `nvim "$(notes path)"`). |
+| `notes show [<target>] [--json]` | Print one note: `daily` (today, the default), `daily:YYYY-MM-DD`, or a `[[wikilink]]` target (`outbox`, `status/inbox`), resolved as the editor's `gf` does (before any `\|` or `#`; `<target>.md` under the profile root, then the vault). The file must resolve inside one of those two, so `../` or a symlink out is refused. `--json` adds the path, title, day neighbours (`prev`, `next`) and each link with whether it resolves; a missing note is `exists: false` there and exit 1 without it. agent-web's and the hub's Focus tab read it through `hub_core::focus`. |
 | `notes link-refs` | Link today's `refs/<date>/*.md` into the note's `## Refs`. |
 | `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |

@@ -302,7 +302,7 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
 // lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
 // test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "queue", "projects", "sessions", "infra", "actions", "log", "fleet"];
+const TAB_NAMES = ["home", "queue", "projects", "sessions", "infra", "focus", "actions", "log", "fleet"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
@@ -314,8 +314,21 @@ function seekSection() {
   st.section = null;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
-function setTab(t) {
+// A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Focus link opens
+// (`#focus/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
+function route(hash) {
+  const h = String(hash || "").replace(/^#/, "");
+  const at = h.indexOf("/");
+  const name = at < 0 ? h : h.slice(0, at);
+  let arg = at < 0 ? "" : h.slice(at + 1);
+  try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
+  return { name, tab: tabOf(name), arg };
+}
+// Show tab t; arg is what it opens (blank for its front). A tab button replaces the URL, so tab
+// hopping makes no history; an in-app link (`href="#focus/outbox"`) pushes one, so Back returns.
+function setTab(t, arg) {
   st.tab = t;
+  st.arg = arg || "";
   for (const n of TAB_NAMES) {
     $("tab-" + n).classList.toggle("on", t === n);
     if (n !== "sessions") $(n).hidden = t !== n;
@@ -323,7 +336,8 @@ function setTab(t) {
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
-  try { history.replaceState(null, "", t === "home" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
+  const frag = st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t;
+  try { history.replaceState(null, "", t === "home" && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -367,10 +381,16 @@ function connect() {
   };
 }
 
+// Back and Forward, and every in-app link, change the fragment; show what it names.
+window.addEventListener("hashchange", () => {
+  const r = route(location.hash);
+  if (r.tab !== st.tab || r.arg !== st.arg) setTab(r.tab, r.arg);
+});
+
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
 document.addEventListener("DOMContentLoaded", () => {
-  const want = location.hash.slice(1);
-  if (RETIRED_TABS[want]) st.section = want;
-  setTab(tabOf(want));
+  const r = route(location.hash);
+  if (RETIRED_TABS[r.name]) st.section = r.name;
+  setTab(r.tab, r.arg);
   connect();
 });

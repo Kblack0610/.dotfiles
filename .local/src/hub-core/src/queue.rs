@@ -169,7 +169,7 @@ pub struct Stats {
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
-fn dur(m: Option<i64>) -> String {
+pub(crate) fn dur(m: Option<i64>) -> String {
     match m {
         None => "-".into(),
         Some(m) if m >= 120 => format!("{}h", m / 60),

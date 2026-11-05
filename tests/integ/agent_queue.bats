@@ -244,10 +244,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" set s queued=now
   assert_failure
   "$AQ" move s done --status ok
-  run "$AQ" set s pr=https://example/pr/9 "note=a b c" report=https://example/report
+  run "$AQ" set s pr=https://example/pr/9 "note=a b c" report=https://example/report cost_usd=4.5 work_min=30
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-s.md)"
   [ "$(field "$f" pr)" = https://example/pr/9 ]
+  [ "$(field "$f" cost_usd)" = 4.5 ]
+  [ "$(field "$f" work_min)" = 30 ]
   [ "$(field "$f" report)" = https://example/report ]
   [ "$(field "$f" note)" = "a b c" ]
 }
@@ -362,6 +364,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   unset TMUX
   CLAUDE_CODE_SESSION_ID=sid-none run "$AQ" mine
   assert_failure 1
+}
+
+@test "mine --sid: that Claude session's item only, never the tmux session's; two exit 2" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  run "$AQ" mine --sid sid-none
+  assert_failure 1
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-other run "$AQ" mine --sid sid-a
+  assert_success
+  assert_output ours
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug second "another"
+  run "$AQ" mine --sid sid-a
+  assert_failure 2
 }
 
 @test "add records the Claude session and the row grammar's type and area; claim adds a session once" {

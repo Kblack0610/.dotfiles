@@ -1,6 +1,8 @@
 "use strict";
 // Markdown to HTML for what agents write: transcript text, plans, asks, rundowns. Everything is
-// escaped before any markup is added, so text can never become HTML; links are http(s) only.
+// escaped before any markup is added, so text can never become HTML; links are http(s) only,
+// plus, with md(text, { notes: true }) for a note on the Focus tab, `[[target|label]]` as an
+// in-app `#focus/<target>` link and `#p:<name>` as `#projects/<name>`, with HTML comments dropped.
 // Covers what Claude writes (headings, lists, task lists, code, tables, quotes, emphasis), not
 // all of CommonMark. Newlines inside a paragraph are kept as line breaks, as in a chat.
 // Unit tests: tests/agent-web/md.test.mjs.
@@ -17,6 +19,13 @@ const md = (() => {
   const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
   const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
+  // Set for the length of one md(text, { notes: true }) call.
+  let notes = false;
+  // A vault-relative target as a URL fragment: each segment encoded, the slashes kept readable.
+  const frag = (t) => t.trim().split("/").map(encodeURIComponent).join("/");
+  const wikilink = (target, label) => `<a href="#focus/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
+  const ptag = (name) => `<a href="#projects/${escape(encodeURIComponent(name))}" class="ptag">#p:${escape(name)}</a>`;
+
   const link = (url, label) => `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
 
   // Inline markup on one run of text. Code spans and links are taken out as placeholders on
@@ -29,6 +38,10 @@ const md = (() => {
       .replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (m, ticks, code) => hold(`<code>${escape(code.trim() || code)}</code>`))
       .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, url) => hold(link(url, label)))
       .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/g, (url) => hold(link(url, url)));
+    if (notes) {
+      s = s.replace(/\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/g, (m, t, label) => hold(wikilink(t, label)))
+        .replace(/(^|[\s(])#p:([\w.-]+)/g, (m, pre, name) => pre + hold(ptag(name)));
+    }
     s = escape(s)
       .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, "$1<strong>$2</strong>")
@@ -62,10 +75,10 @@ const md = (() => {
         open.push({ indent, tag });
         html += `<${tag}${ordered && start !== 1 ? ` start="${start}"` : ""}>`;
       }
-      const task = /^\[([ xX])\]\s+(.*)$/.exec(text);
-      html += task
-        ? `<li class="task"><input type="checkbox" disabled${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`
-        : `<li>${inline(text)}`;
+      const task = /^\[([ xX/])\]\s+(.*)$/.exec(text);
+      html += !task ? `<li>${inline(text)}`
+        : task[1] === "/" ? `<li class="task doing"><input type="checkbox" disabled> <span class="cchip running">doing</span> ${inline(task[2])}`
+        : `<li class="task"><input type="checkbox" disabled${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
     }
     while (open.length) close();
     return html;
@@ -127,7 +140,14 @@ const md = (() => {
     return html;
   }
 
-  return (text) => blocks(String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n"));
+  return (text, opts) => {
+    notes = !!(opts && opts.notes);
+    try {
+      let t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
+      if (notes) t = t.replace(/<!--[\s\S]*?-->/g, "");
+      return blocks(t.split("\n"));
+    } finally { notes = false; }
+  };
 })();
 
 if (typeof module === "object" && module.exports) module.exports = { md };

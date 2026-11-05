@@ -15,7 +15,7 @@ pub struct Tab {
     pub landed: bool,
 }
 
-pub const TABS: [Tab; 7] = [
+pub const TABS: [Tab; 8] = [
     Tab {
         id: "home",
         title: "Home",
@@ -51,6 +51,13 @@ pub const TABS: [Tab; 7] = [
         sections: &[
             "health", "red", "machines", "ci", "jobs", "cloud", "governor",
         ],
+        landed: true,
+    },
+    Tab {
+        id: "focus",
+        title: "Focus",
+        question: "What is my day?",
+        sections: &["lanes", "rollup", "sections", "outbox"],
         landed: true,
     },
     Tab {
@@ -140,6 +147,7 @@ mod tests {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
+        assert_eq!(resolve("focus").map(|t| t.id), Some("focus"));
         assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));

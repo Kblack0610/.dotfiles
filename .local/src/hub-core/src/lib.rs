@@ -6,10 +6,12 @@
 pub mod actions;
 pub mod boards;
 pub mod fleet;
+pub mod focus;
 pub mod home;
 pub mod infra;
 pub mod jobs;
 pub mod layout;
+pub mod outcomes;
 pub mod phone;
 pub mod projects;
 pub mod prom;

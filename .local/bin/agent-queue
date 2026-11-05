@@ -9,7 +9,7 @@
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
-#   mine [--session s]    the slug of the running or waiting item this tmux session records
+#   mine [--session s | --sid id]  the slug of the running or waiting item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
@@ -575,14 +575,21 @@ cmd_show() {
 # session that worked it (`sessions:`), whatever window it ran in. Without one, the tmux session,
 # and only a running item: a hub session hosts many conversations, and a waiting item of an
 # earlier one is not this one's (2026-11-05 a land closed c1103's waiting item that way).
+# --sid asks of that Claude session alone, with no tmux fallback (the focus gate, from a hook).
 cmd_mine() {
-  local session='' sid slugs
-  case "${1:-}" in --session) session="${2:?--session needs a value}" ;; '') ;; *) die "usage: agent-queue mine [--session s]" ;; esac
-  sid="$(claude_sid)" || sid=""
+  local session='' sid only=0 slugs
+  case "${1:-}" in
+    --session) session="${2:?--session needs a value}" ;;
+    --sid) sid="${2:?--sid needs a value}" only=1 ;;
+    '') ;;
+    *) die "usage: agent-queue mine [--session s | --sid id]" ;;
+  esac
+  [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
   lock_read
   if [ -z "$session" ] && [ -n "$sid" ]; then
     slugs="$(collect running waiting | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')"
   fi
+  [ "$only" -eq 0 ] || [ -n "${slugs:-}" ] || return 1
   if [ -z "${slugs:-}" ]; then
     [ -n "$session" ] || session="$(own_session)" || { [ -n "$sid" ] && return 1; die "not in tmux: pass --session <server>:<session>"; }
     slugs="$(collect running | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')"
@@ -647,7 +654,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged report note status area origin lane profile from "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged cost_usd work_min report note status area origin lane profile from "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k

@@ -360,6 +360,25 @@ gate_t() {
   refute_blocks "$(gate_t s2)"
 }
 
+@test "session: an item whose sessions list this one is tracking, though the transcript lost the add" {
+  # 2026-11-05 a compaction dropped the add from the transcript the gate reads, and it blocked
+  # a session its own item already named. A stub answers for the queue: s1 has an item.
+  printf '#!/bin/sh\n[ "$1 $2 $3" = "mine --sid s1" ] && { echo the-item; exit 0; }\nexit 1\n' > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  tcall s1 Edit
+  refute_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  assert_blocks "$(gate_t s2)"
+}
+
+@test "session: its own agent-queue claim is tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue claim fix-thing'
+  refute_blocks "$(gate_t s1)"
+}
+
 @test "session: a read-only agent-queue verb is not tracking" {
   tcall s1 Edit
   tcall s1 Bash 'agent-queue list'
