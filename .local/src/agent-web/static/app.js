@@ -264,8 +264,8 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
 // lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
 // test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "queue", "board", "sessions", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home" };
+const TAB_NAMES = ["home", "queue", "projects", "sessions", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
 function setTab(t) {
   st.tab = t;

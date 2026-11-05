@@ -15,7 +15,7 @@
   <div class="tabs">
     <button id="tab-home" class="on">Home<span id="ask-badge"></span></button>
     <button id="tab-queue">Queue<span id="queue-badge"></span></button>
-    <button id="tab-board">Board</button>
+    <button id="tab-projects">Projects</button>
     <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
     <button id="tab-shepherd">Shepherd</button>
     <button id="tab-actions">Actions</button>
@@ -52,7 +52,7 @@
   </section>
   <section id="home" class="board"></section>
   <section id="queue" class="board" hidden></section>
-  <section id="board" class="board" hidden></section>
+  <section id="projects" class="board" hidden><div id="p-cards"></div><div id="p-rows" hidden><div id="p-head"></div><div id="board"></div></div></section>
   <section id="shepherd" class="board" hidden></section>
   <section id="actions" class="board" hidden></section>
   <section id="watch" class="board" hidden></section>
@@ -73,6 +73,7 @@
 <script src="/static/jobs.js?v={{v}}"></script>
 <script src="/static/queue.js?v={{v}}"></script>
 <script src="/static/board.js?v={{v}}"></script>
+<script src="/static/projects.js?v={{v}}"></script>
 <script src="/static/shepherd.js?v={{v}}"></script>
 <script src="/static/actions.js?v={{v}}"></script>
 <script src="/static/fleet.js?v={{v}}"></script>

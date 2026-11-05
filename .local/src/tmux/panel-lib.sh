@@ -177,8 +177,11 @@ panel_paint() { printf '%s%s%s' "$(panel_glyph_color "$1")" "$1" "$C_OFF"; }
 #
 # --no-input, --cycle and --wrap are NOT here: they are per-surface choices (modal nav,
 # pre-ordered lists), not a floor.
+#
+# --color=16: fzf's own chrome (prompt, pointer, header, match highlight) uses the 16 ANSI
+# colours the theme sets, not fzf's 256-colour defaults, which ignore it.
 panel_fzf_opts() {
-  PANEL_FZF_OPTS=(--ansi --reverse --border)
+  PANEL_FZF_OPTS=(--ansi --reverse --border --color=16)
 }
 
 # panel_fzf_table -- the extra flags a pre-ordered TSV list wants on top of the base.

@@ -10,6 +10,7 @@ pub mod home;
 pub mod infra;
 pub mod jobs;
 pub mod layout;
+pub mod projects;
 pub mod prom;
 pub mod queue;
 pub mod session_actions;

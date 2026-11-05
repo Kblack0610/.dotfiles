@@ -19,7 +19,7 @@ Eight themes ship:
 Only `batman` and `arthur` are wired to the day/night timers; the rest are
 manual (`theme-switch <name>`). The last four are ports of the corresponding
 [kitty-themes](https://github.com/dexpota/kitty-themes) entries - see
-"Porting a kitty theme" below for what is and is not carried over verbatim.
+"Porting a kitty theme" below for what is carried over and what is lifted.
 
 ## Usage
 
@@ -141,7 +141,7 @@ systemd unit files live at `~/.dotfiles/.config/systemd/user/theme-*.{service,ti
 ## Adding a new theme
 
 1. `cp palettes/tokyonight.sh palettes/<name>.sh` and edit the colors.
-2. `cp templates/kitty/tokyonight.conf templates/kitty/<name>.conf` and edit.
+2. `cp templates/kitty/tokyonight.conf templates/kitty/<name>.conf` and edit. It holds only what kitty alone has (cursor, selection, tab style); the ANSI colors come from the palette.
 3. `cp templates/waybar/tokyonight.css templates/waybar/<name>.css` and edit.
    Its structure is identical across every theme; only the nine colors it uses
    (background, panel background, text, accent, alert, dim, ok, warn, info)
@@ -166,10 +166,7 @@ the same set). A kitty theme is only 16 ANSI colors plus a background,
 foreground and cursor, which is a fraction of what a palette here has to fill,
 so the port follows one rule:
 
-- **ANSI colors are carried over verbatim.** Whatever the upstream theme says
-  color0-15 are, that is what kitty, nvim's terminal colors and the ANSI-driven
-  tools get. Quirks included: Batman genuinely has no red (its color1 is gold),
-  and Cyberpunk Neon's ramp is deliberately scrambled (color2 is magenta).
+- **ANSI colors are carried over, then lifted until they read.** Whatever the upstream theme says color0-15 are is the start; any of color1-15 under 4.5:1 on `THEME_BG` (WCAG AA for text) is lifted by lightness only, so its hue and the theme's quirks stay: Batman genuinely has no red (its color1 is gold), and Cyberpunk Neon's ramp is deliberately scrambled (color2 is magenta). `tests/unit/theme_contrast.bats` fails a palette that drops below. Why: every dim label in tmux, the panels and the hub is ANSI 8, and upstream themes put it at 1.9 to 3.3:1.
 - **UI-role colors are chosen for legibility, and the deviation is written down
   in the palette file's header.** These are roles kitty has no opinion about
   (panel background, dim text, the starship/lazygit/hyprland accents) or where
@@ -178,15 +175,14 @@ so the port follows one rule:
   faint for body text; Cyberpunk Neon leaves selection as `none` and gives the
   active tab a background indistinguishable from the window.
 
-The second rule needs the first to stay honest: if the ANSI ramp drifts too, the
-theme stops being the theme it claims to be. Every deviation is a comment in
+The second rule needs the first to stay honest: if the ANSI ramp drifts past a lightness lift, the theme stops being the theme it claims to be. Every deviation is a comment in
 `palettes/<name>.sh` saying which role and why.
 
 ## What each tool gets
 
 | Tool       | How it's updated                                                 | Target   |
 | ---------- | ---------------------------------------------------------------- | -------- |
-| kitty      | full template copy + `SIGUSR1` live reload                        | generated |
+| kitty      | ANSI, background, foreground from the palette + the template (cursor, selection, tabs), `SIGUSR1` live reload | generated |
 | waybar     | full template copy + `SIGUSR2` live reload                        | generated |
 | dunst      | `dunstrc.d/50-theme.conf` colors rebuilt from the palette, then `dunstctl reload`; layout stays in the tracked `dunstrc` | generated |
 | sketchybar | `colors.sh` rebuilt from the palette (no per-theme template)      | generated |

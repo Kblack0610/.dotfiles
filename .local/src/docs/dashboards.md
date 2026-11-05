@@ -18,7 +18,7 @@ Each rule has its why. A rule a test checks names the test.
 10. Load heavy detail only when it is opened. Transcripts, logs and screens are fetched on select, never for every row up front. Why: the human asked that sessions not all load until clicked (2026-11-03).
 11. It works at phone width and in an 80-column terminal. Tables scroll inside their own box and the page never scrolls sideways. Why: agent-web is mostly read from a phone, and the hub runs in a tmux pane.
 12. Mock it up before you build it. A new tab or a reshaped one starts as an ASCII mockup the human approves, in the plan. Why: lesson 2026-10-15, where a board built without one missed what the human pictured.
-13. A layout change says what moved, where to, and why. A PR that removes, merges, moves or renames a tab or section carries a "Moved and removed" table in its body: old place, new home, why. It updates the "Retired names" table below in the same PR, and the old name keeps working as an alias: `#old` on the web and `hub --tab old`. Why: a view that disappears without a note looks like a regression, and waybar, tmux and bookmarks still point at the old name.
+13. A layout change says what moved, where to, and why. A PR that removes, merges, moves or renames a tab or section carries a "Moved and removed" table in its body: old place, new home, why. It updates the "Retired names" table below in the same PR, and the old name keeps working as an alias: `#old` on the web and `hub --tab old`. The table also lists every key and shortcut whose meaning changes (TUI digits, tmux bindings, waybar clicks), and an interim phase keeps the existing digits: a landed tab takes the slot and key of the tab it replaces until the layout renumbers once. Why: a view that disappears without a note looks like a regression, and waybar, tmux and bookmarks still point at the old name.
 14. Done means the human can see it. A dashboard change is done when it shows on the live surface (the agent-web site after the stowed main checkout rebuilds, `hub` in its tmux window), checked with a screenshot. Passing tests are not enough. Why: lesson 2026-10-15, and the 2026-11-03 note "does not close till I can see it".
 
 ## Patterns
@@ -31,13 +31,13 @@ Each rule has its why. A rule a test checks names the test.
 
 ## Hub layout
 
-Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones.
+Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones. The exception is rule 13's interim: a landed tab that replaces one sits in that tab's slot, so the TUI tests check landed tabs keep layout order, not that they lead.
 
 | # | Tab | Question | Status |
 |---|---|---|---|
 | 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the front page on both surfaces |
 | 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
-| 3 | Projects | Where is each project, and its tasks? | planned |
+| 3 | Projects | Where is each project, and its tasks? | landed: `hub_core::projects`, one card per lab project with its open version's progress by size, pace, ETA and what is in flight; Enter (TUI) or Open rows (web) shows that project's rows, All shows every project's. Until the renumbering it keeps Board's slot: TUI key 0, last tab; web third |
 | 4 | Sessions | What is each agent doing? Act on it. | planned |
 | 5 | Infra | Is the machinery healthy? | planned |
 | 6 | Log | What happened? | planned |
@@ -66,6 +66,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 |---|---|---|
 | `overview` (TUI, `hub --tab overview`) | Home | #929 |
 | `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |
+| `board` (agent-web `#board`, `hub --tab board`, `hub tab board`) | Projects | this PR |
 
 ### Log
 

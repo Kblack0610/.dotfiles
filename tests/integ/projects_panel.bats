@@ -147,7 +147,7 @@ setup() {
   PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --board bnb big-alpha
   assert_success
   run cat "$BATS_TEST_TMPDIR/calls"
-  assert_output $'hub tab board bnb/big-alpha\ntmx goto hub hub:board'
+  assert_output $'hub tab projects bnb/big-alpha\ntmx goto hub hub:board'
 }
 
 @test "the task verbs are gone: the hub Board is the one task view" {
