@@ -2,6 +2,11 @@
 name: playground-new-content
 description: >-
   Add a map, character or game to unity-core-playground by its authoring guide. Use for "add a map", "new level", "add an enemy / boss / NPC", "add a new game or mode". New library art: playground-ingest.
+paths:
+  - "Assets/**"
+  - "ProjectSettings/**"
+  - "Packages/**"
+  - "store/**"
 metadata:
   category: authoring
   tags: [unity, level-design, characters, playground, authoring]

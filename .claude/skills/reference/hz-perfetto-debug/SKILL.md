@@ -3,6 +3,15 @@ name: hz-perfetto-debug
 license: Apache-2.0
 description: "Analyzes Meta VR and Horizon OS VR performance using Perfetto traces - frame timing, CPU/GPU bottlenecks, render pass analysis. Use when profiling frame drops, jank, or thermal issues on Meta VR devices. Build paths: all Meta VR app stacks; use hz-quest-verify-first if the build path is unclear."
 allowed-tools: Bash(metavr:*), Bash(hzdb:*), Bash(npx:*)
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, performance]
