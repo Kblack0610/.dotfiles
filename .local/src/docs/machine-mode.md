@@ -18,7 +18,7 @@ machine-mode reserved   # switch
 machine-mode next       # the next mode, wrapping
 ```
 
-The waybar chip shows the mode, and a click runs `machine-mode next`. It stays neutral in every mode. Amber means the last switch never reached the cluster, so the runners are not where the word says. It has no text on a machine with no pool runners.
+The waybar chip shows the mode's initial (R, S or O) and the rest in its hover, and a click runs `machine-mode next`. It stays neutral in every mode. Amber means the last switch never reached the cluster, so the runners are not where the letter says. It has no text on a machine with no pool runners.
 
 ## What a switch does
 
