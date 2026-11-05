@@ -512,7 +512,8 @@ fn inbox_hit(pick: &Pick, l: &sheet::InboxLine) -> bool {
 /// `notes ptask <name> file <query> (--as "<type(area): title>"... | --dup <id>)` - take the
 /// first inbox line matching `<query>` off `## Inbox` and onto a board, in one write per
 /// sheet. `--as` files it as typed rows ([`new_rows`] stamps them, plus `filed:<today>`),
-/// on `--project`'s board and in `--lane`'s sheet when given; no `--as` files a line that is
+/// on `--project`'s board and in `--lane`'s sheet when given (an `#agent` word in the line picks
+/// the agent sheet and stays off the rows); no `--as` files a line that is
 /// typed already as written; `--dup` adds it to an open row. The human's words stay as a
 /// `was: <words>` detail line (none when filed as written), with the line's own detail lines
 /// after it. A row the grammar flags (a retired priority, two priorities, a retired tag) is
@@ -544,10 +545,13 @@ pub(crate) fn file(
         vec![format!("was: {}", line.text)]
     };
     details.extend(line.details.iter().cloned());
+    // An `#agent` word files the line's rows on the agent board, and stays off them.
+    let to_agent = matches!(how.how, How::Rows { .. }) && md::agent_tag(&line.text);
+    let dest_lane = if to_agent { Lane::Agent } else { how.lane };
     let dest_name = how.project.as_deref().unwrap_or(name);
     let dest_proj = projects::project_dir(p, dest_name)?;
-    let dest_dir = how.lane.dir(&dest_proj);
-    let dest = ensure_lane_sheet(p, &dest_proj, dest_name, how.lane)?;
+    let dest_dir = dest_lane.dir(&dest_proj);
+    let dest = ensure_lane_sheet(p, &dest_proj, dest_name, dest_lane)?;
     let same = same_sheet(&src, &dest);
     let base = if same {
         rest.clone()
@@ -560,14 +564,15 @@ pub(crate) fn file(
             to,
             details: extra,
         } => {
-            let texts = if as_is {
+            let texts: Vec<String> = if as_is {
                 if !is_typed(&line.text) {
                     bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
                 }
-                std::slice::from_ref(&line.text)
+                vec![line.text.clone()]
             } else {
-                &texts[..]
+                texts.clone()
             };
+            let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
             if let Some(bad) = texts.iter().find(|t| !is_typed(t)) {
                 bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
             }
@@ -581,7 +586,7 @@ pub(crate) fn file(
             let block = new_rows(
                 dest_name,
                 &dest_proj,
-                texts,
+                &texts,
                 to,
                 cur,
                 &[filed_token(today)],
@@ -635,7 +640,7 @@ pub(crate) fn file(
         dest_name,
         &line.text,
     );
-    ev.lane = how.lane.name().into();
+    ev.lane = dest_lane.name().into();
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
         How::Rows { .. } => written
@@ -2212,6 +2217,41 @@ mod inbox_tests {
             "{s}"
         );
         assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn an_agent_tag_files_on_the_agent_board_without_the_tag() {
+        let v = vault(
+            "agenttag",
+            "- [ ] chore(build): drop the old cache #agent #low\n- ci is slow on mac #agent\n",
+            "",
+        );
+        let pick = Pick::new("old cache", false).unwrap();
+        file(&v.p, &v.log, "scratch", &pick, &rows(&[]), Lane::Human).unwrap();
+        let pick = Pick::new("ci is slow", false).unwrap();
+        let as_rows = rows(&["perf(ci): the mac runs are slow #agent #size/s"]);
+        file(&v.p, &v.log, "scratch", &pick, &as_rows, Lane::Human).unwrap();
+        let human = v.read();
+        assert!(
+            !human.contains("old cache") && !human.contains("slow"),
+            "{human}"
+        );
+        let agent = fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap())
+            .unwrap();
+        let row = |w: &str| agent.lines().find(|l| l.contains(w)).unwrap().to_string();
+        assert!(
+            row("old cache").starts_with("- [ ] chore(build): drop the old cache "),
+            "{agent}"
+        );
+        assert!(
+            row("mac runs").starts_with("- [ ] perf(ci): the mac runs are slow "),
+            "{agent}"
+        );
+        assert!(agent.contains("was: ci is slow on mac #agent"), "{agent}");
+        assert!(
+            !row("old cache").contains("#agent") && !row("mac runs").contains("#agent"),
+            "{agent}"
+        );
     }
 
     #[test]
