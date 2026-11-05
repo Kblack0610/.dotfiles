@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a message against its channel, or report on every message the fleet sent.
+"""Check a message against its channel, or report on every message and row the fleet wrote.
 
   comms-lint --channel <name> [--priority P] [--title T] <file|->
   comms-lint report [--since 7d] [--channel C] [--json]
@@ -14,6 +14,13 @@ the comms-standard skill. Exit: 0 clean, 1 findings, 2 usage error.
 snapshot writes the 7d and 28d reports to COMMS_SNAPSHOT_DIR/<date>.json (nightly, from the
 briefing's evening run); line and kpi read the newest one, so the fleet-bench scorecard never waits on a
 report run. kpi exits 1 when the newest snapshot is older than COMMS_SNAPSHOT_MAX_AGE_H.
+
+A channel with group = "rows" is a row stream (the notes log, the fleet logs, board rows, asks,
+the queue): its pass rate is rows_pass_pct, kept apart from the messages' pass_pct so hundreds
+of rows a day cannot outweigh a dozen pages. A `command` source runs the stream's own reader,
+which prints one JSON record per line: {"ts", "text", "path"?, "reject"?}. A record with
+"reject" is a line the reader could not parse; it counts as a `shape` finding, so the row
+format has one home, the reader, and is never copied here.
 """
 import argparse
 import collections
@@ -39,7 +46,7 @@ SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
         "prose", "items_under", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
-        "max_title"}
+        "max_title", "refs", "group"}
 
 
 def die(msg, code=2):
@@ -58,8 +65,11 @@ def load_config():
     for name, ch in channels.items():
         if unknown := set(ch) - KEYS:
             die(f"channel {name}: unknown key(s) {', '.join(sorted(unknown))}")
-    ids = [re.compile(p) for p in cfg.get("ids", {}).get("patterns", [])]
-    return channels, ids, cfg.get("report", {})
+    idcfg = cfg.get("ids", {})
+    ids = [re.compile(p) for p in idcfg.get("patterns", [])]
+    # What a proof may cite ([ids] refs), searched anywhere in the text.
+    refs = [re.compile(p) for p in idcfg.get("refs", [])]
+    return channels, (ids, refs), cfg.get("report", {})
 
 
 def is_emoji(ch):
@@ -124,6 +134,7 @@ def prose_findings(text):
 
 def lint(text, ch, ids, priority=None, title=None):
     """Findings for one message, as (code, detail) pairs."""
+    ids, refs = ids
     f = []
     item_re = re.compile(ch["item"])
     lines = body_lines(text)
@@ -181,6 +192,8 @@ def lint(text, ch, ids, priority=None, title=None):
         f.append(("quiet-buzzed", f"sent at {priority}; this kind of message goes at normal or lower"))
     if title is not None and ch.get("max_title") and len(title) > ch["max_title"]:
         f.append(("title-too-long", f"{len(title)} chars, budget {ch['max_title']}"))
+    if ch.get("refs") and not any(p.search(scoped) for p in refs):
+        f.append(("no-ref", "cites no reference (a PR, an id, a sha or a URL)"))
     if ch["prose"]:
         f.extend(prose_findings(scoped))
     return f
@@ -204,10 +217,14 @@ def read_source(src, since):
             fh = open(path, encoding="utf-8", errors="replace")
         except OSError:
             return
+        last = None
         with fh:
             for line in fh:
                 parts = line.rstrip("\n").split("\t")
                 if len(parts) < 4:
+                    # A message written with a raw newline: its tail has no fields of its own.
+                    if last is not None and last >= since and line.strip():
+                        yield last, line.strip(), {"reject": "a line with no ledger fields (a message written with a raw newline)"}
                     continue
                 try:
                     when = dt.datetime.fromisoformat(parts[0])
@@ -215,6 +232,7 @@ def read_source(src, since):
                     continue
                 if when.tzinfo is None:
                     when = when.astimezone()
+                last = when
                 if when < since:
                     continue
                 title = parts[2]
@@ -240,6 +258,9 @@ def read_source(src, since):
                 continue
             yield when, pr.get("body") or "", {"path": f"{pr['repository']['name']}#{pr['number']}"}
         return
+    if kind == "command":
+        yield from read_command(src, since)
+        return
     for path in sorted(glob.glob(os.path.expanduser(src["glob"]), recursive=True)):
         when = dt.datetime.fromtimestamp(os.path.getmtime(path)).astimezone()
         if when < since:
@@ -252,7 +273,58 @@ def read_source(src, since):
             text = section(text, src["heading"])
             if text is None:
                 continue
+        if src.get("fields"):
+            text = "\n".join(v for k, v in key_values(text) if k in src["fields"] and v)
+            if not text:
+                continue
         yield when, text, {"path": path}
+
+
+def key_values(text):
+    """The `key: value` lines of a flat record file (an ask)."""
+    for line in text.splitlines():
+        k, sep, v = line.partition(": ")
+        if sep and re.fullmatch(r"[a-z_]+", k):
+            yield k, v.strip()
+
+
+def read_command(src, since):
+    """Records from a stream's own reader: one JSON object per line."""
+    now = dt.datetime.now().astimezone()
+    subs = {"since": since.isoformat(timespec="seconds"), "since_date": since.date().isoformat(),
+            "days": str((now - since).days + 1)}
+    cmd = [os.path.expanduser(a.format(**subs)) for a in src["cmd"]]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=src.get("timeout", 120))
+    except (OSError, subprocess.TimeoutExpired):
+        res = None
+    if res is None or (res.returncode not in (0, 1) and not res.stdout):
+        print(f"comms-lint: source unreadable: {' '.join(cmd)}", file=sys.stderr)
+        return
+    k_ts, k_text, k_path = src.get("ts", "ts"), src.get("text", "text"), src.get("path", "path")
+    want, skip = src.get("select", {}), src.get("skip", {})
+    for line in res.stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (not isinstance(rec, dict) or any(rec.get(k) != v for k, v in want.items())
+                or any(rec.get(k) == v for k, v in skip.items())):
+            continue
+        ts = rec.get(k_ts)
+        try:
+            when = (dt.datetime.fromtimestamp(ts).astimezone() if isinstance(ts, (int, float))
+                    else dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")))
+        except (ValueError, OSError, OverflowError):
+            continue
+        if when.tzinfo is None:
+            when = when.astimezone()
+        if when < since:
+            continue
+        meta = {"path": str(rec.get(k_path) or "")}
+        if rec.get("reject"):
+            meta["reject"] = str(rec["reject"])
+        yield when, str(rec.get(k_text) or ""), meta
 
 
 def section(text, heading):
@@ -296,7 +368,8 @@ def build_report(window, only, channels, ids, rcfg):
         for when, text, meta in read_source(src, since):
             pri = meta.get("priority")
             try:
-                f = lint(text, ch, ids, priority=pri)
+                f = ([("shape", meta["reject"])] if meta.get("reject")
+                     else lint(text, ch, ids, priority=pri))
             except FileNotFoundError:
                 prose_missing = True
                 f = lint(text, {**ch, "prose": False}, ids, priority=pri)
@@ -316,11 +389,12 @@ def build_report(window, only, channels, ids, rcfg):
                     buzz_by[meta["sender"]] += 1
                     if any(c == "quiet-buzzed" for c, _ in f):
                         quiet_buzz += 1
+        group = ch.get("group", "messages")
         if not n:
-            out["channels"][name] = {"messages": 0}
+            out["channels"][name] = {"messages": 0, "group": group}
             continue
         q = statistics.quantiles(lengths, n=10) if len(lengths) > 1 else [lengths[0]] * 9
-        row = {"messages": n, "passed": passed, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
+        row = {"group": group, "messages": n, "passed": passed, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
                "p90_chars": int(q[8]), "findings": dict(codes.most_common(8)),
                "worst": [{"findings": w[0], "when": w[1], "from": w[2], "text": w[3]}
                          for w in sorted(worst, key=lambda w: -w[0])[:3]]}
@@ -336,12 +410,15 @@ def build_report(window, only, channels, ids, rcfg):
 
 
 def summary(out):
-    """Every channel's messages in one pass rate, and the phone's buzzes a day."""
-    rows = [v for v in out["channels"].values() if v.get("messages")]
-    total = sum(v["messages"] for v in rows)
-    passed = sum(v["passed"] for v in rows)
+    """The messages' pass rate, the rows' pass rate, and the phone's buzzes a day."""
+    def rate(group):
+        chans = [v for v in out["channels"].values() if v.get("messages") and v.get("group", "messages") == group]
+        total = sum(v["messages"] for v in chans)
+        return total, round(100 * sum(v["passed"] for v in chans) / total) if total else None
+    total, pct = rate("messages")
+    rows, rows_pct = rate("rows")
     page = out["channels"].get("page", {})
-    return {"messages": total, "pass_pct": round(100 * passed / total) if total else None,
+    return {"messages": total, "pass_pct": pct, "rows": rows, "rows_pass_pct": rows_pct,
             "buzzes_per_day": page.get("buzzed_per_day")}
 
 
@@ -374,6 +451,8 @@ def print_report(out, since):
     rows = {k: v for k, v in out["channels"].items() if v.get("messages")}
     sm = out["summary"]
     head = f"Comms, last {since}: {sm['messages']} messages, {sm['pass_pct'] or 0}% meet the standard."
+    if sm.get("rows"):
+        head += f" {sm['rows']} rows, {sm['rows_pass_pct']}% meet their notation."
     if sm["buzzes_per_day"] is not None:
         mx = kpi_threshold("buzzes_per_day_max")
         head += f" Phone buzzed {sm['buzzes_per_day']} times a day" + (
@@ -382,7 +461,8 @@ def print_report(out, since):
     if out.get("warning"):
         print(f"Warning: {out['warning']}")
     for name, v in rows.items():
-        print(f"\n{name}: {v['messages']} messages, {v['pass_pct']}% pass, "
+        unit = "rows" if v.get("group") == "rows" else "messages"
+        print(f"\n{name}: {v['messages']} {unit}, {v['pass_pct']}% pass, "
               f"median {v['p50_chars']} chars, p90 {v['p90_chars']}")
         for code, c in v["findings"].items():
             print(f"  {c:5d}  {code}")
@@ -427,6 +507,8 @@ def snapshot_line(snap):
     if sm["buzzes_per_day"] is not None:
         mx = kpi_threshold("buzzes_per_day_max")
         line += f", phone buzzed {sm['buzzes_per_day']} times a day" + (f" (most {num(mx)})" if mx is not None else "")
+    if sm.get("rows"):
+        line += f", {sm['rows_pass_pct']}% of {sm['rows']:,} rows meet their notation"
     low = sorted(((v["pass_pct"], k) for k, v in w["channels"].items() if v.get("messages")))[:3]
     if low:
         line += "; lowest: " + ", ".join(f"{k} {p}%" for p, k in low)
@@ -439,7 +521,8 @@ def main():
     if argv[:1] == ["channels"]:
         for name, ch in channels.items():
             src = ch.get("source", {})
-            print(f"{name:14s} {src.get('path') or src.get('glob') or '(no source)'}")
+            where = src.get("path") or src.get("glob") or " ".join(src.get("cmd", [])) or "(no source)"
+            print(f"{name:14s} {where}")
         return 0
     if argv[:1] == ["snapshot"]:
         ap = argparse.ArgumentParser(prog="comms-lint snapshot")
@@ -458,9 +541,10 @@ def main():
         if age_h > SNAPSHOT_MAX_AGE_H:
             die(f"newest comms snapshot is {age_h:.0f}h old ({snap['date']}); a stale number is not a KPI", 1)
         ws = snap["windows"]
-        # Keyed by fleet-bench KPI name: buzzes_per_day, comms_pass_pct.
-        print(json.dumps({kpi: {w: ws[w]["summary"][k] for w in SNAPSHOT_WINDOWS if w in ws}
-                          for kpi, k in (("buzzes_per_day", "buzzes_per_day"), ("comms_pass_pct", "pass_pct"))}
+        # Keyed by fleet-bench KPI name: buzzes_per_day, comms_pass_pct, rows_pass_pct.
+        print(json.dumps({kpi: {w: ws[w]["summary"].get(k) for w in SNAPSHOT_WINDOWS if w in ws}
+                          for kpi, k in (("buzzes_per_day", "buzzes_per_day"), ("comms_pass_pct", "pass_pct"),
+                                         ("rows_pass_pct", "rows_pass_pct"))}
                          | {"date": snap["date"]}))
         return 0
     if argv[:1] == ["report"]:

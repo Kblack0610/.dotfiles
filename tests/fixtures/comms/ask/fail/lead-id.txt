@@ -1,0 +1,1 @@
+dotfiles#910 (the fix that clears the urgent fleet-liveness trip) and #909 are both stuck: their fast tier ran all 1228 tests with 0 failures on #910, then hit its 10m timeout. Start a session on that row now, or wait for dispatch?
