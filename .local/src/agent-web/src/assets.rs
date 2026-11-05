@@ -37,6 +37,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
+    ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
@@ -197,8 +198,8 @@ mod tests {
             );
         }
         for (old, new) in hub_core::layout::RETIRED {
-            // overview was only ever a TUI tab; the web never had it.
-            if *old != "overview" {
+            // overview and forecast were only ever TUI tabs; the web never had them.
+            if !["overview", "forecast"].contains(old) {
                 assert!(
                     retired.chunks(2).any(|p| p[0] == *old && p[1] == *new),
                     "{old} missing"

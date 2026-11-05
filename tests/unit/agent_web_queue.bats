@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# agent-web's Queue, answer and Home cards decide what a waiting item or ask shows, so they are tested
-# against the real scripts (tests/agent-web/{queue,waiting,home}.test.mjs); skips where node is absent.
+# agent-web's Queue, answer, Home and Projects cards, the Log's hour chart and project groups and the Sessions list
+# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,log,sessions}.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -20,5 +20,20 @@ setup() {
 
 @test "agent-web home.js: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/home.test.mjs"
+  assert_success
+}
+
+@test "agent-web projects.js: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/projects.test.mjs"
+  assert_success
+}
+
+@test "agent-web log.js: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/log.test.mjs"
+  assert_success
+}
+
+@test "agent-web Sessions list (app.js, watch.js, shepherd.js): node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/sessions.test.mjs"
   assert_success
 }

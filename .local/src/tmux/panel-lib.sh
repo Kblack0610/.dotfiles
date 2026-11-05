@@ -177,8 +177,11 @@ panel_paint() { printf '%s%s%s' "$(panel_glyph_color "$1")" "$1" "$C_OFF"; }
 #
 # --no-input, --cycle and --wrap are NOT here: they are per-surface choices (modal nav,
 # pre-ordered lists), not a floor.
+#
+# --color=16: fzf's own chrome (prompt, pointer, header, match highlight) uses the 16 ANSI
+# colours the theme sets, not fzf's 256-colour defaults, which ignore it.
 panel_fzf_opts() {
-  PANEL_FZF_OPTS=(--ansi --reverse --border)
+  PANEL_FZF_OPTS=(--ansi --reverse --border --color=16)
 }
 
 # panel_fzf_table -- the extra flags a pre-ordered TSV list wants on top of the base.
@@ -201,6 +204,24 @@ panel_fzf_preview() {
   *) panel_fail "unknown preview side: $side" || return 1 ;;
   esac
   printf -- '--preview-window=%s,%s%%,%s,wrap\n' "$side" "$pct" "$border"
+}
+
+# panel_fzf_layout [stacked|side] -- sets PANEL_FZF_LAYOUT, the one preview layout every
+# picker uses: the window it opens with, and ctrl-/ cycling to the other one, then hidden,
+# then back. stacked = list on top at full width, preview below; side = list left, preview
+# right. The default is ${PANEL_LAYOUT:-stacked}, so `set-environment -g PANEL_LAYOUT side`
+# in .tmux.conf flips every panel at once. agent-panel (Rust) emits these same strings.
+panel_fzf_layout() {
+  local first="${1:-${PANEL_LAYOUT:-stacked}}" a b
+  local stacked side
+  stacked="$(panel_fzf_preview down 60)"; stacked="${stacked#--preview-window=}"
+  side="$(panel_fzf_preview right 55)"; side="${side#--preview-window=}"
+  case "$first" in
+  stacked) a="$stacked" b="$side" ;;
+  side) a="$side" b="$stacked" ;;
+  *) panel_fail "unknown layout: $first (stacked or side)" || return 1 ;;
+  esac
+  PANEL_FZF_LAYOUT=(--preview-window="$a" "--bind=ctrl-/:change-preview-window($b|hidden|$a)")
 }
 
 # ── tmux ─────────────────────────────────────────────────────────────────────

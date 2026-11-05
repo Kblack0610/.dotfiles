@@ -9,7 +9,8 @@
 # --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets pr:<pr>
 # and moves to done, status ok), board (the item's row when it came from the board, done with
 # pr:<pr>; with no item, the --project/--title agent row), plan (--plan: the one "- [ ] <phase>"
-# line becomes "- [x] <phase> (#<pr>)"). One line per step.
+# line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
+# against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one a hand-started session recorded with `agent-queue add --running` (`agent-queue mine`); with
 # one, --project and --title are not needed and not used: the item is the record.
@@ -149,6 +150,20 @@ else
   [ -n "$project" ] && [ -n "$title" ] || die "--project and --title are required without a queue item (--item or AGENT_QUEUE_ITEM)"
 fi
 # board_cmd -> the notes argv that closes the row, one word a line: the item's, or --project/--title.
+# score_body: the merged body's score against comms-standard (channel pr-body). A score, never a
+# gate: the PR is already merged, and the line tells its author what to fix in the next one.
+score_body() {
+  local body out rc=0
+  command -v comms-lint >/dev/null 2>&1 || { echo "body: not scored (no comms-lint on PATH)"; return 0; }
+  body=$(gh pr view "$pr" --json body -q .body 2>&1) || { echo "body: not scored (gh pr view: $(lastline "$body"))"; return 0; }
+  out=$(printf '%s\n' "$body" | comms-lint --channel pr-body - 2>&1) || rc=$?
+  case "$rc" in
+  0) echo "body: passes comms-lint --channel pr-body" ;;
+  1) echo "body: $(lastline "$out") First: $(printf '%s\n' "$out" | sed -n '1s/^ *//p')" ;;
+  *) echo "body: not scored ($(lastline "$out"))" ;;
+  esac
+}
+
 board_cmd() {
   if [ -n "$item" ]; then
     [ -z "$row" ] || printf '%s\n' "$row"
@@ -168,6 +183,7 @@ if [ "$dry" -eq 1 ]; then
   echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
+  echo "body: gh pr view $pr --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   [ -z "$item" ] || echo "item: agent-queue set $item pr=$pr && agent-queue move $item done --status ok"
   mapfile -t b < <(board_cmd)
   [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
@@ -194,6 +210,8 @@ else
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
   echo "merge: #$pr MERGED at ${head:0:8}"
 fi
+
+score_body
 
 if [ -n "$item" ]; then
   if [ "$(jq -r .state <<<"$it")" != "done" ]; then

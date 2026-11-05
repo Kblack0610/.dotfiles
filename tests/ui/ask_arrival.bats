@@ -18,7 +18,7 @@ setup() {
   mkdir -p "$HOME/.local/bin"
   printf '#!/usr/bin/env bash\necho "$*" >> "$HOME/ask-here.log"\n' > "$HOME/.local/bin/agent-panel"
   chmod +x "$HOME/.local/bin/agent-panel"
-  # The ask-here lines of the real config: the format variable, the hooks, Prefix y.
+  # The ask lines of the real config: the format variable, the hooks, Prefix y.
   grep -E '^%hidden ASK_HERE=|^set-hook .*ASK_HERE|^bind y ' "$REPO_ROOT/.tmux.conf" > "$HOME/ask.conf"
   t new-session -d -s one
   t new-session -d -s two
@@ -43,14 +43,16 @@ attach_client() {
 
 ask_calls() { cat "$HOME/ask-here.log" 2>/dev/null; }
 
-@test "the config runs ask-here from the arrival hook and Prefix y" {
+@test "the config runs ask-here from the arrival hook, and Prefix y opens the questions panel" {
   [ "$(grep -c . "$HOME/ask.conf")" -eq 3 ]
   run t show-hooks -g
   assert_output --partial 'client-session-changed[0] run-shell -b'
   assert_output --partial "agent-panel' ask-here --client"
+  # Prefix y is the full-screen questions panel (tests/ui/questions_panel.bats), not ask-here.
   run t list-keys -T prefix y
-  assert_output --partial 'ask-here'
-  assert_output --partial '--key'
+  assert_output --partial 'display-popup -BE -h "100%" -w "100%"'
+  assert_output --partial '/.local/src/tmux/questions.sh'
+  refute_output --partial 'ask-here'
 }
 
 @test "attaching and switching session run ask-here for that client and where it landed" {

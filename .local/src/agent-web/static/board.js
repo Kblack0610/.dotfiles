@@ -1,7 +1,8 @@
 "use strict";
-// The Board tab: every project's open rows from `notes board --json` (/api/board): the human
-// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done,
-// remove, move (to a project or a version), a release sooner or later, and edit go through
+// The rows under the Projects tab (projects.js opens them for one project or for all): every
+// project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
+// playtest, and each profile's Focus (read-only here). Add, start, done, drop, move (to a
+// project or a version), a release sooner or later, edit and tags go through
 // `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
@@ -13,13 +14,13 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  // `form` is the one row whose done, drop, move or edit form is open: { k, kind }.
+  // `form` is the one row whose done, drop, move, edit or tags form is open: { k, kind }.
   open: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
   try { bst.feed = await api("/api/board"); bst.err = null; } catch (e) { bst.err = e.message; }
-  if (st.tab === "board") renderBoard();
+  if (st.tab === "projects") renderProjects();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -99,6 +100,12 @@ function bRow(r, i) {
         `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
         `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
         `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else if (kind === "tag") {
+      // A row has one size, so adding size/m replaces its old one; a release is Move's.
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" placeholder="add: size/s requested">` +
+        `<input data-formremove="${i}" placeholder="remove: ai">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save tags</button>` + cancel;
     } else {
       acts = `<div class="opts">` +
         `<input data-forminput="${i}" value="${esc(r.text)}">` +
@@ -113,7 +120,8 @@ function bRow(r, i) {
       (versioned ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` +
         `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
-        `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
+        `<button class="btn sm" data-edit="${i}">Edit...</button>` +
+        `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
@@ -161,9 +169,9 @@ function drawBoardList() {
   }
   html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
-  const y = $("board").scrollTop;
+  const y = $("projects").scrollTop;
   el.innerHTML = html;
-  $("board").scrollTop = y;
+  $("projects").scrollTop = y;
 }
 
 function renderBoard() {
@@ -212,6 +220,7 @@ async function bWrite(body, okMsg) {
   } finally {
     renderBoard();
     refreshBoard();
+    refreshProjects();
   }
 }
 
@@ -239,7 +248,7 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
   if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
@@ -248,9 +257,9 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
-  const opened = d.done || d.drop || d.move || d.edit;
+  const opened = d.done || d.drop || d.move || d.edit || d.tag;
   if (opened) {
-    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : "edit" };
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
     drawBoardList();
     const i = $("board").querySelector(`[data-forminput="${opened}"]`);
     if (i) i.focus();
@@ -270,6 +279,10 @@ $("board").addEventListener("click", (e) => {
       const dest = q("movedest").value;
       if (!dest && !v) { bst.msg = "Pick a project, a version, or both."; renderBoard(); return; }
       body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
+    } else if (kind === "tag") {
+      const rm = q("formremove").value.trim();
+      if (!v && !rm) { bst.msg = "Type a tag to add or remove."; renderBoard(); return; }
+      body = { verb: "tag", add: v, remove: rm }; ok = "Tags saved.";
     } else {
       if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }
       body = { verb: "edit", text: v }; ok = "Edited.";
@@ -289,14 +302,10 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.forminput;
+  const i = e.target.dataset.forminput || e.target.dataset.formremove;
   if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;
 }, true);
 
-TABS.board = {
-  show() { renderBoard(); refreshBoard(); },
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "board") refreshBoard(); },
-};

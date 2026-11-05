@@ -22,6 +22,7 @@ use crate::controls::{Ask, Controls};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
+use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, hometab};
@@ -30,6 +31,8 @@ use crate::{board, day, fleet, fleettab, hometab};
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
 /// evaluate every 30-60s anyway.
 pub const PROM_REFRESH: Duration = Duration::from_secs(60);
+/// Under this many body lines the Projects rows keep the whole window and get no preview pane.
+const PREVIEW_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -37,12 +40,12 @@ pub enum Tab {
     Jobs,
     Ci,
     Machines,
-    Forecast,
+    Sessions,
     Today,
     History,
     Fleet,
     Queue,
-    Board,
+    Projects,
 }
 
 impl Tab {
@@ -52,11 +55,13 @@ impl Tab {
         Tab::Jobs,
         Tab::Ci,
         Tab::Machines,
-        Tab::Forecast,
+        // Forecast's slot and key 6; `forecast` resolves here (hub_core::layout::RETIRED).
+        Tab::Sessions,
         Tab::Today,
         Tab::History,
         Tab::Fleet,
-        Tab::Board,
+        // Board's slot and key 0 until the layout renumbers the digits once (dashboards.md).
+        Tab::Projects,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -64,12 +69,12 @@ impl Tab {
             Tab::Jobs => "Jobs",
             Tab::Ci => "CI",
             Tab::Machines => "Machines",
-            Tab::Forecast => "Forecast",
+            Tab::Sessions => "Sessions",
             Tab::Today => "Today",
             Tab::History => "History",
             Tab::Fleet => "Fleet",
             Tab::Queue => "Queue",
-            Tab::Board => "Board",
+            Tab::Projects => "Projects",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -91,7 +96,7 @@ impl Tab {
             Tab::Home => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Board => {
+            Tab::Sessions | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Projects => {
                 None
             }
         }
@@ -155,7 +160,7 @@ pub enum Msg {
     Files,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
-    /// `hub tab <name> [search]` asked for a page (tabreq.rs); the search is the Board's.
+    /// `hub tab <name> [words]` asked for a page (tabreq.rs); the words name a project to open.
     Tab(Tab, Option<String>),
     Boards(Box<Boards>),
     Infra(Box<Infra>),
@@ -163,7 +168,7 @@ pub enum Msg {
     Forecast(Box<Forecast>),
     Fleet(Box<hub_core::fleet::Fleet>),
     Log(u64, Result<String, String>),
-    /// The live and parked agent sessions, for the Fleet tab's controls.
+    /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
     /// A session action ended: its output, or why it failed.
     Acted(Result<String, String>),
@@ -176,6 +181,8 @@ pub enum Msg {
     Tasks(Box<Result<Feed, String>>),
     /// A board write ended: notes' output, or why it failed.
     TasksActed(Result<String, String>),
+    /// `notes projects --stats --json` and the project map, for the Projects tab's cards.
+    Projects(Box<projtab::Loaded>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -220,10 +227,13 @@ pub struct App {
     pub qv: QueueView,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
-    /// Every project's open rows, for the Board tab; None until the first read.
+    /// Every project's open rows, for the Projects tab; None until the first read.
     pub tasks: Option<Result<Feed, String>>,
     pub tv: TaskView,
-    /// The Fleet tab's session list, selection and confirm.
+    /// The Projects tab's card inputs; None until the first read.
+    pub projects: Option<projtab::Loaded>,
+    pub pv: ProjView,
+    /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
     pub runner: Arc<dyn Runner + Send + Sync>,
@@ -247,6 +257,7 @@ pub struct App {
     sessions_read: Read,
     queue_read: Read,
     tasks_read: Read,
+    projects_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -275,6 +286,8 @@ impl App {
             queue_dir: queue_dir(),
             tasks: None,
             tv: TaskView::default(),
+            projects: None,
+            pv: ProjView::default(),
             controls: Controls::default(),
             runner: Arc::new(actions::System),
             gather: actions::gather,
@@ -292,6 +305,7 @@ impl App {
             sessions_read: Read::default(),
             queue_read: Read::default(),
             tasks_read: Read::default(),
+            projects_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -327,7 +341,7 @@ impl App {
         }
     }
 
-    /// fleet-bench writes no file to watch, so the Forecast tab is read on the tick, and only
+    /// fleet-bench writes no file to watch, so the Sessions tab reads it on the tick, and only
     /// while it is shown: each read is three jq passes over the progress history.
     pub fn read_forecast(&mut self) {
         if self.forecast_read.want() {
@@ -351,7 +365,7 @@ impl App {
     }
 
     /// The session list has no one file to watch (tmux, `~/.claude/sessions`, the park
-    /// ledger, agent-queue), so the Fleet tab reads it on entering, on `r`, after an action
+    /// ledger, agent-queue), so the Sessions tab reads it on entering, on `r`, after an action
     /// and on the 60s tick while it is shown.
     pub fn read_sessions(&mut self) {
         if self.sessions_read.want() {
@@ -415,9 +429,10 @@ impl App {
         });
     }
 
-    /// The board is read through `notes board --json` (hub_core::tasks), never from the
-    /// sheets: on entering the Board tab, on `r`, after a write, and on the tick while shown.
-    /// The vault has no watch here; `notes` is its writer.
+    /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
+    /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
+    /// the Projects tab, on `r`, after a write, and on the tick while shown. The vault has no
+    /// watch here; `notes` is its writer.
     pub fn read_tasks(&mut self) {
         if self.tasks_read.want() {
             let tx = self.tx.clone();
@@ -425,6 +440,57 @@ impl App {
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Tasks(Box::new(hub_core::tasks::feed(runner.as_ref()))));
             });
+        }
+    }
+
+    /// Both of the Projects tab's reads: the rows and the cards.
+    pub fn read_projects(&mut self) {
+        self.read_tasks();
+        self.read_cards();
+    }
+
+    fn read_cards(&mut self) {
+        if self.projects_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Projects(Box::new(projtab::load(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// The cards, joined from the last reads (hub_core::projects::build).
+    pub fn cards(&self) -> hub_core::projects::Projects {
+        let Some(l) = &self.projects else {
+            return Default::default();
+        };
+        let stats = match &l.stats {
+            Ok(s) => s.as_slice(),
+            Err(e) => {
+                return hub_core::projects::Projects {
+                    errors: vec![e.clone()],
+                    ..Default::default()
+                }
+            }
+        };
+        let feed = match &self.tasks {
+            Some(Ok(f)) => Some(f),
+            _ => None,
+        };
+        let null = serde_json::Value::Null;
+        let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), &l.repos)
+    }
+
+    /// Open the project a `hub tab projects <name>` named, once the cards are read.
+    fn open_wanted(&mut self) {
+        if self.projects.is_none() {
+            return;
+        }
+        if let Some(name) = self.pv.want.take() {
+            let cards = self.cards().cards;
+            self.pv.go(&mut self.tv, &cards, &name);
+            self.scroll = 0;
         }
     }
 
@@ -482,15 +548,15 @@ impl App {
                     self.read_boards();
                     self.read_queue();
                 }
-                if self.tab == Tab::Forecast {
+                if self.tab == Tab::Sessions {
                     self.read_forecast();
+                    self.read_sessions();
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
-                    self.read_sessions();
                 }
-                if self.tab == Tab::Board {
-                    self.read_tasks();
+                if self.tab == Tab::Projects {
+                    self.read_projects();
                 }
             }
             Msg::Files => {
@@ -501,16 +567,19 @@ impl App {
             }
             Msg::BoardFiles => self.read_boards(),
             Msg::Tab(t, q) => {
-                self.board_search(q);
                 self.go(t);
+                self.open_project(q);
             }
             Msg::Boards(b) => {
+                let state = b.watch.state["sessions"].as_array().cloned();
+                self.controls.read(Some(state.unwrap_or_default()), None);
                 self.boards = Some(*b);
                 if self.boards_read.done() {
                     self.read_boards();
                 }
             }
             Msg::Forecast(f) => {
+                self.controls.read(None, Some(forecast::schedule(&f)));
                 self.forecast = Some(*f);
                 if self.forecast_read.done() {
                     self.read_forecast();
@@ -594,7 +663,14 @@ impl App {
             Msg::TasksActed(r) => {
                 self.tv.running = None;
                 self.tv.said = Some(r);
-                self.read_tasks();
+                self.read_projects();
+            }
+            Msg::Projects(l) => {
+                self.projects = Some(*l);
+                self.open_wanted();
+                if self.projects_read.done() {
+                    self.read_cards();
+                }
             }
         }
     }
@@ -618,13 +694,13 @@ impl App {
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
-        if self.tab == Tab::Fleet && self.sessions_key(k) {
+        if self.tab == Tab::Sessions && self.sessions_key(k) {
             return;
         }
         if self.tab == Tab::Queue && self.queue_key(k) {
             return;
         }
-        if self.tab == Tab::Board && self.board_key(k) {
+        if self.tab == Tab::Projects && self.projects_key(k) {
             return;
         }
         let n = self.page.max(1);
@@ -645,15 +721,15 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
-                if self.tab == Tab::Forecast {
+                if self.tab == Tab::Sessions {
                     self.read_forecast();
+                    self.read_sessions();
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
-                    self.read_sessions();
                 }
-                if self.tab == Tab::Board {
-                    self.read_tasks();
+                if self.tab == Tab::Projects {
+                    self.read_projects();
                 }
             }
             KeyCode::Char('o') => {
@@ -672,33 +748,61 @@ impl App {
         }
     }
 
-    /// Set the Board's search, as `/` would; None leaves it as it is.
-    pub fn board_search(&mut self, q: Option<String>) {
-        if let Some(q) = q {
-            self.tv.search = q;
-            self.tv.sel = 0;
+    /// `hub tab projects <name>`: open that project's rows (or All searched for the name)
+    /// once the cards are read; None leaves the tab as it is.
+    pub fn open_project(&mut self, q: Option<String>) {
+        if let Some(q) = q.filter(|q| !q.trim().is_empty()) {
+            self.pv.want = Some(q.trim().to_string());
+            self.open_wanted();
         }
     }
 
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
-        if t == Tab::Forecast {
+        if t == Tab::Sessions {
             self.read_forecast();
+            self.read_sessions();
         }
         if t == Tab::Fleet {
             self.read_fleet();
-            self.read_sessions();
         }
         if t == Tab::Queue {
             self.read_queue();
         }
-        if t == Tab::Board {
-            self.read_tasks();
+        if t == Tab::Projects {
+            self.read_projects();
         }
     }
 
-    /// The Board tab's own keys (tasktab.rs). With a prompt open every key is its; the page keeps the selected row in view (draw).
+    /// The Projects tab's keys: the card list's (projtab.rs), or with the rows open theirs
+    /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
+    fn projects_key(&mut self, k: KeyEvent) -> bool {
+        if !self.pv.open {
+            let cards = self.cards().cards;
+            return self.pv.key(&mut self.tv, k, &cards, self.page);
+        }
+        if self.tv.prompt.is_none() {
+            let v = &self.tv;
+            let filtered = !v.search.is_empty() || v.lane.is_some() || v.said.is_some();
+            if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
+                self.pv.close(&mut self.tv);
+                self.scroll = 0;
+                return true;
+            }
+        }
+        // With no rows read there is nothing to clear: Esc still goes back.
+        if self.board_key(k) {
+            return true;
+        }
+        if k.code == KeyCode::Esc && self.tv.prompt.is_none() {
+            self.pv.close(&mut self.tv);
+            return true;
+        }
+        false
+    }
+
+    /// The rows' own keys (tasktab.rs). With a prompt open every key is its; the page keeps the selected row in view (draw).
     fn board_key(&mut self, k: KeyEvent) -> bool {
         let feed = match &self.tasks {
             Some(Ok(f)) => Some(f),
@@ -739,8 +843,9 @@ impl App {
         }
     }
 
-    /// The Fleet tab's session keys (controls.rs): j/k pick a session, a letter arms an action's
-    /// confirm, and with one armed every key is the confirm's. The page scrolls with
+    /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
+    /// confirm, and with one armed every key is the confirm's; Enter opens the selected
+    /// session's detail and f the forecast at the bottom. The page scrolls with
     /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         match self.controls.key(k) {
@@ -748,7 +853,7 @@ impl App {
             Ask::Done => {}
             Ask::Run(t, a, acct) => self.act(t, a, acct),
         }
-        // The title and the table header sit above the first row.
+        // The stage counts and the table header sit above the first row.
         let at = 2 + self.controls.sel;
         let h = self.page.max(1);
         if at < self.scroll {
@@ -943,6 +1048,21 @@ impl App {
         ])
         .areas(f.area());
         f.render_widget(Paragraph::new(self.tab_bar()), bar);
+        // One project's rows get the selected row in full underneath, under a rule, in at
+        // most a third of the window; a short window keeps every line for the rows.
+        let preview = self.preview(body.width as usize);
+        let body = match preview {
+            Some(lines) if body.height >= PREVIEW_MIN_HEIGHT => {
+                let h = (lines.len() as u16 + 1).min(body.height / 3);
+                let [list, pane] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(h)]).areas(body);
+                let mut l = vec![Line::styled("-".repeat(pane.width as usize), self.p.dim())];
+                l.extend(lines);
+                f.render_widget(Paragraph::new(l), pane);
+                list
+            }
+            _ => body,
+        };
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Jobs {
             self.draw_jobs(f, body);
@@ -950,8 +1070,8 @@ impl App {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
-            // The Board's one section is its selected row, kept in view.
-            if let (Tab::Board, Some(&at)) = (self.tab, sections.first()) {
+            // The Projects tab's one section is its selected card or row, kept in view.
+            if let (Tab::Projects, Some(&at)) = (self.tab, sections.first()) {
                 let h = (body.height as usize).max(1);
                 if at < self.scroll {
                     self.scroll = at.saturating_sub(2);
@@ -1029,13 +1149,13 @@ impl App {
             Tab::Jobs => format!(
                 "Enter log  s source  f state  / search  h history  o open url  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Fleet if self.controls.confirm.is_some() => {
+            Tab::Sessions if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
-            Tab::Fleet => format!(
-                "j/k pick  i p u m x c act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+            Tab::Sessions => format!(
+                "j/k pick  Enter detail  i p u m x c a act  f forecast  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Forecast => {
+            Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Today if self.day.is_some() => {
@@ -1047,12 +1167,28 @@ impl App {
             Tab::Queue => format!(
                 "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
-            Tab::Board => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  +/- release  o open  Esc clear  r refresh  {tabs} tabs  q quit"
+            Tab::Projects if self.tv.prompt.is_some() => {
+                "type, Enter submits, Esc cancels".into()
+            }
+            Tab::Projects if self.pv.open => format!(
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Projects => format!(
+                "j/k pick  Enter open rows  / search all  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
+    }
+
+    /// The selected row in full, when one project's rows (or All) are open on Projects.
+    fn preview(&self, w: usize) -> Option<Vec<Line<'static>>> {
+        if self.tab != Tab::Projects || !self.pv.open {
+            return None;
+        }
+        let Some(Ok(f)) = &self.tasks else {
+            return None;
+        };
+        self.tv.selected(f).map(|r| tasktab::preview(r, self.p, w))
     }
 
     /// A page as lines (or what is being waited for), and where its sections start.
@@ -1077,38 +1213,78 @@ impl App {
                 }
                 (l, vec![])
             }
-            (Tab::Board, ..) => match &self.tasks {
+            (Tab::Projects, ..) if !self.pv.open => match &self.projects {
+                None => reading("notes projects"),
+                Some(_) => {
+                    let feed = match &self.tasks {
+                        Some(Ok(f)) => Some(f),
+                        _ => None,
+                    };
+                    let (l, at) = projtab::page(&self.cards(), feed, &self.pv, self.p, w);
+                    (l, at.into_iter().collect())
+                }
+            },
+            // One project's card stays on top of its rows; All has none.
+            (Tab::Projects, ..) => match &self.tasks {
                 None => reading("notes board"),
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
                 Some(Ok(f)) => {
-                    let (l, at) = tasktab::page(f, &self.tv, self.p, w);
-                    (l, at.into_iter().collect())
+                    let mut l = vec![];
+                    if let Some((profile, name)) = &self.tv.project {
+                        let cards = self.cards().cards;
+                        if let Some(c) = cards
+                            .iter()
+                            .find(|c| c.profile == *profile && c.name == *name)
+                        {
+                            l = projtab::card_lines(c, self.p, w);
+                            l.push(Line::raw(""));
+                        }
+                    }
+                    let top = l.len();
+                    let (rows, at) = tasktab::page(f, &self.tv, self.p, w);
+                    l.extend(rows);
+                    (l, at.map(|a| a + top).into_iter().collect())
                 }
             },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => (queuetab::page(q, &self.qv, self.p, now, w), vec![]),
             },
-            (Tab::Forecast, ..) => match &self.forecast {
-                None => reading("fleet-bench forecast"),
-                Some(f) => (forecast::page(f, self.p, now, w), vec![]),
-            },
-            // The agent sessions first (their controls, then every session's stages), then the
-            // machinery that runs them: accounts, runners and the judges.
-            (Tab::Fleet, b, _) => {
-                let mut l = self.controls.lines(self.p, w);
+            // One row per session (its controls, stage and ETA), the selected one's detail, the
+            // asks and the changes, then the forecast folded at the bottom.
+            (Tab::Sessions, b, _) => {
+                let table = self.controls.lines(self.p, now, w);
+                let mut l = match b {
+                    None => {
+                        let mut l = reading("the board files").0;
+                        l.extend(table);
+                        l
+                    }
+                    Some(b) => fleet::page(&b.watch, table, self.p, now, w),
+                };
                 l.push(Line::raw(""));
-                match b {
-                    None => l.extend(reading("the board files").0),
-                    Some(b) => l.extend(fleet::page(&b.watch, self.p, now, w)),
-                }
-                l.push(Line::raw(""));
-                match &self.fleet {
-                    None => l.extend(reading("the fleet").0),
-                    Some(f) => l.extend(fleettab::page(f, self.p, now, w)),
+                if self.controls.forecast {
+                    l.push(Line::styled("FORECAST  f folds it", self.p.head()));
+                    match &self.forecast {
+                        None => l.extend(reading("fleet-bench forecast").0),
+                        Some(f) => l.extend(forecast::page(f, self.p, now, w)),
+                    }
+                } else {
+                    l.push(crate::fit::clip_line(
+                        Line::styled(
+                            "FORECAST  f opens the all-done band, the drain, the burn-up and the baseline",
+                            self.p.head(),
+                        ),
+                        w,
+                    ));
                 }
                 (l, vec![])
             }
+            // The machinery that runs the sessions: accounts, runners and the judges.
+            (Tab::Fleet, ..) => match &self.fleet {
+                None => reading("the fleet"),
+                Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
+            },
             (Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Today, Some(b), _) => {
                 let pg = day::today(b.rec.as_ref(), self.p, now, w);
@@ -1321,35 +1497,75 @@ mod tests {
         a
     }
 
+    /// The fleet-sessions fixture with the controls fixture's live session in it, so one row
+    /// joins both and the parked one is the snapshot's alone.
+    fn boards() -> Boards {
+        let mut watch = fleet::tests::fixture();
+        watch.state["sessions"][1]["target"] = "lab/dotfiles-agent-3:2".into();
+        Boards {
+            watch,
+            days: vec![],
+            rec: None,
+            hist: vec![],
+        }
+    }
+
     #[test]
-    fn the_fleet_tab_lists_the_sessions_above_the_board_with_a_confirm() {
-        let mut a = app(Tab::Fleet);
+    fn the_sessions_tab_is_one_row_per_session_with_a_confirm() {
+        let mut a = app(Tab::Sessions);
         a.controls.set(crate::controls::tests::fixture());
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[1].starts_with("SESSION CONTROLS  i interrupt"), "{s}");
+        assert!(lines[0].contains("6 Sessions"), "{s}");
+        assert!(lines[1].contains("Reading the board files..."), "{s}");
         assert!(
             lines[2].starts_with("SESSION") && lines[2].contains("ACCOUNT"),
             "{s}"
         );
-        let live = lines[3];
         for want in [
-            "lab/dotfiles-agent-3:2",
+            "dotfiles-agent-3:2",
             "here",
             "idle",
             "bnb",
             "new-curious-garden",
             "a1",
-            "fix-the-thing",
         ] {
-            assert!(live.contains(want), "{want} missing from {live:?}");
+            assert!(
+                lines[3].contains(want),
+                "{want} missing from {:?}",
+                lines[3]
+            );
         }
         assert!(
-            lines[4].contains("lab/dotfiles-agent-9:1") && lines[4].contains("parked"),
+            lines[4].contains("dotfiles-agent-9") && lines[4].contains("parked"),
             "{s}"
         );
-        assert!(s.contains("Reading the board files..."), "{s}");
-        assert!(lines[29].contains("j/k pick  i p u m x c act"), "{s}");
+        assert!(s.contains("FORECAST  f opens"), "{s}");
+        assert!(
+            lines[29].contains("j/k pick  Enter detail  i p u m x c a act"),
+            "{s}"
+        );
+
+        // The stages join by target: the NEEDS row is the live session, and it sorts first.
+        a.handle(Msg::Boards(Box::new(boards())));
+        let s = screen(&mut a, 160, 30);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(
+            lines[1].starts_with("SESSIONS  2  NEEDS 1  WORKING 1"),
+            "{s}"
+        );
+        let row = lines[3];
+        for want in ["dotfiles-agent-3:2", "NEEDS", "here", "bnb", "a1"] {
+            assert!(row.contains(want), "{want} missing from {row:?}");
+        }
+        assert!(
+            lines[4].contains("unity-core-playground-agent-10") && lines[4].contains("WORKING")
+        );
+        assert!(
+            lines[5].contains("dotfiles-agent-9") && lines[5].contains("parked"),
+            "{s}"
+        );
+        assert!(s.contains("ASKS (1)") && s.contains("CHANGES"), "{s}");
 
         a.handle(key('x'));
         let s = screen(&mut a, 140, 30);
@@ -1365,16 +1581,62 @@ mod tests {
         );
         // Tab is the confirm's while one is armed, not the next page.
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Fleet);
+        assert_eq!(a.tab, Tab::Sessions);
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(a.controls.confirm.is_none());
         assert!(!screen(&mut a, 140, 30).contains("Stop lab/"));
+
+        // A row fleet-sessions has but no live session here offers nothing.
+        a.handle(key('j'));
+        a.handle(key('x'));
+        assert!(a.controls.confirm.is_none());
+        assert!(
+            screen(&mut a, 160, 30).contains("is not a live or parked session on this machine"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn enter_opens_the_selected_sessions_detail_and_its_timeline() {
+        let mut a = app(Tab::Sessions);
+        a.handle(Msg::Boards(Box::new(boards())));
+        a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
+        a.handle(key('j'));
+        assert!(!screen(&mut a, 200, 60).contains("DETAIL"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        let s = screen(&mut a, 200, 80);
+        assert!(
+            s.contains("DETAIL  lab/unity-core-playground-agent-10:1"),
+            "{s}"
+        );
+        for want in ["3 behind", "2 ahead", "test 10m", "cargo test", "feat/x"] {
+            assert!(s.contains(want), "{want} missing from\n{s}");
+        }
+        assert!(s.contains("TIMELINE"), "{s}");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(!screen(&mut a, 200, 60).contains("DETAIL"));
+    }
+
+    #[test]
+    fn the_forecast_folds_at_the_bottom_of_sessions_and_its_etas_are_the_rows() {
+        let mut a = app(Tab::Sessions);
+        let mut b = boards();
+        b.watch.state["sessions"][0]["target"] = "hub/dotfiles:8".into();
+        a.handle(Msg::Boards(Box::new(b)));
+        assert!(!screen(&mut a, 200, 60).contains("not draining"));
+        a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
+        let s = screen(&mut a, 200, 60);
+        assert!(s.contains("late 5h35m"), "the forecast's ETA wins: {s}");
+        a.handle(key('f'));
+        let s = screen(&mut a, 200, 120);
+        assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
+        assert!(s.contains("BURN-UP 24h"), "{s}");
     }
 
     #[test]
     fn a_confirmed_move_runs_claude_acct_through_hub_core() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut a = with_tx(Tab::Fleet, tx);
+        let mut a = with_tx(Tab::Sessions, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         a.gather = fixture_sessions;
@@ -1470,43 +1732,99 @@ mod tests {
         assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
     }
 
+    /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
+    fn loaded() -> projtab::Loaded {
+        let stat = |profile: &str, name: &str, done: u32, open: u32| hub_core::projects::Stats {
+            profile: profile.into(),
+            name: name.into(),
+            stage: "alpha".into(),
+            version: Some("v0.1.0".into()),
+            progress: hub_core::projects::Progress {
+                open,
+                done,
+                open_weight: open,
+                done_weight: done,
+                closed_28d: 1,
+                closed_weight_28d: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        projtab::Loaded {
+            stats: Ok(vec![
+                stat("personal", "garden", 1, 1),
+                stat("bnb", "demo", 1, 3),
+            ]),
+            repos: Default::default(),
+        }
+    }
+
+    /// Answer the reads entering the tab started (the fake prints nothing): wait for both.
+    fn settle(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        let (mut tasks, mut cards) = (false, false);
+        while !(tasks && cards) {
+            let m = rx.recv().unwrap();
+            tasks |= matches!(m, Msg::Tasks(_));
+            cards |= matches!(m, Msg::Projects(_));
+            a.handle(m);
+        }
+    }
+
     #[test]
-    fn the_board_tab_writes_through_notes_and_keeps_its_row_in_view() {
+    fn the_projects_tab_lists_cards_then_opens_one_projects_rows_under_its_card() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        assert_eq!(Tab::parse("board"), Some(Tab::Board));
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
-        assert_eq!(a.tab, Tab::Board, "Shift-Tab from Home is the last tab");
-        let s = screen(&mut a, 140, 12);
+        assert_eq!(Tab::parse("board"), Some(Tab::Projects), "board is retired");
+        // Projects has Board's slot and key: every other digit keeps its meaning.
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Projects);
+        let s = screen(&mut a, 140, 30);
+        let bar = s.lines().next().unwrap();
         assert!(
-            s.lines().next().unwrap().contains("9 Fleet  0 Board"),
+            bar.contains("3 Jobs") && bar.contains("9 Fleet  0 Projects"),
             "{s}"
         );
-        assert!(s.contains("Reading notes board..."), "{s}");
+        assert!(s.contains("Reading notes projects..."), "{s}");
+        settle(&mut a, &rx);
+        assert!(screen(&mut a, 140, 30).contains("notes projects --stats --json"));
 
-        // The read Shift-Tab started meets the fake's empty answer: wait for it, not a timer.
-        loop {
-            match rx.recv().unwrap() {
-                Msg::Tasks(f) => {
-                    a.handle(Msg::Tasks(f));
-                    break;
-                }
-                m => a.handle(m),
-            }
-        }
-        assert!(screen(&mut a, 140, 12).contains("notes board --json"));
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
-        for _ in 0..4 {
-            a.handle(key('j'));
-        }
-        let s = screen(&mut a, 140, 12);
+        a.handle(Msg::Projects(Box::new(loaded())));
+        let s = screen(&mut a, 140, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            s.contains("water the beds"),
-            "the last row scrolled into view:\n{s}"
+            at("ALL PROJECTS  5 open rows") < at("DEMO  bnb, alpha"),
+            "{s}"
         );
-        assert!(!s.contains("TASK BOARD"), "{s}");
+        assert!(
+            at("DEMO  bnb, alpha") < at("GARDEN  personal, alpha"),
+            "by name when none is in flight"
+        );
+        assert!(s.contains("v0.1.0 25% (1 of 4 by size)"), "{s}");
+        assert!(s.lines().last().unwrap().contains("Enter open rows"), "{s}");
+
+        // The card's numbers stay on top of its rows.
+        a.handle(key('j'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.tv.project, Some(("bnb".into(), "demo".into())));
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
+            "{s}"
+        );
+        assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
+        assert!(s.lines().last().unwrap().contains("t/T tag"), "{s}");
+        // The selected row in full sits under the rows, above the keys.
+        assert!(
+            at_line(&s, "OPEN ROWS") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
+            "{s}"
+        );
+        assert!(
+            at_line(&s, "sheet  /v/bnb/demo/human.md:0") < s.lines().count() - 1,
+            "{s}"
+        );
 
         a.handle(key('q'));
         assert!(a.quit, "q quits with no prompt open");
@@ -1516,7 +1834,7 @@ mod tests {
             a.handle(key(c));
         }
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.tv.running.as_deref(), Some("drop in personal/garden"));
+        assert_eq!(a.tv.running.as_deref(), Some("drop in bnb/demo"));
         loop {
             match rx.recv().unwrap() {
                 Msg::TasksActed(r) => {
@@ -1526,15 +1844,54 @@ mod tests {
                 m => a.handle(m),
             }
         }
-        assert_eq!(a.tv.said, Some(Ok("drop in personal/garden: done".into())));
+        assert_eq!(a.tv.said, Some(Ok("drop in bnb/demo: done".into())));
         let ran = fake.0.lock().unwrap().clone();
         assert!(
             ran.contains(
-                &"notes ptask garden --profile personal --exact drop --why stale -- - [ ] water the beds"
+                &"notes ptask demo --profile bnb --exact drop --why stale -- - [ ] fix the menu"
                     .to_string()
             ),
             "{ran:?}"
         );
+
+        // Esc clears what is said first, then goes back to the cards on the card it opened.
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        a.handle(esc());
+        assert!(a.pv.open && a.tv.said.is_none());
+        a.handle(esc());
+        assert!(!a.pv.open);
+        assert_eq!(a.pv.card, 1);
+
+        // All keeps the cross-project board, the last row scrolled into view.
+        a.handle(key('g'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.tv.project, None);
+        for _ in 0..4 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 140, 12);
+        assert!(
+            s.contains("water the beds"),
+            "the last row scrolled into view:\n{s}"
+        );
+        assert!(!s.contains("PROJECTS  2 projects"), "{s}");
+        assert!(
+            !s.contains("sheet  /v/"),
+            "a short window has no preview:\n{s}"
+        );
+
+        // `hub tab projects garden` opens garden's rows.
+        a.handle(Msg::Tab(Tab::Projects, Some("garden".into())));
+        assert_eq!(a.tv.project, Some(("personal".into(), "garden".into())));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
+        assert_eq!(a.tab, Tab::Projects, "the last tab");
+    }
+
+    fn at_line(s: &str, t: &str) -> usize {
+        s.lines()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("{t} missing:\n{s}"))
     }
 
     #[test]
@@ -1584,11 +1941,21 @@ mod tests {
         assert_eq!(Tab::parse("overview"), Some(Tab::Home));
         assert_eq!(Tab::parse("waiting"), Some(Tab::Home));
         assert_eq!(Tab::parse("ci"), Some(Tab::Ci));
+        assert_eq!(Tab::parse("forecast"), Some(Tab::Sessions));
+        assert_eq!(Tab::parse("watch"), Some(Tab::Sessions));
+        assert_eq!(Tab::parse("shepherd"), Some(Tab::Sessions));
     }
 
     #[test]
     fn the_landed_layout_tabs_lead_in_hub_core_order() {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs in its order.
+        // Rule 13's interim: until the layout renumbers the digits once, a landed tab that
+        // replaced one keeps that tab's slot and key, so it sits out the order check: Projects
+        // is Board's key 0 and Sessions Forecast's key 6.
+        let interim = [(Tab::Projects, 9), (Tab::Sessions, 5)];
+        for (t, slot) in interim {
+            assert_eq!(Tab::ALL[slot], t, "{} left its interim slot", t.title());
+        }
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         let mut at = 0;
         for t in hub_core::layout::landed() {
@@ -1596,11 +1963,12 @@ mod tests {
                 .iter()
                 .position(|x| *x == t.title)
                 .unwrap_or_else(|| panic!("{} is landed but not a TUI tab", t.title));
+            if interim.iter().any(|(x, _)| x.title() == t.title) {
+                continue;
+            }
             assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
             at = i;
         }
-        let landed: Vec<&str> = hub_core::layout::landed().map(|t| t.title).collect();
-        assert_eq!(titles[..landed.len()], landed[..], "the landed tabs lead");
     }
 
     #[test]
@@ -1629,25 +1997,11 @@ mod tests {
     }
 
     #[test]
-    fn the_forecast_tab_draws_the_drain_and_each_sessions_phases() {
-        let mut a = app(Tab::Forecast);
-        assert!(screen(&mut a, 100, 10).contains("Reading fleet-bench forecast..."));
-        a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
-        let s = screen(&mut a, 200, 60);
-        assert!(s.lines().next().unwrap().contains("6 Forecast"), "{s}");
-        assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
-        assert!(
-            s.contains("dotfiles:4") && s.contains("Step 0 board row"),
-            "{s}"
-        );
-        assert!(s.lines().last().unwrap().contains("0-9/Tab pages"), "{s}");
-    }
-
-    #[test]
     fn a_failed_fleet_bench_draws_the_fallbacks() {
-        let mut a = app(Tab::Forecast);
+        let mut a = app(Tab::Sessions);
         let f = Forecast::read_with("hub-test-no-such-fleet-bench");
         a.handle(Msg::Forecast(Box::new(f)));
+        a.handle(key('f'));
         let s = screen(&mut a, 160, 20);
         assert!(
             s.contains("No forecast: hub-test-no-such-fleet-bench"),
@@ -1666,14 +2020,14 @@ mod tests {
     #[test]
     fn a_tab_request_switches_the_running_board() {
         let mut a = app(Tab::Home);
-        // Entering Fleet and Forecast read the fleet and fleet-bench; mark them already reading
+        // Entering Fleet and Sessions read the fleet and fleet-bench; mark them already reading
         // so no test runs them.
         a.fleet_read.busy = true;
         a.forecast_read.busy = true;
         a.handle(Msg::Tab(Tab::Fleet, None));
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('6'));
-        assert_eq!(a.tab, Tab::Forecast);
+        assert_eq!(a.tab, Tab::Sessions);
         a.handle(key('7'));
         assert_eq!(a.tab, Tab::Today);
     }

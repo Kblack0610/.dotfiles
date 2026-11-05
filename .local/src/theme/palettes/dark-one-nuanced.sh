@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Dark One Nuanced Theme Palette (by ariasuni — kitty-themes)
 # Sourced by theme-switch to apply colors across all tools.
+# ANSI 1-15 are lifted to 4.5:1 on BG by lightness only, hue kept (tests/unit/theme_contrast.bats).
 
 THEME_NAME="dark-one-nuanced"
 THEME_WALLPAPER_PREFIX="dark-one-nuanced"
@@ -20,7 +21,7 @@ THEME_SELECTION_FG="#e6e6e6"
 
 # ── ANSI 0-7 (normal) ────────────────────────────────────────────────
 THEME_BLACK="#3f4451"
-THEME_RED="#e06c75"
+THEME_RED="#e17079"
 THEME_GREEN="#98c379"
 THEME_YELLOW="#d19a66"
 THEME_BLUE="#61afef"
@@ -29,7 +30,7 @@ THEME_CYAN="#56b6c2"
 THEME_WHITE="#e6e6e6"
 
 # ── ANSI 8-15 (bright) ───────────────────────────────────────────────
-THEME_BRIGHT_BLACK="#4f5666"
+THEME_BRIGHT_BLACK="#8b93a5"
 THEME_BRIGHT_RED="#ff7b86"
 THEME_BRIGHT_GREEN="#b1e18b"
 THEME_BRIGHT_YELLOW="#efb074"

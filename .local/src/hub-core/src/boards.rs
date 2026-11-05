@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Transitions sent to the Watch tab: about a day of a busy fleet, sync lines included.
+/// Transitions sent to the Sessions tab: about a day of a busy fleet, sync lines included.
 pub const WATCH_LOG_LINES: usize = 1500;
 
 fn home() -> PathBuf {
@@ -118,6 +118,143 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
         cost_usd: total.and_then(|t| t["cost_usd"].as_f64()),
         tokens: total.and_then(|t| t["tokens"].as_u64()),
     }
+}
+
+/// The project a merged PR counts under: the `project` day-log writes, or for a record from
+/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+pub fn pr_project(pr: &Value) -> String {
+    match pr["project"].as_str() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => pr["repo"]
+            .as_str()
+            .map(|r| r.trim_start_matches('.').to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "other".into()),
+    }
+}
+
+/// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
+#[derive(Serialize, Debug, PartialEq, Default)]
+pub struct HourGrid {
+    /// Local hours of the day, first to last hour with a merge; empty when nothing merged.
+    pub hours: Vec<u32>,
+    /// One row per project, most merges first, then by name.
+    pub rows: Vec<HourRow>,
+    /// Merges per hour across every project, in `hours` order.
+    pub total: Vec<usize>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct HourRow {
+    pub project: String,
+    /// Merges per hour, in `hours` order.
+    pub counts: Vec<usize>,
+    pub total: usize,
+}
+
+/// `rec`'s merged PRs bucketed by the hour they merged in `tz`. A PR whose `merged_at` does not
+/// parse is left out of the grid.
+pub fn merges_by_hour<Tz: chrono::TimeZone>(rec: &Value, tz: &Tz) -> HourGrid {
+    use chrono::Timelike;
+    let mut per: std::collections::BTreeMap<String, [usize; 24]> = Default::default();
+    for pr in rec["merged"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let Some(at) = pr["merged_at"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        else {
+            continue;
+        };
+        per.entry(pr_project(pr)).or_insert([0; 24])[at.with_timezone(tz).hour() as usize] += 1;
+    }
+    let mut all = [0usize; 24];
+    for c in per.values() {
+        for (a, n) in all.iter_mut().zip(c) {
+            *a += n;
+        }
+    }
+    let (Some(a), Some(b)) = (
+        all.iter().position(|n| *n > 0),
+        all.iter().rposition(|n| *n > 0),
+    ) else {
+        return HourGrid::default();
+    };
+    let mut rows: Vec<HourRow> = per
+        .into_iter()
+        .map(|(project, c)| HourRow {
+            project,
+            counts: c[a..=b].to_vec(),
+            total: c.iter().sum(),
+        })
+        .collect();
+    rows.sort_by(|x, y| {
+        y.total
+            .cmp(&x.total)
+            .then_with(|| x.project.cmp(&y.project))
+    });
+    HourGrid {
+        hours: (a as u32..=b as u32).collect(),
+        rows,
+        total: all[a..=b].to_vec(),
+    }
+}
+
+/// The order the Log tabs list projects in: the hour grid's (most merges first), then the
+/// projects with only open PRs, most open first, then by name.
+pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
+    let mut order: Vec<String> = grid.rows.iter().map(|r| r.project.clone()).collect();
+    let mut rest: std::collections::BTreeMap<String, usize> = Default::default();
+    for pr in rec["open"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let p = pr_project(pr);
+        if !order.contains(&p) {
+            *rest.entry(p).or_insert(0) += 1;
+        }
+    }
+    let mut rest: Vec<(String, usize)> = rest.into_iter().collect();
+    rest.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    order.extend(rest.into_iter().map(|(p, _)| p));
+    order
+}
+
+/// `prs` in one group per project, groups in `order` and each keeping the order it was given; a
+/// project `order` does not name goes last, by name. Empty groups are left out.
+pub fn by_project<'a>(prs: &[&'a Value], order: &[String]) -> Vec<(String, Vec<&'a Value>)> {
+    let mut groups: Vec<(String, Vec<&'a Value>)> = vec![];
+    for pr in prs {
+        let p = pr_project(pr);
+        match groups.iter_mut().find(|g| g.0 == p) {
+            Some(g) => g.1.push(pr),
+            None => groups.push((p, vec![pr])),
+        }
+    }
+    let rank = |p: &str| order.iter().position(|o| o == p).unwrap_or(usize::MAX);
+    groups.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then_with(|| a.0.cmp(&b.0)));
+    groups
+}
+
+/// A day's record as the web Log reads it: every merged and open PR carries its `project`
+/// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
+/// `projects` (project_order), so the browser draws the grid and the groups and computes neither.
+pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
+    for k in ["merged", "open"] {
+        if let Some(a) = rec[k].as_array_mut() {
+            for pr in a {
+                let p = pr_project(pr);
+                if let Some(o) = pr.as_object_mut() {
+                    o.insert("project".into(), p.into());
+                }
+            }
+        }
+    }
+    let grid = merges_by_hour(&rec, tz);
+    let order = project_order(&rec, &grid);
+    if let Some(o) = rec.as_object_mut() {
+        o.insert(
+            "hours".into(),
+            serde_json::to_value(&grid).unwrap_or_default(),
+        );
+        o.insert("projects".into(), order.into());
+    }
+    rec
 }
 
 /// History charts span at most this many days; a record is about 130 KB.
@@ -413,6 +550,114 @@ pub fn due(dir: &Path) -> Due {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_list_by_merges_then_open_only_ones_and_group_in_that_order() {
+        let rec = serde_json::json!({
+        "merged": [
+            {"repo": "game", "merged_at": "2026-11-05T16:00:00Z"},
+            {"repo": ".dotfiles", "merged_at": "2026-11-05T16:00:00Z"},
+            {"repo": ".dotfiles", "merged_at": "2026-11-05T17:00:00Z"},
+        ],
+        "open": [
+            {"repo": "web", "number": 1}, {"repo": "api", "number": 2},
+            {"repo": "web", "number": 3}, {"repo": "game", "number": 4},
+        ]});
+        let order = project_order(&rec, &merges_by_hour(&rec, &chrono::Utc));
+        assert_eq!(order, vec!["dotfiles", "game", "web", "api"]);
+        let open: Vec<&Value> = rec["open"].as_array().unwrap().iter().collect();
+        let g: Vec<(String, Vec<u64>)> = by_project(&open, &order)
+            .into_iter()
+            .map(|(p, v)| (p, v.iter().map(|x| x["number"].as_u64().unwrap()).collect()))
+            .collect();
+        assert_eq!(
+            g,
+            vec![
+                ("game".into(), vec![4]),
+                ("web".into(), vec![1, 3]),
+                ("api".into(), vec![2])
+            ]
+        );
+    }
+
+    #[test]
+    fn the_log_view_stamps_every_pr_with_its_project_and_carries_the_grid() {
+        let rec = serde_json::json!({
+            "merged": [{"repo": ".dotfiles", "merged_at": "2026-11-05T16:00:00Z"},
+                       {"repo": "x", "project": "trader", "merged_at": "2026-11-05T16:00:00Z"}],
+            "open": [{"repo": "web"}]});
+        let v = log_view(rec, &chrono::Utc);
+        assert_eq!(v["merged"][0]["project"], "dotfiles");
+        assert_eq!(v["merged"][1]["project"], "trader");
+        assert_eq!(v["open"][0]["project"], "web");
+        assert_eq!(v["hours"]["hours"], serde_json::json!([16]));
+        assert_eq!(v["hours"]["rows"][0]["project"], "dotfiles");
+        assert_eq!(
+            v["projects"],
+            serde_json::json!(["dotfiles", "trader", "web"])
+        );
+    }
+
+    #[test]
+    fn merges_by_hour_counts_each_project_per_local_hour_busiest_first() {
+        let rec = serde_json::json!({"merged": [
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "2026-11-05T16:10:00Z"},
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "2026-11-05T16:50:00Z"},
+            {"repo": "unity-core-playground", "project": "unity-core-playground", "merged_at": "2026-11-05T18:05:00Z"},
+            {"repo": "freqtrade_trading_attempt", "project": "trader", "merged_at": "2026-11-05T18:30:00Z"},
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "not a time"},
+        ]});
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        let g = merges_by_hour(&rec, &pst);
+        assert_eq!(g.hours, vec![8, 9, 10]);
+        assert_eq!(g.total, vec![2, 0, 2]);
+        let rows: Vec<_> = g
+            .rows
+            .iter()
+            .map(|r| (r.project.as_str(), r.counts.clone(), r.total))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dotfiles", vec![2, 0, 0], 2),
+                ("trader", vec![0, 0, 1], 1),
+                ("unity-core-playground", vec![0, 0, 1], 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn merges_by_hour_uses_the_given_zone_across_midnight_utc() {
+        // 07:30Z is 23:30 the evening before at UTC-8, and 07:30 at UTC.
+        let rec =
+            serde_json::json!({"merged": [{"repo": "game", "merged_at": "2026-11-05T07:30:00Z"}]});
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        assert_eq!(merges_by_hour(&rec, &pst).hours, vec![23]);
+        assert_eq!(merges_by_hour(&rec, &chrono::Utc).hours, vec![7]);
+    }
+
+    #[test]
+    fn a_record_from_before_the_project_field_counts_by_repo_without_the_dot() {
+        let rec = serde_json::json!({"merged": [
+            {"repo": ".dotfiles-private", "merged_at": "2026-11-05T16:10:00Z"},
+            {"repo": "", "merged_at": "2026-11-05T16:10:00Z"},
+        ]});
+        let g = merges_by_hour(&rec, &chrono::Utc);
+        let names: Vec<_> = g.rows.iter().map(|r| r.project.as_str()).collect();
+        assert_eq!(names, vec!["dotfiles-private", "other"]);
+    }
+
+    #[test]
+    fn nothing_merged_is_an_empty_grid() {
+        assert_eq!(
+            merges_by_hour(&serde_json::json!({}), &chrono::Utc),
+            HourGrid::default()
+        );
+        assert_eq!(
+            merges_by_hour(&serde_json::json!({"merged": []}), &chrono::Utc),
+            HourGrid::default()
+        );
+    }
 
     #[test]
     fn phases_are_keyed_by_target_and_skip_a_plan_with_no_checklist() {

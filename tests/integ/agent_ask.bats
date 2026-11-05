@@ -214,53 +214,6 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line '  2  y  (recommended)'
 }
 
-@test "pick answers the chosen option only after Enter, and q leaves the ask pending" {
-  local id; id="$("$AGENT_ASK" post --project demo --options 'go|later' 'run the sweep?')"
-  # Negative control: a digit then a non-Enter key sends nothing; q closes.
-  run bash -c 'printf "2xq" | "$AGENT_ASK" pick "$1"' _ "$id"
-  assert_success
-  assert_output --partial 'not sent'
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'
-  # A digit out of range is ignored.
-  run bash -c 'printf "9q" | "$AGENT_ASK" pick "$1"' _ "$id"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'
-  run bash -c 'printf "2\n" | "$AGENT_ASK" pick "$1"' _ "$id"
-  assert_success
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: answered'
-  assert_line 'answer: later'
-}
-
-@test "pick with no id goes back to the list after each card, and says so when nothing waits" {
-  mkdir -p "$BATS_TEST_TMPDIR/bin"
-  # fzf stub: chooses the first row it is offered, the way Enter on the list would.
-  printf '#!/bin/sh\nhead -1\n' > "$BATS_TEST_TMPDIR/bin/fzf"; chmod +x "$BATS_TEST_TMPDIR/bin/fzf"
-  local a b
-  a="$("$AGENT_ASK" post --project demo --options 'go|later' 'run the sweep?')"
-  b="$("$AGENT_ASK" post --project demo --options 'yes|no' 'ship it?')"
-  # Two answers on one keyboard: the second card came from the list after the first.
-  run bash -c 'PATH="$1:$PATH"; printf "1\n1\n" | "$AGENT_ASK" pick' _ "$BATS_TEST_TMPDIR/bin"
-  assert_success
-  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
-  run "$AGENT_ASK" show "$b"; assert_line 'status: answered'
-  run bash -c 'printf "x" | "$AGENT_ASK" pick'
-  assert_success
-  assert_output 'no questions waiting; any key closes'
-}
-
-@test "pick drops a question only after Enter" {
-  local id; id="$("$AGENT_ASK" post --project demo 'run the sweep?')"
-  run bash -c 'printf "dxq" | "$AGENT_ASK" pick "$1"' _ "$id"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'
-  run bash -c 'printf "d\n" | "$AGENT_ASK" pick "$1"' _ "$id"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: cancelled'
-  assert_line 'closed_reason: dropped by the human'
-}
-
 @test "ids are unique across rapid successive posts" {
   local a b c
   a="$(post demo one?)"; b="$(post demo two?)"; c="$(post demo three?)"
@@ -498,7 +451,11 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
 
 @test "the card says where the answer goes once the session is gone" {
   local gone live loose resumed
-  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  # A live session is a Claude process file naming it whose pid runs (this test's own pid).
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  # sid-9's file names a pid that is not running, so it is gone all the same.
+  printf '{"pid":999999999,"sessionId":"sid-9"}\n' > "$HOME/.claude/sessions/999999999.json"
   live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
   gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
   resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
@@ -512,6 +469,9 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   refute_output --partial 'session gone'
   run "$AGENT_ASK" card "$loose"
   refute_output --partial 'session gone'
+  # The questions panel's gone mark reads the same source.
+  run "$AGENT_ASK" live-sessions
+  assert_output 'sid-1'
 }
 
 @test "cancel records its reason" {
@@ -667,4 +627,31 @@ SH
   assert_line --regexp "^$session	unscored	"
   assert_line --regexp "^$deferred	asks-you	human	"
   assert_line 'judged 4 answered asks: the judge would have answered 3, scored 2, agreed 1'
+}
+
+# list and the card read each file once; this is what makes Prefix y open fast.
+@test "list reads 400 asks well inside a second and keeps each key's first value" {
+  local d="$HOME/.agent/asks/demo" i
+  mkdir -p "$d"
+  for i in $(seq 1 400); do
+    printf 'id: q%03d\nproject: demo\nstatus: %s\nkind: question\nquestion: a: b?\ncreated: 2026-11-05T09:00:00+0000\nstatus: answered\n' \
+      "$i" "$([ $((i % 4)) = 0 ] && echo pending || echo answered)" > "$d/q$(printf %03d "$i").md"
+  done
+  local t0 t1
+  t0="$(date +%s%N)"
+  run "$AGENT_ASK" list demo --pending
+  t1="$(date +%s%N)"
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | grep -c .)" 100
+  # The first `status:` line wins, and a value holding ": " survives whole.
+  assert_line --partial $'\tpending\tquestion\ta: b?\t'
+  # Budget: the per-field loop this replaced took about 2.5 s here.
+  [ $(( (t1 - t0) / 1000000 )) -lt 1000 ]
+}
+
+@test "an empty asks dir lists nothing and succeeds" {
+  mkdir -p "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" list demo
+  assert_success
+  assert_output ''
 }

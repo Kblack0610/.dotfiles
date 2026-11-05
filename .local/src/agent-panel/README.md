@@ -35,13 +35,19 @@ Bound in `~/.tmux.conf`:
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
   prompt (`!`) or holding a pending ask (`A`)
-- `Prefix + y` - every pending question, one card after another (`agent-ask pick`)
+- `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
 
 Arriving at a session with an `A` shows a status-line notice for a few seconds: the
 question and "Prefix y to answer". It is never a popup, so keys still go to the pane. The
 `client-session-changed` hook runs `agent-panel ask-here` (an attach, including the hop
 from another server, sets the session too), and `Prefix G` runs it after its jump. The
 chooser preview prints the card above the pane tail.
+
+In the chooser:
+
+- The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
+- `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
+- The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
 
 ## Why a binary (replacing the old bash scripts)
 

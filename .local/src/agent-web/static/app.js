@@ -1,7 +1,9 @@
 "use strict";
 // The Sessions tab, the tab switch and the live-update stream. Shared helpers are in ui.js; the
 // answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
-// registers in TABS.
+// registers in TABS. Sessions is one row per session: its fleet-state facts and the overview
+// (bucket tiles, the last day, changes) are watch.js, the shepherd's pass, due lines and
+// rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
@@ -21,32 +23,50 @@ const refreshAgents = coalesce(async () => {
   }
 });
 
+// The list: the shepherd's pass as one line (it opens the overview), then one row per session
+// grouped by bucket, the shepherd's own session pinned first (sessionRows, watch.js). A
+// fleet-state row with no session on this machine folds open to its card instead of opening.
 function renderList() {
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
-  if (!st.agents.length) { $("list").innerHTML = '<div class="empty">No agents running.</div>'; return; }
-  const groups = new Map();
-  for (const a of st.agents) { if (!groups.has(a.project)) groups.set(a.project, []); groups.get(a.project).push(a); }
-  let html = "";
-  for (const [proj, list] of groups) {
-    html += `<div class="group">${esc(proj)}</div>`;
-    for (const a of list) {
-      const sel = st.sel && st.sel.target === a.target ? " sel" : "";
-      html += `<div class="row${sel}" data-t="${esc(a.target)}"><span class="dot ${esc(a.status)}"></span><div style="min-width:0"><div class="t">${esc(a.target)}</div><div class="s">${esc(a.summary || "")}</div>${pills(a)}</div></div>`;
-    }
+  const rows = sessionRows().filter((r) => !wst.filter || r.group === wst.filter);
+  const ov = `<div class="row ov${st.sel ? "" : " sel"}" data-ov><div style="min-width:0"><div class="t">overview</div><div class="s">${passLine()}</div></div></div>`;
+  if (!rows.length) { $("list").innerHTML = ov + `<div class="empty">${wst.filter ? `No ${esc(wst.filter)} sessions.` : "No agents running."}</div>`; return; }
+  const n = new Map();
+  for (const r of rows) n.set(r.group, (n.get(r.group) || 0) + 1);
+  const now = Date.now(), maxCtx = maxContext();
+  let html = ov, group = null;
+  for (const r of rows) {
+    if (r.group !== group) { group = r.group; html += `<div class="group">${esc(group)} <span class="muted">${n.get(group)}</span></div>`; }
+    html += listRow(r, now, maxCtx);
   }
-  $("list").innerHTML = html;
+  paint($("list"), html, wst.open);
 }
 
-// What the row is beyond its status: the human's own session, parked, its account, plan, ask.
-function pills(a) {
+function listRow(r, now, maxCtx) {
+  const { a, s } = r, t = a ? a.target : s.target;
+  const task = (s && s.topic) || (a && a.summary) || "";
+  const body = `<span class="dot ${esc(a ? a.status : "parked")}"></span><div style="min-width:0"><div class="t">${esc(t)}</div><div class="s">${esc(task)}</div>${pills(a, s)}</div>`;
+  if (a) return `<div class="row${st.sel && st.sel.target === t ? " sel" : ""}" data-t="${esc(t)}">${body}</div>`;
+  const k = "ghost:" + t;
+  return `<details class="ghost" data-k="${esc(k)}"${wst.open[k] ? " open" : ""}><summary class="row" title="no session on this machine: its fleet-state card">${body}</summary>${card(s, maxCtx, now)}</details>`;
+}
+
+// What the row is beyond its status: the human's own session, parked, its PR and CI, plan
+// phases, ETA, idle time, account and ask. `a` is the live session, `s` its fleet-state row;
+// either can be missing.
+function pills(a, s) {
   const p = [];
-  if (a.attached) p.push('<span class="pill here">you are here</span>');
-  if (a.parked) p.push('<span class="pill parked">parked</span>');
-  if (a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
-  if (a.plan) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
-  if (a.phases) p.push(`<span class="pill phases" title="plan phases">${esc(phasesText(a))}</span>`);
-  if (a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
+  if (a && a.attached) p.push('<span class="pill here">you are here</span>');
+  if (a && a.parked) p.push('<span class="pill parked">parked</span>');
+  if (s && s.pr && s.pr !== "-") p.push(`<span class="pill" title="PR">PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}</span>`);
+  const ph = a && a.phases ? phasesText(a) : s && s.phases_total ? `${s.phases_done}/${s.phases_total} phases` : "";
+  if (ph) p.push(`<span class="pill phases" title="plan phases">${esc(ph)}</span>`);
+  if (s && s.eta) p.push(`<span class="pill" title="estimated finish">eta ${esc(s.eta)}</span>`);
+  if (s && s.idle_min != null) p.push(`<span class="pill" title="idle">idle ${dur(s.idle_min)}</span>`);
+  if (a && a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
+  if (a && a.plan && !(s && s.topic)) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
+  if (a && a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
   return p.length ? `<div class="pills">${p.join("")}</div>` : "";
 }
 
@@ -139,12 +159,14 @@ $("acts").addEventListener("click", async (e) => {
 
 $("list").addEventListener("click", (e) => {
   const row = e.target.closest(".row");
-  if (!row) return;
+  if (!row || row.closest(".ghost")) return; // a ghost row folds; there is nothing to open
+  if (row.dataset.ov !== undefined) { overview(true); return; }
   const a = st.agents.find((x) => x.target === row.dataset.t);
   if (a) select(a);
 });
 
 function renderHead() {
+  $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
   $("d-name").textContent = `${st.sel.target}  ${st.sel.summary || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
@@ -163,9 +185,21 @@ function select(a) {
   }
   $("main").classList.add("open");
   $("err").textContent = "";
-  renderHead(); renderList();
+  renderHead(); renderList(); renderFacts();
   $("scroll").innerHTML = "";
   load();
+}
+
+// No session open: the detail pane is the overview (watch.js and shepherd.js fill it). On a
+// phone it is a page of its own, reached from the list's first row.
+function overview(open) {
+  st.sel = null; st.start = null; st.end = null;
+  $("d-dot").hidden = $("v-seg").hidden = true;
+  $("d-name").textContent = "Overview";
+  $("acts").hidden = true;
+  $("compose").hidden = true;
+  if (open) $("main").classList.add("open");
+  renderList(); renderFacts(); renderOverview();
 }
 
 $("back").onclick = () => { $("main").classList.remove("open"); };
@@ -264,8 +298,8 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
 // lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
 // test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "queue", "board", "sessions", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home" };
+const TAB_NAMES = ["home", "queue", "projects", "sessions", "actions", "log", "infra", "jobs", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
 function setTab(t) {
   st.tab = t;

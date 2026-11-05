@@ -197,7 +197,26 @@ def read_source(src, since):
                 yield when, parts[3].replace("\\n", "\n"), {
                     "priority": parts[1], "title": title, "sender": title.split(":")[0].strip() or "?"}
         return
-    for path in sorted(glob.glob(os.path.expanduser(src["glob"]))):
+    if kind == "gh":
+        # Merged PRs whose bodies GitHub keeps: `gh search prs <query> --merged-at >=<day>`.
+        cmd = ["gh", "search", "prs", *src.get("query", "--author=@me").split(),
+               "--merged-at", f">={since.date().isoformat()}", "--limit", str(src.get("limit", 1000)),
+               "--json", "body,closedAt,number,repository"]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            prs = json.loads(res.stdout) if res.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            prs = None
+        if prs is None:
+            print(f"comms-lint: source unreadable: {' '.join(cmd[:4])} {src.get('query', '')}", file=sys.stderr)
+            return
+        for pr in prs:
+            when = dt.datetime.fromisoformat(pr["closedAt"].replace("Z", "+00:00"))
+            if when < since:
+                continue
+            yield when, pr.get("body") or "", {"path": f"{pr['repository']['name']}#{pr['number']}"}
+        return
+    for path in sorted(glob.glob(os.path.expanduser(src["glob"]), recursive=True)):
         when = dt.datetime.fromtimestamp(os.path.getmtime(path)).astimezone()
         if when < since:
             continue

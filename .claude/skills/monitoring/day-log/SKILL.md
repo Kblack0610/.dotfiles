@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-05"
 ---
 
 # day-log
@@ -22,16 +22,16 @@ What a day shipped, from the day-log record: every PR merged in any repo grouped
 - The user asks for the week or what moved: `day-log week`, a table of 7 finished days against the 7 before (`--line` is the one-liner fleet-bench shows, `--json` the data, `--date D` a week ending on D).
 - The user wants the day as a page to look at or share.
 
-Not for what sessions are doing right now (`shepherd status`, the hub Fleet tab) and not for how the scorecard is computed (`fleet-bench`).
+Not for what sessions are doing right now (`shepherd status`, the hub Sessions tab) and not for how the scorecard is computed (`fleet-bench`).
 
 ## Steps
 
 1. Read the record. `day-log json` gathers today fresh (about 5 s, three gh searches). `day-log json --date YYYY-MM-DD` reads a past day; if it says `no record`, run `day-log snapshot --date YYYY-MM-DD` to gather it (merged PRs and spend come back; the live sections stay empty for a day nobody watched).
 2. Check `.unreadable` first. A name there (`gh merged`, `agent-queue: ...`, `ci <repo> ...`) means that part is the last good copy, not current; say so.
-3. Answer in prose, summary before detail: merged count and repos, then each area and group with its notable PRs, then what is open, then what waits on the human, then the scorecard headline (`.bench.headline`, quote it as is). Name the session that landed a PR from `.by` only when it is set.
+3. Answer in the status shape (`comms-standard`, the shape `day-log show` prints): the headline (merged count, repos, spend), then Done (each area with its notable PRs), Doing (open PRs), Next (each live session's next plan phase) and Needs you, then the scorecard headline (`.bench.headline`, quote it as is). Name the session that landed a PR from `.by` only when it is set.
 4. For a page, publish an Artifact built from the same JSON (one section per area, every PR linked), so it cannot disagree with the board.
 
-Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, area, by), `open[]` (repo, number, title, created_at, updated_at, draft, ci, by), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`, and the three sections below.
+Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, area, by), `open[]` (repo, number, title, created_at, updated_at, draft, area, ci, by), `next[]` (area, who, phase, done, total: each unfinished session's next plan phase, from the last live gather), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`, and the three sections below.
 
 ## The snapshot schema
 

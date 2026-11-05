@@ -20,6 +20,7 @@ never express.
 | no inline shell in a bind | same |
 | strict-mode preamble, absolute `$SELF`, no bare `$0`, no truecolor | same (countdown ratchets) |
 | library behaviour: palette, fzf dialect, `$TMUX` handling, `fail` vs `die` | `tests/unit/panel_lib.bats` |
+| preview layout only from `panel_fzf_layout` | `tests/integ/panel_conformance.bats` |
 
 A rule not in that table is advice. A rule in it will stop your PR.
 
@@ -123,20 +124,27 @@ so a machine without `gh` at all reported an authentication problem; it now does
 ```bash
 panel_fzf_opts                       # PANEL_FZF_OPTS=(--ansi --reverse --border)
 panel_fzf_table                      # PANEL_FZF_TABLE=(--cycle --no-sort --wrap --delimiter=TAB)
-"$(panel_fzf_preview left 24)"       # --preview-window=left,24%,border-right,wrap
+panel_fzf_layout                     # PANEL_FZF_LAYOUT: the preview window and its ctrl-/ toggle
 ```
 
 **Arrays, never a flag string.** The sandbox path contains a space *by design*
 (`tests/helpers/sandbox.bash:32`), so a re-split string is exactly the bug that harness exists
 to catch.
 
-**The modern comma form**, via `panel_fzf_preview`. The legacy colon form
-(`left:24%:wrap:border-right`) is spelled three different ways across the tree today.
+**The modern comma form**, via `panel_fzf_preview`, which `panel_fzf_layout` builds on.
 
 `--no-input`, and anything modal, stays per-surface. It is a navigation decision, not a floor.
 
 In every action, re-invoke `"$(printf '%q' "$SELF")"` - never a bare script name (that depends
 on `PATH`, which a popup does not guarantee) and never a bare `$0`.
+
+## Layout: one helper
+
+A panel with a preview passes `"${PANEL_FZF_LAYOUT[@]}"` after `panel_fzf_layout` and never spells `--preview-window` itself. Stacked is the default (list on top, preview below, 60%); `ctrl-/` cycles to side by side (preview right, 55%), then hidden, then back. `set-environment -g PANEL_LAYOUT side` in `.tmux.conf` flips every panel at once. Why: each panel chose its own side and size, and only one could toggle; one helper means one key and one setting everywhere. agent-panel is Rust and cannot source the library, so it emits the same strings and tests that they match.
+
+## Speed: first paint under 300 ms
+
+The list draws from data one pass can read; anything heavier loads on select, in the preview (`dashboards.md` rule 10). Read each file once (one `awk` over many, or `while read` into an array), never a fork per field: `agent-ask list` took 2.4 s for 368 files that way and takes 0.03 s in one pass. The ui test records first paint (`tests/ui/questions_panel.bats`, 87 ms in the container), and `tests/integ/questions_panel.bats` holds `rows` over 200 asks to a CI budget.
 
 ## The script owns its border
 
@@ -186,7 +194,7 @@ A board that redraws on a timer waits for a key like this, so a resize (a popup 
 
 ## Geometry lives in `.tmux.conf`
 
-Three named sizes, as `%hidden` constants:
+Three named sizes. The target is a `%hidden` constant per size; today every bind still spells its sizes literally, and `tests/panels.manifest` records each panel's target class:
 
 | name | `-w` / `-h` | for |
 |---|---|---|

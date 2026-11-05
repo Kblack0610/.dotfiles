@@ -1,4 +1,4 @@
-//! The Shepherd tab: the rundowns and chat answers the shepherd kept
+//! The shepherd on the Sessions tab: the rundowns and chat answers the shepherd kept
 //! (`fleet-shepherd log --rundown`, read by `hub_core::boards::rundowns`) and the live shepherd
 //! session, so the page can show its transcript and type into it through the Sessions routes.
 //! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by

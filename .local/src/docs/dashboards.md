@@ -18,7 +18,7 @@ Each rule has its why. A rule a test checks names the test.
 10. Load heavy detail only when it is opened. Transcripts, logs and screens are fetched on select, never for every row up front. Why: the human asked that sessions not all load until clicked (2026-11-03).
 11. It works at phone width and in an 80-column terminal. Tables scroll inside their own box and the page never scrolls sideways. Why: agent-web is mostly read from a phone, and the hub runs in a tmux pane.
 12. Mock it up before you build it. A new tab or a reshaped one starts as an ASCII mockup the human approves, in the plan. Why: lesson 2026-10-15, where a board built without one missed what the human pictured.
-13. A layout change says what moved, where to, and why. A PR that removes, merges, moves or renames a tab or section carries a "Moved and removed" table in its body: old place, new home, why. It updates the "Retired names" table below in the same PR, and the old name keeps working as an alias: `#old` on the web and `hub --tab old`. Why: a view that disappears without a note looks like a regression, and waybar, tmux and bookmarks still point at the old name.
+13. A layout change says what moved, where to, and why. A PR that removes, merges, moves or renames a tab or section carries a "Moved and removed" table in its body: old place, new home, why. It updates the "Retired names" table below in the same PR, and the old name keeps working as an alias: `#old` on the web and `hub --tab old`. The table also lists every key and shortcut whose meaning changes (TUI digits, tmux bindings, waybar clicks), and an interim phase keeps the existing digits: a landed tab takes the slot and key of the tab it replaces until the layout renumbers once. Why: a view that disappears without a note looks like a regression, and waybar, tmux and bookmarks still point at the old name.
 14. Done means the human can see it. A dashboard change is done when it shows on the live surface (the agent-web site after the stowed main checkout rebuilds, `hub` in its tmux window), checked with a screenshot. Passing tests are not enough. Why: lesson 2026-10-15, and the 2026-11-03 note "does not close till I can see it".
 
 ## Patterns
@@ -31,14 +31,14 @@ Each rule has its why. A rule a test checks names the test.
 
 ## Hub layout
 
-Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones.
+Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones. The exception is rule 13's interim: a landed tab that replaces one sits in that tab's slot (TUI Projects at key 0, Sessions at key 6), and the TUI test exempts those interim slots from the order check until the renumbering.
 
 | # | Tab | Question | Status |
 |---|---|---|---|
 | 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the front page on both surfaces |
 | 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
-| 3 | Projects | Where is each project, and its tasks? | planned |
-| 4 | Sessions | What is each agent doing? Act on it. | planned |
+| 3 | Projects | Where is each project, and its tasks? | landed: `hub_core::projects`, one card per lab project with its open version's progress by size, pace, ETA and what is in flight; Enter (TUI) or Open rows (web) shows that project's rows, All shows every project's. Until the renumbering it keeps Board's slot: TUI key 0, last tab; web third |
+| 4 | Sessions | What is each agent doing? Act on it. | landed (#961): one row per session, grouped by bucket on the web and ranked by bucket in the TUI, with task, PR and CI, phases, ETA, idle and account. TUI: Enter opens the detail pane with the session's forecast timeline, i p u m x c a act, f unfolds the forecast band, burn-up and baseline. Web: the shepherd's pass is the list's first line and its session is pinned first; with no session open the detail pane is the overview (bucket tiles that filter the list, then the last 24h, Changes, Shepherd and Rundowns, folded); an open session shows its fleet-state card folded above the transcript, which loads only then. Until the renumbering it keeps Forecast's slot in the TUI (key 6) and its own on the web |
 | 5 | Infra | Is the machinery healthy? | planned |
 | 6 | Log | What happened? | planned |
 | 7 | Fleet | Can I afford more agents; are the judges right? | planned |
@@ -54,7 +54,7 @@ Both surfaces move to the layout below in the phases of the plan `~/.agent/plans
 | TUI Forecast timeline | Sessions: ETA column and detail pane | A session's ETA belongs on its row |
 | TUI CI and Machines, web Jobs | Infra sections | One question: is the machinery healthy (rule 1) |
 | TUI Today and History | Log | One question: what happened |
-| Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections | Audit trails behind a click (rule 3) |
+| Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections. Until Log lands, Watch Changes, Shepherd rundowns and the Forecast burn-up and baseline are folded at the bottom of Sessions (#961) | Audit trails behind a click (rule 3) |
 | Web Shepherd pass card | Sessions, one line | It is one status line, too small for a tab |
 | Web Shepherd chat | Sessions: the shepherd session pinned first, opened like any session | The chat is that session's transcript and compose box, which Sessions already has |
 
@@ -66,3 +66,12 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 |---|---|---|
 | `overview` (TUI, `hub --tab overview`) | Home | #929 |
 | `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |
+| `board` (agent-web `#board`, `hub --tab board`, `hub tab board`) | Projects | #949 |
+| `forecast` (TUI, `hub --tab forecast`) | Sessions | #961 |
+| `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
+
+### Log
+
+- Merges by hour are per project, on both surfaces: one row (TUI) or one stacked colour (web) per project, the busiest first, with the hourly total last. Both draw `hub_core::boards::merges_by_hour` over the server's local hours; the web gets it in `/api/log` (`hours`, `projects`).
+- Merged and Open PRs are grouped by project in the same order, each group with its count, its first 8 rows and the rest under "+N more". A PR's area and group stay as a short label on its row. Clicking a project in the web legend narrows both lists to that group.
+- A PR's project is its repo's name in `project-map.json` (`project_of_repos_json` in `project-name.sh`, the same registry the Spend by project names come from); a record written before day-log stamped `project` falls back to the repo name without its leading dot.

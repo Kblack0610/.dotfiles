@@ -66,18 +66,22 @@ source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "##
 [channel.rundown]
 prose = true
 max_item = 240
+require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section'], ['(?im)^#*\s*needs you\b', 'Needs you section']]
 source = { kind = "files", glob = "~/.agent/shepherd/rundowns/*.md" }
 
 # A status update in the one shape (Done, Doing, Next, Needs you).
 [channel.status]
 prose = true
 max_item = 200
-require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section']]
+# A section is a heading or a "Done:" label, so a one-line lab status passes in the same shape.
+require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
+source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
 
 # A pull request body.
 [channel.pr-body]
 prose = true
 lead_ids = false
+source = { kind = "gh", query = "--author=@me" }
 
 # A client end-of-day update, drafted for the human to post. A job config may override.
 [channel.client-eod]
@@ -85,11 +89,11 @@ prose = true
 emoji = true
 max_emoji = 8
 max_item = 400
-source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-eod.md" }
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-eod.md" }
 
 # A client weekly recap.
 [channel.client-weekly]
 prose = true
 emoji = true
 max_emoji = 5
-source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-weekly.md" }
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-weekly.md" }

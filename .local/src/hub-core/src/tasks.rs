@@ -42,6 +42,8 @@ pub struct Row {
     pub priority: String,
     pub tier: Option<u8>,
     pub worker: Option<String>,
+    /// The row's `#size/<s|m|l>`, without the prefix.
+    pub size: Option<String>,
     pub requested: bool,
     /// The row's `<code>-<n>` id, when its project has a code.
     pub id: Option<String>,
@@ -109,6 +111,23 @@ pub enum Verb {
     Demote { raw: String },
     /// New text; the checkbox, place and tags stay.
     Edit { raw: String, text: String },
+    /// Tags added and removed, at least one of either. A row has one size, so adding a
+    /// `size/<s>` replaces its old one; a release tag is `Move`'s.
+    Tag {
+        raw: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+/// A tag as a row carries it, without the `#`: one word that cannot read as a flag.
+fn is_tag(t: &str) -> bool {
+    let t = t.strip_prefix('#').unwrap_or(t);
+    !t.is_empty()
+        && !t.starts_with('-')
+        && !is_version(t)
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | ':' | '.'))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +303,19 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
                 }
                 a.extend(["--to".into(), v.into()]);
             }
+            raw.clone()
+        }
+        Verb::Tag { raw, add, remove } => {
+            if add.is_empty() && remove.is_empty() {
+                return Err("type a tag to add or remove".into());
+            }
+            if !add.iter().chain(remove).all(|t| is_tag(t)) {
+                return Err("a tag is one word (size/s, requested); a release is move".into());
+            }
+            a.extend(["--exact".into(), "tag".into()]);
+            let flag = |f: &str, t: &String| format!("--{f}={}", t.trim_start_matches('#'));
+            a.extend(add.iter().map(|t| flag("add", t)));
+            a.extend(remove.iter().map(|t| flag("remove", t)));
             raw.clone()
         }
         Verb::Promote { raw } => {
@@ -531,6 +563,37 @@ mod tests {
             argv(&w("human", edit)).unwrap()[5..],
             ["--exact", "edit", "--text", "-ship it today", "--", RAW]
         );
+    }
+
+    #[test]
+    fn tag_passes_each_tag_as_a_glued_flag_and_refuses_what_is_not_one() {
+        let tag = |add: &[&str], remove: &[&str]| Verb::Tag {
+            raw: RAW.into(),
+            add: add.iter().map(|t| t.to_string()).collect(),
+            remove: remove.iter().map(|t| t.to_string()).collect(),
+        };
+        assert_eq!(
+            argv(&w("agent", tag(&["#size/m", "requested"], &["ai"]))).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "tag",
+                "--add=size/m",
+                "--add=requested",
+                "--remove=ai",
+                "--",
+                RAW
+            ]
+        );
+        for bad in [
+            tag(&[], &[]),
+            tag(&["two words"], &[]),
+            tag(&["-x"], &[]),
+            tag(&["v1.2.0"], &[]),
+            tag(&[""], &[]),
+        ] {
+            assert!(argv(&w("human", bad)).is_err());
+        }
     }
 
     #[test]

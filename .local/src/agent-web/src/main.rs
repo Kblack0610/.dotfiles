@@ -18,6 +18,7 @@ mod feed;
 mod fleet;
 mod infra;
 mod jobs;
+mod projects;
 mod queue;
 mod shepherd;
 mod transcript;
@@ -112,6 +113,7 @@ async fn main() -> Result<()> {
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/projects", get(projects::get))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
@@ -302,7 +304,7 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines, the pass running now and the last
+    // fleet-shepherd's ledger: the Sessions tab's shepherd due lines, the pass running now and the last
     // one scored. Dotfiles have no extension, so this comes before the `ext` match.
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
@@ -927,11 +929,14 @@ async fn log_day(Query(q): Query<LogQuery>) -> ApiResult<Json<serde_json::Value>
     if q.date.as_deref().is_some_and(|d| !boards::is_day(d)) {
         return Err(bad(StatusCode::BAD_REQUEST, "date is YYYY-MM-DD"));
     }
-    tokio::task::spawn_blocking(move || boards::record(&boards::daylog_dir(), q.date.as_deref()))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
+    tokio::task::spawn_blocking(move || {
+        boards::record(&boards::daylog_dir(), q.date.as_deref())
+            .map(|r| boards::log_view(r, &chrono::Local))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
 }
 
 #[derive(Deserialize)]

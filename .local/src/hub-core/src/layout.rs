@@ -34,15 +34,15 @@ pub const TABS: [Tab; 7] = [
         id: "projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &[],
-        landed: false,
+        sections: &["cards", "rows"],
+        landed: true,
     },
     Tab {
         id: "sessions",
         title: "Sessions",
         question: "What is each agent doing?",
-        sections: &[],
-        landed: false,
+        sections: &["shepherd", "sessions", "detail", "forecast", "changes"],
+        landed: true,
     },
     Tab {
         id: "infra",
@@ -74,6 +74,13 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("waiting", "home"),
     ("asks", "home"),
     ("overview", "home"),
+    // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
+    ("board", "projects"),
+    // The TUI's Forecast (its timeline is the Sessions ETA column and detail pane) and
+    // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
+    ("forecast", "sessions"),
+    ("watch", "sessions"),
+    ("shepherd", "sessions"),
 ];
 
 /// The landed tabs, in order.
@@ -115,7 +122,11 @@ mod tests {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
-        assert_eq!(resolve("projects"), None, "not landed yet");
+        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
+        assert_eq!(resolve("forecast").map(|t| t.id), Some("sessions"));
+        assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
+        assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));
+        assert_eq!(resolve("infra"), None, "not landed yet");
         assert_eq!(resolve("nope"), None);
     }
 }

@@ -1,13 +1,17 @@
-//! The Fleet tab's session controls: every live and parked agent session (`hub_core::session_actions`,
-//! the same reader and the same actions as agent-web's session buttons), one selected, and a key
-//! per action that arms a confirm line before anything runs.
+//! The Sessions tab's table: one row per agent session, joining every live and parked session
+//! (`hub_core::session_actions`, the same reader and the same actions as agent-web's session
+//! buttons) with its stage from fleet-sessions' state document and its ETA from
+//! `fleet-bench forecast`, by target. One row is selected, a key per action arms a confirm line
+//! before anything runs, and Enter opens the selected session's detail under the table.
 
-use hub_core::session_actions::{available, Action, Snapshot};
+use hub_core::session_actions::{available, Action, Session, Snapshot};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::Line;
+use serde_json::Value;
 
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fleet;
+use crate::fmt::{clock, dur, Palette};
 
 /// The key that asks for each action.
 pub const KEYS: [(char, Action); 7] = [
@@ -36,7 +40,7 @@ impl Confirm {
     }
 }
 
-/// What a session key on the Fleet tab asks the app to do.
+/// What a session key on the Sessions tab asks the app to do.
 #[derive(Debug, PartialEq)]
 pub enum Ask {
     /// Nothing: the key was not one of the controls' own.
@@ -56,26 +60,98 @@ pub struct Controls {
     pub running: Option<String>,
     /// The last action's answer: its output, or why it failed or was refused.
     pub said: Option<Result<String, String>>,
+    /// fleet-sessions' session objects (state.json `sessions`), joined to the snapshot by target.
+    pub state: Vec<Value>,
+    /// fleet-bench forecast's `schedule` rows: each session's phases and finish p50.
+    pub schedule: Vec<Value>,
+    /// The selected session's detail is shown under the table (Enter).
+    pub open: bool,
+    /// The forecast band, burn-up and baseline are shown at the bottom (f).
+    pub forecast: bool,
+}
+
+/// One table row: a session the snapshot, the state document or both know.
+pub struct Row<'a> {
+    pub target: &'a str,
+    pub state: Option<&'a Value>,
+    pub live: Option<&'a (hub_core::session_actions::Agent, Session)>,
+}
+
+impl Row<'_> {
+    fn bucket(&self) -> &str {
+        self.state
+            .and_then(|x| x["bucket"].as_str())
+            .unwrap_or("PARKED")
+    }
 }
 
 impl Controls {
     fn len(&self) -> usize {
-        self.snap.as_ref().map_or(0, |s| s.agents.len())
+        self.rows().len()
+    }
+
+    /// Every session once, in the order the table lists them: by stage, what needs the human
+    /// first, then by target; a session the state document does not have yet sorts with the
+    /// parked ones, in the snapshot's order.
+    pub fn rows(&self) -> Vec<Row<'_>> {
+        let agents = self.snap.as_ref().map_or(&[][..], |s| s.agents.as_slice());
+        let mut state: Vec<&Value> = self.state.iter().collect();
+        state.sort_by(|a, b| a["target"].as_str().cmp(&b["target"].as_str()));
+        let mut rows: Vec<Row> = state
+            .into_iter()
+            .filter_map(|x| {
+                let target = x["target"].as_str()?;
+                let live = agents.iter().find(|(_, s)| s.target == target);
+                Some(Row {
+                    target,
+                    state: Some(x),
+                    live,
+                })
+            })
+            .collect();
+        for a in agents {
+            if !rows.iter().any(|r| r.target == a.1.target) {
+                rows.push(Row {
+                    target: &a.1.target,
+                    state: None,
+                    live: Some(a),
+                });
+            }
+        }
+        rows.sort_by_key(|r| fleet::rank(r.bucket()));
+        rows
     }
 
     /// A new snapshot keeps the selection on the same target when it is still there.
     pub fn set(&mut self, snap: Snapshot) {
         let was = self.selected_target();
-        self.sel = was
-            .and_then(|t| snap.agents.iter().position(|(_, s)| s.target == t))
-            .unwrap_or(self.sel)
-            .min(snap.agents.len().saturating_sub(1));
         self.snap = Some(snap);
+        self.reselect(was);
+    }
+
+    /// A new state document or forecast, the same.
+    pub fn read(&mut self, state: Option<Vec<Value>>, schedule: Option<Vec<Value>>) {
+        let was = self.selected_target();
+        if let Some(s) = state {
+            self.state = s;
+        }
+        if let Some(s) = schedule {
+            self.schedule = s;
+        }
+        self.reselect(was);
+    }
+
+    fn reselect(&mut self, was: Option<String>) {
+        let rows = self.rows();
+        let n = rows.len();
+        self.sel = was
+            .and_then(|t| rows.iter().position(|r| r.target == t))
+            .unwrap_or(self.sel)
+            .min(n.saturating_sub(1));
     }
 
     fn selected_target(&self) -> Option<String> {
-        let s = self.snap.as_ref()?;
-        s.agents.get(self.sel).map(|(_, x)| x.target.clone())
+        self.rows().get(self.sel).map(|r| r.target.to_string())
     }
 
     /// The controls' own keys; with a confirm armed every key is the confirm's.
@@ -107,6 +183,18 @@ impl Controls {
                 self.sel = self.sel.saturating_sub(1);
                 Ask::Done
             }
+            KeyCode::Enter => {
+                self.open = !self.open;
+                Ask::Done
+            }
+            KeyCode::Esc if self.open => {
+                self.open = false;
+                Ask::Done
+            }
+            KeyCode::Char('f') => {
+                self.forecast = !self.forecast;
+                Ask::Done
+            }
             KeyCode::Char(ch) => match KEYS.iter().find(|(c, _)| *c == ch) {
                 Some((_, a)) => {
                     self.arm(*a);
@@ -124,20 +212,36 @@ impl Controls {
             self.said = Some(Err("an action is still running".into()));
             return;
         }
-        let Some(snap) = &self.snap else { return };
-        let Some((_, s)) = snap.agents.get(self.sel) else {
-            return;
+        match self.offer(a) {
+            Some(Ok(c)) => {
+                self.said = None;
+                self.confirm = Some(c);
+            }
+            Some(Err(e)) => self.said = Some(Err(e)),
+            None => {}
+        }
+    }
+
+    /// The confirm the selected session would arm for an action, or why it is not offered.
+    fn offer(&self, a: Action) -> Option<Result<Confirm, String>> {
+        let snap = self.snap.as_ref()?;
+        let rows = self.rows();
+        let row = rows.get(self.sel)?;
+        let Some((_, s)) = row.live else {
+            return Some(Err(format!(
+                "{} is not a live or parked session on this machine: nothing to act on",
+                row.target
+            )));
         };
         let offered = available(s);
         if !offered.contains(&a) {
             let names: Vec<&str> = offered.iter().map(|a| a.name()).collect();
-            self.said = Some(Err(format!(
+            return Some(Err(format!(
                 "{} is not offered for {}; it offers {}",
                 a.name(),
                 s.target,
                 names.join(", ")
             )));
-            return;
         }
         let to: Vec<String> = if a == Action::Move {
             snap.accounts
@@ -149,71 +253,43 @@ impl Controls {
             vec![]
         };
         if a == Action::Move && to.is_empty() {
-            self.said = Some(Err(
+            return Some(Err(
                 "no other account in the claude-acct accounts file".into()
             ));
-            return;
         }
-        self.said = None;
-        self.confirm = Some(Confirm {
+        Some(Ok(Confirm {
             target: s.target.clone(),
             action: a,
             to,
             pick: 0,
-        });
+        }))
     }
 
-    /// The controls as lines: a title, the session table (the selected row reversed), and the
-    /// confirm, the running action or the last answer.
-    pub fn lines(&self, p: Palette, w: usize) -> Vec<Line<'static>> {
-        let keys: Vec<String> = KEYS
-            .iter()
-            .map(|(c, a)| format!("{c} {}", a.name()))
-            .collect();
-        let mut out = vec![clip_line(
-            Line::styled(format!("SESSION CONTROLS  {}", keys.join("  ")), p.head()),
-            w,
-        )];
-        let Some(snap) = &self.snap else {
+    /// The session table (the selected row reversed), then the confirm, the running action or
+    /// the last answer, then the selected session's detail when it is open.
+    pub fn lines(&self, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+        let rows = self.rows();
+        let mut out = vec![];
+        if self.snap.is_none() && rows.is_empty() {
             out.push(Line::styled("Reading sessions...", p.dim()));
             return out;
-        };
-        if snap.agents.is_empty() {
+        }
+        if rows.is_empty() {
             out.push(Line::styled("No agent sessions.", p.dim()));
         } else {
-            let rows: Vec<Vec<Cell>> = snap
-                .agents
-                .iter()
-                .map(|(a, s)| {
-                    let state = if s.parked {
-                        cell("parked", p.warn())
-                    } else if s.approve_key.is_some() {
-                        cell("plan ready", p.warn())
-                    } else {
-                        cell(a.status.clone(), status_style(&a.status, p))
-                    };
-                    vec![
-                        cell(s.target.clone(), Default::default()),
-                        cell(if s.attached { "here" } else { "" }, p.good()),
-                        state,
-                        dash(&s.account),
-                        dash(&a.plan_slug),
-                        cell(a.ask.clone().unwrap_or_default(), p.warn()),
-                        dash(s.items.last().map_or("", String::as_str)),
-                        a.summary.clone().into(),
-                    ]
-                })
-                .collect();
+            let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 header: vec![
-                    "SESSION", "YOU", "STATE", "ACCOUNT", "PLAN", "ASK", "QUEUE", "DOING",
+                    "SESSION", "STAGE", "TASK", "PR", "CI", "PLAN", "ETA", "IDLE", "ACCOUNT",
+                    "YOU", "ASK", "WHY",
                 ],
-                rows,
-                keep: vec![0, 2, 3, 1, 5, 4, 6],
-                flex: Some(7),
-                flexmin: 12,
-                cap: vec![(0, 34), (4, 28), (6, 24)],
-                ..Default::default()
+                rows: cells,
+                keep: vec![0, 1, 5, 6, 3, 4, 7, 8, 10, 2, 9],
+                flex: Some(11),
+                flexmin: if w >= 100 { 30 } else { 12 },
+                flexkeep: w >= 100,
+                right: vec![7],
+                cap: vec![(0, fleet::NAME_MAX), (2, 22), (6, 22)],
             }
             .fit(w, p.head());
             if let Some(l) = t.get_mut(self.sel + 1) {
@@ -222,6 +298,152 @@ impl Controls {
             out.append(&mut t);
         }
         out.push(self.status_line(p, w));
+        if self.open {
+            out.extend(self.detail(rows.get(self.sel), p, now, w));
+        }
+        out
+    }
+
+    /// The forecast's schedule row for a session.
+    fn plan(&self, target: &str) -> Option<&Value> {
+        self.schedule.iter().find(|s| s["target"] == target)
+    }
+
+    /// The ETA: the forecast's finish p50 and how late it runs, else fleet-sessions' own.
+    fn eta(&self, r: &Row, p: Palette, now: i64) -> Cell {
+        if let Some(f) = self.plan(r.target).and_then(|s| s["finish_p50"].as_i64()) {
+            let late = self.plan(r.target).and_then(|s| s["late_min"].as_i64());
+            return match late {
+                Some(m) => cell(
+                    format!("{} late {}", clock(f, now), dur(m as f64 * 60.0)),
+                    p.bad(),
+                ),
+                None => clock(f, now).into(),
+            };
+        }
+        match r.state.and_then(|x| x["eta"].as_str()) {
+            Some(e) if !e.is_empty() => e.into(),
+            _ => "-".into(),
+        }
+    }
+
+    fn row(&self, r: &Row, p: Palette, now: i64) -> Vec<Cell> {
+        let f = r.state.map(|x| fleet::row(x, p));
+        let at = |j: usize| f.as_ref().map_or_else(|| Cell::from("-"), |f| f[j].clone());
+        let (stage, task, why) = match (&f, r.live) {
+            (Some(_), live) => {
+                let task = match at(1).text.as_str() {
+                    "-" => dash(live.map_or("", |(a, _)| a.plan_slug.as_str())),
+                    _ => at(1),
+                };
+                (at(2), task, at(16))
+            }
+            (None, Some((a, s))) => {
+                let state = if s.parked {
+                    cell("parked", p.warn())
+                } else {
+                    cell(a.status.clone(), status_style(&a.status, p))
+                };
+                (state, dash(&a.plan_slug), a.summary.clone().into())
+            }
+            (None, None) => ("-".into(), "-".into(), "-".into()),
+        };
+        let ask = match r.live {
+            Some((a, s)) => match (&a.ask, s.approve_key) {
+                (Some(q), _) => cell(q.clone(), p.warn()),
+                (None, Some(_)) => cell("plan ready", p.warn()),
+                _ => "".into(),
+            },
+            None => "".into(),
+        };
+        vec![
+            fleet::short(r.target).into(),
+            stage,
+            task,
+            at(6),
+            at(8),
+            at(9),
+            self.eta(r, p, now),
+            at(13),
+            dash(r.live.map_or("", |(_, s)| s.account.as_str())),
+            cell(
+                if r.live.is_some_and(|(_, s)| s.attached) {
+                    "here"
+                } else {
+                    ""
+                },
+                p.good(),
+            ),
+            ask,
+            why,
+        ]
+    }
+
+    /// Everything known about one session: each state-document cell, the live session's own
+    /// fields, what it last said and what blocks it, and the forecast's phases for it (the
+    /// timeline the Forecast tab drew, one session at a time).
+    fn detail(&self, r: Option<&Row>, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+        let Some(r) = r else { return vec![] };
+        let mut out = vec![
+            Line::raw(""),
+            clip_line(
+                Line::styled(
+                    format!("DETAIL  {}   Enter or Esc closes", r.target),
+                    p.head(),
+                ),
+                w,
+            ),
+        ];
+        let field = |k: &str, v: &str| {
+            clip_line(
+                Line::from(vec![
+                    ratatui::text::Span::styled(format!("  {k:<10} "), p.dim()),
+                    ratatui::text::Span::raw(v.to_string()),
+                ]),
+                w,
+            )
+        };
+        if let Some(x) = r.state {
+            for (k, c) in fleet::HEAD.iter().zip(fleet::row(x, p)).skip(1) {
+                if !matches!(c.text.as_str(), "-" | "") {
+                    out.push(field(k, &c.text));
+                }
+            }
+            for k in ["branch", "next_phase", "said"] {
+                if let Some(v) = x[k].as_str().filter(|v| !v.is_empty() && *v != "-") {
+                    out.push(field(
+                        &k.replace('_', " ").to_uppercase(),
+                        &v.replace('\n', " "),
+                    ));
+                }
+            }
+            for b in x["blockers"].as_array().into_iter().flatten() {
+                if let Some(b) = b.as_str() {
+                    out.push(field("BLOCKER", b));
+                }
+            }
+        }
+        if let Some((a, s)) = r.live {
+            out.push(field("ACCOUNT", &s.account));
+            if !a.plan_slug.is_empty() {
+                out.push(field("PLAN FILE", &a.plan_slug));
+            }
+            if !s.items.is_empty() {
+                out.push(field("QUEUE", &s.items.join(", ")));
+            }
+            let offered: Vec<&str> = available(s).iter().map(|a| a.name()).collect();
+            out.push(field("OFFERS", &offered.join(", ")));
+        }
+        match self.plan(r.target) {
+            Some(f) => {
+                out.push(field(
+                    "TIMELINE",
+                    "from the forecast, now to the slow finish",
+                ));
+                out.extend(crate::forecast::timeline(f, p, now, w));
+            }
+            None => out.push(field("TIMELINE", "no plan to schedule")),
+        }
         out
     }
 
