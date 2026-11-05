@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: file every project sheet's `## Inbox` lines as typed rows.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog]
 #
 # A line already written as `type(area): title` is filed as written with no model. The rest
 # of a project's lines go to one cheap-model call (model-lane: triage is a classification job),
@@ -14,12 +14,19 @@
 # that lands during a pass changes the flag again, so the pass repeats until the flag holds
 # still (at most INBOX_TRIAGE_PASSES times). A line typed into a sheet by hand touches no flag,
 # so the runner also has a daily SCHEDULE pass.
+#
+# --backlog runs the same triage over the rows already on each project's two boards, largest
+# project first: the model proposes keep, rewrite (`ptask edit --was`, which keeps the old words
+# as a `was:` line), a move to the product the row is about (`ptask move --project`), a dup of
+# another row, or a drop with its reason (`ptask drop`, which keeps the row ticked). A row in
+# progress is only ever rewritten. Every write is `--exact`, so a row edited since the read is
+# left alone.
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
 : "${INBOX_TRIAGE_CMD:=agentctl-run --role distill}"
 : "${INBOX_TRIAGE_PASSES:=3}"
-: "${INBOX_TRIAGE_MAX:=40}"   # lines sent to the model per project per pass
+: "${INBOX_TRIAGE_MAX:=40}"   # lines sent to the model per project per pass, and rows per --backlog call
 
 LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=/dev/null
@@ -27,7 +34,8 @@ LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=/dev/null
 . "$LIB/md-render.sh"
 
-DRY=0; ONLY=""; FILED=0; KEPT=0; FAILED=0; FLAG=""
+DRY=0; ONLY=""; BACKLOG=0; FILED=0; KEPT=0; FAILED=0; FLAG=""
+REWROTE=0; MOVED=0; DROPPED=0
 say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
@@ -128,6 +136,142 @@ $open"
   return 0
 }
 
+# One --backlog answer line -> n, action, id, project, row, why, split by US.
+# shellcheck disable=SC2016 # jq source, not shell
+BACKLOG_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
+  fromjson? | select(type == "object" and (.n | type) == "number")
+  | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.row | s), (.why | s)] | join("\u001f")'
+
+# pt <project> <lane> <ptask args...>: one ptask write on a lane, or its echo under --dry-run.
+pt() {
+  local p="$1" lane="$2"; shift 2
+  local -a on=()
+  [ "$lane" = agent ] && on=(--agent)
+  if [ "$DRY" = 1 ]; then printf 'would run: notes ptask %q' "$p" "${on[@]}"; printf ' %q' "$@"; echo; return 0; fi
+  notes ptask "$p" "${on[@]}" "$@" >/dev/null || { say "$p ($lane): refused: $*"; FAILED=$((FAILED + 1)); return 1; }
+}
+
+# backlog <project> <lane> <board json> <project names> <homes>: one lane's open rows, in batches.
+backlog() {
+  local p="$1" lane="$2" board="$3" names="$4" homes="$5" rows total off rc=0
+  # Each row with its child rows (the indented open rows under it on the sheet), which the
+  # model sees as context and which go wherever the row goes.
+  # shellcheck disable=SC2016 # jq source, not shell
+  rows="$(jq -c --arg p "$p" --arg l "$lane" '[.rows[] | select(.project == $p and .lane == $l and .state != "done")] | sort_by(.line) as $all
+    | [$all | to_entries[] | select(.value.id != null and (.value.state == "open" or .value.state == "doing")) | .key as $k
+       | .value + {kids: ($all[$k + 1:] | (map(.raw | test("^\\s") | not) | index(true)) as $stop
+                         | (if $stop == null then . else .[:$stop] end) | map(.text))}]
+    | sort_by(.text | ascii_downcase)' <<<"$board")"
+  total="$(jq length <<<"$rows")"
+  for ((off = 0; off < total; off += INBOX_TRIAGE_MAX)); do
+    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$INBOX_TRIAGE_MAX" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" || rc=1
+  done
+  return "$rc"
+}
+
+backlog_batch() {
+  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" listing prompt out rc wd
+  local -a raws ids states kids
+  mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
+  mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
+  mapfile -t states < <(jq -r '.[] | .state' <<<"$batch")
+  mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
+  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.${homes:+ Projects whose code lives in another project's repo: $homes. A row about only one of those belongs on that project, not on the repo's.}
+
+A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 90 characters, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+
+For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
+{\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
+{\"n\": 2, \"action\": \"keep\", \"project\": \"<other project>\"}
+{\"n\": 3, \"action\": \"dup\", \"id\": \"<id of the row it repeats>\"}
+{\"n\": 4, \"action\": \"drop\", \"why\": \"<short reason>\"}
+keep: the row is clean already. rewrite: it is not. Either may carry project, another project's name, only when the row is plainly about that project alone.
+dup: only when another row in this list asks for the same thing; never the row's own id.
+drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
+A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
+
+## Rows (n. [id] text, child rows indented)
+$listing"
+  wd="$(mktemp -d)"
+  # shellcheck disable=SC2086 # a word list by design, overridable in tests
+  out="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$prompt" 2>/dev/null)"; rc=$?
+  rm -rf -- "$wd"
+  [ "$rc" = 0 ] || { say "$p ($lane): model call failed"; return 1; }
+  grep -qx 'INBOX-TRIAGE-START' <<<"$out" || { say "$p ($lane): model returned no answer block"; return 1; }
+  local n action id dest row why raw own
+  local -a seen=()
+  while IFS=$'\x1f' read -r n action id dest row why; do
+    [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
+    [ -z "${seen[n]:-}" ] || continue   # one answer per row
+    seen[n]=1
+    raw="${raws[n - 1]}" own="${ids[n - 1]}"
+    dest="$(clean 60 <<<"$dest")"
+    [ "$dest" = "$p" ] && dest=""
+    if [ "${states[n - 1]}" = doing ]; then
+      dest=""
+      [ "$action" = rewrite ] || action=keep
+    fi
+    # a heading over child rows is never closed: its children would sit under a ticked row
+    [ "${kids[n - 1]}" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
+    case "$action" in
+      rewrite)
+        row="$(clean 150 <<<"$row")"
+        if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
+          REWROTE=$((REWROTE + 1))
+          # the row's line changed, so the move names it by its id
+          [ -n "$dest" ] && pt "$p" "$lane" move --project "$dest" "$own" && MOVED=$((MOVED + 1))
+        else
+          KEPT=$((KEPT + 1))
+        fi
+        ;;
+      dup)
+        id="$(clean 40 <<<"$id")"
+        if [ -n "$id" ] && [ "$id" != "$own" ] && printf '%s\n' "${ids[@]}" | grep -qxF -- "$id" &&
+          pt "$p" "$lane" --exact drop --dup "$id" -- "$raw"; then
+          DROPPED=$((DROPPED + 1))
+        else
+          KEPT=$((KEPT + 1))
+        fi
+        ;;
+      drop)
+        why="$(clean 100 <<<"$why")"
+        if [ -n "$why" ] && pt "$p" "$lane" --exact drop --why "triage: $why" -- "$raw"; then
+          DROPPED=$((DROPPED + 1))
+        else
+          KEPT=$((KEPT + 1))
+        fi
+        ;;
+      *)
+        if [ -n "$dest" ] && pt "$p" "$lane" --exact move --project "$dest" -- "$raw"; then
+          MOVED=$((MOVED + 1))
+        else
+          KEPT=$((KEPT + 1))
+        fi
+        ;;
+    esac
+  done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$BACKLOG_JQ")
+  for ((n = 1; n <= ${#raws[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
+  return 0
+}
+
+# The --backlog pass: every project's two boards, the most open rows first.
+backlog_pass() {
+  local board names homes rc=0 p lane
+  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
+  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  while IFS= read -r p; do
+    [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
+    agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
+    for lane in human agent; do
+      backlog "$p" "$lane" "$board" "$names" "$homes" || rc=1
+    done
+  done < <(jq -r '[.rows[] | select(.project != null and (.lane == "human" or .lane == "agent") and .state != "done")]
+    | group_by(.project) | sort_by(-length) | .[][0].project' <<<"$board")
+  return "$rc"
+}
+
 pass() {
   local board names rc=0 p
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
@@ -145,11 +289,23 @@ main() {
     case "$1" in
       --dry-run) DRY=1; shift ;;
       --project) ONLY="${2:-}"; shift 2 ;;
+      --backlog) BACKLOG=1; shift ;;
       -h|--help) sed -n '2,4p' "$0"; return 0 ;;
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
-  local rc=0 before k dir
+  local rc=0 before k dir summary verdict
+  if [ "$BACKLOG" = 1 ]; then
+    backlog_pass || rc=1
+    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED"
+    say "$summary"
+    [ "$DRY" = 1 ] && return "$rc"
+    verdict=NOOP
+    [ $((REWROTE + MOVED + DROPPED)) -gt 0 ] && verdict=WORKED
+    [ "$rc" != 0 ] && verdict=FAILED
+    proof_report "$NAME" "$verdict" "$summary"
+    return "$rc"
+  fi
   dir="$(notes config 2>/dev/null | awk '$1 == "state" {print $2; exit}')"
   [ -n "$dir" ] && FLAG="$dir/inbox.changed"
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
@@ -158,10 +314,10 @@ main() {
     [ "$DRY" = 1 ] && break
     [ "$(flag_state)" = "$before" ] && break
   done
-  local summary="filed $FILED, left $KEPT, refused $FAILED"
+  summary="filed $FILED, left $KEPT, refused $FAILED"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
-  local verdict=NOOP
+  verdict=NOOP
   [ "$FILED" -gt 0 ] && verdict=WORKED
   [ "$rc" != 0 ] && verdict=FAILED
   proof_report "$NAME" "$verdict" "$summary"
