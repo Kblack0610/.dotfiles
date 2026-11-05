@@ -136,6 +136,7 @@ Media/Music
 !.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/reaper-ops/
 !.claude/skills/ops/usage-cleanup/
+!.claude/skills/ops/pipeline-eval/
 !.claude/skills/reference/compliance/
 !.claude/skills/reference/hz-immersive-designer/
 !.claude/skills/reference/hz-perfetto-debug/

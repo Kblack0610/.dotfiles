@@ -10,6 +10,7 @@ No counter of its own: each number comes from the tool that owns it, so this fil
 them, and a source it cannot read keeps the previous value and is named in .unreadable.
   agent-queue stats --json   queue flow per local day
   fleet-bench flow --json    plan phases
+  fleet-sessions stages      time per delivery stage and reason, from the shepherd's watch.log
   ~/.notes history           board rows opened and closed
   agent-usage tokens json    tokens, cost, sessions by kind and account (the nightly snapshot)
   outcomes/*.jsonl           sessions with no PR, time use (the nightly session-outcomes)
@@ -138,6 +139,10 @@ def phase_flow(start, end):
     return {k: flow.get(k) for k in ("ticked", "added", "removed", "started")}, None
 
 
+def stage_flow(start, end):
+    return run_json(cmd("DAYLOG_FLEET_CMD") + ["stages", "--from", str(start), "--to", str(end), "--json"])
+
+
 def merges(record):
     by_repo, by_area = {}, {}
     for pr in record.get("merged") or []:
@@ -213,7 +218,8 @@ def enrich(a):
     record["work"] = {"queue": read("agent-queue", "work.queue", lambda: queue_flow(day)),
                       "merges": read("merges", "work.merges", lambda: (merges(record), None)),
                       "board": read("notes board", "work.board", lambda: board_flow(a.start, a.end)),
-                      "phases": read("fleet-bench flow", "work.phases", lambda: phase_flow(a.start, a.end))}
+                      "phases": read("fleet-bench flow", "work.phases", lambda: phase_flow(a.start, a.end)),
+                      "stages": read("fleet-sessions stages", "work.stages", lambda: stage_flow(a.start, a.end))}
     record["agents"] = {
         **usage_of(snap),
         # Today has no outcomes yet, and a past day has no live asks: it keeps its last gather's.
@@ -309,9 +315,15 @@ def ci(a):
 SUM = {"queue.queued": "work.queue.queued", "queue.started": "work.queue.started", "queue.waiting": "work.queue.waiting",
        "queue.done": "work.queue.done", "queue.failed": "work.queue.failed", "board.opened": "work.board.opened",
        "board.closed": "work.board.closed", "phases.ticked": "work.phases.ticked", "tokens.context": "agents.tokens.context",
-       "merged_prs": "agents.merged_prs"}
+       "merged_prs": "agents.merged_prs", "stages.needs_min": "work.stages.stages.NEEDS.minutes",
+       "stages.ask_min": "work.stages.stages.NEEDS:ask.minutes", "stages.prompt_min": "work.stages.stages.NEEDS:prompt.minutes",
+       "stages.plan_approval_min": "work.stages.stages.NEEDS:plan_approval.minutes",
+       "stages.stalled_min": "work.stages.stages.STALLED.minutes", "stages.ci_rerun_after_red": "work.stages.ci.rerun_after_red",
+       "stages.conflicts": "work.stages.conflicts.entered", "stages.phases_unticked": "work.stages.plans.phases_unticked",
+       "stages.ended_no_pr": "work.stages.ended_no_pr"}
 MEDIAN = {"queue.lead_p50_min": "work.queue.lead_minutes.p50", "queue.lead_p90_min": "work.queue.lead_minutes.p90",
-          "queue.wait_p50_min": "work.queue.wait_minutes.p50", "queue.wait_p90_min": "work.queue.wait_minutes.p90"}
+          "queue.wait_p50_min": "work.queue.wait_minutes.p50", "queue.wait_p90_min": "work.queue.wait_minutes.p90",
+          "stages.pr_to_merge_p50_min": "work.stages.prs.open_to_merged.p50"}
 LAST = {"board.open": "work.board.open_end", "asks.open": "agents.asks.open", "asks.age_h_max": "agents.asks.age_h_max"}
 CI_SUM = {"runs": "runs", "red": "red", "main_red": "main.red", "runner_hours": "cost.hours.pool", "regated": "cost.regates.gates",
           "regated_branches": "cost.regates.branches_regated", "reruns": "cost.reruns"}
