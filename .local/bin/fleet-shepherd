@@ -3,7 +3,8 @@
 #
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): set the last pass
 #                          aside, refresh the state document, start a fresh `/fleet-lead pass`
-#                          in hub session shepherd (Prefix o), then close what has finished.
+#                          in session shepherd on the shepherd world's own tmux server (Prefix o),
+#                          then close what has finished.
 #                          A run starts nothing while the lease holder is mid-sweep and nobody
 #                          is talking to it
 #   fleet-shepherd open [id]
@@ -77,11 +78,13 @@ PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pa
 ASIDE="$LEDGER/.aside"        # <id>\t<start epoch>\t<due count>\t<handed epoch>\t<pane>: passes replaced and not yet closed
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
-# The pass has a hub session of its own, declared in .config/tmux-servers/hub.conf beside the
-# other worlds: killing session dotfiles took the pass with it on 2026-11-04, when it was a window
-# there. Each run's pass is a window of this session.
+# The pass has a world of its own, .config/tmux-servers/shepherd.conf: its own tmux server, so the
+# window churn below (new-window, rename-window, kill-pane, send-keys, display-message) and a crash
+# of that server never reach the human's hub sessions. Killing session dotfiles took the pass with
+# it on 2026-11-04, when it was a window there, and at 21:55 closing a duplicate pass window in hub
+# took hub down with two of the human's sessions. Each run's pass is a window of this session.
 SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
-SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # hub, beside the human's chats; Prefix o jumps to it
+SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # shepherd; Prefix o hops to it from any world
 WINDOW="${FLEET_SHEPHERD_WINDOW:-shepherd}"
 PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
 ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
@@ -658,8 +661,8 @@ launch_pass() {
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$LEDGER/.proof-$id"
   cmd="bash $(printf '%q' "$LEDGER/.pass.sh")"
   if ! tmux -L "$SERVER" has-session -t "=$SESSION" 2>/dev/null; then
-    # The session is made as hub makes it, from its manifest. With no server, one started from
-    # the runner's unit would die with the unit, so it gets a scope.
+    # The session is made from its world's manifest, as tmx makes every world. With no server,
+    # one started from the runner's unit would die with the unit, so it gets a scope.
     if tmux -L "$SERVER" list-sessions >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1; then
       tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     else
