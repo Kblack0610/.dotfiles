@@ -85,28 +85,30 @@ command -v tmux >/dev/null 2>&1 || die "tmux not installed"
 
 session_count() { tmux -L "$1" list-sessions 2>/dev/null | wc -l | tr -d ' '; }
 
-# ls -- every known server plus any live one, with session counts.
-cmd_ls() {
-  local -a all=()
-  local s
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    all+=("$s")
-  done < <(known_servers)
+# _all_servers -- every world to offer: the declared ones, then any other live server.
+_all_servers() {
+  local s seen=" "
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     world_hidden "$s" && continue
-    case " ${all[*]} " in *" $s "*) ;; *) all+=("$s") ;; esac
-  done < <(panel_live_servers)
+    case "$seen" in *" $s "*) continue ;; esac
+    seen="$seen$s "
+    printf '%s\n' "$s"
+  done < <(known_servers; panel_live_servers)
+}
 
-  for s in "${all[@]}"; do
-    local n; n="$(session_count "$s")"
+# ls -- every known server plus any live one, with session counts.
+cmd_ls() {
+  local s n
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    n="$(session_count "$s")"
     if [ "$n" -gt 0 ]; then
       printf '%-10s %s session(s)\n' "$s" "$n"
     else
       printf '%-10s (not running)\n' "$s"
     fi
-  done
+  done < <(_all_servers)
 }
 
 # _declared_world <server> <session[:window]> -- the world that declares that session, else
@@ -642,7 +644,67 @@ cmd_pick() {
   cmd_hop "${choice%% *}"
 }
 
-# _all_rows -- every session, and every window inside it, across every LIVE server.
+# How old the fleet state may be before Prefix+A stops trusting it. fleet-state.service
+# writes it every minute, so five minutes means the writer has stopped.
+FLEET_STATE_MAX_AGE=300
+# The widest a row may be: the hub runs in an 80-column tmux pane (dashboards rule 11).
+ROW_WIDTH=80
+SESSION_NAME_WIDTH=30
+
+declare -A FLEET=() FLEET_SESSIONS=()
+FLEET_EPOCH=0
+
+# _fleet_load -- read the fleet state document into FLEET (<world>/<session>:<window> ->
+# bucket, idle minutes) and FLEET_SESSIONS. Agent state is read here, never recomputed.
+# Returns 1 when the document cannot be trusted: missing, old, or written by a pass that
+# could not read agent-panel, whose session list is empty rather than true. Every agent
+# would then look stranded, and the human closes what that list shows.
+_fleet_load() {
+  local file="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+  local epoch target bucket idle
+  epoch="$(jq -r 'select((.unreadable // []) | index("agent-panel") | not) | .generated_epoch // 0' \
+    "$file" 2>/dev/null)"
+  [ -n "$epoch" ] && [ $(( $(date +%s) - epoch )) -le "$FLEET_STATE_MAX_AGE" ] || return 1
+  FLEET_EPOCH="$epoch"
+  while IFS=$'\t' read -r target bucket idle; do
+    [ -n "$target" ] || continue
+    FLEET["$target"]="$bucket"$'\t'"$idle"
+    FLEET_SESSIONS["${target%:*}"]=1
+  done < <(jq -r '.sessions[] | select(.target) | [.target, .bucket, (.idle_min // 0)] | @tsv' \
+    "$file" 2>/dev/null)
+}
+
+# _idle_text <minutes> -> 45m, 8h, 2d.
+_idle_text() {
+  if [ "$1" -lt 60 ]; then printf '%sm' "$1"
+  elif [ "$1" -lt 1440 ]; then printf '%sh' "$(( $1 / 60 ))"
+  else printf '%sd' "$(( $1 / 1440 ))"
+  fi
+}
+
+# _fleet_col <target> -> "NEEDS    8h", or nothing for a window with no agent.
+_fleet_col() {
+  local v="${FLEET["$1"]:-}"
+  [ -n "$v" ] || return 0
+  printf '%-7s %3s' "${v%%$'\t'*}" "$(_idle_text "${v##*$'\t'}")"
+}
+
+# _mid <text> <width> -- cut from the middle: the tail of an agent session name is the
+# -agent-N that tells it from its siblings.
+_mid() {
+  if [ "${#1}" -le "$2" ]; then printf '%s' "$1"
+  else printf '%s~%s' "${1:0:$2-11}" "${1: -10}"
+  fi
+}
+
+# _row <server> <session> <window> <display> -- one list row, cut to ROW_WIDTH.
+_row() {
+  local d="$4"
+  [ "${#d}" -le "$ROW_WIDTH" ] || d="${d:0:ROW_WIDTH-1}~"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$d"
+}
+
+# _all_rows -- every world, session and window, in one list, what needs a look first.
 #
 # This is the one view no other tool here can give you. choose-tree (Prefix+w) is
 # server-scoped by construction, and sesh shells out to plain `tmux` so it follows
@@ -653,23 +715,38 @@ cmd_pick() {
 # only describes whatever the cursor happens to be sitting on -- you have to arrow
 # through the list to learn what is in it. The list itself has to answer "what is this".
 #
-# Three levels, all selectable: server -> session -> window.
+# Stranded rows come first: a session with no agent that no manifest declares, or a live
+# server with no manifest. Nothing else will ever come back for those. A stranded session
+# shows there only, as one row.
+#
+# A session with one window is one row, since the window row would only repeat it. An
+# agent's row reads as its state, idle time and task. A session with several windows
+# keeps a row per window. A world that is down gets a row, and Enter starts it.
 #
 # Emits TAB-separated: <server> <session> <window-or-empty> <display>. fzf renders
-# only field 4 (--with-nth=4) and the first three are the machine target. Kept
-# separate from the fzf call so it can be tested without a terminal.
+# only field 4 (--with-nth=4) and the first three are the machine target. A heading has
+# all three empty, and Enter on one does nothing. Kept separate from the fzf call so it
+# can be tested without a terminal.
 _all_rows() {
-  local s sess wins att spath idx wname wact pcmd ptitle disp mark n what
+  local s n sess wins att spath created activity idx wname wact pcmd ptitle
+  local disp mark what col title need body="" rows wrows word known now fleet_ok=0
+  local -a stranded=()
+
+  now="$(date +%s)"
+  known=" $(known_servers | tr '\n' ' ') "
+  _fleet_load && fleet_ok=1
 
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    world_hidden "$s" && continue
 
-    # The server itself, so one list replaces both this and the old server picker.
     n="$(session_count "$s")"
-    printf '%s\t\t\t%s\n' "$s" "$(printf '%-4s %s session(s)' "$s" "$n")"
+    if [ "$n" -eq 0 ]; then
+      body+="$(_row "$s" '' '' "$s  not running")"$'\n'
+      continue
+    fi
 
-    while IFS=$'\t' read -r sess wins att spath; do
+    rows=""; need=0
+    while IFS=$'\t' read -r sess wins att spath created activity; do
       [ -n "$sess" ] || continue
 
       # The simple explanation of a session: WHERE it is and WHAT is running in it.
@@ -680,14 +757,21 @@ _all_rows() {
         | sort | uniq -c | sort -rn \
         | awk '{ printf "%s%s, ", $2, ($1 > 1 ? " x" $1 : "") }' | sed 's/, $//')"
 
-      disp="$(printf '  %-13s %-22s %2s win  %s' "$sess" "$spath" "$wins" "$what")"
-      [ "$att" = "1" ] && disp="$disp  (attached)"
-      printf '%s\t%s\t\t%s\n' "$s" "$sess" "$disp"
+      # A session newer than the document cannot be in it yet, so it is not stranded.
+      if [ "$fleet_ok" = 1 ] && [ -z "${FLEET_SESSIONS["$s/$sess"]:-}" ] \
+        && [ "$created" -le "$FLEET_EPOCH" ] \
+        && ! "${SELF%/*}/close.sh" protected "$sess" >/dev/null 2>&1; then
+        stranded+=("$(_row "$s" "$sess" '' "$(printf '  %s  %-*s %s  idle %s  stranded' "$s" \
+          "$SESSION_NAME_WIDTH" "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$what" \
+          "$(_idle_text "$(( (now - activity) / 60 ))")")")")
+        continue
+      fi
 
       # One row per window. pane_current_command and pane_title resolve against the
       # window's ACTIVE pane, which is what makes these rows worth reading: the
       # command says what is running, the title is where a program puts its context
       # (claude puts the task there, nvim the filename).
+      wrows=""; col=""; title=""
       while IFS=$'\t' read -r idx wname wact pcmd ptitle; do
         [ -n "$idx" ] || continue
         mark=' '; [ "$wact" = "1" ] && mark='*'
@@ -695,16 +779,49 @@ _all_rows() {
         # every later column off screen. Truncate rather than let the row wrap.
         [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
         ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
-        disp="$(printf '      %2s%s %-16s %-8s %s' \
-          "$idx" "$mark" "$wname" "$pcmd" "$ptitle")"
-        printf '%s\t%s\t%s\t%s\n' "$s" "$sess" "$idx" "$disp"
+        ptitle="${ptitle#[!a-zA-Z0-9~/]* }" # claude leads with a status glyph
+        col="$(_fleet_col "$s/$sess:$idx")"
+        title="$ptitle"
+        case "$col" in NEEDS*) need=$((need + 1)) ;; esac
+        wrows+="$(_row "$s" "$sess" "$idx" "$(printf '      %2s%s %-16s %-11s %s' \
+          "$idx" "$mark" "$wname" "${col:-$pcmd}" "$ptitle")")"$'\n'
+      # An empty window name would collapse under read, shifting every field after it.
       done < <(tmux -L "$s" list-windows -t "=$sess" -F \
-        "#{window_index}"$'\t'"#{window_name}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
+        "#{window_index}"$'\t'"#{?#{==:#{window_name},},-,#{window_name}}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
         2>/dev/null)
 
+      if [ "$wins" = "1" ] && [ -n "$col" ]; then
+        disp="$(printf '  %-*s %s  %s' "$SESSION_NAME_WIDTH" \
+          "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$col" "$title")"
+      else
+        disp="$(printf '  %-13s %-22s %2s win  %s' "$(_mid "$sess" "$SESSION_NAME_WIDTH")" \
+          "$(_mid "$spath" "$SESSION_NAME_WIDTH")" "$wins" "$what")"
+      fi
+      [ "$att" = "1" ] && disp="$disp  (attached)"
+      rows+="$(_row "$s" "$sess" '' "$disp")"$'\n'
+      [ "$wins" = "1" ] || rows+="$wrows"
+
     done < <(tmux -L "$s" list-sessions -F \
-      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}" 2>/dev/null)
-  done < <(panel_live_servers)
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+
+    # The server itself, so one list replaces both this and the old server picker.
+    word=sessions; [ "$n" = "1" ] && word=session
+    disp="$s  $n $word"
+    [ "$need" -gt 0 ] && disp="$disp  $need need you"
+    case "$known" in
+      *" $s "*) ;;
+      *) disp="$disp  (no manifest)"
+         [ "$fleet_ok" = 1 ] && stranded+=("$(_row "$s" '' '' "  $s  (no manifest)  stranded")") ;;
+    esac
+    body+="$(_row "$s" '' '' "$disp")"$'\n'"$rows"
+  done < <(_all_servers)
+
+  [ "$fleet_ok" = 1 ] || _row '' '' '' 'fleet state is old: no agent state, no stranded marks'
+  if [ "${#stranded[@]}" -gt 0 ]; then
+    _row '' '' '' "STRANDED  ${#stranded[@]}  no agent, no manifest"
+    printf '%s\n' "${stranded[@]}"
+  fi
+  printf '%s' "$body"
 }
 
 # pick-all -- fzf over every session and window everywhere. Enter goes there.
