@@ -236,7 +236,7 @@ _panel_layout_spec() {
   local w
   case "$1" in
   stacked) w="$(panel_fzf_preview down 60)" ;;
-  side) w="$(panel_fzf_preview right 55)" ;;
+  side) w="$(panel_fzf_preview right 65)" ;;
   *) return 1 ;;
   esac
   printf '%s\n' "${w#--preview-window=}"

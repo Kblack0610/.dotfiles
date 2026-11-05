@@ -10,6 +10,8 @@
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, judge
+#   agent-ask target <id>               where the asking session runs now, as an agent-panel
+#                                       jump target; fails saying why (ended, or no session)
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
@@ -507,6 +509,19 @@ cmd_answer() {
   fi
 }
 
+# cmd_target <id>: the live asking session's `<server>/<session>:<window>`, for a board that
+# jumps to it (the questions panel's g). When there is none it fails and says why.
+cmd_target() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask target <id>" >&2; return 2; }
+  local f sid row; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  sid="$(field "$f" claude_session)"
+  [ -n "$sid" ] || { echo "no Claude session owns this ask" >&2; return 1; }
+  row="$(live_row "$sid")"
+  [ -n "$row" ] || { echo "session ended; resume with claude --resume $sid" >&2; return 1; }
+  jq -r .target <<< "$row"
+}
+
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
 live_row() {
   [ -n "${1:-}" ] && command -v agent-panel >/dev/null 2>&1 || return 0
@@ -902,6 +917,7 @@ case "$sub" in
   count)  cmd_count "$@" ;;
   show)   cmd_show "$@" ;;
   card)   cmd_card "$@" ;;
+  target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;

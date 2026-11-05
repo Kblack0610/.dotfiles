@@ -66,6 +66,9 @@ enum Cmd {
     Rows {
         #[arg(long)]
         map_file: PathBuf,
+        /// Only the sessions waiting on the human: a pending ask or a prompt (ctrl-y).
+        #[arg(long)]
+        asking: bool,
     },
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
@@ -104,7 +107,7 @@ fn main() -> anyhow::Result<()> {
             }
             None => std::process::exit(1),
         },
-        Some(Cmd::Rows { map_file }) => chooser::run_rows(&map_file),
+        Some(Cmd::Rows { map_file, asking }) => chooser::run_rows(&map_file, asking),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

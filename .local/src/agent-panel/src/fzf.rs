@@ -7,7 +7,10 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-/ layout  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+/// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
+const PROMPT_ALL: &str = "Select agent > ";
+const PROMPT_ASKING: &str = "Asking only > ";
+const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-/ layout  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -63,7 +66,14 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
     let shepherd_bind = "ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string();
     // Label keys write through fleet-sessions (the labels' one home), then reload the rows in
     // place. {1} is the row's full target; on a project header it is empty and the label fails.
-    let reload = format!("reload({exe} rows --map-file '{map}')");
+    // The prompt is the asking-only state (ctrl-y), so a reload from a label key keeps the view.
+    let rows = format!("{exe} rows --map-file '{map}'");
+    let reload = format!("reload({rows} $([ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ] && echo --asking))");
+    let asking_bind = format!(
+        "ctrl-y:transform:if [ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ]; \
+         then echo \"change-prompt({PROMPT_ALL})+reload({rows})\"; \
+         else echo \"change-prompt({PROMPT_ASKING})+reload({rows} --asking)\"; fi"
+    );
     let manual_bind = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
     let labels_bind = format!(
         "ctrl-l:execute(sh -c 'printf \"labels for %s (+add -drop ^flip): \" \"$1\"; read -r ops; \
@@ -74,7 +84,7 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
         "--reverse".into(),
         "--border".into(),
         "--cycle".into(),
-        "--prompt=Select agent > ".into(),
+        format!("--prompt={PROMPT_ALL}"),
         format!("--header={HEADER}"),
         "--ansi".into(),
         "--no-sort".into(),
@@ -95,6 +105,8 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
         manual_bind,
         "--bind".into(),
         labels_bind,
+        "--bind".into(),
+        asking_bind,
         // Skip non-selectable project header rows when navigating.
         "--bind".into(),
         "up:up+transform:case {} in *━━*) echo up ;; esac".into(),
@@ -117,7 +129,7 @@ mod tests {
     fn label_keys_write_through_fleet_sessions_and_reload_in_place() {
         let stacked = ["--preview-window=down".to_string(), "--bind=ctrl-/:x".to_string()];
         let a = args("/bin/ap", "/tmp/m.map", Some(3), &stacked);
-        let reload = "reload(/bin/ap rows --map-file '/tmp/m.map')";
+        let reload = "reload(/bin/ap rows --map-file '/tmp/m.map' $([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking))";
         let manual = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
         assert!(a.contains(&manual), "{a:?}");
         let l = a
@@ -128,7 +140,10 @@ mod tests {
         assert!(l.ends_with(&format!(" _ {{1}})+{reload}")), "{l}");
         assert!(a.contains(&"load:pos(3)+unbind(load)".to_string()), "{a:?}");
         assert!(a.contains(&"ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string()), "{a:?}");
-        assert!(HEADER.contains("C-s shepherd"));
+        assert!(HEADER.contains("C-s shepherd") && HEADER.contains("C-y asking"));
+        let y = a.iter().find(|x| x.starts_with("ctrl-y:")).expect("ctrl-y bind");
+        assert!(y.contains("change-prompt(Asking only > )+reload(/bin/ap rows --map-file '/tmp/m.map' --asking)"), "{y}");
+        assert!(y.contains("change-prompt(Select agent > )+reload(/bin/ap rows --map-file '/tmp/m.map')\""), "{y}");
         // Negative control: no active agent, no load bind.
         assert!(!args("/bin/ap", "/tmp/m.map", None, &stacked)
             .iter()
