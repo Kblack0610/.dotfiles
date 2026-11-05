@@ -9,6 +9,7 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
+use hub_core::outcomes::{self, Ranked};
 use hub_core::queue::Queue;
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -185,6 +186,8 @@ pub enum Msg {
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
     Forecast(Box<Forecast>),
+    /// `agentctl-session-outcomes worst`, or why it failed.
+    Ranked(Result<Vec<Ranked>, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
     Log(u64, Result<String, String>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
@@ -240,6 +243,7 @@ pub struct App {
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
+    pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
@@ -277,6 +281,7 @@ pub struct App {
     jobs_read: Read,
     boards_read: Read,
     forecast_read: Read,
+    ranked_read: Read,
     fleet_read: Read,
     sessions_read: Read,
     queue_read: Read,
@@ -304,6 +309,7 @@ impl App {
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
+            ranked: None,
             fleet: None,
             queue: None,
             qv: QueueView::default(),
@@ -327,6 +333,7 @@ impl App {
             jobs_read: Read::default(),
             boards_read: Read::default(),
             forecast_read: Read::default(),
+            ranked_read: Read::default(),
             fleet_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
@@ -374,6 +381,17 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Forecast(Box::new(Forecast::read())));
+            });
+        }
+    }
+
+    /// The outcome rows change once a night, so the ranked list is read only when its fold
+    /// opens and on `r` while it is open.
+    pub fn read_ranked(&mut self) {
+        if self.ranked_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
             });
         }
     }
@@ -611,6 +629,12 @@ impl App {
                     self.read_forecast();
                 }
             }
+            Msg::Ranked(r) => {
+                self.ranked = Some(r);
+                if self.ranked_read.done() {
+                    self.read_ranked();
+                }
+            }
             Msg::Fleet(f) => {
                 self.fleet = Some(*f);
                 if self.fleet_read.done() {
@@ -752,6 +776,9 @@ impl App {
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
                     self.read_sessions();
+                    if self.controls.ranked {
+                        self.read_ranked();
+                    }
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
@@ -899,13 +926,16 @@ impl App {
 
     /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
     /// confirm, and with one armed every key is the confirm's; Enter opens the selected
-    /// session's detail and f the forecast at the bottom. The page scrolls with
+    /// session's detail, f the forecast at the bottom and w the ranked sessions. The page scrolls with
     /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
             Ask::Run(t, a, acct) => self.act(t, a, acct),
+        }
+        if self.controls.ranked && self.ranked.is_none() {
+            self.read_ranked();
         }
         // The stage counts and the table header sit above the first row.
         let at = 2 + self.controls.sel;
@@ -916,6 +946,47 @@ impl App {
             self.scroll = at + 1 - h;
         }
         true
+    }
+
+    /// The RANKED fold under the forecast: the week's sessions worst first, one line each, and
+    /// the command that prints any one's full card.
+    fn ranked_lines(&self, w: usize) -> Vec<Line<'static>> {
+        let clip = |t: String, st| crate::fit::clip_line(Line::styled(t, st), w);
+        if !self.controls.ranked {
+            return vec![clip(
+                format!(
+                    "RANKED  w opens the sessions ranked by friction, last {}d",
+                    outcomes::DAYS
+                ),
+                self.p.head(),
+            )];
+        }
+        let mut l = vec![clip(
+            format!("RANKED  last {}d by friction; w folds it", outcomes::DAYS),
+            self.p.head(),
+        )];
+        match &self.ranked {
+            None => l.push(clip(
+                "Reading agentctl-session-outcomes worst.".into(),
+                self.p.dim(),
+            )),
+            Some(Err(e)) => l.push(clip(format!("No ranking: {e}"), self.p.warn())),
+            Some(Ok(rows)) if rows.is_empty() => l.push(clip(
+                "No session with friction this week.".into(),
+                self.p.dim(),
+            )),
+            Some(Ok(rows)) => {
+                l.extend(
+                    rows.iter()
+                        .map(|r| clip(r.line(), ratatui::style::Style::default())),
+                );
+                l.push(clip(
+                    "  a full card: agentctl-session-outcomes card <id>".into(),
+                    self.p.dim(),
+                ));
+            }
+        }
+        l
     }
 
     /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
@@ -1244,7 +1315,7 @@ impl App {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
             Tab::Sessions => format!(
-                "j/k pick  Enter detail  i p u m x c a act  f forecast  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter detail  i p u m x c a act  f forecast  w ranked  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
@@ -1385,6 +1456,8 @@ impl App {
                         w,
                     ));
                 }
+                l.push(Line::raw(""));
+                l.extend(self.ranked_lines(w));
                 (l, vec![])
             }
             // The machinery that runs the sessions: accounts, runners and the judges.
@@ -1755,6 +1828,54 @@ mod tests {
         let s = screen(&mut a, 200, 120);
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(s.contains("BURN-UP 24h"), "{s}");
+    }
+
+    #[test]
+    fn the_ranked_sessions_fold_under_the_forecast_and_read_only_when_opened() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Sessions, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        let s = screen(&mut a, 200, 60);
+        assert!(
+            s.contains("RANKED  w opens the sessions ranked by friction, last 7d"),
+            "{s}"
+        );
+        assert!(
+            fake.0.lock().unwrap().is_empty(),
+            "nothing is read while it is folded"
+        );
+        a.handle(key('w'));
+        // The worker sends Ranked when the read ends: wait for that message, not a timer.
+        loop {
+            match rx.recv().unwrap() {
+                Msg::Ranked(r) => {
+                    a.handle(Msg::Ranked(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert_eq!(
+            fake.0.lock().unwrap().as_slice(),
+            ["agentctl-session-outcomes worst --json --days 7 -n 20"]
+        );
+        assert!(screen(&mut a, 200, 60).contains("No session with friction this week."));
+        a.handle(Msg::Ranked(Ok(vec![Ranked {
+            session_id: "6f296b73-b7a5".into(),
+            project: "dotfiles".into(),
+            title: "fix the gate".into(),
+            friction: 11,
+            why: "9 nudges".into(),
+            prs_merged: 1,
+            ..Ranked::default()
+        }])));
+        let s = screen(&mut a, 200, 60);
+        assert!(s.contains("RANKED  last 7d by friction; w folds it"), "{s}");
+        assert!(s.contains(" 11  6f296b73  dotfiles"), "{s}");
+        assert!(s.contains("agentctl-session-outcomes card <id>"), "{s}");
+        a.handle(key('w'));
+        assert!(screen(&mut a, 200, 60).contains("RANKED  w opens"));
     }
 
     #[test]

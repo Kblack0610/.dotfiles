@@ -191,8 +191,34 @@ function renderOverview() {
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
     html += fold("changes", "Changes", `<div class="ovbar"><label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></div><div class="panel feed">${feed(now)}</div>`);
   }
-  html += shepherdOverview();
+  html += shepherdOverview() + rankedOverview();
   paint(el, html, wst.open);
+}
+
+// Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes' friction
+// score. The list is read when the fold opens and a card when its row is clicked (rule 10);
+// the rows change once a night, so nothing re-reads them on its own.
+const ost = { rows: null, err: null, open: null, cards: {} };
+async function loadRanked() {
+  try { ost.rows = await api("/api/outcomes"); ost.err = null; } catch (e) { ost.err = e.message; }
+  renderOverview();
+}
+async function loadCard(sid) {
+  try { ost.cards[sid] = await api(`/api/outcomes/card?sid=${encodeURIComponent(sid)}`); } catch (e) { ost.cards[sid] = e.message; }
+  renderOverview();
+}
+function rankedOverview() {
+  const rows = ost.rows || [];
+  const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
+    : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
+    : `<div class="panel scroll"><table class="tbl"><tr><th class="n">friction</th><th>session</th><th>project</th><th class="n">wall</th><th class="n">cost</th><th class="n">PRs</th><th>why</th></tr>${rows.map((r) => {
+        const prs = r.prs_merged + r.prs_open + r.prs_closed_unmerged;
+        const open = ost.open === r.session_id;
+        const card = open ? `<tr><td colspan="7" class="wrap"><pre class="joblog">${ost.cards[r.session_id] == null ? "Loading the card." : esc(ost.cards[r.session_id])}</pre></td></tr>` : "";
+        return `<tr class="click" data-sid="${esc(r.session_id)}"><td class="n">${r.friction}</td><td>${esc(r.title.split("\n")[0].slice(0, 60))} <span class="muted">${esc(r.session_id.slice(0, 8))}</span></td><td>${esc(r.project)}</td>` +
+          `<td class="n">${r.duration_s == null ? "-" : dur(r.duration_s / 60)}</td><td class="n">${r.cost_usd == null ? "-" : "$" + r.cost_usd.toFixed(2)}</td><td class="n">${r.prs_merged}/${prs}</td><td class="wrap">${esc(r.why)}</td></tr>${card}`;
+      }).join("")}</table></div>`;
+  return fold("ranked", `Ranked sessions <span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span>`, body);
 }
 
 // A folded overview section; the fold is remembered across re-renders by its key.
@@ -200,6 +226,13 @@ const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;
+  const row = e.target.closest("tr[data-sid]");
+  if (row) {
+    const sid = row.dataset.sid;
+    ost.open = ost.open === sid ? null : sid;
+    if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderOverview();
+    return;
+  }
   const tile = e.target.closest("[data-bucket]");
   if (tile) { wst.filter = wst.filter === tile.dataset.bucket ? null : tile.dataset.bucket; renderList(); renderOverview(); }
 });
@@ -212,7 +245,11 @@ $("scroll").addEventListener("change", (e) => {
 // A fold the reader opens stays open through the next push (paint reads it before a repaint;
 // this catches the ones toggled between repaints).
 for (const id of ["scroll", "facts", "list"]) {
-  $(id).addEventListener("toggle", (e) => { const k = e.target.dataset && e.target.dataset.k; if (k) wst.open[k] = e.target.open; }, true);
+  $(id).addEventListener("toggle", (e) => {
+    const k = e.target.dataset && e.target.dataset.k;
+    if (k) wst.open[k] = e.target.open;
+    if (k === "ranked" && e.target.open && !ost.rows) loadRanked();
+  }, true);
 }
 
 // fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.

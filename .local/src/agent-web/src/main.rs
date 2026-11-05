@@ -18,6 +18,7 @@ mod feed;
 mod fleet;
 mod infra;
 mod jobs;
+mod outcomes;
 mod projects;
 mod queue;
 mod shepherd;
@@ -120,6 +121,8 @@ async fn main() -> Result<()> {
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/shepherd", get(shepherd::get))
+        .route("/api/outcomes", get(outcomes::ranked))
+        .route("/api/outcomes/card", get(outcomes::card))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
