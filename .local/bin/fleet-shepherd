@@ -571,7 +571,9 @@ talking() {
 # conversation <id> <since epoch> -> what the human said to the pass after <since> and what it
 # answered, oldest first, the answer being the last thing it wrote before their next turn. It
 # starts at the human's first turn: the pass's own prompt, the first human-origin entry, and the
-# sweep it runs from it are left out, so a pass nobody talked to has no conversation.
+# sweep it runs from it are left out, so a pass nobody talked to has no conversation. The handover
+# notice is typed in the second <since> was taken, so it counts from that second: dropped, its
+# answer would read as new conversation and keep the pass from ever winding down.
 conversation() {
   local tp
   tp="$(pass_transcript "$1")"
@@ -581,7 +583,7 @@ conversation() {
     map(select(human or (.type == "assistant" and (said != "")))) as $all
     | ($all | map(.type) | indices("user")) as $turns
     | if ($turns | length) < 2 then empty else $all[$turns[1]:] end
-    | map(select(at > $since) | {type, notice: notice, text: said})
+    | map(select(at > $since or (notice and at >= $since)) | {type, notice: notice, text: said})
     | reduce .[] as $e ([];
         if $e.type == "user" then . + [{human: $e.text, answer: "", notice: $e.notice}]
         elif length == 0 then [{human: "", answer: $e.text}]

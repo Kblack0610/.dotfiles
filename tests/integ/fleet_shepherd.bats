@@ -464,6 +464,29 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   [ ! -e "$hand" ] || fail "the handover file outlived its pass"
 }
 
+@test "a handover notice in the very second the pass was handed over is no conversation, and the pass still winds down" {
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id h; id="$(pass_id)"
+  said "$id" human "$(ago 40)" '/fleet-lead pass'
+  said "$id" human "$(ago 2)" 'why is agent-47 stalled?'
+  live "$id" busy 'shepherd:@3.%5'
+  STUB_PANES='%5\tshepherd\t3\tshepherd\t0\n' run "$SH" run
+  assert_success
+  h="$(aside "$id" 4)"
+  [ -n "$h" ]
+  # tell_pane types the notice right after the handover, often within the same second
+  said "$id" human "$h" '[fleet-shepherd handover] This conversation was handed over'
+  said "$id" assistant "$(( h + 1 ))" 'noted, continuing there'
+  live "$(pass_id)" idle
+  live "$id" idle 'shepherd:@3.%5'
+  echo '- answered the human' >> "$FLEET_SHEPHERD_DIR/log.md"
+  STUB_PANES='%5\tshepherd\t3\tshepherd-x\t0\n' run "$SH" run
+  assert_success
+  grep -qxF -- '-L shepherd kill-pane -t %5' "$HOME/tmux.calls"
+  assert_equal "$(aside "$id" 1)" ''
+}
+
 @test "a pass nobody talked to hands nothing over; its own prompt is not the human, and a turn after it was set aside is" {
   doc "[$(row a DONE false false)]"
   "$SH" run
