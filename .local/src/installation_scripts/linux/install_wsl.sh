@@ -280,6 +280,7 @@ install_all() {
 
     step dotfiles   setup_git
     step dev        install_npm_packages
+    step dev        install_rtk
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private # attach the private overlay (~/.dotfiles-private) on top
     step dotfiles   setup_ai_memory

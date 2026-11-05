@@ -65,6 +65,7 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
+| Bash | `~/.claude/hooks/token-filter.sh` | Rewrite a command through the method in `~/.agent/token-filter/mode` so less output reaches the model. Never denies; see "Token filter" |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 
 ## PostToolUse hooks (user-global)
@@ -74,6 +75,38 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/board-observe.sh` | Record a sprint-board stage transition when the board is edited |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when an always-loaded file passes its budget: `MEMORY.md` 8 KB (or a line over 200 chars), global `CLAUDE.md` 20 KB, repo root `CLAUDE.md`/`AGENTS.md` 12 KB |
+
+| Bash (PostToolUse and PostToolUseFailure) | `~/.claude/hooks/token-filter.sh` | When a rewritten command's output shows an rtk error, log it, feed the breaker, and tell the model the `RTK_DISABLED=1` re-run |
+
+## Token filter
+
+`token-filter.sh` cuts Bash tool output by rewriting commands through rtk (rtk-ai/rtk, the Apache-2.0 `rtk-oss` build, pinned and installed by `install_rtk` in `base_functions.sh`). `token-filter` is the CLI that switches it, checks it and measures it.
+
+Methods, set with `token-filter use <method> --reason R` (each switch is a line in `~/.agent/token-filter/methods.jsonl`, which `claude-recall tool-output --by method` uses to bucket token use):
+
+| Method | What gets rewritten |
+|--------|---------------------|
+| `off` (also: no mode file) | Nothing. The hook exits before reading its input |
+| `rtk` | Everything `rtk rewrite` maps: git, gh, grep/rg, find, wc, jq, test runners, `cat` as `rtk read` |
+| `rtk-vcs` | Only git, gh and test runners; reads and searches stay exact. The fallback when `rtk` mangles file text |
+
+Safety contract:
+
+- Fail-open: every path exits 0, and any error (rtk missing, rewrite timeout after 2s, bad JSON) leaves the command as written.
+- It never sets `permissionDecision`, so a rewritten command is approved by the same rules as the original. A deny from `block-root-search.sh` or `block-pip.sh` still applies.
+- A command carrying `RTK_DISABLED=1`, or matching a skip ERE, is left alone. Tracked defaults are in `~/.config/token-filter/skip`, with the reason for each; `token-filter skip add` and `verify --apply` write to `~/.agent/token-filter/skip`.
+- Breaker: 5 failures (rtk missing, rewrite error or timeout, an rtk error in the output) within an hour switch the mode to `off`, log `by: breaker` in `methods.jsonl`, and page with `agent-notify`. Sessions keep working unfiltered.
+- Logs: `~/.cache/token-filter/rewrites.jsonl` (every rewrite, keyed by tool_use_id), `failures.jsonl`, `verify.jsonl`.
+
+Checks: `token-filter doctor` (pinned rtk, jq, hook registered, a live rewrite, the error hint and fail-open smoke-tested against a temp state) and `token-filter verify` (replays recent read-only Bash commands from the transcripts raw and rewritten, with a socket as stdin like the Bash tool, and flags a changed exit code, a hang, lost output, growth or an rtk error; `--apply` adds a skip for a failing single-command shape).
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Output of `ls -t \| head` is the wrong files | rtk 1.1.0 `ls` lists directories first and adds sizes | Tracked skip for `ls` (2026-11-04) |
+| Nothing is ever rewritten, `rewrites.jsonl` empty | Mode file missing or `off`, or the breaker tripped | `token-filter status`; `token-filter use rtk` |
+| Rewrites stopped mid-day, a page said "tripped to off" | 5 rtk failures in an hour | `token-filter status` lists them; skip the shape or `token-filter use rtk-vcs`, then back on |
+| A one-off command needs exact output | rtk truncates long lines and caps grep results | Prefix the command with `RTK_DISABLED=1` |
+| The hook was edited but behaves the old way | Stow points at the main checkout; a worktree edit is not live | Run the worktree copy by path, or land it |
 
 ## File layout
 
