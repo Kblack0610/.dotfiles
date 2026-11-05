@@ -147,7 +147,7 @@ pt() {
   local p="$1" lane="$2"; shift 2
   local -a on=()
   [ "$lane" = agent ] && on=(--agent)
-  if [ "$DRY" = 1 ]; then printf 'would run: notes ptask %q' "$p" "${on[@]}"; printf ' %q' "$@"; echo; return 0; fi
+  if [ "$DRY" = 1 ]; then printf 'would run: notes ptask'; printf ' %q' "$p" "${on[@]}" "$@"; echo; return 0; fi
   notes ptask "$p" "${on[@]}" "$@" >/dev/null || { say "$p ($lane): refused: $*"; FAILED=$((FAILED + 1)); return 1; }
 }
 
@@ -183,10 +183,10 @@ A clean row is: type(area): title, then tags. type is one of feat fix perf refac
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
-{\"n\": 2, \"action\": \"keep\", \"project\": \"<other project>\"}
+{\"n\": 2, \"action\": \"rewrite\", \"row\": \"feat(town): add a jail #size/m\", \"project\": \"<other project>\"}
 {\"n\": 3, \"action\": \"dup\", \"id\": \"<id of the row it repeats>\"}
 {\"n\": 4, \"action\": \"drop\", \"why\": \"<short reason>\"}
-keep: the row is clean already. rewrite: it is not. Either may carry project, another project's name, only when the row is plainly about that project alone.
+keep: the row is clean already. rewrite: it is not. Either carries project, another project's name, when the row is about that project alone (it names that project, or its places, characters, scenes or tests): the row then moves to that project's board, and its area names a part of that project, never the project itself. A row about several projects, or the shared code under them, stays here.
 dup: only when another row in this list asks for the same thing; never the row's own id.
 drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
 A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.

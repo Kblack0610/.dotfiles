@@ -141,3 +141,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_equal "$(cat "$SHEET")" "$before"
   grep -qx '   - dust in the air' "$NOTES_FIXTURE/prompt.txt" || fail "the child row never reached the model"
 }
+
+@test "--backlog --dry-run on the agent board: one line per command, the homes named, nothing written" {
+  echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
+  sheet '' ''
+  mkdir -p "$PROJ/scratch/agent"
+  printf '%s\n' '# scratch agent board' '' '## Inbox' '' '## Tasks' '- [ ] other needs a logo <!-- id:sc-6 -->' >"$PROJ/scratch/agent/README.md"
+  answer '{"n": 1, "action": "rewrite", "row": "feat(brand): a logo #size/s", "project": "other"}'
+  before="$(cat "$PROJ/scratch/agent/README.md")"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_line --regexp '^would run: notes ptask scratch --agent --exact edit --was --text .*id:sc-6'
+  assert_line 'would run: notes ptask scratch --agent move --project other sc-6'
+  grep -q 'other (in scratch)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
+}
