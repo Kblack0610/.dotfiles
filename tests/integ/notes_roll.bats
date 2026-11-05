@@ -19,7 +19,7 @@ setup() {
   printf '# v1.0.0\n' > "$FROZEN"
 }
 
-# Point the `notes` stub's --roll at $FROZEN so the post-roll steps have a real file.
+# Point the `notes` stub's --release at $FROZEN so the post-roll steps have a real file.
 with_frozen() { printf '%s' "$FROZEN" > "$NOTES_FIXTURE/roll.frozen"; }
 
 notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
@@ -31,7 +31,7 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
   run "$NOTES_ROLL" personal demoapp
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp'
+  assert_output --partial 'projects --release demoapp'
   refute_output --partial '--minor'
   refute_output --partial '--major'
 }
@@ -41,8 +41,8 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
   "$NOTES_ROLL" personal demoapp minor
   "$NOTES_ROLL" personal demoapp major
   run notes_calls
-  assert_output --partial 'projects --roll demoapp --minor'
-  assert_output --partial 'projects --roll demoapp --major'
+  assert_output --partial 'projects --release demoapp --minor'
+  assert_output --partial 'projects --release demoapp --major'
 }
 
 @test "an unknown level is REFUSED, not guessed at" {
@@ -52,14 +52,14 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
   run "$NOTES_ROLL" personal demoapp sideways
   assert_failure
   run notes_calls
-  refute_output --partial '--roll demoapp'
+  refute_output --partial '--release demoapp'
 }
 
 @test "a missing profile or project is refused before anything is rolled" {
   run "$NOTES_ROLL" personal
   assert_failure
   run notes_calls
-  refute_output --partial '--roll'
+  refute_output --partial '--release'
 }
 
 @test "an exact version and carry reach notes as --next and --carry" {
@@ -68,7 +68,7 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
   run "$NOTES_ROLL" personal demoapp v2.0.0 carry
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp --next v2.0.0 --carry'
+  assert_output --partial 'projects --release demoapp --next v2.0.0 --carry'
 }
 
 @test "an unknown mode is REFUSED, not ignored" {
@@ -76,7 +76,7 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
   run "$NOTES_ROLL" personal demoapp patch carryy
   assert_failure 2
   run notes_calls
-  refute_output --partial '--roll demoapp'
+  refute_output --partial '--release demoapp'
 }
 
 # -- the caller has to be able to tell that it failed --
@@ -175,7 +175,7 @@ LIB
   run "$NOTES_ROLL" personal demoapp minor
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp'
+  assert_output --partial 'projects --release demoapp'
 }
 
 @test "a shipping app REFUSES to freeze a version no tag ships" {
@@ -187,7 +187,7 @@ LIB
   assert_output --partial 'v1.13.0'
   # and the sheet is untouched: the refusal happens BEFORE notes is asked to roll
   run notes_calls
-  refute_output --partial 'projects --roll demoapp'
+  refute_output --partial 'projects --release demoapp'
 }
 
 @test "the newest tag being higher does not stand in for the one being rolled" {
@@ -212,7 +212,7 @@ LIB
   ROLL_TAG_CHECK=off run "$NOTES_ROLL" personal demoapp minor
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp'
+  assert_output --partial 'projects --release demoapp'
 }
 
 @test "a NOTES-ONLY project is skipped, not refused for lacking tags it can never have" {
@@ -222,7 +222,7 @@ LIB
   run "$NOTES_ROLL" personal demoapp
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp'
+  assert_output --partial 'projects --release demoapp'
 }
 
 @test "a guard that cannot run REFUSES rather than waving the roll through" {
@@ -235,7 +235,7 @@ LIB
 
 # -- renumber: a sheet whose number ran ahead of its tags --
 #
-# 2026-10-25 a stray planned wave made a tag roll open v1.16.0 on an app tagged v0.4.x.
+# 2026-10-25 a stray planned version made a tag roll open v1.16.0 on an app tagged v0.4.x.
 # That number can never be tagged, so the tag guard would pin the sheet forever. A
 # renumber is the way back down, and it only goes where the tags say it may.
 
@@ -245,7 +245,7 @@ LIB
   run "$NOTES_ROLL" personal demoapp v1.1.0 carry,renumber
   assert_success
   run notes_calls
-  assert_output --partial 'projects --roll demoapp --next v1.1.0 --renumber --carry'
+  assert_output --partial 'projects --release demoapp --next v1.1.0 --renumber --carry'
 }
 
 @test "renumber needs an exact version" {
@@ -253,7 +253,7 @@ LIB
   run "$NOTES_ROLL" personal demoapp minor renumber
   assert_failure 2
   run notes_calls
-  refute_output --partial '--roll demoapp'
+  refute_output --partial '--release demoapp'
 }
 
 @test "renumber REFUSES to land at or below the newest tag" {
@@ -263,7 +263,7 @@ LIB
   assert_failure
   assert_output --partial 'above the newest tag'
   run notes_calls
-  refute_output --partial 'projects --roll demoapp'
+  refute_output --partial 'projects --release demoapp'
 }
 
 @test "renumber REFUSES a sheet that did not run ahead of its tags" {

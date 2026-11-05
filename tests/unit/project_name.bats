@@ -294,11 +294,11 @@ write_tracker_map() {
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
     "monorepo":   { "system": "clickup" },
-    "app-one":    { "system": "vikunja", "repo": "monorepo" },
-    "app-two":    { "system": "vikunja", "repo": "monorepo" },
-    "cockpit":    { "system": "vikunja", "repo": "toolrepo" },
-    "runtime":    { "system": "vikunja", "repo": "toolrepo" },
-    "no-repo":    { "system": "vikunja" }
+    "app-one":    { "system": "board", "repo": "monorepo" },
+    "app-two":    { "system": "board", "repo": "monorepo" },
+    "cockpit":    { "system": "board", "repo": "toolrepo" },
+    "runtime":    { "system": "board", "repo": "toolrepo" },
+    "no-repo":    { "system": "board" }
   }
 }
 EOF
@@ -363,7 +363,7 @@ EOF
 
 @test "project_keys: paths names plus object tracker keys, never default or a comment" {
   write_tracker_map
-  jq '.trackers.default = {"system": "vikunja"}' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
+  jq '.trackers.default = {"system": "board"}' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
   run project_keys
   assert_success
   assert_output "$(printf '%s\n' app-one app-two cockpit monorepo no-repo runtime toolrepo)"
@@ -451,13 +451,13 @@ write_release_map() {
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
-    "monorepo":  { "system": "vikunja" },
-    "shipper":   { "system": "vikunja", "repo": "monorepo" },
-    "webbish":   { "system": "vikunja", "repo": "monorepo" },
-    "quiet-app": { "system": "vikunja", "repo": "monorepo" },
-    "portfolio-site": { "system": "vikunja", "repo": "monorepo", "tagGlob": "portfolio-v*", "lab": "personal" },
-    "strict":    { "system": "vikunja", "repo": "monorepo", "tagGlob": "absent-v*" },
-    "no-repo":   { "system": "vikunja" }
+    "monorepo":  { "system": "board" },
+    "shipper":   { "system": "board", "repo": "monorepo" },
+    "webbish":   { "system": "board", "repo": "monorepo" },
+    "quiet-app": { "system": "board", "repo": "monorepo" },
+    "portfolio-site": { "system": "board", "repo": "monorepo", "tagGlob": "portfolio-v*", "lab": "personal" },
+    "strict":    { "system": "board", "repo": "monorepo", "tagGlob": "absent-v*" },
+    "no-repo":   { "system": "board" }
   }
 }
 EOF
@@ -635,4 +635,36 @@ EOF
   git -C "$REPO" worktree add -q "$WT_ROOT/unrelated-name" -b side
   run resolve_project_name "$WT_ROOT/unrelated-name"
   assert_output 'mono-canon'
+}
+
+@test "project_inherited: a project's own type wins" {
+  write_map '{"mono": {"type": "game"}, "app": {"repo": "mono", "path": "apps/a", "type": "app"}}'
+  run project_inherited mono type
+  assert_output game
+}
+
+@test "project_inherited: a repo with no type takes the one its projects share" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "infra"}}'
+  run project_inherited mono type
+  assert_output infra
+}
+
+@test "project_inherited: a repo whose projects disagree has no type" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "game"}}'
+  run project_inherited mono type
+  assert_success
+  assert_output ''
+}
+
+@test "project_inherited: any field inherits, so a client repo takes its projects' client" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "client": "acme"}}'
+  run project_inherited mono client
+  assert_output acme
+}
+
+@test "project_inherited: an unknown project has no type" {
+  write_map '{}'
+  run project_inherited nothing type
+  assert_success
+  assert_output ''
 }

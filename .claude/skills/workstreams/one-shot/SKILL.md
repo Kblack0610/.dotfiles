@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-05"
 ---
 
 # one-shot
@@ -30,7 +30,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
    - Cut a worktree off the remote tip per `~/.claude/CLAUDE.md` (`wt new`, or `git worktree add ~/.worktrees/<repo>-<slug> -b <branch> origin/<base>`). If the session already sits in a clean, current agent worktree, branch there instead.
-   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session); `<slug>` below is that item. Add no board or sheet row; an item promoted from the board closes its own row when it lands.
+   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session when that is on the agent world; anywhere else it records none, and `--item` carries the landing); `<slug>` below is that item. Add no board or sheet row; an item promoted from the board closes its own row when it lands.
 
 3. **Implement.** Make the smallest change that fully solves the task, matching the surrounding code. Send broad exploration to Explore subagents. Update the docs the project CLAUDE.md says a change of this kind must touch.
 
@@ -38,19 +38,21 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 4. **Validate.** A project with a gate script (its CLAUDE.md names it; unity-core-playground: `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`) runs it in step 6, once the PR is open. A repo with no gate script runs its lint, typecheck and tests now, before the PR. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 7 in blocked mode.
 
-5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, and the classes/checks run with their counts. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
+5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, the classes/checks run with their counts, and for an item promoted from a board row the `Task: <id>` line its brief names. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
 
 6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Start ONE background command and act only on its result:
    ```bash
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
+   - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`, and tick the plan phase by hand.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
-   - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.
+   - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
+   - Work left that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.
    - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`. A board row stays started; the human's merge closes it.
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.

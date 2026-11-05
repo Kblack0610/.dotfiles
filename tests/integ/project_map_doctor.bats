@@ -39,10 +39,10 @@ clean_map() {
   "paths":  { "/tmp/mono": "mono-canon", "/tmp/other": "other-canon" },
   "aliases":{ "mono": "mono-canon" },
   "trackers": {
-    "mono-canon": { "system": "vikunja" },
-    "alpha":      { "inherits": "mono-canon", "repo": "mono-canon", "path": "apps/alpha" },
+    "mono-canon": { "system": "board" },
+    "alpha":      { "repo": "mono-canon", "path": "apps/alpha" },
     "labonly":    { "repo": "other-canon" },
-    "default":    { "system": "vikunja" }
+    "default":    { "system": "board" }
   }
 }
 EOF
@@ -87,14 +87,6 @@ EOF
   assert_output --partial 'trackers.labonly has path "apps/lab" but no repo'
 }
 
-@test "an inherits pointing at a missing tracker fails, and names it" {
-  clean_map
-  jq '.trackers.alpha.inherits = "ghost"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
-  run "$DOCTOR" "$MAP"
-  assert_failure
-  assert_output --partial 'inherits "ghost"'
-}
-
 @test "a dangling repo relation fails, and names it" {
   # This is the relation the lab join rides on. A dangling one silently reads an empty
   # namespace rather than erroring.
@@ -106,15 +98,35 @@ EOF
 }
 
 @test "a string comment key in trackers does not hide the relations after it" {
-  # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.inherits` dies on the
+  # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.repo` dies on the
   # first string value, so every relation after it went unchecked and the check still
   # printed PASS for the ones before it.
   clean_map
-  jq '.trackers = ({"_comment": "doc"} + .trackers) | .trackers.alpha.inherits = "nope" | .trackers.labonly.repo = "nope"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  jq '.trackers = ({"_comment": "doc"} + .trackers) | .trackers.alpha.repo = "nope" | .trackers.labonly.repo = "nope"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'trackers.alpha inherits "nope"'
+  assert_output --partial 'trackers.alpha has repo "nope"'
   assert_output --partial 'trackers.labonly has repo "nope"'
+}
+
+@test "row-id codes: a shared code fails and names both projects" {
+  clean_map
+  jq '.trackers.alpha.code = "mo" | .trackers.labonly.code = "mo"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial '"mo" is shared by alpha, labonly'
+}
+
+@test "row-id codes: a malformed code fails; distinct well-formed codes pass" {
+  clean_map
+  jq '.trackers.alpha.code = "al" | .trackers.labonly.code = "Lab-1"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has code "Lab-1"'
+  jq '.trackers.labonly.code = "lab"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 2 row-id codes checked'
+  refute_output --partial 'code "'
 }
 
 @test "an alias pointing at nothing fails" {
@@ -205,9 +217,9 @@ lab_map() {
 {
   "paths":  { "/tmp/mono": "mono-canon" },
   "trackers": {
-    "mono-canon": { "system": "vikunja" },
+    "mono-canon": { "system": "board" },
     "alpha":      { "repo": "mono-canon", "lab": "personal", "type": "app" },
-    "default":    { "system": "vikunja" }
+    "default":    { "system": "board" }
   }
 }
 EOF
@@ -365,7 +377,7 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   jq --arg r "$repo" '.paths = {($r): "mono-canon"}' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   r="$(lab_root personal)/alpha"
   mkdir -p "$r"
-  { printf '# alpha\n'; [ -z "$1" ] || printf 'Version: %s #prod\n' "$1"; printf '\n## Wave: v9.9.9 (current)\n'; } > "$r/README.md"
+  { printf '# alpha\n'; [ -z "$1" ] || printf 'Version: %s #prod\n' "$1"; printf '\n## Inbox\n\n## Tasks\n'; } > "$r/README.md"
   export GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 }
 

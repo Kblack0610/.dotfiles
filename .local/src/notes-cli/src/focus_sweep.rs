@@ -38,14 +38,10 @@ use std::path::{Path, PathBuf};
 /// Pure core: reorganize the ## Focus section of `content` by status. `None` when the
 /// section is absent or already organized (no change).
 ///
-/// The lane model itself lives in `sweep`, shared with the project-sheet wave sweep. Focus
+/// The lane model itself lives in `sweep`, shared with the project-sheet sweep. Focus
 /// offers all three lanes.
 fn sweep_content(content: &str) -> Option<String> {
-    sweep::sweep_section(
-        content,
-        |h| h.eq_ignore_ascii_case("Focus"),
-        &md::PRIORITIES,
-    )
+    sweep::sweep_section(content, |h| h.eq_ignore_ascii_case("Focus"))
 }
 
 /// notes focus start <query> — toggle the first matching authored `## Focus` task
@@ -98,6 +94,7 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     }
     fs::write(&note, joined)?;
     log.info("focus", "toggled in-progress");
+    crate::ingest::record(p, &crate::ingest::Event::new("toggled", "focus", "", query));
     Ok(0)
 }
 
@@ -109,6 +106,15 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
 /// when nothing moves.
 fn take_ideas(
     content: &str,
+    route: impl FnMut(Option<&str>) -> Option<PathBuf>,
+) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
+    take_tagged(content, md::idea_tag, route)
+}
+
+/// [`take_ideas`] for any routing tag: `tag_of` reads a row's tag (`None` = not tagged).
+fn take_tagged(
+    content: &str,
+    tag_of: impl Fn(&str) -> Option<Option<String>>,
     mut route: impl FnMut(Option<&str>) -> Option<PathBuf>,
 ) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
     let lines: Vec<&str> = content.lines().collect();
@@ -119,7 +125,7 @@ fn take_ideas(
     while i < lines.len() {
         let line = lines[i];
         let tag = (span.contains(&i) && md::is_open_task(line))
-            .then(|| md::idea_tag(line))
+            .then(|| tag_of(line))
             .flatten();
         let Some(target) = tag.and_then(|t| route(t.as_deref())) else {
             keep.push(line);
@@ -208,12 +214,80 @@ fn move_ideas(
             "focus",
             &format!("moved {n} #idea row(s) to {}", path.display()),
         );
+        let to = path
+            .parent()
+            .and_then(Path::file_name)
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for r in rows.iter().filter(|r| md::is_task(r)) {
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("rehomed", "focus", &to, "", r),
+            );
+        }
         println!("moved {n} idea(s) -> {}", path.display());
     }
     Ok(Some(rest))
 }
 
-/// notes focus sweep — move `#idea` rows to their ideas files, then organize today's
+/// Move today's `#p:<project>` rows, with their indented lines, to the `## Inbox` of that
+/// project's sheet, the tag taken off and the rest as typed, for the triager to file. Like
+/// [`move_ideas`] the sheets are written before the note, and a row already in an inbox is
+/// not written twice. A name that is no project leaves the row in Focus.
+fn move_to_inboxes(
+    p: &Profile,
+    log: &Logger,
+    content: &str,
+    project_dir: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<Option<String>> {
+    let taken = take_tagged(
+        content,
+        |l| md::project_tag(l).map(Some),
+        |proj| {
+            let name = proj?;
+            let dir = project_dir(name);
+            if dir.is_none() {
+                eprintln!("focus sweep: #p:{name} names no project; the row stays in Focus");
+            }
+            dir
+        },
+    );
+    let Some((rest, moved)) = taken else {
+        return Ok(None);
+    };
+    for (dir, rows) in &moved {
+        // The group's first line is the tagged row itself.
+        let name = rows
+            .first()
+            .and_then(|r| md::project_tag(r))
+            .unwrap_or_default();
+        let lines: Vec<String> = rows.iter().map(|r| md::without_project_tag(r)).collect();
+        let path = crate::project_tasks::inbox_put(p, dir, &name, &lines)?;
+        for r in lines.iter().filter(|r| !r.starts_with([' ', '\t'])) {
+            let text = crate::sheet::inbox_text(r);
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::new("moved", "focus", &name, &text),
+            );
+        }
+        log.info(
+            "focus",
+            &format!(
+                "moved {} #p row(s) to {}'s inbox",
+                lines.len(),
+                path.display()
+            ),
+        );
+        println!(
+            "moved {} row(s) -> {name} inbox",
+            lines.iter().filter(|r| md::is_task(r)).count()
+        );
+    }
+    Ok(Some(rest))
+}
+
+/// notes focus sweep: move `#idea` rows to their ideas files and `#p:<project>` rows to
+/// their project's inbox, then organize today's
 /// `## Focus` by status in place.
 pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
     let note = daily::today_path(p);
@@ -221,9 +295,9 @@ pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
         return Ok(0);
     }
     let content = fs::read_to_string(&note)?;
-    let moved = move_ideas(p, log, &content, |name| {
-        crate::projects::project_dir(p, name).ok()
-    })?;
+    let dir_of = |name: &str| crate::projects::project_dir(p, name).ok();
+    let moved = move_ideas(p, log, &content, dir_of)?;
+    let moved = move_to_inboxes(p, log, moved.as_deref().unwrap_or(&content), dir_of)?.or(moved);
     let base = moved.as_deref().unwrap_or(&content);
     match sweep_content(base) {
         Some(new) => {
@@ -263,12 +337,24 @@ after
         let done = focus.find("### Done").unwrap();
         // an untagged task takes the default and lands in High, not above the lanes
         let untagged = focus.find("untagged one").unwrap();
-        assert!(out.contains("- [ ] untagged one #high"), "defaulted:\n{out}");
-        assert!(untagged > high && untagged < low, "in the High lane:\n{out}");
-        assert!(urgent < high && high < low, "lanes ordered urgent > high > low");
+        assert!(
+            out.contains("- [ ] untagged one #high"),
+            "defaulted:\n{out}"
+        );
+        assert!(
+            untagged > high && untagged < low,
+            "in the High lane:\n{out}"
+        );
+        assert!(
+            urgent < high && high < low,
+            "lanes ordered urgent > high > low"
+        );
         assert!(focus.find("fire").unwrap() > urgent && focus.find("fire").unwrap() < high);
         assert!(low < done, "Done is last");
-        assert!(focus.find("finished it").unwrap() > done, "checked task under Done");
+        assert!(
+            focus.find("finished it").unwrap() > done,
+            "checked task under Done"
+        );
         assert!(out.contains("## Notes\nafter"), "later sections untouched");
     }
 
@@ -278,8 +364,14 @@ after
         let note = "## Focus\n- [x] shipped it #high\n- [ ] open #high\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
         let done = out.find("### Done").unwrap();
-        assert!(out.find("shipped it").unwrap() > done, "checked+tagged under Done");
-        assert!(out.find("open").unwrap() < done, "open task stays in its High lane");
+        assert!(
+            out.find("shipped it").unwrap() > done,
+            "checked+tagged under Done"
+        );
+        assert!(
+            out.find("open").unwrap() < done,
+            "open task stays in its High lane"
+        );
     }
 
     #[test]
@@ -323,7 +415,10 @@ after
     fn untagged_todos_take_the_default_and_open_the_lanes() {
         let note = "## Focus\n- [ ] a\n- [ ] b\n- [ ] \n\n## Notes\n";
         let out = sweep_content(note).expect("defaulting is a change");
-        assert!(out.contains("- [ ] a #high") && out.contains("- [ ] b #high"), "{out}");
+        assert!(
+            out.contains("- [ ] a #high") && out.contains("- [ ] b #high"),
+            "{out}"
+        );
         assert!(out.contains("### High"), "{out}");
     }
 
@@ -333,7 +428,10 @@ after
         // organizing once, then sweeping the result, produces no further change
         let once = sweep_content(note).expect("first sweep organizes");
         let twice = sweep_content(&once);
-        assert!(twice.is_none(), "a second sweep of swept content is a no-op");
+        assert!(
+            twice.is_none(),
+            "a second sweep of swept content is a no-op"
+        );
     }
 
     #[test]
@@ -351,7 +449,10 @@ after
         let note = "## Focus\n- [ ] task #high\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
         let focus = out.split("## Notes").next().unwrap();
-        assert!(focus.contains("### Urgent"), "empty Urgent lane kept as a column");
+        assert!(
+            focus.contains("### Urgent"),
+            "empty Urgent lane kept as a column"
+        );
         assert!(focus.contains("### High"), "High lane present");
         assert!(focus.contains("### Low"), "empty Low lane kept as a column");
         assert!(focus.contains("### Done"), "empty Done kept");
@@ -362,7 +463,10 @@ after
         // a plain task physically under ### Urgent gets #urgent (drop-to-tag), and stays put
         let note = "## Focus\n### Urgent\n- [ ] dropped here\n\n## Notes\n";
         let out = sweep_content(note).unwrap();
-        assert!(out.contains("- [ ] dropped here #urgent"), "inherited the lane's tag");
+        assert!(
+            out.contains("- [ ] dropped here #urgent"),
+            "inherited the lane's tag"
+        );
         let focus = out.split("## Notes").next().unwrap();
         let urgent = focus.find("### Urgent").unwrap();
         let task = focus.find("dropped here").unwrap();
@@ -438,6 +542,34 @@ after
         move_ideas(&p, &log, idea_note(), none).unwrap();
         let cross = fs::read_to_string(&p.ideas).unwrap();
         assert_eq!(cross.matches("pinball roguelike").count(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_tagged_row_moves_to_that_projects_inbox() {
+        let (root, p) = sandbox("inbox");
+        let log = Logger::new(p.log_file.clone(), false);
+        let dir = root.join("apociseum");
+        let note = "## Focus\n- [ ] gun sound is off #p:apociseum\n  since the patch\n\
+                    - [ ] typo #p:nosuch\n- [ ] just work\n";
+        let at = |n: &str| (n == "apociseum").then(|| dir.clone());
+        let rest = move_to_inboxes(&p, &log, note, at).unwrap().unwrap();
+        assert!(!rest.contains("gun sound"), "{rest}");
+        assert!(
+            rest.contains("- [ ] typo #p:nosuch"),
+            "an unknown project stays"
+        );
+        assert!(rest.contains("- [ ] just work"));
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        let inbox = sheet.split("## Tasks").next().unwrap();
+        assert!(
+            inbox.contains("- [ ] gun sound is off\n  since the patch\n"),
+            "{sheet}"
+        );
+        // a rerun over the same note does not write the line twice
+        move_to_inboxes(&p, &log, note, at).unwrap();
+        let again = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert_eq!(again.matches("gun sound").count(), 1, "{again}");
         let _ = fs::remove_dir_all(&root);
     }
 

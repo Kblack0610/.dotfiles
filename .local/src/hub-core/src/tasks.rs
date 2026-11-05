@@ -24,6 +24,8 @@ pub struct Project {
     pub open: usize,
     pub agent_open: usize,
     pub playtest_open: usize,
+    /// Lines waiting in the sheet's `## Inbox` for the triager.
+    pub inbox: usize,
 }
 
 /// One open row. `raw` is the line as it stands, what a write passes back.
@@ -34,18 +36,23 @@ pub struct Row {
     /// None on a focus row.
     pub project: Option<String>,
     pub lane: String,
-    pub wave: Option<String>,
+    pub version: Option<String>,
     pub game: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,
     pub worker: Option<String>,
-    pub ask: bool,
-    pub target: Option<String>,
+    /// The row's `#size/<s|m|l>`, without the prefix.
+    pub size: Option<String>,
+    pub requested: bool,
+    /// The row's `<code>-<n>` id, when its project has a code.
+    pub id: Option<String>,
     pub text: String,
     pub tags: Vec<String>,
     pub marker: Option<String>,
     pub since: Option<String>,
+    /// `YYYY-MM-DD` the triager filed it from an inbox (its `filed:` marker token).
+    pub filed: Option<String>,
     pub sheet: String,
     pub line: usize,
     pub raw: String,
@@ -54,6 +61,8 @@ pub struct Row {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
+    /// The day the feed was read (`YYYY-MM-DD`, the CLI's clock), what `filed` compares to.
+    pub today: String,
     pub projects: Vec<Project>,
     pub rows: Vec<Row>,
 }
@@ -66,7 +75,7 @@ pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
 /// What a write does to one row, or the row it adds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verb {
-    /// `to` plans it into a later wave (`vX.Y.Z`); `game` is the playtest heading.
+    /// `to` aims it at a later release (`vX.Y.Z`); `game` is the playtest heading.
     Add {
         text: String,
         priority: String,
@@ -79,13 +88,46 @@ pub enum Verb {
         proof: Option<String>,
         unverified: Option<String>,
     },
-    /// Toggles `[ ]` and `[/]`. Not on the playtest lane.
-    Start {
+    /// Queues the row: `fleet-dispatch promote` starts it and adds its queue item, the same
+    /// path a fill takes. An open row only, and not on the playtest lane.
+    Start { raw: String },
+    /// Closes the row undelivered and keeps it: exactly one of `why` and `dup` (the id of the
+    /// row it duplicates); `notes` refuses a drop with no reason.
+    Drop {
         raw: String,
+        why: Option<String>,
+        dup: Option<String>,
     },
-    Rm {
+    /// Onto another project's sheet (aimed at release `to` if given), or with no project aimed
+    /// at release `to` on its own sheet. At least one of the two.
+    Move {
         raw: String,
+        project: Option<String>,
+        to: Option<String>,
     },
+    /// One release sooner (clamped at the open version).
+    Promote { raw: String },
+    /// One release later (the next patch past the last).
+    Demote { raw: String },
+    /// New text; the checkbox, place and tags stay.
+    Edit { raw: String, text: String },
+    /// Tags added and removed, at least one of either. A row has one size, so adding a
+    /// `size/<s>` replaces its old one; a release tag is `Move`'s.
+    Tag {
+        raw: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+/// A tag as a row carries it, without the `#`: one word that cannot read as a flag.
+fn is_tag(t: &str) -> bool {
+    let t = t.strip_prefix('#').unwrap_or(t);
+    !t.is_empty()
+        && !t.starts_with('-')
+        && !is_version(t)
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | ':' | '.'))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,8 +173,12 @@ fn with_priority(text: &str, priority: &str) -> String {
     }
 }
 
+fn is_row(s: &str) -> bool {
+    one_line(s) && s.starts_with("- [")
+}
+
 /// The argv for one write, or why it is refused. Every free-text value goes after `--`, so a
-/// row's `- [ ]` and a text starting with `-` stay values.
+/// row's `- [ ]` and a text starting with `-` stay values; Start's is the value of `--raw`.
 pub fn argv(w: &Write) -> Result<Vec<String>, String> {
     if !is_name(&w.profile) || !is_name(&w.project) {
         return Err("pick a project".into());
@@ -166,7 +212,7 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             a.push("add".into());
             if let Some(v) = to.as_deref().filter(|v| !v.is_empty()) {
                 if playtest || !is_version(v) {
-                    return Err("a wave is vX.Y.Z, and a playtest check has none".into());
+                    return Err("a version is vX.Y.Z, and a playtest check has none".into());
                 }
                 a.extend(["--to".into(), v.into()]);
             }
@@ -200,23 +246,107 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             if playtest {
                 return Err("a playtest check has no in-progress state".into());
             }
-            a.extend(["--exact".into(), "start".into()]);
+            if !is_row(raw) {
+                return Err("that is not a row's line".into());
+            }
+            let mut a: Vec<String> = [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                &w.project,
+                "--profile",
+                &w.profile,
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+            if w.lane == "agent" {
+                a.push("--agent".into());
+            }
+            a.extend(["--raw".into(), raw.clone()]);
+            return Ok(a);
+        }
+        Verb::Drop { raw, why, dup } => {
+            let why = why.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let dup = dup.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            a.extend(["--exact".into(), "drop".into()]);
+            match (why, dup) {
+                (Some(y), None) if one_line(y) => a.extend(["--why".into(), y.into()]),
+                (None, Some(d)) if one_line(d) => a.extend(["--dup".into(), d.into()]),
+                _ => return Err("drop needs why, or the id of the row it duplicates".into()),
+            }
             raw.clone()
         }
-        Verb::Rm { raw } => {
-            a.extend(["--exact".into(), "rm".into()]);
+        Verb::Move { .. } | Verb::Promote { .. } | Verb::Demote { .. } | Verb::Edit { .. }
+            if playtest =>
+        {
+            return Err(
+                "a playtest check has no version and no edit: drop it and add it again".into(),
+            );
+        }
+        Verb::Move { raw, project, to } => {
+            let project = project.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let to = to.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            if project.is_none() && to.is_none() {
+                return Err("move to a project, a version (vX.Y.Z), or both".into());
+            }
+            a.extend(["--exact".into(), "move".into()]);
+            if let Some(p) = project {
+                if !is_name(p) {
+                    return Err("that is not a project name".into());
+                }
+                a.extend(["--project".into(), p.into()]);
+            }
+            if let Some(v) = to {
+                if !is_version(v) {
+                    return Err("a version is vX.Y.Z".into());
+                }
+                a.extend(["--to".into(), v.into()]);
+            }
+            raw.clone()
+        }
+        Verb::Tag { raw, add, remove } => {
+            if add.is_empty() && remove.is_empty() {
+                return Err("type a tag to add or remove".into());
+            }
+            if !add.iter().chain(remove).all(|t| is_tag(t)) {
+                return Err("a tag is one word (size/s, requested); a release is move".into());
+            }
+            a.extend(["--exact".into(), "tag".into()]);
+            let flag = |f: &str, t: &String| format!("--{f}={}", t.trim_start_matches('#'));
+            a.extend(add.iter().map(|t| flag("add", t)));
+            a.extend(remove.iter().map(|t| flag("remove", t)));
+            raw.clone()
+        }
+        Verb::Promote { raw } => {
+            a.extend(["--exact".into(), "promote".into()]);
+            raw.clone()
+        }
+        Verb::Demote { raw } => {
+            a.extend(["--exact".into(), "demote".into()]);
+            raw.clone()
+        }
+        Verb::Edit { raw, text } => {
+            if !one_line(text) {
+                return Err("type the new text, on one line".into());
+            }
+            a.extend([
+                "--exact".into(),
+                "edit".into(),
+                "--text".into(),
+                text.trim().into(),
+            ]);
             raw.clone()
         }
     };
-    let is_row = one_line(&tail) && tail.starts_with("- [");
-    if !matches!(w.verb, Verb::Add { .. }) && !is_row {
+    if !matches!(w.verb, Verb::Add { .. }) && !is_row(&tail) {
         return Err("that is not a row's line".into());
     }
     a.extend(["--".into(), tail]);
     Ok(a)
 }
 
-/// Run one write: `notes`' output, or its stderr (a stale row says nothing matched).
+/// Run one write: its output, or its stderr (a stale row says nothing matched).
 pub fn apply(runner: &dyn Runner, w: &Write) -> Result<String, String> {
     runner.run(&argv(w)?)
 }
@@ -258,18 +388,32 @@ mod tests {
 
     const RAW: &str = "- [ ] ship it #urgent <!-- pr:3 -->";
 
+    fn drop(why: Option<&str>, dup: Option<&str>) -> Verb {
+        Verb::Drop {
+            raw: RAW.into(),
+            why: why.map(Into::into),
+            dup: dup.map(Into::into),
+        }
+    }
+
     #[test]
     fn the_feed_parses_and_a_focus_row_has_no_project() {
         let f = Fake {
             out: Ok(
-                r#"{"projects":[{"profile":"bnb","project":"demo","dir":"/d","version":"v1.0.0","open":1,"agent_open":0,"playtest_open":0}],
-                "rows":[{"profile":"personal","project":null,"lane":"focus","state":"open","priority":"high","text":"x","tags":[],"sheet":"/n","line":4,"raw":"- [ ] x","later":"kept out"}]}"#,
+                r#"{"today":"2026-11-04","projects":[{"profile":"bnb","project":"demo","dir":"/d","version":"v1.0.0","open":1,"agent_open":0,"playtest_open":0,"inbox":2}],
+                "rows":[{"profile":"personal","project":null,"lane":"focus","state":"open","priority":"high","text":"x","tags":[],"sheet":"/n","line":4,"raw":"- [ ] x","later":"kept out"},
+                {"profile":"bnb","project":"demo","lane":"human","state":"open","priority":"low","id":"de-3","text":"y","filed":"2026-11-04","sheet":"/s","line":9,"raw":"- [ ] y"}]}"#,
             ),
             calls: RefCell::default(),
         };
         let feed = feed(&f).unwrap();
         assert_eq!(feed.projects[0].version.as_deref(), Some("v1.0.0"));
         assert_eq!((feed.rows[0].project.clone(), feed.rows[0].line), (None, 4));
+        // what the Filed today card reads
+        assert_eq!(feed.today, "2026-11-04");
+        assert_eq!(feed.projects[0].inbox, 2);
+        assert_eq!(feed.rows[1].id.as_deref(), Some("de-3"));
+        assert_eq!(feed.rows[1].filed.as_deref(), Some("2026-11-04"));
         assert_eq!(f.calls.borrow()[0], ["notes", "board", "--json"]);
         let bad = Fake {
             out: Ok("not json"),
@@ -342,24 +486,189 @@ mod tests {
             ["--exact", "done", "--unverified", "played it", "--", RAW]
         );
         assert_eq!(
-            argv(&w("human", Verb::Rm { raw: RAW.into() })).unwrap()[5..],
-            ["--exact", "rm", "--", RAW]
+            argv(&w("human", drop(Some("stale"), None))).unwrap()[5..],
+            ["--exact", "drop", "--why", "stale", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("human", drop(Some(" "), Some("ar-142")))).unwrap()[5..],
+            ["--exact", "drop", "--dup", "ar-142", "--", RAW]
+        );
+    }
+
+    // Start is the queue's door, not a checkbox: a row started here gets an item, as a fill's does.
+    #[test]
+    fn start_goes_through_fleet_dispatch_promote() {
+        assert_eq!(
+            argv(&w("agent", Verb::Start { raw: RAW.into() })).unwrap(),
+            [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                "demo",
+                "--profile",
+                "bnb",
+                "--agent",
+                "--raw",
+                RAW
+            ]
+        );
+        assert!(!argv(&w("human", Verb::Start { raw: RAW.into() }))
+            .unwrap()
+            .contains(&"--agent".to_string()));
+    }
+
+    #[test]
+    fn move_version_and_edit_pass_the_row_after_the_separator() {
+        let mv = |project: Option<&str>, to: Option<&str>| Verb::Move {
+            raw: RAW.into(),
+            project: project.map(String::from),
+            to: to.map(String::from),
+        };
+        assert_eq!(
+            argv(&w("human", mv(Some("other"), None))).unwrap()[5..],
+            ["--exact", "move", "--project", "other", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("agent", mv(Some("other"), Some("v2.0.0")))).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "move",
+                "--project",
+                "other",
+                "--to",
+                "v2.0.0",
+                "--",
+                RAW
+            ]
+        );
+        assert_eq!(
+            argv(&w("human", mv(Some(" "), Some("v1.3.0")))).unwrap()[5..],
+            ["--exact", "move", "--to", "v1.3.0", "--", RAW],
+            "a blank project is no project"
+        );
+        assert_eq!(
+            argv(&w("human", Verb::Promote { raw: RAW.into() })).unwrap()[5..],
+            ["--exact", "promote", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("agent", Verb::Demote { raw: RAW.into() })).unwrap()[5..],
+            ["--agent", "--exact", "demote", "--", RAW]
+        );
+        let edit = Verb::Edit {
+            raw: RAW.into(),
+            text: " -ship it today ".into(),
+        };
+        assert_eq!(
+            argv(&w("human", edit)).unwrap()[5..],
+            ["--exact", "edit", "--text", "-ship it today", "--", RAW]
         );
     }
 
     #[test]
+    fn tag_passes_each_tag_as_a_glued_flag_and_refuses_what_is_not_one() {
+        let tag = |add: &[&str], remove: &[&str]| Verb::Tag {
+            raw: RAW.into(),
+            add: add.iter().map(|t| t.to_string()).collect(),
+            remove: remove.iter().map(|t| t.to_string()).collect(),
+        };
+        assert_eq!(
+            argv(&w("agent", tag(&["#size/m", "requested"], &["ai"]))).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "tag",
+                "--add=size/m",
+                "--add=requested",
+                "--remove=ai",
+                "--",
+                RAW
+            ]
+        );
+        for bad in [
+            tag(&[], &[]),
+            tag(&["two words"], &[]),
+            tag(&["-x"], &[]),
+            tag(&["v1.2.0"], &[]),
+            tag(&[""], &[]),
+        ] {
+            assert!(argv(&w("human", bad)).is_err());
+        }
+    }
+
+    #[test]
     fn writes_refuse_what_notes_would_misread() {
-        let rm = |raw: &str| Verb::Rm { raw: raw.into() };
+        let gone = |raw: &str| Verb::Drop {
+            raw: raw.into(),
+            why: Some("stale".into()),
+            dup: None,
+        };
         let bad = [
-            w("focus", rm(RAW)),
-            w("human", rm("not a row")),
-            w("human", rm("- [ ] two\n- [ ] lines")),
+            w("human", drop(None, None)),
+            w("human", drop(Some("x"), Some("ar-1"))),
+            w("human", drop(Some("two\nlines"), None)),
+            w("focus", gone(RAW)),
+            w("human", gone("not a row")),
+            w("human", gone("- [ ] two\n- [ ] lines")),
             w("playtest", Verb::Start { raw: RAW.into() }),
+            w(
+                "human",
+                Verb::Start {
+                    raw: "not a row".into(),
+                },
+            ),
             w("human", add("x", "normal", None, None)),
             w("human", add("  ", "high", None, None)),
             w("human", add("x", "high", Some("next"), None)),
             w("playtest", add("x", "high", Some("v1.0.0"), None)),
             w("human", add("x", "high", None, Some("Arena"))),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: None,
+                    to: Some(" ".into()),
+                },
+            ),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: Some("a b".into()),
+                    to: None,
+                },
+            ),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: None,
+                    to: Some("next".into()),
+                },
+            ),
+            w(
+                "playtest",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: Some("other".into()),
+                    to: None,
+                },
+            ),
+            w("playtest", Verb::Promote { raw: RAW.into() }),
+            w(
+                "human",
+                Verb::Edit {
+                    raw: RAW.into(),
+                    text: "two\nlines".into(),
+                },
+            ),
+            w(
+                "human",
+                Verb::Edit {
+                    raw: "not a row".into(),
+                    text: "x".into(),
+                },
+            ),
             w(
                 "human",
                 Verb::Done {
@@ -378,11 +687,11 @@ mod tests {
             ),
             Write {
                 project: "--all".into(),
-                ..w("human", rm(RAW))
+                ..w("human", gone(RAW))
             },
             Write {
                 profile: "a b".into(),
-                ..w("human", rm(RAW))
+                ..w("human", gone(RAW))
             },
         ];
         for b in bad {
@@ -396,14 +705,14 @@ mod tests {
             out: Err("no open task matches"),
             calls: RefCell::default(),
         };
-        let e = apply(&f, &w("human", Verb::Rm { raw: RAW.into() })).unwrap_err();
+        let e = apply(&f, &w("human", drop(Some("stale"), None))).unwrap_err();
         assert_eq!(e, "no open task matches");
         assert_eq!(f.calls.borrow().len(), 1);
         let none = Fake {
             out: Ok(""),
             calls: RefCell::default(),
         };
-        assert!(apply(&none, &w("focus", Verb::Rm { raw: RAW.into() })).is_err());
+        assert!(apply(&none, &w("focus", drop(Some("stale"), None))).is_err());
         assert!(
             none.calls.borrow().is_empty(),
             "a refused write runs nothing"

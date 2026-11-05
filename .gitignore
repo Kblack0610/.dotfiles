@@ -118,6 +118,8 @@ Media/Music
 !.claude/skills/memory/wind-down/
 !.claude/skills/messaging/fleet-comms/
 !.claude/skills/messaging/work-comms/
+!.claude/skills/messaging/comms-standard/
+!.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
 !.claude/skills/monitoring/fleet-dispatch/
@@ -131,7 +133,10 @@ Media/Music
 !.claude/skills/ops/playground-headless-test/
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
+!.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/reaper-ops/
+!.claude/skills/ops/usage-cleanup/
+!.claude/skills/ops/pipeline-eval/
 !.claude/skills/reference/compliance/
 !.claude/skills/reference/hz-immersive-designer/
 !.claude/skills/reference/hz-perfetto-debug/
@@ -253,7 +258,6 @@ test_notifications.sh
 .config/firefox/simpletabgroups/
 .config/firefox/policies.vdi.json
 .local/src/ticket
-.local/src/notes-vikunja
 .local/src/meeting-notes
 # personal MCP config + agent/notes tooling kept in place but private-overlaid
 .claude/.mcp.json
@@ -267,7 +271,6 @@ test_notifications.sh
 .local/bin/binks
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
-.local/bin/notes-to-vikunja
 .local/bin/notes-sync
 .local/bin/notes-watch
 .local/bin/opencode-binks
@@ -306,6 +309,7 @@ test_notifications.sh
 
 # Agent runtime state — lives in the standalone ~/.agent repo, never tracked here
 .agent/
+!tests/fixtures/burn/home/.agent/
 
 # Test suite: vendored bats + per-run failure artifacts (see tests/Makefile bootstrap)
 # Trailing slash would match only a real directory. A git worktree needs `tests/vendor`

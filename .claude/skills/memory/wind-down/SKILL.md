@@ -1,11 +1,11 @@
 ---
 name: wind-down
 description: >-
-  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session.
+  Wrap up: write a status note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-11-02"
+  reviewed: "2026-11-05"
 ---
 
 # wind-down
@@ -17,7 +17,7 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 
@@ -64,32 +64,38 @@ resolution matches the hook:
 # -> /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
 ```
 
-Write that file with this shape (no frontmatter - plain markdown, like the lessons/eval files):
+Write that file in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
 
 **Project:** <repo / project name>
 
-## What happened
-- <bullet per meaningful thing done this session>
+<One sentence that stands alone: where the work is now.>
 
-## Files touched
-- `path/to/file` - <one-line why>
+## Done
+- <what landed, one plain line each, link last: "The rundown reads as Done, Doing, Next, Needs you (dotfiles#946)">
 
-## Verification
-- <what was tested / proven, or "not verified - why">
+## Doing
+- <what is still open and how far along: an unmerged PR, a phase half done; "Nothing." when the session finished>
+
+## Next
+- <what comes next, in order; the first line is the single most useful next action>
+
+## Needs you
+- <one verb, one action, where to do it: an open ask, a human-sheet row; else "Nothing.">
 
 ## Deferred phases
 - <each `[-]` phase in the plan's ## Phases checklist, and the board row it went to; omit the section when there are none>
 
-## Next step
-- <the single most useful next action, if any>
+## Verification
+- <what was tested and proven, or "not verified - why">
+
+## Files touched
+- `path/to/file` - <one-line why>
 ```
 
-Keep it concise and factual - it's a memory aid, not a changelog. If the file already exists for
-today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked,
-so the note becomes durable, recallable knowledge.
+Lint it: `comms-lint --channel status <note>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. If the file already exists for today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 
@@ -105,7 +111,7 @@ Skip if the repo has no lab project.
 See the `lab-sync` skill.
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
-"where we are" line from this session's work into the cockpit's `STATUS` block - the narrative
+"where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
 `lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
@@ -123,7 +129,7 @@ One line, a couple of words; the wrap-up note holds the detail. Check both lanes
 thing first and skip the add if it is already there. Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
-Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#ask` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #ask`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing an `#ask` row needs proof of every clause, and what is left goes on a new `#ask` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
+Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#requested` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #requested`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
 
 Do NOT write it to `notes inbox add`. The inbox is not triaged: by 2026-10-19 it held 217
 wind-down captures across 58 files, none drained since June, all archived unread.
@@ -196,7 +202,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
+6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there, because it closes this session a second later, before the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -209,7 +215,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    no `--force`, and branch deletion is git's safe `-d`. Otherwise it kills the session, removes
    the directory and frees the `agent-N` slot for reuse.
 
-   The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
+   The slot is not free until the reap runs. `wt gc -n` lists what is still held across all repos.
 
    When `wt done` keeps the tree, file one agent-board row for it, `worktree <name> held: <reason>` (check both lanes first), and name it in step 7. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it and marks it `stranded, nobody in it`, and that board row is what brings it back. Why: 2026-11-02, about 30 of 70 playground worktrees were held this way, some for weeks.
 
@@ -228,7 +234,7 @@ If the session produced nothing to commit (pure Q&A / read-only), say so and ski
 
 ```bash
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm            # close just Claude's window (default)
-~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session
+~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session (a world session: this window only)
 ```
 
 **Arm against the session's ORIGINAL project dir.** The Stop hook resolves the sentinel name from the `CLAUDE_PROJECT_DIR` the session started with, not from your current shell. If step 2 already released this session's worktree, a plain `arm` run from somewhere else (the main checkout, `$HOME`) writes `<other-project>__<sid>.request`, the hook never finds it, and the window silently stays open. Pass the original path explicitly: `CLAUDE_PROJECT_DIR=~/.worktrees/<repo>-<slug> wind-down.sh arm`. Why: 2026-09-30, unity-core-playground-agent-15 reaped its worktree, then armed from the main checkout, and the window never closed.

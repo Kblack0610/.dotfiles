@@ -119,11 +119,11 @@ EOF
   assert_equal "$status" 1
 }
 
-# ── the nested-region invariant lab-sync depends on ──────────────────────────
+# ── the nested-region invariant ──────────────────────────
 
 @test "md_splice: a captured nested region survives a splice, and a second splice of the result" {
-  # regen-lab-feed.sh captures its TRACKER inner block BEFORE splicing and re-emits
-  # it from auto_block. This pins that the round trip is lossless — including the
+  # A generator may capture a nested block BEFORE splicing and re-emit it inside the
+  # new one. This pins that the round trip is lossless, including the
   # SECOND pass, where the emitted block is now also the file's existing content.
   cat > "$FILE" <<EOF
 # project

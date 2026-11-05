@@ -15,37 +15,55 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-h` / `C-n` | Server layer: pick a world (compact) or every session everywhere (full); hop to lab / hub |
-| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
+| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Its list is the world's manifest rows plus live sessions |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `harpoon.sh` | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Harpoon for windows: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
-| `projects.sh` | `Prefix+P` | Every profile's projects, main ones first (drafts behind `d`), each with its open count by priority and wave. `1`-`9` or Enter opens a project's tasks: `a` add, `m` move to another project, `x` done, `+`/`-` change wave, `o` open the sheet. `/` searches. Also nvim `<leader>np`. |
+| `projects.sh` | `Prefix+p` | Every profile's projects, main ones first (drafts behind `d`), each with its stage, open count and urgent count. The selected project's card and open rows show on the right (`hub --once --tab 'projects <profile>/<name>'`); `ctrl-/` moves the preview below, hides it, brings it back. `1`-`9`, Enter or `o` opens that project's rows under its card on the hub Projects tab (`hub tab projects <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`), `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
-| `hub` | `Prefix+i` / `Prefix+o` / `Prefix+O`, window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board: Overview (pools, running, queue, down, red now), Jobs (every agentctl, timer, Unity, CI and k8s job, queued/running/done, with its log), CI, Machines, Sessions (each agent session's stages and what just changed), Forecast (all-done-by, phase timeline, burn-up and baseline vs actual from `fleet-bench`), Today (what the day shipped and what waits on you) and History. `Prefix+i` lands on Overview, `Prefix+o` on Sessions, `Prefix+O` on Today: each runs `hub tab <name>; tmx goto hub hub:board`, which rebuilds the window if it was killed. `Prefix+L` comes back, and never returns TO the board: when the last session is sitting on it, L goes to the session you worked in before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
+| `hub` | `Prefix+i` (Home tab), window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board: Home (what needs you, numbers, health), Queue, Infra (health, red now, machines, CI, every agentctl, timer, Unity, CI and k8s job with its log, cloud runners, governor), Sessions (each agent session's stage, ETA and controls), Today (what the day shipped and what waits on you), History, Fleet (the accounts, runners and judges) and Projects. `Prefix+i` lands on the Home tab: it runs `hub tab home; tmx goto hub hub:board`, which rebuilds the window if it was killed. Digits inside reach the other tabs. `Prefix+L` comes back to the window you left, the daily note included, and never returns TO the board: when the last session is sitting on it, L goes to the session you worked in before it. `q` in hub closes the window and shows the one before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
-## Usage
+## Keys
 
-All scripts are bound to tmux keybindings via `~/.tmux.conf`.
+Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc.bats` fails when a bind has no row here or a row names a key that is unbound. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
 
-### Quick Reference
-
-- **The editor**: `Prefix+Space` → this session's editor; again → back where you were
-- **Which world**: `Prefix+C-s` (or bare `tmx`) → the worlds, sessions in the preview
-- **Everything, everywhere**: `Prefix+A` → every session and window on every server
-- **Resume a world**: `Prefix+C-h` lab · `Prefix+C-n` hub (back where you left off)
-- **Root of a world**: `Prefix+H` lab · `Prefix+N` hub (projects overview / daily)
-- **Switch session**: `Prefix+S` → sessions of the current world only
-- **Switch projects**: `Prefix+f` → fuzzy find a repo or a worktree
-- **Project work**: `Prefix+P` → projects with their open counts; Enter for the tasks
-- **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
-- **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
-- **View agents**: `Prefix+g` → choose active agent windows
-- **Fleet watch**: `Prefix+o` -> every session's stages and what just changed (the Sessions tab of the `hub:board` window; the same board with charts is the Watch tab of agent-web)
-- **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
-- **Tag a window**: `Prefix+t` then `i`/`p`/`a`/`g` → important / pinned / agent / group
-- **Pin a window**: `Prefix+a` pins it (again unpins), `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
-- **Find a tagged window**: `Prefix+w` (all, tag column) · `Prefix+C-w` (tagged only) · `Prefix+W` (fzf)
+| Key | What it does |
+|-----|--------------|
+| `Prefix+p` | Projects finder: every project with its stage and open count, the selected one's card and rows beside it. Enter, `o` or a digit opens it on the hub Projects tab, `e` opens its sheet in the hub notes editor |
+| `Prefix+i` | The hub (`hub:board`), on its Home tab. Digits inside reach the other tabs, Board among them |
+| `Prefix+o` | The shepherd pass running now, window `hub:shepherd`. Never starts one |
+| `Prefix+P` | Open PRs from the configured repos, with their status |
+| `Prefix+L` | Back to the window you left, across worlds; never back to the board |
+| `Prefix+Space` | This session's editor (window 1); again goes back where you were |
+| `Prefix+f` | Find a repo or a worktree and open it as a session |
+| `Prefix+F` | Cut a fresh worktree off this repo, in its own session |
+| `Prefix+X` | Kill this session and reap its worktree, from inside it |
+| `Prefix+S` | Sessions of the current world |
+| `Prefix+C-s` | The worlds, sessions in the preview (bare `tmx` too) |
+| `Prefix+A` | Every world, session and window on every server, stranded sessions first |
+| `Prefix+C-h` / `Prefix+C-n` | Resume lab / hub, back where you left off |
+| `Prefix+H` / `Prefix+N` | Root of lab / hub: its landing page (projects index / today's daily) |
+| `Prefix+g` | Agent windows (`agent-panel`) |
+| `Prefix+G` | Jump to the next agent that needs you |
+| `Prefix+y` | The question card of the session you are on; with none asked here, every pending ask |
+| `Prefix+C-g` | Fleet: runners, watches, asks, agents in other sessions |
+| `Prefix+R` | Search every Claude session ever run; Enter resumes it |
+| `Prefix+C-y` | Copy the latest Claude compact summary to the clipboard |
+| `Prefix+C-r` | Today's refs in nvim |
+| `Prefix+w` / `Prefix+C-w` | Window chooser with a tag column / tagged windows only |
+| `Prefix+W` | fzf over every window, tag the row under the cursor |
+| `Prefix+t` / `Prefix+C-t` | Tag this window: then `i` important, `p` pinned, `a` agent, `g` group, `x` clear, `l` list, `Escape` cancel |
+| `Prefix+a` / `Prefix+C-a` | Pin this window to the next harpoon slot (again unpins) |
+| `Prefix+e` | Edit the harpoon list |
+| `M-1` `M-2` `M-3` `M-4` | Jump to harpoon slot 1-4, on any server |
+| `Prefix+m` | Move this window to another session |
+| `Prefix+u` / `Prefix+U` | Images in yazi: `~/Media/Pictures` / this pane's directory |
+| `Prefix+r` | Reload the config on every world |
+| `Prefix+C-b` | Send a literal `C-b` to the pane |
+| `M-h` `M-j` `M-k` `M-l` | Move between panes, no prefix |
+| `M-H` `M-J` `M-K` `M-L` | Resize the pane by 5, no prefix |
+| copy mode `v` / `y` / `Y` | Start a selection / copy it / copy it and leave copy mode |
 
 ## Window Tags
 
@@ -125,23 +143,29 @@ and lab *together* has to be assembled from outside both, which is what
 `tmx pick-all` does. Three selectable levels in one list:
 
 ```
-hub  3 session(s)
-  dotfiles      ~/.dotfiles             8 win  claude x6, zsh, chromium  (attached)
-       2  feat/tmux-cockp~ claude   kill-orphan-sessions-rebuild-views
-       5* main             claude   Research best image viewing library options
-  hub           ~/.notes                1 win  nvim
-       1* master           nvim     2026-07-26.md (~/.notes/journal/daily)
-lab  2 session(s)
-  platform      ~/dev/bnb/platform      1 win  nvim
-       1* fix/placemypare~ nvim     neo-tree filesystem
+STRANDED  1  no agent, no manifest
+  lab  freqtrade_trading_a~pt-agent-2 zsh  idle 2h  stranded
+hub  2 sessions  2 need you
+  dotfiles      ~/.dotfiles            10 win  zsh x8, claude x2
+       2  main             NEEDS    1m rebind-tmux-project-keys
+      11* main             WORKING  0m tmux-pick-all-overview
+  hub           ~/.notes                2 win  nvim, hub
+       1* master           nvim        2026-11-05.md (~/.notes/journal/daily)
+lab  23 sessions  10 need you
+  dotfiles-agent-3               NEEDS    9h  Dotfiles overnight report phase 4
+  lab           ~/.notes/lab            1 win  nvim
+work  not running
 ```
 
-A **session** row explains itself - where it is and what is running in it, both
-derived, so an ad-hoc session is described as well as a declared one and no manifest
-has to be kept in sync. A **window** row carries the branch, the command, and the
-pane title, which is where a program puts its context: claude windows read as their
-task, nvim windows as their file. A **server** row hops the whole world, which is why
-this list can also stand in for the compact picker when you want everything at once.
+A **stranded** row is a session with no agent in the fleet state that no manifest declares, or a live server with no manifest. Nothing will come back for those, so they come first, and a stranded session shows only there. Close one by hand once you have looked at it. A session newer than the fleet state is not stranded yet.
+
+A **session** row with one agent window reads as its state, idle time and task; the state comes from the fleet state document, never recomputed here. Any other session row says where it is and what is running in it, both derived, so an ad-hoc session is described as well as a declared one and no manifest has to be kept in sync. A session with one window has no window row. A **window** row carries the branch, then the agent's state or the command, then the pane title, which is where a program puts its context: claude windows read as their task, nvim windows as their file. A **server** row hops the whole world, and starts it when it is down, which is why this list can also stand in for the compact picker.
+
+Type `needs` or `stranded` to filter to those rows. Rows stop at 80 columns.
+
+| symptom | cause | fix |
+|---|---|---|
+| `fleet state is old` at the top, no states or stranded marks | the fleet state is over 5 minutes old, or its last pass could not read agent-panel, so every agent would look stranded | `systemctl --user status fleet-state.service`, then `fleet-sessions tick` |
 
 **Two views on purpose.** `Prefix+C-s` (and a bare `tmx`) is the COMPACT one - just the
 worlds, two rows, with that world's sessions in the preview; use it when the question is
@@ -164,8 +188,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
+| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -176,7 +200,7 @@ rather than a bare shell.
 A name written `?name` is **on demand**: `ensure` does not boot it, so closing it sticks
 instead of coming back on the next hop in. It is still declared, so `Prefix+f` on its
 directory still routes to this world, and `Prefix+f`, `tmx goto <world> <name>` or the
-world's `Prefix+S` list (`sesh/<world>.toml`) start it. `ensure` reports it as
+world's `Prefix+S` list start it. `ensure` reports it as
 `N on demand`. Never mark the landing entry.
 
 Worlds are **discovered** from that directory rather than hardcoded, so dropping in a
@@ -199,32 +223,31 @@ path from vanishing silently.
 
 #### Which world a directory belongs to
 
-The manifests are also the **routing table**, and `Prefix+f` reads them. Pick a
-directory some `*.conf` declares and you land in the world that declares it, under
-the name that manifest gives it - hopping servers if that is where it lives:
+The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-world`) is the one reader every opener calls. Which world gets what, how to add a repo, and the list of openers: [`.config/tmux-servers/README.md`](../../.config/tmux-servers/README.md). Pick a directory and you land in its world, hopping servers if that is where it lives:
 
 | Picked | Goes to | Because |
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
 | `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
-| `~/.worktrees/unity-core-playground-agent-3` | `lab`, session `unity-core-playground-agent-3` | a linked worktree takes its main repo's world, under its own name |
+| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/dev/bnb/games/engine/unity-core-playground/Assets` | wherever you are, session `Assets` | undeclared: **exact match only** |
+| `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
+| `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
 Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
 session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
 
-`wt new` (`Prefix+F`) asks the same route (`sessionizer.sh --route <main repo>`), so a declared repo's new agent session is created on its world and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
+`wt new` (`Prefix+F`) creates its session on the `@agents` world, inside tmux or out, and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
 other hop, so it records the back-crumb and `Prefix+L` returns from it. Crossing
 worlds from inside a popup is not new - `Prefix+A` has always done it.
 
-`sessionizer.sh --route <dir>` prints the decision (`hub dotfiles`, or `here <name>`
-for anything undeclared) without touching a server, which is how it is tested.
+`tmux-world route <dir>` prints the decision (`hub dotfiles`, or `here <name>` when nothing
+claims it) without touching a server, which is how it is tested.
 
 The startup command is delivered with `send-keys` rather than as a
 `new-session <cmd>` argument, so quitting the editor drops you into a normal shell
@@ -239,27 +262,25 @@ renames, moves or kills - so it is both the boot path and the repair path.
 by construction and can only ever list the sessions of the server its client is
 attached to. That is the entire mechanism behind "completely different lists".
 
-`Prefix+S` needs help, though, because two of sesh's three sources are global: the
-`[[session]]` entries come from one config and **zoxide is one shared database**.
-So `tmx pick-session` derives the server from `#{socket_path}` and runs
-`sesh -C .config/sesh/<server>.toml picker -i -d -c -t` - that world's own config,
-plus its live sessions, and **no `-z`**. Dropping zoxide is what stops every
-server's list looking identical; `-d` collapses the config/live duplicate of the
-same name. Note `-C` must precede the subcommand (`sesh -C f list` works,
-`sesh list -C f` errors).
+`Prefix+S` needs help, though, because sesh's zoxide source is **one shared database**.
+So `tmx pick-session` derives the server from `#{socket_path}`, writes that world's manifest
+rows into a generated sesh config, and runs `sesh -C <generated> picker -i -d -c -t`: the
+world's own entries plus its live sessions, and **no `-z`**. Dropping zoxide is what stops
+every server's list looking identical; `-d` collapses the config/live duplicate of the same
+name. No sesh config is committed, so the list cannot disagree with the manifest. Note `-C`
+must precede the subcommand (`sesh -C f list` works, `sesh list -C f` errors). On the default
+socket there is no world to list, so `Prefix+S` opens `sessionizer.sh`, which routes.
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
 (`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
-they belong to - and it **routes by manifest**: a directory some `*.conf` declares
-lands in that world, under that manifest's name, hopping servers if that is where
-it lives. Everything undeclared opens right where you are. See "Which world a
-directory belongs to" below.
+they belong to - and it **routes by manifest**, hopping servers if that is where the
+directory lives. See "Which world a directory belongs to".
 
 Two things verified, both load-bearing:
 
 - Inside a `-L foo` session `$TMUX` is set, so a bare `tmux ls` reports **foo's**
   sessions. `sesh` shells out to plain `tmux`, so it follows the enclosing server
-  automatically - one `sesh.toml` is correct inside every server, no
+  automatically - one sesh is correct inside every server, no
   `tmux_command` needed.
 - tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
   `detach-client -E`, which runs a command after the client detaches so the
@@ -273,6 +294,16 @@ The bare `tmux` command is a zsh **function** (not an alias) that redirects to t
 `hub` server only when called with no args from outside tmux - see `.zshrc`. An
 alias would append `-L hub` to every call, including from inside `lab`, where
 `-L` overrides `$TMUX`.
+
+#### When a world's server dies
+
+Every pane on it gets SIGHUP, so every conversation there stops. `fleet-dispatch record` keeps the map each minute and pages `tmux <server> server died`. Run `fleet-dispatch restore --dry-run` to see the list, then `fleet-dispatch restore`, which brings the world back and reopens each conversation as a window of its old session, in its last permission mode. What it skips and why: `fleet-dispatch` skill, "A world server died".
+
+| symptom | cause | fix |
+|---|---|---|
+| A whole server dies with SIGSEGV, `coredumpctl` shows `mode_tree_draw` | tmux 3.8 frees the pane under an in-pane prompt: `x y` in `Prefix+w` on the window it was opened from, or `t` then `X y` with that window tagged (tmux issue 5728) | run the patched package, `.local/src/tmux/patched/README.md`; a server is safe only once it has restarted on it |
+| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `session-registry` |
+| A restored window sits on a mode other than the one it died in | the mode comes from the transcript's last `permissionMode`, so a change with no turn after it is not seen | shift-tab in the window |
 
 ## Projects and worktrees (`Prefix+f`)
 
@@ -295,9 +326,8 @@ session name is the **basename** (`panel_session_name`), so 20+ names repeated -
 `~/.agent` is not a root at all: it is the agent runtime axis, one directory per project per
 axis, so it contributed several colliding rows for every project it had ever seen.
 
-An **arbitrary** directory belongs to `Prefix+S`, whose sesh sources are zoxide frecency and
-the `[[session]]` entries in `../../.config/sesh/sesh.toml`. Passing one to `sessionizer.sh`
-as an argument still works; it is only the *list* that is opinionated.
+An **arbitrary** directory can be passed to `sessionizer.sh` as an argument; it is only the
+*list* that is opinionated.
 
 `SESSIONIZER_DEPTH` bounds how far below a root a repo may sit. The walk looks for `.git` one
 level deeper than that, and the `.git` clause comes first in the `find` expression so that
@@ -455,14 +485,12 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 
 ## Sessions (`Prefix+S`)
 
-`sesh` merges three sources into one picker: **live tmux sessions**, **zoxide**
-frecency, and the named `[[session]]` entries in `../../.config/sesh/sesh.toml`.
-Picking a live session switches to it; picking a directory creates a session
-there. This is what `Prefix+w`/`Prefix+C-w` are for windows.
+`sesh` merges two sources into one picker: **live tmux sessions** and the current world's
+manifest rows, generated at pick time. Picking a live session switches to it; picking a row
+starts it. This is what `Prefix+w`/`Prefix+C-w` are for windows.
 
 Additive to `Prefix+f` (`sessionizer.sh`), which only ever saw *directories* and
-had no preview. Keep that list short - zoxide already covers every project repo,
-so a `[[session]]` entry for one just prints a duplicate row.
+had no preview.
 
 **Do not** try to drive a layout tool from `startup_command`: sesh creates the
 session first, so a tool that skips an existing session exits 0 and builds
@@ -489,8 +517,8 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
+| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the
@@ -509,14 +537,7 @@ Three things that are easy to get wrong, all found by testing:
 - **`Prefix+w` needs no configuration.** `choose-tree` is server-scoped by
   construction and can only list the sessions of the server its client is attached
   to. That is the entire mechanism behind "each world has its own list".
-- **`Prefix+S` does need help**, because two of sesh's three sources are global:
-  the `[[session]]` entries come from one config and **zoxide is one shared
-  database**. `tmx pick-session` derives the server from `#{socket_path}` and runs
-  `sesh -C .config/sesh/<server>.toml picker -i -d -c -t` - that world's config
-  plus its live sessions, and **no `-z`**. Dropping zoxide is what stops every
-  list looking identical; `-d` collapses the config/live duplicate of one name.
-  Note `-C` must precede the subcommand (`sesh -C f list` works, `sesh list -C f`
-  errors).
+- **`Prefix+S` does need help**: see [Worlds](#worlds) above.
 - **A startup command is sent with `send-keys` targeting `"$name:"`.** Not as a
   `new-session <cmd>` argument, or quitting the editor would kill the session; and
   not `-t "=$name"`, because the `=` exact-match prefix is valid only for SESSION
@@ -525,10 +546,8 @@ Three things that are easy to get wrong, all found by testing:
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
 (`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
-they belong to - and it **routes by manifest**: a directory some `*.conf` declares
-lands in that world, under that manifest's name, hopping servers if that is where
-it lives. Everything undeclared opens right where you are. See "Which world a
-directory belongs to" below.
+they belong to - and it **routes by manifest**, hopping servers if that is where the
+directory lives. See "Which world a directory belongs to".
 
 ## Status Line Integration
 

@@ -77,73 +77,61 @@ Model notes:
 
 ## What is next
 
-A project has no generated "Next up" block: `summary.md` keeps only STATUS (lab-status) and the AUTO feed (lab-sync). What is next is the sheet's current wave, and the lab feed shows its first open row. Wants go on the BOARD (`notes ptask <project> add "..."`); the agents' own working board is `<project>/agent/README.md` (`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
+A project has no generated "Next up" block: `summary.md` keeps only STATUS (lab-status) and the AUTO feed (lab-sync). What is next is the sheet's `## Tasks`, and the lab feed shows its first open row. Wants go on the BOARD (`notes ptask <project> add "..."`); the agents' own working board is `<project>/agent/README.md` (`notes ptask <project> --agent ...`), and the preflight injects what it left in flight at turn 1.
 
 ## The roadmap
 
-A project sheet holds a PAST (frozen `versions/*.md`), a PRESENT (the current wave) and a FUTURE
-(planned waves). On the sheet the future is just more `## Wave:` sections below the current one:
+A project sheet holds a PAST (frozen `versions/*.md`), a PRESENT (the open `Version:`) and a FUTURE (rows aimed at a later release). One section holds both: a row with no tag belongs to the open version, and a row aimed later carries the release as a tag:
 
 ```markdown
 # myapp
 Version: v1.13.0
 
-## Wave: v1.13.0 (current)
-- [ ] full flow e2e
+## Inbox
 
-## Wave: v1.14.0 (planned)
-- [ ] android: sweep remaining screens
+## Tasks
+- [ ] full flow e2e
+- [ ] android: sweep remaining screens #v1.14.0
 ```
 
-The FIRST `## Wave` is the current one, always - `notes ptask` and `notes board` both read
-it by position, which is exactly why they ignore everything planned below it.
-Anything writing a planned section must keep it there; `notes ptask <project> add --to vX.Y.Z`
-is the sanctioned way, and it inserts in version order.
+A release is a tag, not a section. `notes ptask list` and `notes board` show the open version's rows, so a row aimed later stays out of them until its release opens. A tag at or below the open version means nothing, and the sweep drops one below it.
 
 From the shell:
 
 ```bash
-notes projects --waves <project>                     # the roadmap, TSV
-notes ptask <project> add --to v1.14.0 "..."         # plan forward (mints the wave)
+notes projects --roadmap <project>                   # the roadmap, TSV
+notes ptask <project> add --to v1.14.0 "..."         # aim a new row at a release
 notes ptask <project> move "<word>" --to v1.14.0     # split a pile into versions
-notes ptask <project> list --all                     # every wave, with its version
+notes ptask <project> list --all                     # every row, with its version
 ```
 
 ### A version does not close until it is finished
 
-`notes projects --roll` (and so `notes-roll`) REFUSES to roll while the current wave has open
-tasks. It names them and points at `move --to`. `--force` overrides; `notes-roll ... carry` moves
-them to the next wave instead.
+`notes projects --release` (and so `notes-roll`) REFUSES to close a version with open rows. It names them and points at `move --to`. `--force` closes it anyway and leaves them open on the sheet; `notes-roll ... carry` aims them at the next version instead.
 
-This is deliberate. Rolling used to freeze the whole sheet and reset it to an empty wave, so
-anything still unchecked left the live sheet and survived only inside the frozen note - which
-is how six open items ended up sealed in one project's `versions/v1.12.0.md` and on no live
-list anywhere. "Rolled" now means finished, or explicitly moved on.
+Why: an unchecked row must never survive only inside a frozen note, on no live list anywhere. Released means finished, or explicitly moved on.
 
-The roll then freezes the current wave ALONE (the planned ones are not a release record) and
-PROMOTES the planned wave named for the next version, tasks and all. So the loop is: plan into
-v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> work the promoted v1.14.0.
+The release freezes the closed rows of the version it closes and nothing else. A closed row aimed at a later release waits for that release. So the loop is: aim rows at v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> release -> work v1.14.0.
 
 ### Agent notes and the proof gate (`agent/versions/<vX.Y.Z>.md`)
 
-Each version gets an agent note. The agents' half of a project lives under `agent/`, the same
-shape as the human's half one level down:
+A version's agent note is made the first time something goes into it: archived board rows, or what agents noted. The agents' half of a project lives under `agent/`, the same shape as the human's half one level down:
 
 ```
 myapp/
-  README.md                      the sheet: current wave + the roadmap
+  README.md                      the sheet: open version + the roadmap
   summary.md                     STATUS + AUTO feed (generated)
-  versions/v1.12.0.md            the human's frozen waves
+  versions/v1.12.0.md            the human's frozen versions
   agent/
-    versions/v1.13.0.md          what the agents did this version, and the evidence
+    versions/v1.13.0.md          what the agents noted this version
 ```
 
 `ai/<vX.Y.Z>.md` was the old location. `notes projects --migrate <project>` relocates it.
 
-`notes ptask <project> done` requires evidence and appends a row to it:
+`notes ptask <project> done` requires evidence, and the row itself carries it:
 
 - `--proof <ref>` - something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped into the
-  line's marker comment beside any existing `vk:`/`ask:` id.
+  line's marker comment beside any existing `id:`/`ask:` key.
 - `--unverified "<why>"` - no checkable artifact, said out loud rather than left blank.
 
 Both doors exist on purpose. The failure mode of a proof field is not people lying in it, it is

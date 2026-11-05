@@ -69,17 +69,6 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
   | "\(.key)\t\(.value.repo // "")\t\(.value.path)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n app paths have a repo" || skip "no app paths to check"
 
-# --- 2. every `inherits` names a real tracker ---------------------------------------
-n=0
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  name="${line%%	*}"; parent="${line#*	}"
-  n=$((n + 1))
-  jq -e --arg p "$parent" '(.trackers // {}) | has($p)' "$MAP_FILE" >/dev/null 2>&1 \
-    || fail "trackers.$name inherits \"$parent\", which is not a tracker"
-done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.inherits) | "\(.key)\t\(.value.inherits)"' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n inherits targets exist" || skip "no inherits to check"
-
 # --- 3. every `repo` relation names a registered project ----------------------------
 # This is the relation the lab join now rides on: a project with no code declares the repo
 # whose runtime state it shares. A dangling one silently reads an empty namespace.
@@ -106,6 +95,22 @@ while IFS= read -r line; do
   fi
 done < <(jq -r '(.aliases // {}) | to_entries[] | "\(.key)\t\(.value)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n aliases resolve and none shadow a project" || skip "no aliases to check"
+
+# --- 4b. every row-id `code` is well formed and unique -------------------------------
+# `notes ptask add` stamps `<!-- id:<code>-<n> -->` from trackers.<p>.code. Two projects
+# sharing a code would mint colliding ids, and the queue joins a row by its id.
+n=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="${line%%	*}"; code="${line#*	}"
+  n=$((n + 1))
+  [[ "$code" =~ ^[a-z]{2,4}$ ]] || fail "trackers.$name has code \"$code\"; a code is 2-4 lowercase letters"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.code != null) | "\(.key)\t\(.value.code)"' "$MAP_FILE" 2>/dev/null)
+while IFS= read -r dup; do
+  [ -n "$dup" ] && fail "row-id code $dup"
+done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.code != null) | {k: .key, c: .value.code}]
+  | group_by(.c)[] | select(length > 1) | "\"\(.[0].c)\" is shared by \(map(.k) | join(", "))"' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n row-id codes checked" || skip "no row-id codes to check"
 
 # --- 5. every key under ~/.agent is a registered project ---------------------------
 # Plans, lessons, sessions, asks, outcomes, dreams and evals are filed per project. A key

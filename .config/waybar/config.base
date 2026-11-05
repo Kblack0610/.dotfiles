@@ -115,10 +115,12 @@
         "orientation": "horizontal",
         "modules": [
             "custom/timebox",
+            "custom/health",
             "custom/ai-agents",
             "custom/dispatch",
             "custom/fleet",
             "custom/ci",
+            "custom/machine-mode",
             "custom/day"
         ]
     },
@@ -143,7 +145,7 @@
         "hide-empty-text": true,
         "tooltip": true
     },
-    // Agents: working, ready and need-you totals and a fleet health dot on the bar; the hover is the fleet-sessions stages, a section
+    // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
@@ -176,7 +178,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/load $HOME/.config/waybar/load.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab machines",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab 'infra machines'",
         "tooltip": true
     },
     // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
@@ -188,12 +190,34 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/ci $HOME/.config/waybar/ci_runners.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab ci",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab 'infra ci'",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
+        "tooltip": true
+    },
+    // System health: a pulse and one dot per system, worst first; the hover says what is down
+    // and what is up (health.sh). Click opens the hub board on Home.
+    "custom/health": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/health $HOME/.config/waybar/health.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab home",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
     // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
+    "custom/machine-mode": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/machine-mode $HOME/.config/waybar/machine_mode.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "$HOME/.local/bin/machine-mode next",
+        "tooltip": true
+    },
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",
@@ -206,7 +230,7 @@
         "tooltip": true
     },
     // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
-    // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
+    // what is red now (day.sh). Click opens the hub board on Today, right-click on Home.
     "custom/day": {
         "format": "{}",
         "return-type": "json",

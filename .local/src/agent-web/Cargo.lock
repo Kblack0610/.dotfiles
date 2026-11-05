@@ -19,6 +19,7 @@ dependencies = [
  "agent-panel",
  "anyhow",
  "axum",
+ "chrono",
  "hub-core",
  "notify",
  "serde",

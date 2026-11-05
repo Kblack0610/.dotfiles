@@ -214,6 +214,13 @@ panel_assert_no_bare_script_name() {
   ! grep -qE "(execute|execute-silent|reload|become|preview|transform)\([^)]*${base//./\\.}" "$f"
 }
 
+# A picker takes its preview layout from panel_fzf_layout (panel-lib.sh), never its own
+# --preview-window or change-preview-window: one layout, one ctrl-/ toggle, in every panel.
+panel_assert_layout_from_lib() {
+  local f="$REPO_ROOT/$1"
+  ! grep -qE -- '--preview-window|change-preview-window' "$f"
+}
+
 # The palette must use ANSI indices 0-7/90 and SGR attributes only -- never truecolor.
 #
 # This is what makes these surfaces theme-responsive TODAY: theme-switch recolours the

@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034  # the colours are for the scripts that source this
-# pango.sh - markup helpers for the waybar load, CI, day and dispatch chips (load.sh, ci_runners.sh, day.sh, dispatch.sh). The
+# pango.sh - markup helpers for the waybar load, CI, day, dispatch, agents and health chips (load.sh, ci_runners.sh, day.sh, dispatch.sh, ai_agents.sh, health.sh). The
 # Prometheus reader they share with the hub board is .local/lib/prom.sh.
 
 # Bar theme (Jackie Brown) colours, the set fleet_pulse.sh uses: the pale Catppuccin
@@ -7,6 +7,7 @@
 # the scale the cc:*_status rules use.
 LEVEL_COLOUR=("#a6e34a" "#ffcc2f" "#ef5734")
 LEVEL_CLASS=(ok warn critical)
+C_GRN="${LEVEL_COLOUR[0]}"
 C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
 
@@ -26,9 +27,7 @@ pango_esc() {
 # paint <colour> <text>
 paint() { printf "<span color='%s'>%s</span>" "$1" "$2"; }
 
-# emit <text> <tooltip> <class> [phone]: waybar JSON, escaped by jq. phone is the chip's lines
-# for the phone widget (fleet-overview), in the same markup; waybar reads only its own keys.
+# emit <text> <tooltip> <class>: waybar JSON, escaped by jq.
 emit() {
-  jq -cn --arg t "$1" --arg tt "$2" --arg c "$3" --arg p "${4:-}" \
-    '{text: $t, tooltip: $tt, class: $c} + (if $p == "" then {} else {phone: $p} end)'
+  jq -cn --arg t "$1" --arg tt "$2" --arg c "$3" '{text: $t, tooltip: $tt, class: $c}'
 }

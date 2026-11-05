@@ -11,6 +11,10 @@
 #   fleet-bench headline         the last 24h in one line (the popup and the morning briefing)
 #   fleet-bench scorecard        write the last 24h to <date>.md and latest.md in BENCH_SCORECARD_DIR
 #   fleet-bench sessions --json  the scorecard's session rows, one JSON object each (day-log reads them)
+#   fleet-bench stats --json [--since E]
+#                                each session's whole life since E: minutes per bucket, nudges,
+#                                escalations, phases ticked, peak context, merged PRs, lines, CI
+#                                runs and reds (session-outcomes joins it into its row)
 #   fleet-bench review           count failed CI runs (any workflow) before merge on PRs merged in the window
 #   fleet-bench asks [--write|--page]
 #                                pending asks, the ones blocking a live session ranked first;
@@ -23,6 +27,12 @@
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
+#   fleet-bench respond '<rule> <scope> @<episode>' <actor> <paged|asked|filed-row|cancelled|fixed> [ref]
+#                                record what answered a finding (its fact), in responses.jsonl
+#   fleet-bench loop [--json|--firing]
+#                                each finding episode of the last 7d: minutes to its first response
+#                                that is not a page, and DARK when it reached the human with only pages;
+#                                --firing prints one sentence per dark episode still firing
 #   fleet-bench throughput [--from T] [--to T]
 #                                runs/h, failures, merges/h, pool wait and load on every host
 #   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
@@ -36,12 +46,15 @@
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
 #                                day, wait and time to PR, from `agent-queue stats`
+#   fleet-bench requests [--json] [--since T]
+#                                the human's urgent requests, one row each (a plan chain is one row),
+#                                then those finished since T: the head of every shepherd summary
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H, BENCH_QUEUE_STATS_CMD,
-# BENCH_QUEUE_DAYS.
+# BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
 
@@ -78,11 +91,15 @@ set -uo pipefail
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
+: "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
+: "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
+: "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
+: "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -91,9 +108,12 @@ ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
+RESPONSES="$DIR/responses.jsonl"   # fleet-bench respond: what answered each finding
 FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
+STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
+RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -500,33 +520,37 @@ cmd_accuracy() {
   jq -cs "${CAL_ARGS[@]}" "$JQ_LIB"'accuracy($minn; $lo; $hi) | .[]' "$SCORES"
 }
 
-# window_stats -> one JSON object per session seen in the window: phases ticked, minutes
-# per bucket (each sample owns the gap to the next one, capped), nudges, peak context.
+# window_stats <now> [since] -> one JSON object per session seen since <since> (default: the
+# window): phases ticked, minutes per bucket (each sample owns the gap to the next one,
+# capped), nudges and escalations (a flag turning on), peak context, first and last sample.
 window_stats() {
   local t="$1"
-  jq -cn --argjson since $(( t - BENCH_WINDOW_H * 3600 )) --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
+  jq -cn --argjson since "${2:-$(( t - BENCH_WINDOW_H * 3600 ))}" --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
      --slurpfile p "$PROGRESS" '
-    def mins($g; $b): [$g[] | select(.b == $b) | .m] | add // 0 | floor;
     $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
     | [range(0; length - 1) | {b: $r[.].bucket,
          m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
+    | ($gaps | group_by(.b) | map({key: .[0].b, value: (map(.m) | add | floor)}) | from_entries) as $minutes
     | {session_id: .[0].session_id, target: (last.target), project: (last.project),
      plan: (last.plan_file // "" | sub(".*/"; "") | sub("\\.md$"; "")),
      phase: "\(last.phases_done // "-")/\(last.phases_total // "-")",
      ticked: (group_by(.plan_file) | map((last.phases_done // 0) - (map(.phases_done // 0) | min)) | add),
-     working_min: mins($gaps; "WORKING"), waiting_min: mins($gaps; "NEEDS"), stalled_min: mins($gaps; "STALLED"),
+     working_min: ($minutes.WORKING // 0), waiting_min: ($minutes.NEEDS // 0), stalled_min: ($minutes.STALLED // 0),
+     minutes: $minutes,
      nudges: ([range(1; length) | select($r[.].nudged == true and $r[. - 1].nudged != true)] | length),
-     peak_context: (map(.context_tokens // 0) | max)}'
+     escalations: ([range(1; length) | select($r[.].escalated == true and $r[. - 1].escalated != true)] | length),
+     peak_context: (map(.context_tokens // 0) | max), first_epoch: (.[0].epoch), last_epoch: (last.epoch)}'
 }
 
 # bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project. Waiting
 # and stalled hours are summed over the project's sessions, the ETA ratio is the median of
 # the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
-# in the window by a session of that project.
+# in the window by a session of that project. The KPIs ride along so a reader never runs `kpi`.
 bench_prom() {
-  local t="$1"
-  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") \
-     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") \
+  local t="$1" kpis
+  kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
+  jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
+     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") --argjson k "$kpis" \
      "$JQ_LIB$PROM_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
@@ -539,7 +563,17 @@ bench_prom() {
         $ps[] | . as $p | [{project: $p}, ($s | map(select(.project == $p) | .ratio // empty) | median)]),
       gauge("agent_bench_ci_reds_before_merge"; "CI reds on PRs merged in the last \($win)h, before they merged.";
         $c | map(. + {project: $proj[.session_id]}) | map(select(.project != null)) | group_by(.project)[]
-        | [{project: .[0].project}, (map(.ci_red) | add)])'
+        | [{project: .[0].project}, (map(.ci_red) | add)]),
+      gauge("agent_bench_loop_dark_episodes"; "Finding episodes begun in the last 7d that reached the human with nothing but pages.";
+        [{}, ($e | map(select(.dark)) | length)]),
+      gauge("agent_bench_loop_first_response_minutes"; "Median minutes from a finding episode to its first response that is not a page, last 7d.";
+        [{}, ($e | map(.first_response_min | numbers) | median)]),
+      gauge("agent_bench_kpi"; "The KPIs `fleet-bench kpi` prints, by window.";
+        $k | to_entries[] | .key as $n | .value as $v | ("7d", "28d") as $d | [{kpi: $n, window: $d}, $v[$d]]),
+      gauge("agent_bench_kpi_limit"; "Each KPI'"'"'s threshold from kpi-thresholds.";
+        $k | to_entries[] | [{kpi: .key}, .value.threshold]),
+      gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
+        $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)])'
 }
 
 # publish_window <now>: write bench_prom where node_exporter reads it.
@@ -559,10 +593,11 @@ outcomes_latest() {
   outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
-# in_window <file> <epoch field> <now> -> the file's rows whose field falls in the window
+# in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
+# <since> (default: the window)
 in_window() {
   [ -s "$1" ] || return 0
-  jq -c --arg f "$2" --argjson since $(( $3 - BENCH_WINDOW_H * 3600 )) 'select(.[$f] >= $since)' "$1"
+  jq -c --arg f "$2" --argjson since "${4:-$(( $3 - BENCH_WINDOW_H * 3600 ))}" 'select(.[$f] >= $since)' "$1"
 }
 
 cmd_headline() {
@@ -622,6 +657,33 @@ cmd_sessions() {
   session_rows "$(now)"
 }
 
+# cmd_stats --json [--since E] -> one JSON object per session sampled or merging a PR since E
+# (default: all of it): its whole life from this bench's two stores, the progress samples and
+# pr-ci. merged is null on a session with no merged PR in pr-ci, and sampled is false on one
+# the sampler never saw. session-outcomes keeps each row as its own row's delivery.
+cmd_stats() {
+  local json=0 since=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --since) since="${2:-}"; shift ;;
+      *) json=0; break ;;
+    esac
+    shift
+  done
+  { [ "$json" = 1 ] && [[ "$since" =~ ^[0-9]+$ ]]; } || { echo "usage: fleet-bench stats --json [--since <epoch>]" >&2; return 2; }
+  jq -cn --slurpfile w <([ -s "$PROGRESS" ] && window_stats "$(now)" "$since") \
+     --slurpfile c <(in_window "$CI" merged_epoch 0 "$since") '
+    ($w | map({key: .session_id, value: del(.working_min, .waiting_min, .stalled_min)}) | from_entries) as $ws
+    | ($c | group_by(.session_id)
+       | map({key: .[0].session_id,
+              value: {prs: length, lines_added: (map(.additions // 0) | add), lines_deleted: (map(.deletions // 0) | add),
+                      ci_runs: (map(.ci_runs // 0) | add), ci_reds: (map(.ci_red // 0) | add)}})
+       | from_entries) as $ci
+    | (($ws | keys) + ($ci | keys) | unique)[] as $k
+    | {session_id: $k} + ($ws[$k] // {sampled: false}) + {merged: ($ci[$k] // null)}'
+}
+
 cmd_scorecard() {
   local t day out counts
   t=$(now); day=$(date -d "@$t" +%F)
@@ -643,6 +705,9 @@ cmd_scorecard() {
     forecast_section "$t"
     echo
     wakes_lines
+    report_line "$BENCH_TOKENS_CMD" tokens
+    report_line "$BENCH_WEEK_CMD" week
+    report_line "$BENCH_COMMS_CMD line" comms
     echo
     bottleneck_section "$t"
     echo
@@ -928,17 +993,27 @@ asks_md() {
     end)' <<<"$1"
 }
 
-# asks_line <rows> <path> -> the page: counts, then the top 3 blocking a live session
+# asks_line <rows> <top-n> <max-chars> -> one plain line (comms-standard): the count, the top
+# few questions with their age and recommendation, as many as fit in max-chars (the first
+# always), and where to see them all. Ids and session targets stay in asks.md; the line is
+# read on a lock screen and in the briefing.
 asks_line() {
-  jq -r --arg path "$2" '
+  jq -r --argjson k "$2" --argjson max "$3" '
     def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
-    map(select(.live)) as $l | map(select(.live | not)) as $n
-    | "\(length) asks pending: \($l | length) block a live session, \($n | length) have none"
-      + (if ($n | length) > 0 then " (oldest \($n[0].age_h | age))" else "" end) + "."
-      + ([$l[:3] | to_entries[] | .key as $k | .value
-          | " \($k + 1)) \(.id) \(.target | sub(":[0-9]+$"; "")), \(.age_h | age): \(.question[0:60])"
-            + (if .recommend != "" then " -> \(.recommend)." else "." end)] | join(""))
-      + " Full list: \($path)"' <<<"$1"
+    # The first sentence is the question; the rest is context. A question is never cut:
+    # one too long for the line is named by its "topic:" label (else its project) and id instead.
+    def name: ((.question | capture("^(?<t>[^:?.!]{3,60}): ") | .t) // "a \(.project) question") + ", ask \(.id)";
+    def q: .question | gsub("\\s+"; " ") | ((capture("^(?<s>.*?[?.!])( |$)") | .s) // .);
+    def meta: " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")";
+    (map(select(.live)) | length) as $l
+    | ((if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
+      + (if $l == 0 then ", none holding up a session" else ", \($l) holding up a session" end)
+      + ". Top: ") as $head
+    | ". List: fleet-bench asks." as $tail
+    | def fits($l): ($head + ($l | join("; ")) + $tail | length) <= $max;
+      reduce (.[:$k][] | [q + meta, name + meta]) as [$full, $short] ([];
+        if fits(. + [$full]) then . + [$full] elif length == 0 or fits(. + [$short]) then . + [$short] else . end)
+    | $head + join("; ") + $tail' <<<"$1"
 }
 
 cmd_asks() {
@@ -961,10 +1036,11 @@ cmd_asks() {
     [ "$mode" = --page ] && report_outcome NOOP "no pending asks"
     return 0
   fi
-  line=$(asks_line "$rows" "$out")
-  # --write is the morning briefing's step: it puts the line in its own page, so the
-  # verdict and the page belong to the briefing run, not to this verb.
-  [ "$mode" = --write ] && { printf '%s\n' "$line"; return 0; }
+  # --write is the morning briefing's step: one item of at most 160 chars, so the top one.
+  # It puts the line in its own page, so the verdict and the page belong to the briefing run.
+  # The budgets are channels.toml's: a briefing item (160) and a page (300).
+  [ "$mode" = --write ] && { asks_line "$rows" 1 160; return 0; }
+  line=$(asks_line "$rows" 3 300)
   command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t asks "$line"
   say "$line"
   report_outcome WORKED "$out"
@@ -1024,6 +1100,7 @@ ledger_counts() {
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
   echo "board_open=$(compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] ')"
+  echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
 }
 
 # ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
@@ -1056,11 +1133,17 @@ cmd_ledger() {
   esac
 }
 
-# KPIs: ratios over the human sessions session-outcomes saw in the last 7 and 28 days, plus three
+# KPIs: ratios over the human sessions session-outcomes saw in the last 7 and 28 days, the comms
+# standard's 7d and 28d numbers from the nightly comms snapshot (comms-lint owns the formulas), plus
 # counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad asks_stale board_open"
+KPI_NOW="runners_bad asks_stale board_open loop_dark"
+KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
+
+# comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
+# KPIs show - rather than an old number
+comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 
 # kpi_json <now> <ledger counts> -> one object keyed by KPI, in table order
 kpi_json() {
@@ -1068,7 +1151,8 @@ kpi_json() {
   [ -s "$ci" ] || ci=/dev/null
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$ci" \
-     --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" '
+     --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
+     --argjson cm "$(comms_kpi)" --arg commskeys "$KPI_COMMS" '
     def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;
     def total(f): map(f // 0) | add // 0;
     def win($d; $human; $bot): ($t - $d * 86400) as $since
@@ -1079,12 +1163,15 @@ kpi_json() {
          revert_rate: ratio(($s | total(.reverted_7d)); $prs),
          interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
          cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
-         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length)};
+         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
+         plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits))};
     # older lines have no runner field; _runner is where headless runs are filed
     ($o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.)) as $bot
     | ($o | map(select($bot[.session_id] | not))) as $human
     | win(7; $human; $bot) as $w7 | win(28; $human; $bot) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
+       ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
+                                                     "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
        ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
@@ -1137,6 +1224,98 @@ cmd_queue() {
   if [ "${1:-}" = --json ]; then printf '%s\n' "$s"; else queue_line <<<"$s"; fi
 }
 
+# Items in, with $sessions (the state document's rows), $etas (a cell per target) and $since:
+# the requests. A request is an urgent item from the human or the shepherd; `<prefix>-pN` items
+# linked by after: are one request, and n of m reads their phase numbers, so a plan queued from
+# phase 3 says 3 of 6. The shepherd's own intake leads, each group in queue order: sorted by source
+# alone a morning of human-queued items would bury the ask, and newest first would let the next ask
+# bury it (ci-cleanup fell to third within the hour).
+REQUESTS_JQ='
+def prefix: sub("-p[0-9]+$"; "");
+def pnum: (capture("-p(?<n>[0-9]+)$").n | tonumber) // null;
+def asked: .priority == "urgent" and (.from == "human" or .from == "shepherd");
+def live: .state != "done";
+def open: any(.[]; live and asked);
+def keyed: . as $all | map(. as $i | ($i.slug | prefix) as $p
+  | . + {key: (if any($all[]; (.slug == $i.after or .after == $i.slug) and (.slug | prefix) == $p)
+               then $p else $i.slug end)});
+def session_row($c): ($c.session // "" | (if test(":") then sub(":"; "/") else "lab/" + . end) + ":") as $at
+  | ($sessions[0] | map(select(.target | startswith($at)))) as $rows
+  | ($rows | map(select((.dispatch // "") | endswith(": " + $c.slug))) | first)
+    // (if ($rows | length) == 1 then $rows[0] else null end);
+def active_row: sort_by(.slug | pnum // 0) as $c
+  | ($c | map(select(live)) | sort_by(.state == "queued") | first) as $cur
+  | session_row($cur) as $s
+  | ([$c[].slug | pnum] + [$c[] | (.phases // "") | split(" ")[] | tonumber?] | max) as $m
+  | {request: $c[0].key, slugs: ($c | map(.slug)), project: $cur.project, from: $cur.from,
+     queued: $cur.queued, slug: $cur.slug, n: ($cur.slug | pnum), m: $m, state: $cur.state,
+     session: $cur.session, bucket: $s.bucket,
+     pr: (if $s.pr_state == "OPEN" then $s.pr else null end), ci: (if $s.pr_state == "OPEN" then $s.ci else null end),
+     eta: (if $s == null then null else $etas[0][$s.target] end),
+     waits: (if $cur.state == "queued" then $cur.hold // "a dispatch slot"
+             elif $s != null and $s.bucket != "WORKING" then $s.reason | sub("^waiting on "; "") else null end),
+     report: ([$c[].report // empty] | last)};
+def finished_row: sort_by(.finished) as $c
+  | {request: $c[0].key, slugs: ($c | map(.slug)), project: $c[0].project, from: $c[0].from,
+     finished: $c[-1].finished,
+     outcome: (($c | map(.status // "unknown" | select(. != "ok")) | first) // "ok"),
+     prs: ($c | map(.pr // empty)), report: ([$c[].report // empty] | last)};
+group_by(.slug) | map(sort_by(live, .finished) | last) | keyed | group_by(.key)
+| {since: $since,
+   active: (map(select(open) | active_row)
+            | sort_by(.from != "shepherd", .queued)),
+   finished: (map(select(open | not) | map(select(.state == "done" and asked
+                and (.finished // "1970-01-01T00:00:00Z" | fromdateiso8601) >= $since))
+                | select(length > 0) | finished_row) | sort_by(.finished) | reverse)}
+'
+
+# The rows as the block that heads a summary. Every fact it cannot read stays out of its row.
+REQUESTS_TEXT_JQ='
+def cell($label; $v): if $v == null then empty else "\($label)\($v)" end;
+"## Your requests", "",
+(if (.active | length) == 0 then "No urgent request is active."
+ else .active[] | "- " + ([.request,
+     (if .n == null then empty else "\(.n) of \(.m)" end),
+     (.state + (if .bucket == null then "" else "/\(.bucket)" end)),
+     cell(""; .session),
+     (if .pr == null then "no open PR" else "PR #\(.pr) CI \(.ci // "not read")" end),
+     (if .eta == null then "no ETA" else "ETA \(.eta)" end),
+     cell("waits on: "; .waits), cell("report: "; .report)] | join(", ")) end),
+"", "Finished since \(.since | hm):",
+(if (.finished | length) == 0 then "- nothing"
+ else .finished[] | "- " + ([.request, .outcome,
+     (if (.prs | length) == 0 then "no PR" else (.prs | map("#\(.)") | join(" ")) end),
+     (.finished | fromdateiso8601 | hm), cell("report: "; .report)] | join(", ")) end)
+'
+
+# cmd_requests [--json] [--since T]: the human's requests, from the queue, the fleet state document
+# and the ETAs. T defaults to the last rundown, so a finished request is told once.
+cmd_requests() {
+  local json=0 since='' t items first done_items sessions='[]' etas last out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --since) since=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      *) say "usage: fleet-bench requests [--json] [--since T]"; return 2 ;;
+    esac
+  done
+  t=$(now)
+  if [ -z "$since" ]; then
+    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | head -1)
+    if [ -n "$last" ]; then since=$(stat -c %Y "$last"); else since=$((t - BENCH_WINDOW_H * 3600)); fi
+  fi
+  items=$($BENCH_ITEMS_CMD) || { say "the agent queue is unreadable"; return 1; }
+  # Done items go back to the oldest live chain as well as to T: an earlier phase holds its report.
+  first=$(jq -rs --argjson s "$since" '[$s] + [.[] | select(.priority == "urgent" and .after != null) | .queued | fromdateiso8601] | min' <<<"$items")
+  done_items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$first" +%F)") || { say "the agent queue's done items are unreadable"; return 1; }
+  [ -r "$STATE_FILE" ] && sessions=$(jq -c '.sessions // []' "$STATE_FILE")
+  etas=$(latest_live | jq -cs "$JQ_LIB"'map(select(.eta != null or .finished)
+    | {key: .target, value: (if .finished then "finished" else eta_cell end)}) | from_entries')
+  out=$(printf '%s\n%s\n' "$items" "$done_items" | jq -cs --argjson since "$since" \
+    --slurpfile sessions <(printf '%s\n' "$sessions") --slurpfile etas <(printf '%s\n' "$etas") "$REQUESTS_JQ") || return 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; else jq -r "$JQ_LIB$REQUESTS_TEXT_JQ" <<<"$out"; fi
+}
+
 # queue_section <now>: the queue line, what is active now, and the outcomes by project and by
 # source (human, shepherd, board, ...), in the scorecard
 queue_section() {
@@ -1170,6 +1349,14 @@ wakes_lines() {
        else "- calls per passing wake (\($win)): median \($p.median) over \($p.wakes) wakes, target \($target) or fewer: \(if $p.median > $target then "past" else "ok" end)" end),
       "- calls per wake, all (\($win)): " + (if .all.wakes == 0 then "-"
         else "median \(.all.median), p90 \(.all.p90) over \(.all.wakes) wakes" end)' <<<"$w"
+}
+
+# report_line <command> <label>: one scorecard row another tool writes (the nightly token-usage
+# row, the newest stored week from day-log).
+report_line() {
+  local l
+  l=$($1 2>/dev/null) && [ -n "$l" ] || l="$2: ? (\`$1\` unreadable)"
+  echo "- $l"
 }
 
 cmd_kpi() {
@@ -1348,11 +1535,14 @@ finding_rows() {
             | select($w >= $l.finding_pool_wait_s and $n > 0)
             | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
                | if length > 0 then . else null end) as $repos
+            # bind: capacity when the pool is full, labels when slots sit free or the jobs carry no
+            # pool label (pool "other": pinned to one host, say), so more sessions add no demand to it.
+            | (if $pool == "other" or ($u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share)
+               then "labels" else "capacity" end) as $bind
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $u, slots: $s, oldest_s: $w}; "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($u // "?")/\($s // "?") slots busy: "
-                + (if $u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share
-                   then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
-                "\($n) jobs waiting") + {repos: $repos} ),
+                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
+                "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
             | [$v, ($b["cc:host_load1"][$h]), ($c["cc:host_load1"][$h])] as $vs
@@ -1431,6 +1621,68 @@ cmd_findings() {
   [ -n "$rows" ] || { echo "findings: none open"; return 0; }
   jq -r "$JQ_LIB"'[.decision_class, .rule, .scope, "since \(.episode | hm)", .conclusion + (if .cost != "" then " (\(.cost))" else "" end)] | @tsv' <<<"$rows" |
     awk -F'\t' '{ printf "%-8s %-15s %-24s %-15s %s\n", $1, $2, $3, $4, $5 }'
+}
+
+# The loop: what answered each finding. A finding of class human goes on the human's page once (the
+# ledger's escalate records it as paged); what the fleet did about it is a response: asked,
+# filed-row, cancelled or fixed. An episode that reached class human with nothing but pages is dark:
+# the loop saw it and nothing acted. On 2026-11-05 starved pools paged from 23:31 to 06:07 and no
+# pass did anything else, which no number showed.
+RESPONSE_ACTIONS="paged asked filed-row cancelled fixed"
+LOOP_WINDOW_S=$((7 * 86400))   # the KPI table's 7d
+
+cmd_respond() {
+  local fact="${1:-}" actor="${2:-}" action="${3:-}" ref="${4:-}"
+  if ! [[ "$fact" =~ ^[a-z-]+\ [^\ ]+\ @[0-9]+$ ]] || [ -z "$actor" ] || [[ " $RESPONSE_ACTIONS " != *" $action "* ]]; then
+    say "usage: fleet-bench respond '<rule> <scope> @<episode>' <actor> <${RESPONSE_ACTIONS// /|}> [ref]"
+    return 2
+  fi
+  mkdir -p "$DIR"
+  jq -cn --argjson t "$(now)" --arg f "$fact" --arg a "$actor" --arg x "$action" --arg r "$ref" \
+    '{epoch: $t, fact: $f, actor: $a, action: $x, ref: $r}' >> "$RESPONSES"
+}
+
+# loop_episodes <now> <since> -> one object per finding episode begun since <since> and seen on two
+# samples or more (one is noise, as fleet-lead reads it), report class left out: when it reached class
+# human, its responses, minutes from the episode to its first response that is not a page, whether
+# it still fires, and dark.
+loop_episodes() {
+  local f=/dev/null r=/dev/null
+  [ -s "$FINDINGS" ] && f=$FINDINGS
+  [ -s "$RESPONSES" ] && r=$RESPONSES
+  jq -cn --argjson t "$1" --argjson since "$2" --argjson l "$(finding_limits)" --slurpfile f "$f" --slurpfile r "$r" '
+    ($r | map(select(.epoch <= $t)) | group_by(.fact) | map({key: .[0].fact, value: .}) | from_entries) as $resp
+    | $f | map(select(.decision_class != "report" and .episode >= $since and .epoch <= $t)) | group_by(.fact)[]
+    | select(length > 1)
+    | (map(select(.decision_class == "human")) | min_by(.epoch) | .epoch?) as $human
+    | ($resp[.[0].fact] // []) as $rs
+    | ($rs | map(select(.action != "paged")) | min_by(.epoch) | .epoch?) as $acted
+    | (max_by(.epoch) | .epoch) as $last
+    | {fact: .[0].fact, rule: .[0].rule, scope: .[0].scope, episode: .[0].episode, last: $last,
+       open: ($t - $last <= $l.finding_clear_min * 60), human_at: $human, responses: ($rs | sort_by(.epoch) | map(.action)),
+       first_response_min: (if $acted == null then null else ($acted - .[0].episode) / 60 | round end),
+       dark: ($human != null and $acted == null)}'
+}
+
+cmd_loop() {
+  local t rows
+  case "${1:-}" in ""|--json|--firing) ;; *) say "usage: fleet-bench loop [--json|--firing]"; return 2 ;; esac
+  t=$(now)
+  rows=$(loop_episodes "$t" $((t - LOOP_WINDOW_S))) || return 1
+  if [ "${1:-}" = --json ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
+  # The daily briefing's Needs you line: one sentence per dark episode still firing, nothing when none.
+  if [ "${1:-}" = --firing ]; then
+    [ -z "$rows" ] || jq -rs --argjson t "$t" 'sort_by(.episode)[] | select(.dark and .open)
+      | "Finding \(.fact) has been yours for \((($t - .human_at) / 60) | floor)m and still fires, with nothing done but a page. Run fleet-bench loop."' <<<"$rows"
+    return 0
+  fi
+  [ -n "$rows" ] || { echo "loop: no finding episodes in 7d"; return 0; }
+  jq -rs "$JQ_LIB"'
+    "loop, 7d: \(length) episodes, \(map(select(.dark)) | length) dark (\(map(select(.dark and .open)) | length) still firing), \(map(.first_response_min | numbers) | median | if . == null then "no act recorded" else "first response after \(.)m median" end)",
+    (sort_by(.episode)[] | [(if .dark then "DARK" elif .first_response_min != null then "\(.first_response_min)m" else "-" end),
+       (if .open then "firing" else "cleared" end), .fact,
+       (.responses | if length == 0 then "no response" else join(",") end)] | @tsv)' <<<"$rows" |
+    awk -F'\t' 'NR == 1 { print; next } { printf "%-6s %-8s %-40s %s\n", $1, $2, $3, $4 }'
 }
 
 # throughput_epoch <text> -> an epoch, from an epoch or anything `date -d` reads
@@ -1713,19 +1965,23 @@ main() {
     headline) cmd_headline ;;
     scorecard) cmd_scorecard ;;
     sessions) shift; cmd_sessions "$@" ;;
+    stats) shift; cmd_stats "$@" ;;
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     retro) cmd_retro ;;
     findings) shift; cmd_findings "$@" ;;
+    respond) shift; cmd_respond "$@" ;;
+    loop) shift; cmd_loop "$@" ;;
     throughput) shift; cmd_throughput "$@" ;;
     flow) shift; cmd_flow "$@" ;;
     forecast) shift; cmd_forecast "$@" ;;
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
-    -h | --help) sed -n '2,44p' "$0" ;;
-    *) sed -n '2,38p' "$0" >&2; return 2 ;;
+    requests) shift; cmd_requests "$@" ;;
+    -h | --help) sed -n '2,53p' "$0" ;;
+    *) sed -n '2,47p' "$0" >&2; return 2 ;;
   esac
 }
 

@@ -103,7 +103,7 @@ strand() {
 
 @test "a bare numeric ref 559 is NOT satisfied by a commit naming 1559" {
   # OUR bug, not the Go original's: their refs are always PREFIX-N so a leading
-  # boundary is never needed. Vikunja ids are bare integers, and with only a
+  # boundary is never needed. Ours can be a bare integer, and with only a
   # trailing boundary `559` matches `1559`. Same class of lie, opposite end of
   # the string.
   land 'fix: something else entirely (#1559)' >/dev/null
@@ -178,12 +178,12 @@ strand() {
 }
 
 @test "the ref is found in a commit BODY, not only the subject" {
-  # Squash merges put `Vikunja: 559` in the body via the PR description, and that
+  # Squash merges put `Task: pmp-559` in the body via the PR description, and that
   # is frequently the only place the ref appears.
   printf 'body\n' >> "$MAIN/file.txt"
-  git -C "$MAIN" commit --quiet -am "$(printf 'feat: no ref in the subject\n\nVikunja: 559\n')"
+  git -C "$MAIN" commit --quiet -am "$(printf 'feat: no ref in the subject\n\nTask: pmp-559\n')"
   git -C "$MAIN" push --quiet origin develop
-  run merge_proof "$MAIN" 559 develop
+  run merge_proof "$MAIN" pmp-559 develop
   assert_success
 }
 
@@ -257,7 +257,7 @@ strand() {
 
 @test "a read-back reporting anything but done fails the write" {
   # Herdforge: "board APIs are known to report success on writes that did not
-  # persist." Our vikunja tb_done swallows two of its three writes with `|| true`.
+  # persist."
   run merge_proof_readback 559 echo 'in-progress'
   assert_failure 2
   assert_output --partial 'not done'

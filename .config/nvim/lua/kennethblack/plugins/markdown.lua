@@ -18,6 +18,8 @@ return {
       -- tokyonight is configured `transparent = true`, so Normal has no bg to blend
       -- against -- pin the palette's night bg explicitly.
       local HEADING_BASE = "#1a1b26"
+      -- Bullet glyph per nesting level; deeper levels cycle back to the first.
+      local LIST_GLYPHS = { "●", "○", "◆", "◇" }
 
       -- Blend `hex` toward `base` (alpha 1.0 = pure `hex`), returning "#rrggbb".
       local function blend(hex, base, alpha)
@@ -43,6 +45,13 @@ return {
           -- level is legible from the words, not only from the bar behind them.
           vim.api.nvim_set_hl(0, "@markup.heading." .. i .. ".markdown", { fg = fg, bold = true })
         end
+        -- List markers take the heading accents by nesting level (level 1 = H1 blue, 2 = H2
+        -- purple, ...), so a list reads as part of the same system as the bars above it. The
+        -- plugin's own RenderMarkdownBullet links to Normal, i.e. no colour at all.
+        for i = 1, #LIST_GLYPHS do
+          vim.api.nvim_set_hl(0, "RenderMarkdownListBullet" .. i, { fg = HEADING_FG[i] })
+          vim.api.nvim_set_hl(0, "RenderMarkdownListNumber" .. i, { fg = HEADING_FG[i], bold = true })
+        end
       end
       set_heading_colors()
       vim.api.nvim_create_autocmd("ColorScheme", {
@@ -65,7 +74,37 @@ return {
           style = "normal",
           width = "block",
         },
+        -- `-` bullets and `1.` numbers. Checkbox items conceal their bullet and keep the
+        -- `checkbox` look, so none of this reaches a task line.
+        bullet = {
+          icons = LIST_GLYPHS,
+          highlight = function(ctx)
+            local lvl = (ctx.level - 1) % #LIST_GLYPHS + 1
+            local ordered = ctx.value:match "%d" ~= nil
+            return (ordered and "RenderMarkdownListNumber" or "RenderMarkdownListBullet") .. lvl
+          end,
+        },
+        -- `[/]` (in progress, see STATUS_NEXT) is not in the markdown grammar, so without this
+        -- it renders as a list bullet followed by a literal "/" and would take the bullet colour.
+        checkbox = {
+          custom = {
+            in_progress = { raw = "[/]", rendered = "󰦖 ", highlight = "RenderMarkdownTodo" },
+          },
+        },
       }
+
+      -- A wrapped list item hangs under its own text instead of under the marker.
+      -- `breakindent` is already on globally; `list:-1` indents by the length of the
+      -- 'formatlistpat' match. Checkbox items are excluded from the pattern (the `\@!`), so a
+      -- wrapped task keeps the continuation it has always had.
+      vim.api.nvim_create_autocmd("FileType", {
+        group = vim.api.nvim_create_augroup("MarkdownListIndent", {}),
+        pattern = "markdown",
+        callback = function()
+          vim.opt_local.formatlistpat = [[^\s*\%([-*+]\s\+\%(\[.\]\s\)\@!\|\d\+[.)]\s\+\)]]
+          vim.opt_local.breakindentopt = "list:-1"
+        end,
+      })
 
       -- Task priority tags. These are plain `#hashtags` at the END of a task
       -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
@@ -80,17 +119,18 @@ return {
       -- sits and trim trailing whitespace.
       --
       -- Deliberately NOT anchored to end-of-line. It used to be, which was fine while a
-      -- priority tag was always last; a wave tag now follows it (`#high #v0.0.2`), and an
+      -- priority tag was always last; a release tag now follows it (`#high #v0.0.2`), and an
       -- anchored match reads such a task as untagged, so `<leader>tP` would restart the ring
       -- from nothing every time. Mirrors md::split_priority, which never anchored.
       local function strip_priority(line)
-        for _, p in ipairs(PRIORITIES) do
-          local stripped, n = line:gsub("%s*#" .. p .. "%f[%W]", "")
+        local level
+        for i = #PRIORITIES, 1, -1 do
+          local stripped, n = line:gsub("%s*#" .. PRIORITIES[i] .. "%f[%W]", "")
           if n > 0 then
-            return (stripped:gsub("%s+$", "")), p
+            line, level = stripped, level or PRIORITIES[i]
           end
         end
-        return (line:gsub("%s+$", "")), nil
+        return (line:gsub("%s+$", "")), level
       end
 
       -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
@@ -118,7 +158,7 @@ return {
       -- `dir` (+1 toward urgent, -1 toward low) and CLAMPS at either end rather than
       -- wrapping: one press too many should not flip a task from most-urgent to least. The
       -- old ring had a `false` slot for "clear the tag"; clearing now means "default", which
-      -- is a real level, so the slot is gone. Matches the tW/tw wave ladder.
+      -- is a real level, so the slot is gone. Matches the tW/tw release ladder.
       local PRIORITY_RING = { "low", "high", "urgent" }
       local function step_priority(current, dir)
         local idx
@@ -213,8 +253,8 @@ return {
       end
 
       -- Index of the default lane within `lanes`, falling back to the most urgent offered.
-      -- `lanes` can be a sub-slice (a planned wave offers no Urgent lane), so the default is
-      -- located by name rather than by its index in the full table. Mirrors sweep::default_lane.
+      -- `lanes` can be a sub-slice, so the default is located by name rather than by its index
+      -- in the full table. Mirrors sweep::default_lane.
       local function default_lane(lanes)
         for i, lane in ipairs(lanes) do
           if lane[1] == DEFAULT_PRIORITY then
@@ -325,16 +365,15 @@ return {
         return out
       end
 
-      -- Rebuild one wave body as a single list SORTED by priority, with a trailing
+      -- Rebuild a `## Tasks` body as a single list SORTED by priority, with a trailing
       -- `### Done`. Mirrors sweep::rebuild_sorted.
       --
       -- A project sheet does not earn the lane headings the daily note gets: measured before
       -- this landed, 84 open tasks across 15 sheets with 16 tagged, so three headings and a
-      -- rule were scaffolding two real groups. Always emits - a wave's Done is part of the
-      -- wave, not something that shows up once there is enough to organize.
-      local function rebuild_wave_body(body, inherit, lanes)
-        lanes = lanes or LANES
-        local grouped = rebuild_focus_body(body, inherit, lanes, true)
+      -- rule were scaffolding two real groups. Always emits: Done is part of the section, not
+      -- something that shows up once there is enough to organize.
+      local function rebuild_task_body(body, inherit)
+        local grouped = rebuild_focus_body(body, inherit, LANES, true)
         -- Re-read the lane-grouped output back into one sorted list: drop the scaffold, keep
         -- the order the lanes already put things in. Reusing the bucketing this way is what
         -- keeps the two layouts from disagreeing about which lane a task is in.
@@ -366,12 +405,11 @@ return {
         return out
       end
 
-      -- ---- waves -------------------------------------------------------------------
-      -- A project sheet groups tasks into `## Wave: vX.Y.Z` sections the same way the daily
-      -- note groups them into priority lanes, and by the same rule: the `#vX.Y.Z` tag on the
-      -- line is the source of truth, the heading is swept output. Mirrors project_sweep.rs;
-      -- a golden test in the Rust crate pins the two to the same bytes.
-      local WAVE_PAT = "#v%d+%.%d+%.%d+"
+      -- ---- project sheets ----------------------------------------------------------
+      -- A project sheet is one `## Tasks` list. A row's release is its `#vX.Y.Z` tag, a filter
+      -- rather than a section. Mirrors project_sweep.rs; a golden test in the Rust crate pins
+      -- the two to the same bytes.
+      local VERSION_PAT = "#v%d+%.%d+%.%d+"
 
       local function parse_ver(s)
         local a, b, c = tostring(s):match "^v(%d+)%.(%d+)%.(%d+)$"
@@ -385,7 +423,7 @@ return {
         return string.format("v%d.%d.%d", v[1], v[2], v[3])
       end
 
-      -- -1 / 0 / 1, so waves sort the way versions order rather than the way strings do.
+      -- -1 / 0 / 1, so releases sort the way versions order rather than the way strings do.
       local function ver_cmp(x, y)
         for i = 1, 3 do
           if x[i] ~= y[i] then
@@ -395,49 +433,46 @@ return {
         return 0
       end
 
-      local function wave_of(line)
-        local t = line:match("(" .. WAVE_PAT .. ")")
+      local function version_of(line)
+        local t = line:match("(" .. VERSION_PAT .. ")")
         return t and parse_ver(t:sub(2)) or nil
       end
 
-      local function strip_wave(line)
-        return (line:gsub("%s?" .. WAVE_PAT, ""):gsub("%s+$", ""))
+      local function strip_version(line)
+        return (line:gsub("%s?" .. VERSION_PAT, ""):gsub("%s+$", ""))
       end
 
-      -- Canonical tag order: text, priority, wave, then the marker. Mirrors md::normalize_tags.
+      -- Canonical tag order: text, priority, release, then the marker. Mirrors md::normalize_tags.
       -- Two paths add tags at different points, so without one order the same task is spelled
       -- two ways and the editor and the CLI stop producing the same bytes.
       local function normalize_tags(line)
         if not line:match "^%s*%- %[" then
           return line
         end
-        local wave = line:match("(" .. WAVE_PAT .. ")")
+        local version = line:match("(" .. VERSION_PAT .. ")")
         -- No tags to reorder: return the line untouched rather than round-tripping it through
         -- the strippers, which would also eat the `- [ ] ` placeholder's trailing space.
-        if not wave and not select(2, strip_priority(line)) then
+        if not version and not select(2, strip_priority(line)) then
           return line
         end
-        local base, prio = strip_priority(strip_wave(line))
+        local base, prio = strip_priority(strip_version(line))
         if prio then
           base = add_tag(base, "#" .. prio)
         end
-        if wave then
-          base = add_tag(base, wave)
+        if version then
+          base = add_tag(base, version)
         end
         return base
       end
 
-      -- The current wave: the version the sheet's own `Version:` line declares. Position
-      -- cannot define it in a sweep that reorders sections, so the declaration does.
+      -- The open version: what the sheet's own `Version:` line declares. An agent board has no
+      -- such line, so it reads nil and its tags stay as they are.
       --
       -- The stage tag shares this line (`Version: v1.7.0 #prod`), so stop at the first `#`.
       -- Mirrors projects::sheet_version. Anchoring the match at end-of-line instead read
       -- every tagged sheet as having no version, and both callers treat that as "not a
       -- sheet" and return silently - so the save sweep and the tW/tw ladder were dead on
       -- every sheet at once, with nothing said.
-      --
-      -- With no `Version:` line, the first wave's version: an agent board carries none (it
-      -- follows the human sheet), and still sweeps. Mirrors projects::open_version_of.
       local function sheet_version(lines)
         for _, l in ipairs(lines) do
           local rest = l:match "^%s*Version:%s*([^#]*)"
@@ -448,159 +483,91 @@ return {
             end
           end
         end
-        for _, l in ipairs(lines) do
-          if l:match "^##%s+Wave" then
-            return parse_ver(l:match "(v%d+%.%d+%.%d+)" or "")
-          end
-        end
         return nil
       end
 
-      -- Pure: given all buffer lines, return (new_lines, changed). Rewrites only the `## Wave`
-      -- roadmap. Refuses a sheet with no open version and one whose wave heading names no
-      -- version (a legacy `## Wave 1 - verify`), rather than renumbering what it cannot name.
-      local function sweep_waves(lines, inherit)
-        local cur = sheet_version(lines)
-        if not cur then
-          return lines, false
+      -- First line past the section starting at `s`: the next H2, or the link footer (a `---`
+      -- whose next line has a wikilink), mirroring md::section_end. Without the footer arm a
+      -- sweep strips the footer's `---` and files its link line as a task.
+      local function section_end(lines, s)
+        for i = s + 1, #lines do
+          local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
+          if lines[i]:match "^##%s" or footer then
+            return i
+          end
         end
-        -- the roadmap: the first `## Wave` heading through the last consecutive one
-        local heads = {}
+        return #lines + 1
+      end
+
+      -- Line of the first heading `pat` matches, or nil.
+      local function find_heading(lines, pat)
         for i, l in ipairs(lines) do
-          if l:match "^##%s+Wave" then
-            heads[#heads + 1] = i
-          elseif #heads > 0 and l:match "^##%s" then
-            break
+          if l:match(pat) then
+            return i
           end
         end
-        if #heads == 0 then
+      end
+
+      local TASKS_PAT = "^##%s+Tasks%s*$"
+
+      -- Pure: given all buffer lines, return (new_lines, changed). Rewrites only `## Tasks`.
+      -- A tag on a closed release goes and the row follows the open version; `#urgent` is
+      -- legal only in the open version, so a row aimed later becomes `#high`.
+      local function sweep_tasks(lines, inherit)
+        local s = find_heading(lines, TASKS_PAT)
+        if not s then
           return lines, false
         end
-        local secs = {}
-        for n, i in ipairs(heads) do
-          local v = parse_ver(lines[i]:match "(v%d+%.%d+%.%d+)" or "")
-          if not v then
-            return lines, false -- an unnamed wave is not safe to reorder
-          end
-          local stop = #lines + 1
-          for j = i + 1, #lines do
-            if lines[j]:match "^##%s" then
-              stop = j
-              break
+        local e = section_end(lines, s)
+        local cur = sheet_version(lines)
+        local body = {}
+        for i = s + 1, e - 1 do
+          local l = lines[i]
+          -- blanks and the generated `- [ ] ` placeholder are scaffold, not content
+          if l:match "%S" and not l:match "^%s*%- %[ %]%s*$" then
+            local tag = l:match "^%s*%- %[[ /]%]" and cur and version_of(l)
+            if tag and ver_cmp(tag, cur) < 0 then
+              l = strip_version(l)
+            elseif tag and ver_cmp(tag, cur) > 0 and select(2, strip_priority(l)) == "urgent" then
+              l = add_tag((strip_priority(l)), "#high")
             end
-          end
-          secs[n] = { ver = v, from = i, to = (heads[n + 1] or stop) }
-        end
-        local roadmap_from, roadmap_to = heads[1], secs[#secs].to
-
-        -- bucket every task by its tag, else the section it sits in
-        local order, buckets = {}, {}
-        local function bucket(v)
-          local k = ver_str(v)
-          if not buckets[k] then
-            buckets[k] = {}
-            order[#order + 1] = v
-          end
-          return buckets[k]
-        end
-        bucket(cur)
-        for _, sec in ipairs(secs) do
-          bucket(sec.ver)
-        end
-        for _, sec in ipairs(secs) do
-          for j = sec.from + 1, sec.to - 1 do
-            local l = lines[j]
-            -- blanks and the generated `- [ ] ` placeholder are scaffold, not content
-            if l:match "%S" and not l:match "^%s*%- %[ %]%s*$" then
-              local want = wave_of(l) or sec.ver
-              if ver_cmp(want, cur) < 0 then
-                want = cur -- never earlier than the wave in flight
-              end
-              local line = l
-              if l:match "^%s*%- %[" then
-                local is_cur = ver_cmp(want, cur) == 0
-                line = strip_wave(l)
-                if not is_cur and select(2, strip_priority(line)) == "urgent" then
-                  line = add_tag((strip_priority(line)), "#high")
-                end
-                line = add_tag(line, "#" .. ver_str(want))
-              end
-              table.insert(bucket(want), line)
-            end
+            body[#body + 1] = l
           end
         end
-
-        -- current wave first, then the roadmap ascending. A plain version sort would put a
-        -- wave numbered below the current one ABOVE it, and every reader takes the first
-        -- section as the current wave.
-        local rest = {}
-        for _, v in ipairs(order) do
-          if ver_cmp(v, cur) ~= 0 then
-            rest[#rest + 1] = v
-          end
-        end
-        table.sort(rest, function(a, b)
-          return ver_cmp(a, b) < 0
-        end)
-        table.insert(rest, 1, cur)
 
         local out = {}
-        for i = 1, roadmap_from - 1 do
+        for i = 1, s do
           out[#out + 1] = lines[i]
         end
-        for n, v in ipairs(rest) do
-          if n > 1 then
-            out[#out + 1] = ""
-          end
-          local is_cur = ver_cmp(v, cur) == 0
-          out[#out + 1] = "## Wave: " .. ver_str(v) .. (is_cur and " (current)" or " (planned)")
-          local lanes = LANES
-          if not is_cur then -- only the wave in flight may hold urgent work
-            lanes = { LANES[2], LANES[3] }
-          end
-          for _, l in ipairs(rebuild_wave_body(buckets[ver_str(v)], inherit, lanes)) do
-            out[#out + 1] = normalize_tags(l)
-          end
+        for _, l in ipairs(rebuild_task_body(body, inherit)) do
+          out[#out + 1] = normalize_tags(l)
         end
-        -- One blank line between the roadmap and whatever follows it. At EOF there is
-        -- nothing to separate, and a trailing blank would be a line the CLI does not write.
-        if roadmap_to <= #lines then
+        -- One blank line between the section and whatever follows it. At EOF there is nothing
+        -- to separate, and a trailing blank would be a line the CLI does not write.
+        if e <= #lines then
           out[#out + 1] = ""
-          for i = roadmap_to, #lines do
+          for i = e, #lines do
             out[#out + 1] = lines[i]
           end
         end
-        while #out > 1 and out[#out] == "" and out[#out - 1] == "" do
-          table.remove(out)
+        local squeezed = {}
+        for _, l in ipairs(out) do
+          if not (l == "" and squeezed[#squeezed] == "") then
+            squeezed[#squeezed + 1] = l
+          end
         end
-        return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
+        return squeezed, table.concat(squeezed, "\n") ~= table.concat(lines, "\n")
       end
 
       -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
       -- section is rewritten; everything else is passed through untouched. `inherit` gates
       -- drop-to-tag (see rebuild_focus_body): ON for the save sweep, OFF for the live cycle.
       local function sweep_focus(lines, inherit)
-        local s
-        for i, l in ipairs(lines) do
-          if l:match "^##%s+Focus%s*$" then
-            s = i
-            break
-          end
-        end
+        local s = find_heading(lines, "^##%s+Focus%s*$")
         if not s then
           return lines, false
         end
-        -- Ends at the next H2 or the link footer (a `---` whose next line has a wikilink),
-        -- mirroring md::section_end. Focus is the note's last H2, so without the footer arm
-        -- the sweep strips the footer's `---` and files its link line as a Focus line.
-        local e = #lines + 1
-        for i = s + 1, #lines do
-          local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
-          if lines[i]:match "^##%s" or footer then
-            e = i
-            break
-          end
-        end
+        local e = section_end(lines, s)
         local body = {}
         for i = s + 1, e - 1 do
           body[#body + 1] = lines[i]
@@ -626,36 +593,33 @@ return {
         return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
       end
 
-      -- Apply the on-save sweep to the current buffer (inherit ON: a task dragged into a
-      -- column gets that column's tag), restoring the cursor row.
-      -- A buffer is a project SHEET when it declares a `Version:` and holds a `## Wave`;
-      -- anything else with a `## Focus` is a daily note. One dispatcher so the keymaps and
-      -- the save hook cannot disagree about which sweep a buffer gets.
+      -- A buffer is a project SHEET when it holds both `## Inbox` and `## Tasks`, the pair every
+      -- sheet carries; `## Tasks` alone is too common a heading for a sweep that runs on every
+      -- markdown save. Anything else with a `## Focus` is a daily note. One dispatcher so the
+      -- keymaps and the save hook cannot disagree about which sweep a buffer gets.
       local function sweep_buffer(lines, inherit)
-        for _, l in ipairs(lines) do
-          if l:match "^##%s+Wave" then
-            return sweep_waves(lines, inherit)
-          end
+        if find_heading(lines, TASKS_PAT) and find_heading(lines, "^##%s+Inbox%s*$") then
+          return sweep_tasks(lines, inherit)
         end
         return sweep_focus(lines, inherit)
       end
 
-      -- A task line with its priority and wave tags removed, so a line and the copy the sweep
-      -- re-tagged (`#high` appended to an untagged task, a wave tag moved) compare equal.
+      -- A task line with its priority and release tags removed, so a line and the copy the sweep
+      -- re-tagged (`#high` appended to an untagged task, a release tag moved) compare equal.
       local function task_key(line)
-        return (strip_priority(strip_wave(line)))
+        return (strip_priority(strip_version(line)))
       end
 
       -- Sweep, then put the cursor on wherever the line currently at `track_lnum` ended up,
       -- so the cursor stays on the task it was on instead of on the old row number. Matched
       -- by exact text first, then by `task_key` (the save sweep rewrites tags). Falls back to
       -- a row-clamp when the line can't be found, or is blank (a blank would match the first
-      -- blank anywhere). No-op when the sweep changes nothing. `inherit` is passed to the
-      -- sweep: OFF for the live cycles, ON for save (see rebuild_focus_body).
-      local function sweep_and_follow(track_lnum, inherit)
+      -- blank anywhere). No-op when the sweep changes nothing. Used by the live cycles, so
+      -- drop-to-tag is OFF (see rebuild_focus_body); the save sweep is file_focus_done.
+      local function sweep_and_follow(track_lnum)
         local target = vim.fn.getline(track_lnum)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_buffer(lines, inherit or false)
+        local out, changed = sweep_buffer(lines, false)
         if not changed then
           return
         end
@@ -683,9 +647,20 @@ return {
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
       end
 
-      -- The on-save sweep: drop-to-tag ON, cursor follows the task it was on.
+      -- The on-save sweep: drop-to-tag ON, and the window does not move. A finished task
+      -- still goes to Done, but the cursor keeps its row (clamped to the buffer) and the
+      -- view its scroll, instead of following the task down there like the cycles do.
       local function file_focus_done()
-        sweep_and_follow(vim.api.nvim_win_get_cursor(0)[1], true)
+        local out, changed = sweep_buffer(vim.api.nvim_buf_get_lines(0, 0, -1, false), true)
+        if not changed then
+          return
+        end
+        local view = vim.fn.winsaveview()
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
+        local last = vim.api.nvim_buf_line_count(0)
+        view.lnum = math.min(view.lnum, last)
+        view.topline = math.min(view.topline, last)
+        vim.fn.winrestview(view)
       end
 
       -- Date a hand-typed task the day it was written: in a daily note, every open Focus
@@ -713,25 +688,31 @@ return {
         sweep_and_follow(line1)
       end
 
-      -- Step a task one wave in `dir` (-1 sooner, +1 later), then re-sweep and follow it.
+      -- Step a task one release in `dir` (-1 sooner, +1 later), then re-sweep and follow it.
       --
-      -- A ladder, not a ring, unlike the priority cycle: sooner CLAMPS at the current wave
-      -- (a wave before the one in flight is what every reader takes as current), later MINTS
-      -- the next patch past the end of the roadmap. Mirrors project_sweep::step_wave.
-      local function cycle_wave(line1, line2, dir)
+      -- A ladder, not a ring, unlike the priority cycle: sooner CLAMPS at the open version (a
+      -- closed release cannot take work), later MINTS the next patch past the end of the
+      -- roadmap. The rungs are the releases open rows are aimed at. Mirrors
+      -- project_sweep::step_version. A board has no `Version:` line; a step there goes through
+      -- `notes ptask --agent promote|demote`, which reads the human sheet's.
+      local function cycle_version(line1, line2, dir)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
         local cur = sheet_version(lines)
-        if not cur then
+        local s = find_heading(lines, TASKS_PAT)
+        if not cur or not s then
           return
         end
         local ladder = {}
-        for _, l in ipairs(lines) do
-          local v = l:match "^##%s+Wave:%s+(v%d+%.%d+%.%d+)"
-          if v then
-            ladder[#ladder + 1] = parse_ver(v)
+        for i = s + 1, section_end(lines, s) - 1 do
+          local v = lines[i]:match "^%s*%- %[[ /]%]" and version_of(lines[i])
+          if v and ver_cmp(v, cur) > 0 then
+            ladder[#ladder + 1] = v
           end
         end
-        local at = wave_of(vim.fn.getline(line1)) or cur
+        local at = version_of(vim.fn.getline(line1)) or cur
+        if ver_cmp(at, cur) < 0 then
+          at = cur
+        end
         local to
         if dir < 0 then
           if ver_cmp(at, cur) <= 0 then
@@ -764,7 +745,7 @@ return {
         for lnum = line1, line2 do
           local raw = vim.fn.getline(lnum)
           if raw:match "^%s*%- %[" then
-            local line = strip_wave(raw)
+            local line = strip_version(raw)
             if not is_cur and select(2, strip_priority(line)) == "urgent" then
               line = add_tag((strip_priority(line)), "#high")
             end
@@ -868,7 +849,7 @@ return {
           --   tt  convert line to task, or add an indented subtask if already one
           --   tP  raise priority  none -> low -> high -> urgent -> none
           --   tp  lower priority  (the same ring, the other way)
-          --   tW  push one wave later   tw  pull one wave sooner  (project sheets)
+          --   tW  push one release later   tw  pull one release sooner  (project sheets)
           -- `tt`, not `tc`: notes.nvim binds `<leader>tc` globally to the task cockpit,
           -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
           -- from every markdown buffer -- the one place you most want it.
@@ -907,19 +888,19 @@ return {
             end, { buffer = buf, desc = desc, silent = true })
           end
 
-          -- Wave step, on a project sheet: tW pushes a task one wave LATER (out to the
-          -- roadmap), tw pulls it one wave SOONER. Same shape as the priority cycle, but a
-          -- bounded ladder rather than a ring - sooner stops at the current wave, later opens
-          -- the next patch version. A no-op in a buffer with no versioned wave.
-          for _, m in ipairs { { "W", 1, "Push task one wave later" }, { "w", -1, "Pull task one wave sooner" } } do
+          -- Release step, on a project sheet: tW pushes a task one release LATER (out to the
+          -- roadmap), tw pulls it one release SOONER. Same shape as the priority cycle, but a
+          -- bounded ladder rather than a ring: sooner stops at the open version, later opens
+          -- the next patch version. A no-op in a buffer with no `Version:` line.
+          for _, m in ipairs { { "W", 1, "Push task one release later" }, { "w", -1, "Pull task one release sooner" } } do
             local key, dir, desc = m[1], m[2], m[3]
             vim.keymap.set("n", "<leader>t" .. key, function()
               local lnum = vim.api.nvim_win_get_cursor(0)[1]
-              cycle_wave(lnum, lnum, dir)
+              cycle_version(lnum, lnum, dir)
             end, { buffer = buf, desc = desc, silent = true })
             vim.keymap.set("x", "<leader>t" .. key, function()
               vim.cmd "normal! \27"
-              cycle_wave(vim.fn.line "'<", vim.fn.line "'>", dir)
+              cycle_version(vim.fn.line "'<", vim.fn.line "'>", dir)
             end, { buffer = buf, desc = desc, silent = true })
           end
 

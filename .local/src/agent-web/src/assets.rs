@@ -21,22 +21,27 @@ const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
 /// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the Sessions/Waiting tabs and the event stream; each other script is one board tab.
+/// app.js the Sessions tab and the event stream, waiting.js the answer cards, home.js the Home tab;
+/// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
     ("charts.js", JS, include_bytes!("../static/charts.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
+    ("waiting.js", JS, include_bytes!("../static/waiting.js")),
+    ("home.js", JS, include_bytes!("../static/home.js")),
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
     ("infra.js", JS, include_bytes!("../static/infra.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
+    ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
+    ("focus.js", JS, include_bytes!("../static/focus.js")),
     (
         "inter.woff2",
         WOFF2,
@@ -160,6 +165,49 @@ pub async fn headers(mut res: Response) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in app.js.
+    fn js_list(name: &str) -> Vec<String> {
+        let js = include_str!("../static/app.js");
+        let at = js
+            .find(&format!("const {name} = "))
+            .unwrap_or_else(|| panic!("no {name}"));
+        let rest = &js[at..];
+        let body = &rest[..rest.find(';').unwrap()];
+        body.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn tab_names_lead_with_the_landed_layout() {
+        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs first.
+        let names = js_list("TAB_NAMES");
+        let landed: Vec<&str> = hub_core::layout::landed().map(|t| t.id).collect();
+        assert_eq!(names[..landed.len()], landed[..], "{names:?}");
+        // A retired name the TUI also knows is never a live web tab, and lands where hub-core says.
+        let retired = js_list("RETIRED_TABS");
+        for pair in retired.chunks(2) {
+            let (old, new) = (&pair[0], &pair[1]);
+            assert!(!names.contains(old), "{old} is retired and live");
+            assert_eq!(
+                hub_core::layout::resolve(old).map(|t| t.id),
+                Some(new.as_str()),
+                "{old}"
+            );
+        }
+        for (old, new) in hub_core::layout::RETIRED {
+            // overview and forecast were only ever TUI tabs; the web never had them.
+            if !["overview", "forecast"].contains(old) {
+                assert!(
+                    retired.chunks(2).any(|p| p[0] == *old && p[1] == *new),
+                    "{old} missing"
+                );
+            }
+        }
+    }
 
     fn header_of(res: &Response, name: header::HeaderName) -> String {
         res.headers()

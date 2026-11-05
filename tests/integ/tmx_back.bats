@@ -75,6 +75,27 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
 }
 
+@test "a hop to another window of this session is recorded, so L leaves the board" {
+  # note -> Prefix+i: the board is a window of the session the note is in. Every hop is a
+  # fresh attach, so tmux has no last session and the crumb is the only way back.
+  recorded lab work 4
+  at hub hub 1
+  export STUB_DEST_WINDOW_INDEX=2
+  run "$TMX" goto hub hub:board
+  assert_success
+  assert_equal "$(back_slot)" "$(printf 'hub\thub\t1')"
+}
+
+@test "a hop to the window you are already on leaves the back-slot alone" {
+  # Prefix+i twice: recording the board would lose the note and hand L a board to skip.
+  recorded hub hub 1
+  at hub hub 2
+  export STUB_DEST_WINDOW_INDEX=2
+  run "$TMX" goto hub hub:board
+  assert_success
+  assert_equal "$(back_slot)" "$(printf 'hub\thub\t1')"
+}
+
 @test "outside tmux nothing is recorded, because there is no client to have left" {
   recorded lab work 4
   at hub daily 0
@@ -151,6 +172,15 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_not_called "detach-client"
 }
 
+@test "back to another window of this session selects it, with no detach" {
+  recorded hub hub 1
+  at hub hub 2
+  run "$TMX" back
+  assert_success
+  assert_called "select-window -t hub:1"
+  assert_not_called "detach-client"
+}
+
 @test "tmux's own last-session wins over a stale crumb" {
   # The regression: the crumb is only written by hops, so after switching sessions any
   # other way it points hours into the past. Checking it first made L jump to wherever the
@@ -175,8 +205,8 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
 
 # ── A board is never somewhere to go back to ────────────────────────────────
 #
-# The boards (Prefix o / O) are declared windows of the landing session, and tmux keeps
-# one last-session slot, so a glance at a board took it: A, o, L, L landed on the board.
+# The board (Prefix i) is a declared window of the landing session, and tmux keeps
+# one last-session slot, so a glance at it took that slot: A, i, L, L landed on the board.
 
 # sessions_on <server> <name>... -- list-sessions for that world, most recent first.
 sessions_on() {
@@ -192,7 +222,7 @@ sessions_on() {
 board_declared() { printf 'daily:watch ~ hub\n' >> "$TMUX_SERVERS_DIR/hub.conf"; }
 
 @test "when tmux's last session is sitting on a board, L goes to the session worked in before" {
-  # A, Prefix o, L back to A: tmux now says the last session is the board's.
+  # A, Prefix i, L back to A: tmux now says the last session is the board's.
   board_declared
   sessions_on hub notes daily other
   at hub notes 0

@@ -1,7 +1,9 @@
 "use strict";
-// The Board tab: every project's open rows from `notes board --json` (/api/board): the human
-// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done
-// and remove go through `notes ptask --exact` with the row's raw line (POST /api/board), so a
+// The rows under the Projects tab (projects.js opens them for one project or for all): every
+// project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
+// playtest, and each profile's Focus (read-only here). Add, start, done, drop, move (to a
+// project or a version), a release sooner or later, edit and tags go through
+// `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
 // resync, and on Refresh.
@@ -12,12 +14,13 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  open: {}, pending: {}, doneFor: null, controlsKey: "",
+  // `form` is the one row whose done, drop, move, edit or tags form is open: { k, kind }.
+  open: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
   try { bst.feed = await api("/api/board"); bst.err = null; } catch (e) { bst.err = e.message; }
-  if (st.tab === "board") renderBoard();
+  if (st.tab === "projects") renderProjects();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -41,7 +44,7 @@ function bControls() {
     `<select id="b-prio">${bOpt(B_PRIORITIES, d.priority)}</select>` +
     (playtest
       ? `<input id="b-game" placeholder="game (optional)" value="${esc(d.game)}">`
-      : `<input id="b-to" placeholder="wave vX.Y.Z (optional)" value="${esc(d.to)}">`) +
+      : `<input id="b-to" placeholder="version vX.Y.Z (optional)" value="${esc(d.to)}">`) +
     `<button class="btn primary" id="b-add"${bst.busy ? " disabled" : ""}>${bst.busy ? "Adding..." : "Add"}</button>` +
     `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>` +
     `<div class="card bfilter"><div class="opts">` +
@@ -68,51 +71,94 @@ function bMatch(r) {
 function bRow(r, i) {
   const k = bKey(r);
   const focus = r.lane === "focus";
-  const tags = [r.wave, r.target && "-> " + r.target, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
-    r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
+  const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
+    r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const meta = [
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
-    r.since ? "since " + esc(r.since) : "",
+    r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (focus) {
     acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.doneFor === k) {
-    acts = `<div class="opts">` +
-      `<select data-proofkind="${i}">${bOpt([["proof", "proof"], ["unverified", "unverified, because"]], "proof")}</select>` +
-      `<input data-proof="${i}" placeholder="pr:123, a URL, or why it is unverified">` +
-      `<button class="btn sm primary" data-donego="${i}">Mark done</button>` +
-      `<button class="btn sm" data-donecancel="${i}">Cancel</button></div>`;
+  } else if (bst.form && bst.form.k === k) {
+    const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
+    const kind = bst.form.kind;
+    if (kind === "done" || kind === "drop") {
+      // Every close says how: done with a proof or why it has none, or dropped with why or the
+      // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
+      const done = kind === "done";
+      const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
+      acts = `<div class="opts">` +
+        `<select data-formkind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
+        `<input data-forminput="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
+        `<button class="btn sm primary" data-formgo="${i}">${done ? "Mark done" : "Drop"}</button>` + cancel;
+    } else if (kind === "move") {
+      const names = [...new Set(bst.feed.projects.map((p) => p.project))].filter((p) => p !== r.project).sort();
+      acts = `<div class="opts">` +
+        `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
+        `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
+        `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else if (kind === "tag") {
+      // A row has one size, so adding size/m replaces its old one; a release is Move's.
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" placeholder="add: size/s requested">` +
+        `<input data-formremove="${i}" placeholder="remove: ai">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save tags</button>` + cancel;
+    } else {
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" value="${esc(r.text)}">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
+    }
   } else {
+    // A playtest check has no version and no edit: notes takes add, done and drop there.
+    const versioned = r.lane !== "playtest";
     acts = `<div class="opts">` +
-      (r.lane !== "playtest" && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
+      (versioned && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
       `<button class="btn sm" data-done="${i}">Done...</button>` +
-      `<button class="btn sm" data-rm="${i}">${bst.pending[k] ? "Click again to remove" : "Remove"}</button></div>`;
+      (versioned ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` +
+        `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
+        `<button class="btn sm" data-move="${i}">Move...</button>` +
+        `<button class="btn sm" data-edit="${i}">Edit...</button>` +
+        `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
+      `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
+// The matching rows, split: what the triager filed today (by the feed's own clock) and,
+// once each, the rest by group.
 function bGroups() {
-  const rows = bst.feed.rows;
-  const groups = new Map();
-  rows.forEach((r, i) => {
+  const groups = new Map(), filed = [];
+  bst.feed.rows.forEach((r, i) => {
     if (!bMatch(r)) return;
+    if (r.filed && r.filed === bst.feed.today) return filed.push([r, i]);
     const g = r.project ? r.profile + "/" + r.project : r.profile + " Focus";
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push([r, i]);
   });
-  return groups;
+  return { groups, filed };
 }
 
 function drawBoardList() {
   const el = $("b-list");
   if (!el) return;
-  const groups = bGroups();
+  const { groups, filed } = bGroups();
   const narrowed = bst.filter.project || bst.filter.q.trim();
   let n = 0, html = bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "";
+  // What the triager filed from the inboxes today, to check: Edit... rewrites a row, Drop...
+  // rejects it with a why. A reworded row keeps the human's words as its `was:` line.
+  const waiting = bst.feed.projects.reduce((s, p) => s + (p.inbox || 0), 0);
+  if (filed.length || waiting) {
+    n += filed.length;
+    const open = bst.open["filed-today"] != null ? bst.open["filed-today"] : true;
+    html += `<details data-k="filed-today"${open ? " open" : ""}><summary><h2 class="sec">Filed today ` +
+      `<span class="muted">${filed.length} from the inboxes${waiting ? `, ${waiting} still waiting` : ""}</span></h2></summary>` +
+      (filed.length ? filed.map(([r, i]) => bRow(r, i)).join("") : `<div class="card muted">Nothing filed yet today.</div>`) +
+      `</details>`;
+  }
   for (const [g, list] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
     n += list.length;
     const urgent = list.filter(([r]) => r.priority === "urgent").length;
@@ -121,11 +167,11 @@ function drawBoardList() {
       `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
       list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
   }
-  html = `<div class="muted qstats">${n} open rows in ${groups.size} groups</div>` +
+  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
-  const y = $("board").scrollTop;
+  const y = $("projects").scrollTop;
   el.innerHTML = html;
-  $("board").scrollTop = y;
+  $("projects").scrollTop = y;
 }
 
 function renderBoard() {
@@ -174,6 +220,7 @@ async function bWrite(body, okMsg) {
   } finally {
     renderBoard();
     refreshBoard();
+    refreshProjects();
   }
 }
 
@@ -200,27 +247,48 @@ $("board").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
-  const r = rows[t.dataset.start || t.dataset.done || t.dataset.rm || t.dataset.donego || t.dataset.donecancel];
+  const d = t.dataset;
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
-  if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
-  if (t.dataset.done) { bst.doneFor = k; drawBoardList(); const i = $("board").querySelector(`[data-proof="${t.dataset.done}"]`); if (i) i.focus(); return; }
-  if (t.dataset.donecancel) { bst.doneFor = null; drawBoardList(); return; }
-  if (t.dataset.donego) {
-    const i = t.dataset.donego;
-    const v = $("board").querySelector(`[data-proof="${i}"]`).value.trim();
-    const kind = $("board").querySelector(`[data-proofkind="${i}"]`).value;
-    if (!v) { bst.msg = kind === "proof" ? "Give the proof (pr:N or a URL)." : "Say why it is unverified."; renderBoard(); return; }
-    bst.doneFor = null;
-    bWrite(Object.assign({ verb: "done", [kind]: v }, bTarget(r)), "Done.");
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
+  if (d.promote || d.demote) {
+    const verb = d.promote ? "promote" : "demote";
+    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
-  if (t.dataset.rm) {
-    // The page has no confirm dialog to lean on, so the button asks twice.
-    if (bst.pending[k]) { delete bst.pending[k]; bWrite(Object.assign({ verb: "rm" }, bTarget(r)), "Removed."); return; }
-    bst.pending[k] = true;
-    t.textContent = "Click again to remove";
-    setTimeout(() => { delete bst.pending[k]; }, 4000);
+  const opened = d.done || d.drop || d.move || d.edit || d.tag;
+  if (opened) {
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
+    drawBoardList();
+    const i = $("board").querySelector(`[data-forminput="${opened}"]`);
+    if (i) i.focus();
+    return;
+  }
+  if (d.formcancel) { bst.form = null; drawBoardList(); return; }
+  if (d.formgo && bst.form) {
+    const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
+    const v = q("forminput").value.trim(), kind = bst.form.kind;
+    let body, ok;
+    if (kind === "done" || kind === "drop") {
+      const how = q("formkind").value;
+      const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+      if (!v) { bst.msg = need[how]; renderBoard(); return; }
+      body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
+    } else if (kind === "move") {
+      const dest = q("movedest").value;
+      if (!dest && !v) { bst.msg = "Pick a project, a version, or both."; renderBoard(); return; }
+      body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
+    } else if (kind === "tag") {
+      const rm = q("formremove").value.trim();
+      if (!v && !rm) { bst.msg = "Type a tag to add or remove."; renderBoard(); return; }
+      body = { verb: "tag", add: v, remove: rm }; ok = "Tags saved.";
+    } else {
+      if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }
+      body = { verb: "edit", text: v }; ok = "Edited.";
+    }
+    bst.form = null;
+    bWrite(Object.assign(body, bTarget(r)), ok);
   }
 });
 $("board").addEventListener("change", (e) => {
@@ -234,14 +302,10 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.proof;
-  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-donego="${i}"]`); if (b) b.click(); }
+  const i = e.target.dataset.forminput || e.target.dataset.formremove;
+  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;
 }, true);
 
-TABS.board = {
-  show() { renderBoard(); refreshBoard(); },
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "board") refreshBoard(); },
-};

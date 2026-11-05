@@ -36,7 +36,7 @@ setup() {
   "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a string value, to catch an unguarded jq",
-    "proj": { "system": "vikunja", "instance": "https://example.test" }
+    "proj": { "system": "board", "code": "pj" }
   }
 }
 EOF
@@ -169,7 +169,7 @@ seed_anchor() {
 
 # One `notes projects --stats --json` row. $1 name, $2 stage, $3 status_date, $4 status.
 lab_row() {
-  printf '{"profile":"bnb","name":"%s","dir":"%s/lab/%s","stage":"%s","version":"v1.2.0","wave":"v1.2.0","open":3,"done":2,"urgent":0,"high":1,"low":1,"planned":4,"agent":5,"status":"%s","status_date":"%s","sheet":"x","summary":"y"}' \
+  printf '{"profile":"bnb","name":"%s","dir":"%s/lab/%s","stage":"%s","version":"v1.2.0","open":3,"done":2,"urgent":0,"high":1,"low":1,"planned":4,"agent":5,"status":"%s","status_date":"%s","sheet":"x","summary":"y"}' \
     "$1" "$HOME" "$1" "$2" "$4" "$3"
 }
 
@@ -180,7 +180,7 @@ lab_row() {
   assert_success
   run cat "$ANCHOR"
   assert_output --partial '## Lab'
-  assert_output --partial "- **proj** (bnb, beta) v1.2.0: 3 open, 2 done this wave, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
+  assert_output --partial "- **proj** (bnb, beta) v1.2.0: 3 open, 2 done, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
   assert_output --partial '  - Status: boss fight in review'
   refute_output --partial 'STALE'
   refute_output --partial '**other**'
@@ -213,7 +213,7 @@ EOF2
   assert_success
   run cat "$ANCHOR"
   assert_output --partial '- **app-a** (bnb, beta)'
-  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: 3 open, 2 done this wave, 5 on the agent board; no status;'
+  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: 3 open, 2 done, 5 on the agent board; no status;'
   refute_output --partial '  - Status:'
 }
 
@@ -242,7 +242,7 @@ EOF2
 @test "regen-anchor --all: scaffolds every project's anchor, but none for a repo-only key" {
   cat > "$MAP" <<'EOF2'
 { "paths": { "/repos/toolrepo": "toolrepo" }, "aliases": {},
-  "trackers": { "default": { "system": "vikunja" }, "_comment": "doc",
+  "trackers": { "default": { "system": "none" }, "_comment": "doc",
                 "game": { "repo": "toolrepo", "path": "games/g" },
                 "board-only": { "repo": "toolrepo" }, "proj": {} } }
 EOF2

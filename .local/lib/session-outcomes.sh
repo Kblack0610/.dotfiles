@@ -27,7 +27,10 @@
 # own notes; a commit counts because an edit made through Bash is not a tool call of its own.
 # uses counts what the session reached for, by name: Agent spawns by subagent_type, Skill
 # calls, and typed /commands. Calls made inside a subagent live in its own transcript and
-# are not counted here; `claude-recall stats` folds those in.
+# are not counted here; `claude-recall stats` folds those in. A compaction is a
+# compact_boundary record, split by what triggered it: auto (the context filled) or manual.
+# plan_gate counts ExitPlanMode calls and how many plan-standard.sh denied; the human rejecting
+# a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
   jq -nR '
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
@@ -40,6 +43,8 @@ so_transcript_metrics() {
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
+        plan_exits: 0, plan_denied: 0,
+        compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
       | if $r.type == "assistant" then
@@ -52,6 +57,7 @@ so_transcript_metrics() {
         | reduce ($r.message.content | if type == "array" then .[] else empty end
                   | select(.type == "tool_use")) as $u (.;
             .tool_calls += 1
+            | (if $u.name == "ExitPlanMode" then .plan_exits += 1 else . end)
             | (if $u.name == "Agent" or $u.name == "Task" then
                  .uses.subagents[($u.input.subagent_type // "general-purpose") | tostring] += 1
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
@@ -92,6 +98,7 @@ so_transcript_metrics() {
               | ($c.is_error == true) as $err
               | (if $err then .tool_errors += 1 else . end)
               | (if $err and ($t | startswith("The user doesn'"'"'t want to proceed")) then .denied += 1 else . end)
+              | (if $err and ($t | startswith("PreToolUse:ExitPlanMode hook error: plan-standard: ")) then .plan_denied += 1 else . end)
               | (if ($err | not) and .pr_ids[$c.tool_use_id] then
                    .prs += ([ $t | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
                               | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ]
@@ -106,14 +113,18 @@ so_transcript_metrics() {
               .interrupts += 1
             else . end)
         end
+      elif $r.type == "system" and $r.subtype == "compact_boundary" then
+        .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
     | { prs: (.prs | unique),
         entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
+        plan_gate: { exits: .plan_exits, denied: .plan_denied },
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
-                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0) },
+                    tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
+                    compactions },
         uses }
   ' < "$1"
 }
@@ -167,17 +178,27 @@ so_latest() {
 # so_friction_def - the ONE ranking every reader uses: a sort key for "look at this
 # session first", not a grade (an idle session scores 0 like a perfect one). A revert
 # undoes shipped work (5); a PR closed unmerged or a written-down correction is redirected
-# work (2); an interrupt, rejected tool call or API error is friction (1). tool_errors
-# stay out: failed commands are how work gets done.
+# work (2); an interrupt, rejected tool call, API error, shepherd nudge or CI red before a
+# merge is friction (1): pipeline-eval found nudges and reds are rework worth scoring.
+# tool_errors stay out: failed commands are how work gets done. Minutes, cost and
+# escalations stay on the card and out of the sum: they measure size, not friction.
+# friction_terms is the one list of [weight, count, words]: friction sums it and why
+# reads it out (`worst`, `card`), so the words always add up to the number.
 so_friction_def() {
   cat <<'EOF'
-def friction:
-  5 * (.reverted_7d // 0)
-  + 2 * (.prs_closed_unmerged // 0)
-  + 2 * (.corrections.lessons_written // 0)
-  + (.corrections.interrupts // 0)
-  + (.hard_errors.denied // 0)
-  + (.hard_errors.api_error // 0);
+def friction_terms:
+  [ [5, (.reverted_7d // 0), "reverted"],
+    [2, (.prs_closed_unmerged // 0), "closed unmerged"],
+    [2, (.corrections.lessons_written // 0), "lessons written"],
+    [1, (.corrections.interrupts // 0), "interrupts"],
+    [1, (.hard_errors.denied // 0), "denied"],
+    [1, (.hard_errors.api_error // 0), "API errors"],
+    [1, (.delivery.nudges // 0), "nudges"],
+    [1, (.delivery.merged.ci_reds // 0), "CI reds before merge"] ];
+def friction: friction_terms | map(.[0] * .[1]) | add;
+def why:
+  friction_terms | map(select(.[1] > 0) | (if .[0] > 1 then "\(.[0]) x " else "" end) + "\(.[1]) \(.[2])")
+  | join(" + ");
 EOF
 }
 
@@ -199,7 +220,11 @@ so_langfuse_events() {
         ["lessons_written", .corrections.lessons_written],
         ["denied", .hard_errors.denied],
         ["api_error", .hard_errors.api_error],
-        ["tool_errors", .hard_errors.tool_errors] ][]
+        ["tool_errors", .hard_errors.tool_errors],
+        ["compactions", (.activity.compactions | values | .auto + .manual)],
+        ["nudges", .delivery.nudges],
+        ["ci_reds", .delivery.merged.ci_reds],
+        ["lines_added", .delivery.merged.lines_added] ][]
     | select(.[1] != null)
     | { id: "so:\($r.session_id):\(.[0]):\($r.observed)",
         type: "score-create",

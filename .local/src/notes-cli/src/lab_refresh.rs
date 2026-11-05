@@ -20,7 +20,9 @@ pub fn kick() {
     if std::env::var_os(SKIP_ENV).is_some() {
         return;
     }
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
     let log_dir = std::path::Path::new(&home).join(".local/log");
     let _ = std::fs::create_dir_all(&log_dir);
     let stderr = OpenOptions::new()

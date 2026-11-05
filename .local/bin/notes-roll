@@ -3,12 +3,12 @@
 #
 #   notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
 #
-# Wraps `notes projects --roll` with the tag guard (a shipping app never freezes an
+# Wraps `notes projects --release` with the tag guard (a shipping app never freezes an
 # untagged version), the agent changelog appended to the frozen note, and the
 # notes-version-summary refresh (best-effort).
 #
-# Defaults to PATCH, because that is what a wave is. `vX.Y.Z` opens that exact version
-# next; `carry` moves the wave's open tasks forward instead of refusing on them (what a
+# Defaults to PATCH. `vX.Y.Z` opens that exact version
+# next; `carry` aims the version's open tasks at the next instead of refusing on them (what a
 # release tag closing its version does). `renumber` (with `vX.Y.Z`) opens a version BELOW
 # the open one, for a sheet whose number ran ahead of the app's tags: the open number can
 # never be tagged, so the guard accepts it only while the sheet is above the newest tag and
@@ -119,7 +119,7 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX
   local profile="$1" name="$2" flag="${3:-}" out frozen
   roll_tag_guard "$profile" "$name" || return 1
   # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
-  out="$(notes --profile "$profile" projects --roll "$name" $flag 2>&1)" \
+  out="$(notes --profile "$profile" projects --release "$name" $flag 2>&1)" \
     || { echo "$out"; echo "roll failed"; return 1; }
   echo "$out"
   # the note that was just frozen (path is in the `(froze <path>)` line)

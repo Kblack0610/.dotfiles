@@ -351,7 +351,7 @@ function M.setup()
   end, { desc = "Find notes by tag" })
   vim.keymap.set("n", "<leader>np", function()
     require("notes.cockpit").open_projects()
-  end, { desc = "Projects popup (tmux Prefix+P)" })
+  end, { desc = "Projects popup (tmux Prefix+p)" })
   -- Task cockpit — reachable as <leader>nc (notes group) and <leader>tc (tasks
   -- group; one-handed). Both open the same global cross-profile cockpit.
   local open_cockpit = function()

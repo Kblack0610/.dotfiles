@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# agentctl-inbox-plan: plan each open board row tagged #plan, before anyone starts it.
+#
+#   agentctl-inbox-plan [--dry-run] [--project <name>] [--waiting]
+#
+# Triage tags a row #plan when it is more than one small change; a person can tag one by hand.
+# Per row (INBOX_PLAN_MAX a pass, oldest first) one model call (the conf's MODEL) reads the row,
+# its details, its project's open rows and, read-only, the project's code, and proposes a goal,
+# an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
+# #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
+# the ingest record, so later passes skip the row until its words change. The inbox sweep
+# starts this runner when `--waiting` (exit 0: a row waits) says so. How it all fits: notes-cli
+# README, "Intake".
+
+set -uo pipefail
+
+NAME="${AGENTCTL_NAME:-inbox-plan}"
+: "${INBOX_PLAN_CMD:=agentctl-run --role distill}"
+: "${INBOX_PLAN_MAX:=3}"
+
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+LIB="$HERE/../lib"
+# shellcheck source=/dev/null
+. "$LIB/agent-proof.sh"
+# shellcheck source=/dev/null
+. "$LIB/md-render.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$HERE/../../.config/shared-hooks/project-name.sh"
+
+DRY=0; ONLY=""; WAITING=0; PLANNED=0; SPLIT=0; FAILED=0; RECORD=""
+say() { printf 'inbox-plan: %s\n' "$*" >&2; }
+clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
+
+# The open #plan rows the record has not refused, oldest first, as JSON lines.
+# shellcheck disable=SC2016 # jq source, not shell
+WAITING_JQ='[.rows[] | select(.state == "open" and .id != null and (.text | test("(^| )#plan( |$)"; "i")))
+  | select($only == "" or .project == $only)
+  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[]'
+
+# seen: the record's refused rows, by project and words.
+seen() {
+  [ -s "$RECORD" ] || { echo '{}'; return; }
+  jq -cn '[inputs | select(.action == "refused") | {key: (.from + "\t" + .text), value: true}]
+    | from_entries' "$RECORD" 2>/dev/null || echo '{}'
+}
+
+refused() {
+  say "$1: $3 ($2)"
+  FAILED=$((FAILED + 1))
+  [ "$DRY" = 1 ] || notes ingest record --action refused --from "$1" --why "$2" -- "$3" >/dev/null 2>&1
+}
+
+# plan_row <row json> <board json>: one model call and its writes.
+plan_row() {
+  local row="$1" board="$2" p id lane text raw sheet line details open repo sub prompt out rc wd ans
+  p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
+  text="$(jq -r .text <<<"$row")"; raw="$(jq -r .raw <<<"$row")"
+  sheet="$(jq -r .sheet <<<"$row")"; line="$(jq -r .line <<<"$row")"
+  details="$(sed -n "$((line + 1)),\$p" "$sheet" 2>/dev/null | awk '/^  /{print; next} {exit}')"
+  open="$(jq -r --arg p "$p" --arg l "$lane" --arg id "$id" '.rows[]
+    | select(.project == $p and .lane == $l and .state != "done" and .id != $id) | "\(.id)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  repo="$(project_repo_path "$p")"; sub="$(project_field "$p" path)"
+  [ -n "$repo" ] && [ -d "$repo" ] || repo=""
+  local -a lanes=() add=()
+  [ "$lane" = agent ] && lanes=(--agent)
+  prompt="You plan one task before anyone starts it. Project: $p (board: $lane; human is the person's own list, agent is work agents do).${repo:+ Its code is at $repo${sub:+/$sub}: read what you need with Read, Grep and Glob to ground the plan, name real files, and change nothing.}
+
+The row: $text
+${details:+Its detail lines:
+$details
+}
+Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci run decide check, title under 80 characters. Do not split into a row the open rows below already hold.
+
+Answer with one JSON object between a line INBOX-PLAN-START and a line INBOX-PLAN-END, nothing else between them:
+{\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": []}
+
+## Open rows on this board (id, text)
+$open"
+  [ -n "$repo" ] && add=(--add-dir "$repo")
+  wd="$(mktemp -d)"
+  # shellcheck disable=SC2086 # a word list by design, overridable in tests
+  # An empty directory, so no repo's Stop hook answers in place of the model.
+  out="$(cd "$wd" && $INBOX_PLAN_CMD -p "$prompt" "${add[@]}" 2>/dev/null)"; rc=$?
+  rm -rf -- "$wd"
+  [ "$rc" = 0 ] || { say "$p $id: model call failed"; FAILED=$((FAILED + 1)); return 1; }
+  ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c 'select(type == "object")' 2>/dev/null | head -n 1)"
+  [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 1; }
+
+  local goal size new d r n=0 why
+  local -a dets=() rows=()
+  goal="$(jq -r '.goal // "" | tostring' <<<"$ans" | clean 200)"
+  [ -n "$goal" ] || { refused "$p" "the plan had no goal" "$text"; return 1; }
+  dets=(--detail "goal: $goal")
+  while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "approach: $d"); done \
+    < <(jq -r '.approach[]? | strings' <<<"$ans" | head -n 6)
+  while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "check: $d"); done \
+    < <(jq -r '.checks[]? | strings' <<<"$ans" | head -n 6)
+  mapfile -t rows < <(jq -r '.split[]? | strings' <<<"$ans" | head -n 6)
+  why="$(( ${#dets[@]} / 2 )) plan lines"
+  [ "${#rows[@]}" -gt 0 ] && dets+=(--detail "split: ${#rows[@]} rows, each marked part of $id")
+  size="$(jq -r '.size // "" | tostring' <<<"$ans")"
+  # The row's words without #plan, its size the plan's.
+  new="$(sed -E 's/(^| )#[Pp][Ll][Aa][Nn]( |$)/ /g; s/  +/ /g; s/^ //; s/ $//' <<<"$text")"
+  if [[ "$size" =~ ^[sml]$ ]]; then
+    new="$(sed -E 's/(^| )#size\/[a-z]+( |$)/ /g; s/  +/ /g; s/ $//' <<<"$new") #size/$size"
+  fi
+  if [ "$DRY" = 1 ]; then
+    printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
+  fi
+  local err
+  if ! { err="$(notes ptask "$p" "${lanes[@]}" --exact edit --text "$new" "${dets[@]}" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
+    refused "$p" "$(tail -n 1 <<<"${err:-not edited}" | clean 160)" "$text"; return 1
+  fi
+  PLANNED=$((PLANNED + 1))
+  for r in "${rows[@]}"; do
+    r="$(clean 150 <<<"$r")"; [ -n "$r" ] || continue
+    if notes ptask "$p" "${lanes[@]}" add --detail "part of $id: $new" -- "$r" >/dev/null 2>&1; then
+      n=$((n + 1)); SPLIT=$((SPLIT + 1))
+    else
+      say "$p $id: split row not added: $r"; FAILED=$((FAILED + 1))
+    fi
+  done
+  [ "$n" -gt 0 ] && why="$why, split into $n rows"
+  notes ingest record --action planned --from "$p" --id "$id" --why "$why" -- "$new" >/dev/null 2>&1 \
+    || say "$p $id: not recorded as planned"
+}
+
+main() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY=1; shift ;;
+      --project) ONLY="${2:-}"; shift 2 ;;
+      --waiting) WAITING=1; shift ;;
+      -h|--help) sed -n '2,4p' "$0"; return 0 ;;
+      *) say "unknown argument: $1"; return 2 ;;
+    esac
+  done
+  local dir board rows rc=0 row summary verdict
+  dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
+  [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
+  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board" | head -n "$INBOX_PLAN_MAX")"
+  [ "$WAITING" = 1 ] && { [ -n "$rows" ]; return; }
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true
+    plan_row "$row" "$board" || rc=1
+  done <<<"$rows"
+  summary="planned $PLANNED, split into $SPLIT rows, refused $FAILED"
+  say "$summary"
+  [ "$DRY" = 1 ] && return "$rc"
+  verdict=NOOP
+  [ "$PLANNED" -gt 0 ] && verdict=WORKED
+  [ "$rc" != 0 ] && verdict=FAILED
+  proof_report "$NAME" "$verdict" "$summary"
+  agentctl report --name "$NAME" "detail=$summary" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

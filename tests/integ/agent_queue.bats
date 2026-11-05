@@ -7,6 +7,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
+  sandbox_worlds
   AQ="$REPO_ROOT/.local/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
@@ -17,6 +18,8 @@ setup() {
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
+  # The caller's Claude session stamps items and decides mine: a test sets it, never inherits it.
+  unset CLAUDE_CODE_SESSION_ID
 }
 
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
@@ -152,6 +155,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
+  "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
+  "$AQ" add --project game --slug clock --tags "at:09:00" "b"
+  # 16:00 the day before: the time-of-day tag has passed, the dated one holds.
+  AGENT_QUEUE_NOW=2026-11-04T16:00 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = clock ]
+  "$AQ" move clock done --status cancelled
+  AGENT_QUEUE_NOW=2026-11-04T16:00 run "$AQ" next --json
+  assert_failure
+  AGENT_QUEUE_NOW=2026-11-05T08:59 run "$AQ" next --json
+  assert_failure
+  AGENT_QUEUE_NOW=2026-11-05T09:00 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = tomorrow ]
+  run "$AQ" add --project game --tags "at:2026-13-01T09:00" "x"
+  assert_failure; assert_output --partial "at:YYYY-MM-DDTHH:MM"
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
@@ -205,7 +225,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move w running
   f="$(item running w)"
   [ -n "$(field "$f" started)" ]
-  [ "$(field "$f" session)" = game-agent-1 ]
+  [ "$(field "$f" session)" = lab:game-agent-1 ]
   "$AQ" move w waiting
   [ -n "$(field "$(item waiting w)" waiting)" ]
   run "$AQ" move w done
@@ -224,10 +244,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" set s queued=now
   assert_failure
   "$AQ" move s done --status ok
-  run "$AQ" set s pr=https://example/pr/9 "note=a b c"
+  run "$AQ" set s pr=https://example/pr/9 "note=a b c" report=https://example/report
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-s.md)"
   [ "$(field "$f" pr)" = https://example/pr/9 ]
+  [ "$(field "$f" report)" = https://example/report ]
   [ "$(field "$f" note)" = "a b c" ]
 }
 
@@ -252,30 +273,54 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$f" note)" ]
 }
 
+@test "add --title writes one title line; an item without one has no title key" {
+  "$AQ" add --project game --slug t --title $'Fix the  thing\nnow' "the long task text"
+  [ "$(field "$(item queued t)" title)" = "Fix the thing now" ]
+  "$AQ" add --project game --slug u "no title given"
+  ! grep -q '^title:' "$(item queued u)"
+}
+
 @test "plan mode and --running are recorded; --running starts in running/" {
   "$AQ" add --project game --mode plan --slug p "plan this"
   [ "$(field "$(item queued p)" mode)" = plan ]
   run "$AQ" add --project game --running --session dotfiles-70 --slug by-hand "this session"
   assert_success
   f="$(item running by-hand)"
-  [ "$(field "$f" session)" = dotfiles-70 ]
+  [ "$(field "$f" session)" = lab:dotfiles-70 ]
   [ -n "$(field "$f" started)" ]
 }
 
-@test "--running inside tmux records <server>:<session> by default; outside it, none" {
+@test "--running on the agent world records <server>:<session>; off it or outside tmux, none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
-  TMUX="$SANDBOX/tmp/tmux-1000/default,123,0" run "$AQ" add --project game --running --slug here "this session"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
   assert_success
-  [ "$(field "$(item running here)" session)" = default:dotfiles-agent-9 ]
-  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --session given --slug given "given"
-  [ "$(field "$(item running given)" session)" = given ]
+  [ "$(field "$(item running here)" session)" = lab:dotfiles-agent-9 ]
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubbed "from a hub window"
+  assert_success
+  [ -z "$(field "$(item running hubbed)" session)" ]
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --session given --slug given "given"
+  [ "$(field "$(item running given)" session)" = lab:given ]
   run "$AQ" add --project game --running --slug nowhere "no tmux"
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+@test "a bare session is refused when no world declares @agents, and cancel kills nothing on a value with no server" {
+  rm "$HOME/.config/tmux-servers/lab.conf"
+  run "$AQ" add --project game --running --session given --slug given "given"
+  assert_failure
+  assert_output --partial 'no world declares @agents'
+  sandbox_worlds
+  "$AQ" add --project game --running --session lab:x --slug bare "bare"
+  sed -i 's/^session: .*/session: dotfiles/' "$(item running bare)"
+  run "$AQ" cancel bare
+  assert_success
+  assert_not_called 'kill-session'
+}
+
 @test "mine: the active item this tmux session records; none exits 1, two exit 2" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
-  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
   run "$AQ" mine
   assert_failure 1
   "$AQ" add --project game --running --slug here "this session"
@@ -292,6 +337,72 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move second done --status ok
   run "$AQ" mine
   assert_failure 1
+}
+
+@test "mine: a waiting item of the same tmux session is not this one's; only a running one is" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug earlier "an earlier conversation"
+  "$AQ" move earlier waiting
+  run "$AQ" mine
+  assert_failure 1
+}
+
+@test "mine: the Claude session decides first, across tmux sessions and in waiting; none with a session id exits 1" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_success
+  assert_output ours
+  "$AQ" move ours waiting
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_output ours
+  unset TMUX
+  CLAUDE_CODE_SESSION_ID=sid-none run "$AQ" mine
+  assert_failure 1
+}
+
+@test "mine --sid: that Claude session's item only, never the tmux session's; two exit 2" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  run "$AQ" mine --sid sid-none
+  assert_failure 1
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-other run "$AQ" mine --sid sid-a
+  assert_success
+  assert_output ours
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug second "another"
+  run "$AQ" mine --sid sid-a
+  assert_failure 2
+}
+
+@test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
+  f="$(item queued typed)"
+  [ "$(field "$f" sessions)" = sid-a ]
+  [ "$(field "$f" type)" = fix ]
+  [ "$(field "$f" area)" = agent-land ]
+  "$AQ" add --project game --slug untyped "Menu: pick sides"
+  [ -z "$(field "$(item queued untyped)" sessions)" ]
+  [ -z "$(field "$(item queued untyped)" type)" ]
+  "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
+  [ "$(field "$(item queued titled)" area)" = queue ]
+  run "$AQ" claim typed --sid sid-b
+  assert_success
+  CLAUDE_CODE_SESSION_ID=sid-b run "$AQ" claim typed
+  assert_output --partial "already claimed"
+  [ "$(field "$f" sessions)" = "sid-a sid-b" ]
+  run "$AQ" claim typed --sid 'x;rm'
+  assert_failure
+  run "$AQ" claim typed
+  assert_failure
+  assert_output --partial "no Claude session"
+  "$AQ" move typed done --status ok
+  run "$AQ" claim typed --sid sid-c
+  assert_failure
 }
 
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
@@ -387,10 +498,12 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = night ]
+  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   f="$(item queued my-plan-p4)"
   [ "$(field "$f" after)" = my-plan-p2 ]
   [ "$(field "$f" phases)" = "4 5" ]
+  [ "$(field "$f" title)" = "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4" ]
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
   [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
@@ -436,7 +549,7 @@ EOF
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" | grep my-plan)" ]
 }
 
-@test "cancel moves a queued item to done, and kills a running item's session" {
+@test "cancel moves a queued item to done, and kills the session dispatch made for a running item" {
   "$AQ" add --project game --slug q "q"
   run "$AQ" cancel q
   assert_success
@@ -444,6 +557,7 @@ EOF
   run grep -c kill-session "$NOTES_FIXTURE/calls.log"
   assert_output 0
   "$AQ" add --project game --running --session game-agent-2 --slug r "r"
+  "$AQ" set r origin=run
   run "$AQ" cancel r
   assert_success
   run grep -- "-L lab kill-session -t =game-agent-2" "$NOTES_FIXTURE/calls.log"
@@ -452,10 +566,60 @@ EOF
   assert_failure; assert_output --partial "nothing active"
   # fleet-dispatch writes <server>:<tmux session>: the kill goes to that server.
   "$AQ" add --project game --running --session default:game-agent-3 --slug s "s"
+  "$AQ" set s origin=hand
   run "$AQ" cancel s
   assert_success
   run grep -- "-L default kill-session -t =game-agent-3" "$NOTES_FIXTURE/calls.log"
   assert_success
+}
+
+# 2026-11-04: cancelling an item hand-started in a hub:dotfiles window killed hub:dotfiles and
+# every window in it. A hand start now records no hub session, but items that name one exist.
+@test "cancel of an item recorded on a hub:dotfiles window closes its window, never the session" {
+  "$AQ" add --project game --running --session hub:dotfiles --slug by-hand "by hand"
+  "$AQ" set by-hand window=@9
+  run "$AQ" cancel by-hand
+  assert_success
+  assert_output --partial "closed window @9 of dotfiles"
+  run grep -- "tmux -L hub kill-window -t @9" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "a hand start on the agent world records its window, and cancel closes only that" {
+  echo game-agent-1 > "$NOTES_FIXTURE/tmux.session"
+  TMUX="/tmp/tmux-1000/lab,1,0" TMUX_PANE=%31 STUB_WINDOW_ID=@9 \
+    "$AQ" add --project game --running --slug by-hand "by hand"
+  f="$(item running by-hand)"
+  [ "$(field "$f" session)" = lab:game-agent-1 ]
+  [ "$(field "$f" window)" = @9 ]
+  run "$AQ" cancel by-hand
+  assert_success
+  run grep -- "tmux -L lab kill-window -t @9" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "cancel of a hand-started item that recorded no window kills nothing" {
+  "$AQ" add --project game --running --session hub:dotfiles --slug old "recorded before windows were"
+  run "$AQ" cancel old
+  assert_success
+  assert_output --partial "left hub:dotfiles open"
+  run grep -cE "kill-(session|window)" "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "cancel never kills a world session, even one an item says dispatch made" {
+  export TMUX_SERVERS_DIR="$REPO_ROOT/.config/tmux-servers"
+  "$AQ" add --project game --running --session hub:dotfiles --slug wrong "a bad record"
+  "$AQ" set wrong origin=run
+  run "$AQ" cancel wrong
+  assert_success
+  assert_output --partial "dotfiles is a world session"
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "the same slug finished twice in a day keeps both records" {
@@ -466,6 +630,17 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR"/done/*/ | grep -c twice)" -eq 2 ]
   run bash -c "'$AQ' show twice | tail -1"
   assert_output 2
+}
+
+@test "list --since reads done items from that day on, across days" {
+  local slug day
+  for slug in old edge new; do "$AQ" add --project game --slug "$slug" "t"; "$AQ" cancel "$slug"; done
+  for slug in old:2026-11-01 edge:2026-11-02 new:2026-11-03; do
+    day="$AGENT_QUEUE_DIR/done/${slug#*:}"; mkdir -p "$day"
+    mv "$AGENT_QUEUE_DIR"/done/"$(date +%F)"/*-"${slug%:*}".md "$day/"
+  done
+  run bash -c "'$AQ' list --state done --since 2026-11-02 --json | jq -r .slug | sort | tr '\n' ' '"
+  assert_output "edge new "
 }
 
 @test "list groups by state and says when nothing is there" {
@@ -517,9 +692,44 @@ EOF
   assert_success
   assert_output --partial "done:"
   assert_output --partial "to PR:   median 90 min"
-  assert_output --partial "wait:    median 30 min, p90 30 min from queued to started, 1 started at once and not counted"
+  assert_output --partial "wait:    median 30 min, p90 30 min from ready to started, 1 started at once and not counted"
   assert_output --partial "sitting: 1 can start, oldest 2h (c), median 2h; 1 held (after 1)"
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
+}
+
+@test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
+  "$AQ" add --project game --slug p "p"
+  "$AQ" add --project game --slug f --after p "f"
+  "$AQ" move p running; "$AQ" move p done --status ok
+  "$AQ" set p finished=2026-11-03T12:00:00Z
+  f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  "$AQ" move f running; "$AQ" set f started=2026-11-03T12:10:00Z
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c '[.wait_minutes_median, .wait_minutes_p90]' <<<"$output")" '[10,10]'
+  # negative control: with its predecessor gone from the store, the wait runs from queued
+  rm "$AGENT_QUEUE_DIR"/done/*/*-p.md
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '250'
+}
+
+@test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
+  export TZ=America/Los_Angeles
+  "$AQ" add --project game --slug a "a"
+  "$AQ" move a running
+  "$AQ" set a started=2026-11-03T10:30:00Z
+  f="$(item running a)"; sed -i 's/^queued: .*/queued: 2026-11-03T10:00:00Z/' "$f"
+  "$AQ" move a done --status ok
+  "$AQ" set a finished=2026-11-03T11:30:00Z
+  "$AQ" add --project game --slug b "b"
+  f="$(item queued b)"; sed -i 's/^queued: .*/queued: 2026-11-04T02:00:00Z/' "$f"
+  "$AQ" move b done --status failed
+  "$AQ" set b finished=2026-11-04T03:00:00Z
+  run "$AQ" stats --json --flow --since 2026-11-03
+  assert_success
+  assert_equal "$(jq -c '.flow["2026-11-03"] | [.queued, .started, .done, .ok, .failed, .lead_minutes, .wait_minutes.p50, .run_minutes.p50]' <<<"$output")" '[2,1,2,1,1,{"n":2,"p50":90,"p90":90},30,60]'
+  run "$AQ" stats --json --flow --since 2026-11-04
+  [ "$(jq -c '.flow | has("2026-11-03")' <<<"$output")" = false ]
 }
 
 @test "stats counts the flow of the last 1, 6 and 24 hours: added by queued, started by started, done and failed by finished" {

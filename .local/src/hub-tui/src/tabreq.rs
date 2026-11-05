@@ -2,7 +2,9 @@
 //! socket, so a request arrives as an event and needs no file watch (inotify can be full: an
 //! open Unity Editor takes nearly all of it). With no hub listening, the request is left in a
 //! file that the next hub to start takes, which is how a Prefix key that creates hub:board
-//! lands on its page.
+//! lands on its page. A request is the tab's name, then for the Projects tab an optional search
+//! (`projects bnb/demo`, what the projects popup sends to land on one project's rows) or for
+//! Infra the section to open (`infra ci`, what `hub tab ci` sends).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -26,9 +28,32 @@ pub fn dir() -> PathBuf {
         .join("hub")
 }
 
+/// A page to show, and for the Board tab the search to show it with.
+pub type Req = (Tab, Option<String>);
+
+/// `board bnb/demo` -> (Board, Some("bnb/demo")), `ci` -> (Infra, Some("ci")); any other
+/// bare name has no query.
+pub fn parse(s: &str) -> Option<Req> {
+    let (t, q) = s
+        .trim()
+        .split_once(char::is_whitespace)
+        .unwrap_or((s.trim(), ""));
+    let q = q.trim();
+    // A retired name that became a section (`ci`) asks for that section of its new tab.
+    let q = Some(q.to_string())
+        .filter(|q| !q.is_empty())
+        .or_else(|| hub_core::layout::section(t).map(String::from));
+    Some((Tab::parse(t)?, q))
+}
+
 /// Send `t` to the hub listening in `dir`, else leave it in `dir/tab` for the next one.
-pub fn request(dir: &Path, t: Tab) -> std::io::Result<()> {
-    let word = t.title().to_lowercase();
+pub fn request(dir: &Path, t: Tab, query: Option<&str>) -> std::io::Result<()> {
+    let mut word = t.title().to_lowercase();
+    if let Some(q) = query.map(|q| q.split_whitespace().collect::<Vec<_>>().join(" ")) {
+        if !q.is_empty() {
+            word = format!("{word} {q}");
+        }
+    }
     if let Ok(mut s) = UnixStream::connect(dir.join("tab.sock")) {
         if writeln!(s, "{word}").is_ok() {
             return Ok(());
@@ -41,11 +66,11 @@ pub fn request(dir: &Path, t: Tab) -> std::io::Result<()> {
 }
 
 /// Take the request left while no hub ran: read it and remove it, so it is acted on once.
-pub fn take(dir: &Path) -> Option<Tab> {
+pub fn take(dir: &Path) -> Option<Req> {
     let f = dir.join("tab");
     let s = std::fs::read_to_string(&f).ok()?;
     let _ = std::fs::remove_file(&f);
-    Tab::parse(s.trim())
+    parse(&s)
 }
 
 /// Listen for requests, unless another hub already does (None: that one gets them). A socket
@@ -68,8 +93,8 @@ pub fn serve(l: UnixListener, tx: Sender<Msg>) {
         if BufReader::new(s).read_line(&mut line).is_err() {
             continue;
         }
-        if let Some(t) = Tab::parse(line.trim()) {
-            if tx.send(Msg::Tab(t)).is_err() {
+        if let Some((t, q)) = parse(&line) {
+            if tx.send(Msg::Tab(t, q)).is_err() {
                 break;
             }
         }
@@ -100,8 +125,8 @@ mod tests {
     fn with_no_hub_running_a_request_waits_in_the_file_and_is_taken_once() {
         let d = Scratch::new("file");
         for t in Tab::ALL {
-            request(&d.0, t).unwrap();
-            assert_eq!(take(&d.0), Some(t));
+            request(&d.0, t, None).unwrap();
+            assert_eq!(take(&d.0), Some((t, None)));
             assert_eq!(take(&d.0), None, "a request is acted on once");
         }
         std::fs::write(d.0.join("tab"), "nonsense\n").unwrap();
@@ -110,6 +135,34 @@ mod tests {
             !d.0.join("tab").exists(),
             "a bad request is removed too, so it cannot stick"
         );
+    }
+
+    #[test]
+    fn a_retired_name_that_became_a_section_asks_for_it() {
+        assert_eq!(parse("ci"), Some((Tab::Infra, Some("ci".into()))));
+        assert_eq!(
+            parse("Machines"),
+            Some((Tab::Infra, Some("machines".into())))
+        );
+        assert_eq!(parse("jobs"), Some((Tab::Infra, Some("jobs".into()))));
+        assert_eq!(parse("infra"), Some((Tab::Infra, None)));
+        assert_eq!(parse("infra ci"), Some((Tab::Infra, Some("ci".into()))));
+    }
+
+    #[test]
+    fn a_board_request_carries_its_search_on_one_line() {
+        let d = Scratch::new("query");
+        request(&d.0, Tab::Projects, Some(" bnb/demo \n extra ")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.0.join("tab")).unwrap(),
+            "projects bnb/demo extra"
+        );
+        assert_eq!(
+            take(&d.0),
+            Some((Tab::Projects, Some("bnb/demo extra".into())))
+        );
+        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
+        assert_eq!(parse("nonsense bnb/demo"), None);
     }
 
     #[test]
@@ -122,10 +175,14 @@ mod tests {
         );
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || serve(l, tx));
-        for t in [Tab::Sessions, Tab::Today, Tab::Overview] {
-            request(&d.0, t).unwrap();
+        for (t, q) in [
+            (Tab::Fleet, None),
+            (Tab::Projects, Some("bnb/demo")),
+            (Tab::Home, None),
+        ] {
+            request(&d.0, t, q).unwrap();
             match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(Msg::Tab(got)) => assert_eq!(got, t),
+                Ok(Msg::Tab(got, gq)) => assert_eq!((got, gq.as_deref()), (t, q)),
                 _ => panic!("no tab message for {t:?}"),
             }
         }
@@ -140,8 +197,8 @@ mod tests {
             d.0.join("tab.sock").exists(),
             "the dead hub's socket is left"
         );
-        request(&d.0, Tab::History).unwrap();
-        assert_eq!(take(&d.0), Some(Tab::History));
+        request(&d.0, Tab::History, None).unwrap();
+        assert_eq!(take(&d.0), Some((Tab::History, None)));
         assert!(
             listen(&d.0).unwrap().is_some(),
             "the next hub takes it over"

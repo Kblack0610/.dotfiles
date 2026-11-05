@@ -1,9 +1,12 @@
 "use strict";
-// The Sessions and Waiting tabs, the tab switch and the live-update stream. Shared helpers are
-// in ui.js; each board tab is its own static/*.js and registers in TABS.
+// The Sessions tab, the tab switch and the live-update stream. Shared helpers are in ui.js; the
+// answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
+// registers in TABS. Sessions is one row per session: its fleet-state facts and the overview
+// (bucket tiles, the last day, changes) are watch.js, the shepherd's pass, due lines and
+// rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "queue", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 
@@ -11,7 +14,7 @@ const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
   renderList();
   renderBadge();
-  if (st.tab === "asks") renderAsks();
+  if (st.tab === "home") renderHome();
   // A session coming or going changes which queue rows have an Open button.
   if (st.tab === "queue") renderQueueList();
   if (st.sel) {
@@ -20,32 +23,50 @@ const refreshAgents = coalesce(async () => {
   }
 });
 
+// The list: the shepherd's pass as one line (it opens the overview), then one row per session
+// grouped by bucket, the shepherd's own session pinned first (sessionRows, watch.js). A
+// fleet-state row with no session on this machine folds open to its card instead of opening.
 function renderList() {
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
-  if (!st.agents.length) { $("list").innerHTML = '<div class="empty">No agents running.</div>'; return; }
-  const groups = new Map();
-  for (const a of st.agents) { if (!groups.has(a.project)) groups.set(a.project, []); groups.get(a.project).push(a); }
-  let html = "";
-  for (const [proj, list] of groups) {
-    html += `<div class="group">${esc(proj)}</div>`;
-    for (const a of list) {
-      const sel = st.sel && st.sel.target === a.target ? " sel" : "";
-      html += `<div class="row${sel}" data-t="${esc(a.target)}"><span class="dot ${esc(a.status)}"></span><div style="min-width:0"><div class="t">${esc(a.target)}</div><div class="s">${esc(a.summary || "")}</div>${pills(a)}</div></div>`;
-    }
+  const rows = sessionRows().filter((r) => !wst.filter || r.group === wst.filter);
+  const ov = `<div class="row ov${st.sel ? "" : " sel"}" data-ov><div style="min-width:0"><div class="t">overview</div><div class="s">${passLine()}</div></div></div>`;
+  if (!rows.length) { $("list").innerHTML = ov + `<div class="empty">${wst.filter ? `No ${esc(wst.filter)} sessions.` : "No agents running."}</div>`; return; }
+  const n = new Map();
+  for (const r of rows) n.set(r.group, (n.get(r.group) || 0) + 1);
+  const now = Date.now(), maxCtx = maxContext();
+  let html = ov, group = null;
+  for (const r of rows) {
+    if (r.group !== group) { group = r.group; html += `<div class="group">${esc(group)} <span class="muted">${n.get(group)}</span></div>`; }
+    html += listRow(r, now, maxCtx);
   }
-  $("list").innerHTML = html;
+  paint($("list"), html, wst.open);
 }
 
-// What the row is beyond its status: the human's own session, parked, its account, plan, ask.
-function pills(a) {
+function listRow(r, now, maxCtx) {
+  const { a, s } = r, t = a ? a.target : s.target;
+  const task = (s && s.topic) || (a && a.summary) || "";
+  const body = `<span class="dot ${esc(a ? a.status : "parked")}"></span><div style="min-width:0"><div class="t">${esc(t)}</div><div class="s">${esc(task)}</div>${pills(a, s)}</div>`;
+  if (a) return `<div class="row${st.sel && st.sel.target === t ? " sel" : ""}" data-t="${esc(t)}">${body}</div>`;
+  const k = "ghost:" + t;
+  return `<details class="ghost" data-k="${esc(k)}"${wst.open[k] ? " open" : ""}><summary class="row" title="no session on this machine: its fleet-state card">${body}</summary>${card(s, maxCtx, now)}</details>`;
+}
+
+// What the row is beyond its status: the human's own session, parked, its PR and CI, plan
+// phases, ETA, idle time, account and ask. `a` is the live session, `s` its fleet-state row;
+// either can be missing.
+function pills(a, s) {
   const p = [];
-  if (a.attached) p.push('<span class="pill here">you are here</span>');
-  if (a.parked) p.push('<span class="pill parked">parked</span>');
-  if (a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
-  if (a.plan) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
-  if (a.phases) p.push(`<span class="pill phases" title="plan phases">${esc(phasesText(a))}</span>`);
-  if (a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
+  if (a && a.attached) p.push('<span class="pill here">you are here</span>');
+  if (a && a.parked) p.push('<span class="pill parked">parked</span>');
+  if (s && s.pr && s.pr !== "-") p.push(`<span class="pill" title="PR">PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}</span>`);
+  const ph = a && a.phases ? phasesText(a) : s && s.phases_total ? `${s.phases_done}/${s.phases_total} phases` : "";
+  if (ph) p.push(`<span class="pill phases" title="plan phases">${esc(ph)}</span>`);
+  if (s && s.eta) p.push(`<span class="pill" title="estimated finish">eta ${esc(s.eta)}</span>`);
+  if (s && s.idle_min != null) p.push(`<span class="pill" title="idle">idle ${dur(s.idle_min)}</span>`);
+  if (a && a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
+  if (a && a.plan && !(s && s.topic)) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
+  if (a && a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
   return p.length ? `<div class="pills">${p.join("")}</div>` : "";
 }
 
@@ -66,7 +87,7 @@ function approveButtons(a) {
     : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
 }
 function rerenderApprove() {
-  if (st.tab === "asks") renderAsks();
+  if (st.tab === "home") renderHome();
   if (st.tab === "queue") renderQueueList();
 }
 document.addEventListener("click", async (e) => {
@@ -86,6 +107,10 @@ document.addEventListener("click", async (e) => {
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
 // here in the page; the confirm's own button sends it. Parked rows offer only unpark.
 const DANGER = ["stop", "cancel"];
+// The button for each session action (hub-core session_actions.rs names); an unknown one shows its name.
+const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpark session", move: "Move to account",
+  stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
+const actLabel = (n) => ACT_LABEL[n] || n;
 st.act = { confirm: null, busy: false, msg: "", err: false };
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
@@ -101,13 +126,13 @@ function renderActs() {
     const pick = c.action === "move"
       ? `<select id="act-acct">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : "";
     const danger = DANGER.includes(c.action) ? " danger" : "";
-    html += `<span class="q">${esc(c.action)} ${esc(a.target)}${a.attached ? " (you are attached to it)" : ""}: ${esc(st.opts.describe[c.action] || "")}</span>${pick}`
+    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(st.opts.describe[c.action] || "")}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
       + (c.action === "approve-plan" && a.question && a.question.kind === "plan"
         ? `<div class="planpeek md">${md(a.question.text.split("\n").filter((l) => l.trim()).slice(0, 6).join("\n"))}</div>` : "")
-      + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(c.action)}</button>`
+      + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(n)}</button>`).join("");
+    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
   }
   if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
   box.innerHTML = html;
@@ -123,13 +148,13 @@ $("acts").addEventListener("click", async (e) => {
   if (b.dataset.go === undefined || !st.act.confirm) return;
   const { action, target } = st.act.confirm;
   const account = action === "move" && $("act-acct") ? $("act-acct").value : "";
-  st.act = { confirm: null, busy: true, msg: `${action} ${target}: running`, err: false };
+  st.act = { confirm: null, busy: true, msg: `${actLabel(action)}: running... (${target})`, err: false };
   renderActs();
   try {
     const r = await post(`/api/session/${encodeURIComponent(target)}/${encodeURIComponent(action)}`, { account });
-    st.act.msg = `${action} ${target}: done${r && r.output ? "\n" + r.output : ""}`;
+    st.act.msg = `${actLabel(action)}: done (${target})${r && r.output ? "\n" + r.output : ""}`;
   } catch (err) {
-    st.act.msg = `${action} ${target}: ${err.message}`; st.act.err = true;
+    st.act.msg = `${actLabel(action)} failed (${target}). ${err.message}`; st.act.err = true;
   }
   st.act.busy = false;
   refreshAgents();
@@ -138,12 +163,14 @@ $("acts").addEventListener("click", async (e) => {
 
 $("list").addEventListener("click", (e) => {
   const row = e.target.closest(".row");
-  if (!row) return;
+  if (!row || row.closest(".ghost")) return; // a ghost row folds; there is nothing to open
+  if (row.dataset.ov !== undefined) { overview(true); return; }
   const a = st.agents.find((x) => x.target === row.dataset.t);
   if (a) select(a);
 });
 
 function renderHead() {
+  $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
   $("d-name").textContent = `${st.sel.target}  ${st.sel.summary || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
@@ -162,9 +189,21 @@ function select(a) {
   }
   $("main").classList.add("open");
   $("err").textContent = "";
-  renderHead(); renderList();
+  renderHead(); renderList(); renderFacts();
   $("scroll").innerHTML = "";
   load();
+}
+
+// No session open: the detail pane is the overview (watch.js and shepherd.js fill it). On a
+// phone it is a page of its own, reached from the list's first row.
+function overview(open) {
+  st.sel = null; st.start = null; st.end = null;
+  $("d-dot").hidden = $("v-seg").hidden = true;
+  $("d-name").textContent = "Overview";
+  $("acts").hidden = true;
+  $("compose").hidden = true;
+  if (open) $("main").classList.add("open");
+  renderList(); renderFacts(); renderOverview();
 }
 
 $("back").onclick = () => { $("main").classList.remove("open"); };
@@ -260,146 +299,45 @@ async function sendText() {
 $("send").onclick = sendText;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendText(); } });
 
-const refreshAsks = coalesce(async () => {
-  st.asks = await api("/api/asks");
-  renderBadge();
-  if (st.tab === "asks") renderAsks();
-  if (st.tab === "queue") renderQueueList();
-});
-
-// The Waiting tab: every live session with a dialog or permission prompt open (read from its
-// transcript by the server), then every pending ask, the one record of a question to the human.
-// An ask from a live session names that session; answering it types the answer into its pane.
-const asking = () => st.agents.filter((a) => a.question);
-function renderBadge() {
-  const n = asking().length + st.asks.length;
-  $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
+// hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
+// lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
+// test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
+const TAB_NAMES = ["home", "queue", "projects", "sessions", "infra", "focus", "actions", "log", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra" };
+const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
+// A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
+// there once that section has drawn (hub_core::layout::section). Each board calls this after
+// it paints; the first paint that has the section clears it.
+function seekSection() {
+  const e = st.section && $("sec-" + st.section);
+  if (!e) return;
+  st.section = null;
+  if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
-
-function sessionCard(a) {
-  const q = a.question;
-  let opts = "";
-  if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
-  if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
-  if (q.kind === "plan") opts = approveButtons(a);
-  const what = { choice: "asking", tool: "permission", plan: "plan to approve" }[q.kind] || "your turn";
-  return `
-    <div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">
-      <span class="open" data-open>open</span>
-      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${what}${a.phases ? ` &middot; ${esc(phasesText(a))}` : ""}</div>
-      <div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>
-      <div class="opts">
-        ${opts}
-        <input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>
-      </div>
-      <div class="err"></div>
-    </div>`;
+// A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Focus link opens
+// (`#focus/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
+function route(hash) {
+  const h = String(hash || "").replace(/^#/, "");
+  const at = h.indexOf("/");
+  const name = at < 0 ? h : h.slice(0, at);
+  let arg = at < 0 ? "" : h.slice(at + 1);
+  try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
+  return { name, tab: tabOf(name), arg };
 }
-
-function renderAsks() {
-  // Session events re-render this often; keep a reply that is being typed.
-  const f = document.activeElement, card = f && f.closest && f.closest("#asks .card");
-  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
-  drawAsks();
-  if (!keep) return;
-  const again = [...$("asks").querySelectorAll(".card")].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
-  const input = again && again.querySelector("[data-free]");
-  if (input) { input.value = keep.v; input.focus(); }
-}
-
-// The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
-function judgeLine(a) {
-  if (!a.judge) return "";
-  const call = a.judge === "human" ? "leave it to you"
-    : a.judge === "take-recommend" ? `take the recommendation (${a.recommend})`
-    : `answer "${a.judge.replace(/^answer:/, "")}"`;
-  return `<div class="meta">judge would ${esc(call)}</div>`;
-}
-
-// One pending ask, answered through agent-ask (the Queue tab shows a session's own asks too).
-function askCard(a) {
-  const owner = st.agents.find((x) => a.session && x.session === a.session);
-  return `
-    <div class="card" data-id="${esc(a.id)}">
-      <div class="meta">${esc(a.project)} &middot; ${owner ? esc(owner.target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
-      <div class="q md">${md(a.question)}</div>
-      ${judgeLine(a)}
-      <div class="opts">
-        ${a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (rec)" : ""}</button>`).join("")}
-        <input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>
-      </div>
-      <div class="err"></div>
-    </div>`;
-}
-
-function drawAsks() {
-  const live = asking();
-  if (!live.length && !st.asks.length) { $("asks").innerHTML = '<div class="empty">Nothing is waiting on you.</div>'; return; }
-  let html = "";
-  if (live.length) html += '<h2 class="sec">Sessions</h2>' + live.map(sessionCard).join("");
-  if (st.asks.length) html += '<h2 class="sec">Asks</h2>' + st.asks.map(askCard).join("");
-  $("asks").innerHTML = html;
-}
-
-// A session card answers through the session's own pane, so the answer lands in that
-// conversation. A typed reply to a dialog first closes it with Escape; the text then
-// arrives as the human's next message.
-async function answerSession(card, e) {
-  const t = card.dataset.t;
-  if (e.target.dataset.open !== undefined) {
-    const a = st.agents.find((x) => x.target === t);
-    if (a) { setTab("sessions"); select(a); }
-    return;
-  }
-  const key = e.target.dataset.k;
-  const text = e.target.dataset.reply !== undefined ? card.querySelector("[data-free]").value : "";
-  if (!key && !text.trim()) return;
-  if (key) await post("/api/send", { t, key });
-  else {
-    if (card.dataset.kind !== "text") await post("/api/send", { t, key: "Escape" });
-    await post("/api/send", { t, text });
-  }
-  card.querySelector("[data-free]").value = "";
-}
-
-// A click inside a session card or an ask card, on the Waiting tab or a queue row.
-async function answerCard(card, e) {
-  if (card.dataset.t) {
-    try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
-    catch (err) { card.querySelector(".err").textContent = err.message; }
-    return;
-  }
-  let answer = e.target.dataset.a;
-  if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
-  if (!answer || !answer.trim()) return;
-  try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
-  catch (err) { card.querySelector(".err").textContent = err.message; }
-}
-$("asks").addEventListener("click", (e) => {
-  const card = e.target.closest(".card");
-  if (card) answerCard(card, e);
-});
-
-function answerOnEnter(e) {
-  if (e.key !== "Enter" || !e.target.matches("[data-free]")) return;
-  e.preventDefault();
-  const btn = e.target.parentElement.querySelector("[data-reply], [data-send]");
-  if (btn) btn.click();
-}
-$("asks").addEventListener("keydown", answerOnEnter);
-
-const TAB_NAMES = ["queue", "board", "sessions", "asks", "shepherd", "actions", "watch", "log", "infra", "jobs", "fleet"];
-function setTab(t) {
+// Show tab t; arg is what it opens (blank for its front). A tab button replaces the URL, so tab
+// hopping makes no history; an in-app link (`href="#focus/outbox"`) pushes one, so Back returns.
+function setTab(t, arg) {
   st.tab = t;
+  st.arg = arg || "";
   for (const n of TAB_NAMES) {
     $("tab-" + n).classList.toggle("on", t === n);
     if (n !== "sessions") $(n).hidden = t !== n;
   }
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
-  if (t === "asks") renderAsks();
   if (TABS[t]) TABS[t].show();
-  try { history.replaceState(null, "", t === "queue" ? location.pathname : "#" + t); } catch (e) { /* not fatal */ }
+  const frag = st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t;
+  try { history.replaceState(null, "", t === "home" && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -443,8 +381,16 @@ function connect() {
   };
 }
 
+// Back and Forward, and every in-app link, change the fragment; show what it names.
+window.addEventListener("hashchange", () => {
+  const r = route(location.hash);
+  if (r.tab !== st.tab || r.arg !== st.arg) setTab(r.tab, r.arg);
+});
+
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
 document.addEventListener("DOMContentLoaded", () => {
-  setTab(TAB_NAMES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "queue");
+  const r = route(location.hash);
+  if (RETIRED_TABS[r.name]) st.section = r.name;
+  setTab(r.tab, r.arg);
   connect();
 });

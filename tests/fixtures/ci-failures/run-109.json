@@ -1,0 +1,1 @@
+{"databaseId": 109, "workflowName": "Checks", "headBranch": "feat/g", "headSha": "9999999999999999999999999999999999999999", "event": "pull_request", "status": "completed", "conclusion": "failure", "createdAt": "2026-11-03T14:00:00Z", "attempt": 1, "url": "https://example.invalid/runs/109", "_listed_as": ["checks.yml"]}

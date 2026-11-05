@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-# Absolute path to this script - fzf's --preview re-invokes it, and $0 is not
+# Absolute path to this script - fzf's reload re-invokes it, and $0 is not
 # reliable there (relative invocation, symlink on PATH, shell function wrapper).
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -97,7 +97,7 @@ live_lines() {
   # Never fail. These files are created and removed as sessions start and stop,
   # so one can vanish between the find and the jq. Under `set -o pipefail` that
   # surfaces as a spurious non-zero exit in whatever called us - including the
-  # fzf preview, which re-runs on every keystroke.
+  # fzf reload, which re-runs on every keystroke.
 }
 
 _unsentinel() { [ "${1:-}" = "-" ] && echo "" || echo "${1:-}"; }
@@ -415,12 +415,11 @@ index_rows() {
   sort -t"$TAB" -k4,4nr "$INDEX" 2>/dev/null
 }
 
-# ---------------------------------------------------------------- preview ---
+# ------------------------------------------------------------------- show ---
 
-cmd_preview() {
+cmd_show() {
   # Everything here is read straight out of the transcript and the registry -
-  # no model call, so it is safe to run on every keystroke in the picker.
-  # `sessions compact` remains the explicit, on-demand LLM escalation.
+  # no model call. `sessions compact` remains the explicit, on-demand LLM escalation.
   local want="${1:-}"; [ -n "$want" ] || return 0
   local id; id="$(resolve_id "$want" 2>/dev/null)" || { echo "no such session: $want"; return 0; }
 
@@ -518,9 +517,10 @@ cmd_filter() {
       # $9 first_prompt, $10 last_prompt, $11 files
       hay = tolower($1 " " $2 " " $6 " " $8 " " $9 " " $10 " " $11)
       for (i = 1; i <= nq; i++) if (terms[i] != "" && index(hay, terms[i]) == 0) next
-      what = ($7 != "-" && $7 != "") ? $7 : $9
+      # A title shows whole; the fallback prompt is capped so it stays one row.
+      what = ($7 != "-" && $7 != "") ? $7 : substr($9, 1, 80)
       mark = (($1 in islive) ? "o live" : "")
-      printf "%s\t%-8.8s  %-5s  %-6s  %-13.13s  %s\n", $1, $1, age($4), mark, $2, what
+      printf "%s\t%-8.8s  %-5s  %-6s  %-20.20s  %s\n", $1, $1, age($4), mark, $2, what
     }'
 }
 
@@ -550,7 +550,7 @@ cmd_search() {
         "'${q}'" "$RECALL" "'${q}'" >&2
       return 0
     fi
-    printf '%-8s  %-5s  %-6s  %-13s  %s\n' "ID" "AGE" "LIVE" "PROJECT" "WHAT"
+    printf '%-8s  %-5s  %-6s  %-20s  %s\n' "ID" "AGE" "LIVE" "PROJECT" "WHAT"
     printf '%s\n' "$out"
     return 0
   fi
@@ -558,13 +558,10 @@ cmd_search() {
   local id
   id=$(cmd_filter "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
-        --disabled --query="$q" \
+        --disabled --query="$q" --wrap \
         --bind="change:reload('$SELF' _filter {q})" \
-        --bind='?:toggle-preview' \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
-        --prompt="session> " --header='enter resume | ctrl-g full-text | ? preview' \
-        --preview="'$SELF' _preview {1}" \
-        --preview-window='right,55%,border-left,wrap' \
+        --prompt="session> " --header='enter resume | ctrl-g full-text' \
       | cut -f1)
   [ -n "$id" ] || return 0
   cmd_resume ${window:+"$window"} "$id"
@@ -582,14 +579,11 @@ pick_id() {
     what="${LIVE_NAME[$id]:-}"
     [ -n "$what" ] || what="$(ai_title "$(_unsentinel "$transcript")")"
     [ -n "$what" ] || what="$prompt"
-    rows+="$(printf '%s\t%-8s  %-5s  %-6s  %-12s  %s' \
+    rows+="$(printf '%s\t%-8s  %-5s  %-6s  %-20.20s  %s' \
       "$id" "${id:0:8}" "$(_age "$updated")" "$(live_marker "$id")" "$project" "$what")"$'\n'
   done <<< "$(rows_tsv --all)"
-  printf '%s' "$rows" | fzf --with-nth=2.. --delimiter="$TAB" \
+  printf '%s' "$rows" | fzf --with-nth=2.. --delimiter="$TAB" --wrap \
       --prompt="session> " \
-      --preview="'$SELF' _preview {1}" \
-      --preview-window='right,55%,border-left,wrap' \
-      --bind='?:toggle-preview' \
     | cut -f1
 }
 
@@ -617,6 +611,24 @@ session_window() {
     [ -n "$hit" ] && { printf '%s\n' "$hit"; return 0; }
     p="$(_ppid_of "$p")"
   done
+}
+
+# open_window <id> <dir> -- a window running claude -r, in the world and session that directory
+# belongs to, then go there. A directory no manifest claims opens in the current session.
+open_window() {
+  local id="$1" dir="$2" cmd="claude -r '$1'" world='' name='' here
+  [ -z "$dir" ] || read -r world name <<< "$(tmux-world route "$dir")"
+  here="$(basename "${TMUX%%,*}")"
+  if [ "${world:-here}" = here ]; then
+    tmux new-window ${dir:+-c "$dir"} "$cmd" 2>/dev/null
+    return
+  fi
+  if tmux -L "$world" has-session -t "=$name" 2>/dev/null; then
+    tmux -L "$world" new-window -t "=$name:" -c "$dir" "$cmd" 2>/dev/null
+  else
+    tmux -L "$world" new-session -ds "$name" -c "$dir" "$cmd" 2>/dev/null
+  fi || return 1
+  if [ "$world" = "$here" ]; then tmux switch-client -t "=$name"; else tmx goto "$world" "$name"; fi
 }
 
 cmd_resume() {
@@ -652,8 +664,7 @@ cmd_resume() {
   # From the tmux popup, exec'ing here would trap a full Claude session inside a
   # transient popup - closing it would kill the session. Open a real window.
   if [ "$new_window" = true ] && [ -n "${TMUX:-}" ]; then
-    tmux new-window ${dir:+-c "$dir"} "claude -r '$id'" 2>/dev/null \
-      && return 0
+    open_window "$id" "$dir" && return 0
     echo "sessions: could not open a tmux window, resuming here instead" >&2
   fi
 
@@ -716,7 +727,7 @@ so it is scriptable. Typing searches each session's whole card - every AI title
 it has carried, its first and last prompt, the files it touched, project and
 branch - which is why "email" finds the session that now goes by "aerc-nested-
 folders-config". In the window: enter resumes, ctrl-g escalates the query to a
-full-text sweep, '?' toggles the preview.
+full-text sweep.
 
 -w/--window opens the chosen session in a NEW tmux window rather than in place.
 That is what `prefix R` uses: exec'ing inside a display-popup would trap a live
@@ -724,7 +735,7 @@ Claude session in a transient popup, and closing it would kill the session.
 Picking a session that is ALREADY running never opens a second copy - it jumps
 to the window that has it.
 
---pick opens an fzf picker with `show` rendered alongside it; '?' toggles it.
+--pick opens an fzf picker of the same rows; `sessions show <id>` reads one.
 
 LIVE column: '* busy' = mid-turn, 'o wait'/'o idle' = open, blank = closed.
 WHAT column: the session's own name or AI title, else its first prompt. Titles
@@ -748,7 +759,7 @@ case "$sub" in
   index)         cmd_index "$@" ;;
   _filter)       cmd_filter "$@" ;;
   _window)       session_window "$(resolve_id "${1:-}" 2>/dev/null)" ;;
-  show|_preview) cmd_preview "$@" ;;
+  show)          cmd_show "$@" ;;
   resume)        cmd_resume "$@" ;;
   compact)       cmd_compact "$@" ;;
   -h|--help|help) usage ;;

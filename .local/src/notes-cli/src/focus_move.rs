@@ -31,7 +31,7 @@ fn task_text(line: &str) -> (String, Option<String>) {
     // so truncating at `<!--` before lifting it would silently drop the tag.
     //
     // Through `md::split_priority`, NOT an end-anchored match. This used to test
-    // `t.ends_with(p)`, which was true while a priority tag was always last - but a wave tag
+    // `t.ends_with(p)`, which was true while a priority tag was always last - but a release tag
     // now follows it (`#high #v0.0.2`), and an anchored match reads such a line as untagged
     // and drops the tag on the way through `mv`. The same trap the nvim `strip_priority`
     // already had to be un-anchored for.
@@ -195,6 +195,10 @@ pub fn mv(
             fs::write(&dnote, dnew)?;
             fs::write(&src_note, src_without)?;
             log.info("focus", &format!("moved to {d}: {}", new_line.trim()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("rehomed", "focus", d, "", &new_line),
+            );
             println!("moved to {d} {}", new_line.trim());
         }
         // same profile: a re-tag in place
@@ -202,6 +206,10 @@ pub fn mv(
             let updated = md::insert_under_heading(&src_without, "Focus", &[new_line.clone()]);
             fs::write(&src_note, updated)?;
             log.info("focus", &format!("retagged in {}", src_note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("tagged", "focus", "", "", &new_line),
+            );
             println!("{}", new_line.trim());
         }
     }
@@ -213,10 +221,10 @@ mod tests {
     use super::*;
 
     // The bug this parser had: it matched a priority tag only at END of line, which was true
-    // while a priority tag was always last. A wave tag now follows it, and an anchored match
+    // while a priority tag was always last. A release tag now follows it, and an anchored match
     // read such a line as untagged and dropped the tag on the way through `mv`.
     #[test]
-    fn a_priority_tag_survives_a_wave_tag_following_it() {
+    fn a_priority_tag_survives_a_release_tag_following_it() {
         let (text, prio) = task_text("- [ ] a thing #high #v0.12.1");
         assert_eq!(prio.as_deref(), Some("#high"), "tag found, not dropped");
         assert!(

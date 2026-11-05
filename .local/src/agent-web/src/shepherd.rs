@@ -1,4 +1,4 @@
-//! The Shepherd tab: the rundowns and chat answers the shepherd kept
+//! The shepherd on the Sessions tab: the rundowns and chat answers the shepherd kept
 //! (`fleet-shepherd log --rundown`, read by `hub_core::boards::rundowns`) and the live shepherd
 //! session, so the page can show its transcript and type into it through the Sessions routes.
 //! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by
@@ -17,7 +17,7 @@ const RUNDOWNS: usize = 60;
 
 #[derive(Serialize)]
 pub struct Shepherd {
-    /// The pane holding the shepherd lease, or null when no shepherd is armed.
+    /// The pane of the live shepherd, or null when no shepherd is armed.
     target: Option<String>,
     /// Its Claude session id: the page matches transcript events against it.
     session: Option<String>,
@@ -43,23 +43,30 @@ fn parse_stats(out: &[u8]) -> Option<Value> {
         .filter(Value::is_object)
 }
 
-/// The agent carrying agent-panel's `shepherd` tag, which it sets only while the lease is live.
-fn armed(agents: Vec<chooser::Agent>) -> Option<chooser::Agent> {
+/// The agent carrying agent-panel's `shepherd` tag, which it sets only while the lease is live,
+/// else the session `fleet-shepherd stats` names as the pass: a pass resumed in another pane has
+/// no tag until its next lease.
+fn armed(agents: Vec<chooser::Agent>, pass: Option<&str>) -> Option<chooser::Agent> {
+    let tagged = |a: &chooser::Agent| a.tags.split_whitespace().any(|t| t == "shepherd");
     agents
-        .into_iter()
-        .find(|a| a.tags.split_whitespace().any(|t| t == "shepherd"))
+        .iter()
+        .find(|a| tagged(a))
+        .or_else(|| agents.iter().find(|a| Some(a.session_id.as_str()) == pass))
+        .cloned()
 }
 
 pub async fn get() -> Json<Shepherd> {
     let out = tokio::task::spawn_blocking(|| {
-        let a = armed(chooser::collect());
+        let stats = stats();
+        let pass = stats.as_ref().and_then(|s| s["pass_id"].as_str());
+        let a = armed(chooser::collect(), pass);
         Shepherd {
             target: a.as_ref().map(|a| a.target.clone()),
             session: a.as_ref().map(|a| a.session_id.clone()),
             status: a.map(|a| a.status),
             rundowns: boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS),
             ledger: boards::due(&boards::shepherd_dir()),
-            stats: stats(),
+            stats,
         }
     })
     .await
@@ -88,12 +95,26 @@ mod tests {
 
     #[test]
     fn the_shepherd_is_the_agent_with_the_live_lease_tag() {
-        let got = armed(vec![
-            agent("a:1", "agent shepherding "),
-            agent("b:1", "pinned shepherd "),
-        ]);
+        let got = armed(
+            vec![
+                agent("a:1", "agent shepherding "),
+                agent("b:1", "pinned shepherd "),
+            ],
+            None,
+        );
         assert_eq!(got.map(|a| a.target), Some("b:1".to_string()));
-        assert!(armed(vec![agent("a:1", "agent ")]).is_none());
+        assert!(armed(vec![agent("a:1", "agent ")], None).is_none());
+    }
+
+    #[test]
+    fn a_pass_with_no_tag_is_found_by_its_session_id() {
+        let resumed = chooser::Agent {
+            session_id: "sid".into(),
+            ..agent("dotfiles:1", "agent ")
+        };
+        let got = armed(vec![agent("a:1", "agent "), resumed.clone()], Some("sid"));
+        assert_eq!(got.map(|a| a.target), Some("dotfiles:1".to_string()));
+        assert!(armed(vec![agent("a:1", "agent "), resumed], Some("other")).is_none());
     }
 
     #[test]

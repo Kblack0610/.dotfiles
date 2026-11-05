@@ -1,13 +1,12 @@
 #!/usr/bin/env bats
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is three
-# totals from fleet-sessions on Prometheus, ~ working, a check mark ready (LANDED or DONE) and
-# ! need you, then a health dot; the hover has the stage counts, then a section per tmux world
+# totals from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
+# in green and ! need you in red, after a robot coloured by fleet health; the hover has the stage counts, then a section per tmux world
 # with a line per session. What these pin: the bar is three totals whatever the fleet's size (a
 # group per project pushed the clock off the bar); sessions group by world, not repo; parked is
-# listed but counted nowhere; a stalled session or a stale textfile turns the dot red, an unclear
+# listed but counted nowhere; a stalled session or a stale textfile turns the robot red, an unclear
 # one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
-# never a quiet 0. The phone lines are the same counts, then a glyph strip per project, biggest
-# project and worst stage first.
+# never a quiet 0.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -15,8 +14,11 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ai_agents.sh"
-  ICON=$'\U000f06a9' CK=$'\u2713' DOT=$'\u25cf' # as escapes so no editor can strip them
+  ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
+  # bar <health colour> <working> <ready> <need>: the chip text.
+  bar() { printf "<span color='%s'>%s</span> <span color='$Y'>~%s</span> <span color='$G'>%s%s</span> %s" "$1" "$ICON" "$2" "$CK" "$3" "$(need "$4")"; }
+  need() { if [ "$1" = 0 ]; then printf '!0'; else printf "<span color='$R'>!%s</span>" "$1"; fi; }
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -58,20 +60,19 @@ PY
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
-phone() { jq -r .phone <<< "$output"; }
 
-@test "the bar is working, ready and need-you totals and a green dot, however many there are" {
+@test "the bar is a green robot and amber working, green ready and red need-you totals, however many" {
   feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10 \
     lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400 lab/uc-agent-4:1=PARKED:50
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$ICON ~2 ${CK}2 <span color='$Y'>!1</span> <span color='$G'>$DOT</span>"
+  assert_equal "$(text)" "$(bar "$G" 2 2 1)"
   assert_equal "$(class)" ok
   local args=() i
   for i in $(seq 1 40); do args+=("lab/uc-agent-1$i:1=WORKING:5"); done
   feed "${args[@]}"
   run "$MODULE"
-  assert_equal "$(text)" "$ICON ~40 ${CK}0 !0 <span color='$G'>$DOT</span>"
+  assert_equal "$(text)" "$(bar "$G" 40 0 0)"
 }
 
 @test "the hover groups by world, not repo: dotfiles in hub sits with hub, a lab dotfiles with lab" {
@@ -89,20 +90,20 @@ phone() { jq -r .phone <<< "$output"; }
   assert_line --index 7 "DONE     uc-agent-2:1       up 6h40m</tt>"
 }
 
-@test "a stalled session is red, leads the hover and heads its world" {
+@test "a stalled session turns the robot amber, leads the hover and heads its world" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80
   run "$MODULE"
-  assert_equal "$(text)" "$ICON ~1 ${CK}0 !0 <span color='$R'>$DOT</span>"
-  assert_equal "$(class)" critical
+  assert_equal "$(text)" "$(bar "$Y" 1 0 0)"
+  assert_equal "$(class)" warn
   run tip
-  assert_line --index 1 "<span color='$R'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
-  assert_line --index 3 "<tt><span color='$R'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
+  assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
+  assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
 }
 
-@test "an unclear session is amber" {
+@test "an unclear session turns the robot amber" {
   feed hub/dotfiles:1=UNCLEAR:10
   run "$MODULE"
-  assert_equal "$(text)" "$ICON ~0 ${CK}0 !0 <span color='$Y'>$DOT</span>"
+  assert_equal "$(text)" "$(bar "$Y" 0 0 0)"
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "<span color='$Y'>1</span> unclear"
@@ -119,13 +120,13 @@ phone() { jq -r .phone <<< "$output"; }
 @test "a second scrape of a session counts once" {
   feed hub/dotfiles:1=WORKING:10 dup:hub/dotfiles:1=WORKING:10
   run "$MODULE"
-  assert_equal "$(text)" "$ICON ~1 ${CK}0 !0 <span color='$G'>$DOT</span>"
+  assert_equal "$(text)" "$(bar "$G" 1 0 0)"
 }
 
 @test "no sessions with a fresh textfile is inactive zeros" {
   feed
   run "$MODULE"
-  assert_equal "$(text)" "$ICON ~0 ${CK}0 !0 <span color='$G'>$DOT</span>"
+  assert_equal "$(text)" "$(bar "$G" 0 0 0)"
   assert_equal "$(class)" inactive
 }
 
@@ -135,51 +136,6 @@ phone() { jq -r .phone <<< "$output"; }
   run "$MODULE"
   assert_equal "$(class)" warn
   run tip
-  assert_output --partial "no fleet_sessions.prom on Prometheus"
-}
-
-@test "phone: a glyph strip per project, biggest project and worst stage first" {
-  feed p:games:lab/g1:1=WORKING:30 p:games:lab/g2:1=STALLED:30 p:games:lab/g3:1=NEEDS:30 \
-    p:games:lab/g4:1=UNCLEAR:30 p:games:lab/g5:1=WORKING:30 p:games:lab/g6:1=LANDED:30 \
-    p:games:lab/g7:1=DONE:30 p:games:lab/g8:1=PARKED:30 p:tools:hub/t1:1=WORKING:30
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "games <span color='$R'>x</span><span color='$Y'>?</span><span color='$Y'>!</span>~~+.-"
-  assert_line --index 2 "tools ~"
-  assert_equal "${#lines[@]}" 3
-}
-
-@test "phone: the head line is the hover's counts" {
-  feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20
-  run "$MODULE"
-  head="$(tip | head -1)"
-  assert_equal "$(phone | head -1)" "$head"
-}
-
-@test "phone: a run of sessions in one stage is one glyph each, and a second scrape counts once" {
-  feed lab/a:1=WORKING:30 lab/b:1=WORKING:30 lab/c:1=WORKING:30 dup:lab/a:1=WORKING:30
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "proj ~~~"
-}
-
-@test "phone: a project name with markup stays valid" {
-  feed "p:a&b:lab/x:1=WORKING:30"
-  run "$MODULE"
-  run phone
-  assert_line --index 1 "a&amp;b ~"
-}
-
-# Negative control: the strips show stalled sessions, but a missing feed has nothing to draw.
-@test "phone: a missing feed says so, a stalled session gets no sentence" {
-  feed lab/a:1=STALLED:30
-  run "$MODULE"
-  run phone
-  refute_output --partial "no fleet_sessions.prom"
-  refute_output --partial "STALLED:"
-  feed mtime=-
-  run "$MODULE"
-  run phone
   assert_output --partial "no fleet_sessions.prom on Prometheus"
 }
 

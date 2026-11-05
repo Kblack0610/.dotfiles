@@ -55,7 +55,7 @@ HOOKS
 
 # -- which version a roll opens --
 #
-# 2026-10-25 a stray `v1.16.0 (planned)` wave on an app tagged v0.4.0 was promoted, and the
+# 2026-10-25 a stray `v1.16.0 (planned)` version on an app tagged v0.4.0 was promoted, and the
 # sheet ran so far ahead of its tags that no later tag could roll it.
 
 shipped_at() { # $1=tag the app shipped; the sheet's open version is the same, so it rolls
@@ -67,16 +67,16 @@ HOOKS
   git -C "$REPO" remote add origin "$SANDBOX/origin.git"
 }
 
-@test "a planned wave that is the next release becomes current" {
+@test "a planned version that is the next release becomes current" {
   shipped_at v0.4.0
-  printf 'v0.4.0\tcurrent\t3\t0\tx\nv0.5.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"
+  printf 'v0.4.0\tcurrent\t3\t0\nv0.5.0\tplanned\t0\t0\n' > "$NOTES_FIXTURE/roadmap.demoapp"
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'v0.4.0 -> v0.5.0'
 }
 
-@test "a planned wave far above the tag is skipped for the patch after it" {
+@test "a planned version far above the tag is skipped for the patch after it" {
   shipped_at v0.4.0
-  printf 'v0.4.0\tcurrent\t3\t0\tx\nv1.16.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"
+  printf 'v0.4.0\tcurrent\t3\t0\nv1.16.0\tplanned\t0\t0\n' > "$NOTES_FIXTURE/roadmap.demoapp"
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'v0.4.0 -> v0.4.1'
   assert_output --partial 'too far above tag v0.4.0'
@@ -84,7 +84,7 @@ HOOKS
 
 @test "a draft or alpha project is skipped; beta still rolls" {
   shipped_at v0.4.0
-  printf 'v0.4.0\tcurrent\t3\t0\tx\nv0.5.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"
+  printf 'v0.4.0\tcurrent\t3\t0\nv0.5.0\tplanned\t0\t0\n' > "$NOTES_FIXTURE/roadmap.demoapp"
   echo alpha > "$NOTES_FIXTURE/stage.demoapp"
   run "$WAVE_ROLL" --dry-run demoapp
   refute_output --partial 'would roll'
@@ -97,9 +97,9 @@ HOOKS
   assert_output --partial 'v0.4.0 -> v0.5.0'
 }
 
-@test "the next major is still a plausible planned wave" {
+@test "the next major is still a plausible planned version" {
   shipped_at v0.4.0
-  printf 'v0.4.0\tcurrent\t3\t0\tx\nv1.0.0\tplanned\t0\t0\tx\n' > "$NOTES_FIXTURE/waves.demoapp"
+  printf 'v0.4.0\tcurrent\t3\t0\nv1.0.0\tplanned\t0\t0\n' > "$NOTES_FIXTURE/roadmap.demoapp"
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'v0.4.0 -> v1.0.0'
 }

@@ -32,13 +32,19 @@ fn is_tags(s: &str) -> bool {
     })
 }
 
-/// Every active item plus today's finished ones, in queue order, read through hub-core.
+/// How many days back, today included, the page's Done section reaches.
+const DONE_DAYS: i64 = 7;
+
+/// Every active item plus those finished in the last `DONE_DAYS` days, in queue order, read
+/// through hub-core.
 pub async fn list() -> ApiResult<Json<Vec<Item>>> {
-    tokio::task::spawn_blocking(|| hub_queue::list(&System, "all"))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+    tokio::task::spawn_blocking(|| {
+        hub_queue::list_since(&System, "all", &hub_queue::days_ago(DONE_DAYS - 1))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
 /// The window's line and what sits now, worded by hub-core as the hub TUI words them.
@@ -47,9 +53,15 @@ pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(
-        serde_json::json!({ "week": s.week(), "sitting": s.sitting_line() }),
-    ))
+    // The prose lines for the folded detail, and the typical times the page's tiles show; the
+    // tiles count the items themselves.
+    Ok(Json(serde_json::json!({
+        "week": s.week(),
+        "sitting": s.sitting_line(),
+        "wait_minutes_median": s.wait_minutes_median,
+        "run_minutes_median": s.run_minutes_median,
+        "to_pr_minutes_median": s.to_pr_minutes_median,
+    })))
 }
 
 /// Cancel or bump through hub-core, which checks the slug and priority and runs agent-queue.
@@ -137,11 +149,7 @@ pub async fn bump(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
 /// The projects a task may be queued for: the names in project-map.json, which is also what
 /// agent-queue checks `--project` against.
 pub async fn projects() -> Json<Vec<String>> {
-    let path = std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
-        std::path::PathBuf::from,
-    );
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
     Json(project_names(&text))
 }
 

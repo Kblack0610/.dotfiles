@@ -2,7 +2,8 @@
 # 1984 Orwellian Theme Palette (upstream: kitty-themes/1984_orwellian.conf)
 # Sourced by theme-switch to apply colors across all tools.
 #
-# ANSI values are upstream 1984 Orwellian verbatim, with one exception:
+# ANSI values are upstream 1984 Orwellian, lifted to 4.5:1 on BG by
+# lightness only (tests/unit/theme_contrast.bats), with one exception:
 #   - BRIGHT_BLACK is #6e675c, not upstream's #000000. Upstream sets bright
 #     black to pure black, which makes every dim-text role (starship
 #     duration, waybar inactive chips, lazygit inactive border) invisible
@@ -28,20 +29,20 @@ THEME_SELECTION_FG="#000000"
 
 # -- ANSI 0-7 (normal) -------------------------------------------------
 THEME_BLACK="#000000"
-THEME_RED="#e74946"
+THEME_RED="#eb6663"
 THEME_GREEN="#4cb605"
 THEME_YELLOW="#fcd395"
-THEME_BLUE="#356fe4"
+THEME_BLUE="#628fea"
 THEME_MAGENTA="#fcbe95"
 THEME_CYAN="#3fc4ce"
 THEME_WHITE="#f1f1f1"
 
 # -- ANSI 8-15 (bright) ------------------------------------------------
-THEME_BRIGHT_BLACK="#6e675c"
-THEME_BRIGHT_RED="#e74946"
+THEME_BRIGHT_BLACK="#989084"
+THEME_BRIGHT_RED="#eb6663"
 THEME_BRIGHT_GREEN="#4cb605"
 THEME_BRIGHT_YELLOW="#fcd395"
-THEME_BRIGHT_BLUE="#356fe4"
+THEME_BRIGHT_BLUE="#628fea"
 THEME_BRIGHT_MAGENTA="#fcbe95"
 THEME_BRIGHT_CYAN="#3fc4ce"
 THEME_BRIGHT_WHITE="#f1f1f1"

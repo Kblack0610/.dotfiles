@@ -392,14 +392,25 @@ const BRIEFING: &str = "briefing";
 /// The day log's file stem under today's refs dir. Written by `day-log`.
 const SHIPPED: &str = "shipped";
 
-/// `## Morning`: what happened while you were away, below Notes and Focus. The briefing's
-/// headline and its "Needs you" items (each cut before its `-> do:` hint, which stays in the
-/// briefing), the day log's headline, then what the knowledge engine compiled since the last
-/// note listed it.
+/// `## Morning`: what happened while you were away, below Notes and Focus. It leads with the
+/// two intake links, the outbox to post to and the inbox page saying what the sweep did with
+/// each line, count-free so a sweep never rewrites the note. Then the briefing's headline and its "Needs you" items, the day log's
+/// headline, then what the knowledge engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
     let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
     let mut s = String::from("## Morning\n");
+    // The outbox is cross-org like the board, so linked against the vault, and made when
+    // missing so the link opens a file the sweep reads. The inbox page is this org's own.
+    if let Err(e) = crate::outbox::ensure(p) {
+        eprintln!("notes: could not create {}: {e}", p.outbox.display());
+    }
+    s.push_str(&format!(
+        "- Outbox: [[{}]]\n",
+        config::wikilink(&p.vault, &p.outbox)
+    ));
+    let inbox = config::wikilink(&p.root, &status::page_path(&p.root, status::Feed::Inbox));
+    s.push_str(&format!("- Inbox: [[{inbox}]]\n"));
     match fs::read_to_string(&briefing) {
         Ok(text) => {
             let headline = text
@@ -417,7 +428,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
                 let Some(body) = item.strip_prefix("- ") else {
                     continue;
                 };
-                let body = body.split(" -> do:").next().unwrap_or(body).trim();
+                let body = body.trim();
                 if !body.is_empty() && body != "nothing" {
                     s.push_str(&format!("  - {body}\n"));
                 }
@@ -554,7 +565,7 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
         links.push((label.clone(), config::wikilink(&p.root, b)));
     }
     // Board first, then the index. The board is the one the human opens daily (it carries
-    // the live wave); the index is the slower "what projects exist" page. The agent board has
+    // the live list); the index is the slower "what projects exist" page. The agent board has
     // no line here: the board's own header links it, one click from this one.
     //
     // The board is linked against the VAULT, not this org's root: it is one cross-org file, so
@@ -570,7 +581,10 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // as the complete list while showing only one org's, which is how projects in another org
     // came to look missing.
     if let Some(pi) = &p.project_index {
-        links.push((format!("{} projects", p.name), config::wikilink(&p.root, pi)));
+        links.push((
+            format!("{} projects", p.name),
+            config::wikilink(&p.root, pi),
+        ));
     }
     // The knowledge index (the `notes index --rebuild` MOC over knowledge/ + zettels), so the
     // curated side of the vault is one click from the day.
@@ -585,8 +599,12 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     // in and out of existence as it crossed zero - in the one line the status pages depend on
     // holding still. Rendering all three regardless of whether the page exists yet also keeps
     // the footer identical on every machine, so the note never becomes machine-dependent; an
-    // unfollowed wikilink is normal in a vault.
-    for f in status::Feed::ALL {
+    // unfollowed wikilink is normal in a vault. The inbox page is linked at the top of
+    // `## Morning`, beside the outbox, instead.
+    for f in status::Feed::ALL
+        .into_iter()
+        .filter(|f| *f != status::Feed::Inbox)
+    {
         let t = config::wikilink(&p.root, &status::page_path(&p.root, f));
         if !t.is_empty() && !t.starts_with("..") && !t.starts_with('/') {
             links.push((f.title().to_string(), t));
@@ -650,9 +668,18 @@ pub(crate) fn strip_backlog_footer(content: &mut String) {
 pub(crate) fn insert_before_footer(content: &str, block: &str) -> String {
     if let Some(idx) = footer_idx(content) {
         let (head, tail) = content.split_at(idx);
-        format!("{}\n\n{}{}", head.trim_end(), block.trim_start_matches('\n'), tail)
+        format!(
+            "{}\n\n{}{}",
+            head.trim_end(),
+            block.trim_start_matches('\n'),
+            tail
+        )
     } else {
-        format!("{}\n\n{}", content.trim_end(), block.trim_start_matches('\n'))
+        format!(
+            "{}\n\n{}",
+            content.trim_end(),
+            block.trim_start_matches('\n')
+        )
     }
 }
 
@@ -794,7 +821,6 @@ pub(crate) fn watch_summary(rows: &[WatchRow]) -> String {
     format!("{total} watches - {}", parts.join(", "))
 }
 
-
 /// Is the watch registry actually on THIS machine?
 ///
 /// Stronger than `p.watches.is_some()` on purpose. The notes config is gitignored and copied
@@ -842,6 +868,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     });
     status::Page {
         feed: status::Feed::Watches,
+        more: Vec::new(),
         stat,
         rows: rows
             .into_iter()
@@ -858,12 +885,172 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     }
 }
 
-/// Today's quick-captures (the bullet lines in `inbox/<today>.md`) as the inbox status page,
-/// in capture order. Each keeps a short `(sess <id>)` suffix when the capture carried a
-/// session marker, so it links back to its conversation via `claude -r <id>`.
+/// Every profile's project dirs, by name: the ingest record is the machine's, so a filing can
+/// land in any profile's project.
+fn all_project_dirs() -> Vec<(String, PathBuf)> {
+    crate::config::all_profile_names()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|n| crate::config::resolve(Some(n)).ok())
+        .flat_map(|p| discover_project_dirs(&p))
+        .filter_map(|(name, summary)| Some((name, summary.parent()?.to_path_buf())))
+        .collect()
+}
+
+/// Days of filings the page's kept-as-filed count covers.
+const KEPT_DAYS: i64 = 7;
+
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
+    inbox_page_in(p, &all_project_dirs())
+}
+
+/// The inbox status page: what the intake sweep did today, one row per line in one shape
+/// whatever its source, and what still waits on the human. A row is
+/// `HH:MM <verb> [<id>] in <project> (<lane>): <words>`, the verbs being the ones
+/// `Feed::guide` explains, with `from:` (where the line was, when not its project's own inbox),
+/// `was:` (the words before filing, when they changed) and `why:` sub-lines only when they
+/// say something.
+///
+/// - Needs you: each line the sweep left or a write refused, each line still in the outbox,
+///   and today's quick-captures (the bullet lines in `inbox/<today>.md`, each with a short
+///   `(sess <id>)` suffix when it carried a session marker, so it links back via `claude -r`).
+/// - Handled today: each line filed or joined to an open row, each row the planner planned,
+///   and each line moved to a project inbox and not filed yet. A line moved and then filed
+///   reads as one row, the filing, its `from:` saying where it came from.
+/// - Waiting in project inboxes: each sheet whose `## Inbox` holds lines, with the count.
+///
+/// Each project name links its sheet, found in `dirs` (project name, dir), which the kept
+/// count reads too.
+fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
+    use crate::agent_sheet::Lane;
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let rows: Vec<status::Row> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
+    let events = crate::ingest::on_day(p, &today);
+    let week = crate::ingest::since(p, KEPT_DAYS);
+    let ids: std::collections::HashSet<&str> = week
+        .iter()
+        .filter(|e| e.action == "filed")
+        .filter_map(|e| e.id.as_deref())
+        .collect();
+    let (kept, scored) = crate::ingest::kept(&week, &crate::ingest::find_rows(dirs, &ids));
+    let sheet = |name: &str, lane: Lane| {
+        dirs.iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, d)| crate::project_tasks::task_sheet(&lane.dir(d)))
+    };
+    // A project name as a link to its sheet; anything else (outbox, focus) as written.
+    let name = |n: &str, lane: &str| {
+        let lane = if lane == "agent" {
+            Lane::Agent
+        } else {
+            Lane::Human
+        };
+        match sheet(n, lane) {
+            Some(s) => format!("[[{}|{n}]]", config::wikilink(&p.vault, &s)),
+            None => n.to_string(),
+        }
+    };
+    let mut rows: Vec<status::Row> = Vec::new();
+    let (mut filed, mut joined, mut planned, mut left, mut refused) = (0, 0, 0, 0, 0);
+    for (i, ev) in events.iter().enumerate() {
+        let at = ev.ts.get(11..16).unwrap_or("--:--");
+        let lane = if ev.lane.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", ev.lane)
+        };
+        let id = ev
+            .id
+            .as_deref()
+            .map(|i| format!(" {i}"))
+            .unwrap_or_default();
+        let mut detail: Vec<(String, String)> = Vec::new();
+        let (attention, head) = match ev.action.as_str() {
+            "moved" => {
+                let filed_later = |e: &crate::ingest::Event| {
+                    matches!(e.action.as_str(), "filed" | "dup")
+                        && e.from == ev.to
+                        && e.text == ev.text
+                };
+                if events[i + 1..].iter().any(filed_later) {
+                    continue;
+                }
+                detail.push(("from".into(), ev.from.clone()));
+                (
+                    false,
+                    format!("{at} moved to {}: {}", name(&ev.to, ""), ev.text),
+                )
+            }
+            "filed" | "dup" => {
+                let verb = if ev.action == "dup" {
+                    joined += 1;
+                    "joined"
+                } else {
+                    filed += 1;
+                    "filed"
+                };
+                let from = events[..i]
+                    .iter()
+                    .rev()
+                    .find(|m| m.action == "moved" && m.to == ev.from && m.text == ev.text)
+                    .map(|m| m.from.as_str())
+                    .unwrap_or(ev.from.as_str());
+                if from != ev.to {
+                    detail.push(("from".into(), from.to_string()));
+                }
+                let words = ev.row.as_deref().unwrap_or(&ev.text);
+                if ev.row.is_some() && crate::ingest::row_words(&ev.text) != words {
+                    detail.push(("was".into(), ev.text.clone()));
+                }
+                (
+                    false,
+                    format!(
+                        "{at} {verb}{id} in {}{lane}: {words}",
+                        name(&ev.to, &ev.lane)
+                    ),
+                )
+            }
+            "planned" => {
+                planned += 1;
+                detail.push(("added".into(), ev.why.clone().unwrap_or_default()));
+                (
+                    false,
+                    format!("{at} planned{id} in {}: {}", name(&ev.from, ""), ev.text),
+                )
+            }
+            action @ ("left" | "refused") => {
+                if action == "refused" {
+                    refused += 1;
+                } else {
+                    left += 1;
+                }
+                let why = ev.why.as_deref().unwrap_or("no reason given");
+                detail.push(("why".into(), why.to_string()));
+                (
+                    true,
+                    format!("{at} {action} ({}): {}", name(&ev.from, ""), ev.text),
+                )
+            }
+            _ => continue,
+        };
+        rows.push(row(attention, i, head, detail));
+    }
+    let waiting = crate::outbox::lines(p).unwrap_or_default();
+    let shown = |l: &crate::sheet::InboxLine| {
+        events.iter().any(|e| {
+            e.from == "outbox"
+                && e.text == l.text
+                && matches!(e.action.as_str(), "left" | "refused")
+        })
+    };
+    for (i, l) in waiting.iter().filter(|l| !shown(l)).enumerate() {
+        rows.push(status::Row {
+            attention: true,
+            sort: (0, format!("o{i:04}")),
+            head: format!("waiting in the outbox: {}", l.text),
+            detail: vec![],
+        });
+    }
+    let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
@@ -872,27 +1059,137 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
             let suffix = inbox_session(line)
                 .map(|id| format!(" (sess {})", id.split('-').next().unwrap_or(&id)))
                 .unwrap_or_default();
-            Some(format!("{core}{suffix}"))
-        })
-        .enumerate()
-        .map(|(i, head)| status::Row {
-            attention: true,
-            sort: (0, format!("{i:04}")),
-            head,
-            detail: vec![],
+            Some(format!("captured: {core}{suffix}"))
         })
         .collect();
+    let captured = captures.len();
+    for (i, head) in captures.into_iter().enumerate() {
+        rows.push(status::Row {
+            attention: true,
+            sort: (1, format!("{i:04}")),
+            head,
+            detail: vec![],
+        });
+    }
+    // Each sheet's `## Inbox` that holds lines, both lanes, by project name.
+    let mut inboxes: Vec<String> = Vec::new();
+    for (n, _) in dirs {
+        for lane in [Lane::Human, Lane::Agent] {
+            let count = sheet(n, lane)
+                .and_then(|s| fs::read_to_string(s).ok())
+                .map(|c| crate::sheet::inbox_lines(&c).len())
+                .unwrap_or(0);
+            if count > 0 {
+                inboxes.push(format!("{}: {count} waiting", name(n, lane.name())));
+            }
+        }
+    }
+    inboxes.sort();
+    inboxes.dedup();
     status::Page {
         feed: status::Feed::Inbox,
-        stat: Some(format!("{} captured {today}", rows.len())),
+        stat: Some(format!(
+            "{today}: {filed} filed, {joined} joined, {planned} planned, {left} left, {refused} refused, {} in the outbox, {captured} captured{}",
+            waiting.len(),
+            if scored > 0 {
+                format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
+            } else {
+                String::new()
+            }
+        )),
         rows,
+        more: vec![
+            ("Waiting in project inboxes".into(), inboxes),
+            ("Sheet actions".into(), sheet_actions(&events)),
+        ],
     }
 }
 
-/// Publish today's captures to the inbox page and take any `## Inbox` section out of the note.
-/// Captures land all day, so they live on the page: the note itself is not rewritten for them.
+/// Past this many, the page lists the newest and points at `notes log`.
+const SHEET_ACTIONS_SHOWN: usize = 40;
+
+/// The day's verb writes for the page: a line each for Focus and the human lane, oldest first,
+/// and one line per action and board for the agent lane, which writes far too many to list.
+/// Intake has its own rows above, so a line added to the outbox, or added and then filed, is
+/// not told twice here.
+fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
+    const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
+    let told_above = |i: usize, e: &crate::ingest::Event| {
+        INTAKE.contains(&e.action.as_str())
+            || (e.action == "added"
+                && (e.from == "outbox"
+                    || events[i + 1..].iter().any(|n| {
+                        matches!(n.action.as_str(), "filed" | "dup")
+                            && n.from == e.from
+                            && n.text == e.text
+                    })))
+    };
+    let (agent, human): (Vec<_>, Vec<_>) = events
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| !told_above(*i, e))
+        .map(|(_, e)| e)
+        .partition(|e| e.lane == "agent");
+
+    let hidden = human.len().saturating_sub(SHEET_ACTIONS_SHOWN);
+    let mut lines = Vec::new();
+    if hidden > 0 {
+        lines.push(format!("+{hidden} older: notes log"));
+    }
+    // `log_line` leads with `YYYY-MM-DD `; the page is one day, so its rows lead with the time.
+    lines.extend(human[hidden..].iter().map(|e| {
+        let l = crate::ingest::log_line(e);
+        l.get(11..).unwrap_or(&l).to_string()
+    }));
+
+    let mut folded: std::collections::BTreeMap<_, (usize, Vec<&str>)> = Default::default();
+    for e in agent {
+        let (count, ids) = folded.entry((&e.action, &e.from, &e.to)).or_default();
+        *count += 1;
+        ids.extend(e.id.as_deref());
+    }
+    for ((action, from, to), (count, ids)) in folded {
+        let place = if to.is_empty() {
+            from.clone()
+        } else {
+            format!("{from} -> {to}")
+        };
+        let mut shown = ids[..ids.len().min(3)].join(", ");
+        if ids.len() > 3 {
+            shown.push_str(&format!(" +{}", ids.len() - 3));
+        }
+        lines.push(format!("agent lane: {action} {count} on {place} ({shown})"));
+    }
+    lines
+}
+
+/// One event's row: under Needs you when `attention`, in the record's order.
+fn row(attention: bool, i: usize, head: String, detail: Vec<(String, String)>) -> status::Row {
+    status::Row {
+        attention,
+        sort: (if attention { 0 } else { 2 }, format!("{i:04}")),
+        head,
+        detail,
+    }
+}
+
+/// Publish the inbox page and take any `## Inbox` section out of the note. The page is owned
+/// by the machine that runs the intake sweep, the one holding the ingest record: that record
+/// is per-machine state, so a second machine rendering the page from its own (empty) record
+/// would fight the first through the vault's git sync.
 fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    publish_and_strip(p, log, note, &inbox_page(p), p.inbox.is_dir(), "Inbox")
+    publish_and_strip(p, log, note, &inbox_page(p), inbox_present(p), "Inbox")
+}
+
+fn inbox_present(p: &Profile) -> bool {
+    p.inbox.is_dir() && crate::ingest::path(p).exists()
+}
+
+/// `notes ingest page`: publish the inbox page alone, which the sweep runs after each pass so
+/// the summary is current without a full `notes today`.
+pub fn publish_inbox_page(p: &Profile, log: &Logger) -> Result<i32> {
+    status::publish(&p.root, &p.daily, log, &inbox_page(p), inbox_present(p))?;
+    Ok(0)
 }
 
 /// Core text of an inbox capture line, for display + dedup: strip a leading bullet or
@@ -967,7 +1264,14 @@ pub(crate) fn publish_and_strip(
 }
 
 fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    publish_and_strip(p, log, note, &watches_page(p), watches_present(p), "Watches")
+    publish_and_strip(
+        p,
+        log,
+        note,
+        &watches_page(p),
+        watches_present(p),
+        "Watches",
+    )
 }
 
 /// Create the standing backlog files from templates if missing.
@@ -1051,9 +1355,8 @@ fn migrate_to_schedule(p: &Profile, log: &Logger) -> Result<()> {
         active.extend(md::section_lines(&c, "Active").unwrap_or_default());
         done.extend(md::section_lines(&c, "Done").unwrap_or_default());
     }
-    let keep = |v: Vec<String>| -> Vec<String> {
-        v.into_iter().filter(|l| md::is_task(l)).collect()
-    };
+    let keep =
+        |v: Vec<String>| -> Vec<String> { v.into_iter().filter(|l| md::is_task(l)).collect() };
     let (active, done) = (keep(active), keep(done));
 
     if let Some(parent) = p.schedule.parent() {
@@ -1123,8 +1426,8 @@ fn space_headings(note: &Path) -> Result<()> {
 }
 
 fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
-    let original = fs::read_to_string(note)
-        .with_context(|| format!("reading {}", note.display()))?;
+    let original =
+        fs::read_to_string(note).with_context(|| format!("reading {}", note.display()))?;
 
     let mut folded: Vec<String> = Vec::new();
     for heading in ["Due", "Priority"] {
@@ -1150,7 +1453,10 @@ fn conform_legacy_sections(note: &Path, log: &Logger) -> Result<()> {
     md::write_atomic(note, &content)?;
     log.info(
         "today",
-        &format!("conformed legacy sections ({} item(s) folded into Focus)", folded.len()),
+        &format!(
+            "conformed legacy sections ({} item(s) folded into Focus)",
+            folded.len()
+        ),
     );
     Ok(())
 }
@@ -1266,10 +1572,19 @@ mod tests {
         conform_legacy_sections(&note, &log).unwrap();
         let out = fs::read_to_string(&note).unwrap();
 
-        assert!(!out.contains("## Current Projects"), "static link list dropped");
+        assert!(
+            !out.contains("## Current Projects"),
+            "static link list dropped"
+        );
         assert!(!out.contains("## Due"), "second list dropped");
-        assert!(out.contains("- [ ] carried from due"), "open item folded, not deleted");
-        assert!(!out.contains("- [x] finished"), "completed item not resurrected");
+        assert!(
+            out.contains("- [ ] carried from due"),
+            "open item folded, not deleted"
+        );
+        assert!(
+            !out.contains("- [x] finished"),
+            "completed item not resurrected"
+        );
         assert!(out.contains("- [ ] already here"), "existing focus kept");
         assert!(out.contains("Schedule: [[schedule]]"), "footer intact");
 
@@ -1311,9 +1626,15 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert!(dir.join("daily/2026-06-18.md").exists(), "note carried over");
+        assert!(
+            dir.join("daily/2026-06-18.md").exists(),
+            "note carried over"
+        );
         assert!(!dir.join("log").exists(), "legacy dir is gone, not copied");
-        assert!(dir.join("daily_archive/2026").is_dir(), "archive migrated too");
+        assert!(
+            dir.join("daily_archive/2026").is_dir(),
+            "archive migrated too"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1331,7 +1652,10 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert!(dir.join("log/2026-06-18.md").exists(), "pinned dir untouched");
+        assert!(
+            dir.join("log/2026-06-18.md").exists(),
+            "pinned dir untouched"
+        );
         assert!(!dir.join("daily").exists(), "no daily dir invented");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1352,7 +1676,10 @@ mod tests {
 
         migrate_log_to_daily(&p, &log).unwrap();
 
-        assert_eq!(fs::read_to_string(dir.join("daily/keep.md")).unwrap(), "keep");
+        assert_eq!(
+            fs::read_to_string(dir.join("daily/keep.md")).unwrap(),
+            "keep"
+        );
         assert!(dir.join("log/old.md").exists(), "legacy left for the human");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1580,11 +1907,17 @@ mod tests {
         let (out, remaining) = promote_schedule(content, d("2026-07-10"));
 
         let surfaced: Vec<&str> = out.iter().map(|s| s.as_str()).collect();
-        assert_eq!(surfaced.len(), 2, "friday habit + today's one-off: {surfaced:?}");
+        assert_eq!(
+            surfaced.len(),
+            2,
+            "friday habit + today's one-off: {surfaced:?}"
+        );
         assert!(surfaced.iter().any(|l| l.contains("timesheets")));
         assert!(surfaced.iter().any(|l| l.contains("one-off thing")));
         // cadence stripped, the date kept as the due tag, created-stamped
-        assert!(!out.iter().any(|l| l.contains("every:") || l.contains("[2026-")));
+        assert!(!out
+            .iter()
+            .any(|l| l.contains("every:") || l.contains("[2026-")));
         assert!(out.iter().all(|l| l.contains("#c0710")));
         assert!(out.contains(&"- [ ] one-off thing #c0710 #due0710".to_string()));
 
@@ -1658,7 +1991,10 @@ mod tests {
         assert!(active.contains("water plants (every:sun)"), "{out}");
         // the finished items stayed finished
         assert!(!active.contains("old one"), "Done bled into Active:\n{out}");
-        assert!(!active.contains("old habit"), "Done bled into Active:\n{out}");
+        assert!(
+            !active.contains("old habit"),
+            "Done bled into Active:\n{out}"
+        );
         assert!(out.contains("- [x] old one") && out.contains("- [x] old habit"));
 
         // sources renamed aside, not deleted — the data is the user's
@@ -1696,8 +2032,14 @@ mod tests {
         assert!(!out.contains("## Due"), "Due section is gone:\n{out}");
         let focus = md::section_lines(&out, "Focus").unwrap().join("\n");
         assert!(focus.contains("my thing"), "{out}");
-        assert!(focus.contains("water plants"), "legacy Due item stranded:\n{out}");
-        assert!(focus.contains("pay rent"), "legacy Due item stranded:\n{out}");
+        assert!(
+            focus.contains("water plants"),
+            "legacy Due item stranded:\n{out}"
+        );
+        assert!(
+            focus.contains("pay rent"),
+            "legacy Due item stranded:\n{out}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1723,8 +2065,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items without
-    /// their `-> do:` hints, the day log's first sentence, then one line for the knowledge logs
+    /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items as
+    /// written, the day log's first sentence, then one line for the knowledge logs
     /// the previous note did not list. Re-running it changes nothing, and `## Refs` lists neither
     /// the briefing nor the day log.
     #[test]
@@ -1736,15 +2078,18 @@ mod tests {
         std::fs::create_dir_all(dir.join("knowledge/_log/2026/09")).unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/briefing.md"),
-            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45, 2 page(s), 1 high.\n\n## Needs you\n\n- wave-roll STALLED -> do: agentctl status wave-roll\n\n## Quiet\n\n- 15 watches OK\n",
+            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45: 1 thing needs you.\n\n## Needs you\n\n- Runner wave-roll stalled. Run agentctl status wave-roll.\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/shipped.md"),
-            "# Day log, 2026-09-30\n\n3 merged in 2 repos, whose spend is $4.5. Gathered by `day-log`.\n",
+            "# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
-        for (d, line) in [("28", "- created [[knowledge/a]]: r"), ("29", "- updated [[knowledge/b]]: r")] {
+        for (d, line) in [
+            ("28", "- created [[knowledge/a]]: r"),
+            ("29", "- updated [[knowledge/b]]: r"),
+        ] {
             std::fs::write(
                 dir.join(format!("knowledge/_log/2026/09/2026-09-{d}.md")),
                 format!("# log\n\n## Changes\n{line}\n"),
@@ -1763,18 +2108,31 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 merged in 2 repos, whose spend is $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
+        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Runner wave-roll stalled. Run agentctl status wave-roll.\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
-        assert!(at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"), "{out}");
-        assert!(!out.contains("2026-09-28"), "already listed yesterday:\n{out}");
+        assert!(
+            at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("2026-09-28"),
+            "already listed yesterday:\n{out}"
+        );
 
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
-        assert_eq!(std::fs::read_to_string(&note).unwrap(), out, "a second pass must not write");
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            out,
+            "a second pass must not write"
+        );
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let after = std::fs::read_to_string(&note).unwrap();
-        assert!(!after.contains("## Refs"), "Morning already links both:
-{after}");
+        assert!(
+            !after.contains("## Refs"),
+            "Morning already links both:
+{after}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1791,7 +2149,9 @@ mod tests {
         let note = dir.join("journal/daily/2026-09-30.md");
         create_note(&p, &log, d("2026-09-30"), &note).unwrap();
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
-        assert!(std::fs::read_to_string(&note).unwrap().contains("- Briefing: not written yet"));
+        assert!(std::fs::read_to_string(&note)
+            .unwrap()
+            .contains("- Briefing: not written yet"));
 
         std::fs::write(
             dir.join("journal/refs/2026-09-30/briefing.md"),
@@ -1805,7 +2165,10 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("not written yet"), "{out}");
-        assert!(!out.contains("## Refs"), "the briefing is not listed twice:\n{out}");
+        assert!(
+            !out.contains("## Refs"),
+            "the briefing is not listed twice:\n{out}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1826,7 +2189,7 @@ mod tests {
         let out = std::fs::read_to_string(&note).unwrap();
         assert_eq!(
             out,
-            "# 2026-09-30\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Morning\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n\n## Projects\n- [[x]]\n"
+            "# 2026-09-30\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n\n## Projects\n- [[x]]\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1840,7 +2203,7 @@ mod tests {
         let p = profile(dir.to_str().unwrap());
         assert_eq!(
             morning_section(&p, None, d("2026-09-30")),
-            "## Morning\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n"
+            "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1852,10 +2215,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let note = dir.join("n.md");
-        std::fs::write(&note, "# d\n\n## Projects\n- [[x]]\n## Refs\n- [[r]]\n```\n## not a heading\n```\n").unwrap();
+        std::fs::write(
+            &note,
+            "# d\n\n## Projects\n- [[x]]\n## Refs\n- [[r]]\n```\n## not a heading\n```\n",
+        )
+        .unwrap();
         space_headings(&note).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
-        assert_eq!(out, "# d\n\n## Projects\n- [[x]]\n\n## Refs\n- [[r]]\n```\n## not a heading\n```\n");
+        assert_eq!(
+            out,
+            "# d\n\n## Projects\n- [[x]]\n\n## Refs\n- [[r]]\n```\n## not a heading\n```\n"
+        );
         space_headings(&note).unwrap();
         assert_eq!(std::fs::read_to_string(&note).unwrap(), out);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1887,11 +2257,7 @@ mod tests {
         let pass = || {
             ensure_footer(&p, &note).unwrap();
             let c = std::fs::read_to_string(&note).unwrap();
-            if let Some(s) = crate::sweep::sweep_section(
-                &c,
-                |h| h.eq_ignore_ascii_case("Focus"),
-                &md::PRIORITIES,
-            ) {
+            if let Some(s) = crate::sweep::sweep_section(&c, |h| h.eq_ignore_ascii_case("Focus")) {
                 std::fs::write(&note, s).unwrap();
             }
             std::fs::read_to_string(&note).unwrap()
@@ -1979,8 +2345,15 @@ mod tests {
             !footer.chars().any(|c| c.is_ascii_digit()),
             "the footer must carry no counts:\n{footer}"
         );
-        for feed in ["- Watches: [[status/watches]]", "- Comms: [[status/comms]]", "- Inbox: [[status/inbox]]"] {
-            assert!(footer.contains(feed), "the footer must reach {feed}:\n{footer}");
+        for feed in ["- Watches: [[status/watches]]", "- Comms: [[status/comms]]"] {
+            assert!(
+                footer.contains(feed),
+                "the footer must reach {feed}:\n{footer}"
+            );
+        }
+        // The intake links lead `## Morning` instead, so each has one home.
+        for moved in ["[[status/inbox]]", "[[outbox]]"] {
+            assert!(!footer.contains(moved), "{moved} is in Morning:\n{footer}");
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2019,7 +2392,10 @@ mod tests {
         // Every watch survives now, healthy ones included -- the page has a `## Quiet` to put
         // them in, where the note's one-glance section could only afford the exceptions.
         assert_eq!(rows.len(), 3);
-        assert_eq!(watch_summary(&rows), "3 watches - 1 OK, 1 tripped, 1 paused");
+        assert_eq!(
+            watch_summary(&rows),
+            "3 watches - 1 OK, 1 tripped, 1 paused"
+        );
         assert_eq!(rows[0].name, "router"); // unhealthy first
         assert_eq!(rows[1].name, "api"); // healthy next
         assert_eq!(rows[2].name, "parked"); // paused last
@@ -2110,5 +2486,151 @@ mod tests {
         let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         assert!(promoted.is_empty());
         assert_eq!(remaining, content);
+    }
+
+    #[test]
+    fn sheet_actions_tell_a_line_once_and_fold_the_agent_lane() {
+        use crate::ingest::Event;
+        let row = |action, lane, line: &str| {
+            let mut e = Event::row(action, "demo", "", lane, line);
+            e.ts = "2026-11-05T10:41:00-08:00".into();
+            e.by = "human".into();
+            e
+        };
+        let mut events = vec![
+            Event::row("added", "outbox", "", "", "- [ ] a drop"),
+            row("added", "", "- [ ] filed later"),
+            Event::new("filed", "demo", "demo", "filed later"),
+            row("added", "", "- [ ] stays put"),
+        ];
+        for n in 1..=5 {
+            let line = format!("- [ ] a row <!-- id:dm-{n} -->");
+            events.push(row("edited", "agent", &line));
+        }
+        assert_eq!(
+            sheet_actions(&events),
+            [
+                "10:41 added demo by human: stays put",
+                "agent lane: edited 5 on demo (dm-1, dm-2, dm-3 +2)",
+            ]
+        );
+
+        let many: Vec<_> = (0..SHEET_ACTIONS_SHOWN + 2)
+            .map(|n| row("done", "human", &format!("- [ ] row {n}")))
+            .collect();
+        let lines = sheet_actions(&many);
+        assert_eq!(lines.len(), SHEET_ACTIONS_SHOWN + 1);
+        assert_eq!(lines[0], "+2 older: notes log");
+        assert!(lines[1].ends_with("row 2"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn the_inbox_page_shows_where_each_line_went_and_what_waits() {
+        use crate::ingest::{record, Event};
+        let root = std::env::temp_dir().join(format!("inbox-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        record(
+            &p,
+            &Event::new("moved", "outbox", "demo", "loading screens"),
+        );
+        let mut filed = Event::new("filed", "demo", "demo", "loading screens");
+        filed.lane = "human".into();
+        filed.id = Some("dm-4".into());
+        filed.row = Some("feat(ui): loading screens".into());
+        record(&p, &filed);
+        let demo = root.join("demo");
+        std::fs::create_dir_all(&demo).unwrap();
+        std::fs::write(
+            demo.join("README.md"),
+            "## Inbox\n- [ ] still in the inbox\n\n## Tasks\n- [ ] feat(ui): loading screens #size/s <!-- id:dm-4 filed:2026-11-05 -->\n",
+        )
+        .unwrap();
+        let mut dup = Event::new("dup", "nc", "nc", "focus and outbox");
+        dup.id = Some("nc-9".into());
+        record(&p, &dup);
+        let mut left = Event::new("left", "outbox", "", "a thought");
+        left.why = Some("not a task".into());
+        record(&p, &left);
+        let mut refused = Event::new("refused", "demo", "", "do the thing #medium");
+        refused.why = Some("retired priority #medium".into());
+        record(&p, &refused);
+        let mut plan = Event::new("planned", "demo", "", "feat(ui): a brand kit #size/l");
+        plan.id = Some("dm-5".into());
+        plan.why = Some("3 plan lines, split into 2 rows".into());
+        record(&p, &plan);
+        // A verb's own write is not intake: it shows under Sheet actions, never as a red row.
+        let mut removed = Event::row("removed", "focus", "", "", "- [ ] a Focus row");
+        removed.by = "human".into();
+        record(&p, &removed);
+        for id in ["dm-1", "dm-2"] {
+            let line = format!("- [ ] a row <!-- id:{id} -->");
+            record(&p, &Event::row("edited", "demo", "", "agent", &line));
+        }
+        record(
+            &p,
+            &Event::new("moved", "focus", "demo", "still in the inbox"),
+        );
+        std::fs::write(
+            &p.outbox,
+            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n",
+        )
+        .unwrap();
+        let page = inbox_page_in(&p, &[("demo".into(), demo)]);
+        let out = status::render(&p.root, &p.daily, &page);
+        // Every event row leads with its HH:MM, which is the test's clock: mask it.
+        let masked: String = out
+            .lines()
+            .map(|l| match l.strip_prefix("- ") {
+                Some(r)
+                    if r.len() > 6
+                        && r.as_bytes()[2] == b':'
+                        && r[..5].chars().all(|c| c.is_ascii_digit() || c == ':') =>
+                {
+                    format!("- HH:MM{}\n", &r[5..])
+                }
+                _ => format!("{l}\n"),
+            })
+            .collect();
+        let body = masked
+            .split_once("## Needs you\n")
+            .and_then(|(_, b)| b.split_once("\n---\n"))
+            .map(|(b, _)| b)
+            .unwrap();
+        assert_eq!(
+            body,
+            "\
+- HH:MM left (outbox): a thought
+  - why: not a task
+- HH:MM refused ([[demo/README|demo]]): do the thing #medium
+  - why: retired priority #medium
+- waiting in the outbox: new one
+
+## Handled today
+- HH:MM filed dm-4 in [[demo/README|demo]] (human): feat(ui): loading screens
+  - from: outbox
+  - was: loading screens
+- HH:MM joined nc-9 in nc: focus and outbox
+- HH:MM planned dm-5 in [[demo/README|demo]]: feat(ui): a brand kit #size/l
+  - added: 3 plan lines, split into 2 rows
+- HH:MM moved to [[demo/README|demo]]: still in the inbox
+  - from: focus
+
+## Waiting in project inboxes
+- [[demo/README|demo]]: 1 waiting
+
+## Sheet actions
+- HH:MM removed focus by human: a Focus row
+- agent lane: edited 2 on demo (dm-1, dm-2)
+"
+        );
+        assert!(page.stat.unwrap().ends_with(
+            ": 1 filed, 1 joined, 1 planned, 1 left, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 1 as filed (7d)"
+        ));
+        assert!(
+            out.contains("\nfiled: made a new row - joined:"),
+            "the guide line:\n{out}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

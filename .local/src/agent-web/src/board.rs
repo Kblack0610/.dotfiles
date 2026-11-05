@@ -1,5 +1,6 @@
-//! The Board tab: every project's open rows (human sheet, agent board, playtest, and each
-//! profile's Focus, read-only), and add, start, done and remove on them.
+//! The rows under the Projects tab: every project's open rows (human sheet, agent board,
+//! playtest, and each profile's Focus, read-only), and add, start, done, drop, move, edit and
+//! tag on them.
 //!
 //! `notes` is the sheets' only writer. The read and the writes go through `hub_core::tasks`,
 //! which the hub TUI uses too; a write passes the row's raw line to `notes ptask --exact`, so a
@@ -43,6 +44,22 @@ pub struct WriteBody {
     proof: String,
     #[serde(default)]
     unverified: String,
+    #[serde(default)]
+    why: String,
+    #[serde(default)]
+    dup: String,
+    /// A move's destination project; blank keeps the row on its own sheet.
+    #[serde(default)]
+    dest: String,
+    /// A tag write's words, space separated, `#` optional.
+    #[serde(default)]
+    add: String,
+    #[serde(default)]
+    remove: String,
+}
+
+fn words(s: &str) -> Vec<String> {
+    s.split_whitespace().map(str::to_string).collect()
 }
 
 fn some(s: String) -> Option<String> {
@@ -67,8 +84,28 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             unverified: some(b.unverified),
         },
         "start" => Verb::Start { raw: b.raw },
-        "rm" => Verb::Rm { raw: b.raw },
-        _ => return Err("the verb is add, done, start or rm"),
+        "drop" => Verb::Drop {
+            raw: b.raw,
+            why: some(b.why),
+            dup: some(b.dup),
+        },
+        "move" => Verb::Move {
+            raw: b.raw,
+            project: some(b.dest),
+            to: some(b.to),
+        },
+        "promote" => Verb::Promote { raw: b.raw },
+        "demote" => Verb::Demote { raw: b.raw },
+        "edit" => Verb::Edit {
+            raw: b.raw,
+            text: b.text,
+        },
+        "tag" => Verb::Tag {
+            raw: b.raw,
+            add: words(&b.add),
+            remove: words(&b.remove),
+        },
+        _ => return Err("the verb is add, done, start, drop, move, promote, demote, edit or tag"),
     };
     Ok(Write {
         profile: b.profile,
@@ -125,8 +162,83 @@ mod tests {
             ["--agent", "--exact", "done", "--proof", "pr:3", "--", "- [ ] a"]
         );
         assert!(to_write(body(
-            r#"{"verb":"edit","profile":"bnb","project":"demo","lane":"human"}"#
+            r#"{"verb":"sweep","profile":"bnb","project":"demo","lane":"human"}"#
         ))
         .is_err());
+        assert!(
+            to_write(body(
+                r#"{"verb":"rm","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a"}"#
+            ))
+            .is_err(),
+            "rm is gone: a row is dropped with a reason"
+        );
+    }
+
+    #[test]
+    fn a_drop_carries_its_reason() {
+        let w = to_write(body(
+            r#"{"verb":"drop","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a","why":"stale","dup":" "}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--exact", "drop", "--why", "stale", "--", "- [ ] a"]
+        );
+    }
+
+    #[test]
+    fn a_move_names_its_dest_apart_from_the_rows_own_project() {
+        let w = to_write(body(
+            r#"{"verb":"move","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a","dest":"other","to":""}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[2..],
+            [
+                "demo",
+                "--profile",
+                "bnb",
+                "--exact",
+                "move",
+                "--project",
+                "other",
+                "--",
+                "- [ ] a"
+            ]
+        );
+        let w = to_write(body(
+            r#"{"verb":"edit","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","text":"b"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--agent", "--exact", "edit", "--text", "b", "--", "- [ ] a"]
+        );
+    }
+
+    #[test]
+    fn a_tag_splits_its_words_and_one_that_is_not_a_tag_is_refused() {
+        let w = to_write(body(
+            r##"{"verb":"tag","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","add":"#size/s  requested","remove":"ai"}"##,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "tag",
+                "--add=size/s",
+                "--add=requested",
+                "--remove=ai",
+                "--",
+                "- [ ] a"
+            ]
+        );
+        let w = to_write(body(
+            r#"{"verb":"tag","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","add":"v0.2.0"}"#,
+        ))
+        .unwrap();
+        assert!(tasks::argv(&w).is_err(), "a release is move's");
     }
 }

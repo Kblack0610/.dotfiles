@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [notes, journal, cli]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-05"
 ---
 
 # notes-system
@@ -91,7 +91,8 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes knowledge init\|due\|apply` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log). Hand edits to articles are fine; an engine update loses to an edit made during its run. |
 | `notes doctor` | Diagnose: profile/dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. Alias: `ndoctor`. **Run this first when "notes are broken".** |
-| `notes projects ...` / `notes ptask ...` | Projects, waves and tasks. Do not restate them here: the cheatsheet (every verb, the project dir shape, the `<leader>np` keys) is `~/.dotfiles/.local/src/notes-cli/README.md` -> Projects cheatsheet. |
+| `notes log [--id ID] [--project P] [--days N]` | What happened to a row or sheet: every CLI write, with who and when. Hand edits are in vault git history instead. |
+| `notes projects ...` / `notes ptask ...` | Projects, versions and tasks. Do not restate them here: the cheatsheet (every verb, the project dir shape, the `<leader>np` keys) is `~/.dotfiles/.local/src/notes-cli/README.md` -> Projects cheatsheet. |
 
 Structured log: `~/.local/state/notes/journal.log`; `--verbose` echoes to stderr.
 Daily-note model: only fresh **Focus** + **Priority** inline; Fun/Carry Over live in
@@ -106,19 +107,19 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 - **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
 - **nvim keymap:** `<leader>tp` in a markdown buffer cycles the current line (or a visual selection, converging to one level): `(none) -> #low -> #high -> #urgent -> (none)`. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
 - **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
-- **Vs Vikunja:** complementary, not synced. Vikunja tickets use their own P-labels for tracked work; these tags are for lightweight in-note prioritisation.
 
 ## Project board
 
 The rules every agent follows on a project's two lanes. The verbs are in the CLI README, Projects cheatsheet. Every lane goes through the `notes` CLI (never hand-edit a sheet), in plain ASCII.
 
-- A row's format is the CLI README, "The task row": `type(area): title`, one priority, the stamps `ptask add` writes, detail on indented lines under it. Agent-board rows are filed in that form; a human-sheet row may be free text until triage rewrites it. `notes doctor --projects` lints it.
+- A row's format is the CLI README, "The task row": `type(area): title`, one priority, the stamps `ptask add` writes, detail on indented lines under it. Agent-board rows are filed in that form. Free text for the human sheet waits in its `## Inbox` (`ptask add`, a `#p:<name>` Focus row, agent-web's Add), and work for any project in the outbox (`notes outbox add`), until the `agentctl-inbox-triage --watch` sweep files it about 30s after the save, and `agentctl-inbox-plan` plans each row it flags `#plan` (goal, approach, checks, split); an inbox line leaves only through `ptask file` (README, Intake). `notes doctor --projects` lints it.
 - The task a session is on is a queue item, not a row: `agent-queue add --running --project <p> "<task>"` (the dispatcher already made one when `$AGENT_QUEUE_ITEM` is set), closed by `agent-land <N>` or `agent-queue move <slug> done`. Its session, PR and state are what lets another session resume it (`~/.config/agentctl/QUEUE.md`). The agent board is the backlog: follow-ups and subtasks no session is on yet, `notes ptask <project> --agent add "<title>"`. Project names come from `~/.dotfiles-private/.config/shared-hooks/project-map.json`.
-- The project sheet (no `--agent`) is the human's queue. Every open row on its current wave is the work, whoever does it; `start`/`done` the rows you take. Add to it only (1) asks the human wrote, (2) human-only actions (prod writes, releasing, money, legal, product decisions, device runs), or (3) findings with prod user, PHI, security or money impact, each with a `file:line` and a one-line impact. Anything else: fix it in the PR that found it, put it on the agent board and finish it before the wave rolls, or drop it. Check both lanes before adding.
-- `done` needs `--proof <ref>` checkable later (`pr:1142`, `run:<id>`, a URL) or `--unverified "<why>"` when that is the truth. Why: a version cannot roll while its wave has open tasks, and that gate is only worth anything if a ticked box means done.
-- Agents never write into a planned wave (`add --to`, `move --to`). A bare add is tagged `#high`, meaning "nobody decided"; pass `#urgent` or `#low` when that is your judgment. Why: otherwise agent-filed `#high` rows, most of them agent-board work, fill the human's planned wave.
-- What the human asked for goes in a plan; the board gets one `#ask` row per unfinished plan, never one per phase. An ask with no plan, unlanded at session end, gets one row in their words. Closing an `#ask` needs proof of every clause, with what is left on a new `#ask`; only the human drops an undelivered one. `agent-ask` is a different thing: a question for the human. Why: an ask with no row is lost when the session ends.
-- Unattended dispatch (`fleet-dispatch`) picks rows by tag; what is eligible is the `fleet-dispatch` skill. When you file a row you may tag your own `#tier/N`, never `#worker/*`, except `#worker/asks` on an `#ask` row that is tier 2 or lower, size S and says what done looks like. Untagged `unity-core-playground` agent-board rows are eligible as they stand: file them clear and in one area, or tag them `#tier/3`.
+- The project sheet (no `--agent`) is the human's queue. Every open row on its open version is the work, whoever does it; `start`/`done` the rows you take. Add to it only (1) asks the human wrote, (2) human-only actions (prod writes, releasing, money, legal, product decisions, device runs), or (3) findings with prod user, PHI, security or money impact, each with a `file:line` and a one-line impact. Anything else: fix it in the PR that found it, put it on the agent board and finish it before the wave rolls, or drop it. Check both lanes before adding.
+- `done` needs `--proof <ref>` checkable later (`pr:1142`, `run:<id>`, a URL) or `--unverified "<why>"` when that is the truth; a row that will not be delivered is `drop --why "<why>"` or `drop --dup <id>`, which keeps it ticked with the reason. Name a row by its id (`ar-142`) when it has one. Why: a version cannot roll while its wave has open tasks, and that gate is only worth anything if a ticked box means done.
+- Agents never aim a row at a later release (`add --to`, `move --to`). A bare add is tagged `#high`, meaning "nobody decided"; pass `#urgent` or `#low` when that is your judgment. Why: otherwise agent-filed `#high` rows, most of them agent-board work, fill the human's planned wave.
+- What the human asked for goes in a plan; the board gets one `#requested` row per unfinished plan, never one per phase. An ask with no plan, unlanded at session end, gets one row in their words. Closing a `#requested` row needs proof of every clause, with what is left on a new `#requested` row; only the human drops an undelivered one. `agent-ask` is a different thing: a question for the human. Why: an ask with no row is lost when the session ends.
+- Unattended dispatch (`fleet-dispatch`) picks rows by tag; what is eligible is the `fleet-dispatch` skill. When you file a row you may tag your own `#tier/N`, never `#worker/*`, except `#worker/requested` on a `#requested` row that is tier 2 or lower, size S and says what done looks like. Untagged `unity-core-playground` agent-board rows are eligible as they stand: file them clear and in one area, or tag them `#tier/3`.
+- Where a row goes: project is the product, type is the kind of work, area is the part. A game with its own `store/` listing has its own board; shared systems, the CI gate, store tooling, the registry and games with no store listing (game name as area) go on `unity-core-playground`; hosts and the cluster on `home-config`; API work on the `bnb-platform` app. There is no `deploy` type and no `unity-core` board. `agentctl-inbox-triage` applies the same rule. Why: one game platform project, chosen 2026-11-05, so shared work never splits across boards.
 - Today's `## Focus` (`notes focus`) is the human's list; the preflight shows it as context, never as your queue.
 - After creating, staging, rolling or archiving a lab project, moving rows, or editing a summary or index, run `lab-refresh` (the `lab-sync` skill, "After any lab change").
 
@@ -151,25 +152,6 @@ Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detec
 
 One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `~/.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
 
-### `notes-to-vikunja`
-
-Bridge that captures **project tasks** from today's daily note into Vikunja (`vikunja.example.internal`). One-directional: notes are the capture surface, Vikunja stays the source of truth. Script: `~/.local/src/notes-vikunja/notes-to-vikunja` (Python stdlib); runs every 15 min via `notes-vikunja.timer`, or manually (`--dry-run`, `--date YYYY-MM-DD`).
-
-What syncs (everything else stays notes-only):
-
-| Line in daily note | Lands in |
-|---|---|
-| `- [ ] myapp: fix bug waves` | Vikunja project `myapp` (prefix must match an existing project title or a `PROJECT_ALIASES` alias) |
-| `- [ ] fix bug waves #dodginballs` | Vikunja project `dodginballs` |
-| `- [ ] renew passport @vk` | Vikunja `Inbox` project (opt-in capture for non-project tasks) |
-
-Mechanics:
-- Captured tasks get the `from-notes` label; the created date (`#c1026`, or a legacy `#c261026` / `<!-- since: -->`) lands in the description.
-- Dedup state: `~/.local/state/notes-vikunja/synced.tsv`, keyed on the notes CLI's `task_key` normalisation - carry-forward re-stamping never duplicates. **No write-back into the note** (stamp_line would clobber it).
-- Checking a previously synced task (`- [x]`) marks it done in Vikunja on the next run.
-- Unknown project names are skipped, never auto-created.
-- Config/token: `~/.config/notes-vikunja.env` (machine-local; `VIKUNJA_API_TOKEN`, falls back to `$VIKUNJA_MCP_TOKEN` for manual shell runs).
-
 ### `journal-create` (deprecated)
 
 Legacy bash creator of daily notes - superseded by `notes today`. Kept only as the shell
@@ -192,5 +174,5 @@ not profile-aware; never prefer it when the binary exists.
 - CLI source + full docs: `~/.dotfiles/.local/src/notes-cli/README.md`.
 - Profile config: `~/.config/notes/config.toml` (-> `~/.dotfiles/.config/notes/config.toml`).
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
-- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`, `journal-refs-archive.{service,timer}`, `notes-vikunja.{service,timer}`.
+- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`, `journal-refs-archive.{service,timer}`.
 - Core sync logic: `~/.local/src/git/git-sync-notes.sh` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`).

@@ -35,10 +35,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The unit and integ tiers run as two jobs at once: back to back they took 4m47s and
+  # 5m10s on 2026-11-05 and the shared 10-minute cap cut the job off on its last test.
   fast:
-    name: fast tier (unit + contract)
+    name: fast tier (${{ matrix.tier }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [unit, integ]
     steps:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
@@ -50,7 +56,7 @@ jobs:
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
       - name: Fast tier
-        run: make -C tests test-fast
+        run: make -C tests test-${{ matrix.tier }}
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
@@ -60,7 +66,7 @@ jobs:
       fail-fast: false
       matrix:
         # On push/PR only the version the author runs. The weekly `drift` job sweeps wider.
-        tmux: ['3.7b']
+        tmux: ['3.8']
     steps:
       - uses: actions/checkout@v4
       # docker.sh builds the image, vendors bats on the host first, then runs the tier
@@ -69,6 +75,10 @@ jobs:
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
+      # tests/ui/session_send.bats drives the real agent-panel binary; the image has no Rust,
+      # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
+      - name: Build agent-panel for the ui tier
+        run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}
@@ -91,9 +101,9 @@ jobs:
       fail-fast: false
       matrix:
         # 3.4 is what ubuntu-24.04's apt ships and what most machines have.
-        # 3.5a is Debian trixie's version. 3.7b is the author's, and the only one with
-        # floating panes. The image builds tmux from source, so all three are reachable.
-        tmux: ['3.4', '3.5a', '3.7b']
+        # 3.5a is Debian trixie's version. 3.7b is the first with floating panes, and 3.8 (patched) the author's.
+        # The image builds tmux from source, so all of them are reachable.
+        tmux: ['3.4', '3.5a', '3.7b', '3.8']
     steps:
       - uses: actions/checkout@v4
       - name: Whole suite in the container
@@ -135,6 +145,13 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
       - name: Rust gate
         run: make -C tests test-rust
+      # The bats cases that need a built notes: the test job has none, so they would only skip there.
+      - name: Board to queue join, on the real notes
+        run: |
+          cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
+          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
+      - name: Inbox triager, on the real notes
+        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=integ/inbox_triage.bats BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)

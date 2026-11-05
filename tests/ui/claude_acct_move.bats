@@ -153,3 +153,35 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   [ -z "$(t show-options -p -qv -t '=agent-q:' remain-on-exit)" ]
   [ ! -e "$HOME/.agent/parked/agent-q" ]
 }
+
+@test "one window of a shared session moves, by session:window or pane id; the other window's claude stays on its account" {
+  # a hub-like session with a claude in each of two windows: the whole session is refused
+  t new-session -d -s shared -n one -c "$HOME/wt" "bash --norc --noprofile"
+  t send-keys -t '=shared:one' -l 'claude --resume sid-w1'
+  t send-keys -t '=shared:one' Enter
+  t new-window -d -t '=shared:' -n two -c "$HOME/wt" "exec claude --resume sid-w2"
+  wait_until 'registered_sid sid-w1 main'
+  wait_until 'registered_sid sid-w2 main'
+  run "$ACCT" move shared --server "$SRV"
+  assert_failure
+  assert_output --partial 'more than one claude in its panes'
+
+  local w1 p2
+  w1=$(t display-message -p -t '=shared:one' '#{window_index}')
+  run "$ACCT" move "$SRV/shared:$w1"
+  assert_success
+  assert_output --partial "claude-acct: moved shared:$w1 to alt"
+  wait_until 'registered_sid sid-w1 "$ALT"'
+  registered_sid sid-w2 main
+
+  p2=$(t display-message -p -t '=shared:two' '#{pane_id}')
+  run "$ACCT" park "$p2" --server "$SRV"
+  assert_success
+  wait_until '! registered_sid sid-w2 main'
+  [ "$(t display-message -p -t "$p2" '#{pane_dead}')" = 1 ]
+  registered_sid sid-w1 "$ALT"
+  run "$ACCT" unpark "$p2"
+  assert_success
+  wait_until 'registered_sid sid-w2 "$ALT"'
+  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+}

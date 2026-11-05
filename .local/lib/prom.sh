@@ -1,6 +1,6 @@
 # shellcheck shell=bash disable=SC2034  # PROM_URL, W and LONG_RUN_SECS are for the scripts that source this
-# prom.sh - the one bash Prometheus reader, for the waybar load, CI and day chips
-# (.config/waybar/load.sh, ci_runners.sh, day.sh) and the fleet scripts. The hub board
+# prom.sh - the one bash Prometheus reader, for the waybar load, CI, day and health chips
+# (.config/waybar/load.sh, ci_runners.sh, day.sh, health.sh) and the fleet scripts. The hub board
 # is Rust (.local/src/hub-tui) and reads through hub-core's prom module.
 #
 # All of them draw the cc:* recording rules and runner-exporter series (home-config

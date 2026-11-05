@@ -7,6 +7,8 @@
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
+#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
+#   agent-usage tokens snapshot|line|json|check [--date D]        the nightly token-usage record per day
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.
 #
@@ -157,10 +159,11 @@ _from_transcript() { # $1=transcript path
         printf "%d %d %d %d %d %d %s\n", I+0, O+0, CC+0, CR+0, n+0, d, (ms==""?"-":ms) }'
 }
 
-# From Prometheus: tokens by type (all query_sources), models, real USD.
-# Emits "in out cw cr cost models_csv" or nothing when Prometheus is unreachable/empty.
+# From Prometheus: tokens by type (all query_sources), models, real USD, and USD per model.
+# Emits "in out cw cr cost models_csv cost_by_model_csv" or nothing when Prometheus is
+# unreachable/empty; cost_by_model_csv is "model=usd,..." or "-".
 _from_prom() { # $1=session id
-  local id="$1" toks cost models i=0 o=0 cc=0 cr=0
+  local id="$1" toks cost models by_model i=0 o=0 cc=0 cr=0
 
   toks="$(prom_by type "sum by (type) (claude_code_token_usage_tokens_total{session_id=\"$id\"})")"
   [ -n "$toks" ] || return 1
@@ -175,11 +178,13 @@ _from_prom() { # $1=session id
     esac
   done <<< "$toks"
 
-  cost="$(prom "sum(claude_code_cost_usage_USD_total{session_id=\"$id\"})")"
   models="$(prom_by model "sum by (model) (claude_code_token_usage_tokens_total{session_id=\"$id\"})" \
             | cut -f1 | sort -u | paste -sd, -)"
+  # The total is the sum of the per-model costs: one query for both.
+  read -r cost by_model < <(prom_by model "sum by (model) (claude_code_cost_usage_USD_total{session_id=\"$id\"})" \
+    | awk -F'\t' '{ s += $2; m = m (NR > 1 ? "," : "") $1 "=" $2 } END { if (NR) printf "%.10g %s\n", s, m }')
 
-  printf '%s %s %s %s %s %s\n' "$i" "$o" "$cc" "$cr" "${cost:-0}" "${models:--}"
+  printf '%s %s %s %s %s %s %s\n' "$i" "$o" "$cc" "$cr" "${cost:-0}" "${models:--}" "${by_model:--}"
 }
 
 cmd_session() {
@@ -201,10 +206,10 @@ cmd_session() {
   local t_in t_out t_cw t_cr nreq duration t_models
   read -r t_in t_out t_cw t_cr nreq duration t_models <<< "$tr"
 
-  local in out cw cr cost models source partial
+  local in out cw cr cost models source partial by_model=-
   local pr; pr="$(_from_prom "$id")"
   if [ -n "$pr" ]; then
-    read -r in out cw cr cost models <<< "$pr"
+    read -r in out cw cr cost models by_model <<< "$pr"
     source="otel"; partial=false
     [ "$models" = "-" ] && models="$t_models"
   else
@@ -218,12 +223,15 @@ cmd_session() {
     jq -nc \
       --arg id "$id" --arg src "$source" --arg models "$models" \
       --arg cost "${cost:-}" --argjson partial "$partial" \
+      --arg by_model "$by_model" \
       --argjson i "$in" --argjson o "$out" --argjson cw "$cw" --argjson cr "$cr" \
       --argjson total "$total" --argjson d "${duration:-0}" --argjson n "${nreq:-0}" \
       '{session_id:$id,
         cost_usd:(if $cost == "" then null else ($cost | tonumber) end),
         usage_source:$src, usage_partial:$partial, duration_s:$d, requests:$n,
         models:($models | split(",") | map(select(. != "-"))),
+        cost_by_model:(if $by_model == "-" then null
+                       else $by_model | split(",") | map(split("=") | {key: .[0], value: (.[1] | tonumber * 10000 | round / 10000)}) | from_entries end),
         tokens:{input:$i, output:$o, cacheCreation:$cw, cacheRead:$cr, total:$total}}'
     return 0
   fi
@@ -586,9 +594,29 @@ cmd_wakes() {
   } | column -t -s "$TAB"
 }
 
+# --- burn ------------------------------------------------------------------
+
+# Where a window's tokens went: by account, project, kind and model, per merged PR, first-turn
+# context, waits, cache writes by cause, idle wakes and dream runs. The usage-cleanup skill's
+# numbers; the logic lives in ../lib/agent-usage-burn.py.
+#
+#   burn [--days 7] [--before YYYY-MM-DD] [--json]
+cmd_burn() {
+  python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-burn.py" "$@"
+}
+
+# --- tokens ----------------------------------------------------------------
+
+# One JSON per day under ~/.agent/token-usage/ joined from claude-recall tool-output, burn and
+# token-filter verify; its one-line row; the drift check the token-usage-drift watch runs.
+# Written nightly by the agentctl token-usage schedule. Logic: ../lib/agent-usage-tokens.py.
+cmd_tokens() {
+  python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-tokens.py" "$@"
+}
+
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -601,6 +629,8 @@ case "$sub" in
   changelog) cmd_changelog "$@" ;;
   backfill)  cmd_backfill "$@" ;;
   wakes)     cmd_wakes "$@" ;;
+  burn)      cmd_burn "$@" ;;
+  tokens)    cmd_tokens "$@" ;;
   -h|--help|help|'') usage ;;
   *) echo "agent-usage: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

@@ -166,11 +166,19 @@ install_nvim() {
     install_pacman_package "fd"
 }
 
+# tmux 3.8 from .local/src/tmux/patched: its README says why and when this goes away.
+install_tmux_patched() {
+    local dir="$HOME/.dotfiles/.local/src/tmux/patched" out="$HOME/.cache/tmux-pkg"
+    mkdir -p "$out"
+    (cd "$dir" && BUILDDIR="$out" PKGDEST="$out" SRCDEST="$out" makepkg -fs --noconfirm) &&
+        sudo pacman -U --noconfirm "$out"/tmux-3.8-1.2-*.pkg.tar.zst
+}
+
 # Override: Install tmux
 install_tmux() {
     log_section "Installing tmux"
-    install_pacman_package "tmux"
-    install_aur_package "sesh-bin"  # session picker (Go binary); config at .config/sesh/sesh.toml
+    install_tmux_patched
+    install_aur_package "sesh-bin"  # session picker (Go binary); tmx pick-session generates its config
 }
 
 # Override: Install Kitty
@@ -799,6 +807,7 @@ install_all() {
     step shell       install_fonts
     step dotfiles    setup_git
     step dev         install_npm_packages
+    step dev         install_rtk
     step dotfiles    apply_dotfiles
 
     # Must come after apply_dotfiles

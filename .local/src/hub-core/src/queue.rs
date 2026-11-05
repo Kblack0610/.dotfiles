@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session_actions::Runner;
+use crate::text::{cap, headline, TITLE_MAX};
 
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
@@ -39,6 +40,10 @@ pub const SECTIONS: [(State, &str); 4] = [
 pub struct Item {
     pub slug: String,
     pub state: State,
+    /// What the item is, in a few words: the `title:` header when it has one, else `parse` fills
+    /// it from the task (`title()`), so every view shows the same words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default)]
     pub project: String,
     #[serde(default)]
@@ -56,6 +61,9 @@ pub struct Item {
     /// `<server>:<tmux session>`, or a bare tmux session on agent-queue's server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// The `@N` window a hand-started item runs in, on the session's server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
     /// `ok`, `failed` or `cancelled`, once done.
@@ -83,13 +91,14 @@ impl Item {
         self.tags.split_whitespace()
     }
 
-    /// The first line of the task, for a one-line row.
-    pub fn title(&self) -> &str {
-        self.task
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim()
+    /// What the item is in a few words: the `title:` header, else the task's first sentence
+    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    pub fn title(&self) -> String {
+        if self.title.trim().is_empty() {
+            headline(&self.task).0
+        } else {
+            cap(self.title.trim(), TITLE_MAX)
+        }
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -187,27 +196,47 @@ impl Stats {
         )
     }
 
-    /// What sits in the queue now: how many could start and for how long, and what holds the rest.
+    /// What sits in the queue now, in plain words: how many could start and the oldest of them,
+    /// then what holds the rest. The item slug comes after the point.
     pub fn sitting_line(&self) -> Option<String> {
         let s = self.sitting.as_ref()?;
         if s.queued == 0 {
-            return Some("sitting: nothing queued".into());
+            return Some("Queue: nothing waiting.".into());
         }
-        let mut out = format!("sitting: {} can start", s.runnable);
-        if let Some(o) = s.oldest_runnable.first() {
-            out += &format!(
-                ", oldest {} ({}), median {}",
+        let mut out = match (s.runnable, s.oldest_runnable.first()) {
+            (0, _) => "Queue: nothing can start now.".to_string(),
+            (n, Some(o)) => format!(
+                "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
                 dur(Some(o.minutes)),
                 o.slug,
                 dur(s.runnable_age_minutes_median)
-            );
-        }
-        out += &format!("; {} held", s.held);
-        if !s.held_by.is_empty() {
-            let by: Vec<String> = s.held_by.iter().map(|(k, v)| format!("{k} {v}")).collect();
-            out += &format!(" ({})", by.join(", "));
+            ),
+            (n, None) => format!("Queue: {n} can start now."),
+        };
+        if s.held > 0 {
+            let by: Vec<String> = s
+                .held_by
+                .iter()
+                .map(|(k, v)| format!("{v} {}", hold_reason(k)))
+                .collect();
+            out += &format!(" {} held", s.held);
+            if !by.is_empty() {
+                out += &format!(": {}", by.join(", "));
+            }
+            out += ".";
         }
         Some(out)
+    }
+}
+
+/// Why a queued item is held, from the first word of its `hold` (agent-queue `hold_for`).
+fn hold_reason(kind: &str) -> String {
+    match kind {
+        "after" => "after another item".into(),
+        "night" => "until night".into(),
+        "at" => "until a set time".into(),
+        "pr" => "until a PR merges".into(),
+        k => format!("held by {k}"),
     }
 }
 
@@ -223,6 +252,10 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
+        .map(|mut i| {
+            i.title = i.title();
+            i
+        })
         .collect()
 }
 
@@ -232,6 +265,25 @@ pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
         .run(&argv(&["list", "--json", "--state", state]))
         .map(|out| parse(&out))
+}
+
+/// The items in `state` with the done ones finished on `since` (`YYYY-MM-DD`) or later.
+pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<Item>, String> {
+    if since.len() != 10 || !since.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err(format!("bad date: {since}"));
+    }
+    runner
+        .run(&argv(&[
+            "list", "--json", "--state", state, "--since", since,
+        ]))
+        .map(|out| parse(&out))
+}
+
+/// The local date `days` before today, as `list_since` takes it.
+pub fn days_ago(days: i64) -> String {
+    (chrono::Local::now().date_naive() - chrono::Days::new(days.max(0) as u64))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
@@ -360,11 +412,64 @@ mod tests {
     }
 
     #[test]
+    fn a_title_is_the_header_or_the_tasks_first_sentence_with_paths_as_names() {
+        let item = |title: &str, task: &str| Item {
+            title: title.into(),
+            task: task.into(),
+            ..Item::default()
+        };
+        assert_eq!(item("Fix the page", "long task").title(), "Fix the page");
+        assert_eq!(
+            item(
+                "",
+                "\nDodginBalls epic, P4 (game: verified join). The plan is /a/b.md: read it."
+            )
+            .title(),
+            "DodginBalls epic, P4 (game: verified join)"
+        );
+        assert_eq!(
+            item(
+                "",
+                "Phase 4 of the plan /home/k/.agent/plans/x/rewards-admin.md: Game. Read it"
+            )
+            .title(),
+            "Phase 4 of the plan rewards-admin: Game"
+        );
+        assert_eq!(item("", "is ~/x/y.sh ok? yes").title(), "is y ok?");
+        let long = item(&"word ".repeat(40), "").title();
+        assert!(
+            long.ends_with("word...") && long.chars().count() <= TITLE_MAX + 3,
+            "{long}"
+        );
+        let parsed = parse(r#"{"slug":"s","state":"queued","title":"From the header","task":"x"}"#);
+        assert_eq!(parsed[0].title, "From the header");
+    }
+
+    #[test]
+    fn list_since_passes_a_date_and_refuses_anything_else() {
+        let fake = Fake {
+            list: Some(LIST),
+            ..Fake::default()
+        };
+        assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
+        assert_eq!(
+            fake.calls.borrow()[0],
+            "agent-queue list --json --state all --since 2026-10-30"
+        );
+        assert!(list_since(&fake, "all", "--state").is_err());
+        assert_eq!(days_ago(0).len(), 10);
+    }
+
+    #[test]
     fn an_item_hands_on_every_key_agent_queue_printed() {
         let items = parse(LIST);
         let back = serde_json::to_value(&items[0]).unwrap();
-        let orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
-        assert_eq!(back, orig, "agent and file ride in extra");
+        let mut orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
+        orig["title"] = "Pick a side".into();
+        assert_eq!(
+            back, orig,
+            "agent and file ride in extra; parse adds the title"
+        );
         let q = serde_json::to_value(&items[1]).unwrap();
         assert_eq!(
             q["tags"], "night at:02:30",
@@ -398,12 +503,23 @@ mod tests {
         );
         assert_eq!(
             s.sitting_line().as_deref(),
-            Some("sitting: 1 can start, oldest 3h (q1), median 3h; 2 held (after 1, pr 1)")
+            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h. 2 held: 1 after another item, 1 until a PR merges.")
         );
         assert_eq!(
             Stats::default().sitting_line(),
             None,
             "an older agent-queue without `sitting` says nothing, never that the queue is empty"
+        );
+        let held: Stats = serde_json::from_str(
+            r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            held.sitting_line().as_deref(),
+            Some(
+                "Queue: nothing can start now. 13 held: 12 after another item, 1 held by vacation."
+            ),
+            "nothing runnable says so plainly, and a hold kind it does not know still reads"
         );
 
         let q = Queue::read(&Fake::default());

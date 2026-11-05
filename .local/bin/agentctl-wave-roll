@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# agentctl-wave-roll - a release tag closes its wave.
+# agentctl-wave-roll - a release tag closes its version.
 #
 # For every project that ships (project_release_version non-empty), once the newest tag has
-# reached the sheet's `Version:`, roll it: open tasks carry to the next wave, the finished
-# wave freezes, the next wave opens after the tag, and the agent board follows (notes
-# `projects --roll`). Notes-only projects are left alone.
+# reached the sheet's `Version:`, release it: open tasks carry to the next version, the
+# finished one freezes, the next opens after the tag, and the agent board follows (notes
+# `projects --release`). Notes-only projects are left alone.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
 # and an event hook sees none of those. Comparing sheet to tags every pass catches them all.
@@ -33,7 +33,7 @@ ver_ge() { [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1
 patch_after() { local v="${1#v}"; printf 'v%s.%s.%s' "${v%%.*}" "$(cut -d. -f2 <<<"$v")" "$(( ${v##*.} + 1 ))"; }
 
 # plausible_next SHIPPED V: V is a version the app could ship next - the same major with
-# at most one minor step, or the next major at minor 0. 2026-10-25 a stray `v1.16.0 (planned)` wave on
+# at most one minor step, or the next major at minor 0. 2026-10-25 a stray `v1.16.0 (planned)` version on
 # an app tagged v0.4.0 was promoted, and the sheet ran so far ahead of its tags that no tag
 # could ever roll it again.
 plausible_next() {
@@ -43,16 +43,16 @@ plausible_next() {
   { [ "$va" = "$sa" ] && [ "$vb" -le $((sb + 1)) ]; } || { [ "$va" = $((sa + 1)) ] && [ "$vb" = 0 ]; }
 }
 
-# The version to open next: the first PLANNED wave above the shipped tag, so a roadmap the
+# The version to open next: the first PLANNED version above the shipped tag, so a roadmap the
 # human already laid out is what becomes current; else the patch after the tag. A planned
-# wave too far above the tag to be the next release is skipped, and said so.
+# version too far above the tag to be the next release is skipped, and said so.
 next_after() { # $1=profile $2=project $3=shipped
   local v state
   while IFS=$'\t' read -r v state _; do
     [ "$state" = planned ] && is_ver "$v" && ! ver_ge "$3" "$v" || continue
     if plausible_next "$3" "$v"; then printf '%s' "$v"; return; fi
-    log "skip planned wave $v on $2: too far above tag $3 to be its next release" >&2
-  done < <(notes --profile "$1" projects --waves "$2" 2>/dev/null)
+    log "skip planned version $v on $2: too far above tag $3 to be its next release" >&2
+  done < <(notes --profile "$1" projects --roadmap "$2" 2>/dev/null)
   patch_after "$3"
 }
 
@@ -92,7 +92,7 @@ while read -r profile; do
       log "skip $name: no versioned sheet (shipped $shipped)"
       continue
     fi
-    # A draft or alpha project keeps one working list; `notes projects --roll` refuses it.
+    # A draft or alpha project keeps one working list; `notes projects --release` refuses it.
     stage="$(notes --profile "$profile" projects --stage "$name" 2>/dev/null)"
     case "$stage" in draft|alpha) log "skip $name: #$stage does not roll"; continue ;; esac
     ver_ge "$shipped" "$ver" || continue            # the open version has not shipped yet
@@ -107,12 +107,12 @@ while read -r profile; do
       rolled=$((rolled + 1))
       log "rolled $name $ver -> $next (tag $shipped, carried $open)"
       stale="$(grep -o 'stale (carried [0-9]*x): .*' <<<"$out" || true)"
-      agent-notify -t "wave rolled: $name" \
+      agent-notify -t "version released: $name" \
         "$name $ver closed by tag $shipped; $next is current, $open task(s) carried.${stale:+ Stale: $stale}"
     else
       failed=$((failed + 1))
       log "FAILED $name $ver -> $next: $(tail -3 <<<"$out" | tr '\n' ' ')"
-      agent-notify -p high -t "wave roll failed: $name" "$(tail -5 <<<"$out")"
+      agent-notify -p high -t "release failed: $name" "$(tail -5 <<<"$out")"
     fi
   done < <(notes --profile "$profile" projects 2>/dev/null)
 done < <(notes config --profiles 2>/dev/null)

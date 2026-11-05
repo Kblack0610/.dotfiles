@@ -19,21 +19,25 @@ mod focus_move;
 mod focus_sweep;
 mod inbox;
 mod index;
+mod ingest;
 mod knowledge;
 mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
+mod migrate_rows;
+mod outbox;
 mod playtest;
 mod project_sweep;
 mod project_tasks;
 mod projects;
 mod registry;
+mod sheet;
+mod show;
 mod status;
 mod summarize;
 mod sweep;
 mod tags;
-mod waves;
 mod zettel;
 
 use agent_sheet::Lane;
@@ -73,6 +77,15 @@ enum Cmd {
     Path {
         #[arg(default_value = "daily")]
         target: String,
+    },
+    /// One note for a viewer: daily (default), daily:YYYY-MM-DD, or a [[wikilink]] target,
+    /// resolved like the editor's gf and kept inside the notes
+    Show {
+        #[arg(default_value = "daily")]
+        target: String,
+        /// One JSON object: path, rel, title, exists, date, prev, next, markdown, links
+        #[arg(long)]
+        json: bool,
     },
     /// Link today's ref files into today's note's `## Refs` section
     LinkRefs,
@@ -121,7 +134,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<FocusCmd>,
     },
-    /// Per-project task list — the `## Wave` on a project's sheet (the project analog of
+    /// Per-project task list - the `## Tasks` on a project's sheet (the project analog of
     /// `focus`, which is the daily note's `## Focus`). Project tasks live in the project .md.
     Ptask {
         /// Project name (case-insensitive)
@@ -131,7 +144,7 @@ enum Cmd {
         #[arg(long)]
         agent: bool,
         /// Act on the project's `playtest.md`: one row is one thing to play and check off.
-        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `rm` only
+        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `drop` only
         #[arg(long, conflicts_with = "agent")]
         playtest: bool,
         /// The query is one whole open task line, byte for byte (the `raw` field of
@@ -143,13 +156,13 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
-    /// Regenerate the project/agent board — every project's current `## Wave`, agent lane
+    /// Regenerate the project/agent board - every project's `## Tasks`, agent lane
     /// first, across every profile — and print its path. Also refreshed by `notes today`.
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
     Board {
         /// Print every open row of every project as JSON instead of writing the board:
-        /// the human and agent sheets' current waves and the playtest checks, across all
+        /// the human and agent sheets' open-version rows and the playtest checks, across all
         /// profiles. READ-ONLY. The feed the board UIs read; the row shape is in the README
         #[arg(long, conflicts_with = "agent")]
         json: bool,
@@ -159,12 +172,18 @@ enum Cmd {
         /// session preflight that calls this must never be able to lose a turn over it.
         #[arg(long)]
         agent: bool,
+        /// Print the release view instead of writing the board: every row aimed at
+        /// vX.Y.Z, open and closed, both lanes, with the closed rows' PRs. A row's release
+        /// is its `#vX.Y.Z` tag, or its sheet's `Version:` when untagged; rows already frozen
+        /// into `versions/vX.Y.Z.md` are included. READ-ONLY
+        #[arg(long, value_name = "vX.Y.Z", conflicts_with_all = ["json", "agent"])]
+        version: Option<String>,
         /// Limit to these projects (repeatable). Names are the LAB project names, which
         /// are not the same namespace as the agent-side project name: a session in
         /// ~/.dotfiles resolves to `dotfiles`, whose lab projects are `notes-cockpit` and
         /// `agent-runtime`. Callers join the two through project-map.json
         /// `trackers.<n>.repo` (see `project_lab_names` in project-name.sh) and pass the
-        /// results here. Ignored without --agent.
+        /// results here. Ignored without --agent or --version.
         #[arg(long = "project")]
         projects: Vec<String>,
     },
@@ -172,6 +191,17 @@ enum Cmd {
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
+    },
+    /// The outbox (`<vault>/outbox.md`): drop work for any project; the inbox sweep routes
+    /// each line to its project's inbox. No subcommand = list.
+    Outbox {
+        #[command(subcommand)]
+        sub: Option<OutboxCmd>,
+    },
+    /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
+    Ingest {
+        #[command(subcommand)]
+        sub: IngestCmd,
     },
     /// Compiled knowledge base under knowledge/ (written by the nightly engine)
     Knowledge {
@@ -218,10 +248,10 @@ enum Cmd {
         /// List archived projects instead of the current ones
         #[arg(long)]
         archived: bool,
-        /// Roll a project's working sheet to the next version: freeze it into versions/
-        /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
+        /// Close a project's open version: its closed rows freeze into versions/ and
+        /// `Version:` moves to the next one. Refused for a draft or alpha project
         #[arg(long, value_name = "NAME")]
-        roll: Option<String>,
+        release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
         /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
         /// Works on archived projects too. Never overwrites; idempotent.
@@ -240,48 +270,52 @@ enum Cmd {
         /// Frozen versions/ notes keep their tags as history. Idempotent.
         #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
         retire_ai_tag: Option<String>,
-        /// With --retire-ai-tag: report what would change and write nothing
+        /// Migrate every project sheet and agent board, in every profile, onto `## Tasks`
+        /// and the row grammar: ids, `#c` tags, no retired tags, done rows under `### Done`.
+        /// Exact duplicates are reported, never removed. Idempotent
+        #[arg(long)]
+        migrate_rows: bool,
+        /// With --retire-ai-tag or --migrate-rows: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
-        /// With --roll: step the minor (v0.1.2 -> v0.2.0)
+        /// With --release: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
-        /// With --roll: step the major (v0.1.2 -> v1.0.0)
+        /// With --release: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
         major: bool,
-        /// With --roll: close the version even though its wave still has open tasks
+        /// With --release: close the version even though it still has open rows; they stay open
         #[arg(long)]
         force: bool,
-        /// With --roll: move every open task into the next wave (retagged, `carried:N`
+        /// With --release: aim every open row at the next version (retagged, `carried:N`
         /// counted) before closing, and append to an existing versions/ note rather than
         /// refusing. What a release tag does to its sheet (`agentctl-wave-roll`)
         #[arg(long)]
         carry: bool,
-        /// With --roll: open exactly this version next (vX.Y.Z, above the current one)
+        /// With --release: open exactly this version next (vX.Y.Z, above the current one)
         /// instead of stepping. For a sheet a release tag has already passed, so it lands
-        /// after the tag in one roll rather than creeping up a patch per roll
+        /// after the tag in one release rather than creeping up a patch at a time
         #[arg(long, value_name = "VERSION")]
         next: Option<String>,
-        /// With --roll --next: allow a version BELOW the open one, to realign a sheet whose
+        /// With --release --next: allow a version BELOW the open one, to realign a sheet whose
         /// number ran ahead of the app's release tags (it could never be tagged, so tags
-        /// would never roll it). `notes-roll` checks the target is above the newest tag
+        /// would never close it). `notes-roll` checks the target is above the newest tag
         #[arg(long)]
         renumber: bool,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
-        /// Print a project's roadmap - current wave then planned ones
-        /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
+        /// Print a project's roadmap: the open version, then the releases rows are aimed at
+        /// (TSV: `version<TAB>state<TAB>open<TAB>done`)
         #[arg(long, value_name = "NAME")]
-        waves: Option<String>,
+        roadmap: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
         /// (TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>
-        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the current wave's, planned
-        /// is the later waves', agent is the agent board's)
+        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the open version's, planned
+        /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats: one JSON array instead, adding each project's dir, current wave,
-        /// done count, STATUS line and date, and summary path
+        /// With --stats: one JSON array instead, adding each project's dir, done count, STATUS line and date, and summary path
         #[arg(long, requires = "stats")]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it.
@@ -322,6 +356,30 @@ enum Cmd {
         /// `<profile>/<project>: <finding>` line each
         #[arg(long)]
         projects: bool,
+    },
+    /// What was written to which row, and by whom: today, or `--day` / `--days`
+    Log {
+        /// One day, `YYYY-MM-DD`
+        #[arg(long, conflicts_with = "days")]
+        day: Option<String>,
+        /// The last N days, today included
+        #[arg(long)]
+        days: Option<i64>,
+        /// Only events from or to this project, or `focus` or `outbox`
+        #[arg(long)]
+        project: Option<String>,
+        /// Only this row, like ucp-79
+        #[arg(long)]
+        id: Option<String>,
+        /// Only this action, like `dropped`
+        #[arg(long)]
+        action: Option<String>,
+        /// Only this writer: `human`, a queue item or a session's first 8 characters
+        #[arg(long)]
+        by: Option<String>,
+        /// One JSON event per line
+        #[arg(long)]
+        json: bool,
     },
     /// Print the resolved profile + paths
     Config {
@@ -403,22 +461,22 @@ enum FocusCmd {
     Sweep,
 }
 
-/// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Wave`.
+/// `notes ptask <name> ...` verbs - the project analog of `FocusCmd`, on the sheet's `## Tasks`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
-    /// List the project's open wave tasks (TSV: `path<TAB>line<TAB>key<TAB>text`;
-    /// with --wave/--all a fifth `wave` column is appended)
+    /// List the open version's rows (TSV: `path<TAB>line<TAB>key<TAB>text`;
+    /// with --version/--all a fifth `version` column is appended)
     List {
-        /// Only this wave (`vX.Y.Z`), current or planned
+        /// Only the rows of this release (`vX.Y.Z`), open or later
         #[arg(long, value_name = "VERSION")]
-        wave: Option<String>,
-        /// Every wave on the sheet: the current one and the whole roadmap
+        version: Option<String>,
+        /// Every open row on the sheet, whichever release it is aimed at
         #[arg(long)]
         all: bool,
     },
-    /// Add a task to the project's current wave, or to a planned one with --to
+    /// Add a task to the open version, or aim it at a later release with --to
     Add {
-        /// Plan it into this version instead (`vX.Y.Z`); opens the wave if it is new
+        /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
         /// With --playtest: the `## <game>` heading the check goes under (default General)
@@ -427,24 +485,26 @@ enum PtaskCmd {
         /// With --playtest: the PR the check is for, written as `<!-- pr:<n> -->`
         #[arg(long, value_name = "N")]
         pr: Option<u64>,
+        /// A detail line under the row: evidence, file:line, the original words. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Move the first matching open task into another wave, or with --project onto
-    /// another project's sheet (its current wave, or the existing wave --to names)
+    /// Aim the first matching open task at another release, or with --project move it onto
+    /// another project's sheet (its open version, or the release --to names)
     Move {
-        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new. With
-        /// --project: optional, and the wave must already exist on the dest sheet
+        /// The release to aim it at (`vX.Y.Z`). Optional with --project
         #[arg(long, value_name = "VERSION", required_unless_present = "project")]
         to: Option<String>,
         /// Move the row to this project instead (any profile; with --agent, agent sheet to
-        /// agent sheet). Retagged for the wave it lands in
+        /// agent sheet). Its old release tag goes unless --to names one
         #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Check off the first open wave task whose text matches. Needs evidence: pass
+    /// Check off the first open task whose text matches. Needs evidence: pass
     /// --proof for something checkable, or --unverified to say out loud that there is none
     Done {
         /// Something checkable later: `pr:1142`, `run:<id>`, a URL
@@ -456,46 +516,108 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Toggle the first matching wave task between todo and in-progress (`[ ]` <-> `[/]`)
+    /// Add or take hashtags off the first matching open task (before its marker). A release
+    /// tag is refused: move, promote and demote own it
+    Tag {
+        /// A tag to add (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        add: Vec<String>,
+        /// A tag to take off (`#` optional). Repeatable
+        #[arg(long, value_name = "TAG")]
+        remove: Vec<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
     Start {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Delete the first open wave task whose text matches
-    Rm {
+    /// Close the first matching open task undelivered: the row stays, ticked, with the
+    /// reason in its marker. Needs --why or --dup
+    Drop {
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
+        /// It duplicates this row (its id, like ar-142)
+        #[arg(long, value_name = "ID")]
+        dup: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Change the first matching open wave task's text in place: its place on the sheet,
+    /// Change the first matching open task's text in place: its place on the sheet,
     /// its checkbox state and its tags stay as they were
     Edit {
         /// The task's new text
-        #[arg(long, conflicts_with = "append", required_unless_present = "append")]
+        #[arg(
+            long,
+            conflicts_with = "append",
+            required_unless_present_any = ["append", "detail"]
+        )]
         text: Option<String>,
         /// Words to add to the end of the task's text
         #[arg(long)]
         append: Option<String>,
+        /// A detail line to add under the row, after its existing ones. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
+        /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
+        /// `was:` detail line, and the old row's own tags (#requested, #tier/N, #size/x) carry over
+        #[arg(long, requires = "text")]
+        was: bool,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Step the first matching task one wave SOONER (toward the current wave).
-    /// Clamps there: nothing may sit before the wave that is in flight
+    /// Step the first matching task one release SOONER (toward the open version).
+    /// Clamps there: nothing may sit before the version in flight
     Promote {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Step the first matching task one wave LATER, opening the next patch version
-    /// when it is already in the last wave on the sheet
+    /// Step the first matching task one release LATER, onto the next patch version
+    /// when no later release is on the sheet
     Demote {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Re-lane the sheet: group tasks into waves by their `#vX.Y.Z` tag (current wave
-    /// first, roadmap ascending), then by priority inside each wave, done at the foot
+    /// Sort the section by priority, done at the foot, and drop release tags the sheet
+    /// has passed
     Sweep {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]
         dry_run: bool,
+    },
+    /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
+    Inbox {
+        /// One JSON array of `{line, raw, text, details}` instead
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take the first inbox line matching the query off `## Inbox` and onto the board as
+    /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
+    /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
+    File {
+        /// A typed row to file it as: `type(area): title`, with its priority and size tags.
+        /// None files a line that is typed already as written
+        #[arg(long = "as", value_name = "ROW")]
+        rows: Vec<String>,
+        /// It duplicates this open row (its id): its words join that row as a detail line
+        #[arg(long, value_name = "ID", conflicts_with_all = ["rows", "to", "detail"])]
+        dup: Option<String>,
+        /// File it on this project's board instead (any profile)
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+        /// The board lane it goes to: `human` (default) or `agent`
+        #[arg(long, value_name = "LANE", default_value = "human")]
+        lane: String,
+        /// Aim the rows at this release (`vX.Y.Z`)
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+        /// Another detail line under each row, after the `was:` line. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
     },
     /// With --agent: move the agent board's done rows into `agent/versions/<vX.Y.Z>.md`
     /// (the note their proof is in), under `## Done rows`
@@ -504,6 +626,50 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum OutboxCmd {
+    /// The lines waiting, oldest first (TSV `line<TAB>text`)
+    List {
+        /// One JSON array of `{line, raw, text, details, project}` instead
+        #[arg(long)]
+        json: bool,
+    },
+    /// Append a line and wake the inbox sweep
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Move the line that is RAW byte for byte into PROJECT's `## Inbox` (the sweep's write path)
+    Move {
+        #[arg(long, value_name = "PROJECT")]
+        project: String,
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
+    /// human, one whose write was `refused`, or a row the planner `planned`
+    Record {
+        #[arg(long, value_parser = ["left", "refused", "planned"])]
+        action: String,
+        /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        why: Option<String>,
+        /// The row's id, for `planned`
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Publish the inbox status page from the record and the outbox (the sweep runs it)
+    Page,
 }
 
 #[derive(Subcommand)]
@@ -587,21 +753,22 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// The four verbs `ptask --playtest` takes. Everything else acts on waves, which playtest.md
+/// The four verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     Ok(match sub {
         None
         | Some(PtaskCmd::List {
-            wave: None,
+            version: None,
             all: false,
         }) => playtest::Op::List,
         Some(PtaskCmd::Add {
             to: None,
             game,
             pr,
+            detail,
             text,
-        }) => playtest::Op::Add {
+        }) if detail.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),
@@ -615,11 +782,12 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             unverified,
             pick: Pick::new(&query.join(" "), exact)?,
         },
-        Some(PtaskCmd::Rm { query }) => playtest::Op::Rm {
+        Some(PtaskCmd::Drop { why, dup, query }) => playtest::Op::Drop {
+            stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
         _ => bail!(
-            "--playtest takes list, add, done and rm only (no waves: no --to, --wave or --all)"
+            "--playtest takes list, add, done and drop only (no releases or details: no --to, --version, --all or --detail)"
         ),
     })
 }
@@ -652,6 +820,7 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Show { target, json } => show::run(&prof, &target, json)?,
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
             Some(path) => {
                 println!("{}", path.display());
@@ -731,8 +900,9 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
-            if let playtest::Op::Done { pick, .. } | playtest::Op::Rm { pick } = &op {
+            if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
             }
             playtest::run(&prof, &log, &name, op)?
@@ -744,6 +914,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -755,14 +926,28 @@ fn main() -> Result<()> {
             };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
-                Some(PtaskCmd::List { wave, all }) => {
-                    project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
+                Some(PtaskCmd::List { version, all }) => {
+                    project_tasks::list(&prof, &name, version.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add { to, game, pr, text }) => {
+                Some(PtaskCmd::Add {
+                    to,
+                    game,
+                    pr,
+                    detail,
+                    text,
+                }) => {
                     if game.is_some() || pr.is_some() {
                         bail!("--game and --pr only apply with --playtest");
                     }
-                    project_tasks::add(&prof, &log, &name, &text.join(" "), to.as_deref(), lane)?
+                    project_tasks::add(
+                        &prof,
+                        &log,
+                        &name,
+                        &text.join(" "),
+                        &detail,
+                        to.as_deref(),
+                        lane,
+                    )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
                     (Some(dest), to) => {
@@ -802,12 +987,58 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
-                Some(PtaskCmd::Rm { query }) => {
-                    project_tasks::rm(&prof, &log, &name, &pick(&query)?, lane)?
+                Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::File {
+                    rows,
+                    dup,
+                    project,
+                    lane: to_lane,
+                    to,
+                    detail,
+                    query,
+                }) => {
+                    let to_lane = match to_lane.as_str() {
+                        "human" => Lane::Human,
+                        "agent" => Lane::Agent,
+                        other => bail!("--lane is human or agent, not '{other}'"),
+                    };
+                    let how = project_tasks::Filing {
+                        project,
+                        lane: to_lane,
+                        how: match dup {
+                            Some(id) => project_tasks::How::Dup(id),
+                            None => project_tasks::How::Rows {
+                                texts: rows,
+                                to,
+                                details: detail,
+                            },
+                        },
+                    };
+                    let q = query.join(" ");
+                    let pick = if exact {
+                        Pick::Exact(q.trim_end().to_string())
+                    } else {
+                        Pick::new(&q, false)?
+                    };
+                    project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
+                Some(PtaskCmd::Tag { add, remove, query }) => {
+                    project_tasks::tag(&prof, &log, &name, &pick(&query)?, &add, &remove, lane)?
+                }
+                Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
+                    &prof,
+                    &log,
+                    &name,
+                    &pick(&query)?,
+                    why.as_deref(),
+                    dup.as_deref(),
+                    lane,
+                )?,
                 Some(PtaskCmd::Edit {
                     text,
                     append,
+                    detail,
+                    was,
                     query,
                 }) => project_tasks::retext(
                     &prof,
@@ -816,6 +1047,8 @@ fn main() -> Result<()> {
                     &pick(&query)?,
                     text.as_deref(),
                     append.as_deref(),
+                    &detail,
+                    was,
                     lane,
                 )?,
                 Some(PtaskCmd::Promote { query }) => {
@@ -835,9 +1068,12 @@ fn main() -> Result<()> {
         Cmd::Board {
             json,
             agent,
+            version,
             projects,
         } => {
-            if json {
+            if let Some(v) = version {
+                board::print_version(&v, &projects)?
+            } else if json {
                 board::print_json()?
             } else if agent {
                 board::print_agent(&projects)?
@@ -845,6 +1081,47 @@ fn main() -> Result<()> {
                 board::run(&log)?
             }
         }
+        Cmd::Outbox { sub } => match sub {
+            None => outbox::list(&prof, false)?,
+            Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
+            Some(OutboxCmd::Move { project, raw }) => {
+                outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            }
+        },
+        Cmd::Log {
+            day,
+            days,
+            project,
+            id,
+            action,
+            by,
+            json,
+        } => {
+            let filter = ingest::Filter {
+                project: project.map(|n| registry::canonical(&n)),
+                id,
+                action,
+                by,
+            };
+            ingest::log(&prof, day.as_deref(), days, &filter, json)?
+        }
+        Cmd::Ingest { sub } => match sub {
+            IngestCmd::Record {
+                action,
+                from,
+                why,
+                id,
+                text,
+            } => {
+                let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
+                ev.why = why;
+                ev.id = id;
+                ingest::record(&prof, &ev);
+                0
+            }
+            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
+        },
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
@@ -906,11 +1183,12 @@ fn main() -> Result<()> {
             archive,
             restore,
             archived,
-            roll,
+            release,
             migrate,
             move_project,
             to_profile,
             retire_ai_tag,
+            migrate_rows,
             dry_run,
             minor,
             major,
@@ -919,7 +1197,7 @@ fn main() -> Result<()> {
             next,
             renumber,
             version_of,
-            waves,
+            roadmap,
             stats,
             json,
             agent_note,
@@ -940,6 +1218,13 @@ fn main() -> Result<()> {
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            if migrate_rows {
+                migrate_rows::run(&log, dry_run)?;
+                if !dry_run {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
@@ -970,7 +1255,8 @@ fn main() -> Result<()> {
             }
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
+                new, archive, restore, release, migrate, version_of, roadmap, agent_note, archived,
+                name,
             ) {
                 (Some(n), ..) => {
                     projects::new_project(&prof, &log, &n, &projects::Overlays::load()?)?;
@@ -985,7 +1271,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
-                    projects::roll(
+                    projects::release(
                         &prof,
                         &log,
                         &n,
@@ -1002,7 +1288,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
+                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
                     projects::show_agent_note(&prof, &n, version.as_deref())?
                 }
@@ -1072,8 +1358,8 @@ mod tests {
             Ok(playtest::Op::Done { .. })
         ));
         assert!(matches!(
-            ptask(&["rm", "arena"]),
-            Ok(playtest::Op::Rm { .. })
+            ptask(&["drop", "--why", "cut", "arena"]),
+            Ok(playtest::Op::Drop { .. })
         ));
         for bad in [
             &["start", "arena"][..],
@@ -1082,10 +1368,11 @@ mod tests {
             &["edit", "arena", "--text", "x"],
             &["list", "--all"],
             &["add", "--to", "v1.0.0", "arena"],
+            &["add", "--detail", "why", "arena"],
         ] {
             let e = ptask(bad).err().expect("refused").to_string();
             assert!(
-                e.contains("--playtest takes list, add, done and rm"),
+                e.contains("--playtest takes list, add, done and drop"),
                 "{bad:?}: {e}"
             );
         }

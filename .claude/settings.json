@@ -112,7 +112,7 @@
     "defaultMode": "plan",
     "disableAutoMode": "disable"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "autoCompactWindow": 200000,
   "subagentPromptCacheTtl": "1h",
   "fallbackModel": [
@@ -137,6 +137,16 @@
             "command": "bash ~/.claude/hooks/context-budget-guard.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/token-filter.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -146,6 +156,15 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
           }
         ]
       },
@@ -168,6 +187,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/block-poll.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Grep|Glob|Bash",
         "hooks": [
           {
@@ -182,6 +211,16 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/spawn-watch.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/token-filter.sh",
+            "timeout": 5
           }
         ]
       }
@@ -212,6 +251,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
           }
         ]
       }
@@ -258,13 +301,14 @@
         ]
       }
     ],
-    "SessionEnd": [
+    "PostToolUseFailure": [
       {
-        "matcher": "",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh stale"
+            "command": "bash ~/.claude/hooks/token-filter.sh",
+            "timeout": 5
           }
         ]
       }
@@ -279,6 +323,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "tui": "default",
   "cleanupPeriodDays": 365,
   "remoteControlAtStartup": true,
   "additionalDirectories": [

@@ -1,9 +1,12 @@
-//! The Board tab: every project's open rows as `notes board --json` prints them, read through
-//! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
-//! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
-//! row, `/` searches, `l` steps the lane filter, and a, s, d, D and x add, start, finish and
-//! remove through `notes ptask --exact`. This file writes nothing: it hands the app a
-//! `tasks::Write`, and a row edited since the read fails in `notes` and the page re-reads.
+//! The rows under the Projects tab (projtab.rs): one project's open rows, or every project's
+//! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
+//! same feed and writes as agent-web's Projects tab. Rows are grouped by profile and project
+//! (each profile's Focus rows are their own group, read-only) and their text wraps, so a row
+//! shows whole; j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
+//! e, t/T, + and - add, start, finish, drop (with why, or the id it duplicates), move (to a
+//! project or a version), edit, tag and untag, and step a row a release sooner or later through
+//! `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
+//! the read fails in `notes` and the page re-reads.
 
 use std::collections::BTreeMap;
 
@@ -11,18 +14,20 @@ use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
-/// What a key on the Board tab asks the app to do.
+/// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
 pub enum Ask {
     /// Not one of the tab's own keys.
     Pass,
-    /// Handled here: a move, a prompt keystroke, an armed or dropped confirm, a refusal.
+    /// Handled here: a move, a prompt keystroke, a refusal.
     Done,
     /// Run this write; it has passed `tasks::argv` already.
     Write(String, Write),
+    /// Open this sheet at this line in an editor.
+    Open(String, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +36,12 @@ pub enum Kind {
     Add,
     Proof,
     Unverified,
+    Why,
+    Dup,
+    Move,
+    Edit,
+    Tag,
+    Untag,
 }
 
 /// A line being typed at the status line, and the row it is about (none for a search).
@@ -56,9 +67,9 @@ pub struct TaskView {
     pub sel: usize,
     pub search: String,
     pub lane: Option<&'static str>,
+    /// One project's rows, as (profile, project); None shows every project's.
+    pub project: Option<(String, String)>,
     pub prompt: Option<Prompt>,
-    /// The row a remove waits on y for.
-    pub confirm: Option<Row>,
     /// The write now running, as "done in bnb/demo".
     pub running: Option<String>,
     /// The last write's answer: notes' output, or why it failed.
@@ -80,6 +91,11 @@ pub fn groups<'a>(f: &'a Feed, v: &TaskView) -> Vec<(String, Vec<&'a Row>)> {
     for r in &f.rows {
         if v.lane.is_some_and(|l| r.lane != l) {
             continue;
+        }
+        if let Some((profile, project)) = &v.project {
+            if r.profile != *profile || r.project.as_ref() != Some(project) {
+                continue;
+            }
         }
         let hay = format!("{} {} {}", group(r), r.text, r.tags.join(" ")).to_lowercase();
         if !q.is_empty() && !hay.contains(&q) {
@@ -131,7 +147,7 @@ impl TaskView {
                 "a Focus row is read-only here: notes focus owns the daily note"
             }
             Some(r) if r.lane == "playtest" && !playtest_ok => {
-                "a playtest check has no in-progress state"
+                "a playtest check has no state, version or edit: d done, x drop"
             }
             Some(r) => {
                 self.said = None;
@@ -172,6 +188,51 @@ impl TaskView {
                     game: r.game.clone().filter(|_| r.lane == "playtest"),
                 },
             ),
+            Kind::Move => {
+                // Words: a vX.Y.Z is the version, anything else the project; `notes` checks both.
+                let (mut project, mut to) = (None, None);
+                for word in p.text.split_whitespace() {
+                    let slot = if word.starts_with('v')
+                        && word[1..].starts_with(|c: char| c.is_ascii_digit())
+                    {
+                        &mut to
+                    } else {
+                        &mut project
+                    };
+                    *slot = Some(word.to_string());
+                }
+                (
+                    format!("move in {at}"),
+                    Verb::Move {
+                        raw: r.raw.clone(),
+                        project,
+                        to,
+                    },
+                )
+            }
+            Kind::Edit => (
+                format!("edit in {at}"),
+                Verb::Edit {
+                    raw: r.raw.clone(),
+                    text: p.text,
+                },
+            ),
+            Kind::Tag | Kind::Untag => {
+                let tags: Vec<String> = p.text.split_whitespace().map(str::to_string).collect();
+                let (add, remove) = if p.kind == Kind::Tag {
+                    (tags, vec![])
+                } else {
+                    (vec![], tags)
+                };
+                (
+                    format!("tag in {at}"),
+                    Verb::Tag {
+                        raw: r.raw.clone(),
+                        add,
+                        remove,
+                    },
+                )
+            }
             Kind::Proof | Kind::Unverified => {
                 let (proof, unverified) = if p.kind == Kind::Proof {
                     (Some(p.text), None)
@@ -184,6 +245,21 @@ impl TaskView {
                         raw: r.raw.clone(),
                         proof,
                         unverified,
+                    },
+                )
+            }
+            Kind::Why | Kind::Dup => {
+                let (why, dup) = if p.kind == Kind::Why {
+                    (Some(p.text), None)
+                } else {
+                    (None, Some(p.text))
+                };
+                (
+                    format!("drop in {at}"),
+                    Verb::Drop {
+                        raw: r.raw.clone(),
+                        why,
+                        dup,
                     },
                 )
             }
@@ -213,20 +289,6 @@ impl TaskView {
                 _ => {}
             }
             return Ask::Done;
-        }
-        if self.confirm.is_some() {
-            return match k.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    let r = self.confirm.take().unwrap();
-                    let label = format!("rm in {}", group(&r));
-                    self.ask(label, on(&r, Verb::Rm { raw: r.raw.clone() }))
-                }
-                KeyCode::Char('n') | KeyCode::Esc => {
-                    self.confirm = None;
-                    Ask::Done
-                }
-                _ => Ask::Done,
-            };
         }
         let Some(f) = f else { return Ask::Pass };
         let last = shown(f, self).len().saturating_sub(1);
@@ -284,7 +346,48 @@ impl TaskView {
                     self.prompt = prompt(kind, Some(r));
                 }
             }
-            KeyCode::Char('x') => self.confirm = self.target(f, true),
+            KeyCode::Char(c @ ('x' | 'X')) => {
+                if let Some(r) = self.target(f, true) {
+                    let kind = if c == 'x' { Kind::Why } else { Kind::Dup };
+                    self.prompt = prompt(kind, Some(r));
+                }
+            }
+            KeyCode::Char('m') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = prompt(Kind::Move, Some(r));
+                }
+            }
+            KeyCode::Char(c @ ('t' | 'T')) => {
+                if let Some(r) = self.target(f, false) {
+                    let kind = if c == 't' { Kind::Tag } else { Kind::Untag };
+                    self.prompt = prompt(kind, Some(r));
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = Some(Prompt {
+                        kind: Kind::Edit,
+                        text: r.text.clone(),
+                        row: Some(r),
+                    });
+                }
+            }
+            KeyCode::Char(c @ ('+' | '-')) => {
+                if let Some(r) = self.target(f, false) {
+                    let (word, verb) = if c == '+' {
+                        ("sooner", Verb::Promote { raw: r.raw.clone() })
+                    } else {
+                        ("later", Verb::Demote { raw: r.raw.clone() })
+                    };
+                    return self.ask(format!("a release {word} in {}", group(&r)), on(&r, verb));
+                }
+            }
+            KeyCode::Char('o') => {
+                return match self.selected(f) {
+                    Some(r) => Ask::Open(r.sheet.clone(), r.line),
+                    None => Ask::Done,
+                };
+            }
             _ => return Ask::Pass,
         }
         Ask::Done
@@ -304,10 +407,10 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         "high" => p.warn(),
         _ => p.dim(),
     };
-    let wave = if r.lane == "playtest" {
+    let version = if r.lane == "playtest" {
         r.game.clone()
     } else {
-        r.wave.clone()
+        r.version.clone()
     };
     let state = if r.state == "doing" {
         cell("doing", p.good())
@@ -315,13 +418,13 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         cell(r.state.clone(), Default::default())
     };
     let mut text = r.text.clone();
-    if r.ask {
-        text += "  #ask";
+    if r.requested {
+        text += "  #requested";
     }
     vec![
         cell(r.priority.clone(), prio),
         r.lane.clone().into(),
-        wave.unwrap_or_default().into(),
+        version.unwrap_or_default().into(),
         state,
         text.into(),
     ]
@@ -341,7 +444,11 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
     let mut out = vec![
         clip_line(
             heading(
-                "TASK BOARD",
+                if v.project.is_some() {
+                    "OPEN ROWS"
+                } else {
+                    "ALL PROJECTS"
+                },
                 format!("  {n} open rows in {} groups{filter}", gs.len()),
                 p,
             ),
@@ -367,8 +474,8 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             rest += "  (read-only)";
         }
         out.push(clip_line(heading(&title.to_uppercase(), rest, p), w));
-        let mut t = Table {
-            header: vec!["PRIO", "LANE", "WAVE", "STATE", "TEXT"],
+        let (mut t, starts) = Table {
+            header: vec!["PRIO", "LANE", "VERSION", "STATE", "TEXT"],
             rows: rows.iter().map(|r| row(r, p)).collect(),
             keep: vec![0, 3, 1, 2],
             flex: Some(4),
@@ -377,17 +484,93 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             cap: vec![(2, 16)],
             ..Default::default()
         }
-        .fit(w, p.head());
+        .fit_wrapped(w, p.head());
         if let Some(i) = rows
             .iter()
             .position(|r| sel.as_ref() == Some(&(r.sheet.clone(), r.raw.clone())))
         {
-            t[i + 1].style = p.sel();
-            at = Some(out.len() + i + 1);
+            let end = starts.get(i + 1).copied().unwrap_or(t.len());
+            for l in &mut t[starts[i]..end] {
+                l.style = p.sel();
+            }
+            at = Some(out.len() + starts[i]);
         }
         out.append(&mut t);
     }
     (out, at)
+}
+
+/// The selected row in full, for the pane under the rows: what the table clips or leaves out
+/// (its id, tags, worker, dates, marker and the sheet line a write lands on).
+pub fn preview(r: &Row, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut head = vec![
+        r.id.clone().unwrap_or_else(|| "no id".into()),
+        group(r),
+        r.lane.clone(),
+    ];
+    let version = if r.lane == "playtest" {
+        &r.game
+    } else {
+        &r.version
+    };
+    head.extend(version.iter().cloned());
+    head.push(r.state.clone());
+    head.push(r.priority.clone());
+    head.extend(r.size.iter().map(|s| format!("size/{s}")));
+    let mut out: Vec<Line<'static>> = wrap(&head, "  ", w)
+        .into_iter()
+        .map(|l| clip_line(Line::styled(l, p.head()), w))
+        .collect();
+    let words: Vec<&str> = r.text.split_whitespace().collect();
+    out.extend(
+        wrap(&words, " ", w)
+            .into_iter()
+            .map(|l| clip_line(Line::raw(l), w)),
+    );
+    // A label, then its items wrapped under one another.
+    let field = |k: &str, items: &[String], sep: &str| -> Vec<Line<'static>> {
+        wrap(items, sep, w.saturating_sub(7).max(1))
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let k = if i == 0 { k } else { "" };
+                clip_line(
+                    Line::from(vec![Span::styled(format!("{k:<7}"), p.dim()), Span::raw(v)]),
+                    w,
+                )
+            })
+            .collect()
+    };
+    if !r.tags.is_empty() || r.requested {
+        let mut t: Vec<String> = r.tags.iter().map(|t| format!("#{t}")).collect();
+        if r.requested && !r.tags.iter().any(|t| t == "requested") {
+            t.push("#requested".into());
+        }
+        out.extend(field("tags", &t, " "));
+    }
+    let mut when = vec![];
+    if let Some(wk) = &r.worker {
+        when.push(format!("worker {wk}"));
+    }
+    if let Some(d) = &r.since {
+        when.push(format!("since {d}"));
+    }
+    if let Some(d) = &r.filed {
+        when.push(format!("filed {d}"));
+    }
+    if let Some(m) = &r.marker {
+        when.push(m.clone());
+    }
+    if !when.is_empty() {
+        out.extend(field("about", &when, "  "));
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let sheet = match r.sheet.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => r.sheet.clone(),
+    };
+    out.extend(field("sheet", &[format!("{sheet}:{}", r.line)], ""));
+    out
 }
 
 fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
@@ -401,18 +584,15 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             ),
             (Kind::Proof, _) => "Done, the proof (pr:N or a URL): ".into(),
             (Kind::Unverified, _) => "Done unverified, because: ".into(),
+            (Kind::Why, _) => "Drop it, because: ".into(),
+            (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
+            (Kind::Move, _) => "Move to a project, a version vX.Y.Z, or both: ".into(),
+            (Kind::Edit, _) => "New text (tags stay): ".into(),
+            (Kind::Tag, _) => "Add tags (size/s, requested; a new size replaces the old): ".into(),
+            (Kind::Untag, _) => "Remove tags: ".into(),
             (_, None) => String::new(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
-    } else if let Some(r) = &v.confirm {
-        Line::styled(
-            format!(
-                "Remove \"{}\" from {}?  y/Enter yes  n/Esc no",
-                r.text,
-                group(r)
-            ),
-            p.warn(),
-        )
     } else if let Some(r) = &v.running {
         Line::styled(format!("Running {r}..."), p.dim())
     } else {
@@ -435,7 +615,7 @@ pub(crate) mod tests {
             profile: profile.into(),
             project: project.map(String::from),
             lane: lane.into(),
-            wave: Some("v0.1.0".into()).filter(|_| lane != "focus" && lane != "playtest"),
+            version: Some("v0.1.0".into()).filter(|_| lane != "focus" && lane != "playtest"),
             game: Some("demo".into()).filter(|_| lane == "playtest"),
             state: "open".into(),
             priority: prio.into(),
@@ -445,6 +625,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         Feed {
+            today: "2026-11-04".into(),
             projects: vec![
                 tasks::Project {
                     profile: "bnb".into(),
@@ -496,7 +677,7 @@ pub(crate) mod tests {
         let v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("TASK BOARD  5 open rows in 3 groups"), "{s}");
+        assert!(s.contains("ALL PROJECTS  5 open rows in 3 groups"), "{s}");
         assert!(at("BNB FOCUS  1, 1 urgent  (read-only)") < at("BNB/DEMO  3, 1 urgent"));
         assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
@@ -552,7 +733,7 @@ pub(crate) mod tests {
             v.said
         );
         assert_eq!(v.key(key('x'), Some(&f), 10), Ask::Done);
-        assert!(v.confirm.is_none(), "no remove on a focus row");
+        assert!(v.prompt.is_none(), "no drop on a focus row");
 
         v.key(key('j'), Some(&f), 10);
         let Ask::Write(label, w) = v.key(key('s'), Some(&f), 10) else {
@@ -562,31 +743,49 @@ pub(crate) mod tests {
         assert_eq!(
             tasks::argv(&w).unwrap(),
             [
-                "notes",
-                "ptask",
+                "fleet-dispatch",
+                "promote",
+                "--project",
                 "demo",
                 "--profile",
                 "bnb",
-                "--exact",
-                "start",
-                "--",
+                "--raw",
                 "- [ ] fix the menu"
             ]
         );
 
+        // A drop says why, or names the row it duplicates; Esc drops nothing.
         v.key(key('x'), Some(&f), 10);
-        assert!(text(&f, &v, 160).contains("Remove \"fix the menu\" from bnb/demo?"));
-        assert_eq!(v.key(key('n'), Some(&f), 10), Ask::Done);
-        assert!(v.confirm.is_none());
-        v.key(key('x'), Some(&f), 10);
-        let Ask::Write(_, w) = v.key(key('y'), Some(&f), 10) else {
-            panic!("y removes")
-        };
+        assert!(text(&f, &v, 160).contains("Drop it, because: "));
         assert_eq!(
-            w.verb,
-            Verb::Rm {
-                raw: "- [ ] fix the menu".into()
-            }
+            enter(&mut v, &f),
+            Ask::Done,
+            "a drop with no reason is refused"
+        );
+        assert!(
+            matches!(&v.said, Some(Err(e)) if e.contains("why")),
+            "{:?}",
+            v.said
+        );
+        v.key(key('x'), Some(&f), 10);
+        assert_eq!(v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10), Ask::Done);
+        assert!(v.prompt.is_none());
+        v.key(key('X'), Some(&f), 10);
+        typed(&mut v, &f, "ar-142");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("a drop runs")
+        };
+        assert_eq!(label, "drop in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "drop",
+                "--dup",
+                "ar-142",
+                "--",
+                "- [ ] fix the menu"
+            ]
         );
 
         v.key(key('d'), Some(&f), 10);
@@ -613,6 +812,91 @@ pub(crate) mod tests {
                 unverified: Some("checked by hand".into())
             }
         );
+    }
+
+    #[test]
+    fn move_edit_and_the_version_keys_carry_the_rows_raw_line() {
+        let f = fixture();
+        let mut v = TaskView::default();
+        v.key(key('j'), Some(&f), 10);
+        assert_eq!(v.selected(&f).unwrap().text, "fix the menu");
+
+        v.key(key('m'), Some(&f), 10);
+        typed(&mut v, &f, "garden v0.2.0");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("move runs")
+        };
+        assert_eq!(label, "move in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "move",
+                "--project",
+                "garden",
+                "--to",
+                "v0.2.0",
+                "--",
+                "- [ ] fix the menu"
+            ]
+        );
+        v.key(key('m'), Some(&f), 10);
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a move to nowhere is refused");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("move to")));
+
+        v.key(key('e'), Some(&f), 10);
+        assert_eq!(
+            v.prompt.as_ref().unwrap().text,
+            "fix the menu",
+            "edit starts from the text"
+        );
+        typed(&mut v, &f, " bar");
+        let Ask::Write(_, w) = enter(&mut v, &f) else {
+            panic!("edit runs")
+        };
+        assert_eq!(
+            w.verb,
+            Verb::Edit {
+                raw: "- [ ] fix the menu".into(),
+                text: "fix the menu bar".into()
+            }
+        );
+
+        let Ask::Write(label, w) = v.key(key('+'), Some(&f), 10) else {
+            panic!("+ runs")
+        };
+        assert_eq!(label, "a release sooner in bnb/demo");
+        assert_eq!(
+            w.verb,
+            Verb::Promote {
+                raw: "- [ ] fix the menu".into()
+            }
+        );
+        let Ask::Write(_, w) = v.key(key('-'), Some(&f), 10) else {
+            panic!("- runs")
+        };
+        assert_eq!(
+            w.verb,
+            Verb::Demote {
+                raw: "- [ ] fix the menu".into()
+            }
+        );
+
+        assert_eq!(
+            v.key(key('o'), Some(&f), 10),
+            Ask::Open("/v/bnb/demo/human.md".into(), 0)
+        );
+
+        // The playtest row and the focus row refuse the version keys before anything runs.
+        for _ in 0..2 {
+            v.key(key('j'), Some(&f), 10);
+        }
+        assert_eq!(v.selected(&f).unwrap().lane, "playtest");
+        assert_eq!(v.key(key('+'), Some(&f), 10), Ask::Done);
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("playtest")));
+        v.key(key('g'), Some(&f), 10);
+        assert_eq!(v.key(key('m'), Some(&f), 10), Ask::Done);
+        assert!(v.prompt.is_none(), "no move on a focus row");
     }
 
     #[test]
@@ -665,5 +949,101 @@ pub(crate) mod tests {
         assert_eq!(v.selected(&fewer).unwrap().text, "sweep the logs");
         v.reselect(None, &Feed::default());
         assert_eq!(v.sel, 0);
+    }
+
+    #[test]
+    fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
+        let mut f = fixture();
+        f.rows[1].text = "fix the menu so the back button returns to the map".into();
+        f.rows[1].size = Some("m".into());
+        let mut v = TaskView {
+            project: Some(("bnb".into(), "demo".into())),
+            ..Default::default()
+        };
+        assert_eq!(shown(&f, &v).len(), 3, "only bnb/demo's rows");
+        let s = text(&f, &v, 50);
+        assert!(s.contains("OPEN ROWS  3 open rows in 1 groups"), "{s}");
+        assert!(!s.contains('~'), "nothing is clipped:\n{s}");
+        assert!(
+            s.contains("returns to the map"),
+            "the text wraps whole:\n{s}"
+        );
+        // The selected row is lit on every line it wraps onto.
+        let (lines, at) = page(&f, &v, Palette::default(), 50);
+        let at = at.unwrap();
+        assert_eq!(lines[at].style, lines[at + 1].style);
+        assert!(
+            plain(&lines[at + 1]).starts_with(' '),
+            "{:?}",
+            plain(&lines[at + 1])
+        );
+
+        v.key(key('t'), Some(&f), 10);
+        assert!(text(&f, &v, 160).contains("Add tags"));
+        typed(&mut v, &f, "size/s #requested");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("tag runs")
+        };
+        assert_eq!(label, "tag in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "tag",
+                "--add=size/s",
+                "--add=requested",
+                "--",
+                "- [ ] fix the menu"
+            ]
+        );
+        v.key(key('T'), Some(&f), 10);
+        typed(&mut v, &f, "v0.2.0");
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a release is move's");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("release")));
+    }
+
+    #[test]
+    fn the_preview_shows_the_selected_row_whole_with_what_the_table_leaves_out() {
+        let mut f = fixture();
+        let r = &mut f.rows[1];
+        r.id = Some("bnb-7".into());
+        r.size = Some("m".into());
+        r.tags = vec!["p1".into(), "size/m".into()];
+        r.since = Some("2026-10-27".into());
+        r.marker = Some("carried:3 id:bnb-7".into());
+        r.line = 36;
+        r.text = "fix the menu so the back button returns to the map".into();
+        let l: Vec<String> = preview(&f.rows[1], Palette { no_color: true }, 30)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "bnb-7  bnb/demo  human  v0.1.0",
+                "open  urgent  size/m",
+                "fix the menu so the back",
+                "button returns to the map",
+                "tags   #p1 #size/m",
+                "about  since 2026-10-27",
+                "       carried:3 id:bnb-7",
+                "sheet  /v/bnb/demo/human.md:36",
+            ],
+            "nothing is clipped: every part wraps between words"
+        );
+
+        // A row with nothing extra: no tags or about line, and it says it has no id.
+        let l: Vec<String> = preview(&f.rows[0], Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "no id  personal/garden  human  v0.1.0  open  low",
+                "water the beds",
+                "sheet  /v/personal/garden/human.md:0"
+            ]
+        );
     }
 }

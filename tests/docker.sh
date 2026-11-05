@@ -11,6 +11,7 @@
 #   ./docker.sh test-fast           # unit + integ, inside the container
 #   ./docker.sh --shell             # interactive shell in the image, for debugging
 #   TMUX_REF=3.4 ./docker.sh        # sweep a different tmux
+#   TMUX_STOCK=1 ./docker.sh ...    # 3.8 without .local/src/tmux/patched: a negative control
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -21,9 +22,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
-TMUX_REF="${TMUX_REF:-3.7b}"
+TMUX_REF="${TMUX_REF:-3.8}"
+TMUX_STOCK="${TMUX_STOCK:-}"
 FZF_REF="${FZF_REF:-0.74.1}"
-IMAGE="${COCKPIT_TEST_IMAGE:-cockpit-tests:tmux${TMUX_REF}-fzf${FZF_REF}}"
+IMAGE="${COCKPIT_TEST_IMAGE:-cockpit-tests:tmux${TMUX_REF}${TMUX_STOCK:+-stock}-fzf${FZF_REF}}"
 DOCKER="${DOCKER:-docker}"
 
 command -v "$DOCKER" >/dev/null 2>&1 || {
@@ -40,10 +42,12 @@ command -v "$DOCKER" >/dev/null 2>&1 || {
 [ -x "$HERE/vendor/bats-core/bin/bats" ] || make -C "$HERE" bootstrap
 
 echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
+# The context is the patch directory: the one thing the image copies.
 "$DOCKER" build \
   --build-arg "TMUX_REF=$TMUX_REF" \
+  --build-arg "TMUX_STOCK=$TMUX_STOCK" \
   --build-arg "FZF_REF=$FZF_REF" \
-  -t "$IMAGE" -f "$HERE/Dockerfile" "$HERE" >/dev/null
+  -t "$IMAGE" -f "$HERE/Dockerfile" "$REPO/.local/src/tmux/patched" >/dev/null
 
 # --network none      the suite needs no network; nothing can phone home
 # --init              reap orphans. A crashed test can leave fzf/tmux children behind, and
@@ -74,6 +78,9 @@ fi
 # override the Makefile's `BATS_FLAGS ?=` default -- make treats a set-but-empty environment
 # variable as a definition -- silently dropping --print-output-on-failure.
 [ -n "${BATS_FLAGS:-}" ] && run_args+=(--env "BATS_FLAGS=$BATS_FLAGS")
+# CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
+# into a failure, so a red cannot hide as a skip there.
+[ -n "${CI:-}" ] && run_args+=(--env "CI=$CI")
 
 if [ "${1:-}" = "--shell" ]; then
   shift
