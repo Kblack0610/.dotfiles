@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034  # the colours are for the scripts that source this
-# pango.sh - markup helpers for the waybar load, CI, day and dispatch chips (load.sh, ci_runners.sh, day.sh, dispatch.sh). The
+# pango.sh - markup helpers for the waybar load, CI, day, dispatch and agents chips (load.sh, ci_runners.sh, day.sh, dispatch.sh, ai_agents.sh). The
 # Prometheus reader they share with the hub board is .local/lib/prom.sh.
 
 # Bar theme (Jackie Brown) colours, the set fleet_pulse.sh uses: the pale Catppuccin
@@ -7,6 +7,7 @@
 # the scale the cc:*_status rules use.
 LEVEL_COLOUR=("#a6e34a" "#ffcc2f" "#ef5734")
 LEVEL_CLASS=(ok warn critical)
+C_GRN="${LEVEL_COLOUR[0]}"
 C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
 

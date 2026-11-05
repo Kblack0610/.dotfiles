@@ -21,7 +21,7 @@ The repo docs own everything but the procedure: `docs/operations/ci-cost.md` (ho
 - After a harness change lands, to prove what it saved.
 - When the runner pool queue is long and nobody knows which workflow fills it.
 
-Not for running tests or gating a PR - that is `playground-headless-test`. Not for agent-session ETAs - that is `fleet-bench`. Not for why gates are red - that is `ci-failures`.
+Not for running tests or gating a PR - that is `playground-headless-test`. Not for agent-session ETAs - that is `fleet-bench`. Not for why gates are red - that is `ci-failures`. A whole cleanup pass is `ci-cleanup`.
 
 ## Steps
 

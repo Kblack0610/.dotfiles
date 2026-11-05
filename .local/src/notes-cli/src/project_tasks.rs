@@ -175,8 +175,9 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
-/// Which row a verb acts on: the first open task whose text contains some words, or the one
-/// open task whose line is exactly `raw`.
+/// Which row a verb acts on: the first open task whose text contains some words, the open
+/// task carrying an id (a query shaped like one, `ar-142`), or the one open task whose line
+/// is exactly `raw`.
 ///
 /// `Exact` is for a UI. It shows a row from `notes board --json` and acts on that row's `raw`
 /// field, so the write is optimistic concurrency without id stamps in the sheets: when the
@@ -185,6 +186,7 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Pick {
     Words(String),
+    Id(String),
     Exact(String),
 }
 
@@ -202,6 +204,9 @@ impl Pick {
         if q.is_empty() {
             bail!("which one? (provide a word from the task)");
         }
+        if md::is_row_id(&q) {
+            return Ok(Pick::Id(q));
+        }
         Ok(Pick::Words(q))
     }
 
@@ -209,6 +214,7 @@ impl Pick {
     pub(crate) fn hits(&self, line: &str) -> bool {
         match self {
             Pick::Words(q) => is_match(line, q),
+            Pick::Id(id) => md::is_open_task(line) && md::row_id(line).as_deref() == Some(id),
             Pick::Exact(raw) => md::is_open_task(line) && line.trim_end() == raw,
         }
     }
@@ -241,7 +247,7 @@ pub(crate) fn sheet_of(p: &Profile, name: &str, lane: Lane) -> Result<Option<Pat
 impl std::fmt::Display for Pick {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Pick::Words(q) | Pick::Exact(q) => f.write_str(q),
+            Pick::Words(q) | Pick::Id(q) | Pick::Exact(q) => f.write_str(q),
         }
     }
 }
@@ -305,13 +311,15 @@ pub fn list(p: &Profile, name: &str, wave: Option<&str>, all: bool, lane: Lane) 
 /// hold it yet. That is the whole roadmap-forward loop: plan into `v1.14.0` while `v1.13.0`
 /// is still running, and the roll promotes it when v1.13.0 closes.
 ///
-/// Unlike daily `focus add`, wave tasks are NOT day-stamped (they live in the version's
-/// wave until done or rolled, not carried forward).
+/// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
+/// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
+/// registry gives the project a `code`. Each of `details` becomes an indented line under it.
 pub fn add(
     p: &Profile,
     log: &Logger,
     name: &str,
     text: &str,
+    details: &[String],
     to: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
@@ -327,18 +335,62 @@ pub fn add(
     let content = fs::read_to_string(&sheet)?;
     let (heading, grown) = target_wave(&content, to, true)?;
     let base = grown.unwrap_or(content);
-    // Wave tasks are not day-stamped (see the doc above), so `stamp_line` never runs here
-    // and the default has to be applied directly or every project-sheet task is born
-    // untagged.
-    let line = md::with_default_priority(&format!("- [ ] {text}"));
-    let new = md::insert_under_heading(&base, &heading, std::slice::from_ref(&line));
+    let today = chrono::Local::now().date_naive();
+    let mut line = md::stamp_line(
+        &md::with_default_priority(&format!("- [ ] {text}")),
+        today,
+        today,
+    );
+    match crate::registry::Registry::load().and_then(|r| r.code(name)) {
+        Some(code) => line = md::add_marker(&line, &format!("id:{}", next_id(&proj_dir, &code))),
+        None => eprintln!(
+            "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
+        ),
+    }
+    let mut block = vec![line.clone()];
+    block.extend(md::detail_lines("", details));
+    let new = md::insert_under_heading(&base, &heading, &block);
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("added to {} ({name})", sheet.display()));
-    println!("{line}");
+    for l in &block {
+        println!("{l}");
+    }
     if to.is_some() {
         println!("  -> {heading}");
     }
     Ok(0)
+}
+
+/// The next row id for a project: `<code>-<n>`, `n` one past the highest `id:<code>-N` on any
+/// `.md` file under its dir (both lanes, playtest and `versions/`). A dropped row keeps its
+/// id on the sheet and an archived one keeps it in `versions/`, so an id is never reused.
+pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
+    let needle = format!("id:{code}-");
+    let mut max = 0u64;
+    let mut stack = vec![proj_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "md") {
+                let Ok(text) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (i, _) in text.match_indices(&needle) {
+                    let digits: String = text[i + needle.len()..]
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    max = max.max(digits.parse().unwrap_or(0));
+                }
+            }
+        }
+    }
+    format!("{code}-{}", max + 1)
 }
 
 /// `notes ptask <name> move <query> --to vX.Y.Z` — move the first open task matching
@@ -739,14 +791,50 @@ fn record_proof(p: &Profile, name: &str, query: &str, stamp: &str) -> Result<()>
     Ok(())
 }
 
-/// `notes ptask <name> rm <query>` — delete the first open wave task matching `<query>`.
-pub fn rm(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
-    Ok(edit(p, log, name, pick, "removed", lane, |_| None)?.0)
+/// `notes ptask <name> drop --why "<why>" | --dup <id> <query>` - close the first matching open
+/// wave task undelivered. The row stays, ticked, with `dropped: <why>` or `dup:<id>` in its
+/// marker, so its id is never reused, its detail lines stay under it, and the sweep and roll
+/// treat it as any closed row. There is no delete.
+pub fn drop(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    why: Option<&str>,
+    dup: Option<&str>,
+    lane: Lane,
+) -> Result<i32> {
+    let stamp = drop_stamp(why, dup)?;
+    Ok(edit(p, log, name, pick, "dropped", lane, move |l| {
+        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+    })?
+    .0)
+}
+
+/// The marker a `drop` stamps, or the error saying it needs a reason.
+pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String> {
+    match (why.map(str::trim), dup.map(str::trim)) {
+        (Some(_), Some(_)) => bail!("--why and --dup are alternatives; pick one"),
+        (Some(w), None) if !w.is_empty() => Ok(format!("dropped: {w}")),
+        (None, Some(d)) if md::is_row_id(d) => Ok(format!("dup:{d}")),
+        (None, Some(d)) => {
+            bail!("--dup takes the id of the row this one duplicates (like ar-142), not '{d}'")
+        }
+        _ => bail!(
+            "drop needs a reason. one of:\n  \
+             --why \"<why>\"   stale, superseded, moved to its home (\"moved: ideas.md\")\n  \
+             --dup <id>      the row it duplicates"
+        ),
+    }
 }
 
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching wave task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
 /// checkbox state and its tags stay as they were ([`md::retext_task`]).
+///
+/// Each of `details` becomes an indented line at the end of the row's block, after its
+/// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
+#[allow(clippy::too_many_arguments)]
 pub fn retext(
     p: &Profile,
     log: &Logger,
@@ -754,11 +842,31 @@ pub fn retext(
     pick: &Pick,
     text: Option<&str>,
     append: Option<&str>,
+    details: &[String],
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
-    if text.or(append).is_none_or(str::is_empty) {
-        bail!("edit needs the new words: --text \"<new text>\" or --append \"<more>\"");
+    let has_details = details.iter().any(|d| !d.trim().is_empty());
+    if text.or(append).is_none_or(str::is_empty) && !has_details {
+        bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
+    }
+    if has_details {
+        let Some((sheet, heading, content)) = sheet_and_wave(p, name, lane)? else {
+            bail!("'{name}' has no task sheet yet");
+        };
+        let Some(new) = md::append_details(&content, &heading, |l| pick.hits(l), details) else {
+            eprintln!("no open task matches '{pick}' in {name}");
+            return Ok(1);
+        };
+        md::write_atomic(&sheet, &new)?;
+        log.info(
+            "ptask",
+            &format!("detailed in {} ({name})", sheet.display()),
+        );
+        if text.or(append).is_none_or(str::is_empty) {
+            println!("detailed '{pick}'");
+            return Ok(0);
+        }
     }
     Ok(edit(p, log, name, pick, "edited", lane, |l| {
         let new = match (text, append) {
@@ -1592,5 +1700,72 @@ Version: v0.0.1
         // nothing left to move is not an error
         assert_eq!(archive(&p, &log, "demo", false, Lane::Agent).unwrap(), 0);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // An id is never reused: the max is taken over both lanes and the archive, and a dropped
+    // row keeps its id on the sheet.
+    #[test]
+    fn next_id_is_one_past_the_highest_id_anywhere_in_the_project() {
+        let dir = std::env::temp_dir().join(format!("ptask-ids-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        assert_eq!(next_id(&dir, "ar"), "ar-1", "an empty project starts at 1");
+        fs::write(dir.join("README.md"), "- [ ] a <!-- id:ar-3 -->\n").unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "- [x] b <!-- id:ar-9 dropped: stale -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("versions/v0.1.0.md"),
+            "- [x] c <!-- id:ar-12 pr:4 -->\n",
+        )
+        .unwrap();
+        fs::write(dir.join("notes.txt"), "id:ar-99 is not on a sheet\n").unwrap();
+        fs::write(
+            dir.join("other.md"),
+            "- [ ] d <!-- id:bar-40 id:xar-41 -->\n",
+        )
+        .unwrap();
+        assert_eq!(next_id(&dir, "ar"), "ar-13");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_drop_says_why_or_names_its_duplicate_never_both() {
+        assert_eq!(drop_stamp(Some("stale"), None).unwrap(), "dropped: stale");
+        assert_eq!(drop_stamp(None, Some("ar-142")).unwrap(), "dup:ar-142");
+        assert!(drop_stamp(None, None).is_err(), "a drop with no reason");
+        assert!(drop_stamp(Some("x"), Some("ar-1")).is_err(), "both");
+        assert!(
+            drop_stamp(None, Some("the other one")).is_err(),
+            "--dup takes an id"
+        );
+        assert!(
+            drop_stamp(Some("  "), None).is_err(),
+            "a blank reason is no reason"
+        );
+    }
+
+    #[test]
+    fn an_id_shaped_query_picks_that_row_and_no_other() {
+        let pick = w("AR-14");
+        assert!(matches!(pick, Pick::Id(ref id) if id == "ar-14"));
+        assert!(pick.hits("- [ ] fix(a): b #high <!-- id:ar-14 -->"));
+        assert!(pick.hits("- [/] fix(a): b #high <!-- id:ar-14 pr:3 -->"));
+        assert!(
+            !pick.hits("- [ ] fix(a): b #high <!-- id:ar-142 -->"),
+            "a prefix"
+        );
+        assert!(
+            !pick.hits("- [x] fix(a): b #high <!-- id:ar-14 -->"),
+            "closed"
+        );
+        assert!(
+            !pick.hits("- [ ] see ar-14 for the cause #high"),
+            "text is not an id"
+        );
+        assert!(matches!(w("inotify"), Pick::Words(_)));
     }
 }
