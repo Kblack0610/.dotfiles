@@ -105,6 +105,15 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
 /// when nothing moves.
 fn take_ideas(
     content: &str,
+    route: impl FnMut(Option<&str>) -> Option<PathBuf>,
+) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
+    take_tagged(content, md::idea_tag, route)
+}
+
+/// [`take_ideas`] for any routing tag: `tag_of` reads a row's tag (`None` = not tagged).
+fn take_tagged(
+    content: &str,
+    tag_of: impl Fn(&str) -> Option<Option<String>>,
     mut route: impl FnMut(Option<&str>) -> Option<PathBuf>,
 ) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
     let lines: Vec<&str> = content.lines().collect();
@@ -115,7 +124,7 @@ fn take_ideas(
     while i < lines.len() {
         let line = lines[i];
         let tag = (span.contains(&i) && md::is_open_task(line))
-            .then(|| md::idea_tag(line))
+            .then(|| tag_of(line))
             .flatten();
         let Some(target) = tag.and_then(|t| route(t.as_deref())) else {
             keep.push(line);
@@ -209,7 +218,57 @@ fn move_ideas(
     Ok(Some(rest))
 }
 
-/// notes focus sweep — move `#idea` rows to their ideas files, then organize today's
+/// Move today's `#p:<project>` rows, with their indented lines, to the `## Inbox` of that
+/// project's sheet, the tag taken off and the rest as typed, for the triager to file. Like
+/// [`move_ideas`] the sheets are written before the note, and a row already in an inbox is
+/// not written twice. A name that is no project leaves the row in Focus.
+fn move_to_inboxes(
+    p: &Profile,
+    log: &Logger,
+    content: &str,
+    project_dir: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<Option<String>> {
+    let taken = take_tagged(
+        content,
+        |l| md::project_tag(l).map(Some),
+        |proj| {
+            let name = proj?;
+            let dir = project_dir(name);
+            if dir.is_none() {
+                eprintln!("focus sweep: #p:{name} names no project; the row stays in Focus");
+            }
+            dir
+        },
+    );
+    let Some((rest, moved)) = taken else {
+        return Ok(None);
+    };
+    for (dir, rows) in &moved {
+        // The group's first line is the tagged row itself.
+        let name = rows
+            .first()
+            .and_then(|r| md::project_tag(r))
+            .unwrap_or_default();
+        let lines: Vec<String> = rows.iter().map(|r| md::without_project_tag(r)).collect();
+        let path = crate::project_tasks::inbox_put(p, dir, &name, &lines)?;
+        log.info(
+            "focus",
+            &format!(
+                "moved {} #p row(s) to {}'s inbox",
+                lines.len(),
+                path.display()
+            ),
+        );
+        println!(
+            "moved {} row(s) -> {name} inbox",
+            lines.iter().filter(|r| md::is_task(r)).count()
+        );
+    }
+    Ok(Some(rest))
+}
+
+/// notes focus sweep: move `#idea` rows to their ideas files and `#p:<project>` rows to
+/// their project's inbox, then organize today's
 /// `## Focus` by status in place.
 pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
     let note = daily::today_path(p);
@@ -217,9 +276,9 @@ pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
         return Ok(0);
     }
     let content = fs::read_to_string(&note)?;
-    let moved = move_ideas(p, log, &content, |name| {
-        crate::projects::project_dir(p, name).ok()
-    })?;
+    let dir_of = |name: &str| crate::projects::project_dir(p, name).ok();
+    let moved = move_ideas(p, log, &content, dir_of)?;
+    let moved = move_to_inboxes(p, log, moved.as_deref().unwrap_or(&content), dir_of)?.or(moved);
     let base = moved.as_deref().unwrap_or(&content);
     match sweep_content(base) {
         Some(new) => {
@@ -464,6 +523,34 @@ after
         move_ideas(&p, &log, idea_note(), none).unwrap();
         let cross = fs::read_to_string(&p.ideas).unwrap();
         assert_eq!(cross.matches("pinball roguelike").count(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_tagged_row_moves_to_that_projects_inbox() {
+        let (root, p) = sandbox("inbox");
+        let log = Logger::new(p.log_file.clone(), false);
+        let dir = root.join("apociseum");
+        let note = "## Focus\n- [ ] gun sound is off #p:apociseum\n  since the patch\n\
+                    - [ ] typo #p:nosuch\n- [ ] just work\n";
+        let at = |n: &str| (n == "apociseum").then(|| dir.clone());
+        let rest = move_to_inboxes(&p, &log, note, at).unwrap().unwrap();
+        assert!(!rest.contains("gun sound"), "{rest}");
+        assert!(
+            rest.contains("- [ ] typo #p:nosuch"),
+            "an unknown project stays"
+        );
+        assert!(rest.contains("- [ ] just work"));
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        let inbox = sheet.split("## Tasks").next().unwrap();
+        assert!(
+            inbox.contains("- [ ] gun sound is off\n  since the patch\n"),
+            "{sheet}"
+        );
+        // a rerun over the same note does not write the line twice
+        move_to_inboxes(&p, &log, note, at).unwrap();
+        let again = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert_eq!(again.matches("gun sound").count(), 1, "{again}");
         let _ = fs::remove_dir_all(&root);
     }
 

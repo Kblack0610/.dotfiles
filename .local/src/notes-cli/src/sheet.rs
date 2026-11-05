@@ -87,9 +87,171 @@ pub(crate) fn later_versions(content: &str, cur: Option<V>) -> Vec<V> {
     out
 }
 
+/// One line waiting in `## Inbox`: the human's words as typed and the indented lines under it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InboxLine {
+    /// 1-based file line of the inbox line itself.
+    pub line: usize,
+    /// The line as it is on the sheet, what `--exact` matches.
+    pub raw: String,
+    /// The words: the line with its bullet and checkbox taken off, nothing else touched.
+    pub text: String,
+    /// Its indented lines, trimmed.
+    pub details: Vec<String>,
+}
+
+/// The words of an inbox line: `- [ ] x`, `- x` and `x` all read as `x`.
+fn inbox_text(line: &str) -> String {
+    let t = line.trim();
+    let t = ["- [ ]", "- [/]", "- [x]", "- [X]", "-", "*"]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))
+        .unwrap_or(t);
+    t.trim().to_string()
+}
+
+/// The lines waiting in `## Inbox`, in sheet order. Every top-level line counts, whatever the
+/// human typed: a checkbox row, a bare bullet or a sentence. A line indented under one is its
+/// detail; a comment line is neither.
+pub(crate) fn inbox_lines(content: &str) -> Vec<InboxLine> {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, INBOX) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut i = span.start;
+    while i < span.end {
+        let l = lines[i];
+        let t = l.trim();
+        if t.is_empty()
+            || l.starts_with([' ', '\t'])
+            || (t.starts_with("<!--") && t.ends_with("-->"))
+        {
+            i += 1;
+            continue;
+        }
+        let end = md::row_block_end(&lines, i).min(span.end);
+        let text = inbox_text(l);
+        if text.is_empty() {
+            i = end;
+            continue;
+        }
+        out.push(InboxLine {
+            line: i + 1,
+            raw: l.trim_end().to_string(),
+            text,
+            details: lines[i + 1..end]
+                .iter()
+                .map(|d| d.trim().to_string())
+                .collect(),
+        });
+        i = end;
+    }
+    out
+}
+
+/// `content` with `block` at the end of `## Inbox`, the section added above `## Tasks` (or at
+/// the foot of a sheet with neither) when the sheet has none. Oldest first, so the triager
+/// files in the order the human wrote.
+pub(crate) fn put_in_inbox(content: &str, block: &[String]) -> String {
+    let refs: Vec<&str> = content.lines().collect();
+    let (inbox, tasks) = (
+        md::section_span(&refs, INBOX),
+        md::section_span(&refs, TASKS),
+    );
+    let mut lines: Vec<String> = refs.iter().map(|l| (*l).to_string()).collect();
+    let at = match inbox {
+        Some(span) => {
+            let mut at = span.end;
+            while at > span.start && lines[at - 1].trim().is_empty() {
+                at -= 1;
+            }
+            at
+        }
+        None => {
+            let heading = format!("## {INBOX}");
+            match tasks {
+                Some(span) => {
+                    let at = span.start - 1;
+                    lines.splice(at..at, [heading, String::new()]);
+                    at + 1
+                }
+                None => {
+                    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                        lines.pop();
+                    }
+                    lines.extend([String::new(), heading]);
+                    lines.len()
+                }
+            }
+        }
+    };
+    lines.splice(at..at, block.iter().cloned());
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// `content` with the first inbox line `hits` accepts removed, its detail lines with it, and
+/// that line. None when nothing in `## Inbox` matches.
+pub(crate) fn take_inbox<P>(content: &str, hits: P) -> Option<(String, InboxLine)>
+where
+    P: Fn(&InboxLine) -> bool,
+{
+    let found = inbox_lines(content).into_iter().find(|l| hits(l))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = found.line - 1;
+    let end = start + 1 + found.details.len();
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.extend_from_slice(&lines[end..]);
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some((joined, found))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_top_level_inbox_line_is_waiting_and_indented_ones_are_its_details() {
+        let s = "# a\n\n## Inbox\n- [ ] raw thought\n  more words\n- bare bullet\nplain sentence\n<!-- note -->\n\n## Tasks\n- [ ] row\n";
+        let got = inbox_lines(s);
+        let texts: Vec<&str> = got.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["raw thought", "bare bullet", "plain sentence"]);
+        assert_eq!(got[0].details, ["more words"]);
+        assert_eq!(got[0].line, 4);
+        assert_eq!(got[1].raw, "- bare bullet");
+        assert!(inbox_lines("# a\n\n## Tasks\n- [ ] row\n").is_empty());
+    }
+
+    #[test]
+    fn a_new_inbox_line_goes_last_and_the_section_is_made_above_tasks() {
+        let s = "# a\n\n## Inbox\n- [ ] one\n\n## Tasks\n- [ ] row\n";
+        let got = put_in_inbox(s, &["- [ ] two".into()]);
+        assert_eq!(
+            got,
+            "# a\n\n## Inbox\n- [ ] one\n- [ ] two\n\n## Tasks\n- [ ] row\n"
+        );
+        let bare = put_in_inbox("# a\n\n## Tasks\n- [ ] row\n", &["- [ ] x".into()]);
+        assert_eq!(bare, "# a\n\n## Inbox\n- [ ] x\n\n## Tasks\n- [ ] row\n");
+        let none = put_in_inbox("# a\n\nprose\n\n", &["- [ ] x".into()]);
+        assert_eq!(none, "# a\n\nprose\n\n## Inbox\n- [ ] x\n");
+    }
+
+    #[test]
+    fn taking_an_inbox_line_takes_its_details_and_leaves_the_rest() {
+        let s = "# a\n\n## Inbox\n- [ ] one\n  why\n- [ ] two\n\n## Tasks\n- [ ] one\n";
+        let (rest, got) = take_inbox(s, |l| l.text == "one").unwrap();
+        assert_eq!(got.details, ["why"]);
+        assert_eq!(rest, "# a\n\n## Inbox\n- [ ] two\n\n## Tasks\n- [ ] one\n");
+        assert!(
+            take_inbox(s, |l| l.text == "row").is_none(),
+            "Tasks is not the inbox"
+        );
+    }
 
     const SHEET: &str = "# a\nVersion: v1.13.0\n\n## Inbox\n- [ ] raw thought\n\n## Tasks\n- [ ] now\n- [/] going\n- [ ] later #v1.14.0\n- [ ] further #v1.15.0\n- [ ] stale #v1.2.0\n- [ ] \n\n---\n### Done\n- [x] shipped #v1.14.0\n\n## Notes\n- [ ] not a row\n";
     const CUR: Option<V> = Some((1, 13, 0));

@@ -24,6 +24,8 @@ pub struct Project {
     pub open: usize,
     pub agent_open: usize,
     pub playtest_open: usize,
+    /// Lines waiting in the sheet's `## Inbox` for the triager.
+    pub inbox: usize,
 }
 
 /// One open row. `raw` is the line as it stands, what a write passes back.
@@ -41,10 +43,14 @@ pub struct Row {
     pub tier: Option<u8>,
     pub worker: Option<String>,
     pub ask: bool,
+    /// The row's `<code>-<n>` id, when its project has a code.
+    pub id: Option<String>,
     pub text: String,
     pub tags: Vec<String>,
     pub marker: Option<String>,
     pub since: Option<String>,
+    /// `YYYY-MM-DD` the triager filed it from an inbox (its `filed:` marker token).
+    pub filed: Option<String>,
     pub sheet: String,
     pub line: usize,
     pub raw: String,
@@ -53,6 +59,8 @@ pub struct Row {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
+    /// The day the feed was read (`YYYY-MM-DD`, the CLI's clock), what `filed` compares to.
+    pub today: String,
     pub projects: Vec<Project>,
     pub rows: Vec<Row>,
 }
@@ -360,14 +368,20 @@ mod tests {
     fn the_feed_parses_and_a_focus_row_has_no_project() {
         let f = Fake {
             out: Ok(
-                r#"{"projects":[{"profile":"bnb","project":"demo","dir":"/d","version":"v1.0.0","open":1,"agent_open":0,"playtest_open":0}],
-                "rows":[{"profile":"personal","project":null,"lane":"focus","state":"open","priority":"high","text":"x","tags":[],"sheet":"/n","line":4,"raw":"- [ ] x","later":"kept out"}]}"#,
+                r#"{"today":"2026-11-04","projects":[{"profile":"bnb","project":"demo","dir":"/d","version":"v1.0.0","open":1,"agent_open":0,"playtest_open":0,"inbox":2}],
+                "rows":[{"profile":"personal","project":null,"lane":"focus","state":"open","priority":"high","text":"x","tags":[],"sheet":"/n","line":4,"raw":"- [ ] x","later":"kept out"},
+                {"profile":"bnb","project":"demo","lane":"human","state":"open","priority":"low","id":"de-3","text":"y","filed":"2026-11-04","sheet":"/s","line":9,"raw":"- [ ] y"}]}"#,
             ),
             calls: RefCell::default(),
         };
         let feed = feed(&f).unwrap();
         assert_eq!(feed.projects[0].version.as_deref(), Some("v1.0.0"));
         assert_eq!((feed.rows[0].project.clone(), feed.rows[0].line), (None, 4));
+        // what the Filed today card reads
+        assert_eq!(feed.today, "2026-11-04");
+        assert_eq!(feed.projects[0].inbox, 2);
+        assert_eq!(feed.rows[1].id.as_deref(), Some("de-3"));
+        assert_eq!(feed.rows[1].filed.as_deref(), Some("2026-11-04"));
         assert_eq!(f.calls.borrow()[0], ["notes", "board", "--json"]);
         let bad = Fake {
             out: Ok("not json"),

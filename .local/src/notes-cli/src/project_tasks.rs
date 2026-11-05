@@ -71,6 +71,22 @@ pub(crate) fn task_sheet(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// [`ensure_task_sheet`] for either lane: the project's own sheet, or its agent board.
+fn ensure_lane_sheet(p: &Profile, proj_dir: &Path, name: &str, lane: Lane) -> Result<PathBuf> {
+    match lane {
+        Lane::Human => ensure_task_sheet(proj_dir, name),
+        Lane::Agent => crate::agent_sheet::ensure_for(p, proj_dir, name),
+    }
+}
+
+/// True when two paths are one sheet, through links; by name when either is missing.
+fn same_sheet(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Resolve (or create) a project's task sheet. Prefers an existing `## Tasks` sheet; else
 /// appends the sections to an existing `README.md`; else scaffolds a fresh `README.md` task
 /// sheet. `name` seeds the title of a fresh sheet.
@@ -99,6 +115,8 @@ pub(crate) struct OpenRows {
     pub sheet: PathBuf,
     pub version: String,
     pub rows: Vec<(usize, String)>,
+    /// Lines waiting in the sheet's `## Inbox`.
+    pub inbox: usize,
 }
 
 /// A directory's open version, `None` when it has no task sheet at all. The one reader the
@@ -120,6 +138,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         version: projects::version_or_default(cur),
         sheet: path,
         rows,
+        inbox: sheet::inbox_lines(&content).len(),
     })
 }
 
@@ -270,6 +289,10 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
 /// registry gives the project a `code`. Each of `details` becomes an indented line under it.
+///
+/// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
+/// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
+/// ([`file`]). Nothing raw lands on the board. Agent-lane adds are typed by their writers.
 pub fn add(
     p: &Profile,
     log: &Logger,
@@ -289,28 +312,21 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
-    let path = match lane {
-        Lane::Human => ensure_task_sheet(&proj_dir, name)?,
-        Lane::Agent => crate::agent_sheet::ensure_for(p, &proj_dir, name)?,
-    };
+    let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
-    let today = chrono::Local::now().date_naive();
-    let mut line = md::stamp_line(
-        &md::with_default_priority(&format!("- [ ] {text}")),
-        today,
-        today,
-    );
-    if let Some(v) = to {
-        line = project_sweep::retag(&line, v, Some(v) == cur).0;
+    if lane == Lane::Human && !is_typed(text) {
+        let mut line = format!("- [ ] {text}");
+        if let Some(v) = to {
+            line = md::add_tag(&line, &projects::fmt_version(v));
+        }
+        let mut block = vec![line];
+        block.extend(md::detail_lines("", details));
+        let path = inbox_put(p, &proj_dir, name, &block)?;
+        log.info("ptask", &format!("inboxed in {} ({name})", path.display()));
+        println!("inbox: {}", block.join("\n"));
+        return Ok(0);
     }
-    match crate::registry::Registry::load().and_then(|r| r.code(name)) {
-        Some(code) => line = md::add_marker(&line, &format!("id:{}", next_id(&proj_dir, &code))),
-        None => eprintln!(
-            "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
-        ),
-    }
-    let mut block = vec![line.clone()];
-    block.extend(md::detail_lines("", details));
+    let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
@@ -320,10 +336,297 @@ pub fn add(
     Ok(0)
 }
 
+/// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
+/// as needed) and wake the triager. Lines already in the inbox are not written twice, so a
+/// writer that stopped part way can run again. Returns the sheet.
+pub(crate) fn inbox_put(
+    p: &Profile,
+    proj_dir: &Path,
+    name: &str,
+    block: &[String],
+) -> Result<PathBuf> {
+    let path = ensure_task_sheet(proj_dir, name)?;
+    let content = fs::read_to_string(&path)?;
+    let have: Vec<String> = sheet::inbox_lines(&content)
+        .into_iter()
+        .map(|l| l.raw)
+        .collect();
+    if block
+        .first()
+        .is_some_and(|b| have.contains(&b.trim_end().to_string()))
+    {
+        return Ok(path);
+    }
+    md::write_atomic(&path, &sheet::put_in_inbox(&content, block))?;
+    inbox_changed(p);
+    Ok(path)
+}
+
+/// The file every inbox writer touches, the event the triager's path unit waits on:
+/// `<state_dir>/inbox.changed` (`~/.local/state/notes/inbox.changed` by default). A path
+/// unit takes no glob, so one flag stands in for every sheet.
+pub(crate) fn inbox_flag(p: &Profile) -> PathBuf {
+    p.state_dir.join("inbox.changed")
+}
+
+/// Touch [`inbox_flag`]. Best effort: a missing state dir must not fail the write it follows.
+fn inbox_changed(p: &Profile) {
+    let flag = inbox_flag(p);
+    if let Some(dir) = flag.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(&flag, format!("{}\n", chrono::Local::now().to_rfc3339()));
+}
+
+/// Does `text` open with a well-formed `type(area): ` (README "The task row")?
+fn is_typed(text: &str) -> bool {
+    projects::row_type_area(&format!("- [ ] {text}")).is_some()
+}
+
+/// The stamped rows for `texts` on `name`'s board, each followed by `details`: created tag,
+/// default priority, the `to` tag, `marker` tokens and an id per row when the registry gives
+/// the project a `code`. The ids run consecutively from [`next_id`], so rows written in one
+/// call never share one.
+fn new_rows(
+    name: &str,
+    proj_dir: &Path,
+    texts: &[String],
+    to: Option<V>,
+    cur: Option<V>,
+    marker: &[String],
+    details: &[String],
+) -> Result<Vec<String>> {
+    let today = chrono::Local::now().date_naive();
+    let code = crate::registry::Registry::load().and_then(|r| r.code(name));
+    if code.is_none() {
+        eprintln!(
+            "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
+        );
+    }
+    let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
+    let mut block = Vec::new();
+    for (k, text) in texts.iter().enumerate() {
+        let mut line = md::stamp_line(
+            &md::with_default_priority(&format!("- [ ] {}", text.trim())),
+            today,
+            today,
+        );
+        if let Some(v) = to {
+            line = project_sweep::retag(&line, v, Some(v) == cur).0;
+        }
+        if let (Some(code), Some(n)) = (&code, first) {
+            line = md::add_marker(&line, &format!("id:{code}-{}", n + k as u64));
+        }
+        for m in marker {
+            line = md::add_marker(&line, m);
+        }
+        block.push(line);
+        block.extend(md::detail_lines("", details));
+    }
+    Ok(block)
+}
+
+/// The marker token on a row the triager filed today: `filed:YYYY-MM-DD`. The "filed today"
+/// views read it back with [`filed_on`].
+pub(crate) fn filed_token(day: chrono::NaiveDate) -> String {
+    format!("filed:{}", day.format("%Y-%m-%d"))
+}
+
+/// The day a row was filed from an inbox, from its `filed:` marker token.
+pub(crate) fn filed_on(line: &str) -> Option<String> {
+    md::marker_token(line, "filed:")
+        .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
+        .map(str::to_string)
+}
+
+/// `notes ptask <name> inbox [--json]` - the lines waiting in `## Inbox`, oldest first:
+/// TSV `path<TAB>line<TAB>text`, or one JSON array of `{line, raw, text, details, typed}`,
+/// `typed` when the text already reads `type(area): title`.
+pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
+    let (path, lines) = match sheet_and_content(p, name, lane)? {
+        Some((path, content)) => (path, sheet::inbox_lines(&content)),
+        None => (PathBuf::new(), Vec::new()),
+    };
+    if json {
+        let rows: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
+                    "typed": is_typed(&l.text),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(rows));
+        return Ok(0);
+    }
+    for l in &lines {
+        println!("{}\t{}\t{}", path.display(), l.line, l.text);
+    }
+    Ok(0)
+}
+
+/// What [`file`] does with an inbox line, and on which board: `project`'s (default the
+/// line's own) in `lane`.
+pub(crate) struct Filing {
+    pub project: Option<String>,
+    pub lane: Lane,
+    pub how: How,
+}
+
+/// The two ways an inbox line leaves.
+pub(crate) enum How {
+    /// File it as these typed rows (more than one splits a pile; none files a typed line as
+    /// written), aimed at `to`, each with `details` under it.
+    Rows {
+        texts: Vec<String>,
+        to: Option<String>,
+        details: Vec<String>,
+    },
+    /// It duplicates this open row: its words join that row as a detail line.
+    Dup(String),
+}
+
+/// The inbox line `pick` names: by words in its text, or byte for byte with `--exact`.
+fn inbox_hit(pick: &Pick, l: &sheet::InboxLine) -> bool {
+    match pick {
+        Pick::Words(q) | Pick::Id(q) => l.text.to_lowercase().contains(q.as_str()),
+        Pick::Exact(raw) => l.raw == *raw,
+    }
+}
+
+/// `notes ptask <name> file <query> (--as "<type(area): title>"... | --dup <id>)` - take the
+/// first inbox line matching `<query>` off `## Inbox` and onto a board, in one write per
+/// sheet. `--as` files it as typed rows ([`new_rows`] stamps them, plus `filed:<today>`),
+/// on `--project`'s board and in `--lane`'s sheet when given; no `--as` files a line that is
+/// typed already as written; `--dup` adds it to an open row. The human's words stay as a
+/// `was: <words>` detail line (none when filed as written), with the line's own detail lines
+/// after it. A row the grammar flags (a retired priority, two priorities, a retired tag) is
+/// refused. This is the triager's one write path: it never edits a sheet.
+///
+/// Every refusal comes before the first write. When the line moves to another sheet, that
+/// sheet is written first, so a failed second write leaves the line on both sheets (seen,
+/// filed twice) and never on neither.
+pub(crate) fn file(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    how: &Filing,
+    lane: Lane,
+) -> Result<i32> {
+    let Some((src, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet, so no inbox");
+    };
+    let Some((rest, line)) = sheet::take_inbox(&content, |l| inbox_hit(pick, l)) else {
+        eprintln!("no inbox line matches '{pick}' in {name}");
+        return Ok(1);
+    };
+    // The human's words, unless the line is filed as written.
+    let as_is = matches!(&how.how, How::Rows { texts, .. } if texts.is_empty());
+    let mut details = if as_is {
+        Vec::new()
+    } else {
+        vec![format!("was: {}", line.text)]
+    };
+    details.extend(line.details.iter().cloned());
+    let dest_name = how.project.as_deref().unwrap_or(name);
+    let dest_proj = projects::project_dir(p, dest_name)?;
+    let dest_dir = how.lane.dir(&dest_proj);
+    let dest = ensure_lane_sheet(p, &dest_proj, dest_name, how.lane)?;
+    let same = same_sheet(&src, &dest);
+    let base = if same {
+        rest.clone()
+    } else {
+        fs::read_to_string(&dest)?
+    };
+    let (new_dest, written) = match &how.how {
+        How::Rows {
+            texts,
+            to,
+            details: extra,
+        } => {
+            let texts = if as_is {
+                if !is_typed(&line.text) {
+                    bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
+                }
+                std::slice::from_ref(&line.text)
+            } else {
+                &texts[..]
+            };
+            if let Some(bad) = texts.iter().find(|t| !is_typed(t)) {
+                bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
+            }
+            let to = to.as_deref().map(parse_to).transpose()?;
+            let cur = version_in(&dest_dir, &base);
+            if let Some(v) = to {
+                refuse_behind(v, cur)?;
+            }
+            details.extend(extra.iter().cloned());
+            let today = chrono::Local::now().date_naive();
+            let block = new_rows(
+                dest_name,
+                &dest_proj,
+                texts,
+                to,
+                cur,
+                &[filed_token(today)],
+                &details,
+            )?;
+            if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
+                bail!("{why}, so nothing was filed");
+            }
+            (md::insert_under_heading(&base, sheet::TASKS, &block), block)
+        }
+        How::Dup(id) => {
+            if !md::is_row_id(id) {
+                bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
+            }
+            let hit = Pick::Id(id.clone());
+            let Some(new) = md::append_details(&base, sheet::TASKS, |l| hit.hits(l), &details)
+            else {
+                bail!(
+                    "no open row {id} on {}, so nothing was filed",
+                    dest.display()
+                );
+            };
+            (new, details.iter().map(|d| format!("  {d}")).collect())
+        }
+    };
+    md::write_atomic(&dest, &new_dest)?;
+    if !same {
+        md::write_atomic(&src, &rest).map_err(|e| {
+            anyhow::anyhow!(
+                "{e}\n  the line was FILED on {} but is still in {}'s inbox - file it again with --dup",
+                dest.display(),
+                src.display()
+            )
+        })?;
+    }
+    log.info(
+        "ptask",
+        &format!(
+            "filed from {}'s inbox to {} ({dest_name})",
+            name,
+            dest.display()
+        ),
+    );
+    println!("filed {}", line.text);
+    for l in &written {
+        println!("  {l}");
+    }
+    Ok(0)
+}
+
 /// The next row id for a project: `<code>-<n>`, `n` one past the highest `id:<code>-N` on any
 /// `.md` file under its dir (both lanes, playtest and `versions/`). A dropped row keeps its
 /// id on the sheet and an archived one keeps it in `versions/`, so an id is never reused.
 pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
+    format!("{code}-{}", next_id_n(proj_dir, code))
+}
+
+/// The number half of [`next_id`].
+fn next_id_n(proj_dir: &Path, code: &str) -> u64 {
     let needle = format!("id:{code}-");
     let mut max = 0u64;
     let mut stack = vec![proj_dir.to_path_buf()];
@@ -349,7 +652,7 @@ pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
             }
         }
     }
-    format!("{code}-{}", max + 1)
+    max + 1
 }
 
 /// `notes ptask <name> move <query> --to vX.Y.Z` - aim the first open task matching `<query>`
@@ -474,11 +777,7 @@ fn transfer(
     pick: &Pick,
     to: Option<&str>,
 ) -> Result<Option<Lifted>> {
-    let same = match (src_sheet.canonicalize(), dest_sheet.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => src_sheet == dest_sheet,
-    };
-    if same {
+    if same_sheet(src_sheet, dest_sheet) {
         bail!(
             "source and destination are the same sheet - use `move --to <VERSION>` to change release"
         );
@@ -1586,5 +1885,211 @@ Version: v0.0.1
             "text is not an id"
         );
         assert!(matches!(w("inotify"), Pick::Words(_)));
+    }
+}
+
+#[cfg(test)]
+mod inbox_tests {
+    use super::*;
+
+    struct Vault {
+        root: PathBuf,
+        p: Profile,
+        log: Logger,
+    }
+
+    impl Drop for Vault {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl Vault {
+        fn sheet(&self) -> PathBuf {
+            self.root.join("projects/scratch/README.md")
+        }
+        fn read(&self) -> String {
+            fs::read_to_string(self.sheet()).unwrap()
+        }
+    }
+
+    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
+    fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
+        let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("projects/scratch");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "# scratch\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!("# scratch\nVersion: v0.1.0\n\n## Inbox\n{inbox}\n## Tasks\n{tasks}"),
+        )
+        .unwrap();
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        p.projects = Some(root.join("projects"));
+        let log = Logger::new(root.join(".state/log"), false);
+        Vault { root, p, log }
+    }
+
+    fn rows(texts: &[&str]) -> Filing {
+        Filing {
+            project: None,
+            lane: Lane::Human,
+            how: How::Rows {
+                texts: texts.iter().map(|t| t.to_string()).collect(),
+                to: None,
+                details: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_raw_add_waits_in_the_inbox_and_a_typed_one_goes_to_tasks() {
+        let v = vault("add", "", "");
+        add(
+            &v.p,
+            &v.log,
+            "scratch",
+            "the gun sound is off",
+            &[],
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        add(
+            &v.p,
+            &v.log,
+            "scratch",
+            "fix(audio): gun sound",
+            &[],
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let s = v.read();
+        let inbox = s.split("## Tasks").next().unwrap();
+        assert!(inbox.contains("- [ ] the gun sound is off\n"), "{s}");
+        let tasks = s.split("## Tasks").nth(1).unwrap();
+        assert!(tasks.contains("fix(audio): gun sound"), "{s}");
+        assert!(!tasks.contains("the gun sound is off"), "{s}");
+        assert!(
+            inbox_flag(&v.p).is_file(),
+            "the inbox write wakes the triager"
+        );
+    }
+
+    #[test]
+    fn filing_moves_the_line_to_a_typed_row_that_keeps_the_human_words() {
+        let v = vault(
+            "file",
+            "- the gun sound is off\n  - since the top-down patch\n",
+            "",
+        );
+        let pick = Pick::new("gun sound", false).unwrap();
+        let rc = file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["fix(audio): gun sound #high"]),
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        let (inbox, tasks) = s.split_once("## Tasks").unwrap();
+        assert!(
+            !inbox.contains("gun sound"),
+            "the line left the inbox:\n{s}"
+        );
+        let row = tasks
+            .lines()
+            .find(|l| l.contains("fix(audio): gun sound"))
+            .unwrap();
+        assert!(row.contains("#high"), "{row}");
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(
+            filed_on(row),
+            Some(today.format("%Y-%m-%d").to_string()),
+            "{row}"
+        );
+        assert!(
+            tasks.contains("  was: the gun sound is off\n  - since the top-down patch\n"),
+            "{s}"
+        );
+        // the line is gone, so a second run finds nothing to file
+        assert_eq!(
+            file(
+                &v.p,
+                &v.log,
+                "scratch",
+                &pick,
+                &rows(&["fix(audio): gun sound"]),
+                Lane::Human
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_untyped_filing_and_a_dup_of_no_row_write_nothing() {
+        let v = vault(
+            "refuse",
+            "- the gun sound is off\n",
+            "- [ ] fix(ui): menu <!-- id:sc-4 -->\n",
+        );
+        let before = v.read();
+        let pick = Pick::new("gun", false).unwrap();
+        assert!(file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["gun sound"]),
+            Lane::Human
+        )
+        .is_err());
+        // a retired priority, and no --as on a line that is not typed yet
+        for bad in [&["fix(audio): gun sound #medium"][..], &[]] {
+            assert!(file(&v.p, &v.log, "scratch", &pick, &rows(bad), Lane::Human).is_err());
+        }
+        let dup = |id: &str| Filing {
+            project: None,
+            lane: Lane::Human,
+            how: How::Dup(id.into()),
+        };
+        assert!(file(&v.p, &v.log, "scratch", &pick, &dup("sc-9"), Lane::Human).is_err());
+        assert_eq!(v.read(), before);
+
+        file(&v.p, &v.log, "scratch", &pick, &dup("sc-4"), Lane::Human).unwrap();
+        let s = v.read();
+        assert!(
+            s.contains("- [ ] fix(ui): menu <!-- id:sc-4 -->\n  was: the gun sound is off\n"),
+            "{s}"
+        );
+        assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn a_typed_line_with_no_as_is_filed_as_written() {
+        let v = vault(
+            "asis",
+            "- [ ] chore(build): drop the old cache #low
+",
+            "",
+        );
+        let pick = Pick::new("old cache", false).unwrap();
+        file(&v.p, &v.log, "scratch", &pick, &rows(&[]), Lane::Human).unwrap();
+        let s = v.read();
+        let (inbox, tasks) = s.split_once("## Tasks").unwrap();
+        assert!(!inbox.contains("old cache"), "{s}");
+        let row = tasks.lines().find(|l| l.contains("old cache")).unwrap();
+        assert!(
+            row.starts_with("- [ ] chore(build): drop the old cache"),
+            "{row}"
+        );
+        assert!(filed_on(row).is_some(), "{row}");
+        assert!(!s.contains("was:"), "{s}");
     }
 }

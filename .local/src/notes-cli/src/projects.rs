@@ -866,7 +866,7 @@ fn row_title(line: &str) -> String {
 /// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer and to carrying an id,
 /// rolled up to one line each, since a board written before the grammar fails it on most rows. The human sheet
 /// takes free text: triage rewrites it.
-fn row_findings(content: &str, agent: bool) -> Vec<String> {
+pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
     let (mut unprefixed, mut long, mut no_id) = (Vec::new(), Vec::new(), Vec::new());
     for (i, line) in content.lines().enumerate() {
