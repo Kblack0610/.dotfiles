@@ -30,6 +30,7 @@ use crate::daily;
 use crate::logging::Logger;
 use crate::md;
 use crate::project_tasks;
+use crate::sheet::{self, V};
 use anyhow::{Context, Result};
 use chrono::Local;
 use std::fs;
@@ -426,6 +427,133 @@ fn agent_rows_for_dir(proj: &str, dir: &std::path::Path) -> Vec<String> {
     open.iter()
         .map(|line| format!("{proj}\t{}", render(line)))
         .collect()
+}
+
+/// The rows of one sheet that belong to the release `want`, open and closed, when the sheet's
+/// open version is `cur`. The same rule `notes projects --release` gates on and freezes by: a
+/// row's release is its tag when that is ahead of `cur`, else `cur`, so an untagged row is in
+/// the open version and a closed row aimed later waits for its own release.
+fn release_rows(content: &str, cur: Option<V>, want: V) -> (Vec<String>, Vec<String>) {
+    let ours = |l: &str| sheet::version_of(l, cur) == Some(want);
+    let open = sheet::open_rows(content)
+        .into_iter()
+        .filter(|(_, l)| ours(l))
+        .map(|(_, l)| l.trim_end().to_string())
+        .collect();
+    let lines: Vec<&str> = content.lines().collect();
+    let span = md::section_span(&lines, sheet::TASKS).unwrap_or(0..0);
+    let closed = project_tasks::done_rows(content)
+        .into_iter()
+        .filter(|r| span.contains(&r.start) && ours(lines[r.start]))
+        .map(|r| lines[r.start].trim_end().to_string())
+        .collect();
+    (open, closed)
+}
+
+/// The top-level closed rows of a frozen note, or none when it does not exist.
+fn frozen_rows(note: &std::path::Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(note) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    project_tasks::done_rows(&content)
+        .into_iter()
+        .map(|r| lines[r.start].trim_end().to_string())
+        .collect()
+}
+
+/// Rows with the lane each came from.
+type LaneRows = Vec<(Lane, String)>;
+
+/// One project's release `want` across both lanes: the live sheets' rows aimed at it, plus the
+/// rows already frozen into `versions/<want>.md` or archived into `agent/versions/<want>.md`.
+/// Each row carries its lane. Empty when nothing on this project is aimed at `want`.
+fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
+    let ver = crate::projects::fmt_version(want);
+    let (mut open, mut closed) = (Vec::new(), Vec::new());
+    for lane in [Lane::Human, Lane::Agent] {
+        let ldir = lane.dir(dir);
+        if let Some(c) = project_tasks::task_sheet(&ldir).and_then(|s| fs::read_to_string(s).ok()) {
+            let (o, d) = release_rows(&c, project_tasks::open_version_for(&ldir), want);
+            open.extend(o.into_iter().map(|l| (lane, l)));
+            closed.extend(d.into_iter().map(|l| (lane, l)));
+        }
+        let note = match lane {
+            Lane::Human => dir.join("versions").join(format!("{ver}.md")),
+            Lane::Agent => crate::projects::agent_note_path(dir, &ver),
+        };
+        closed.extend(frozen_rows(&note).into_iter().map(|l| (lane, l)));
+    }
+    (open, closed)
+}
+
+/// One release-view row: the board's text, then the lane when it is the agents', then the
+/// PRs on a closed row or `dropped` for one closed undelivered.
+fn release_line(lane: Lane, line: &str) -> String {
+    let mark = if md::is_checked(line) { 'x' } else { ' ' };
+    let mut s = format!("- [{mark}] {}", render(line));
+    if lane == Lane::Agent {
+        s.push_str(" (agent)");
+    }
+    if md::is_dropped(line) {
+        s.push_str(" (dropped)");
+    } else {
+        let prs = md::pr_refs(line);
+        if !prs.is_empty() {
+            s.push_str(&format!(" (pr:{})", prs.join(" pr:")));
+        }
+    }
+    s
+}
+
+/// `notes board --version vX.Y.Z [--project N]...` - print every row aimed at that release,
+/// across every profile and both lanes: open rows first, then closed ones with their PRs.
+///
+/// READ-ONLY, like `--agent`: a release is a filter over the one list, so this is a view of the
+/// sheets and the frozen notes, never a store. It shows what `notes projects --release` would
+/// gate on (the open rows) and freeze (the closed ones). Exits 0 with no rows.
+pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
+    let want = crate::projects::parse_version(version.trim())
+        .ok_or_else(|| anyhow::anyhow!("--version wants vX.Y.Z, got '{version}'"))?;
+    let ver = crate::projects::fmt_version(want);
+    let wanted: Vec<String> = projects.iter().map(|p| p.to_lowercase()).collect();
+    let mut out = String::new();
+    let (mut n_open, mut n_closed) = (0, 0);
+    for name in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&name)) else {
+            continue;
+        };
+        for (proj, summary) in daily::discover_project_dirs(&p) {
+            if !wanted.is_empty() && !wanted.contains(&proj.to_lowercase()) {
+                continue;
+            }
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
+            let (open, closed) = release_view(dir, want);
+            if open.is_empty() && closed.is_empty() {
+                continue;
+            }
+            n_open += open.len();
+            n_closed += closed.len();
+            out.push_str(&format!(
+                "\n## {name}/{proj} - {} open, {} closed\n",
+                open.len(),
+                closed.len()
+            ));
+            for (lane, l) in open.iter().chain(&closed) {
+                out.push_str(&release_line(*lane, l));
+                out.push('\n');
+            }
+        }
+    }
+    println!("# {ver} - {n_open} open, {n_closed} closed");
+    if out.is_empty() {
+        println!("\n_(no row is aimed at {ver})_");
+    } else {
+        print!("{out}");
+    }
+    Ok(0)
 }
 
 /// One open row of the task feed: `notes board --json`, the one shape every board UI reads.
@@ -835,6 +963,67 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("README.md"), body).unwrap();
         dir
+    }
+
+    const RELEASE_SHEET: &str =
+        "# demo\nVersion: v1.13.0\n\n## Inbox\n- [ ] raw words\n\n## Tasks\n\
+        - [ ] open now\n- [ ] open later #v1.14.0\n- [x] shipped now <!-- pr:7 -->\n  was: words\n\
+        - [x] shipped early #v1.14.0 <!-- pr:8 -->\n- [x] old tag counts as now #v1.12.0\n";
+
+    #[test]
+    fn a_release_view_is_the_rows_the_release_would_gate_on_and_freeze() {
+        let cur = Some((1, 13, 0));
+        let (open, closed) = release_rows(RELEASE_SHEET, cur, (1, 13, 0));
+        assert_eq!(open, vec!["- [ ] open now"]);
+        assert_eq!(
+            closed,
+            vec![
+                "- [x] shipped now <!-- pr:7 -->",
+                "- [x] old tag counts as now #v1.12.0"
+            ]
+        );
+        // A row aimed later is in ITS release, open or closed, and never in the open one.
+        let (open, closed) = release_rows(RELEASE_SHEET, cur, (1, 14, 0));
+        assert_eq!(open, vec!["- [ ] open later #v1.14.0"]);
+        assert_eq!(closed, vec!["- [x] shipped early #v1.14.0 <!-- pr:8 -->"]);
+        // NEGATIVE CONTROL: an inbox line is not on the board, and a release nothing is aimed
+        // at is empty.
+        let (open, closed) = release_rows(RELEASE_SHEET, cur, (2, 0, 0));
+        assert!(open.is_empty() && closed.is_empty());
+    }
+
+    #[test]
+    fn a_release_view_reads_both_lanes_and_the_frozen_notes() {
+        let dir = sheet("relview", RELEASE_SHEET);
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\n\n## Tasks\n- [ ] agent open\n- [x] agent stale <!-- dropped: superseded -->\n",
+        );
+        std::fs::create_dir_all(dir.join("versions")).unwrap();
+        std::fs::write(
+            dir.join("versions/v1.12.0.md"),
+            "# demo\nVersion: v1.12.0\n\n## Tasks\n- [x] frozen row <!-- pr:3 -->\n",
+        )
+        .unwrap();
+
+        let (open, closed) = release_view(&dir, (1, 13, 0));
+        let open: Vec<String> = open.iter().map(|(l, r)| release_line(*l, r)).collect();
+        let closed: Vec<String> = closed.iter().map(|(l, r)| release_line(*l, r)).collect();
+        assert_eq!(open, vec!["- [ ] open now", "- [ ] agent open (agent)"]);
+        assert_eq!(
+            closed,
+            vec![
+                "- [x] shipped now (pr:7)",
+                "- [x] old tag counts as now",
+                "- [x] agent stale (agent) (dropped)"
+            ]
+        );
+        // A frozen release is read from its note: the live sheet holds none of it.
+        let (open, closed) = release_view(&dir, (1, 12, 0));
+        assert!(open.is_empty());
+        let closed: Vec<String> = closed.iter().map(|(l, r)| release_line(*l, r)).collect();
+        assert_eq!(closed, vec!["- [x] frozen row (pr:3)"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Give a fixture project the agents' half, at the one path `Lane::Agent` resolves.
