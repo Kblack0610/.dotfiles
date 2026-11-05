@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
-  reviewed: 2026-11-03
+  reviewed: 2026-11-05
 ---
 
 # shepherd
@@ -49,6 +49,7 @@ What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue` and `nightly re
    - LANDED with no checklist (`phases_total` null, nothing merged yet): "No PR of yours has merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then queue them with `agent-queue add --plan <plan_file> --priority high` and run /wind-down auto."
    - STALLED `nightly red after PR #N`: "The default branch's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
    - STALLED `PR #N conflicts with the default branch`: "PR #N conflicts with the default branch. Merge origin/<base> into your branch and resolve it; never rebase a pushed branch. A green gate stays green: gate again only when the merge changed files your pick depends on (the repo's CI doc, for unity-core-playground docs/operations/ci.md rule 6). Then carry on with your plan."
+   - LANDED or STALLED with `background shell is not a gate or test`: "Your background shell is not a gate, a test or a subagent. If it waits for a time or a day of data, queue that step as an `at:` item whose task names your plan (agentctl `QUEUE.md`, `at:`), close this item, and wind down; otherwise stop the shell. Then carry on with your plan."
    - STALLED: name the fact and the next step from `one-shot`: dirty or ahead with no PR, open the PR; red CI, fix it; green and unmerged, merge it; work after a merge, land it as a new PR. End with "then carry on with your plan".
    The session reads its plan, groups the phases that share a branch, and queues them; the shepherd only says that the last one landed. `agent-queue add --plan` refuses a plan another active item already names, so a plan queued by hand or by a peer is never queued twice.
    - `overdue:` due line (a WORKING session, not mid-turn, whose open phase has run twice its `fleet-bench eta` estimate and at least an hour): read its pane first. If it is plainly moving (a gate running, output in the last minutes), `fleet-shepherd skip "<line>" "<what it is doing>"`. Otherwise: "Phase `<n>/<m>` `<name>` has been open `<age>`, about twice the `<expected>` a phase takes here. What is blocking it? If it is the human, ask in this conversation and file it with `agent-ask post`, then build the rest of the phase without that step; if it is too big, land what works and split the rest into the next phase; otherwise carry on and land it." Then run the ledger call the line prints. An `escalate overdue:` line goes to the human as step 4 says, with the ledger call it prints.
