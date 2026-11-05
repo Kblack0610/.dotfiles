@@ -43,6 +43,10 @@ pub struct WriteBody {
     proof: String,
     #[serde(default)]
     unverified: String,
+    #[serde(default)]
+    why: String,
+    #[serde(default)]
+    dup: String,
     /// A move's destination project; blank keeps the row on its own sheet.
     #[serde(default)]
     dest: String,
@@ -70,7 +74,11 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             unverified: some(b.unverified),
         },
         "start" => Verb::Start { raw: b.raw },
-        "rm" => Verb::Rm { raw: b.raw },
+        "drop" => Verb::Drop {
+            raw: b.raw,
+            why: some(b.why),
+            dup: some(b.dup),
+        },
         "move" => Verb::Move {
             raw: b.raw,
             project: some(b.dest),
@@ -82,7 +90,7 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             raw: b.raw,
             text: b.text,
         },
-        _ => return Err("the verb is add, done, start, rm, move, promote, demote or edit"),
+        _ => return Err("the verb is add, done, start, drop, move, promote, demote or edit"),
     };
     Ok(Write {
         profile: b.profile,
@@ -142,6 +150,25 @@ mod tests {
             r#"{"verb":"sweep","profile":"bnb","project":"demo","lane":"human"}"#
         ))
         .is_err());
+        assert!(
+            to_write(body(
+                r#"{"verb":"rm","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a"}"#
+            ))
+            .is_err(),
+            "rm is gone: a row is dropped with a reason"
+        );
+    }
+
+    #[test]
+    fn a_drop_carries_its_reason() {
+        let w = to_write(body(
+            r#"{"verb":"drop","profile":"bnb","project":"demo","lane":"human","raw":"- [ ] a","why":"stale","dup":" "}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--exact", "drop", "--why", "stale", "--", "- [ ] a"]
+        );
     }
 
     #[test]

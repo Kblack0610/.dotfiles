@@ -1,11 +1,11 @@
 //! The Board tab: every project's open rows as `notes board --json` prints them, read through
 //! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
 //! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
-//! row, `/` searches, `l` steps the lane filter, and a, s, d, D, x, m, e, + and - add, start,
-//! finish, remove, move (to a project or a wave), edit, and step a row a wave sooner or later
-//! through `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it
-//! hands the app a `tasks::Write`, and a row edited since the read fails in `notes` and the
-//! page re-reads.
+//! row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m, e, + and - add, start,
+//! finish, drop (with why, or the id it duplicates), move (to a project or a wave), edit, and
+//! step a row a wave sooner or later through `notes ptask --exact`; `o` opens the sheet at the
+//! row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
+//! the read fails in `notes` and the page re-reads.
 
 use std::collections::BTreeMap;
 
@@ -21,7 +21,7 @@ use crate::fmt::Palette;
 pub enum Ask {
     /// Not one of the tab's own keys.
     Pass,
-    /// Handled here: a move, a prompt keystroke, an armed or dropped confirm, a refusal.
+    /// Handled here: a move, a prompt keystroke, a refusal.
     Done,
     /// Run this write; it has passed `tasks::argv` already.
     Write(String, Write),
@@ -35,6 +35,8 @@ pub enum Kind {
     Add,
     Proof,
     Unverified,
+    Why,
+    Dup,
     Move,
     Edit,
 }
@@ -63,8 +65,6 @@ pub struct TaskView {
     pub search: String,
     pub lane: Option<&'static str>,
     pub prompt: Option<Prompt>,
-    /// The row a remove waits on y for.
-    pub confirm: Option<Row>,
     /// The write now running, as "done in bnb/demo".
     pub running: Option<String>,
     /// The last write's answer: notes' output, or why it failed.
@@ -137,7 +137,7 @@ impl TaskView {
                 "a Focus row is read-only here: notes focus owns the daily note"
             }
             Some(r) if r.lane == "playtest" && !playtest_ok => {
-                "a playtest check has no state, waves or edit: d done, x remove"
+                "a playtest check has no state, waves or edit: d done, x drop"
             }
             Some(r) => {
                 self.said = None;
@@ -222,6 +222,21 @@ impl TaskView {
                     },
                 )
             }
+            Kind::Why | Kind::Dup => {
+                let (why, dup) = if p.kind == Kind::Why {
+                    (Some(p.text), None)
+                } else {
+                    (None, Some(p.text))
+                };
+                (
+                    format!("drop in {at}"),
+                    Verb::Drop {
+                        raw: r.raw.clone(),
+                        why,
+                        dup,
+                    },
+                )
+            }
         };
         self.ask(label, on(&r, verb))
     }
@@ -248,20 +263,6 @@ impl TaskView {
                 _ => {}
             }
             return Ask::Done;
-        }
-        if self.confirm.is_some() {
-            return match k.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    let r = self.confirm.take().unwrap();
-                    let label = format!("rm in {}", group(&r));
-                    self.ask(label, on(&r, Verb::Rm { raw: r.raw.clone() }))
-                }
-                KeyCode::Char('n') | KeyCode::Esc => {
-                    self.confirm = None;
-                    Ask::Done
-                }
-                _ => Ask::Done,
-            };
         }
         let Some(f) = f else { return Ask::Pass };
         let last = shown(f, self).len().saturating_sub(1);
@@ -319,7 +320,12 @@ impl TaskView {
                     self.prompt = prompt(kind, Some(r));
                 }
             }
-            KeyCode::Char('x') => self.confirm = self.target(f, true),
+            KeyCode::Char(c @ ('x' | 'X')) => {
+                if let Some(r) = self.target(f, true) {
+                    let kind = if c == 'x' { Kind::Why } else { Kind::Dup };
+                    self.prompt = prompt(kind, Some(r));
+                }
+            }
             KeyCode::Char('m') => {
                 if let Some(r) = self.target(f, false) {
                     self.prompt = prompt(Kind::Move, Some(r));
@@ -466,20 +472,13 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             ),
             (Kind::Proof, _) => "Done, the proof (pr:N or a URL): ".into(),
             (Kind::Unverified, _) => "Done unverified, because: ".into(),
+            (Kind::Why, _) => "Drop it, because: ".into(),
+            (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
             (Kind::Move, _) => "Move to a project, a wave vX.Y.Z, or both: ".into(),
             (Kind::Edit, _) => "New text (tags stay): ".into(),
             (_, None) => String::new(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
-    } else if let Some(r) = &v.confirm {
-        Line::styled(
-            format!(
-                "Remove \"{}\" from {}?  y/Enter yes  n/Esc no",
-                r.text,
-                group(r)
-            ),
-            p.warn(),
-        )
     } else if let Some(r) = &v.running {
         Line::styled(format!("Running {r}..."), p.dim())
     } else {
@@ -619,7 +618,7 @@ pub(crate) mod tests {
             v.said
         );
         assert_eq!(v.key(key('x'), Some(&f), 10), Ask::Done);
-        assert!(v.confirm.is_none(), "no remove on a focus row");
+        assert!(v.prompt.is_none(), "no drop on a focus row");
 
         v.key(key('j'), Some(&f), 10);
         let Ask::Write(label, w) = v.key(key('s'), Some(&f), 10) else {
@@ -641,19 +640,38 @@ pub(crate) mod tests {
             ]
         );
 
+        // A drop says why, or names the row it duplicates; Esc drops nothing.
         v.key(key('x'), Some(&f), 10);
-        assert!(text(&f, &v, 160).contains("Remove \"fix the menu\" from bnb/demo?"));
-        assert_eq!(v.key(key('n'), Some(&f), 10), Ask::Done);
-        assert!(v.confirm.is_none());
-        v.key(key('x'), Some(&f), 10);
-        let Ask::Write(_, w) = v.key(key('y'), Some(&f), 10) else {
-            panic!("y removes")
-        };
+        assert!(text(&f, &v, 160).contains("Drop it, because: "));
         assert_eq!(
-            w.verb,
-            Verb::Rm {
-                raw: "- [ ] fix the menu".into()
-            }
+            enter(&mut v, &f),
+            Ask::Done,
+            "a drop with no reason is refused"
+        );
+        assert!(
+            matches!(&v.said, Some(Err(e)) if e.contains("why")),
+            "{:?}",
+            v.said
+        );
+        v.key(key('x'), Some(&f), 10);
+        assert_eq!(v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10), Ask::Done);
+        assert!(v.prompt.is_none());
+        v.key(key('X'), Some(&f), 10);
+        typed(&mut v, &f, "ar-142");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("a drop runs")
+        };
+        assert_eq!(label, "drop in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "drop",
+                "--dup",
+                "ar-142",
+                "--",
+                "- [ ] fix the menu"
+            ]
         );
 
         v.key(key('d'), Some(&f), 10);

@@ -80,11 +80,13 @@ pub enum Verb {
         unverified: Option<String>,
     },
     /// Toggles `[ ]` and `[/]`. Not on the playtest lane.
-    Start {
+    Start { raw: String },
+    /// Closes the row undelivered and keeps it: exactly one of `why` and `dup` (the id of the
+    /// row it duplicates); `notes` refuses a drop with no reason.
+    Drop {
         raw: String,
-    },
-    Rm {
-        raw: String,
+        why: Option<String>,
+        dup: Option<String>,
     },
     /// Onto another project's sheet (its current wave, or the existing wave `to`), or with no
     /// project into the wave `to` on its own sheet. At least one of the two.
@@ -94,18 +96,11 @@ pub enum Verb {
         to: Option<String>,
     },
     /// One wave sooner (clamped at the current wave).
-    Promote {
-        raw: String,
-    },
+    Promote { raw: String },
     /// One wave later (opens the next patch wave past the last).
-    Demote {
-        raw: String,
-    },
+    Demote { raw: String },
     /// New text; the checkbox, place and tags stay.
-    Edit {
-        raw: String,
-        text: String,
-    },
+    Edit { raw: String, text: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -223,14 +218,23 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             a.extend(["--exact".into(), "start".into()]);
             raw.clone()
         }
-        Verb::Rm { raw } => {
-            a.extend(["--exact".into(), "rm".into()]);
+        Verb::Drop { raw, why, dup } => {
+            let why = why.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let dup = dup.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            a.extend(["--exact".into(), "drop".into()]);
+            match (why, dup) {
+                (Some(y), None) if one_line(y) => a.extend(["--why".into(), y.into()]),
+                (None, Some(d)) if one_line(d) => a.extend(["--dup".into(), d.into()]),
+                _ => return Err("drop needs why, or the id of the row it duplicates".into()),
+            }
             raw.clone()
         }
         Verb::Move { .. } | Verb::Promote { .. } | Verb::Demote { .. } | Verb::Edit { .. }
             if playtest =>
         {
-            return Err("a playtest check has no waves and no edit: rm it and add it again".into());
+            return Err(
+                "a playtest check has no waves and no edit: drop it and add it again".into(),
+            );
         }
         Verb::Move { raw, project, to } => {
             let project = project.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -324,6 +328,14 @@ mod tests {
 
     const RAW: &str = "- [ ] ship it #urgent <!-- pr:3 -->";
 
+    fn drop(why: Option<&str>, dup: Option<&str>) -> Verb {
+        Verb::Drop {
+            raw: RAW.into(),
+            why: why.map(Into::into),
+            dup: dup.map(Into::into),
+        }
+    }
+
     #[test]
     fn the_feed_parses_and_a_focus_row_has_no_project() {
         let f = Fake {
@@ -408,8 +420,12 @@ mod tests {
             ["--exact", "done", "--unverified", "played it", "--", RAW]
         );
         assert_eq!(
-            argv(&w("human", Verb::Rm { raw: RAW.into() })).unwrap()[5..],
-            ["--exact", "rm", "--", RAW]
+            argv(&w("human", drop(Some("stale"), None))).unwrap()[5..],
+            ["--exact", "drop", "--why", "stale", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("human", drop(Some(" "), Some("ar-142")))).unwrap()[5..],
+            ["--exact", "drop", "--dup", "ar-142", "--", RAW]
         );
     }
 
@@ -463,11 +479,18 @@ mod tests {
 
     #[test]
     fn writes_refuse_what_notes_would_misread() {
-        let rm = |raw: &str| Verb::Rm { raw: raw.into() };
+        let gone = |raw: &str| Verb::Drop {
+            raw: raw.into(),
+            why: Some("stale".into()),
+            dup: None,
+        };
         let bad = [
-            w("focus", rm(RAW)),
-            w("human", rm("not a row")),
-            w("human", rm("- [ ] two\n- [ ] lines")),
+            w("human", drop(None, None)),
+            w("human", drop(Some("x"), Some("ar-1"))),
+            w("human", drop(Some("two\nlines"), None)),
+            w("focus", gone(RAW)),
+            w("human", gone("not a row")),
+            w("human", gone("- [ ] two\n- [ ] lines")),
             w("playtest", Verb::Start { raw: RAW.into() }),
             w("human", add("x", "normal", None, None)),
             w("human", add("  ", "high", None, None)),
@@ -539,11 +562,11 @@ mod tests {
             ),
             Write {
                 project: "--all".into(),
-                ..w("human", rm(RAW))
+                ..w("human", gone(RAW))
             },
             Write {
                 profile: "a b".into(),
-                ..w("human", rm(RAW))
+                ..w("human", gone(RAW))
             },
         ];
         for b in bad {
@@ -557,14 +580,14 @@ mod tests {
             out: Err("no open task matches"),
             calls: RefCell::default(),
         };
-        let e = apply(&f, &w("human", Verb::Rm { raw: RAW.into() })).unwrap_err();
+        let e = apply(&f, &w("human", drop(Some("stale"), None))).unwrap_err();
         assert_eq!(e, "no open task matches");
         assert_eq!(f.calls.borrow().len(), 1);
         let none = Fake {
             out: Ok(""),
             calls: RefCell::default(),
         };
-        assert!(apply(&none, &w("focus", Verb::Rm { raw: RAW.into() })).is_err());
+        assert!(apply(&none, &w("focus", drop(Some("stale"), None))).is_err());
         assert!(
             none.calls.borrow().is_empty(),
             "a refused write runs nothing"

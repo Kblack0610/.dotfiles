@@ -487,7 +487,7 @@ fn check_name(name: &str) -> Result<()> {
 /// while the project BOARD held 41 open items — 21 of them `#ai` — that nothing read.
 /// Scaffolding it into every new project only widened the trap, because a section that
 /// invites you to "type a want" and is then read by nothing is worse than no section.
-/// The `#ai` lane on the board is the channel now, and the preflight reads that.
+/// The agent lane of the project board is the channel now, and the preflight reads that.
 ///
 /// There is deliberately NO `<!-- canonical: -->` line. The directory name IS the
 /// project name: project-map.json is the sole registry and the sole minter, and
@@ -821,6 +821,22 @@ const TITLE_MAX: usize = 80;
 /// then one lowercase kebab word in parentheses, a colon and a space. Returns the title
 /// behind it.
 fn split_row_prefix(text: &str) -> Option<&str> {
+    row_prefix(text).map(|(_, _, title)| title)
+}
+
+/// A row line's `(type, area)`, when its text (hashtags aside) opens with a well-formed
+/// `type(area): `.
+pub(crate) fn row_type_area(line: &str) -> Option<(String, String)> {
+    let text = md::task_text(line);
+    let bare: Vec<&str> = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect();
+    row_prefix(&bare.join(" ")).map(|(ty, area, _)| (ty.to_string(), area.to_string()))
+}
+
+/// `(type, area, title)` of a well-formed `type(area): title`.
+fn row_prefix(text: &str) -> Option<(&str, &str, &str)> {
     let (ty, rest) = text.split_once('(')?;
     let (area, title) = rest.split_once("): ")?;
     let kebab = !area.is_empty()
@@ -828,7 +844,7 @@ fn split_row_prefix(text: &str) -> Option<&str> {
         && area
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    (ROW_TYPES.contains(&ty) && kebab && !title.trim().is_empty()).then_some(title)
+    (ROW_TYPES.contains(&ty) && kebab && !title.trim().is_empty()).then_some((ty, area, title))
 }
 
 /// A row's title as the grammar counts it: its text with the stamps, the hashtags and the
@@ -847,12 +863,12 @@ fn row_title(line: &str) -> String {
 /// priorities, a retired tag or `since:` stamp, a malformed tier, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
-/// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer, rolled up to one line
-/// each, since a board written before the grammar fails it on most rows. The human sheet
+/// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer and to carrying an id,
+/// rolled up to one line each, since a board written before the grammar fails it on most rows. The human sheet
 /// takes free text: triage rewrites it.
 fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
-    let (mut unprefixed, mut long) = (Vec::new(), Vec::new());
+    let (mut unprefixed, mut long, mut no_id) = (Vec::new(), Vec::new(), Vec::new());
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
@@ -904,6 +920,9 @@ fn row_findings(content: &str, agent: bool) -> Vec<String> {
             if row_title(line).chars().count() > TITLE_MAX {
                 long.push(n);
             }
+            if md::row_id(line).is_none() {
+                no_id.push(n);
+            }
         }
     }
     if let Some(first) = unprefixed.first() {
@@ -918,6 +937,12 @@ fn row_findings(content: &str, agent: bool) -> Vec<String> {
             long.len()
         ));
     }
+    if let Some(first) = no_id.first() {
+        out.push(format!(
+            "{} open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line {first})",
+            no_id.len()
+        ));
+    }
     out
 }
 
@@ -925,8 +950,11 @@ fn row_findings(content: &str, agent: bool) -> Vec<String> {
 /// `ptask done --proof`/`--unverified` stamps.
 fn has_proof(line: &str) -> bool {
     line.split("<!--").skip(1).any(|m| {
-        let m = m.split("-->").next().unwrap_or("").trim();
-        !m.is_empty() && !m.starts_with("carried") && !m.starts_with("ask:")
+        m.split("-->")
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .any(|t| !t.starts_with("carried") && !t.starts_with("ask:") && !t.starts_with("id:"))
     })
 }
 
@@ -4514,6 +4542,7 @@ mod move_layout_tests {
                 "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
                 "line 6: done with no proof marker (<!-- pr:N -->)",
                 "4 open row(s) not in `type(area): title` form (first: line 2)",
+                "4 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
             ]
         );
         assert_eq!(
@@ -4551,6 +4580,7 @@ mod move_layout_tests {
                 "line 10: since: is retired, the created stamp is #cMMDD",
                 "2 open row(s) not in `type(area): title` form (first: line 5)",
                 "1 open row(s) with a title over 80 chars, detail goes on an indented line (first: line 7)",
+                "7 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 4)",
             ]
         );
         assert_eq!(
@@ -4558,9 +4588,15 @@ mod move_layout_tests {
             4,
             "the human sheet takes free text: only the stamp checks apply"
         );
-        let clean =
-            "- [ ] fix(a-b2): fine #high <!-- id:x-1 -->\n- [ ] decide(ucp): pick one #low\n";
+        let clean = "- [ ] fix(a-b2): fine #high <!-- id:xy-1 -->\n\
+            - [ ] decide(ucp): pick one #low <!-- id:xy-2 -->\n\
+            - [x] fix(a): dropped #low <!-- id:xy-3 dropped: stale -->\n";
         assert_eq!(row_findings(clean, true), Vec::<String>::new());
+        // an id is not proof: a done row carrying only its id was closed by hand
+        assert_eq!(
+            row_findings("- [x] fix(a): b #low <!-- id:xy-4 -->\n", true),
+            ["line 1: done with no proof marker (<!-- pr:N -->)"]
+        );
     }
 
     #[test]

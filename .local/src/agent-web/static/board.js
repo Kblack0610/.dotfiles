@@ -13,8 +13,8 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  // `form` is the one row whose done, move or edit form is open: { k, kind }.
-  open: {}, pending: {}, form: null, controlsKey: "",
+  // `form` is the one row whose done, drop, move or edit form is open: { k, kind }.
+  open: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
@@ -71,12 +71,12 @@ function bRow(r, i) {
   const k = bKey(r);
   const focus = r.lane === "focus";
   const tags = [r.wave, r.target && "-> " + r.target, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
-    r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
+    r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
   const meta = [
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
-    r.since ? "since " + esc(r.since) : "",
+    r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (focus) {
@@ -84,11 +84,15 @@ function bRow(r, i) {
   } else if (bst.form && bst.form.k === k) {
     const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
     const kind = bst.form.kind;
-    if (kind === "done") {
+    if (kind === "done" || kind === "drop") {
+      // Every close says how: done with a proof or why it has none, or dropped with why or the
+      // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
+      const done = kind === "done";
+      const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
       acts = `<div class="opts">` +
-        `<select data-proofkind="${i}">${bOpt([["proof", "proof"], ["unverified", "unverified, because"]], "proof")}</select>` +
-        `<input data-forminput="${i}" placeholder="pr:123, a URL, or why it is unverified">` +
-        `<button class="btn sm primary" data-formgo="${i}">Mark done</button>` + cancel;
+        `<select data-formkind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
+        `<input data-forminput="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
+        `<button class="btn sm primary" data-formgo="${i}">${done ? "Mark done" : "Drop"}</button>` + cancel;
     } else if (kind === "move") {
       const names = [...new Set(bst.feed.projects.map((p) => p.project))].filter((p) => p !== r.project).sort();
       acts = `<div class="opts">` +
@@ -101,7 +105,7 @@ function bRow(r, i) {
         `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
     }
   } else {
-    // A playtest check has no waves and no edit: notes takes add, done and rm there.
+    // A playtest check has no waves and no edit: notes takes add, done and drop there.
     const waves = r.lane !== "playtest";
     acts = `<div class="opts">` +
       (waves && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
@@ -110,7 +114,7 @@ function bRow(r, i) {
         `<button class="btn sm" data-demote="${i}" title="one wave later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
         `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
-      `<button class="btn sm" data-rm="${i}">${bst.pending[k] ? "Click again to remove" : "Remove"}</button></div>`;
+      `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
@@ -222,7 +226,7 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  const r = rows[d.start || d.done || d.rm || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
   if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
@@ -231,9 +235,9 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One wave sooner." : "One wave later.");
     return;
   }
-  const opened = d.done || d.move || d.edit;
+  const opened = d.done || d.drop || d.move || d.edit;
   if (opened) {
-    bst.form = { k, kind: d.done ? "done" : d.move ? "move" : "edit" };
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : "edit" };
     drawBoardList();
     const i = $("board").querySelector(`[data-forminput="${opened}"]`);
     if (i) i.focus();
@@ -244,10 +248,11 @@ $("board").addEventListener("click", (e) => {
     const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
     const v = q("forminput").value.trim(), kind = bst.form.kind;
     let body, ok;
-    if (kind === "done") {
-      const how = q("proofkind").value;
-      if (!v) { bst.msg = how === "proof" ? "Give the proof (pr:N or a URL)." : "Say why it is unverified."; renderBoard(); return; }
-      body = { verb: "done", [how]: v }; ok = "Done.";
+    if (kind === "done" || kind === "drop") {
+      const how = q("formkind").value;
+      const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+      if (!v) { bst.msg = need[how]; renderBoard(); return; }
+      body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
     } else if (kind === "move") {
       const dest = q("movedest").value;
       if (!dest && !v) { bst.msg = "Pick a project, a wave, or both."; renderBoard(); return; }
@@ -258,14 +263,6 @@ $("board").addEventListener("click", (e) => {
     }
     bst.form = null;
     bWrite(Object.assign(body, bTarget(r)), ok);
-    return;
-  }
-  if (t.dataset.rm) {
-    // The page has no confirm dialog to lean on, so the button asks twice.
-    if (bst.pending[k]) { delete bst.pending[k]; bWrite(Object.assign({ verb: "rm" }, bTarget(r)), "Removed."); return; }
-    bst.pending[k] = true;
-    t.textContent = "Click again to remove";
-    setTimeout(() => { delete bst.pending[k]; }, 4000);
   }
 });
 $("board").addEventListener("change", (e) => {

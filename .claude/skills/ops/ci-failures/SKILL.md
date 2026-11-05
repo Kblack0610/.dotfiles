@@ -21,7 +21,7 @@ The repo's CI doc owns what a red means, quarantine, and stop-the-line (`docs/op
 - Before choosing which red to fix first, or when a red has no owner.
 - After a fix lands, to show its signature stopped.
 
-Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-hours - that is `ci-cost`. Running or gating playground tests is `playground-headless-test`.
+Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-hours - that is `ci-cost`. Running or gating playground tests is `playground-headless-test`. A whole cleanup pass (baseline, bandaids, causes, report) is `ci-cleanup`.
 
 ## Steps
 
