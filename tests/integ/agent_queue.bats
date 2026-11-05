@@ -479,18 +479,29 @@ EOF
 }
 
 # 2026-11-04: cancelling an item hand-started in a hub:dotfiles window killed hub:dotfiles and
-# every window in it. A hand start records its window, and cancel closes only that.
-@test "cancel of an item hand-started in a hub:dotfiles window closes its window, never the session" {
-  echo dotfiles > "$NOTES_FIXTURE/tmux.session"
-  TMUX="/tmp/tmux-1000/hub,1,0" TMUX_PANE=%31 STUB_WINDOW_ID=@9 \
-    "$AQ" add --project game --running --slug by-hand "by hand"
-  f="$(item running by-hand)"
-  [ "$(field "$f" session)" = hub:dotfiles ]
-  [ "$(field "$f" window)" = @9 ]
+# every window in it. A hand start now records no hub session, but items that name one exist.
+@test "cancel of an item recorded on a hub:dotfiles window closes its window, never the session" {
+  "$AQ" add --project game --running --session hub:dotfiles --slug by-hand "by hand"
+  "$AQ" set by-hand window=@9
   run "$AQ" cancel by-hand
   assert_success
   assert_output --partial "closed window @9 of dotfiles"
   run grep -- "tmux -L hub kill-window -t @9" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "a hand start on the agent world records its window, and cancel closes only that" {
+  echo game-agent-1 > "$NOTES_FIXTURE/tmux.session"
+  TMUX="/tmp/tmux-1000/lab,1,0" TMUX_PANE=%31 STUB_WINDOW_ID=@9 \
+    "$AQ" add --project game --running --slug by-hand "by hand"
+  f="$(item running by-hand)"
+  [ "$(field "$f" session)" = lab:game-agent-1 ]
+  [ "$(field "$f" window)" = @9 ]
+  run "$AQ" cancel by-hand
+  assert_success
+  run grep -- "tmux -L lab kill-window -t @9" "$NOTES_FIXTURE/calls.log"
   assert_success
   run grep -c kill-session "$NOTES_FIXTURE/calls.log"
   assert_output 0

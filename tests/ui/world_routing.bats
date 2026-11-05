@@ -92,10 +92,9 @@ in_pane() {
   "$REAL_TMUX" -L hub has-session -t =dotfiles || fail "cancel killed hub dotfiles"
 }
 
-@test "the same --running from a lab agent session records it, and cancel closes that session" {
+@test "the same --running from a lab agent session records that session and its window" {
   in_pane lab dotfiles-agent-1 "$(printf '%q' "$AQ") add --running --project dotfiles --slug hand 'by hand'"
   f="$(ls "$AGENT_QUEUE_DIR"/running/*-hand.md)"
   assert_equal "$(field "$f" session)" lab:dotfiles-agent-1
-  "$AQ" cancel hand
-  ! "$REAL_TMUX" -L lab has-session -t =dotfiles-agent-1 2>/dev/null || fail "cancel left the agent session"
+  [ -n "$(field "$f" window)" ] || fail "no window recorded"
 }
