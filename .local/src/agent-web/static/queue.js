@@ -4,6 +4,8 @@
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
+// The queue form's modes in the human's words; the option values stay what agent-queue takes.
+const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 const Q_SECTIONS = [
   ["waiting", "Waiting for you"],
   ["running", "Running"],
@@ -116,12 +118,12 @@ function qCompose() {
     `<textarea id="q-task" placeholder="The whole task, as you would type it to a session (Ctrl+Enter to queue)">${esc(d.task)}</textarea>` +
     `<div class="opts">` +
     `<select id="q-project"><option value="">project...</option>${opt(qst.projects, d.project)}</select>` +
-    `<select id="q-mode">${opt(["oneshot", "plan"], d.mode)}</select>` +
+    `<select id="q-mode">${["oneshot", "plan"].map((m) => `<option value="${m}"${m === d.mode ? " selected" : ""}>${Q_MODE[m]}</option>`).join("")}</select>` +
     `<select id="q-priority">${opt(Q_PRIORITIES, d.priority)}</select>` +
     `<input id="q-tags" placeholder="tags: night, at:02:30" value="${esc(d.tags)}">` +
-    `<button class="btn primary" id="q-add"${qst.busy ? " disabled" : ""}>${qst.busy ? "Queueing..." : "Queue"}</button>` +
+    `<button class="btn primary" id="q-add"${qst.busy ? " disabled" : ""}>${qst.busy ? "Adding..." : "Add to queue"}</button>` +
     `</div><div class="err" id="q-msg">${esc(qst.msg)}</div>` +
-    `<div class="muted qhint">oneshot runs /one-shot when capacity frees, by priority; plan starts a plan-mode session now. ` +
+    `<div class="muted qhint">Run to PR starts when a slot frees, by priority, and ends at a PR; Plan first opens a planning session now. ` +
     `night waits for the night window and stops at the PR; at:HH:MM waits for that time.</div></div>`;
 }
 

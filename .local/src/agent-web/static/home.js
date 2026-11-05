@@ -14,7 +14,7 @@ const refreshHome = coalesce(async () => {
   if (st.tab === "home") renderHome();
 });
 
-const NEED_KIND = { ask: "ask", session: "session", queue: "waiting", nightly: "nightly red", red: "red now" };
+const NEED_KIND = { ask: "question", session: "waiting on you", queue: "waiting", nightly: "nightly failed", red: "failing" };
 
 // A row with no answer card: what it is, how long it has waited, and a way to it.
 function needCard(n) {
@@ -68,7 +68,7 @@ function drawHome() {
     (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
   const needs = capped("home-needs", h.needs, needHtml, "older", "Nothing waits on you.");
   const running = capped("home-running", h.running, runningCard, "more", "Nothing running from the queue.");
-  const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(" &middot; ");
+  const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
   // The two summary lines lead, so a long Needs list never buries them.
   paint(el, errs + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
     sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) +
