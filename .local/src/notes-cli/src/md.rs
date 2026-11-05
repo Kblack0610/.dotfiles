@@ -638,6 +638,11 @@ fn created_date(tag: &str, today: NaiveDate) -> Option<NaiveDate> {
     tag_date(tag.strip_prefix('c')?, today)
 }
 
+/// The day a task line was created, from its first created tag (`#c1026`).
+pub fn created_on(line: &str, today: NaiveDate) -> Option<NaiveDate> {
+    created_date(&split_created(line).1?, today)
+}
+
 /// True when `tag` (bare, no `#`) is a created tag. `notes tags` skips these: one per day
 /// would bury every real tag, and `rg '#c10'` is the date search.
 pub fn is_created_tag(tag: &str) -> bool {
