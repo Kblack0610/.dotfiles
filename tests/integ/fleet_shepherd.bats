@@ -29,7 +29,7 @@ case "$*" in
 esac'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
-  stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session shepherd" ] && echo shepherd'
+  stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
   room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
   pick) echo "$HOME/.claude-best" ;;
@@ -64,7 +64,8 @@ outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
 # The pass the last run started, and what its launcher hands claude.
 pass_id() { cut -f1 "$FLEET_SHEPHERD_DIR/.pass"; }
 prompt() { bash "$FLEET_SHEPHERD_DIR/.pass.sh" && cat "$HOME/last-prompt"; }
-starts() { grep -c new-window "$HOME/tmux.calls"; }
+starts() { grep -cE 'new-window|respawn-pane' "$HOME/tmux.calls"; }
+windows() { grep -c new-window "$HOME/tmux.calls"; }
 # live <id> <status> [tmux field]: claude's session file for the pass, on a live pid (this test's).
 live() {
   mkdir -p "$HOME/.claude/sessions"
@@ -83,13 +84,11 @@ used() {
   mkdir -p "$HOME/.claude/projects/-home"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s"}]}}\n' "$2" >> "$HOME/.claude/projects/-home/$1.jsonl"
 }
-# aged <minutes> [file] [column]: that ledger's time (.pass or .aside; start, or 4 for handed) is
-# that long ago.
+# aged <minutes> [file] [column]: that ledger's time (.pass start by default) is that long ago.
 aged() {
   local f="$FLEET_SHEPHERD_DIR/${2:-.pass}"
   awk -F'\t' -v t="$(date +%s)" -v m="$1" -v c="${3:-2}" 'BEGIN { OFS = FS } { $c = int(t - m * 60); print }' "$f" > "$HOME/p" && mv "$HOME/p" "$f"
 }
-aside() { awk -F'\t' -v i="$1" -v c="$2" '$1 == i { print $c }' "$FLEET_SHEPHERD_DIR/.aside"; }
 ago() { echo $(( $(date +%s) - $1 * 60 )); }
 
 @test "due lists unnudged DONE/LANDED/STALLED, unescalated rows for the human, and nightly red" {
@@ -156,21 +155,21 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
 }
 
-@test "run starts a pass in session shepherd on the shepherd server, as the runner, and does not wait for it" {
+@test "run starts a pass in window shepherd of session hub on the hub server, as the runner, and does not wait for it" {
   doc "[$(row a DONE false false)]"
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
   local id; id="$(pass_id)"
   [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "no pass id recorded: '$id'"
-  grep -qxF -- "-L shepherd new-window -d -P -F #{pane_id} -t =shepherd: -n shepherd -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
+  grep -qxF -- "-L hub new-window -d -P -F #{pane_id} -t =hub: -n shepherd -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls" ||
     fail "$(cat "$HOME/tmux.calls")"
   assert_equal "$(cut -f4 "$FLEET_SHEPHERD_DIR/.pass")" %9
   # labelled shepherd, so fleet-sessions and the sessions feed list the pass but count it nowhere
   assert_equal "$(cat "$FLEET_SHEPHERD_DIR/labels/$id" | paste -sd' ')" 'manual shepherd'
-  grep -qxF -- 'trust shepherd %9 bypass permissions on' "$HOME/trust.calls"
-  grep -qE -- '^-L shepherd set-option -p -t %9 @shepherd [0-9]+$' "$HOME/tmux.calls"
-  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L shepherd attach -t shepherd:shepherd" "$HOME/agentctl.calls"
+  grep -qxF -- 'trust hub %9 bypass permissions on' "$HOME/trust.calls"
+  grep -qE -- '^-L hub set-option -p -t %9 @shepherd [0-9]+$' "$HOME/tmux.calls"
+  grep -qxF -- "report --name shepherd-test item=pass ${id:0:8}: tmux -L hub attach -t hub:shepherd" "$HOME/agentctl.calls"
   # the session exists, so nothing creates it, and a run never closes a session
   [ ! -e "$HOME/tmx.calls" ]
   run grep -c kill-session "$HOME/tmux.calls"
@@ -193,60 +192,56 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
 @test "no world declares the session: run stops and says so, and touches no tmux" {
   STUB_NO_WORLD=1 run "$REPO_ROOT/.local/bin/fleet-shepherd" run
   assert_failure
-  assert_output --partial 'no world declares session shepherd'
+  assert_output --partial 'no world declares session hub'
   [ ! -e "$HOME/tmux.calls" ] || fail "called tmux with no server: $(cat "$HOME/tmux.calls")"
 }
 
-@test "with no shepherd session the world's own tmx ensure makes it, and with no tmux server it gets a scope of its own" {
+@test "with no hub session the world's own tmx ensure makes it, and with no tmux server it gets a scope of its own" {
   doc "[$(row a DONE false false)]"
   STUB_TMUX_FAIL='has-session' run "$SH" run
   assert_success
-  assert_equal "$(cat "$HOME/tmx.calls")" 'ensure shepherd shepherd'
-  grep -q -- "-L shepherd new-window -d -P -F #{pane_id} -t =shepherd: -n shepherd -c $HOME/.dotfiles bash" "$HOME/tmux.calls"
+  assert_equal "$(cat "$HOME/tmx.calls")" 'ensure hub hub'
+  grep -q -- "-L hub new-window -d -P -F #{pane_id} -t =hub: -n shepherd -c $HOME/.dotfiles bash" "$HOME/tmux.calls"
   [ ! -e "$HOME/systemd-run.calls" ]
   rm "$FLEET_SHEPHERD_DIR/.pass"
   STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
   assert_success
-  assert_equal "$(cat "$HOME/systemd-run.calls")" '--user --scope --quiet tmx ensure shepherd shepherd'
+  assert_equal "$(cat "$HOME/systemd-run.calls")" '--user --scope --quiet tmx ensure hub hub'
 }
 
-@test "a pass recorded in a window of session dotfiles, with no pane on record, is found by the registry" {
+@test "a pass recorded in a window of session dotfiles, with no pane on record, is found by the registry and closed there" {
   doc "[$(row a DONE false false)]"
   local old=11111111-2222-3333-4444-555555555555
   printf '%s\t%s\t1\tdotfiles:shepherd\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
-  live "$old" busy 'dotfiles:@298.%304'
-  said "$old" human "$(ago 3)" '/fleet-lead pass'
-  said "$old" human "$(ago 1)" 'what is agent-9 doing?'
+  live "$old" idle 'dotfiles:@298.%304'
   export STUB_PANES='%304\tdotfiles\t4\tshepherd\t0\n'
   run "$SH" run
-  assert_success
-  # handed over: it stays, named as handed over, and its pane is on record now
-  grep -qxF -- "-L shepherd rename-window -t %304 handed-${old:0:8}" "$HOME/tmux.calls"
-  assert_equal "$(aside "$old" 5)" %304
-  live "$old" idle 'dotfiles:@298.%304'
-  run "$SH" run
-  grep -qxF -- '-L shepherd kill-pane -t %304' "$HOME/tmux.calls"
-  [ ! -s "$FLEET_SHEPHERD_DIR/.aside" ]
-  run grep -cE 'kill-session|kill-window' "$HOME/tmux.calls"
+  # outside the pass session its pane closes, and the new pass gets the one pass window
+  grep -qxF -- '-L hub kill-pane -t %304' "$HOME/tmux.calls"
+  assert_equal "$(windows)" 1
+  run grep -cE 'kill-session|kill-window|respawn-pane' "$HOME/tmux.calls"
   assert_output 0
 }
 
-@test "a registry entry naming another server's pane is not the pass; a shell left in a gone pass's pane is not closed" {
+@test "a registry entry naming another server's pane is not the pass; a shell left in a gone pass's pane is not touched" {
   doc "[$(row a DONE false false)]"
   local old=11111111-2222-3333-4444-555555555555
   printf '%s\t%s\t1\t%%7\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
   # pane ids are per server: %7 here is someone else's, in session work
   live "$old" idle 'other:@1.%7'
   STUB_PANES='%7\twork\t1\tvim\t0\n' run "$SH" run
-  # the recorded pane is the fallback, and it matched, so the idle pass closes there
-  grep -qxF -- '-L shepherd kill-pane -t %7' "$HOME/tmux.calls"
+  # the recorded pane is the fallback, and it matched outside the pass session, so it closes there
+  grep -qxF -- '-L hub kill-pane -t %7' "$HOME/tmux.calls"
   : > "$HOME/tmux.calls"; gone
-  STUB_PANES='%9\tshepherd\t2\tshepherd\t0\n' run "$SH" run
-  run grep -c kill-pane "$HOME/tmux.calls"
+  STUB_PANES='%9\thub\t2\tshepherd\t0\n' run "$SH" run
+  run grep -cE 'kill-pane|respawn-pane' "$HOME/tmux.calls"
   assert_output 0
-  # Negative control: the same pane dead is the pass's leftover, and it goes.
-  STUB_PANES='%9\tshepherd\t2\tshepherd\t1\n' run "$SH" run
-  grep -qxF -- '-L shepherd kill-pane -t %9' "$HOME/tmux.calls"
+  assert_equal "$(windows)" 1
+  # Negative control: the same pane dead is the pass's leftover, and the next pass takes it.
+  : > "$HOME/tmux.calls"
+  STUB_PANES='%9\thub\t2\tshepherd\t1\n' run "$SH" run
+  grep -qxF -- "-L hub respawn-pane -k -t %9 -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls"
+  assert_equal "$(windows)" 0
 }
 
 @test "the pass prompt names only the role skills its due lines need" {
@@ -283,14 +278,13 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_equal "$(starts)" 1
   assert_equal "$(pass_id)" "$id"
   assert_equal "$(cut -d' ' -f3 "$FLEET_SHEPHERD_DIR/.lease")" "$id"
-  [ ! -s "$FLEET_SHEPHERD_DIR/.aside" ]
   [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
   assert_equal "$(outcome)" WORKED
   live "$id" waiting
   run "$SH" run
   assert_success
   assert_equal "$(starts)" 1
-  # Negative control: past the working limit it is set aside, closed STALLED, and replaced.
+  # Negative control: past the working limit it is closed STALLED and replaced.
   aged 31
   run "$SH" run
   assert_failure
@@ -301,8 +295,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_output --partial "STALLED pass ${id:0:8}: 1 due, 31m, still waiting, replaced"
   grep -qP "\t$id\tSTALLED\tpass ${id:0:8}: 1 due, 31m, still waiting, replaced$" "$FLEET_SHEPHERD_DIR/passes.tsv" ||
     fail "$(cat "$FLEET_SHEPHERD_DIR/passes.tsv")"
-  assert_equal "$(aside "$id" 1)" ''
-  grep -qxF -- "report --name shepherd-test item=pass ${new:0:8}: tmux -L shepherd attach -t shepherd:shepherd" "$HOME/agentctl.calls"
+  grep -qxF -- "report --name shepherd-test item=pass ${new:0:8}: tmux -L hub attach -t hub:shepherd" "$HOME/agentctl.calls"
 }
 
 @test "a lease holder mid-sweep that the runner did not start stands the run down too; idle, it does not" {
@@ -320,16 +313,13 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_equal "$(cut -d' ' -f1,3 "$FLEET_SHEPHERD_DIR/.lease")" "runner $(pass_id)"
 }
 
-@test "only the pass holding the lease acts: the handed-over pass's lease, skip, log, mark and escalate refuse" {
+@test "only the pass holding the lease acts: the replaced pass's lease, skip, log, mark and escalate refuse" {
   doc "[$(row a DONE false false)]"
   "$SH" run
   local old new lease
   old="$(pass_id)"
-  live "$old" busy
-  said "$old" human "$(ago 3)" '/fleet-lead pass'
-  said "$old" human "$(ago 1)" 'hold on'
+  live "$old" idle
   run "$SH" run
-  assert_success
   new="$(pass_id)"
   [ "$new" != "$old" ]
   # the lease names the new pass from the moment it is started, before its claude registers
@@ -392,26 +382,45 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
 }
 
-@test "the human talking to a pass: the sweep still runs, and the new pass gets the conversation" {
+@test "the human talking to a pass: no new pass while it answers or is young; then the next takes its pane, with the conversation" {
   doc "[$(row a DONE false false)]"
   "$SH" run
   local id new; id="$(pass_id)"
-  said "$id" human "$(ago 40)" '/fleet-lead pass'
-  said "$id" assistant "$(ago 39)" 'swept the fleet'
-  said "$id" human "$(ago 20)" 'why is agent-47 stalled?'
-  said "$id" assistant "$(ago 19)" 'looking at it'
-  said "$id" assistant "$(ago 18)" 'it waits on CI'
+  said "$id" human "$(ago 20)" '/fleet-lead pass'
+  said "$id" assistant "$(ago 19)" 'swept the fleet'
+  said "$id" human "$(ago 10)" 'why is agent-47 stalled?'
+  said "$id" assistant "$(ago 9)" 'looking at it'
+  said "$id" assistant "$(ago 8)" 'it waits on CI'
   said "$id" human "$(ago 1)" 'and the NEEDS rows?'
-  # past the working limit, and busy: neither stops the run nor closes a conversation
-  live "$id" busy 'shepherd:@3.%5'
+  export STUB_PANES='%5\thub\t3\tshepherd\t0\n'
+  # answering, past the working limit: the run starts nothing and types nothing
+  live "$id" busy 'hub:@3.%5'
   aged 40
-  STUB_PANES='%5\tshepherd\t3\tshepherd\t0\n' STUB_CLIENTS='/dev/pts/7\n' run "$SH" run
+  : > "$HOME/tmux.calls"
+  run "$SH" run
   assert_success
-  refute_output --partial 'talking'
-  assert_equal "$(starts)" 2
-  assert_equal "$(outcome)" WORKED
+  assert_output --partial "the human is talking to pass ${id:0:8} (busy, 40m): no new pass"
+  assert_equal "$(pass_id)" "$id"
+  run grep -cE 'new-window|respawn-pane|send-keys|kill-' "$HOME/tmux.calls"
+  assert_output 0
+  # idle and young: still theirs
+  live "$id" idle 'hub:@3.%5'
+  aged 10
+  run "$SH" run
+  assert_output --partial "the human is talking to pass ${id:0:8} (idle, 10m): no new pass"
+  assert_equal "$(pass_id)" "$id"
+  # Negative control: idle past the limit, it is replaced in its own pane, never a new window.
+  echo '- told the human why agent-47 waits' >> "$FLEET_SHEPHERD_DIR/log.md"
+  aged 31
+  run "$SH" run
+  assert_success
   new="$(pass_id)"
   [ "$new" != "$id" ]
+  grep -qxF -- "-L hub respawn-pane -k -t %5 -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls"
+  run grep -cE 'new-window|send-keys -t %5 -l|rename-window|kill-' "$HOME/tmux.calls"
+  assert_output 0
+  assert_equal "$(cut -f4 "$FLEET_SHEPHERD_DIR/.pass")" %5
+  assert_equal "$(outcome)" WORKED
   local hand="$FLEET_SHEPHERD_DIR/.handover-$new"
   run prompt
   assert_line "Handover: $hand"
@@ -423,71 +432,17 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial 'looking at it'
   refute_output --partial '/fleet-lead pass'
   refute_output --partial 'swept the fleet'
-  # the conversation is left open: nothing killed, its window named as handed over, a line on the
-  # human's status bar, and the notice typed into its own pane, once
-  run grep -cE 'kill-|paste-buffer' "$HOME/tmux.calls"
-  assert_output 0
-  grep -qxF -- "-L shepherd rename-window -t %5 handed-${id:0:8}" "$HOME/tmux.calls"
-  grep -q -- '-L shepherd display-message -c /dev/pts/7 -d 15000 pass' "$HOME/tmux.calls"
-  grep -qF -- "-L shepherd send-keys -t %5 -l [fleet-shepherd handover] This conversation was handed over to pass ${new:0:8}, window shepherd of session shepherd" "$HOME/tmux.calls"
-  assert_equal "$(grep -c -- '-L shepherd send-keys -t %5 Enter' "$HOME/tmux.calls")" 1
-  # the notice and the pass's answer to it are not the human talking, and are not handed on
-  said "$id" human "$(( $(date +%s) + 1 ))" '[fleet-shepherd handover] This conversation was handed over'
-  said "$id" assistant "$(( $(date +%s) + 2 ))" 'noted, continuing there'
-  # What they say there next comes along at the next run, and only that.
-  live "$new" idle
-  echo '- moved a' >> "$FLEET_SHEPHERD_DIR/log.md"
-  aged 0.5 .aside 4
-  said "$id" human "$(( $(date +%s) - 10 ))" 'one more thing'
-  STUB_PANES='%5\tshepherd\t3\tshepherd-x\t0\n' run "$SH" run
-  assert_success
-  run cat "$FLEET_SHEPHERD_DIR/.handover-$(pass_id)"
-  assert_line 'one more thing'
-  refute_output --partial 'why is agent-47 stalled?'
-  refute_output --partial 'and the NEEDS rows?'
-  run cat "$FLEET_SHEPHERD_DIR/.handover-$(pass_id)"
-  refute_output --partial 'fleet-shepherd handover'
-  refute_output --partial 'continuing there'
-  # Idle with nothing new, it winds down; the next pass has no handover and its file goes with it.
-  live "$(pass_id)" idle
-  live "$id" idle 'shepherd:@3.%5'
-  said "$id" human "$(ago 1)" 'an old line, not after the handover'
+  # The next pass nobody talked to hands nothing on, and the handover file goes with its pass.
+  live "$new" idle 'hub:@3.%5'
   echo '- answered the human' >> "$FLEET_SHEPHERD_DIR/log.md"
-  STUB_PANES='%5\tshepherd\t3\tshepherd-x\t0\n' run "$SH" run
+  run "$SH" run
   assert_success
-  grep -qxF -- '-L shepherd kill-pane -t %5' "$HOME/tmux.calls"
-  assert_equal "$(aside "$id" 1)" ''
   run prompt
   refute_output --partial Handover
-  gone
-  run "$SH" run
   [ ! -e "$hand" ] || fail "the handover file outlived its pass"
 }
 
-@test "a handover notice in the very second the pass was handed over is no conversation, and the pass still winds down" {
-  doc "[$(row a DONE false false)]"
-  "$SH" run
-  local id h; id="$(pass_id)"
-  said "$id" human "$(ago 40)" '/fleet-lead pass'
-  said "$id" human "$(ago 2)" 'why is agent-47 stalled?'
-  live "$id" busy 'shepherd:@3.%5'
-  STUB_PANES='%5\tshepherd\t3\tshepherd\t0\n' run "$SH" run
-  assert_success
-  h="$(aside "$id" 4)"
-  [ -n "$h" ]
-  # tell_pane types the notice right after the handover, often within the same second
-  said "$id" human "$h" '[fleet-shepherd handover] This conversation was handed over'
-  said "$id" assistant "$(( h + 1 ))" 'noted, continuing there'
-  live "$(pass_id)" idle
-  live "$id" idle 'shepherd:@3.%5'
-  echo '- answered the human' >> "$FLEET_SHEPHERD_DIR/log.md"
-  STUB_PANES='%5\tshepherd\t3\tshepherd-x\t0\n' run "$SH" run
-  assert_success
-  grep -qxF -- '-L shepherd kill-pane -t %5' "$HOME/tmux.calls"
-  assert_equal "$(aside "$id" 1)" ''
-}
-
-@test "a pass nobody talked to hands nothing over; its own prompt is not the human, and a turn after it was set aside is" {
+@test "a pass nobody talked to hands nothing over; its own prompt is not the human, and a later turn is" {
   doc "[$(row a DONE false false)]"
   "$SH" run
   local id; id="$(pass_id)"
@@ -497,11 +452,12 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   run "$SH" run
   run prompt
   refute_output --partial Handover
-  # Negative control: the human reached the next pass mid-sweep, so it hands over.
+  # Negative control: the human reached the next pass, which is idle past the limit, so it hands over.
   id="$(pass_id)"
   said "$id" human "$(ago 2)" '/fleet-lead pass'
   said "$id" human "$(( $(date +%s) - 5 ))" 'are you there?'
-  live "$id" busy
+  live "$id" idle
+  aged 31
   run "$SH" run
   run prompt
   assert_line --partial 'Handover: '
@@ -562,12 +518,12 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   [ -e "$FLEET_SHEPHERD_DIR/.pass" ]
 }
 
-@test "passes lists the pass running now, then the scored ones newest first; open goes to its pane or resumes it" {
+@test "passes lists the pass running now, then the scored ones newest first; open goes to its pane, never starts one" {
   stub fleet-dispatch 'echo "$*" >> "$HOME/dispatch.calls"'
   run "$SH" passes
   assert_success
   assert_output --partial 'no passes yet'
-  run "$SH" open
+  STUB_TMUX_FAIL='has-session' run "$SH" open
   assert_failure 2
   assert_output --partial 'no pass running'
   doc "[$(row a DONE false false)]"
@@ -579,18 +535,22 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   run "$SH" passes
   assert_line --index 0 --regexp "^[0-9-]+ [0-9:]+	$id	now	1 due, gone$"
   assert_line --index 1 --regexp "	$first	WORKED	"
-  run "$SH" open nosuchpass
-  assert_failure 2
   # the pane there, in a window a resume named and another session: open goes to it, outside tmux
   STUB_PANES='%9\tdotfiles\t1\tcbf1b878\t0\n' TMUX='' run "$SH" open
   assert_success
-  grep -qxF -- '-L shepherd attach -t =dotfiles:1' "$HOME/tmux.calls"
-  # no pane left: the pass resumes in a session of its own, labelled shepherd so nothing counts it
-  STUB_TMUX_FAIL='has-session' TMUX='' run "$SH" open "${first:0:8}"
+  grep -qxF -- '-L hub attach -t =dotfiles:1' "$HOME/tmux.calls"
+  # no pane left: open goes to the pass session, and starts or resumes nothing
+  : > "$HOME/tmux.calls"
+  TMUX='' run "$SH" open
   assert_success
-  assert_equal "$(cat "$HOME/dispatch.calls")" "start --resume $first --session shepherd-${first:0:8} --cwd $HOME/.dotfiles --project dotfiles --server shepherd"
-  grep -qxF -- "-L shepherd attach -t =shepherd-${first:0:8}:" "$HOME/tmux.calls"
-  assert_equal "$(paste -sd' ' "$FLEET_SHEPHERD_DIR/labels/$first")" 'manual shepherd'
+  grep -qxF -- '-L hub attach -t =hub:' "$HOME/tmux.calls"
+  # and to the pass window when hub has one
+  STUB_PANE='hub\nshepherd\n' TMUX='' run "$SH" open
+  assert_success
+  grep -qxF -- '-L hub attach -t =hub:shepherd' "$HOME/tmux.calls"
+  [ ! -e "$HOME/dispatch.calls" ] || fail "open started a session: $(cat "$HOME/dispatch.calls")"
+  run grep -cE 'new-window|new-session|respawn-pane' "$HOME/tmux.calls"
+  assert_output 0
 }
 
 @test "a lease taken outside claude does not stand the runner down, and the lease moves to the new pass" {
@@ -1047,20 +1007,20 @@ idle_row() {
   printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '30 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   printf 'sid-2\t%s\t3\t%%9\n' "$(( $(date +%s) - 120 ))" > "$FLEET_SHEPHERD_DIR/.pass"
   live sid-2 busy
-  export STUB_PANES='%9\tshepherd\t2\tshepherd\t0\n'
+  export STUB_PANES='%9\thub\t2\tshepherd\t0\n'
   run "$SH" stats
   assert_success
   assert_equal "$(jq -c '[.pass_running, .pass_id, .pass_status, .attach, .last_pass_id, .last_verdict]' <<< "$output")" \
-    '[true,"sid-2","busy","tmux -L shepherd attach -t shepherd:2","p1","WORKED"]'
+    '[true,"sid-2","busy","tmux -L hub attach -t hub:2","p1","WORKED"]'
   age="$(jq .pass_age_s <<< "$output")"
   [ "$age" -ge 115 ] && [ "$age" -le 180 ] || fail "pass_age_s $age"
   assert_equal "$(jq .last_pass_age_s <<< "$output")" "$age"
   # a resume put it in a window of another session, under another name, in another pane
   live sid-2 busy 'dotfiles:@12.%31'
-  STUB_PANES='%9\tshepherd\t2\tzsh\t0\n%31\tdotfiles\t1\tsid-2\t0\n' run "$SH" stats
-  assert_equal "$(jq -c '[.pass_running, .pass_status, .attach]' <<< "$output")" '[true,"busy","tmux -L shepherd attach -t dotfiles:1"]'
+  STUB_PANES='%9\thub\t2\tzsh\t0\n%31\tdotfiles\t1\tsid-2\t0\n' run "$SH" stats
+  assert_equal "$(jq -c '[.pass_running, .pass_status, .attach]' <<< "$output")" '[true,"busy","tmux -L hub attach -t dotfiles:1"]'
   # Negative control: no pane anywhere, the recorded place is all there is.
   gone
   STUB_PANES='' run "$SH" stats
-  assert_equal "$(jq -c '[.pass_status, .attach]' <<< "$output")" '["gone","tmux -L shepherd attach -t shepherd:shepherd"]'
+  assert_equal "$(jq -c '[.pass_status, .attach]' <<< "$output")" '["gone","tmux -L hub attach -t hub:shepherd"]'
 }

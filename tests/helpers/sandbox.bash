@@ -45,13 +45,11 @@ export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AG
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
 # fixture data by copy (never by running the real tool).
 # sandbox_worlds -- the manifests the fleet scripts ask `tmux-world` about: agents on lab, the
-# human's dotfiles on hub, the shepherd's session on its own world. A test of routing itself
-# writes its own.
+# human's dotfiles on hub. A test of routing itself writes its own.
 sandbox_worlds() {
   mkdir -p "$HOME/.config/tmux-servers"
   echo '@agents' > "$HOME/.config/tmux-servers/lab.conf"
   echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
-  echo 'shepherd ~/.dotfiles' > "$HOME/.config/tmux-servers/shepherd.conf"
 }
 
 sandbox_init() {
