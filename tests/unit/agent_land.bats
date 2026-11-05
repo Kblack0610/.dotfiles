@@ -42,8 +42,12 @@ EOF
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1" in
-rev-list) cat "$NOTES_FIXTURE/behind" ;;
+rev-list)
+  # behind.seq: one count per call, popped as read; then behind
+  q="$NOTES_FIXTURE/behind.seq"
+  if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) echo 0123456789abcdef ;;
+merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
@@ -77,6 +81,32 @@ item() {
   assert_output --partial 'behind origin/main by 2, merge it and re-run'
   refute_output --partial 're-gate'
   run grep -c 'pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
+@test "behind after a green gate: base is merged in and pushed, and that head lands with no second checks wait" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_success
+  assert_line 'fetch: merged origin/main (1 behind) into the green head and pushed it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks' "$LOG"
+  assert_output 1
+  run grep -A3 '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_line --index 1 'git push -q'
+  assert_line --index 2 'git rev-parse HEAD'
+  assert_line --index 3 'gh pr merge 42 --squash --match-head-commit 0123456789abcdef'
+}
+
+@test "behind after a green gate with a conflicting merge: aborted, exit 3, nothing pushed or merged" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  : >"$NOTES_FIXTURE/merge.conflicts"
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_failure 3
+  assert_output --partial 'behind origin/main by 1 and merging it conflicts'
+  run grep -c '^git merge --abort$' "$LOG"
+  assert_output 1
+  run grep -c 'git push\|pr merge\|^notes' "$LOG"
   assert_output 0
 }
 
