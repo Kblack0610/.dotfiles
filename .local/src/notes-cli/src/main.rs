@@ -496,6 +496,10 @@ enum PtaskCmd {
         /// A detail line to add under the row, after its existing ones. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
+        /// `was:` detail line, and the old row's own tags (#ask, #tier/N, #size/x) carry over
+        #[arg(long, requires = "text")]
+        was: bool,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -919,6 +923,7 @@ fn main() -> Result<()> {
                     text,
                     append,
                     detail,
+                    was,
                     query,
                 }) => project_tasks::retext(
                     &prof,
@@ -928,6 +933,7 @@ fn main() -> Result<()> {
                     text.as_deref(),
                     append.as_deref(),
                     &detail,
+                    was,
                     lane,
                 )?,
                 Some(PtaskCmd::Promote { query }) => {
