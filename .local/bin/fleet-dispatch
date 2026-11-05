@@ -3,6 +3,7 @@
 #
 #   fleet-dispatch run [--dry-run]   one pass: start up to DISPATCH_PER_PASS queue items, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
+#   fleet-dispatch suggest [--json]  the Candidates: open rows of every alpha+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
@@ -93,8 +94,13 @@ logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "
 
 # --- facts ---------------------------------------------------------------------------
 
-# stage_of <sheet> -> draft|alpha|beta|prod, from the tag on its Version: line
-stage_of() { sed -n 's/^Version:.*#\(draft\|alpha\|beta\|prod\)\b.*/\1/p' "$1" 2>/dev/null | head -1; }
+# heads <profile> -> "<name>\t<stage>\t<prio>" per project, "-" for none: the stage and the
+# `#prio/` the human set (`notes projects --prio`), as notes reads them off the sheet. Read from the
+# CLI, never from the listing's path: for a bnb project that path is summary.md, not the sheet.
+heads() {
+  np "$1" projects --stats --json 2>/dev/null | jq -r --arg p "$1" '.[] | select($p == "" or .profile == $p)
+    | [.name, ((.stage // "") | if . == "" then "-" else . end), ((.prio // "") | if . == "" then "-" else . end)] | @tsv'
+}
 
 stage_rank() { case "$1" in prod) echo 0 ;; beta) echo 1 ;; *) echo 2 ;; esac; }
 
@@ -105,12 +111,6 @@ prio_rank() {
     *'#low'*) echo 3 ;;
     *) echo 2 ;;
   esac
-}
-
-# prio_of <sheet> -> focus|high|low from the `#prio/<word>` the human set in the sheet's head
-# (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
-prio_of() {
-  sed -n '/^## /q; p' "$1" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,
@@ -134,7 +134,7 @@ def rank_fields($today; $pprio):
   | . + {why: ([(if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
                  elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
-                (.worker // empty),
+                (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
@@ -317,24 +317,27 @@ judged_keys() {
 }
 
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today
+  local judged table prof name stage pprio repo lane key text rank worker tier line today
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
   for prof in $DISPATCH_PROFILES; do
-    while IFS=$'\t' read -r name sheet _v _; do
+    while IFS=$'\t' read -r name stage pprio; do
       [ -n "$name" ] || continue
-      stage=$(stage_of "$sheet")
       case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
-      pprio=$(prio_of "$sheet")
+      [ "$pprio" != - ] || pprio=''
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       for lane in human agent; do
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
-          read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text") || continue
+          if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
+            # suggest shows the agent rows no worker takes too, after the ones one does.
+            [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
+            rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
+          fi
           line=$(printf '%s' "$text" | sig)
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t'"$line" <<<"$judged" && continue
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t*' <<<"$judged" && continue
@@ -347,7 +350,7 @@ cmd_candidates() {
               worker: $worker, wrank: $wrank} | rank_fields($today; $pprio)'
         done < <(rows "$prof" "$name" "$lane")
       done
-    done < <(notes --profile "$prof" projects 2>/dev/null)
+    done < <(heads "$prof")
   done
 }
 
@@ -394,7 +397,31 @@ Copy project, lane and key exactly as given."
   printf '%s\n' "$verdicts" >> "$VERDICTS"
 }
 
-# latest verdict per row, as JSON lines
+# suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
+# of each alpha, beta or prod project with a repo, in every notes profile, in RANK_JQ order. Each
+# carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
+# `verdict`, the latest under this policy for this text, or `unjudged`; and `held`, whether an active
+# queue item holds its area. Display only: it never judges, claims or queues.
+cmd_suggest() {
+  local profs cands
+  profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[].profile] | unique | join(" ")' 2>/dev/null)
+  [ -n "$profs" ] || profs=$DISPATCH_PROFILES
+  cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
+  [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
+  jq -sc --arg sig "$(policy_sig)" --slurpfile v <(latest_verdicts) \
+    --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ"'
+    ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
+      | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase),
+             verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
+                       elif $d.policy != $sig or $d.line != $c.line then "unjudged" else $d.verdict end)}
+      | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null)})
+    | rank | .[]' <<<"$cands" |
+    if [ "${1:-}" = --json ]; then cat; else
+      jq -r '"\(if .auto then "auto" else "man " end)  \(.verdict | .[0:8] | . + " " * (8 - length))  \(.project) \(.key)\(if .held then " (area held)" else "" end)  [\(.why)]"'
+    fi
+}
+
 latest_verdicts() {
   [ -f "$VERDICTS" ] || return 0
   jq -sc 'group_by([.project, .lane, .key]) | map(last) | .[]' "$VERDICTS" 2>/dev/null
@@ -1510,10 +1537,9 @@ cmd_fill() {
 # take because of tier alone: no tier tag below 3 and none of DISPATCH_NIGHT_SKIP. `order` is the
 # row's place on its board, newest first; `rank` puts subtract-or-fix rows, then observer rows, first.
 night_rows() {
-  local judged="$1" name sheet stage repo key text body t line n
+  local judged="$1" name stage repo key text body t line n
   for name in $DISPATCH_NIGHT_PROJECTS; do
-    sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
-    stage=$(stage_of "$sheet")
+    stage=$(heads "$DISPATCH_NIGHT_PROFILE" | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -1591,6 +1617,7 @@ main() {
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
       return "$rc" ;;
     candidates) cmd_candidates ;;
+    suggest) shift; cmd_suggest "$@" ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;

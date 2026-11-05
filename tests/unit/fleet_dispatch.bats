@@ -63,12 +63,21 @@ stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
 #!/usr/bin/env bash
 F="$NOTES_FIXTURE"; printf 'notes %s\n' "$*" >> "$F/calls.log"
-args=(); lane=human; exact=0
+args=(); lane=human; exact=0; prof=personal
 while [ $# -gt 0 ]; do
-  case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
+  case "$1" in --profile) prof="$2"; shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
-  projects) cat "$F/projects" 2>/dev/null ;;
+  projects)
+    # --stats --json reads each project's sheet, as the CLI does; the listing gives its summary.
+    if [ "${args[1]}" = --stats ]; then
+      while IFS=$'\t' read -r n summary _; do
+        v=$(grep -m1 '^Version:' "${summary%.summary.md}.md")
+        jq -cn --arg n "$n" --arg p "$prof" --arg v "$v" '{name: $n, profile: $p,
+          stage: ($v | capture("#(?<s>draft|alpha|beta|prod)\\b").s // ""),
+          prio: ($v | capture("#prio/(?<s>focus|high|low)\\b").s // "")}'
+      done < "$F/projects" | jq -s .
+    else cat "$F/projects" 2>/dev/null; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in
@@ -94,10 +103,12 @@ EOF
   chmod +x "$SANDBOX/bin/notes"
 }
 
-# project <name> <stage> <repo-dir|-> : a sheet, a registry entry, and a projects line
+# project <name> <stage> <repo-dir|-> : a sheet, a registry entry, and a projects line. The line
+# names a summary with no Version: line, as bnb's do, so nothing may read the tags off that path.
 project() {
   printf 'Version: v1.0.0 #%s\n' "$2" > "$SANDBOX/sheets/$1.md"
-  printf '%s\t%s\t\tv1.0.0\n' "$1" "$SANDBOX/sheets/$1.md" >> "$NOTES_FIXTURE/projects"
+  printf '# %s\n' "$1" > "$SANDBOX/sheets/$1.summary.md"
+  printf '%s\t%s\t\tv1.0.0\n' "$1" "$SANDBOX/sheets/$1.summary.md" >> "$NOTES_FIXTURE/projects"
   local m='{"trackers":{},"paths":{}}'; [ -f "$DISPATCH_PROJECT_MAP" ] && m=$(cat "$DISPATCH_PROJECT_MAP")
   if [ "$3" = - ]; then
     jq --arg p "$1" '.trackers[$p] = {repo: null}' <<<"$m" > "$DISPATCH_PROJECT_MAP"
@@ -362,12 +373,56 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" theask
 }
 
+@test "suggest: every open agent row and each human row a worker takes, auto or not, with its verdict and held area; it never judges" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  project app alpha "$SANDBOX/repos/app"
+  mkdir -p "$SANDBOX/repos/sketch"
+  project sketch draft "$SANDBOX/repos/sketch"
+  row game agent 'game judged' "- [ ] game judged #high $T"
+  row game agent 'game busy' "- [ ] game busy $T"
+  row game agent 'game new' "- [ ] game new $T"
+  row app agent 'app row' "- [ ] app row #high $T"
+  row game human 'game human' "- [ ] game human $T"
+  row app human 'app human' "- [ ] app human $T"
+  row sketch agent 'sketch row' "- [ ] sketch row $T"
+  verdict game agent 'game judged' dispatch
+  verdict game agent 'game busy' dispatch S 1 combat
+  started_item other lab:other-1 run combat
+  run cmd_suggest
+  assert_success
+  assert_output "auto  dispatch  game game judged  [fleet, #high, beta]
+auto  unjudged  game game human  [fleet, beta]
+auto  dispatch  game game busy (area held)  [fleet, beta]
+auto  unjudged  game game new  [fleet, beta]
+man   unjudged  app app row  [#high, alpha]"
+  refute_output --partial 'app human'
+  refute_output --partial 'sketch'
+  run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A changed policy makes every cached verdict stale, so the list says unjudged, not dispatch.
+  echo 'policy v2' > "$DISPATCH_POLICY"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.verdict)/\(.auto)"' <<<"$output" | paste -sd' ')" \
+    'game judged=unjudged/true game human=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
+}
+
+@test "suggest: says so when no project has an open agent row" {
+  project game beta "$SANDBOX/repos/game"
+  run cmd_suggest
+  assert_success
+  assert_output 'suggest: no open agent row'
+  run cmd_suggest --json
+  assert_success
+  assert_output ''
+}
+
 @test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game.md"
   project app alpha "$SANDBOX/repos/app"
-  printf '## Inbox\n- [ ] a row that says #prio/high is not the head\n' >> "$SANDBOX/sheets/app.md"
   row app agent 'app urgent' "- [ ] app urgent #urgent $T"
   row app agent 'app due' "- [ ] app due #due1105 $T"
   row game agent 'game low' "- [ ] game low #low $T #c1101"
