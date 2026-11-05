@@ -96,8 +96,9 @@ pub struct Session {
     pub parked: bool,
     pub attached: bool,
     pub account: String,
-    /// The agent-queue slug whose item runs in this tmux session.
-    pub item: Option<String>,
+    /// The slugs of the agent-queue items in this pane, in queue order: those that record its
+    /// window, and those that record only its tmux session, which can share it with others.
+    pub items: Vec<String>,
     /// The digit that accepts the plan, while its pane shows the plan dialog.
     pub approve_key: Option<char>,
 }
@@ -114,7 +115,7 @@ impl From<&chooser::Agent> for Session {
             parked: a.parked,
             attached: a.attached,
             account: a.account.clone(),
-            item: None,
+            items: Vec::new(),
             approve_key: None,
         }
     }
@@ -164,7 +165,7 @@ pub fn available(s: &Session) -> Vec<Action> {
     if s.approve_key.is_some() {
         v.insert(0, Action::ApprovePlan);
     }
-    if s.item.is_some() {
+    if !s.items.is_empty() {
         v.push(Action::Cancel);
     }
     v
@@ -295,7 +296,7 @@ pub fn plan(
             v
         }
         Action::Cancel => {
-            let slug = s.item.as_deref().unwrap_or_default();
+            let slug = s.items.last().map_or("", String::as_str);
             if !is_word(slug) {
                 return Err(format!("{target} has a queue slug this will not pass on"));
             }
@@ -347,8 +348,8 @@ pub fn execute(steps: &[Step], runner: &dyn Runner) -> Result<String, String> {
     Ok(said.join("\n"))
 }
 
-/// Name each session's queue item: the item whose `session` names that tmux session, once it
-/// has started. `session` is `<server>:<tmux-session>`; agent-queue writes nothing else.
+/// Name each session's queue items: those whose `session` names that tmux session, once they
+/// have started. `session` is `<server>:<tmux-session>`; agent-queue writes nothing else.
 pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
     for i in items {
         let Some(sess) = i.session.as_deref().filter(|s| !s.is_empty()) else {
@@ -360,9 +361,11 @@ pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
         let Some((srv, sess)) = sess.split_once(':') else {
             continue;
         };
+        let window = i.window.as_deref().filter(|w| !w.is_empty());
         for s in sessions.iter_mut() {
-            if s.server == srv && s.tmux_session == sess && !s.parked {
-                s.item = Some(i.slug.clone());
+            let here = s.server == srv && s.tmux_session == sess && !s.parked;
+            if here && window.is_none_or(|w| w == s.window_id) {
+                s.items.push(i.slug.clone());
             }
         }
     }
@@ -470,7 +473,7 @@ mod tests {
     #[test]
     fn every_action_runs_the_command_that_owns_it() {
         let mut queued = live();
-        queued.item = Some("fix-the-thing".into());
+        queued.items = vec!["fix-the-thing".into()];
         assert_eq!(
             run(Action::Interrupt, &live(), None),
             [
@@ -559,7 +562,7 @@ mod tests {
         let err = plan(Action::Cancel, &live().target, None, &[live()], &accounts()).unwrap_err();
         assert!(err.contains("not started by a queue item"), "{err}");
         let mut bad = live();
-        bad.item = Some("--all".into());
+        bad.items = vec!["--all".into()];
         assert!(plan(
             Action::Cancel,
             &bad.target,
@@ -593,9 +596,12 @@ mod tests {
                  {\"slug\":\"e\",\"session\":\"dotfiles-agent-3\",\"state\":\"running\"}\n",
             ),
         );
-        assert_eq!(s[0].item.as_deref(), Some("a"));
-        assert_eq!(s[1].item, None, "a parked row is unparked, not cancelled");
-        assert_eq!(s[2].item, None, "same name on another server");
+        assert_eq!(s[0].items, ["a"]);
+        assert!(
+            s[1].items.is_empty(),
+            "a parked row is unparked, not cancelled"
+        );
+        assert!(s[2].items.is_empty(), "same name on another server");
 
         with_items(
             &mut s,
@@ -603,12 +609,38 @@ mod tests {
                 "{\"slug\":\"d\",\"session\":\"hub:dotfiles-agent-3\",\"state\":\"running\"}\n",
             ),
         );
-        assert_eq!(
-            s[2].item.as_deref(),
-            Some("d"),
-            "<server>:<session> names its server"
+        assert_eq!(s[2].items, ["d"], "<server>:<session> names its server");
+        assert_eq!(s[0].items, ["a"]);
+    }
+
+    #[test]
+    fn a_shared_session_lists_every_item_and_cancel_takes_the_last() {
+        let mut s = vec![live()];
+        with_items(
+            &mut s,
+            &queue::parse(
+                "{\"slug\":\"a\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"waiting\"}\n\
+                 {\"slug\":\"b\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"running\"}\n",
+            ),
         );
-        assert_eq!(s[0].item.as_deref(), Some("a"));
+        assert_eq!(s[0].items, ["a", "b"]);
+        assert_eq!(s[0].items.last().map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn an_item_that_recorded_its_window_joins_only_that_pane() {
+        let mut other = live();
+        other.window_id = "@8".into();
+        let mut s = vec![live(), other];
+        with_items(
+            &mut s,
+            &queue::parse(
+                "{\"slug\":\"a\",\"session\":\"lab:dotfiles-agent-3\",\"window\":\"@8\",\"state\":\"waiting\"}\n\
+                 {\"slug\":\"b\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"waiting\"}\n",
+            ),
+        );
+        assert_eq!(s[0].items, ["b"], "no window recorded: every pane of the session");
+        assert_eq!(s[1].items, ["a", "b"]);
     }
 
     #[test]
