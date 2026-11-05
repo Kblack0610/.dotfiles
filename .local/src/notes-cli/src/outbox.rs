@@ -30,6 +30,19 @@ fn read(p: &Profile) -> Result<String> {
     }
 }
 
+/// Write the skeleton when the outbox does not exist yet, so a file opened from the daily note's
+/// link already has its `## Outbox` and a line typed under it is seen by the sweep.
+pub(crate) fn ensure(p: &Profile) -> Result<()> {
+    if p.outbox.exists() {
+        return Ok(());
+    }
+    if let Some(dir) = p.outbox.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    md::write_atomic(&p.outbox, &skeleton())?;
+    Ok(())
+}
+
 /// The lines waiting in the outbox, oldest first.
 pub(crate) fn lines(p: &Profile) -> Result<Vec<sheet::InboxLine>> {
     Ok(sheet::lines_in(&read(p)?, HEADING))
@@ -158,6 +171,20 @@ mod tests {
             project_tasks::inbox_flag(&p).exists(),
             "an add must wake the sweep"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_makes_a_file_a_typed_line_is_read_from_and_keeps_an_existing_one() {
+        let (root, p, _log) = vault("ensure");
+        ensure(&p).unwrap();
+        let mut s = fs::read_to_string(&p.outbox).unwrap();
+        s.push_str("- typed by hand\n");
+        fs::write(&p.outbox, &s).unwrap();
+        ensure(&p).unwrap();
+        let got = lines(&p).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "typed by hand");
         let _ = fs::remove_dir_all(&root);
     }
 
