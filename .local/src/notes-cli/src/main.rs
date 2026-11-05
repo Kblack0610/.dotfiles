@@ -33,6 +33,7 @@ mod project_tasks;
 mod projects;
 mod registry;
 mod sheet;
+mod show;
 mod status;
 mod summarize;
 mod sweep;
@@ -76,6 +77,15 @@ enum Cmd {
     Path {
         #[arg(default_value = "daily")]
         target: String,
+    },
+    /// One note for a viewer: daily (default), daily:YYYY-MM-DD, or a [[wikilink]] target,
+    /// resolved like the editor's gf and kept inside the notes
+    Show {
+        #[arg(default_value = "daily")]
+        target: String,
+        /// One JSON object: path, rel, title, exists, date, prev, next, markdown, links
+        #[arg(long)]
+        json: bool,
     },
     /// Link today's ref files into today's note's `## Refs` section
     LinkRefs,
@@ -810,6 +820,7 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Show { target, json } => show::run(&prof, &target, json)?,
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
             Some(path) => {
                 println!("{}", path.display());

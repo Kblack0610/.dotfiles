@@ -26,7 +26,7 @@ use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
-use crate::{board, day, fleet, fleettab, hometab};
+use crate::{board, day, fleet, fleettab, focustab, hometab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -43,12 +43,13 @@ pub enum Tab {
     Today,
     History,
     Fleet,
+    Focus,
     Queue,
     Projects,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Home,
         Tab::Queue,
         // Jobs' slot and key 3; `jobs`, `ci` and `machines` resolve here and 4 and 5 open its CI
@@ -59,6 +60,9 @@ impl Tab {
         Tab::Today,
         Tab::History,
         Tab::Fleet,
+        // No digit is free until the layout renumbers once (dashboards.md): Tab, BackTab and
+        // `hub --tab focus` reach it.
+        Tab::Focus,
         // Board's slot and key 0 until the layout renumbers the digits once (dashboards.md).
         Tab::Projects,
     ];
@@ -70,6 +74,7 @@ impl Tab {
             Tab::Today => "Today",
             Tab::History => "History",
             Tab::Fleet => "Fleet",
+            Tab::Focus => "Focus",
             Tab::Queue => "Queue",
             Tab::Projects => "Projects",
         }
@@ -99,9 +104,13 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Sessions | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Projects => {
-                None
-            }
+            Tab::Sessions
+            | Tab::Today
+            | Tab::History
+            | Tab::Fleet
+            | Tab::Focus
+            | Tab::Queue
+            | Tab::Projects => None,
         }
     }
 }
@@ -189,6 +198,8 @@ pub enum Msg {
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
+    /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
+    Focus(Box<Result<hub_core::focus::View, String>>),
     Log(u64, Result<String, String>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
@@ -245,6 +256,10 @@ pub struct App {
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
+    /// The Focus tab's note; None until the first read.
+    pub focus: Option<Result<hub_core::focus::View, String>>,
+    /// The day the Focus tab shows (`YYYY-MM-DD`); None is today.
+    pub focus_day: Option<String>,
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
     pub qv: QueueView,
@@ -283,6 +298,7 @@ pub struct App {
     forecast_read: Read,
     ranked_read: Read,
     fleet_read: Read,
+    focus_read: Read,
     sessions_read: Read,
     queue_read: Read,
     tasks_read: Read,
@@ -311,6 +327,8 @@ impl App {
             forecast: None,
             ranked: None,
             fleet: None,
+            focus: None,
+            focus_day: None,
             queue: None,
             qv: QueueView::default(),
             queue_dir: queue_dir(),
@@ -335,6 +353,7 @@ impl App {
             forecast_read: Read::default(),
             ranked_read: Read::default(),
             fleet_read: Read::default(),
+            focus_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
             tasks_read: Read::default(),
@@ -404,6 +423,25 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
+            });
+        }
+    }
+
+    /// Nothing here watches the vault (`notes` is its writer), so the Focus tab reads its day
+    /// on entering, on a day key, on `r` and on the tick while it is shown.
+    pub fn read_focus(&mut self) {
+        if self.focus_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            let target = self
+                .focus_day
+                .as_ref()
+                .map_or("daily".to_string(), |d| format!("daily:{d}"));
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Focus(Box::new(hub_core::focus::read(
+                    runner.as_ref(),
+                    &target,
+                ))));
             });
         }
     }
@@ -599,6 +637,9 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
                 }
+                if self.tab == Tab::Focus {
+                    self.read_focus();
+                }
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
@@ -639,6 +680,12 @@ impl App {
                 self.fleet = Some(*f);
                 if self.fleet_read.done() {
                     self.read_fleet();
+                }
+            }
+            Msg::Focus(v) => {
+                self.focus = Some(*v);
+                if self.focus_read.done() {
+                    self.read_focus();
                 }
             }
             Msg::Infra(i) => {
@@ -741,6 +788,9 @@ impl App {
         if self.tab == Tab::Today && self.today_key(k) {
             return;
         }
+        if self.tab == Tab::Focus && self.focus_key(k) {
+            return;
+        }
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
@@ -782,6 +832,9 @@ impl App {
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
+                }
+                if self.tab == Tab::Focus {
+                    self.read_focus();
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
@@ -847,6 +900,9 @@ impl App {
         }
         if t == Tab::Fleet {
             self.read_fleet();
+        }
+        if t == Tab::Focus {
+            self.read_focus();
         }
         if t == Tab::Queue {
             self.read_queue();
@@ -1011,6 +1067,30 @@ impl App {
             KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
             _ => return false,
         }
+        true
+    }
+
+    /// Focus's own keys: `[` and `]` step to the day before or after that has a note, `t`
+    /// goes back to today.
+    fn focus_key(&mut self, k: KeyEvent) -> bool {
+        let note = match &self.focus {
+            Some(Ok(v)) => Some(&v.note),
+            _ => None,
+        };
+        let day = match k.code {
+            KeyCode::Char('[') => note.and_then(|n| n.prev.clone()),
+            KeyCode::Char(']') => note.and_then(|n| n.next.clone()),
+            KeyCode::Char('t') if self.focus_day.is_some() => None,
+            _ => return false,
+        };
+        if k.code != KeyCode::Char('t') && day.is_none() {
+            return true;
+        }
+        // The next day with a note may be today's, which is the live view.
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        self.focus_day = day.filter(|d| *d != today);
+        self.scroll = 0;
+        self.read_focus();
         true
     }
 
@@ -1256,7 +1336,11 @@ impl App {
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for t in Tab::ALL.iter() {
-            let label = format!(" {} {} ", t.digit(), t.title());
+            // A tab with no digit yet (Focus) shows its title alone.
+            let label = match t.digit() {
+                ' ' => format!(" {} ", t.title()),
+                d => format!(" {d} {} ", t.title()),
+            };
             s.push(if *t == self.tab {
                 Span::styled(label, self.p.sel())
             } else {
@@ -1320,6 +1404,10 @@ impl App {
             Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
+            Tab::Focus if self.focus_day.is_some() => {
+                "[ ] day  t today  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            }
+            Tab::Focus => "[ ] day  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into(),
             Tab::Today if self.day.is_some() => {
                 format!("[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit")
             }
@@ -1464,6 +1552,12 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
+            },
+            // A day's Focus lanes, read-only (focustab.rs).
+            (Tab::Focus, ..) => match &self.focus {
+                None => reading("the daily note"),
+                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                Some(Ok(v)) => (focustab::page(v, self.p, w), vec![]),
             },
             (Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Today, Some(b), _) => {
@@ -2031,7 +2125,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Infra") && bar.contains("9 Fleet  0 Projects"),
+            bar.contains("3 Infra") && bar.contains("9 Fleet  Focus  0 Projects"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -2223,6 +2317,54 @@ mod tests {
             assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
             at = i;
         }
+    }
+
+    #[test]
+    fn the_focus_tab_reads_today_then_steps_a_day_with_its_keys() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        assert_eq!(Tab::parse("focus"), Some(Tab::Focus));
+        a.handle(Msg::Tab(Tab::Focus, None));
+        // The fake answers nothing, so the read fails, and says why.
+        let first = rx.recv().unwrap();
+        a.handle(first);
+        assert!(
+            screen(&mut a, 100, 20).contains("notes show --json"),
+            "the error is drawn"
+        );
+        let note = hub_core::focus::Note {
+            exists: true,
+            date: Some("2026-11-05".into()),
+            prev: Some("2026-11-04".into()),
+            markdown: "## Focus\n### Urgent\n- [ ] fix the menu\n".into(),
+            ..Default::default()
+        };
+        a.handle(Msg::Focus(Box::new(Ok(hub_core::focus::build(note)))));
+        let s = screen(&mut a, 100, 20);
+        assert!(
+            s.contains("FOCUS 2026-11-05  1 open, 0 done") && s.contains("[ ] fix the menu"),
+            "{s}"
+        );
+        a.handle(key('['));
+        assert_eq!(a.focus_day.as_deref(), Some("2026-11-04"));
+        // Each answer is handled, as the loop would, so the read is free for the next key.
+        let m = rx.recv().unwrap();
+        a.handle(m);
+        a.handle(key('t'));
+        assert_eq!(a.focus_day, None);
+        let m = rx.recv().unwrap();
+        a.handle(m);
+        let ran = fake.0.lock().unwrap().clone();
+        assert_eq!(
+            ran,
+            [
+                "notes show --json -- daily",
+                "notes show --json -- daily:2026-11-04",
+                "notes show --json -- daily"
+            ]
+        );
     }
 
     #[test]

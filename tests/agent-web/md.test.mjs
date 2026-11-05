@@ -59,3 +59,26 @@ test("empty and null input render nothing", () => {
   assert.equal(md(""), "");
   assert.equal(md(null), "");
 });
+
+test("notes mode links a wikilink to its note and a #p: tag to its project, in-app", () => {
+  const n = { notes: true };
+  assert.equal(md("see [[status/inbox|Inbox]] and [[outbox]]", n),
+    '<p>see <a href="#focus/status/inbox" class="wl">Inbox</a> and <a href="#focus/outbox" class="wl">outbox</a></p>');
+  assert.equal(md("- [ ] fix it #p:notes-cockpit #urgent", n),
+    '<ul><li class="task"><input type="checkbox" disabled> fix it <a href="#projects/notes-cockpit" class="ptag">#p:notes-cockpit</a> #urgent</li></ul>');
+  // A label or target cannot break out of the attribute or the text.
+  assert.equal(md('[[a"b|<i>]]', n), '<p><a href="#focus/a%22b" class="wl">&lt;i&gt;</a></p>');
+});
+
+test("notes mode drops HTML comments and reads [/] as doing", () => {
+  const h = md("- [/] wiring\n<!-- rollup:start -->\n- [x] done", { notes: true });
+  assert.match(h, /<li class="task doing"><input type="checkbox" disabled> <span class="cchip running">doing<\/span> wiring<\/li>/);
+  assert.doesNotMatch(h, /rollup:start/);
+});
+
+test("outside notes mode, and inside code, wikilinks and #p: stay text; web links still open a new tab", () => {
+  assert.equal(md("[[outbox]] #p:x"), "<p>[[outbox]] #p:x</p>");
+  assert.equal(md("`#p:x [[y]]`", { notes: true }), "<p><code>#p:x [[y]]</code></p>");
+  assert.match(md("https://a.dev [[x]]", { notes: true }), /<a href="https:\/\/a\.dev" target="_blank" rel="noopener noreferrer">/);
+  assert.equal(md("<!-- kept -->"), "<p>&lt;!-- kept --&gt;</p>");
+});
