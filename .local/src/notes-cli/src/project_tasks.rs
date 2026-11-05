@@ -312,6 +312,9 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
+    if lane == Lane::Agent && crate::epics::is_epic(&format!("- [ ] {text}")) {
+        bail!("an epic belongs on the human sheet: add it without --agent");
+    }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !is_typed(text) {
@@ -436,6 +439,16 @@ fn new_rows(
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
+        );
+    }
+    if code.is_none()
+        && texts
+            .iter()
+            .any(|t| crate::epics::is_epic(&format!("- [ ] {}", t.trim())))
+    {
+        bail!(
+            "'{name}' has no `code` in project-map.json trackers, so an epic would get no id \
+             for its stories' #of/<id> to name"
         );
     }
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
@@ -1003,6 +1016,7 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    refuse_open_children(p, name, pick, lane, "finish")?;
     let on = done_token(chrono::Local::now().date_naive());
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
@@ -1116,12 +1130,46 @@ pub fn drop(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
+    refuse_open_children(p, name, pick, lane, "finish or drop")?;
     Ok(
         edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
             Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
         })?
         .0,
     )
+}
+
+/// Refuse to close the row `pick` names while a child of it (`#of/<its id>`) is open: a
+/// parent weighs what its children weigh, so closing it first would report open work as
+/// done. Checked before the edit, so a refusal writes nothing.
+fn refuse_open_children(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    verb: &str,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(id) = md::section_span(&lines, sheet::TASKS)
+        .and_then(|mut span| span.find(|&i| pick.hits(lines[i])))
+        .and_then(|i| md::row_id(lines[i]))
+    else {
+        return Ok(());
+    };
+    let dir = projects::project_dir(p, name)?;
+    let open = crate::epics::Index::of(&dir, projects::open_version(&dir)).open_children(&id);
+    if !open.is_empty() {
+        bail!(
+            "{id} has {} open child row(s); {verb} them first, or re-parent them with \
+             `ptask tag <id> --remove of/{id} --add of/<other>`:\n  {}",
+            open.len(),
+            open.join("\n  ")
+        );
+    }
+    Ok(())
 }
 
 /// The marker a `drop` stamps, or the error saying it needs a reason.
