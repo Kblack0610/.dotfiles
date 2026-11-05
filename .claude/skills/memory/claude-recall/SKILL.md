@@ -65,6 +65,7 @@ claude-recall stats --kind agent --by week --json              # agent use per I
 
 # Token use: API usage per response, and the tool output behind it
 claude-recall tool-output --by command --days 7                # which Bash commands fill the context
+claude-recall tool-output --by filetype --days 2               # which kinds of file reads fill it
 claude-recall tool-output --by method --since 2026-11-05       # token-filter trial, per method window
 ```
 
@@ -90,7 +91,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 - Totals: input, cache write, cache read and output tokens; context per response; tool result chars (about 4 chars a token).
 - `carried` weights each tool result by how many later responses re-read it before a compaction drops it. It is the cost a big result really has, since the whole context is re-read on every turn.
-- `--by tool|command` ranks what produces output (`command` is the Bash command head, past env, `cd` and wrappers, with git/gh subcommands; an `rtk` rewrite counts under the tool it ran). `--by method|day|week|project` splits usage over time; `method` reads the `token-filter` switch log (`.claude/hooks/README.md` "Token filter"), and `filtered` counts rewritten calls.
+- `--by tool|command` ranks what produces output (`command` is the Bash command head, past env, `cd` and wrappers, with git/gh subcommands; an `rtk` rewrite counts under the tool it ran). `--by filetype` ranks file reads (Read, and the file a `sed`/`cat`/`head`/`tail` call names) as `<class> .<ext>`, class one of code, prose, config, output, data, other; `--by kind` splits tool output between main sessions and subagents. `--by method|day|week|project` splits usage over time; `method` reads the `token-filter` switch log (`.claude/hooks/README.md` "Token filter"), and `filtered` counts rewritten calls.
 - `--since`/`--until` take a date (a UTC day) or an ISO time (an exact window, any offset).
 - `long_runs` (JSON) and the text footer list the stretches between compactions that ran `--long-turns` (default 150) responses or more, top 10 by carried cost.
 
