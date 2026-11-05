@@ -132,6 +132,7 @@ jq -nc \
         usage_partial: $usage.usage_partial,
         tokens:        $usage.tokens,
         models:        $usage.models,
+        cost_by_model: $usage.cost_by_model,
         duration_s:    $usage.duration_s
       } end)' \
   >> "$TMP" 2>/dev/null || { rm -f "$TMP"; exit 0; }
