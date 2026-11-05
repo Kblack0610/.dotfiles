@@ -112,10 +112,9 @@ project_repo_path() {
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
 #
-# The registry owns each project's wiring (lab, type, path, branch, root, releaseEpic,
-# tagGlob, prFilter); a `<!-- cockpit: -->` marker in its summary.md used to. Own entry
-# only: `inherits` merges tracker config (labels, epics), and a field like `tagGlob`
-# copied from a parent would name the parent's tags.
+# The registry owns each project's wiring (lab, type, path, branch, tagGlob, prFilter);
+# a `<!-- cockpit: -->` marker in its summary.md used to. Own entry only, never the
+# `repo`'s: a `tagGlob` read from the parent would name the parent's tags.
 project_field() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0

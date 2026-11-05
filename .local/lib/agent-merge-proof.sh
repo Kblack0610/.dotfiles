@@ -151,7 +151,7 @@ merge_proof() {
   #
   # Trailing (from the Go): without it FAC-18 is satisfied by a commit naming
   # FAC-180. Leading (ours, NOT in the Go): their refs are always PREFIX-N, but
-  # ours can be a bare vikunja id, and a bare `559` with only a trailing
+  # ours can be a bare integer, and a bare `559` with only a trailing
   # boundary is satisfied by `1559`. A ticket proved done by an unrelated
   # ticket's commit is exactly the class of lie this file exists to stop.
   pat="(^|[^0-9A-Za-z_-])${ref}([^0-9]|\$)"
@@ -170,10 +170,7 @@ merge_proof() {
 # merge_proof_readback LABEL CMD... — prove the tracker write actually persisted.
 #
 # Herdforge's reason, which we have no cause to doubt: "board APIs are known to
-# report success on writes that did not persist." Our own vikunja backend is
-# worse than that — tb_done swallows the label and bucket writes with `|| true`
-# and never checks the `done:true` POST at all, so a 200-with-error-body is
-# indistinguishable from success.
+# report success on writes that did not persist."
 #
 # CMD must print the ticket's post-write state on stdout. Anything other than
 # `done` (case/space insensitive) is a failure, INCLUDING an empty answer: a

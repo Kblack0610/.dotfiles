@@ -79,10 +79,10 @@ dated prose
 @test "a marker containing > is still stripped whole" {
   # The cockpit marker carries `branch=develop`, and /<!--[^>]*-->/ stops at the first `>`,
   # leaking the tail of the marker onto the pane. Hence the index()-based scan.
-  run mdr '<!-- cockpit: vikunja=3 pathfilter=apps/x branch=develop -->
+  run mdr '<!-- cockpit: tracker=3 pathfilter=apps/x branch=develop -->
 real text'
   assert_success
-  refute_output --partial 'vikunja=3'
+  refute_output --partial 'tracker=3'
   refute_output --partial '\-\->'
   assert_output --partial 'real text'
 }
@@ -227,18 +227,18 @@ text'
 }
 
 @test "a link collapses to its text" {
-  run mdr 'board [vikunja](https://vikunja.example/projects/3) and on'
+  run mdr 'board [forgejo](https://forgejo.example/projects/3) and on'
   assert_success
-  assert_output --partial 'board vikunja and on'
+  assert_output --partial 'board forgejo and on'
   refute_output --partial 'https'
 }
 
 @test "emphasis markers do not survive" {
-  run mdr '**In progress** (Vikunja):
+  run mdr '**In progress** (open PRs):
 _a dated aside_'
   assert_success
   refute_output --partial '**'
-  assert_output --partial 'In progress (Vikunja):'
+  assert_output --partial 'In progress (open PRs):'
   assert_output --partial 'a dated aside'
 }
 
