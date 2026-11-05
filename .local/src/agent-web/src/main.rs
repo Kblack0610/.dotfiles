@@ -16,6 +16,7 @@ mod board;
 mod cloud;
 mod feed;
 mod fleet;
+mod focus;
 mod infra;
 mod jobs;
 mod projects;
@@ -114,6 +115,7 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
+        .route("/api/focus", get(focus::get))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
