@@ -14,10 +14,11 @@ agent-web's asks list.
 
 An ask file is the only record that something waits on the human, for attended sessions as much as headless runs. The sessions and boards around it work like this:
 
-- An attended session asks in its conversation and runs `agent-ask post` in the same turn. `post` prints the ask in the session's pane and does not page: the shepherd's "N need you" page and the briefing cover pending asks.
+- An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - When the session ends, the SessionEnd hook (`ask-settle.sh stale`) marks what is left stale.
+- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) opens its card in a tmux popup, and `Prefix y` reopens it, or lists every pending ask when the session you are on asks nothing. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
 
@@ -29,6 +30,15 @@ So the first-class flow is: post-now -> exit -> answer-later -> consumed by the 
 `resume` command, which `agent-ask answer` hands to `ask-resume`. `post --wait` (block until answered, print the answer) is a
 SECONDARY convenience for an attended agent only; producers never use it.
 
+## A question is one line
+
+`post` refuses a question that does not end in `?` or runs past `AGENT_ASK_QUESTION_MAX` (150) characters, because the question is what the human reads first on every surface. The detail goes elsewhere:
+
+- `--context "<why, what it blocks>"` is the `why:` line under the question.
+- `--options 'now=ship it today|later=wait for review'` gives each option a meaning. The slugs alone stay in `options:`, which agent-web, settle matching and the judge read; the meanings go to `option_notes:`, pipe-aligned with them.
+
+`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. `agent-ask pick [<id>]` is the card with keys: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `q` or Esc closes. Answering or dropping needs Enter because the popup can open under a key meant for the pane. With no id, `pick` lists every pending ask in fzf first.
+
 ## Verbs
 
 ```
@@ -39,13 +49,16 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --agent A       who asked (kb-coordinator, shepherd, ...)
   --task T        link to a Focus task key or tracker ticket
   --kind K        question | gate | approval  (gate/approval default options: approve|hold)
-  --options a|b|c pipe-separated choices
+  --options a|b|c pipe-separated choices; a=meaning|b=meaning adds each option's meaning
+  --context TEXT  why it is asked and what it blocks (the card's why: line)
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
 agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by
 agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
+agent-ask card <id>                          print the question card
+agent-ask pick [<id>]                        the card with keys to answer or drop; no id: fzf over every pending ask
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals
@@ -67,6 +80,8 @@ created: 2026-07-24T13:47:04-0700
 status: pending           # pending | answered | cancelled
 question: which auth provider should ledger use?
 options: oauth|magic
+option_notes: hosted, SSO later|email links, nothing to run   # optional, aligned with options
+context: the login screen is blocked on this                   # optional, the card's why: line
 answer:                   # filled by `answer`
 answered_at:
 answered_by:              # human | judge | shepherd

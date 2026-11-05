@@ -2,10 +2,15 @@
 # agent-ask - the human<->agent ask queue: the two-way bridge a headless agent uses
 # to ASK the human a question and later READ the answer.
 #
-#   agent-ask post [opts] "question"    create a pending ask; print its id
-#     --options a|b|c   the fixed answer vocabulary
+#   agent-ask post [opts] "question?"   create a pending ask; print its id
+#     --options a|b|c   the fixed answer vocabulary; `a=what a means|b=...` adds each meaning
 #     --recommend b     which of them YOU recommend; shown marked in the picker
+#     --context "why"   the background the human needs; the question itself stays one line
 #     --session s       the asking session; default the caller's tmux session
+#   agent-ask card <id>                 the ask as the human reads it: question, numbered
+#                                       options with meanings, recommendation, context, judge
+#   agent-ask pick [<id>]               card + one-key answer (the tmux popup); no id lists
+#                                       every pending ask first
 #   agent-ask list [project|--all] [--pending|--answered|--stale] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
@@ -39,6 +44,13 @@
 # ask closes itself when the human answers (typed into the session, or `answer` from a board,
 # which also types the answer into the session) or when the session ends (stale). A human-only
 # action the session will not wait on is a human-sheet row, not an ask.
+#
+# A QUESTION IS ONE LINE. `post` refuses a question that does not end in `?` or runs past
+# AGENT_ASK_QUESTION_MAX characters: the background goes in --context and what each option
+# does in `--options 'slug=meaning|...'`. 2026-11-05: JSVBgC was one paragraph with bare slugs
+# (fix-flake|wait-for-row|merge-over-red), and the human landing on the session could not
+# tell what was being asked. The slugs stay alone in `options:` (agent-web, settle-session and
+# the judge read it); the meanings sit pipe-aligned in `option_notes:`.
 #
 # ASYNC IS THE PRIMARY PATH. Headless producers (timer runners, queue items) CANNOT block:
 # they post and exit, and the ask's `resume` command consumes the answer. `post --wait` is a
@@ -74,6 +86,7 @@ set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_STALE_DAYS:=14}"
+: "${AGENT_ASK_QUESTION_MAX:=150}"
 : "${AGENT_ASK_POLICY:=$HOME/.config/agent-ask/policy.md}"
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --role observe}"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
@@ -128,16 +141,67 @@ set_field() {
   ) 9>"$(dirname "$f")/.lock"
 }
 
-# render_ask <file>: the ask as the human reads it in the asking session's pane.
+# age_of <iso>: "5m", "3h", "2d" since an ask's `created`; empty when it does not parse.
+age_of() {
+  local c now d; c="$(date -d "$1" +%s 2>/dev/null)" || return 0
+  now="$(date +%s)"; d=$(( now - c )); [ "$d" -lt 0 ] && d=0
+  if [ "$d" -lt 3600 ]; then echo "$((d / 60))m"
+  elif [ "$d" -lt 172800 ]; then echo "$((d / 3600))h"
+  else echo "$((d / 86400))d"; fi
+}
+
+# wrap <indent> <text>: word-wrap to the card width, every line indented.
+wrap() {
+  local pad="$1" w; w=$(( ${CARD_WIDTH:-100} - ${#pad} )); [ "$w" -lt 20 ] && w=20
+  printf '%s\n' "$2" | fold -s -w "$w" | sed -e "s/^/$pad/" -e 's/ *$//'
+}
+
+# render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
+# (post), the tmux popup (pick) and the agent-panel preview (card). Colour only on a terminal
+# or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
 render_ask() {
-  local f="$1" opt rec out="" opts=()
-  rec="$(field "$f" recommend)"
-  printf 'ASK %s (%s) - waiting on you\n%s\n' "$(field "$f" id)" "$(field "$f" kind)" "$(field "$f" question)"
+  local f="$1" b="" d="" c="" g="" r="" x=""
+  if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
+    b=$'\e[1m' d=$'\e[2m' c=$'\e[36m' g=$'\e[32m' r=$'\e[31m' x=$'\e[0m'
+  fi
+  local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
+  [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
+  local CARD_WIDTH="$cols"
+  local id kind st rec where age opts=() notes=() i n w=0 note judge reason ctx
+  id="$(field "$f" id)"; kind="$(field "$f" kind)"; st="$(field "$f" status)"
+  rec="$(field "$f" recommend)"; age="$(age_of "$(field "$f" created)")"
+  where="$(field "$f" project)"
+  [ -n "$(field "$f" session)" ] && where+=" . $(field "$f" session)"
+  [ -n "$age" ] && where+=" . $age ago"
+  local state="waiting on you"; [ "$st" = pending ] || state="$st"
+  local kc="$c"; [ "$kind" = question ] || kc="$r"
+  printf '%sASK %s (%s%s%s%s) - %s%s  %s%s%s\n' "$b" "$id" "$x$kc" "$kind" "$x" "$b" "$state" "$x" "$d" "$where" "$x"
+  printf '%s' "$b"; wrap "" "$(field "$f" question)"; printf '%s' "$x"
   IFS='|' read -r -a opts <<< "$(field "$f" options)"
-  for opt in "${opts[@]}"; do
-    [ "$opt" = "$rec" ] && out+=" [$opt] (recommended)" || out+=" [$opt]"
-  done
-  [ -n "$out" ] && printf 'options:%s\n' "$out"
+  IFS='|' read -r -a notes <<< "$(field "$f" option_notes)"
+  if [ "${#opts[@]}" -gt 0 ]; then
+    echo
+    for i in "${!opts[@]}"; do [ "${#opts[i]}" -gt "$w" ] && w="${#opts[i]}"; done
+    for i in "${!opts[@]}"; do
+      n=$((i + 1)); note="${notes[i]:-}"
+      [ "${opts[i]}" = "$rec" ] && note="${note:+$note  }${g}(recommended)${x}"
+      printf '  %s%d%s  %-*s  %s\n' "$b" "$n" "$x" "$w" "${opts[i]}" "$note" | sed 's/ *$//'
+    done
+  fi
+  ctx="$(field "$f" context)"
+  if [ -n "$ctx" ]; then echo; printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; fi
+  judge="$(field "$f" judge)"; reason="$(field "$f" judge_reason)"
+  if [ -n "$judge" ]; then
+    case "$judge" in
+      human) judge="needs you" ;;
+      take-recommend) judge="would take the recommendation" ;;
+      answer:*) judge="would answer: ${judge#answer:}" ;;
+    esac
+    printf '%s' "$d"; wrap "       " "judge: $judge${reason:+ - $reason}" | sed '1s/^       //'; printf '%s' "$x"
+  fi
+  if [ "$st" != pending ]; then
+    [ -n "$(field "$f" answer)" ] && printf '%sanswer: %s%s\n' "$b" "$(field "$f" answer)" "$x"
+  fi
   return 0
 }
 
@@ -145,7 +209,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" resume="" wait=0 question=""
+        options="" recommend="" resume="" wait=0 question="" context=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -157,6 +221,7 @@ cmd_post() {
       --options) options="$2"; shift 2 ;;
       --recommend) recommend="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
+      --context) context="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
       -*) echo "agent-ask post: unknown flag $1" >&2; return 2 ;;
@@ -164,6 +229,26 @@ cmd_post() {
     esac
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
+  question="$(oneline "$question")"
+  if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
+    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\" and what each option does in --options 'slug=meaning|slug=meaning'." >&2
+    return 2
+  fi
+  # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
+  # into `option_notes:`. Plain `a|b` options carry no notes.
+  local option_notes="" o has_note=0
+  if [ -n "$options" ]; then
+    local parts=()
+    IFS='|' read -r -a parts <<< "$options"
+    options=""
+    for o in "${parts[@]}"; do
+      local slug="${o%%=*}" note=""
+      [ "$slug" != "$o" ] && { note="${o#*=}"; has_note=1; }
+      slug="$(oneline "$slug")"; note="$(oneline "$note")"
+      options+="${options:+|}$slug"; option_notes+="${option_notes:+|}$note"
+    done
+    [ "$has_note" = 1 ] || option_notes=""
+  fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
     # for it. The resolver's own answer (no --project) is canonical by construction.
@@ -222,6 +307,8 @@ cmd_post() {
     printf 'status: pending\n'
     printf 'question: %s\n'   "$(oneline "$question")"
     printf 'options: %s\n'    "$(oneline "$options")"
+    printf 'option_notes: %s\n' "$option_notes"
+    printf 'context: %s\n'    "$(oneline "$context")"
     # Which option the ASKING agent would pick, and why it is a separate field rather than a
     # sentence in the question: a recommendation buried in 900 characters of prose is a
     # recommendation the human reads only if they open the ask. As a field the picker can
@@ -242,7 +329,9 @@ cmd_post() {
   # its own pane. No page per ask: the pane already has it, the shepherd's "N need you" pages
   # pending asks, and the briefing pages headless ones. A page per ask was 53 a day.
   if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
-    render_ask "$file" >&2
+    { render_ask "$file"
+      echo "End your turn on this question and its numbered options as written above, never on 'filed as ask $id'."
+    } >&2
   fi
 
   # The judge is an event on the post, detached so a headless producer exits at once.
@@ -399,6 +488,68 @@ file_stale_row() {
   q="$(field "$f" question | tr -cd ' -~' | tr -d '#' | cut -c1-160)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
     "unanswered ask $(field "$f" id): $q" >/dev/null 2>&1 || true
+}
+
+cmd_card() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask card <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  render_ask "$f"
+}
+
+# pick_pending: choose one pending ask (fzf with the card as preview); prints its id.
+pick_pending() {
+  local rows
+  rows="$(cmd_list --all --pending | awk -F'\t' '{ printf "%s\t%s . %s\t%s\n", $1, $2, $13, $6 }')"
+  [ -n "$rows" ] || { echo "no pending questions" >&2; return 1; }
+  command -v fzf >/dev/null 2>&1 || { echo "agent-ask pick: fzf is not installed; pass an id" >&2; return 1; }
+  fzf --delimiter='\t' --with-nth=2.. --no-sort --layout=reverse --prompt='question> ' \
+      --preview "AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS '${BASH_SOURCE[0]}' card {1}" \
+      --preview-window='down,60%,wrap' <<< "$rows" | cut -f1
+}
+
+# pick [<id>]: the card and a one-key answer, for the tmux popup (`agent-panel ask-here`, the
+# chooser, Prefix y). An option needs Enter to send, because the popup opens by itself when the
+# human switches to the session and their next keystroke may have been meant for the pane.
+# No id: choose among every pending ask first.
+cmd_pick() {
+  local id="${1:-}" f k c n opts=()
+  [ -n "$id" ] || id="$(pick_pending)" || return 1
+  [ -n "$id" ] || return 0
+  f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  render_ask "$f"
+  echo
+  if [ "$(field "$f" status)" != pending ]; then
+    echo "no longer pending; any key closes"; read -rsn1 _ || true; return 0
+  fi
+  IFS='|' read -r -a opts <<< "$(field "$f" options)"
+  n="${#opts[@]}"
+  if [ "$n" -gt 0 ]; then
+    printf 'keys: 1-%d answer . t type an answer . d drop the question . q close\n' "$n"
+  else
+    printf 'keys: t type an answer . d drop the question . q close\n'
+  fi
+  while IFS= read -rsn1 k; do
+    case "$k" in
+      [1-9])
+        [ "$k" -le "$n" ] || continue
+        printf 'send "%s"? enter sends, any other key goes back\n' "${opts[k-1]}"
+        IFS= read -rsn1 c || return 0
+        [ -z "$c" ] && { cmd_answer "$id" "${opts[k-1]}"; return; }
+        echo "not sent" ;;
+      t)
+        local text; IFS= read -e -r -p 'answer: ' text || return 0
+        [ -n "$text" ] && { cmd_answer "$id" "$text"; return; } ;;
+      d)
+        printf 'drop this question unanswered? enter drops it, any other key goes back\n'
+        IFS= read -rsn1 c || return 0
+        [ -z "$c" ] && { close_ask cancelled "$id" "dropped by the human"; return; }
+        echo "kept" ;;
+      q|$'\e') return 0 ;;
+    esac
+  done
+  return 0
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
@@ -657,6 +808,8 @@ case "$sub" in
   list)   cmd_list "$@" ;;
   count)  cmd_count "$@" ;;
   show)   cmd_show "$@" ;;
+  card)   cmd_card "$@" ;;
+  pick)   cmd_pick "$@" ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   stale)  cmd_stale "$@" ;;
