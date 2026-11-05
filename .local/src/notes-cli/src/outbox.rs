@@ -94,15 +94,9 @@ fn items(content: &str) -> Vec<String> {
     out
 }
 
-/// FNV-1a over the items, as 16 hex digits: stable across builds, so a hash a page read with
-/// one `notes` still matches after an upgrade.
+/// The items' compare-and-swap base (`md::fnv1a`).
 fn hash(items: &[String]) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in items.join("\n").bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    md::fnv1a(&items.join("\n"))
 }
 
 fn show_json(p: &Profile, content: &str) -> serde_json::Value {
@@ -129,7 +123,8 @@ pub fn show(p: &Profile, json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// What `put` did: wrote the items, or found the file changed since `base` (nothing written).
+/// What a compare-and-swap put did (`notes outbox put`, `notes put`): wrote, or found the file
+/// changed since `base` (nothing written).
 #[derive(Debug, PartialEq)]
 pub(crate) enum Put {
     Written(serde_json::Value),

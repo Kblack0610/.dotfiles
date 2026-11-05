@@ -5,6 +5,18 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
+/// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
+/// a page read with one `notes` still matches after an upgrade.
+pub fn fnv1a(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Atomically write `contents` to `path`: stage into a sibling `.<name>.tmp` file, then
 /// `rename` it over the target. The rename is atomic on POSIX, so a concurrent reader (a
 /// daily note open in Nvim, the session preflight, another `notes` run) never observes a
