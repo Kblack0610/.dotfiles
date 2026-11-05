@@ -35,3 +35,4 @@ Not for one PR's gate red (`/my:fix-ci`) or for CI time (`ci-cost`).
 - A runner red repeats per run id on the board; grep the host name before filing.
 - `fleet-dispatch` never gives a `ci:`-prefixed row a merging session, so name test and content fixes `fix(test)`/`fix(content)`.
 - No queue hold waits for a workflow run; the `at:` time is the hold, and the validation item must check the runs are finished before judging (a late or cancelled run is a red to triage).
+- A bare `agent-land <N>` closes the session's own item and its board row. The owner session lands each of its PRs on an item of its own (`agent-queue add --running ...`, then `agent-land <N> --item <slug>`), so the owner row stays open until step 7.
