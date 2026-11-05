@@ -1098,8 +1098,69 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
             }
         )),
         rows,
-        more: vec![("Waiting in project inboxes".into(), inboxes)],
+        more: vec![
+            ("Waiting in project inboxes".into(), inboxes),
+            ("Sheet actions".into(), sheet_actions(&events)),
+        ],
     }
+}
+
+/// Past this many, the page lists the newest and points at `notes log`.
+const SHEET_ACTIONS_SHOWN: usize = 40;
+
+/// The day's verb writes for the page: a line each for Focus and the human lane, oldest first,
+/// and one line per action and board for the agent lane, which writes far too many to list.
+/// Intake has its own rows above, so a line added to the outbox, or added and then filed, is
+/// not told twice here.
+fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
+    const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
+    let told_above = |i: usize, e: &crate::ingest::Event| {
+        INTAKE.contains(&e.action.as_str())
+            || (e.action == "added"
+                && (e.from == "outbox"
+                    || events[i + 1..].iter().any(|n| {
+                        matches!(n.action.as_str(), "filed" | "dup")
+                            && n.from == e.from
+                            && n.text == e.text
+                    })))
+    };
+    let (agent, human): (Vec<_>, Vec<_>) = events
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| !told_above(*i, e))
+        .map(|(_, e)| e)
+        .partition(|e| e.lane == "agent");
+
+    let hidden = human.len().saturating_sub(SHEET_ACTIONS_SHOWN);
+    let mut lines = Vec::new();
+    if hidden > 0 {
+        lines.push(format!("+{hidden} older: notes log"));
+    }
+    // `log_line` leads with `YYYY-MM-DD `; the page is one day, so its rows lead with the time.
+    lines.extend(human[hidden..].iter().map(|e| {
+        let l = crate::ingest::log_line(e);
+        l.get(11..).unwrap_or(&l).to_string()
+    }));
+
+    let mut folded: std::collections::BTreeMap<_, (usize, Vec<&str>)> = Default::default();
+    for e in agent {
+        let (count, ids) = folded.entry((&e.action, &e.from, &e.to)).or_default();
+        *count += 1;
+        ids.extend(e.id.as_deref());
+    }
+    for ((action, from, to), (count, ids)) in folded {
+        let place = if to.is_empty() {
+            from.clone()
+        } else {
+            format!("{from} -> {to}")
+        };
+        let mut shown = ids[..ids.len().min(3)].join(", ");
+        if ids.len() > 3 {
+            shown.push_str(&format!(" +{}", ids.len() - 3));
+        }
+        lines.push(format!("agent lane: {action} {count} on {place} ({shown})"));
+    }
+    lines
 }
 
 /// One event's row: under Needs you when `attention`, in the record's order.
@@ -2428,6 +2489,42 @@ mod tests {
     }
 
     #[test]
+    fn sheet_actions_tell_a_line_once_and_fold_the_agent_lane() {
+        use crate::ingest::Event;
+        let row = |action, lane, line: &str| {
+            let mut e = Event::row(action, "demo", "", lane, line);
+            e.ts = "2026-11-05T10:41:00-08:00".into();
+            e.by = "human".into();
+            e
+        };
+        let mut events = vec![
+            Event::row("added", "outbox", "", "", "- [ ] a drop"),
+            row("added", "", "- [ ] filed later"),
+            Event::new("filed", "demo", "demo", "filed later"),
+            row("added", "", "- [ ] stays put"),
+        ];
+        for n in 1..=5 {
+            let line = format!("- [ ] a row <!-- id:dm-{n} -->");
+            events.push(row("edited", "agent", &line));
+        }
+        assert_eq!(
+            sheet_actions(&events),
+            [
+                "10:41 added demo by human: stays put",
+                "agent lane: edited 5 on demo (dm-1, dm-2, dm-3 +2)",
+            ]
+        );
+
+        let many: Vec<_> = (0..SHEET_ACTIONS_SHOWN + 2)
+            .map(|n| row("done", "human", &format!("- [ ] row {n}")))
+            .collect();
+        let lines = sheet_actions(&many);
+        assert_eq!(lines.len(), SHEET_ACTIONS_SHOWN + 1);
+        assert_eq!(lines[0], "+2 older: notes log");
+        assert!(lines[1].ends_with("row 2"), "{}", lines[1]);
+    }
+
+    #[test]
     fn the_inbox_page_shows_where_each_line_went_and_what_waits() {
         use crate::ingest::{record, Event};
         let root = std::env::temp_dir().join(format!("inbox-page-{}", std::process::id()));
@@ -2462,8 +2559,14 @@ mod tests {
         plan.id = Some("dm-5".into());
         plan.why = Some("3 plan lines, split into 2 rows".into());
         record(&p, &plan);
-        // A verb's own write is not intake, so it adds no row and above all no red one.
-        record(&p, &Event::new("edited", "demo", "", "feat(ui): a row"));
+        // A verb's own write is not intake: it shows under Sheet actions, never as a red row.
+        let mut removed = Event::row("removed", "focus", "", "", "- [ ] a Focus row");
+        removed.by = "human".into();
+        record(&p, &removed);
+        for id in ["dm-1", "dm-2"] {
+            let line = format!("- [ ] a row <!-- id:{id} -->");
+            record(&p, &Event::row("edited", "demo", "", "agent", &line));
+        }
         record(
             &p,
             &Event::new("moved", "focus", "demo", "still in the inbox"),
@@ -2515,6 +2618,10 @@ mod tests {
 
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting
+
+## Sheet actions
+- HH:MM removed focus by human: a Focus row
+- agent lane: edited 2 on demo (dm-1, dm-2)
 "
         );
         assert!(page.stat.unwrap().ends_with(
