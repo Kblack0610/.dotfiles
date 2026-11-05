@@ -229,7 +229,7 @@ $("board").addEventListener("click", (e) => {
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
-  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
   if (d.promote || d.demote) {
     const verb = d.promote ? "promote" : "demote";
     bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One wave sooner." : "One wave later.");
