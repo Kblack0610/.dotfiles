@@ -508,13 +508,15 @@ live_row() {
 # in that session too, so a board answer and a typed answer reach the same place. Skipped when
 # the session sits in a permission/question dialog that a paste would answer by accident.
 deliver_to_session() {
-  local f="$1" answer="$2" row="$3" pane server
+  local f="$1" answer="$2" row="$3" pane
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
   [ "$(jq -r .status <<< "$row")" = waiting ] && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
-  pane="$(jq -r .pane <<< "$row")"; server="${pane%%/*}"; pane="${pane#*/}"
-  printf 'Answer to ask %s: %s' "$(field "$f" id)" "$answer" | tmux -L "$server" load-buffer -b agent-ask - 2>/dev/null &&
-    tmux -L "$server" paste-buffer -p -d -b agent-ask -t "$pane" 2>/dev/null &&
-    tmux -L "$server" send-keys -t "$pane" Enter 2>/dev/null || true
+  # agent-panel send owns typing into a pane: it waits for the paste to be drawn before Enter
+  # (Claude Code drops an Enter on the heels of a paste) and says when the Enter was not taken.
+  pane="$(jq -r .pane <<< "$row")"
+  agent-panel send --pane "$pane" "Answer to ask $(field "$f" id): $answer" ||
+    echo "agent-ask: answer recorded, but it did not submit in $(field "$f" session); it is in that session's input box" >&2
+  return 0
 }
 
 # file_board_row <ask file> <text>: an answer nobody is left to act on, as one plain agent board

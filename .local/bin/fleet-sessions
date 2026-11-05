@@ -615,17 +615,21 @@ git_facts() {
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
-# ledger whose tmux session has no live claude again, so a parked session's git, PR and main
-# facts are read like any other's. A ledger beside a live claude is stale: the live row wins.
+# ledger whose tmux session (a session:window ledger: whose window) has no live claude again, so a
+# parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
+# is stale: the live row wins. A window ledger is one claude of a shared session (hub/dotfiles),
+# whose other windows stay live.
 parked_lines() {
   local f live
-  live="$(jq -r '.target | sub(":[^:]*$"; "")' <<<"$1" 2>/dev/null)"
+  live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
     [ -f "$f" ] || continue
-    jq -cn --rawfile l "$f" --arg live "$live" '
+    jq -cn --rawfile l "$f" --arg live "$live" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
-      | select(($live | split("\n") | index($t | sub(":[^:]*$"; ""))) | not)
+      | (if ($key | contains(":")) then [$t, ($live | split("\n"))]
+         else [($t | sub(":[^:]*$"; "")), ($live | split("\n") | map(sub(":[^:]*$"; "")))] end) as [$me, $all]
+      | select($all | index($me) | not)
       | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
          session_id: $p.session_id, cwd: $p.cwd, idle_since: ($p.parked | tonumber? // 0),
          context_tokens: 0, plan_file: ""}' 2>/dev/null
@@ -649,17 +653,17 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob pq names
+          work jobs human parked compactions topic doing said gate test ojob acct pq names
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob < <(jq -r '
+    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
-       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text)]
+       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
@@ -707,12 +711,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")"
+      "$(plan_phase_list "$planf")" "${acct:--}"
   done
   main_rows
 }
@@ -910,7 +914,8 @@ json_rows() {
       doing: (if (.[39] // "-") == "-" then null else .[39] end),
       said: (if (.[40] // "-") == "-" then null else .[40] end),
       main_red: (if (.[43] // "-") == "RED" then true elif (.[43] // "-") == "OK" then false else null end),
-      phases: ((.[44] // "[]") | fromjson)}'
+      phases: ((.[44] // "[]") | fromjson),
+      account: (if (.[45] // "-") == "-" then null else .[45] end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

@@ -32,6 +32,7 @@ esac'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
   room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
+  status) printf "%b" "${STUB_ACCTS:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
   trust) echo "$*" >> "$HOME/trust.calls" ;;
 esac'
@@ -844,6 +845,49 @@ idle_row() {
   doc "[$(idle_row lab/old:1 %3 9)]"
   STUB_PANE='hit your weekly limit\n1\n2\n3\n4\n5\n6\n7\n' run "$SH" due
   assert_failure
+}
+
+# acct_row <target> <pane> <activity> <account> [labels-json]: a live session limit_due reads
+acct_row() {
+  jq -n --arg t "$1" --arg p "$2" --arg a "$3" --arg c "$4" --argjson l "${5:-[]}" \
+    '{target:$t, pane:$p, activity:$a, account:$c, idle_min:0, bucket:"WORKING", nudged:false, escalated:false, labels:$l}'
+}
+# accts <main week> <main 5h>: claude-acct status --json with main at those numbers, alt with room
+accts() {
+  printf '[{"name":"main","dir":"","state":"ok","week_used":%s,"five_hour":%s},{"name":"alt","dir":"%s","state":"ok","week_used":20,"five_hour":5}]' \
+    "$1" "$2" "$HOME/.claude-acct2"
+}
+
+@test "an account at its week cap: its idle sessions move to the room account, a dialog is listed, busy and shell wait" {
+  doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 waiting main),
+        $(acct_row hub/dotfiles:4 %35 shell main), $(acct_row hub/dotfiles:5 %17 busy main),
+        $(acct_row hub/dotfiles:7 %45 idle main '["manual"]'), $(acct_row lab/agent-1:1 %5 idle alt)]"
+  STUB_ACCTS="$(accts 100 40)" STUB_PANE='You have hit your weekly limit\n' run "$SH" due
+  assert_success
+  assert_output "limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
+limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
+  # the account read covers them: no pane on main is read for the limit text
+  run grep -sc capture-pane "$HOME/tmux.calls"
+  refute_output --regexp '^[1-9]'
+}
+
+@test "a 5h cap moves sessions too; under both caps nothing moves; the pane line still reads sessions on other accounts" {
+  doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(idle_row lab/agent-1:1 %5 9)]"
+  STUB_ACCTS="$(accts 50 100)" run "$SH" due
+  assert_success
+  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  # Negative control: main under both caps is not out of usage
+  STUB_ACCTS="$(accts 99 99)" run "$SH" due
+  assert_failure
+  STUB_ACCTS="$(accts 99 99)" STUB_PANE='hit your weekly limit\n' run "$SH" due
+  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+}
+
+@test "an account out of usage with no room anywhere is one line for the human" {
+  doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 idle main)]"
+  STUB_ACCTS="$(accts 100 40)" STUB_NO_ROOM=1 run "$SH" due
+  assert_success
+  assert_output 'limit: main is out of usage and no account has room; then: tell the human once (2 live on it), and fleet-shepherd skip it'
 }
 
 @test "an unreadable state document fails the run; it does not read as a quiet fleet, and the pass still starts, told why" {

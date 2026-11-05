@@ -106,6 +106,8 @@ The judge never answers. agent-web's Waiting tab shows "judge would ..." under t
 
 Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
+An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). If the session does not take the Enter, `answer` still records it and prints where the text is.
+
 Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (`agent-ask answer` calls it; `ask-resume --all` drains by hand).
 
 Surfaces:
@@ -117,3 +119,9 @@ Surfaces:
 The ask queue carries ONLY what-needs-you (asks / blocks / gates). Release status (open
 PRs, ready-for-release) stays in the lab "Release & status feed" (turn-1 cockpit surface).
 Two surfaces, no overlap - that separation is what keeps the bridge from becoming inbox noise.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| An answer reached the session but sat unsent in its input box, and showed up the next time you typed there | `agent-ask` pasted and pressed Enter at once; Claude Code drops an Enter on the heels of a paste | `agent-panel send` waits for the paste to be drawn, retries a dropped Enter once, and reports a second drop (`tests/ui/session_send.bats`) |
