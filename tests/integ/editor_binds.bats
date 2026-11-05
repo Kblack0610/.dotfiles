@@ -79,11 +79,11 @@ setup() {
 
 # ── prefix+i, which this feature must NOT have touched ───────────────────────
 
-@test "infra is still on prefix+i, exactly where it was" {
-  local infra
-  infra="$(bind_for i)"
-  [ -n "$infra" ] || fail "prefix+i is not bound -- infra was dropped"
-  grep -qF 'hub tab overview' <<< "$infra" || fail "prefix+i is bound to something that is not infra: $infra"
+@test "the board is still on prefix+i" {
+  local board
+  board="$(bind_for i)"
+  [ -n "$board" ] || fail "prefix+i is not bound -- the board was dropped"
+  grep -qF 'hub tab board' <<< "$board" || fail "prefix+i is bound to something that is not the board: $board"
 }
 
 @test "prefix+i is bound exactly once" {
