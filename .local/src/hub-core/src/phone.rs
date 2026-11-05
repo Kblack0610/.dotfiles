@@ -18,6 +18,8 @@ use crate::text::cap;
 const ASK_MAX: usize = 70;
 /// How many projects the needs row names before the rest fold under "+N more".
 const PROJECTS: usize = 3;
+/// How many KPIs the over-limit row names before the rest fold under "+N more": one line at 4x4.
+const KPIS: usize = 2;
 /// Fleet-state buckets of a session that has stopped, so its ETA means nothing.
 const FINISHED: [&str; 3] = ["DONE", "LANDED", "PARKED"];
 /// KPI names that do not read as words once the underscores go.
@@ -186,6 +188,11 @@ fn over_limit(infra: &Infra) -> Option<String> {
         })
         .collect();
     said.sort();
+    let more = said.len().saturating_sub(KPIS);
+    said.truncate(KPIS);
+    if more > 0 {
+        said.push(format!("+{more} more"));
+    }
     (!said.is_empty()).then(|| format!("over limit: {}", said.join(", ")))
 }
 
@@ -257,7 +264,7 @@ fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
     if let Some(s) = sitting.filter(|s| s.runnable > 0) {
         text += &format!(", {} can start", s.runnable);
         if let Some(o) = s.oldest_runnable.first() {
-            text += &format!(", oldest {}", age(o.minutes * 60));
+            text += &format!(" ({})", age(o.minutes * 60));
         }
     }
     Some(row(Level::Ok, "queue", text))
@@ -558,6 +565,24 @@ mod tests {
                 "over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
                 "$6.54 per PR (28d $7.00), 85 merged today".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn over_limit_stays_one_line_however_many_kpis_are_past() {
+        let mut bench = bench();
+        bench.extend([
+            metric(
+                "agent_bench_kpi",
+                json!({"kpi": "zz_extra", "window": "7d"}),
+                "9",
+            ),
+            metric("agent_bench_kpi_limit", json!({"kpi": "zz_extra"}), "1"),
+            metric("agent_bench_kpi_past", json!({"kpi": "zz_extra"}), "1"),
+        ]);
+        assert_eq!(
+            over_limit(&infra(vec![("bench", bench)])).as_deref(),
+            Some("over limit: CI reds per PR 0.86 (0.5), board 372 (60), +1 more")
         );
     }
 
