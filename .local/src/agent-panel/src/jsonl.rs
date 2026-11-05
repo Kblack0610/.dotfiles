@@ -849,8 +849,8 @@ pub struct Said {
     pub first: String,
     /// The typed prompt the asking turn answered.
     pub prompt: String,
-    /// The assistant's own text in that turn, blocks joined by a blank line.
-    pub said: String,
+    /// The assistant's own text blocks in that turn, oldest first.
+    pub said: Vec<String>,
 }
 
 /// `said_around` over the transcript at `path`.
@@ -889,7 +889,7 @@ fn said_around(text: &str, id: &str) -> Option<Said> {
         }
     }
     let first = lines.iter().find_map(|l| typed_prompt(l)).unwrap_or_default();
-    Some(Said { first, prompt, said: said.join("\n\n") })
+    Some(Said { first, prompt, said })
 }
 
 /// A tool result entry whose text has `id` alone on a line.
@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(typed_prompt(slash).as_deref(), Some("/my:go ship it"));
         assert_eq!(got.first, "earlier ask");
         assert_eq!(got.prompt, "should we keep the merge queue");
-        assert_eq!(got.said, "Looked at the queue.\n\nKeep it? 1 keep 2 drop");
+        assert_eq!(got.said, ["Looked at the queue.", "Keep it? 1 keep 2 drop"]);
         // Negative controls: an id only mentioned in passing, or never printed, finds nothing.
         assert_eq!(said_around(&lines.join("\n"), "AbC12"), None);
         assert_eq!(said_around(&lines.join("\n"), "zzz999"), None);
