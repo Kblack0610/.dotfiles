@@ -65,21 +65,12 @@ stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
 #!/usr/bin/env bash
 F="$NOTES_FIXTURE"; printf 'notes %s\n' "$*" >> "$F/calls.log"
-args=(); lane=human; exact=0; prof=personal
+args=(); lane=human; exact=0
 while [ $# -gt 0 ]; do
-  case "$1" in --profile) prof="$2"; shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
+  case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
-  projects)
-    # --stats --json reads each project's sheet, as the CLI does; the listing gives its summary.
-    if [ "${args[1]}" = --stats ]; then
-      while IFS=$'\t' read -r n summary _; do
-        v=$(grep -m1 '^Version:' "${summary%.summary.md}.md")
-        jq -cn --arg n "$n" --arg p "$prof" --arg v "$v" --arg l "$LAB_STAGES" '{name: $n, profile: $p,
-          stage: ($v | capture("#(?<s>\($l | split(" ") | join("|")))\\b").s // ""),
-          prio: ($v | capture("#prio/(?<s>focus|high|low)\\b").s // "")}'
-      done < "$F/projects" | jq -s .
-    else cat "$F/projects" 2>/dev/null; fi ;;
+  projects) cat "$F/projects" 2>/dev/null ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in

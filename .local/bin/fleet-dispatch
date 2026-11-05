@@ -3,7 +3,7 @@
 #
 #   fleet-dispatch run [--dry-run]   one pass: start up to DISPATCH_PER_PASS queue items, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
-#   fleet-dispatch suggest [--json]  the Candidates: open rows of every alpha+ project, ranked, with why, auto, verdict, held
+#   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
@@ -330,16 +330,17 @@ judged_keys() {
 }
 
 cmd_candidates() {
-  local judged table prof name stage pprio repo lane key text rank worker tier line today
+  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
   for prof in $DISPATCH_PROFILES; do
-    while IFS=$'\t' read -r name stage pprio; do
+    while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
+      stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
-      [ "$pprio" != - ] || pprio=''
+      pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       for lane in human agent; do
@@ -363,7 +364,7 @@ cmd_candidates() {
               worker: $worker, wrank: $wrank} | rank_fields($today; $pprio)'
         done < <(rows "$prof" "$name" "$lane")
       done
-    done < <(heads "$prof")
+    done < <(notes --profile "$prof" projects 2>/dev/null)
   done
 }
 
@@ -411,7 +412,7 @@ Copy project, lane and key exactly as given."
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
-# of each alpha, beta or prod project with a repo, in every notes profile, in RANK_JQ order. Each
+# of each project from dev up with a repo, in every notes profile, in RANK_JQ order. Each
 # carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
 # `verdict`, the latest under this policy for this text, or `unjudged`; and `held`, whether an active
 # queue item holds its area. Display only: it never judges, claims or queues.
@@ -435,6 +436,7 @@ cmd_suggest() {
     fi
 }
 
+# latest verdict per row, as JSON lines
 latest_verdicts() {
   [ -f "$VERDICTS" ] || return 0
   jq -sc 'group_by([.project, .lane, .key]) | map(last) | .[]' "$VERDICTS" 2>/dev/null
@@ -1550,9 +1552,10 @@ cmd_fill() {
 # take because of tier alone: no tier tag below 3 and none of DISPATCH_NIGHT_SKIP. `order` is the
 # row's place on its board, newest first; `rank` puts subtract-or-fix rows, then observer rows, first.
 night_rows() {
-  local judged="$1" name stage repo key text body t line n
+  local judged="$1" name sheet stage repo key text body t line n
   for name in $DISPATCH_NIGHT_PROJECTS; do
-    stage=$(heads "$DISPATCH_NIGHT_PROFILE" | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
+    sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
+    stage=$(stage_of "$sheet")
     dispatchable "$stage" || continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
