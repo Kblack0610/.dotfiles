@@ -21,6 +21,8 @@ if hard:
     print("  line 1: DASH: em dash")
 sys.exit(1 if hard or "robust" in t else 0)
 EOF
+  # The queue's reader prints nothing here, so no live queue reaches a report.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-queue"; chmod +x "$SANDBOX/bin/agent-queue"
 }
 
 @test "a plain page passes" {
@@ -204,7 +206,7 @@ EOF
   assert_output --partial "comms 2026-11-05: 7d 50% of 2 messages meet the standard, phone buzzed 0.3 times a day (most 15); lowest: page 50%."
   run "$SUBJECT" kpi --json
   assert_success
-  assert_output '{"buzzes_per_day": {"7d": 0.3, "28d": 0.1}, "comms_pass_pct": {"7d": 50, "28d": 50}, "date": "2026-11-05"}'
+  assert_output '{"buzzes_per_day": {"7d": 0.3, "28d": 0.1}, "comms_pass_pct": {"7d": 50, "28d": 50}, "rows_pass_pct": {"7d": null, "28d": null}, "date": "2026-11-05"}'
   # an older day's file never wins over the newest
   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['date']='2026-11-01'; json.dump(d, open(sys.argv[2],'w'))" \
     "$COMMS_SNAPSHOT_DIR/2026-11-05.json" "$COMMS_SNAPSHOT_DIR/2026-11-01.json"
@@ -259,7 +261,95 @@ EOF
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
-  for c in page briefing morning rundown status pr-body client-eod client-weekly; do
+  for c in page briefing morning rundown status pr-body client-eod client-weekly board proof ask queue fleet-log; do
     assert_output --partial "$c"
   done
+}
+
+@test "a ledger line with no fields of its own is a shape finding, dated by the page before it" {
+  now=$(date -Iseconds)
+  mkdir -p "$HOME/.local/state/agent-notify"
+  printf '%s\tnormal\tbriefing\tTwo things need you.\nstale (carried 3x): run the DR drill\n' "$now" >> "$HOME/.local/state/agent-notify/log"
+  printf '2020-01-01T00:00:00+00:00\tnormal\told\tOld page.\nold tail\n' >> "$HOME/.local/state/agent-notify/log"
+  run "$SUBJECT" report --since 1d --channel page --json
+  assert_success
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['page']; print(d['messages'], d['passed'], d['findings'])" "$output"
+  assert_output "2 1 {'shape': 1}"
+}
+
+@test "a command source lints its reader's records; a reject is a shape finding; rows keep their own pass rate" {
+  cat > "$SANDBOX/bin/reader" <<'EOF'
+#!/usr/bin/env bash
+now=$(date -Iseconds)
+printf '%s\n' "$*" > "$SANDBOX/reader.args"
+printf '{"ts":"%s","text":"fix(x): a clean row","path":"ar-1"}\n' "$now"
+printf '{"ts":"%s","text":"fix(x): an \\u2014 dash","path":"ar-2"}\n' "$now"
+printf '{"ts":"%s","text":"- 09:00 nudge","reject":"no UTC stamp"}\n' "$now"
+printf '{"ts":"%s","text":"a human row \\u2014","by":"human"}\n' "$now"
+printf '{"ts":"%s","text":"a bot row \\u2014","by":"bot"}\n' "$now"
+printf '{"ts":1,"text":"too old"}\n'
+printf 'not json\n'
+printf '{"text":"no time"}\n'
+EOF
+  chmod +x "$SANDBOX/bin/reader"
+  export SANDBOX
+  { sed -n '/^\[defaults\]/,/^$/p' "$COMMS_CHANNELS"
+    printf '[ids]\npatterns = []\n\n[channel.rows]\ngroup = "rows"\nlead_ids = false\n'
+    printf 'source = { kind = "command", cmd = ["reader", "--days", "{days}"], skip = { by = ["human", "bot"] } }\n'
+    printf '\n[channel.page]\nsource = { kind = "ledger", path = "~/.local/state/agent-notify/log" }\n'
+  } > "$SANDBOX/rows.toml"
+  mkdir -p "$HOME/.local/state/agent-notify"
+  printf '%s\tnormal\tx\tThe nightly is green again.\n' "$(date -Iseconds)" >> "$HOME/.local/state/agent-notify/log"
+  export COMMS_CHANNELS="$SANDBOX/rows.toml"
+  run "$SUBJECT" report --since 1d --json
+  assert_success
+  run cat "$SANDBOX/reader.args"
+  assert_output "--days 2"
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['channels']['rows']; print(r['group'], r['messages'], r['passed'], sorted(r['findings'])); s=d['summary']; print(s['messages'], s['pass_pct'], s['rows'], s['rows_pass_pct'])" "$("$SUBJECT" report --since 1d --json)"
+  assert_line --index 0 "rows 3 1 ['non-ascii', 'shape']"
+  assert_line --index 1 "1 100 3 33"
+  run "$SUBJECT" report --since 1d
+  assert_line --partial "1 messages, 100% meet the standard. 3 rows, 33% meet their notation."
+  # A reader line that is not JSON, or has no time, is counted on stderr, never dropped in silence.
+  assert_line --partial "2 unreadable record(s) (not JSON, or no time) from reader --days 2"
+  # A reader that cannot run says so on stderr, never a silent pass.
+  rm "$SANDBOX/bin/reader"
+  run "$SUBJECT" report --since 1d --channel rows
+  assert_success
+  assert_output --partial "source unreadable: reader --days 2"
+}
+
+@test "a proof cites a reference; negative control: words alone fail" {
+  run "$SUBJECT" --channel proof - <<< "merged and verified live"
+  assert_failure 1
+  assert_output --partial "no-ref"
+  for p in "pr:982" "dotfiles#926 #936, private#404" "commit 29ed5f8" "https://github.com/x/y/pull/3"; do
+    run "$SUBJECT" --channel proof - <<< "$p"
+    assert_success
+  done
+}
+
+@test "an ask is linted on its question and context, not its bookkeeping" {
+  mkdir -p "$HOME/.agent/asks/dotfiles"
+  printf 'id: aB3dEf\nproject: dotfiles\nquestion: dotfiles#910 is stuck. Rerun it?\ncontext: The fast tier timed out.\noptions: a=rerun|b=wait\n' > "$HOME/.agent/asks/dotfiles/aB3dEf.md"
+  printf 'id: Cd4eFg\nproject: dotfiles\nsession: /home/x/caf\xc3\xa9\nquestion: Rerun the fast tier (dotfiles#910)?\n' > "$HOME/.agent/asks/dotfiles/Cd4eFg.md"
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['ask']; print(d['messages'], d['passed'], sorted(d['findings']))" "$("$SUBJECT" report --since 1d --channel ask --json)"
+  assert_output "2 1 ['lead-id']"
+}
+
+@test "every fixture in the replay corpus fails or passes its channel as filed" {
+  # tests/fixtures/comms/<channel>/{pass,fail}/*: real messages and rows, hosts replaced.
+  # A rule change that lets a filed failure through, or fails a filed pass, fails here.
+  n=0
+  for f in "$REPO_ROOT"/tests/fixtures/comms/*/*/*; do
+    want=$(basename "$(dirname "$f")") ch=$(basename "$(dirname "$(dirname "$f")")")
+    run "$SUBJECT" --channel "$ch" "$f"
+    if [ "$want" = fail ]; then
+      [ "$status" -eq 1 ] || fail "$ch/fail/$(basename "$f") passed: $output"
+    else
+      [ "$status" -eq 0 ] || fail "$ch/pass/$(basename "$f") failed: $output"
+    fi
+    n=$((n + 1))
+  done
+  [ "$n" -ge 12 ] || fail "only $n fixtures found"
 }

@@ -27,6 +27,13 @@ patterns = [
   '^~?/[\w.~/-]+',                                  # a path
   '^\d{8}-\d{6}-',                                  # a queue slug
 ]
+# What a proof may cite: a PR or issue, a commit, a URL. Searched anywhere in the text.
+refs = [
+  '#\d+\b',                                        # #926, dotfiles#926
+  '\bpr:\d+\b',                                     # pr:982
+  '\b[0-9a-f]{7,40}\b',                             # a commit
+  'https?://\S+',                                   # a URL
+]
 
 [report]
 buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
@@ -103,3 +110,43 @@ prose = true
 emoji = true
 max_emoji = 5
 source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-weekly.md" }
+
+# Row streams: what the fleet writes into ledgers, boards and queues. group = "rows" keeps
+# them out of the messages' pass rate (rows_pass_pct instead). A `command` source runs the
+# stream's own reader, so the row format stays in the reader; see references/channels.md.
+
+# Board rows an agent wrote: every add, edit and move through the notes CLI.
+[channel.board]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"], text = "text", path = "id", skip = { by = "human" } }
+
+# The proof on a board row an agent marked done: it cites a PR, a commit or a URL.
+[channel.proof]
+group = "rows"
+lead_ids = false
+max_lead = 0
+refs = true
+source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}", "--action", "done"], text = "why", path = "id", skip = { by = "human" } }
+
+# An ask the fleet put to the human: its question and the context it gave.
+[channel.ask]
+group = "rows"
+max_lead = 0                    # agent-ask post caps the question itself
+source = { kind = "files", glob = "~/.agent/asks/*/*.md", fields = ["question", "context"] }
+
+# A queue item the fleet filed for itself (the human's own words are left alone).
+[channel.queue]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["agent-queue", "list", "--json", "--state", "all", "--since", "{since_date}"], ts = "queued", text = "task", path = "slug", skip = { from = "human" } }
+
+# The fleet's own log rows: the shepherd's and dispatch's entries, and the lines their reader
+# (hub-core actions) could not parse. Pages and queue items have channels of their own.
+[channel.fleet-log]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["hub", "actions", "--since", "{since}", "--records"], ts = "at", text = "text", path = "source", select = { source = ["shepherd-log", "dispatch-log"] } }
