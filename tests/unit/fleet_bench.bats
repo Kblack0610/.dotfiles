@@ -790,6 +790,17 @@ loop_fixture() {
   assert_line --partial '55m    cleared  starved pool:mac'
 }
 
+@test "loop --firing: one sentence per dark episode still firing, and nothing when none fires" {
+  kpi_setup; loop_fixture
+  run "$SUBJECT" loop --firing
+  assert_success
+  assert_output "Finding starved pool:other @$((T0 - 7200)) has been yours for 60m and still fires, with nothing done but a page. Run fleet-bench loop."
+  BENCH_NOW=$((T0 - 3000)) "$SUBJECT" respond "starved pool:other @$((T0 - 7200))" binks asked ask-4
+  run "$SUBJECT" loop --firing
+  assert_success
+  assert_output ''
+}
+
 @test "loop: no findings is a line, never an error; a bad flag is a usage error" {
   kpi_setup
   run "$SUBJECT" loop

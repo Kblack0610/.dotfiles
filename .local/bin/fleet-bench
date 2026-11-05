@@ -29,8 +29,10 @@
 #                                on every machine; --run evaluates and appends (each sample does)
 #   fleet-bench respond '<rule> <scope> @<episode>' <actor> <paged|asked|filed-row|cancelled|fixed> [ref]
 #                                record what answered a finding (its fact), in responses.jsonl
-#   fleet-bench loop [--json]    each finding episode of the last 7d: minutes to its first response
-#                                that is not a page, and DARK when it reached the human with only pages
+#   fleet-bench loop [--json|--firing]
+#                                each finding episode of the last 7d: minutes to its first response
+#                                that is not a page, and DARK when it reached the human with only pages;
+#                                --firing prints one sentence per dark episode still firing
 #   fleet-bench throughput [--from T] [--to T]
 #                                runs/h, failures, merges/h, pool wait and load on every host
 #   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
@@ -1653,10 +1655,16 @@ loop_episodes() {
 
 cmd_loop() {
   local t rows
-  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench loop [--json]"; return 2 ;; esac
+  case "${1:-}" in ""|--json|--firing) ;; *) say "usage: fleet-bench loop [--json|--firing]"; return 2 ;; esac
   t=$(now)
   rows=$(loop_episodes "$t" $((t - LOOP_WINDOW_S))) || return 1
   if [ "${1:-}" = --json ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
+  # The daily briefing's Needs you line: one sentence per dark episode still firing, nothing when none.
+  if [ "${1:-}" = --firing ]; then
+    [ -z "$rows" ] || jq -rs --argjson t "$t" 'sort_by(.episode)[] | select(.dark and .open)
+      | "Finding \(.fact) has been yours for \((($t - .human_at) / 60) | floor)m and still fires, with nothing done but a page. Run fleet-bench loop."' <<<"$rows"
+    return 0
+  fi
   [ -n "$rows" ] || { echo "loop: no finding episodes in 7d"; return 0; }
   jq -rs "$JQ_LIB"'
     "loop, 7d: \(length) episodes, \(map(select(.dark)) | length) dark (\(map(select(.dark and .open)) | length) still firing), \(map(.first_response_min | numbers) | median | if . == null then "no act recorded" else "first response after \(.)m median" end)",
@@ -1961,8 +1969,8 @@ main() {
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
-    -h | --help) sed -n '2,51p' "$0" ;;
-    *) sed -n '2,45p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,53p' "$0" ;;
+    *) sed -n '2,47p' "$0" >&2; return 2 ;;
   esac
 }
 
