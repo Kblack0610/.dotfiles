@@ -54,8 +54,8 @@ enum Cmd {
         text: String,
     },
     /// The turn of a transcript that posted an ask, as JSON {"first","prompt","said"}: the
-    /// session's first typed prompt, the prompt that turn answered, and its own text (the ask
-    /// card's story). Exits 1 when no tool result in the transcript printed the id.
+    /// session's first typed prompt, the prompt that turn answered, and its text blocks, oldest
+    /// first (the ask card's story). Exits 1 when no tool result in the transcript printed the id.
     Said {
         transcript: PathBuf,
         #[arg(long)]

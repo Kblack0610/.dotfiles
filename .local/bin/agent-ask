@@ -171,6 +171,18 @@ wrap() {
   printf '%s\n' "$2" | fold -s -w "$w" | sed -e "s/^/$pad/" -e 's/ *$//'
 }
 
+# card_slug <project>: its short name (project-name.sh project_slug), the one the questions
+# panel rows use; the name itself where the shared hooks are not installed.
+card_slug() {
+  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SHARED_HOOKS/project-name.sh"
+    project_slug "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
 # (post), the questions panel and the agent-panel preview (card). Colour only on a terminal
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
@@ -190,7 +202,13 @@ render_ask() {
   # out when it only repeats the project, and the kind only shows when it is not a question.
   where="${ASK[project]:-}"
   local sess; sess="${ASK[session]:-}"
-  [ -n "$sess" ] && [ "$sess" != "$where" ] && where+=" . $sess"
+  # An agent session reads as the questions panel row does: slug:N, then the project in full.
+  if [[ "$sess" =~ ^(.*-)?agent-([0-9]+)$ ]]; then
+    where="$(card_slug "$where"):${BASH_REMATCH[2]}"
+    [ "${where%:*}" = "${ASK[project]:-}" ] || where+=" . ${ASK[project]:-}"
+  elif [ -n "$sess" ] && [ "$sess" != "$where" ]; then
+    where+=" . $sess"
+  fi
   [ -n "$age" ] && where+=" . $age ago"
   where+=" . $id"
   local head="asking you" hc="$c"
@@ -206,7 +224,13 @@ render_ask() {
     for i in "${!opts[@]}"; do
       n=$((i + 1)); note="${notes[i]:-}"
       [ "${opts[i]}" = "$rec" ] && note="${note:+$note  }${g}(recommended)${x}"
-      printf '  %s%d%s  %-*s  %s\n' "$b" "$n" "$x" "$w" "${opts[i]}" "$note" | sed 's/ *$//'
+      # A long meaning wraps under itself, so the numbers and slugs stay a clean column.
+      if [ -n "$note" ]; then
+        printf '  %s%d%s  %-*s  ' "$b" "$n" "$x" "$w" "${opts[i]}"
+        wrap "$(printf '%*s' $((w + 7)) '')" "$note" | sed '1s/^ *//'
+      else
+        printf '  %s%d%s  %s\n' "$b" "$n" "$x" "${opts[i]}"
+      fi
       if [ "${opts[i]}" = "$rec" ] && [ -n "${ASK[recommend_why]:-}" ]; then
         printf '%s' "$g"; wrap "     " "because: ${ASK[recommend_why]}"; printf '%s' "$x"
       fi
@@ -226,7 +250,7 @@ render_ask() {
     printf '%s' "$d"; wrap "" "$judge${reason:+ - $reason}"; printf '%s' "$x"
   fi
   if [ "$st" != pending ]; then
-    [ -n "${ASK[answer]:-}" ] && printf '%sanswer: %s%s\n' "$b" "${ASK[answer]:-}" "$x"
+    [ -n "${ASK[answer]:-}" ] && { printf '%s' "$b"; wrap "        " "answer: ${ASK[answer]}" | sed '1s/^ *//'; printf '%s' "$x"; }
   fi
   return 0
 }
@@ -610,15 +634,17 @@ session_gone_note() {
   fi
 }
 
-# render_story <file>: what a panel's card adds under render_ask, each block only with data:
-# where the ask came from, the request that started the session, the agent's own words in
-# the turn that posted it, and the session's nightly telemetry. post leaves it out of the
-# asking pane's copy: that session already holds all of it.
+# render_story <file>: what a panel's card adds under render_ask, one labelled block per line
+# of story, each only with data: where the ask came from, the request that started the
+# session, the prompt the asking turn answered, the agent's newest words in that turn, and the
+# session's nightly telemetry. Each block is capped so the whole card reads on one screen; the
+# session (g in the questions panel) holds the rest. post leaves it out of the asking pane's
+# copy: that session already holds all of it.
 render_story() {
-  local f="$1" d="" b="" x="" sid src tele
+  local f="$1" d="" x="" sid src tele
   load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
-    b=$'\e[1m' d=$'\e[2m' x=$'\e[0m'
+    d=$'\e[2m' x=$'\e[0m'
   fi
   local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
@@ -632,7 +658,8 @@ render_story() {
     src+="${src:+, }claude ${sid:0:8}"
     if session_alive "$sid"; then src+=" (live)"; else src+=" (ended)"; fi
   fi
-  story_block from "$src"
+  [ -n "$src" ] && echo
+  story_line from "$src" 2
   [ -n "$sid" ] || return 0
   # The registry's title names the session. The transcript gives the request (its first typed
   # prompt), the prompt the asking turn answered, and that turn's own words.
@@ -644,26 +671,55 @@ render_story() {
      said="$(agent-panel said "$t" --around "${ASK[id]:-}" 2>/dev/null)"; then
     first="$(jq -r '.first // ""' <<<"$said")"
     prompt="$(jq -r '.prompt // ""' <<<"$said")"
-    words="$(jq -r '.said // ""' <<<"$said")"
+    words="$(story_words "${ASK[question]:-}" <<<"$said")"
   fi
   [ "$prompt" = "$first" ] && prompt=""
-  local req="$title"; [ -n "$first" ] && req="${title:+$title: }$(story_cap "$first")"
-  story_block request "$req"
-  story_block "asked after" "$(story_cap "$prompt")"
-  story_block "in its words" "$words"
+  story_line request "${title:+$title${first:+: }}$first" 3
+  story_line "you said" "$prompt" 2
+  story_line "it said" "$words" 6
   tele="$(story_telemetry "$sid")"
-  story_block telemetry "$tele"
+  story_line telemetry "$tele" 2
   return 0
 }
 
-# A prompt can be pages long; the card keeps its start, and the session holds the rest.
-story_cap() { if [ "${#1}" -gt 700 ]; then printf '%s...' "${1:0:700}"; else printf '%s' "$1"; fi; }
-
-# story_block <label> <text>: a dim label line, then the text wrapped two spaces in.
-story_block() {
+# story_line <label> <text> <max lines>: the dim label, then the text wrapped beside it with a
+# hanging indent, blank lines dropped, cut to <max> lines with "..." on the last.
+story_line() {
   [ -n "$2" ] || return 0
-  printf '\n%s%s%s\n' "$b$d" "$1" "$x"
-  wrap "  " "$2"
+  local pad="          " w
+  w=$(( CARD_WIDTH - ${#pad} )); [ "$w" -lt 20 ] && w=20
+  printf '%s%-10s%s' "$d" "$1" "$x"
+  wrap "$pad" "$2" | awk -v max="$3" -v w="$w" -v pad="$pad" '
+    /^ *$/ { next }
+    { n++; if (n <= max) line[n] = $0 }
+    END {
+      if (n > max) { l = substr(line[max], length(pad) + 1)
+                     if (length(l) > w - 4) { l = substr(l, 1, w - 4); sub(/ +[^ ]*$/, "", l) }
+                     sub(/ +$/, "", l); line[max] = pad l " ..."; n = max }
+      for (i = 1; i <= n; i++) { if (i == 1) sub(/^ +/, "", line[i]); print line[i] }
+    }'
+}
+
+# story_words <question> < said-json: the newest text block of the asking turn that still says
+# something once the card's own parts are gone: the question and the option list under it,
+# markdown tables (they wrap into noise), code fences and bold marks. The newest block is
+# where the session stands now; an older one only when the newest just repeats the ask.
+story_words() {
+  local q="$1" said n i words
+  said="$(cat)"
+  n="$(jq -r '.said | if type == "array" then length else 0 end' <<<"$said" 2>/dev/null)" || return 0
+  for (( i = n - 1; i >= 0; i-- )); do
+    words="$(jq -r --argjson i "$i" '.said[$i]' <<<"$said" | awk -v q="$q" '
+      function norm(s) { gsub(/[*_`#>]/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return tolower(s) }
+      BEGIN { nq = norm(q) }
+      /^[ \t]*```/ { fence = !fence; next }
+      fence || /^[ \t]*\|/ { next }
+      { line = $0; sub(/^#+[ \t]*/, "", line) }
+      nq != "" && norm(line) == nq { inq = 1; next }
+      inq && (line ~ /^[ \t]*$/ || line ~ /^[ \t]*([0-9]+[.)]|[-*])[ \t]/) { next }
+      { inq = 0; gsub(/\*\*/, "", line); print line }')"
+    [ -n "${words//[[:space:]]/}" ] && { printf '%s\n' "$words"; return 0; }
+  done
 }
 
 # story_telemetry <sid>: one line from the nightly outcome row (agentctl-session-outcomes), and

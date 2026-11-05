@@ -63,6 +63,30 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   done
 }
 
+# The card reads on one screen (human, 2026-11-05): a full story (a long request, a turn with a
+# table and the ask repeated, a paragraph of context) still shows its last line beside the list.
+@test "at 144x33 the whole card, story and all, fits beside the list" {
+  mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/delta"
+  : > "$HOME/.claude/projects/p/sid-u.jsonl"
+  printf '{"session_id":"sid-u","title":"runner-pool-tonight"}\n' > "$HOME/.agent/sessions/delta/sessions.jsonl"
+  jq -cn --arg req "$(printf 'please sort out the runner pool for tonight %.0s' $(seq 1 12))" '{first: $req, prompt: "which goes first?",
+    said: ["| job | runner |\n|---|---|\n| sweep | pool |\n\nstep 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
+    > "$NOTES_FIXTURE/agent-panel.said"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-u "$AGENT_ASK" post --project delta --session delta-agent-4 \
+    --options 'sweep=start the sweep before the nightly run so the cache is warm by morning|rebuild=rebuild the cache first and let the sweep wait for the next window' \
+    --recommend sweep --why 'the sweep is shorter and the rebuild can run on the spare runner after it' \
+    --context 'Both jobs want the whole runner pool tonight. The sweep takes about forty minutes and the rebuild about two hours. Whichever waits starts after the other finishes, so the order decides which result is ready by morning.' \
+    'Sweep or rebuild first?')"
+  sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'side_by_side && screen_has "it said"'
+  keep_screen story_144x33
+  screen_has 'step 6 done. ...'
+  screen_lacks 'step 7'
+  screen_lacks '| job'
+  screen_has 'runner-pool-tonight: please sort out'
+}
+
 @test "ctrl-/ puts the card under the list, then hides it" {
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
