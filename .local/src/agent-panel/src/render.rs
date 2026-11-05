@@ -158,8 +158,13 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             map.push(format!(
-                "{}\t{}\t{}\t{}\t{}",
-                a.target, jsonl, a.project, a.summary, a.repo_full
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                a.target,
+                jsonl,
+                a.project,
+                a.summary,
+                a.repo_full,
+                a.ask.as_deref().unwrap_or("")
             ));
         }
     }
@@ -168,7 +173,14 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 }
 
 /// Render the preview pane for one agent row.
-pub fn preview(target: &str, jsonl: Option<&std::path::Path>, project: &str, summary: &str, repo_full: &str) {
+pub fn preview(
+    target: &str,
+    jsonl: Option<&std::path::Path>,
+    project: &str,
+    summary: &str,
+    repo_full: &str,
+    ask: &str,
+) {
     let mut header = if repo_full.is_empty() {
         if project.is_empty() {
             target.to_string()
@@ -182,6 +194,14 @@ pub fn preview(target: &str, jsonl: Option<&std::path::Path>, project: &str, sum
         header = format!("{header} - {summary}");
     }
     println!("{CYAN}{BOLD}── {header} ──{RESET}");
+
+    // What it is asking comes first: the pane tail often has the question scrolled away.
+    // `agent-ask card` owns the ask format, so the panel prints it rather than parse it.
+    if !ask.is_empty() {
+        println!("{BLUE}{BOLD}── question ──{RESET}");
+        print!("{}", crate::asks::card(ask));
+        println!("{BLUE}{BOLD}── pane ──{RESET}");
+    }
 
     // Live pane state — keep colour escapes so it renders like the real pane.
     let pane = crate::tmux::capture_pane(target, true, -60);
