@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # Tier 3: `fleet-shepherd run` on a REAL tmux server. Every run starts a pass in a window of the
-# shepherd session, in ~/.dotfiles; a conversation with an older pass stays in its pane, and a pass
-# is found by its pane wherever a resume put it. Every other collaborator is a stub; the pass's
+# shepherd session, in ~/.dotfiles, unless the last pass is mid-sweep with nobody talking to it; a
+# conversation with an older pass stays in its pane, renamed handed-<id> and told where it went, and
+# a pass is found by its pane wherever a resume put it. Every other collaborator is a stub; the pass's
 # agentctl-run records what it was given and signals the test through tmux wait-for instead of
 # calling a model. Container only, like every ui test.
 
@@ -93,7 +94,7 @@ said() {
   assert_equal "$(wc -l < "$HOME/pass.cwd")" 2
 }
 
-@test "the human talking to a pass: the sweep still runs and the conversation's pane is left as it was, then closes once idle" {
+@test "the human talking to a pass: the sweep still runs, the old pane is named handed-<id> and told, then closes once idle" {
   touch "$HOME/hold"
   run "$SH" run
   ran
@@ -108,27 +109,37 @@ said() {
   ran
   new="$(pass_id)"
   [ "$new" != "$id" ]
-  # it was not touched: same pane, alive, under a name of its own, and nothing typed into it
-  assert_equal "$(window_of "$pane")" "shepherd-${id:0:8}"
+  # same pane, alive, named as handed over, and the notice typed into it names the new pass
+  assert_equal "$(window_of "$pane")" "handed-${id:0:8}"
   assert_equal "$(t list-panes -a -f "#{==:#{pane_id},$pane}" -F '#{pane_dead}')" 0
-  assert_equal "$(t capture-pane -p -t "$pane" | tr -d '[:space:]')" ''
+  run t capture-pane -p -J -t "$pane"
+  assert_output --partial "[fleet-shepherd handover] This conversation was handed over to pass ${new:0:8}"
   run cat "$HOME/last-prompt"
   assert_line "Handover: $FLEET_SHEPHERD_DIR/.handover-$new"
   grep -qxF 'why is agent-47 stalled?' "$FLEET_SHEPHERD_DIR/.handover-$new"
-  assert_equal "$(windows shepherd)" "base shepherd-${id:0:8} shepherd"
-  # the human moved on with the new pass: the old one, idle, winds down
+  assert_equal "$(windows shepherd)" "base handed-${id:0:8} shepherd"
+  # the human moved on, and the new pass is mid-sweep with nobody talking to it: the run starts
+  # nothing, and the old one, idle, winds down
   echo "- answered the human" >> "$FLEET_SHEPHERD_DIR/log.md"
   live "$id" idle
   live "$new" busy
   run "$SH" run
   assert_success
-  ran
+  assert_output --partial "pass ${new:0:8} is mid-sweep"
   assert_equal "$(window_of "$pane")" ''
-  # Negative control: the pass that was only working stays, under its own name.
-  assert_equal "$(windows shepherd)" "base shepherd-${new:0:8} shepherd"
+  assert_equal "$(windows shepherd)" 'base shepherd'
+  assert_equal "$(pass_id)" "$new"
+  # Negative control: the same pass idle, the run starts the next one.
+  echo "- moved a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  live "$new" idle
+  run "$SH" run
+  assert_success
+  ran
+  [ "$(pass_id)" != "$new" ]
+  assert_equal "$(windows shepherd)" 'base shepherd'
 }
 
-@test "a pass hub resumed in a window named by its id, in another session, is found by its pane and named back" {
+@test "a pass hub resumed in a window named by its id, in another session, is found by its pane and named handed over" {
   touch "$HOME/hold"
   run "$SH" run
   ran
@@ -145,10 +156,12 @@ said() {
   run "$SH" stats
   assert_equal "$(jq -r .attach <<< "$output")" "tmux -L $SRV attach -t shepherd:shepherd"
   live "$id" busy "dotfiles:$where"
+  said "$id" $(( $(date +%s) - 120 )) '/fleet-lead pass'
+  said "$id" $(( $(date +%s) - 60 )) 'why is agent-47 stalled?'
   run "$SH" run
   assert_success
   ran
-  assert_equal "$(windows dotfiles)" "claude shepherd-${id:0:8}"
+  assert_equal "$(windows dotfiles)" "claude handed-${id:0:8}"
   assert_equal "$(windows shepherd)" 'base shepherd'
 }
 
