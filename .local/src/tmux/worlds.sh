@@ -108,7 +108,7 @@ world_of_session() {
   return 1
 }
 
-# world_of_repo <dir> -- the world for a checkout no manifest names: the `@repos <dir>` line
+# world_of_repo <dir> -- the world for a directory no manifest names: the `@repos <dir>` line
 # that encloses it, deepest first, else the bare `@repos` line, else nothing.
 world_of_repo() {
   local dir="${1%/}" world scope best='' depth=-1 fallback=''
@@ -123,19 +123,19 @@ world_of_repo() {
   printf '%s\n' "${best:-$fallback}"
 }
 
-# world_is_linked <dir> -- rc 0 for a LINKED worktree. Its .git is a file; so is a submodule's,
-# whose common dir sits under the superproject's .git/modules and so does not end in .git.
+# world_is_linked <dir> -- rc 0 anywhere inside a LINKED worktree: its git dir is not its common
+# dir. A submodule's common dir sits under the superproject's .git/modules, so it does not end
+# in .git.
 world_is_linked() {
-  local common
-  [ -f "$1/.git" ] || return 1
-  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
-  [ "${common##*/}" = .git ]
+  local gitdir common
+  { read -r gitdir && read -r common; } < <(git -C "$1" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null)
+  [ "${gitdir:-}" != "${common:-}" ] && [ "${common##*/}" = .git ]
 }
 
 # world_route <dir> -- "<world> <session>". The one rule:
 #   a directory a manifest names  -> that world, under the manifest's session name
 #   any linked worktree           -> the agent world, whichever repo it was cut from
-#   any other checkout            -> the `@repos` world
+#   any other directory           -> the `@repos` world
 #   none of those                 -> `here`, the caller's own world
 world_route() {
   local dir="${1%/}" decl world

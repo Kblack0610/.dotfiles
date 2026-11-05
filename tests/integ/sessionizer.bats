@@ -526,6 +526,18 @@ real_repo_with_worktree() {
   assert_output 'lab undeclared-agent-1'
 }
 
+@test "route sends a directory inside a worktree to the agent world, and one inside a base checkout does not" {
+  # A session resumed from a subdirectory is still an agent session.
+  real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
+  mkdir -p "$HOME/.worktrees/undeclared-agent-1/docs" "$HOME/undeclared/docs"
+  run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1/docs"
+  assert_success
+  assert_output 'lab docs'
+  run "$WORLD" route "$HOME/undeclared/docs"
+  assert_success
+  assert_output 'here docs'
+}
+
 @test "route leaves a worktree here when no world declares @agents" {
   # The negative control: the rule comes from the manifest, not from being a worktree.
   printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"

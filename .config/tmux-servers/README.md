@@ -15,8 +15,8 @@ A world is a tmux server on its own socket. The `.conf` files here are the only 
 The first matching rule wins:
 
 1. A directory a manifest names: that world, under the manifest's session name.
-2. Any linked worktree: the `@agents` world, under its own name, whichever repo it was cut from.
-3. Any other checkout: the deepest enclosing `@repos <dir>`, else the bare `@repos`.
+2. Anywhere inside a linked worktree: the `@agents` world, under its own name, whichever repo it was cut from.
+3. Any other directory: the deepest enclosing `@repos <dir>`, else the bare `@repos`.
 4. Nothing matched: `here`, the caller's own world.
 
 A repo's world never reaches its worktrees: `dotfiles` is on hub and `dotfiles-agent-3` is on lab.
