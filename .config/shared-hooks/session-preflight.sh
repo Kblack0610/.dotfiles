@@ -178,7 +178,7 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
         # the in-flight rows a session needs to resume. Sheet order otherwise; spare room
         # goes to the asks left over.
         printf '%s\n' "$AGENT_ALL" | awk -F'\t' -v max="$BOARD_MAX" -v asks="$BOARD_ASKS" '
-          $2 ~ /(^| )#ask( |$)/ { if (shown < asks) { print; shown++ } else extra[++e] = $0; next }
+          $2 ~ /(^| )#requested( |$)/ { if (shown < asks) { print; shown++ } else extra[++e] = $0; next }
           { rest[++r] = $0 }
           END {
             for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }

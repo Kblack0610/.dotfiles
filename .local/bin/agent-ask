@@ -168,12 +168,17 @@ render_ask() {
   local id kind st rec where age opts=() notes=() i n w=0 note judge reason ctx
   id="$(field "$f" id)"; kind="$(field "$f" kind)"; st="$(field "$f" status)"
   rec="$(field "$f" recommend)"; age="$(age_of "$(field "$f" created)")"
+  # One quiet line of where it came from, then the question on its own. The session is left
+  # out when it only repeats the project, and the kind only shows when it is not a question.
   where="$(field "$f" project)"
-  [ -n "$(field "$f" session)" ] && where+=" . $(field "$f" session)"
+  local sess; sess="$(field "$f" session)"
+  [ -n "$sess" ] && [ "$sess" != "$where" ] && where+=" . $sess"
   [ -n "$age" ] && where+=" . $age ago"
-  local state="waiting on you"; [ "$st" = pending ] || state="$st"
-  local kc="$c"; [ "$kind" = question ] || kc="$r"
-  printf '%sASK %s (%s%s%s%s) - %s%s  %s%s%s\n' "$b" "$id" "$x$kc" "$kind" "$x" "$b" "$state" "$x" "$d" "$where" "$x"
+  where+=" . $id"
+  local head="asking you" hc="$c"
+  [ "$kind" = question ] || { head="$kind - asking you"; hc="$r"; }
+  [ "$st" = pending ] || { head="$st"; hc="$d"; }
+  printf '%s%s%s  %s%s%s\n\n' "$b$hc" "$head" "$x" "$d" "$where" "$x"
   printf '%s' "$b"; wrap "" "$(field "$f" question)"; printf '%s' "$x"
   IFS='|' read -r -a opts <<< "$(field "$f" options)"
   IFS='|' read -r -a notes <<< "$(field "$f" option_notes)"
@@ -189,13 +194,15 @@ render_ask() {
   ctx="$(field "$f" context)"
   if [ -n "$ctx" ]; then echo; printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; fi
   judge="$(field "$f" judge)"; reason="$(field "$f" judge_reason)"
+  # "needs you" is what the card already says, so only a judge that would answer is shown.
+  case "$judge" in
+    take-recommend) judge="the judge would take the recommendation" ;;
+    answer:*) judge="the judge would answer: ${judge#answer:}" ;;
+    *) judge="" ;;
+  esac
   if [ -n "$judge" ]; then
-    case "$judge" in
-      human) judge="needs you" ;;
-      take-recommend) judge="would take the recommendation" ;;
-      answer:*) judge="would answer: ${judge#answer:}" ;;
-    esac
-    printf '%s' "$d"; wrap "       " "judge: $judge${reason:+ - $reason}" | sed '1s/^       //'; printf '%s' "$x"
+    [ -n "$ctx" ] || echo
+    printf '%s' "$d"; wrap "" "$judge${reason:+ - $reason}"; printf '%s' "$x"
   fi
   if [ "$st" != pending ]; then
     [ -n "$(field "$f" answer)" ] && printf '%sanswer: %s%s\n' "$b" "$(field "$f" answer)" "$x"
@@ -525,14 +532,24 @@ pick_pending() {
       --preview-window='down,60%,wrap' <<< "$rows" | cut -f1
 }
 
-# pick [<id>]: the card and a one-key answer, for the tmux popup (`agent-panel ask-here`, the
-# chooser, Prefix y). An option needs Enter to send, because the popup opens by itself when the
-# human switches to the session and their next keystroke may have been meant for the pane.
-# No id: choose among every pending ask first.
+# pick [<id>]: the card and a one-key answer. An option or a drop needs Enter, so a stray key
+# sends nothing. No id is Prefix y (`agent-panel ask-here --key`): the list of every pending ask,
+# back to the list after each card, until Esc on the list or no question is left.
 cmd_pick() {
-  local id="${1:-}" f k c n opts=()
-  [ -n "$id" ] || id="$(pick_pending)" || return 1
-  [ -n "$id" ] || return 0
+  [ -z "${1:-}" ] || { pick_one "$1"; return; }
+  local id
+  # Nothing asked: say so and wait for a key, or the popup would close before it is read.
+  [ -n "$(cmd_list --all --pending)" ] || { echo "no questions waiting; any key closes"; read -rsn1 _ || true; return 0; }
+  while id="$(pick_pending)" && [ -n "$id" ]; do
+    pick_one "$id" || return 0
+    echo
+  done
+  return 0
+}
+
+# pick_one <id>: one card and its keys. Non-zero only when the keyboard input ended.
+pick_one() {
+  local id="$1" f k c n opts=()
   f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
@@ -553,21 +570,21 @@ cmd_pick() {
       [1-9])
         [ "$k" -le "$n" ] || continue
         printf 'send "%s"? enter sends, any other key goes back\n' "${opts[k-1]}"
-        IFS= read -rsn1 c || return 0
+        IFS= read -rsn1 c || return 1
         [ -z "$c" ] && { cmd_answer "$id" "${opts[k-1]}"; return; }
         echo "not sent" ;;
       t)
-        local text; IFS= read -e -r -p 'answer: ' text || return 0
+        local text; IFS= read -e -r -p 'answer: ' text || return 1
         [ -n "$text" ] && { cmd_answer "$id" "$text"; return; } ;;
       d)
         printf 'drop this question unanswered? enter drops it, any other key goes back\n'
-        IFS= read -rsn1 c || return 0
+        IFS= read -rsn1 c || return 1
         [ -z "$c" ] && { close_ask cancelled "$id" "dropped by the human"; return; }
         echo "kept" ;;
       q|$'\e') return 0 ;;
     esac
   done
-  return 0
+  return 1
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case

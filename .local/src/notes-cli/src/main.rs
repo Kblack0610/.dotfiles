@@ -516,7 +516,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
-        /// `was:` detail line, and the old row's own tags (#ask, #tier/N, #size/x) carry over
+        /// `was:` detail line, and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
         was: bool,
         #[arg(required = true, num_args = 1..)]

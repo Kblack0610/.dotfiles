@@ -383,7 +383,7 @@ fn is_typed(text: &str) -> bool {
     projects::row_type_area(&format!("- [ ] {text}")).is_some()
 }
 
-/// `new` plus each tag of `old` (`#ask`, `#tier/3`) whose name, the part before `/`, `new`
+/// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
 /// (`#1469`) are words, not tags, so they stay in the `was:` line only.
 fn carry_tags(old: &str, new: &str) -> String {
@@ -1041,7 +1041,7 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
 /// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
-/// the old text's own tags (`#ask`, `#tier/3`, `#size/m`) carry over unless the new text
+/// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
@@ -2288,7 +2288,7 @@ mod inbox_tests {
         let v = vault(
             "was",
             "",
-            "- [ ] the menu flickers on resize #1469 #ask #tier/3 #size/m #high #c1026 <!-- id:sc-4 -->\n  - seen on the deck\n",
+            "- [ ] the menu flickers on resize #1469 #requested #tier/3 #size/m #high #c1026 <!-- id:sc-4 -->\n  - seen on the deck\n",
         );
         let before = v.read();
         let pick = Pick::new("sc-4", false).unwrap();
@@ -2322,13 +2322,13 @@ mod inbox_tests {
         let s = v.read();
         let row = s.lines().find(|l| l.contains("id:sc-4")).unwrap();
         assert!(
-            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #ask #tier/3"),
+            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"),
             "{row}"
         );
         assert!(!row.contains("#size/m") && !row.contains("#1469"), "{row}");
         assert!(row.contains("#high") && row.contains("#c1026"), "{row}");
         assert!(
-            s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #ask #tier/3 #size/m\n"),
+            s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #requested #tier/3 #size/m\n"),
             "{s}"
         );
 

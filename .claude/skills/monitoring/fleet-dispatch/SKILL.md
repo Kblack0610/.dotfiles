@@ -16,7 +16,7 @@ Away comes from `fleet-presence`: no keypress in any tmux client and no desktop 
 
 Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
 
-- `asks`: `#ask` rows tagged `#worker/asks`, on `unity-core-playground`, up to tier 2.
+- `requested`: `#requested` rows tagged `#worker/requested`, on `unity-core-playground`, up to tier 2.
 - `fleet`: rows the human tagged `#worker/fleet`, up to tier 1, with a `#tier/N`.
 - `board`: `unity-core-playground` agent-board rows with no `#worker` tag, up to tier 2. No tags are needed, because the judge reads the tier. A row tagged `#tier/3` stays out.
 
@@ -26,7 +26,7 @@ The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners
 - `fleet-dispatch report` shows the latest verdict for every row it has judged: picked or skipped, size, judged tier, area, and the one-line reason. A verdict made under an older policy is marked stale.
 - `fleet-dispatch candidates` lists the open rows it would judge next.
 - `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
-- Night items: `fleet-dispatch fill` also judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit) and promotes up to `DISPATCH_NIGHT_MAX` (3 active, one an area) whose verdict says tier 3 is the only reason to skip (`tier3_only`) as queue items tagged `night`, which agent-queue holds to its night window; each brief stops at an open PR. It skips `#ask`, `decide:`, device, the human's machine, secrets, prod and wishes; it ranks subtract-or-fix rows first, then `kpi:`/`dream`/`retro` rows, then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. `fleet-dispatch fill --dry-run` lists them as `night`.
+- Night items: `fleet-dispatch fill` also judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit) and promotes up to `DISPATCH_NIGHT_MAX` (3 active, one an area) whose verdict says tier 3 is the only reason to skip (`tier3_only`) as queue items tagged `night`, which agent-queue holds to its night window; each brief stops at an open PR. It skips `#requested`, `decide:`, device, the human's machine, secrets, prod and wishes; it ranks subtract-or-fix rows first, then `kpi:`/`dream`/`retro` rows, then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. `fleet-dispatch fill --dry-run` lists them as `night`.
 
 ## A pass, in order
 

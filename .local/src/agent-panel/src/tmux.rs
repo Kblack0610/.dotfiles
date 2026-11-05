@@ -190,13 +190,11 @@ pub fn current_target() -> Option<String> {
     (!s.is_empty()).then(|| format!("{server}/{s}"))
 }
 
-/// The target is on the server this process runs inside (or names none): a jump to it is a
-/// `switch-client`, which keeps this client and any popup it has open.
-pub fn is_local(target: &str) -> bool {
-    match split(target).0 {
-        Some(srv) => current_server().as_deref() == Some(srv),
-        None => true,
-    }
+/// A status-line message on one client for a few seconds; keys keep going to the pane.
+pub fn notice(socket: &str, client: &str, msg: &str) {
+    let _ = Command::new("tmux")
+        .args(["-S", socket, "display-message", "-c", client, "-d", "6000", msg])
+        .status();
 }
 
 /// Open a popup running `cmd` on `client` of the server at `socket`. `-EE` closes it when the

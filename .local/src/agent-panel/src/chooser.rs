@@ -265,28 +265,9 @@ pub fn run_interactive() -> Result<()> {
         let target = line.split('\t').next().unwrap_or("");
         if !target.is_empty() {
             tmux::jump(target);
-            // Landed on a session that is asking something: this popup becomes its question
-            // card. tmux keeps one popup per client and ignores a second, so the arrival hook
-            // (`ask-here`) is a no-op while this one is open, and there is no race between them.
-            // A hop to another server detaches this client and closes the popup; the hook on
-            // the other server shows the card there.
-            if let Some(id) = agents.iter().find(|a| a.target == target).and_then(|a| a.ask.as_ref()) {
-                if tmux::is_local(target) {
-                    return Err(exec_pick(id));
-                }
-            }
         }
     }
     Ok(())
-}
-
-/// Replace this process with `agent-ask pick <id>`; returns only when exec failed.
-fn exec_pick(id: &str) -> anyhow::Error {
-    use std::os::unix::process::CommandExt;
-    std::process::Command::new(asks::agent_ask_path())
-        .args(["pick", id])
-        .exec()
-        .into()
 }
 
 /// The agent whose ask to show a client that just arrived at `server/session:window`: the one in
@@ -299,26 +280,39 @@ pub fn ask_here<'a>(agents: &'a [Agent], server: &str, session: &str, window: &s
         .min_by_key(|a| a.target != here)
 }
 
-/// `ask-here`: show the question card of the session a client is on, in a popup on that client.
-/// The tmux arrival hooks run it in the background with `key` false, so a session with no ask
-/// shows nothing; Prefix y runs it with `key` true, and then no ask here opens the list of every
-/// pending ask (orphans included) instead.
+/// `ask-here`: the tmux arrival hook runs it with `key` false, and a session that is asking
+/// something gets a status-line notice on that client, never a popup: the human is working and
+/// their next keystroke belongs to the pane. Prefix y runs it with `key` true and opens the list
+/// of every pending ask in a popup, to answer them one after another.
 pub fn run_ask_here(socket: &str, client: &str, session: &str, window: &str, key: bool) -> Result<()> {
+    if key {
+        let cmd = vec![asks::agent_ask_path().to_string_lossy().into_owned(), "pick".to_string()];
+        tmux::popup(socket, client, " questions ", &cmd);
+        return Ok(());
+    }
     let server = Path::new(socket)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let agents = collect();
-    let id = ask_here(&agents, &server, session, window).and_then(|a| a.ask.clone());
-    let ask_bin = asks::agent_ask_path();
-    let mut cmd = vec![ask_bin.to_string_lossy().into_owned(), "pick".to_string()];
-    match id {
-        Some(id) => cmd.push(id),
-        None if key => {}
-        None => return Ok(()),
+    if let Some(id) = ask_here(&agents, &server, session, window).and_then(|a| a.ask.clone()) {
+        tmux::notice(socket, client, &notice_text(&asks::question(&id)));
     }
-    tmux::popup(socket, client, " question ", &cmd);
     Ok(())
+}
+
+/// The status-line notice for a session asking `question`: the question, cut to fit, and the key.
+pub fn notice_text(question: &str) -> String {
+    const MAX: usize = 90;
+    let q: String = if question.chars().count() > MAX {
+        question.chars().take(MAX - 3).collect::<String>() + "..."
+    } else if question.is_empty() {
+        "a question".to_string()
+    } else {
+        question.to_string()
+    };
+    // display-message expands #; a literal one is ##.
+    format!("asking you: {} - Prefix y to answer", q.replace('#', "##"))
 }
 
 /// Render the rows and write the preview map file they need.
@@ -581,6 +575,14 @@ mod tests {
         // Another window of the same session that asks: still shown.
         let got = ask_here(&agents, "hub", "dotfiles", "9").and_then(|a| a.ask.as_deref());
         assert_eq!(got, Some("other"));
+    }
+
+    #[test]
+    fn the_notice_is_the_question_cut_to_fit_and_the_key() {
+        assert_eq!(notice_text("ship #910 now?"), "asking you: ship ##910 now? - Prefix y to answer");
+        let long = notice_text(&"x".repeat(200));
+        assert!(long.contains(&format!("{}...", "x".repeat(87))), "{long}");
+        assert_eq!(notice_text(""), "asking you: a question - Prefix y to answer");
     }
 
     #[test]

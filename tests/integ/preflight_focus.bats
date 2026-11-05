@@ -186,7 +186,7 @@ board_stub() {
 #!/usr/bin/env bash
 if [ "\$1 \$2" = "board --agent" ]; then
   for i in \$(seq 1 $2); do printf 'notes-cockpit\tfollow-up %s\n' "\$i"; done
-  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #ask #tier/2\n' "\$i"; done
+  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #requested #tier/2\n' "\$i"; done
 fi
 exit 0
 EOF
