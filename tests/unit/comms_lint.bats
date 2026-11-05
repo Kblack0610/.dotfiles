@@ -103,6 +103,15 @@ EOF
   assert_output --partial "missing: Next section"
 }
 
+@test "a rundown is in the status shape: Done, Next and Needs you are required" {
+  run "$SUBJECT" --channel rundown - <<< $'Merged since 19:00: 12 PRs.\nHealth: 24 working.'
+  assert_failure 1
+  assert_output --partial "missing: Done section"
+  assert_output --partial "missing: Needs you section"
+  run "$SUBJECT" --channel rundown - <<< $'Moving, two late.\n## Done\n- x #1\n## Doing\n- y\n## Next\n- z\n## Needs you\n- Nothing.'
+  assert_success
+}
+
 @test "a missing prose checker is a usage error, never a silent pass" {
   export COMMS_PROSE_CHECK="$SANDBOX/nope.py"
   run "$SUBJECT" --channel status - <<< $'Done\n- x\nNext\n- y'
