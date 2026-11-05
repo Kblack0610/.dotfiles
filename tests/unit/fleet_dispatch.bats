@@ -8,7 +8,8 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
-  export DISPATCH_PROFILES=bnb DISPATCH_SERVER=lab
+  sandbox_worlds
+  export DISPATCH_PROFILES=bnb
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
   export DISPATCH_WORKERS="$SANDBOX/workers.json"
@@ -41,7 +42,7 @@ setup() {
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 
 # started_item <slug> <session> [origin] [area] [from] [state] [project] -- a started queue item on
-# that session (<server>:<name>, or a bare name on lab): the one record of a running session.
+# that session (<server>:<name>): the one record of a running session.
 started_item() {
   local d="$AGENT_QUEUE_DIR/${6:-running}"; mkdir -p "$d"
   {
@@ -218,7 +219,7 @@ verdict() {
 @test "candidates: a live dispatched session does not hold its project" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' "- [ ] fix crash $T"
-  started_item other-work game-agent-3 run
+  started_item other-work lab:game-agent-3 run
   printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
@@ -319,7 +320,7 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
 
 @test "picks: the same area name in another project is not busy" {
   verdict other agent k dispatch S 1 wilds
-  started_item other-work game-agent-3 run wilds
+  started_item other-work lab:game-agent-3 run wilds
   printf 'game-agent-3\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run picks '{"project":"other","stage":"beta","lane":"agent","key":"k","prio":1,"tier":2,"line":""}' 1
   assert_equal "$(jq -r .key <<<"$output")" k
@@ -602,7 +603,7 @@ refuses() {
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
-    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
   assert_success
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
@@ -800,8 +801,8 @@ two_items() {
 
 @test "headroom counts live sessions started by hand apart from run slots, and names the held kind" {
   two_items
-  started_item run-one lab-run-1 run
-  started_item hand-one lab-hand-1 hand
+  started_item run-one lab:lab-run-1 run
+  started_item hand-one lab:lab-hand-1 hand
   printf 'lab-run-1\nlab-hand-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   export DISPATCH_MAX_LIVE=1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
@@ -999,7 +1000,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 @test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
-  started_item fix-crash game-agent-1 run '' 'board:game:fix crash'
+  started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
   run cmd_reap
   assert_success
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
@@ -1010,7 +1011,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 @test "reap leaves a board item its session closed ok, and its row, alone" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [x] fix crash'
-  started_item fix-crash game-agent-1 run '' 'board:game:fix crash'
+  started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
   agent-queue move fix-crash done --status ok >/dev/null
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
@@ -1022,7 +1023,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 @test "reap leaves a live session's item running while it neither waits nor asks" {
   project game beta "$SANDBOX/repos/game"
-  started_item fix-crash game-agent-1 run
+  started_item fix-crash lab:game-agent-1 run
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}"'
   stub agent-ask 'exit 0'
@@ -1038,7 +1039,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 @test "reap moves an item to waiting while its session waits on the human or owns a pending ask, and back after" {
   project game beta "$SANDBOX/repos/game"
   started_item p lab:game-agent-1
-  started_item q game-agent-2
+  started_item q lab:game-agent-2
   printf 'game-agent-1\ngame-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
   stub agent-ask 'printf "a1\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-2\n"'
@@ -1055,7 +1056,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 @test "reap moves nothing when it cannot read the sessions or the asks" {
   project game beta "$SANDBOX/repos/game"
-  started_item p game-agent-1 '' '' human waiting
+  started_item p lab:game-agent-1 '' '' human waiting
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub agent-panel 'exit 1'
   stub agent-ask 'exit 0'
@@ -1071,21 +1072,21 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 # 2026-10-28: only `run` tagged @dispatch and kept a record, so restored and hand-launched
 # sessions showed no [dispatch] and an agent tagged two by hand with set-option.
 
-@test "start --brief claims the row, promotes it to an item, and starts that item on the named server" {
+@test "start --brief claims the row, promotes it to an item, and starts that item on the agent world" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'tidy the loader' '- [ ] tidy the loader'
   printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
   stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent \
-    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
   assert_success
   assert_output --partial 'started game-agent-1: game: tidy-the-loader'
   grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
-  assert_called "new --server default --detach -c $SANDBOX/repos/game"
-  assert_called 'tmux -L default set-option -t =game-agent-1: @dispatch game: tidy-the-loader'
+  assert_called "new --server lab --detach -c $SANDBOX/repos/game"
+  assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: tidy-the-loader'
   f=$(qitem running tidy-the-loader)
   [ -n "$f" ] || fail "the row's item is not running"
-  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" lane) $(qfield "$f" profile)" 'default:game-agent-1 hand agent bnb'
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" lane) $(qfield "$f" profile)" 'lab:game-agent-1 hand agent bnb'
   assert_equal "$(qfield "$f" from)" 'board:game:tidy the loader'
   # One /one-shot: the item's brief adds it, so the row brief's own is dropped.
   assert_equal "$(grep -o '/one-shot' "$NOTES_FIXTURE/cmd" | wc -l)" 1
@@ -1149,7 +1150,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
-    --row 'tidy the loader' --server default --brief "$SANDBOX/brief.md"
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
   assert_success
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
@@ -1167,6 +1168,27 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   assert_output --partial 'already exists on default'
   assert_not_called 'new-session'
   assert_not_called 'set-option'
+}
+
+@test "start takes --server only for a resume: a new session goes to the agent world" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [ ] fix crash'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row 'fix crash' --server hub --brief "$SANDBOX/brief.md"
+  assert_failure 2
+  assert_output --partial '--server is for --resume'
+  assert_not_called 'wt new'
+}
+
+@test "start refuses to guess when no world declares @agents" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [ ] fix crash'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  rm "$HOME/.config/tmux-servers/lab.conf"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row 'fix crash' --brief "$SANDBOX/brief.md"
+  assert_failure 1
+  assert_output --partial 'no world declares @agents'
+  assert_not_called 'wt new'
 }
 
 @test "start refuses a call that is not exactly one launch" {

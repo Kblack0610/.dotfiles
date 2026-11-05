@@ -7,6 +7,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
+  sandbox_worlds
   AQ="$REPO_ROOT/.local/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
@@ -205,7 +206,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move w running
   f="$(item running w)"
   [ -n "$(field "$f" started)" ]
-  [ "$(field "$f" session)" = game-agent-1 ]
+  [ "$(field "$f" session)" = lab:game-agent-1 ]
   "$AQ" move w waiting
   [ -n "$(field "$(item waiting w)" waiting)" ]
   run "$AQ" move w done
@@ -258,24 +259,41 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" add --project game --running --session dotfiles-70 --slug by-hand "this session"
   assert_success
   f="$(item running by-hand)"
-  [ "$(field "$f" session)" = dotfiles-70 ]
+  [ "$(field "$f" session)" = lab:dotfiles-70 ]
   [ -n "$(field "$f" started)" ]
 }
 
-@test "--running inside tmux records <server>:<session> by default; outside it, none" {
+@test "--running on the agent world records <server>:<session>; off it or outside tmux, none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
-  TMUX="$SANDBOX/tmp/tmux-1000/default,123,0" run "$AQ" add --project game --running --slug here "this session"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
   assert_success
-  [ "$(field "$(item running here)" session)" = default:dotfiles-agent-9 ]
-  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --session given --slug given "given"
-  [ "$(field "$(item running given)" session)" = given ]
+  [ "$(field "$(item running here)" session)" = lab:dotfiles-agent-9 ]
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubbed "from a hub window"
+  assert_success
+  [ -z "$(field "$(item running hubbed)" session)" ]
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --session given --slug given "given"
+  [ "$(field "$(item running given)" session)" = lab:given ]
   run "$AQ" add --project game --running --slug nowhere "no tmux"
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+@test "a bare session is refused when no world declares @agents, and cancel kills nothing on a value with no server" {
+  rm "$HOME/.config/tmux-servers/lab.conf"
+  run "$AQ" add --project game --running --session given --slug given "given"
+  assert_failure
+  assert_output --partial 'no world declares @agents'
+  sandbox_worlds
+  "$AQ" add --project game --running --session lab:x --slug bare "bare"
+  sed -i 's/^session: .*/session: dotfiles/' "$(item running bare)"
+  run "$AQ" cancel bare
+  assert_success
+  assert_not_called 'kill-session'
+}
+
 @test "mine: the active item this tmux session records; none exits 1, two exit 2" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
-  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
   run "$AQ" mine
   assert_failure 1
   "$AQ" add --project game --running --slug here "this session"

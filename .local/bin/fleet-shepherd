@@ -68,11 +68,11 @@ PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while 
 UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<session:window>: the pass running now
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
-SERVER="${FLEET_SHEPHERD_SERVER:-hub}"  # hub, beside the human's chats; Prefix o jumps to it
 # The pass is a window of hub's dotfiles session (.config/tmux-servers/hub.conf), not a session
 # of its own, so the session lists hold agent sessions only. `=` on both parts: an exact match,
 # never a prefix match onto a session or window whose name only starts the same.
 SESSION="${FLEET_SHEPHERD_SESSION:-dotfiles}"
+SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # hub, beside the human's chats; Prefix o jumps to it
 WINDOW="${FLEET_SHEPHERD_WINDOW:-shepherd}"
 PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
 WIN="=$SESSION:=$WINDOW"

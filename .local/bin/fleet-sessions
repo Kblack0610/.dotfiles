@@ -63,7 +63,6 @@ STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/stat
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # A session working a queue item is named by that item's `session:` (<server>:<tmux session>, a
 # bare name on this server); its "<project>: <slug>" is shown so the shepherd knows what it works.
-QUEUE_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
 # claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
@@ -626,10 +625,9 @@ collect() {
   local panel items qjson
   qjson="$(agent-queue list --json --state active 2>/dev/null)"
   # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
-  items="$(jq -r --arg d "$QUEUE_SERVER" <<<"$qjson" '
-    select(.state != "queued" and (.session // "") != "")
-    | (if (.session | contains(":")) then .session | sub(":"; "/") else "\($d)/\(.session)" end)
-      + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
+  items="$(jq -r <<<"$qjson" '
+    select(.state != "queued" and ((.session // "") | contains(":")))
+    | (.session | sub(":"; "/")) + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
   # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"

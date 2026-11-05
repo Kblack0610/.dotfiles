@@ -18,7 +18,7 @@
 #   - Inside a `-L foo` session $TMUX is set, so a bare `tmux ls` reports foo's
 #     sessions, not the default server's.
 #   - `sesh` shells out to plain `tmux`, so it follows the enclosing server with no
-#     config change. One sesh.toml is correct inside every server.
+#     config change. Its session list is generated from that world's manifest.
 #
 # What does NOT survive: tmux cannot move a live session between servers. There is no
 # `move-session -L`. Switching a session to another server means recreating it.
@@ -29,7 +29,8 @@
 #
 # Each server holds a SET of sessions, declared in .config/tmux-servers/<name>.conf.
 # `ensure` creates only the ones that are missing, keyed on session name, so booting a
-# world and repairing one are the same command.
+# world and repairing one are the same command. Which world a directory, session or agent
+# belongs to is worlds.sh's answer, not this file's.
 #
 # Because sessions are per-socket, `Prefix+w` (choose-tree) inside a server can only
 # ever list that server's sessions. That is the whole point and needs no code:
@@ -43,19 +44,7 @@ set -uo pipefail
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
-
-# server name -> start dir for its initial session. A name not listed here still
-# works; it just boots at $HOME.
-server_root() {
-  case "$1" in
-    hub) printf '%s\n' "$HOME" ;;
-    lab) printf '%s\n' "$HOME/.notes/lab" ;;
-    *)   printf '%s\n' "$HOME" ;;
-  esac
-}
-
-MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
-SESH_CONFIG_DIR="${SESH_CONFIG_DIR:-$HOME/.config/sesh}"
+. "${SELF%/*}/worlds.sh" || exit 1
 
 # One slot: where the last hop LEFT from, so `back` can walk it in reverse. tmux cannot
 # hold this itself - switch-client -l is per-client AND per-server, and a cross-server hop
@@ -89,17 +78,6 @@ known_servers() {
   return 0
 }
 
-# world_hidden <name> -- rc 0 when THIS machine opts out of a world. The opt-out is
-# $MANIFEST_DIR/hidden, one world per line, `#` comments. It is machine-local: stow links
-# the manifests one file at a time, so a file the repo does not have stays on this machine
-# (and .gitignore keeps it out if the directory is ever folded into one link). A hidden
-# world is not listed and refuses hop/root/goto, so its keys can stay bound everywhere.
-# sessionizer.sh:world_hidden reads the same file the same way.
-world_hidden() {
-  [ -r "$MANIFEST_DIR/hidden" ] || return 1
-  sed 's/#.*//; s/[[:space:]]//g' "$MANIFEST_DIR/hidden" | grep -qxF -- "$1"
-}
-
 die() { printf 'tmx: %s\n' "$*" >&2; exit 1; }
 
 command -v tmux >/dev/null 2>&1 || die "tmux not installed"
@@ -131,6 +109,12 @@ cmd_ls() {
   done
 }
 
+# _declared_world <server> <session[:window]> -- the world that declares that session, else
+# <server>. A session has one home, so naming it on the wrong world still reaches that home.
+_declared_world() {
+  world_of_session "${2%%:*}" || printf '%s\n' "$1"
+}
+
 # ensure <name> [<session>] -- create every session in the manifest that is not already there.
 # Idempotent and additive: it never renames, moves or kills an existing session, so
 # running it against a live world is safe and is also how you repair one.
@@ -141,12 +125,13 @@ cmd_ls() {
 # `land`/`goto` wake it.
 cmd_ensure() {
   local srv="${1:?ensure needs a server name}" want="${2:-}"
+  [ -z "$want" ] || srv="$(_declared_world "$srv" "$want")"
   local manifest="$MANIFEST_DIR/$srv.conf"
   local made=0 kept=0 skipped=0 deferred=0
 
   if [ ! -r "$manifest" ]; then
     # No manifest is not an error: an ad-hoc server just gets its default session.
-    tmux -L "$srv" new-session -A -d -s "$srv" -c "$(server_root "$srv")" 2>/dev/null
+    tmux -L "$srv" new-session -A -d -s "$srv" -c "$HOME" 2>/dev/null
     printf 'tmx: %s has no manifest (%s); booted a single "%s" session\n' \
       "$srv" "$manifest" "$srv" >&2
     return 0
@@ -154,7 +139,6 @@ cmd_ensure() {
 
   local name dir cmd sess win ondemand
   while read -r name dir cmd; do
-    case "$name" in ''|'#'*) continue ;; esac
     [ -n "$dir" ] || continue
     dir="${dir/#\~/$HOME}"           # manifests are written with ~
     # `<session>:<window>` adds a named window to a session declared on an earlier line
@@ -212,36 +196,47 @@ cmd_ensure() {
     # valid for SESSION targets (has-session -t =x); against a pane target tmux
     # fails with "can't find pane", which silently no-ops every startup command.
     [ -n "$cmd" ] && tmux -L "$srv" send-keys -t "$name:" "$cmd" Enter
-  done < "$manifest"
+  done < <(world_entries "$manifest")
 
   printf 'tmx: %s — %d created, %d already up, %d skipped (no dir), %d on demand\n' \
     "$srv" "$made" "$kept" "$skipped" "$deferred"
 }
 
-# pick-session -- the Prefix+S dispatch. Inside a NAMED server, scope the picker to
-# that world's own sesh config and drop zoxide (-c -t, no -z), because the zoxide
-# database is global and would otherwise make every server's list look the same.
-# Inside the unnamed default server there is no world to scope to, so fall back to
-# the global config and full behaviour.
+# pick-session -- the Prefix+S dispatch. Scoped to this world: its live sessions plus what its
+# manifest declares, so it can only open something that belongs here. sesh reads a TOML file, so
+# the list is generated from the manifest at each pick, and -z stays off because the zoxide
+# database is global and would put other worlds' directories in the list.
+#
+# The unnamed default server is nobody's world, so a pick there goes to the sessionizer, whose
+# route decides where it lands. sesh would create the session on the default socket.
 cmd_pick_session() {
-  command -v sesh >/dev/null 2>&1 || die "sesh not installed"
   local srv cfg
   srv="$(tmux display-message -p '#{socket_path}' 2>/dev/null)"
   srv="${srv##*/}"
-  cfg="$SESH_CONFIG_DIR/$srv.toml"
+  [ -n "$srv" ] && [ "$srv" != default ] || exec "${SELF%/*}/sessionizer.sh"
+  command -v sesh >/dev/null 2>&1 || die "sesh not installed"
+  cfg="$(dirname "$BACK_FILE")/sesh-$srv.toml"
+  mkdir -p "${cfg%/*}"
+  _sesh_config "$srv" > "$cfg"
+  sesh -C "$cfg" picker -i -d -c -t
+}
 
-  if [ -n "$srv" ] && [ "$srv" != "default" ] && [ -r "$cfg" ]; then
-    sesh -C "$cfg" picker -i -d -c -t
-  else
-    sesh picker -i -d
-  fi
+# _sesh_config <world> -- that world's declared sessions as a sesh config. Only directories this
+# machine has: a manifest stays identical everywhere, and sesh cannot open what is missing.
+_sesh_config() {
+  local world name dir
+  printf '[default_session]\npreview_command = "eza --all --git --icons --color=always {}"\n'
+  while read -r world name dir; do
+    [ "$world" = "$1" ] && [ -d "$dir" ] || continue
+    printf '\n[[session]]\nname = "%s"\npath = "%s"\n' "$name" "$dir"
+  done <<< "$(world_rows)"
 }
 
 # The world's root page: the FIRST entry in its manifest. Three callers read this and
 # they must agree - `root` attaches to it, resume EXCLUDES it, and _record_back compares
 # against it - so it is derived in one place.
 _landing() {
-  awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
+  awk '!/^[[:space:]]*[#@]/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
 }
 
 # The landing session's OWN window: the first one that is not a declared board. The board
@@ -547,13 +542,15 @@ cmd_root() { _enter "${1:?root needs a server name}" root; }
 # The third way to arrive, beside hop (resume) and root (landing page): "take me to THIS
 # session, wherever it lives". `pick-all` has always done it by calling _enter with an
 # explicit session; this only gives that a name so another surface can ask for it.
-# sessionizer.sh is the caller: a directory some manifest declares belongs in that
-# manifest's world, and creating it here instead would be a second session on one dir.
+# sessionizer.sh is the caller: a directory belongs in the world worlds.sh routes it to, and
+# creating it here instead would be a second session on one dir. A session some manifest
+# declares goes to that world, whichever world was named.
 #
 # Deliberately NOT a `land` call. land is the FAR side of the hop and never looks at
 # $TMUX, so calling it from inside a live client skips the detach entirely (see _enter).
 cmd_goto() {
-  _enter "${1:?goto needs a server name}" "${2:?goto needs a session name}"
+  local sess="${2:?goto needs a session name}"
+  _enter "$(_declared_world "${1:?goto needs a server name}" "$sess")" "$sess"
 }
 
 # back -- Prefix+L. tmux's own last-session FIRST; the crumb only when tmux has none.

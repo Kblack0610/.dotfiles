@@ -44,6 +44,14 @@ export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AG
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
 # fixture data by copy (never by running the real tool).
+# sandbox_worlds -- the manifests the fleet scripts ask `tmux-world` about: agents on lab, the
+# shepherd's session on hub. A test of routing itself writes its own.
+sandbox_worlds() {
+  mkdir -p "$HOME/.config/tmux-servers"
+  echo '@agents' > "$HOME/.config/tmux-servers/lab.conf"
+  echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
+}
+
 sandbox_init() {
   local fixture="${1:-basic}"
 
@@ -150,6 +158,10 @@ sandbox_init() {
     cp "$REPO_ROOT/.local/bin/$b" "$SANDBOX/bin/$b"
     chmod +x "$SANDBOX/bin/$b"
   done
+
+  # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
+  printf '#!/bin/sh\nexec "%s/.local/src/tmux/worlds.sh" "$@"\n' "$REPO_ROOT" > "$SANDBOX/bin/tmux-world"
+  chmod +x "$SANDBOX/bin/tmux-world"
 
   # Fixture data the `notes` stub reads. Seeded by copy, never by running the real tool.
   export NOTES_FIXTURE="$SANDBOX/fixture"

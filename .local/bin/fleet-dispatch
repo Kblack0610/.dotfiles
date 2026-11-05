@@ -9,8 +9,8 @@
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
-#   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
-#       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--item SLUG])
+#   fleet-dispatch start --project P [--profile X] [--agent] [--model M]
+#       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--server S] [--item SLUG])
 #                                    start ONE session the way every agent must: see cmd_start
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
@@ -22,7 +22,7 @@
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and added
-# to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the lab server
+# to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the agent world
 # running /one-shot, tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # Tier 3 runs unattended only as a `night` item: fill promotes the dotfiles boards' tier-3 rows
@@ -50,7 +50,6 @@ unset _k _v
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --role observe}"
-: "${DISPATCH_SERVER:=lab}"
 : "${DISPATCH_POLICY:=$HOME/.config/fleet-dispatch/policy.md}"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
@@ -163,8 +162,8 @@ np() {
   if [ -n "$p" ]; then notes --profile "$p" "$@"; else notes "$@"; fi
 }
 
-# session_live <session> [server]
-session_live() { tmux -L "${2:-$DISPATCH_SERVER}" has-session -t "=$1" 2>/dev/null; }
+# session_live <session> <server>
+session_live() { tmux -L "$2" has-session -t "=$1" 2>/dev/null; }
 
 # The env prefix that starts claude on the account claude-acct pick chooses
 # (the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
@@ -181,13 +180,13 @@ account_env() {
 
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
-# state, weight. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`; a
-# bare name is on DISPATCH_SERVER (tmux turns a ':' in a session name into '_', so one ':' splits).
+# state, weight. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`
+# (tmux turns a ':' in a session name into '_', so one ':' splits).
 item_sessions() {
-  agent-queue list --json --state active 2>/dev/null | jq -r --arg d "$DISPATCH_SERVER" '
-    select(.state != "queued" and (.session // "") != "")
+  agent-queue list --json --state active 2>/dev/null | jq -r '
+    select(.state != "queued" and ((.session // "") | contains(":")))
     | (.session | index(":")) as $i
-    | [.slug, (if $i then .session[:$i] else $d end), (if $i then .session[$i + 1:] else .session end),
+    | [.slug, .session[:$i], .session[$i + 1:],
        (.origin // ""), .project, (.area // ""), .state, (.weight // "light")] | join("\u001f")' 2>/dev/null
   return 0
 }
@@ -384,7 +383,7 @@ picks() {
 #                           The sheet is not touched: the row was claimed before the reboot.
 #                           --item SLUG re-attaches the started item that session was working.
 cmd_start() {
-  local project='' prof='' lane=human key='' server="$DISPATCH_SERVER" model='' brief_file='' \
+  local project='' prof='' lane=human key='' server='' model='' brief_file='' \
     resume='' cwd='' session='' area='' item='' it='' st='' brief cmd label origin acct mode ready
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -408,6 +407,10 @@ cmd_start() {
     esac
     shift 2
   done
+  # A new session goes where the manifests say; --server only puts a resume back where it was.
+  [ -z "$server" ] || [ -n "$resume" ] || { say "start: --server is for --resume; the agent world comes from the manifests"; return 2; }
+  [ -n "$server" ] || server=$(tmux-world agents)
+  [ -n "$server" ] || { say "start: no world declares @agents on this machine"; return 1; }
   if [ -n "$brief_file" ]; then
     [ -z "$resume$item" ] || { say "start: give exactly one of --brief, --item or --resume"; return 2; }
     [ -n "$project" ] || { say "start: --project is required"; return 2; }
@@ -722,7 +725,7 @@ start_item() {
   # Asked again here, as launch does: the gate's answer may be minutes old.
   acct=$(claude-acct room 2>/dev/null) || { settle BLOCKED "no account has room for queue item $slug"; return 3; }
   model=$(model-lane classify "$(jq -r .task <<<"$it")" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
-  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --server "$DISPATCH_SERVER" --model "${model:-opus}"
+  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --model "${model:-opus}"
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
     settle WORKED "started queue item $slug"

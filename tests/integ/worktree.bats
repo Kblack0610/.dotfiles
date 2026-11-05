@@ -162,18 +162,18 @@ add_wt() {
   assert_equal "${lines[-1]}" repo-agent-2
 }
 
-# A repo a server manifest declares gets its session on that server, whichever world the key
-# was pressed in. 2026-10-28: Prefix+F pressed on hub put three playground agents on hub's
-# socket while their 23 siblings sat on lab, because the repo routed `here`.
+# Every agent worktree lands on the world that declares `@agents`, whichever repo it was cut
+# from and wherever it was started. 2026-10-28: Prefix+F pressed on hub put three playground
+# agents on hub's socket while their 23 siblings sat on lab, because the repo routed `here`.
 declare_in_lab() {
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"
   # `~`, because $SANDBOX has a space and the manifest format is whitespace-delimited.
-  printf 'game ~/dev/game\n' > "$TMUX_SERVERS_DIR/lab.conf"
+  printf 'game ~/dev/game\n@agents\n' > "$TMUX_SERVERS_DIR/lab.conf"
   make_repo "$HOME/dev/game"
 }
 
-@test "new pressed in hub on a repo lab declares makes the session on lab and hops there" {
+@test "new pressed in hub makes the session on the agent world and hops there" {
   declare_in_lab
   export TMUX=/tmp/tmux-stub/hub,1,0
   run "$WT" new -c "$MAIN"
@@ -184,7 +184,7 @@ declare_in_lab() {
   assert_not_called 'switch-client'
 }
 
-@test "new pressed in the declaring world itself stays put, with no hop" {
+@test "new pressed on the agent world itself stays put, with no hop" {
   declare_in_lab
   export TMUX=/tmp/tmux-stub/lab,1,0
   run "$WT" new -c "$MAIN"
@@ -194,7 +194,7 @@ declare_in_lab() {
   assert_not_called 'tmux -L lab new-session'
 }
 
-@test "new --server still wins over the world a manifest declares" {
+@test "new --server still wins over the agent world" {
   declare_in_lab
   WT_NEW_CMD='true' run "$WT" new --server elsewhere --detach -c "$MAIN"
   assert_success

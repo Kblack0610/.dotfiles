@@ -119,7 +119,7 @@ vim.keymap.set("n", "<leader>q", "<cmd>confirm q<cr>", { desc = "Quit" })
 vim.keymap.set("n", "<C-d>", "<C-d>zz", { desc = "Half-page down (center)" })
 vim.keymap.set("n", "<C-u>", "<C-u>zz", { desc = "Half-page up (center)" })
 -- tmux sessionizer in nvim
-vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww ~/.config/bin/tmux-sessionizer.sh<CR>", { desc = "tmux sessionizer" })
+vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww ~/.local/src/tmux/sessionizer.sh<CR>", { desc = "tmux sessionizer" })
 -- copy current file name
 vim.keymap.set(
   "n",

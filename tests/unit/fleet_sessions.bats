@@ -577,10 +577,10 @@ queue_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions"
   assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
 
-  # A bare session name is on the queue's server; the same name on another server is not this one.
+  # A value with no server names no session, and the same name on another server is not this one.
   rm -r "$HOME/.agent/queue/running"; queue_item waiting s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]

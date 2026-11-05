@@ -347,15 +347,9 @@ pub fn execute(steps: &[Step], runner: &dyn Runner) -> Result<String, String> {
     Ok(said.join("\n"))
 }
 
-/// The tmux server agent-queue starts its sessions on, as agent-queue resolves it.
-fn queue_server() -> String {
-    std::env::var("AGENT_QUEUE_TMUX_SERVER").unwrap_or_else(|_| "lab".into())
-}
-
 /// Name each session's queue item: the item whose `session` names that tmux session, once it
-/// has started. `session` is `<server>:<tmux-session>`, or a bare tmux session on agent-queue's
-/// `server`.
-pub fn with_items(sessions: &mut [Session], items: &[queue::Item], server: &str) {
+/// has started. `session` is `<server>:<tmux-session>`; agent-queue writes nothing else.
+pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
     for i in items {
         let Some(sess) = i.session.as_deref().filter(|s| !s.is_empty()) else {
             continue;
@@ -363,7 +357,9 @@ pub fn with_items(sessions: &mut [Session], items: &[queue::Item], server: &str)
         if i.slug.is_empty() || i.state == queue::State::Queued {
             continue;
         }
-        let (srv, sess) = sess.split_once(':').unwrap_or((server, sess));
+        let Some((srv, sess)) = sess.split_once(':') else {
+            continue;
+        };
         for s in sessions.iter_mut() {
             if s.server == srv && s.tmux_session == sess && !s.parked {
                 s.item = Some(i.slug.clone());
@@ -385,7 +381,7 @@ pub fn gather(runner: &dyn Runner) -> Snapshot {
     let agents = chooser::collect_all();
     let mut sessions: Vec<Session> = agents.iter().map(Session::from).collect();
     let items = queue::list(runner, "active").unwrap_or_default();
-    with_items(&mut sessions, &items, &queue_server());
+    with_items(&mut sessions, &items);
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
         if a.plan && !s.parked && is_word(&s.server) && is_id(&s.pane, '%') {
@@ -583,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn a_queue_item_names_its_running_session_on_the_queue_server() {
+    fn a_queue_item_names_its_running_session_on_its_server() {
         let mut s = vec![live(), parked()];
         let mut other = live();
         other.server = "hub".into();
@@ -591,11 +587,11 @@ mod tests {
         with_items(
             &mut s,
             &queue::parse(
-                "{\"slug\":\"a\",\"session\":\"dotfiles-agent-3\",\"state\":\"running\"}\n\
-                 {\"slug\":\"b\",\"session\":\"dotfiles-agent-9\",\"state\":\"running\"}\n\
-                 {\"slug\":\"c\",\"session\":\"dotfiles-agent-3\",\"state\":\"queued\"}\n",
+                "{\"slug\":\"a\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"running\"}\n\
+                 {\"slug\":\"b\",\"session\":\"lab:dotfiles-agent-9\",\"state\":\"running\"}\n\
+                 {\"slug\":\"c\",\"session\":\"lab:dotfiles-agent-3\",\"state\":\"queued\"}\n\
+                 {\"slug\":\"e\",\"session\":\"dotfiles-agent-3\",\"state\":\"running\"}\n",
             ),
-            "lab",
         );
         assert_eq!(s[0].item.as_deref(), Some("a"));
         assert_eq!(s[1].item, None, "a parked row is unparked, not cancelled");
@@ -606,7 +602,6 @@ mod tests {
             &queue::parse(
                 "{\"slug\":\"d\",\"session\":\"hub:dotfiles-agent-3\",\"state\":\"running\"}\n",
             ),
-            "lab",
         );
         assert_eq!(
             s[2].item.as_deref(),

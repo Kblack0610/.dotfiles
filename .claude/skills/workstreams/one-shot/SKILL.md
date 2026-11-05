@@ -30,7 +30,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
    - Cut a worktree off the remote tip per `~/.claude/CLAUDE.md` (`wt new`, or `git worktree add ~/.worktrees/<repo>-<slug> -b <branch> origin/<base>`). If the session already sits in a clean, current agent worktree, branch there instead.
-   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session); `<slug>` below is that item. Add no board or sheet row; an item promoted from the board closes its own row when it lands.
+   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session when that is on the agent world; anywhere else it records none, and `--item` carries the landing); `<slug>` below is that item. Add no board or sheet row; an item promoted from the board closes its own row when it lands.
 
 3. **Implement.** Make the smallest change that fully solves the task, matching the surrounding code. Send broad exploration to Explore subagents. Update the docs the project CLAUDE.md says a change of this kind must touch.
 
