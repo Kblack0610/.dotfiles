@@ -134,26 +134,53 @@ fn prune(path: &std::path::Path) -> std::io::Result<()> {
 /// `ts` is serialized first, so a line from another day is passed over without parsing it:
 /// `notes today` reads this on every shell start.
 pub fn on_day(p: &Profile, day: &str) -> Vec<Event> {
+    read_day(p, day).0
+}
+
+fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
     let head = format!("{{\"ts\":\"{day}");
-    fs::read_to_string(path(p))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.starts_with(&head))
-        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-        .collect()
+    read(p, |l| l.starts_with(&head))
 }
 
 /// Every event of the last `days` days, today included, oldest first.
 pub fn since(p: &Profile, days: i64) -> Vec<Event> {
+    read_since(p, days).0
+}
+
+fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {
     let cut = (chrono::Local::now() - chrono::Duration::days(days - 1))
         .format("%Y-%m-%d")
         .to_string();
-    fs::read_to_string(path(p))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.get(7..17).is_some_and(|d| d >= &cut[..]))
-        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-        .collect()
+    read(p, |l| l.get(7..17).is_some_and(|d| d >= &cut[..]))
+}
+
+/// A line of the record that does not read as an event (a torn write), as `notes log --json`
+/// prints it so comms-lint counts it: dated by the event before it.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Reject {
+    pub ts: String,
+    pub text: String,
+    pub reject: &'static str,
+}
+
+/// The record's lines that `keep` picks, as events, and the ones that do not read.
+fn read(p: &Profile, keep: impl Fn(&str) -> bool) -> (Vec<Event>, Vec<Reject>) {
+    let (mut events, mut rejects) = (vec![], vec![]);
+    let text = fs::read_to_string(path(p)).unwrap_or_default();
+    for l in text.lines().filter(|l| keep(l)) {
+        match serde_json::from_str::<Event>(l) {
+            Ok(e) => events.push(e),
+            Err(_) => rejects.push(Reject {
+                ts: events
+                    .last()
+                    .map(|e: &Event| e.ts.clone())
+                    .unwrap_or_default(),
+                text: l.to_string(),
+                reject: "a record line that does not read as an event",
+            }),
+        }
+    }
+    (events, rejects)
 }
 
 /// What `notes log` shows: every set field narrows it.
@@ -166,6 +193,10 @@ pub struct Filter {
 }
 
 impl Filter {
+    fn is_empty(&self) -> bool {
+        self.project.is_none() && self.id.is_none() && self.action.is_none() && self.by.is_none()
+    }
+
     fn hits(&self, e: &Event) -> bool {
         let is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| w == got);
         self.project
@@ -215,16 +246,22 @@ pub fn log(
     filter: &Filter,
     json: bool,
 ) -> anyhow::Result<i32> {
-    let events = match (day, days) {
-        (Some(d), _) => on_day(p, d),
-        (None, Some(n)) => since(p, n),
-        (None, None) => since(p, 1),
+    let (events, rejects) = match (day, days) {
+        (Some(d), _) => read_day(p, d),
+        (None, Some(n)) => read_since(p, n),
+        (None, None) => read_since(p, 1),
     };
     for e in events.iter().filter(|e| filter.hits(e)) {
         if json {
             println!("{}", serde_json::to_string(e)?);
         } else {
             println!("{}", log_line(e));
+        }
+    }
+    // A line that does not read has no fields to filter on, so only the unfiltered log has it.
+    if json && filter.is_empty() {
+        for r in &rejects {
+            println!("{}", serde_json::to_string(r)?);
         }
     }
     Ok(0)
@@ -460,6 +497,33 @@ mod tests {
             }]
         );
         assert_eq!(on_day(&p, "2026-01-01").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_torn_line_is_a_reject_dated_by_the_event_before_it() {
+        let dir = std::env::temp_dir().join(format!("ingest-torn-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        let ev = Event::new("filed", "outbox", "nc", "a row");
+        record(&p, &ev);
+        let day = &ev.ts[..10];
+        let torn = format!("{{\"ts\":\"{day}T23:59:00-08:00\",\"action\":\"fi");
+        let mut f = fs::OpenOptions::new().append(true).open(path(&p)).unwrap();
+        writeln!(f, "{torn}").unwrap();
+        let (events, rejects) = read_since(&p, 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(rejects.len(), 1);
+        assert_eq!(
+            (rejects[0].ts.as_str(), rejects[0].text.as_str()),
+            (ev.ts.as_str(), torn.as_str())
+        );
+        assert!(read_day(&p, day).1.len() == 1, "the day read keeps it too");
+        assert_eq!(
+            since(&p, 1).len(),
+            1,
+            "callers that want events see only events"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -40,21 +40,6 @@ enum Cmd {
     /// Print a transcript's closed time by what it waited on, as one JSON object. The nightly
     /// session-outcomes run reads this, so the rule lives only in `time_use`.
     TimeUse { transcript: PathBuf },
-    /// Tell a tmux client in its status line that the session it is on asks something, and that
-    /// Prefix y answers it. Run by the tmux arrival hooks; silent when the session asks nothing.
-    AskHere {
-        /// The server's socket (`#{socket_path}`).
-        #[arg(long)]
-        socket: String,
-        /// The client to show it on (`#{client_name}`).
-        #[arg(long)]
-        client: String,
-        /// The tmux session and window index the client is on.
-        #[arg(long)]
-        session: String,
-        #[arg(long)]
-        window: String,
-    },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
     /// Type a message into a pane (`list --json`'s `pane`, `<server>/<pane>`) and submit it once
@@ -67,6 +52,14 @@ enum Cmd {
         #[arg(long)]
         no_submit: bool,
         text: String,
+    },
+    /// The turn of a transcript that posted an ask, as JSON {"first","prompt","said"}: the
+    /// session's first typed prompt, the prompt that turn answered, and its own text (the ask
+    /// card's story). Exits 1 when no tool result in the transcript printed the id.
+    Said {
+        transcript: PathBuf,
+        #[arg(long)]
+        around: String,
     },
     /// Internal fzf reload callback: print the chooser rows again (not meant to be run by hand).
     #[command(hide = true)]
@@ -96,9 +89,6 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?);
             Ok(())
         }
-        Some(Cmd::AskHere { socket, client, session, window }) => {
-            chooser::run_ask_here(&socket, &client, &session, &window)
-        }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
         Some(Cmd::Send { pane, no_submit, text }) => {
             if agent_panel::send::message(&pane, &text, !no_submit)? == agent_panel::send::Sent::NotSubmitted {
@@ -107,6 +97,13 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Said { transcript, around }) => match agent_panel::jsonl::said_around_at(&transcript, &around) {
+            Some(said) => {
+                println!("{}", serde_json::to_string(&said)?);
+                Ok(())
+            }
+            None => std::process::exit(1),
+        },
         Some(Cmd::Rows { map_file }) => chooser::run_rows(&map_file),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }

@@ -28,7 +28,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
-       hub actions --since WHEN [--json]
+       hub actions --since WHEN [--json | --records]
        hub phone --json
   TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
@@ -97,13 +97,16 @@ fn main() {
 }
 
 /// `hub actions`: hub-core's actions reader, so the briefing's digest is the Actions tab's.
+/// `--records` streams the whole window as JSONL, one action or reject per line, with none
+/// capped: comms-lint's `fleet-log` channel reads it.
 fn actions(args: Vec<String>) -> i32 {
-    let (mut since, mut json) = (None, false);
+    let (mut since, mut json, mut records) = (None, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--since" => since = it.next().and_then(|s| parse_since(s)),
             "--json" => json = true,
+            "--records" => records = true,
             _ => die(USAGE),
         }
     }
@@ -112,9 +115,20 @@ fn actions(args: Vec<String>) -> i32 {
         Ok(items) => (items, None),
         Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
     };
-    let mut g = hub_core::actions::gather(&hub_core::actions::Paths::from_env(), since, &items);
+    let paths = hub_core::actions::Paths::from_env();
+    let mut g = if records {
+        hub_core::actions::window(&paths, since, &items)
+    } else {
+        hub_core::actions::gather(&paths, since, &items)
+    };
     g.errors.extend(err);
-    if json {
+    if records {
+        let lines = g.actions.iter().map(serde_json::to_string);
+        for line in lines.chain(g.rejects.iter().map(serde_json::to_string)) {
+            println!("{}", line.unwrap_or_default());
+        }
+        g.errors.iter().for_each(|e| eprintln!("hub actions: {e}"));
+    } else if json {
         println!("{}", serde_json::to_string(&g).unwrap_or_default());
     } else {
         print!("{}", hub_core::actions::digest(&g));
