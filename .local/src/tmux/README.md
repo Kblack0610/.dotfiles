@@ -41,7 +41,7 @@ All scripts are bound to tmux keybindings via `~/.tmux.conf`.
 - **Cut a worktree**: `Prefix+F` → a fresh worktree off this repo, in its own session
 - **Tear it down**: `Prefix+X` → kill this session and reap its worktree, from inside it
 - **View agents**: `Prefix+g` → choose active agent windows
-- **Fleet watch**: every session's stages and what just changed (the Fleet tab of the `hub:board` window, key 8; the same board with charts is the Watch tab of agent-web)
+- **Fleet watch**: every session's stages and what just changed (the Fleet tab of the `hub:board` window, key 9; the same board with charts is the Watch tab of agent-web)
 - **Resume a past chat**: `Prefix+R` → search every Claude session ever run, Enter resumes it
 - **Tag a window**: `Prefix+t` then `i`/`p`/`a`/`g` → important / pinned / agent / group
 - **Pin a window**: `Prefix+a` pins it (again unpins), `M-1`..`M-4` jump to slot 1-4, `Prefix+e` edits the list
