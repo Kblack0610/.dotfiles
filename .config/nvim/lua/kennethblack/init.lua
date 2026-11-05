@@ -16,6 +16,7 @@ vim.opt.rtp:prepend(lazypath)
 require "kennethblack.set"
 require "kennethblack.map"
 require "kennethblack.autocmds"
+require("kennethblack.agent_request").setup()
 
 -- Load plugins, lazy will do this automagically if string is in lua/{your dir here}. I use 'plugins'
 require("lazy").setup("kennethblack.plugins", {
