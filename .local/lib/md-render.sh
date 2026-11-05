@@ -38,13 +38,17 @@
 # 38;2;R;G;B or 38;5;N. Theme-switch recolours the terminal palette, so these follow a theme
 # swap for free; a pinned hex would stop tracking it.
 if [ -n "${PANEL_NO_COLOR:-${NO_COLOR:-}}" ]; then
-  MD_C_HEAD='' MD_C_PROJ='' MD_C_DIM='' MD_C_BOX='' MD_C_OFF=''
+  MD_C_HEAD='' MD_C_PROJ='' MD_C_DIM='' MD_C_BOX='' MD_C_OFF='' MD_C_LIST=''
 else
   MD_C_HEAD=$'\033[1;37m' # heading (bold white)
   MD_C_PROJ=$'\033[1;35m' # sub-heading (magenta)
   MD_C_DIM=$'\033[90m'    # de-emphasis: rules, bullets, notes, done items
   MD_C_BOX=$'\033[36m'    # open checkbox (cyan)
   MD_C_OFF=$'\033[0m'
+  # List marker colour per nesting depth, space-separated SGR parameters: blue, magenta, cyan,
+  # green. The same order as the nvim heading accents (markdown.lua HEADING_FG), so a list
+  # reads the same in a preview pane as in the editor.
+  MD_C_LIST='34 35 36 32'
 fi
 
 # md_ascii -- stdin to stdout, Unicode punctuation folded to ASCII.
@@ -89,7 +93,7 @@ md_render() {
   { if [ "$src" = - ]; then cat; else cat -- "$src"; fi; } | md_ascii | awk \
     -v W="$w" \
     -v HEAD="$MD_C_HEAD" -v PROJ="$MD_C_PROJ" -v DIM="$MD_C_DIM" \
-    -v BOX="$MD_C_BOX" -v OFF="$MD_C_OFF" '
+    -v BOX="$MD_C_BOX" -v OFF="$MD_C_OFF" -v LIST="$MD_C_LIST" '
 function repeat(c, n,   s) { s = ""; while (n-- > 0) s = s c; return s }
 
 # The ONLY place colour is added. The first LEAD_N characters of the first row of a block
@@ -175,7 +179,20 @@ function inline(s,   t, p) {
   return s
 }
 
-BEGIN { if (W < 30) W = 30 }
+# Nesting depth of a list line from its leading whitespace: two columns a level, clamped at 3.
+function depth_of(l,   ws, d) {
+  ws = l; sub(/[^ \t].*$/, "", ws); gsub(/\t/, "  ", ws)
+  d = int(length(ws) / 2); return d > 3 ? 3 : d
+}
+
+# Marker colour for a depth, bold for an ordered number. Empty when colour is off.
+function list_col(d, bold) { return NLIST ? sprintf("\033[%s%sm", (bold ? "1;" : ""), LCOL[d % NLIST + 1]) : "" }
+
+BEGIN {
+  if (W < 30) W = 30
+  NLIST = split(LIST, LCOL, " ")
+  split("- * +", GLYPH, " ")            # bullet glyph per depth, ASCII by the house rule
+}
 
 {
   line = $0
@@ -235,10 +252,19 @@ BEGIN { if (W < 30) W = 30 }
 
   if (match(line, /^[ \t]*[-*+][ \t]+/)) {
     pre = RLENGTH
-    ws = line; sub(/[^ \t].*$/, "", ws); gsub(/\t/, "  ", ws)
-    depth = int(length(ws) / 2); if (depth > 3) depth = 3
+    depth = depth_of(line)
     ind = "  " repeat("  ", depth)
-    emit(inline(substr(line, pre + 1)), ind "- ", ind "  ", length(ind) + 1, DIM, "")
+    emit(inline(substr(line, pre + 1)), ind GLYPH[depth % 3 + 1] " ", ind "  ", length(ind) + 1, list_col(depth, 0), "")
+    next
+  }
+
+  # `1. item` / `1) item`: the number keeps its value and takes the depth colour in bold, and a
+  # wrapped line hangs under the text, past the number however many digits it has.
+  if (match(line, /^[ \t]*[0-9]+[.)][ \t]+/)) {
+    num = substr(line, 1, RLENGTH); gsub(/[ \t]/, "", num)
+    depth = depth_of(line)
+    ind = "  " repeat("  ", depth)
+    emit(inline(substr(line, RLENGTH + 1)), ind num " ", ind repeat(" ", length(num) + 1), length(ind) + length(num), list_col(depth, 1), "")
     next
   }
 
