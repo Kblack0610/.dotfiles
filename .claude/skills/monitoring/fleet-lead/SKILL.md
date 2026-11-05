@@ -16,7 +16,7 @@ The fleet lead is persona **Binks** (`~/.dotfiles-private/.claude/PERSONAS.md`):
 |---|---|
 | `fleet-pace` | machine room: assess, hold, go, the pace check (load, blocked I/O, usage limits) |
 | `shepherd` | delivery state: the buckets, nudges, escalation, overdue phases |
-| `fleet-dispatch` | starting sessions from the board while the human is away, and `fleet-dispatch start` |
+| `fleet-dispatch` | keeping the queue topped up from the board and starting its sessions (away rate, present trickle), and `fleet-dispatch start` |
 
 The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting near 100% idle is as much a failure as one at 0% idle. Every pass looks at both directions.
 
