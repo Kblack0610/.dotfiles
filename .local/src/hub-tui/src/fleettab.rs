@@ -1,6 +1,6 @@
-//! The Fleet tab: the Claude accounts, each agentctl runner, and the dispatch and answer judges,
-//! from hub-core's `fleet` (the same reader as agent-web's Fleet tab). Named apart from
-//! `fleet.rs`, which is the Sessions tab's watch page.
+//! The Fleet tab's machinery, below the sessions: the Claude accounts, each agentctl runner, and
+//! the dispatch and answer judges, from hub-core's `fleet` (the same reader as agent-web's Fleet
+//! tab). Named apart from `fleet.rs`, which is the sessions' watch page.
 
 use std::collections::BTreeMap;
 

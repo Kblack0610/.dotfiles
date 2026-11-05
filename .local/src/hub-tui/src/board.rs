@@ -1034,7 +1034,6 @@ pub fn page(
             out.extend(b.recent(w));
         }
         Tab::Jobs
-        | Tab::Sessions
         | Tab::Forecast
         | Tab::Today
         | Tab::History
