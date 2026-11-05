@@ -1,11 +1,13 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
-//! TUI (its Overview tab) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
+//! TUI's Infra tab (and Home's health line) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
 //! Grafana's kb-command-center does, so none of them judges anything itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
+
+use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
 use crate::prom::{self, Series, W};
 
@@ -156,11 +158,82 @@ impl Infra {
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    /// The `cc` series keyed as the boards key them: `name` or `name/<domain|host|pool|site>`.
+    pub fn cc_values(&self) -> HashMap<String, f64> {
+        let mut v = HashMap::new();
+        for s in self.get("cc") {
+            let name = s.label("__name__");
+            let sub = if name == "cc:domain_status" {
+                s.label("domain")
+            } else {
+                ["host", "pool", "site"]
+                    .into_iter()
+                    .map(|k| s.label(k))
+                    .find(|x| !x.is_empty())
+                    .unwrap_or("")
+            };
+            let key = if sub.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}/{sub}")
+            };
+            if let Some(x) = s.value {
+                v.insert(key, x);
+            }
+        }
+        v
+    }
+
+    /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line and
+    /// Infra's health section; k3s and ci show even with no status, as no data.
+    pub fn health(&self) -> Vec<Chip> {
+        let v = self.cc_values();
+        DOMAINS
+            .iter()
+            .filter_map(|d| {
+                let s = v.get(&format!("cc:domain_status/{d}")).copied();
+                (s.is_some() || ALWAYS.contains(d)).then(|| Chip {
+                    name: (*d).into(),
+                    level: Level::of(s),
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cc(name: &str, label: (&str, &str), v: f64) -> Series {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("__name__".to_string(), name.to_string());
+        labels.insert(label.0.to_string(), label.1.to_string());
+        Series {
+            labels,
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    #[test]
+    fn health_keeps_strip_order_and_always_shows_k3s_and_ci() {
+        let mut i = Infra::default();
+        i.instant.insert(
+            "cc",
+            vec![
+                cc("cc:domain_status", ("domain", "ci"), 2.0),
+                cc("cc:pool_status", ("pool", "unity"), 1.0),
+            ],
+        );
+        let h = i.health();
+        let names: Vec<_> = h.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["k3s", "ci"]);
+        assert_eq!(h[0].level, Level::Nodata);
+        assert_eq!(h[1].level, Level::Red);
+        assert_eq!(i.cc_values().get("cc:pool_status/unity"), Some(&1.0));
+    }
 
     #[test]
     fn the_grafana_link_is_cut_to_its_base() {

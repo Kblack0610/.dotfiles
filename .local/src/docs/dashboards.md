@@ -39,7 +39,7 @@ Both surfaces move to the layout below in the phases of the plan `~/.agent/plans
 | 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
 | 3 | Projects | Where is each project, and its tasks? | landed: `hub_core::projects`, one card per lab project with its open version's progress by size, pace, ETA and what is in flight; Enter (TUI) or Open rows (web) shows that project's rows, All shows every project's. Until the renumbering it keeps Board's slot: TUI key 0, last tab; web third |
 | 4 | Sessions | What is each agent doing? Act on it. | landed (#961): one row per session, grouped by bucket on the web and ranked by bucket in the TUI, with task, PR and CI, phases, ETA, idle and account. TUI: Enter opens the detail pane with the session's forecast timeline, i p u m x c a act, f unfolds the forecast band, burn-up and baseline. Web: the shepherd's pass is the list's first line and its session is pinned first; with no session open the detail pane is the overview (bucket tiles that filter the list, then the last 24h, Changes, Shepherd and Rundowns, folded); an open session shows its fleet-state card folded above the transcript, which loads only then. Until the renumbering it keeps Forecast's slot in the TUI (key 6) and its own on the web |
-| 5 | Infra | Is the machinery healthy? | planned |
+| 5 | Infra | Is the machinery healthy? | landed (#PR): `hub_core::infra` on both surfaces, sections health, red now, machines (one table in place of POOLS, CI by machine and the Machines tab), CI (running, queued, failed 24h; green is one line), jobs (TUI: 8 rows, Enter opens the table; web: the table), cloud runners, governor. Until the renumbering it keeps Jobs' slot: TUI key 3, with 4 and 5 opening it at CI and Machines; web fifth, after Sessions |
 | 6 | Log | What happened? | planned |
 | 7 | Fleet | Can I afford more agents; are the judges right? | planned |
 
@@ -69,6 +69,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `board` (agent-web `#board`, `hub --tab board`, `hub tab board`) | Projects | #949 |
 | `forecast` (TUI, `hub --tab forecast`) | Sessions | #961 |
 | `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
+| `jobs`, `ci`, `machines` (TUI `hub --tab jobs`, `hub --tab ci`, `hub --tab machines`, keys 4 and 5; agent-web `#jobs`) | Infra, scrolled to that section; `jobs` opens the TUI jobs table | #PR |
 
 ### Log
 

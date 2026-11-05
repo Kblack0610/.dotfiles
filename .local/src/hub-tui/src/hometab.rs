@@ -1,8 +1,8 @@
 //! The Home tab: what needs you, what is running, the numbers and the health strip, from
-//! `hub_core::home` (the reader agent-web's Home uses too), then the machines and pools that
-//! were the Overview's body until the Infra tab takes them (docs/dashboards.md "Hub layout").
+//! `hub_core::home` (the reader agent-web's Home uses too). The machines, pools and CI that sat
+//! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
-use hub_core::home::{Home, Kind, Level};
+use hub_core::home::{Chip, Home, Kind, Level};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, wrap, Table};
@@ -50,31 +50,7 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         out.push(Line::from(vec![Span::styled(head, p.head()), Span::raw(l)]));
     }
 
-    // Green collapses to one line; only the chips that are not green are drawn.
-    let mut strip = vec![Span::styled("HEALTH   ", p.head())];
-    if h.health.is_empty() {
-        strip.push(Span::styled("no data", p.dim()));
-    } else if h.exceptions().next().is_none() {
-        strip.push(Span::styled(
-            format!("all green ({})", h.health.len()),
-            p.good(),
-        ));
-    } else {
-        for c in h.exceptions() {
-            let v = match c.level {
-                Level::Ok => Some(0.0),
-                Level::Warn => Some(1.0),
-                Level::Red => Some(2.0),
-                Level::Nodata => None,
-            };
-            let (style, word) = p.status(v);
-            strip.push(Span::styled(format!(" {} {word} ", c.name), style));
-            strip.push(Span::raw(" "));
-        }
-        let ok = h.health.len() - h.exceptions().count();
-        strip.push(Span::styled(format!("{ok} green"), p.dim()));
-    }
-    out.push(clip_line(Line::from(strip), w));
+    out.push(health_line(&h.health, p, w));
     out.push(Line::raw(""));
 
     if h.needs.is_empty() {
@@ -178,6 +154,38 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     }
 
     out
+}
+
+/// The HEALTH line, Home's and Infra's: green collapses to one line, and only the chips that
+/// are not green are drawn, then how many are green.
+pub fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
+    let mut strip = vec![Span::styled("HEALTH   ", p.head())];
+    let bad: Vec<&Chip> = chips.iter().filter(|c| c.level != Level::Ok).collect();
+    if chips.is_empty() {
+        strip.push(Span::styled("no data", p.dim()));
+    } else if bad.is_empty() {
+        strip.push(Span::styled(
+            format!("all green ({})", chips.len()),
+            p.good(),
+        ));
+    } else {
+        for c in &bad {
+            let v = match c.level {
+                Level::Ok => Some(0.0),
+                Level::Warn => Some(1.0),
+                Level::Red => Some(2.0),
+                Level::Nodata => None,
+            };
+            let (style, word) = p.status(v);
+            strip.push(Span::styled(format!(" {} {word} ", c.name), style));
+            strip.push(Span::raw(" "));
+        }
+        strip.push(Span::styled(
+            format!("{} green", chips.len() - bad.len()),
+            p.dim(),
+        ));
+    }
+    clip_line(Line::from(strip), w)
 }
 
 #[cfg(test)]

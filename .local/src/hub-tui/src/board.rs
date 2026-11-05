@@ -15,7 +15,6 @@ use crate::fmt::{clock, dur, pct, Palette};
 /// runs past about an hour a bug to fix, not a wait.
 pub const LONG_RUN_SECS: f64 = 3600.0;
 /// Queue groups the Home lists before it counts the rest.
-pub const QUEUE_ROWS: usize = 8;
 /// Recent runs the CI page lists before it counts the rest (Grafana keeps them all).
 pub const RECENT_ROWS: usize = 60;
 
@@ -366,113 +365,52 @@ impl<'a> Board<'a> {
             .collect()
     }
 
-    /// The balance view, one row per pool: busy of its slots, waiting, the oldest wait, the
-    /// last day's done and pass rate, and the machines serving it (host:n past one slot).
-    pub fn pools(&self, w: usize) -> Vec<Line<'static>> {
-        let mut on: BTreeMap<(String, String), u32> = BTreeMap::new();
-        for s in &self.runners {
-            if matches!(s.label("state"), "running" | "idle") {
-                *on.entry((lab(s, "pool").into(), lab(s, "host").into()))
-                    .or_default() += 1;
-            }
-        }
+    /// The queue per pool: waiting, the oldest wait, the last day's done and pass rate. Busy of
+    /// slots and the machines serving a pool are MACHINES' POOLS column. A machine's local
+    /// slots read as their own pool, `unity-local on <host>`.
+    pub fn queues(&self, w: usize) -> Vec<Line<'static>> {
         let mut rows = vec![];
         for p in self.pools_list() {
-            let hosts: Vec<String> = on
-                .iter()
-                .filter(|((pool, _), _)| *pool == p)
-                .map(|((_, h), n)| {
-                    if *n > 1 {
-                        format!("{h}:{n}")
-                    } else {
-                        h.clone()
-                    }
-                })
-                .collect();
-            let slots = match self.get(&format!("cc:pool_slots/{p}")) {
-                Some(_) => format!(
-                    "{}/{}",
-                    self.num(&format!("cc:pool_busy/{p}")),
-                    self.num(&format!("cc:pool_slots/{p}"))
-                ),
-                None => "-".into(),
-            };
             let ratio = self.get(&format!("cc:pool_pass_ratio_24h/{p}"));
             rows.push(vec![
                 Cell::from(p.clone()),
-                slots.into(),
                 self.num(&format!("cc:pool_waiting/{p}")).into(),
                 self.get(&format!("cc:pool_oldest_wait_seconds/{p}"))
                     .map_or("-".into(), dur)
                     .into(),
                 self.int(&format!("cc:pool_done_24h/{p}")).into(),
                 cell(pct(ratio), self.p.pass(ratio)),
-                if hosts.is_empty() {
-                    "-".into()
-                } else {
-                    hosts.join(" ").into()
-                },
             ]);
         }
         for h in self.local_hosts() {
             let ratio = self.get(&format!("cc:host_local_pass_ratio_24h/{h}"));
             rows.push(vec![
-                "unity-local".into(),
-                self.local_cell(&h).into(),
+                format!("unity-local on {h}").into(),
                 self.num(&format!("cc:host_local_queued/{h}")).into(),
                 "-".into(),
                 self.int(&format!("cc:host_local_done_24h/{h}")).into(),
                 cell(pct(ratio), self.p.pass(ratio)),
-                h.into(),
             ]);
         }
-        Table {
-            header: vec!["POOL", "BUSY", "WAITING", "OLDEST", "DONE", "PASS", "ON"],
-            rows,
-            keep: vec![0, 1, 2, 5, 4, 3],
-            flex: Some(6),
-            flexmin: 8,
-            right: vec![1, 2, 3, 4, 5],
-            ..Default::default()
-        }
-        .fit(w, self.p.head())
-    }
-
-    /// The machine view. Full (the Machines tab): one row per machine with where it is, busy
-    /// of its slots, its load and busy/slots per pool; narrowing drops TEMP, MEM, 6H, WHERE, then
-    /// LOAD, and BUSY, CPU and POOLS stay. Compact (Home): only machines with
-    /// a slot or a gate up, busiest first, and only MACHINE, WHERE, BUSY and POOLS.
-    pub fn machines(&self, w: usize, compact: bool) -> Vec<Line<'static>> {
-        let mut ms = self.machine_slots();
-        if compact {
-            ms.retain(|m| m.slots > 0 || m.busy > 0 || !m.pools.is_empty());
-            ms.sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.host.cmp(&b.host)));
-            if ms.is_empty() {
-                return vec![self.heading("MACHINES", "  no CI slot up".into())];
-            }
-            let rows = ms
-                .iter()
-                .map(|m| {
-                    vec![
-                        m.host.clone().into(),
-                        m.where_().into(),
-                        m.busy_cell().into(),
-                        m.pools_cell().into(),
-                    ]
-                })
-                .collect();
-            return Table {
-                header: vec!["MACHINE", "WHERE", "BUSY", "POOLS"],
+        let mut out = vec![self.heading("QUEUES", "  by pool, the last day".into())];
+        out.extend(
+            Table {
+                header: vec!["POOL", "WAITING", "OLDEST", "DONE", "PASS"],
                 rows,
-                keep: vec![0, 2, 1],
-                flex: Some(3),
-                flexmin: 12,
-                flexkeep: true,
-                right: vec![2],
+                keep: vec![0, 1, 4, 3, 2],
+                right: vec![1, 2, 3, 4],
                 ..Default::default()
             }
-            .fit(w, self.p.head());
-        }
+            .fit(w, self.p.head()),
+        );
+        out
+    }
+
+    /// The one machine table (Infra's Machines): one row per machine with where it is, busy of
+    /// its slots, its load and busy/slots per pool. Narrowing drops TEMP, MEM, 6H, WHERE, then
+    /// LOAD; BUSY, CPU and POOLS stay.
+    pub fn machines(&self, w: usize) -> Vec<Line<'static>> {
+        let ms = self.machine_slots();
         let rows: Vec<Vec<Cell>> = ms
             .iter()
             .map(|m| {
@@ -629,9 +567,9 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// Waiting jobs grouped by pool, repo, PR and branch, oldest first, `max` groups at most.
-    /// A stuck run (queued with no jobs) is DOWN's, so it cannot pass for the queue's age.
-    pub fn queued(&self, w: usize, max: Option<usize>) -> Vec<Line<'static>> {
+    /// Waiting jobs grouped by pool, repo, PR and branch, oldest first. A stuck run (queued
+    /// with no jobs) is RED NOW's, so it cannot pass for the queue's age.
+    pub fn queued(&self, w: usize) -> Vec<Line<'static>> {
         let mut groups: BTreeMap<[String; 4], (u32, f64)> = BTreeMap::new();
         let (mut n, mut oldest) = (0, 0.0f64);
         for s in self.infra.get("waiting") {
@@ -668,11 +606,8 @@ impl<'a> Board<'a> {
         )];
         let mut g: Vec<_> = groups.into_iter().collect();
         g.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
-        let total = g.len();
-        let shown = max.unwrap_or(total).min(total);
         let rows = g
             .into_iter()
-            .take(shown)
             .map(|([pool, repo, pr, branch], (c, old))| {
                 vec![
                     pool.into(),
@@ -696,15 +631,20 @@ impl<'a> Board<'a> {
             }
             .fit(w, self.p.head()),
         );
-        if total > shown {
-            out.push(self.dim(format!("  +{} more groups (3 CI)", total - shown)));
-        }
         out
     }
 
-    /// Offline or missing runners, stuck runs, and GitHub or the exporter not answering.
+    /// RED NOW: the `cc:red_now` items, offline or missing runners, stuck runs, and GitHub or
+    /// the exporter not answering, the likeliest cause first.
     pub fn down(&self, w: usize) -> Vec<Line<'static>> {
-        let mut items: Vec<String> = vec![];
+        let mut items: Vec<String> = self
+            .infra
+            .get("red")
+            .iter()
+            .map(|s| s.label("item").to_string())
+            .filter(|i| !i.is_empty())
+            .collect();
+        items.sort();
         for s in &self.runners {
             if matches!(s.label("state"), "offline" | "missing") {
                 items.push(format!("{} {}", lab(s, "name"), s.label("state")));
@@ -744,23 +684,23 @@ impl<'a> Board<'a> {
         }
         let line = if items.is_empty() {
             self.heading(
-                "DOWN",
-                "    nothing: every rostered runner is registered and online".into(),
+                "RED NOW",
+                "  nothing: every rostered runner is registered and online".into(),
             )
         } else {
             Line::from(vec![
-                Span::styled("DOWN", self.p.head()),
-                Span::raw("    "),
+                Span::styled("RED NOW", self.p.head()),
+                Span::raw("  "),
                 Span::styled(items.join(", "), self.p.bad()),
             ])
         };
         vec![clip_line(line, w)]
     }
 
-    /// The last day of runs per repo and workflow, the worst pass rate first, `max` rows at
-    /// most. Pass is success of success + failure + timed out; cancelled is its own column,
-    /// since gates for closed PRs are cancelled on purpose. All-green workflows fold to a line.
-    pub fn finished(&self, w: usize, max: Option<usize>) -> Vec<Line<'static>> {
+    /// The last day of runs per repo and workflow, the worst pass rate first. Pass is success
+    /// of success + failure + timed out; cancelled is its own column, since gates for closed
+    /// PRs are cancelled on purpose. All-green workflows fold to a line.
+    pub fn finished(&self, w: usize) -> Vec<Line<'static>> {
         let fin = self.infra.get("finished");
         if fin.is_empty() {
             return vec![self.heading(
@@ -807,11 +747,9 @@ impl<'a> Board<'a> {
                 .then(b[2].cmp(&a[2]))
                 .then(b[3].cmp(&a[3]))
         });
-        let shown = max.unwrap_or(bad.len()).min(bad.len());
         if !bad.is_empty() {
             let rows = bad
                 .iter()
-                .take(shown)
                 .map(|((repo, wf), a)| {
                     let r = ratio(a[1], a[2]);
                     vec![
@@ -837,12 +775,6 @@ impl<'a> Board<'a> {
                 }
                 .fit(w, self.p.head()),
             );
-            if bad.len() > shown {
-                out.push(self.dim(format!(
-                    "  +{} more workflows with failures (3 CI)",
-                    bad.len() - shown
-                )));
-            }
         }
         if !green.is_empty() {
             let runs: u64 = green.iter().map(|(_, a)| a[0]).sum();
@@ -920,6 +852,212 @@ impl<'a> Board<'a> {
         }
         out
     }
+    /// The governor's per-host series as name -> host -> (labels' key value, value).
+    fn by_host(&self, q: &str, prefix: &str) -> BTreeMap<String, HashMap<String, &Series>> {
+        let mut by: BTreeMap<String, HashMap<String, &Series>> = BTreeMap::new();
+        for s in self.infra.get(q) {
+            let host = s.label("host");
+            if host.is_empty() {
+                continue;
+            }
+            let k = s.label("__name__").trim_start_matches(prefix).to_string();
+            by.entry(host.into()).or_default().insert(k, s);
+        }
+        by
+    }
+
+    /// The cloud runners the governor powers: state and why, hours today of the cap, and a
+    /// button's override. Read-only: the buttons are on agent-web's Infra.
+    pub fn cloud(&self, w: usize) -> Vec<Line<'static>> {
+        let by = self.by_host("power", "ci_governor_power_");
+        if by.is_empty() {
+            return vec![self.heading("CLOUD RUNNERS", "  none powered by the governor".into())];
+        }
+        let v = |m: &HashMap<String, &Series>, k: &str| m.get(k).and_then(|s| s.value);
+        let rows = by
+            .iter()
+            .map(|(host, m)| {
+                let st = m.get("state");
+                let state = st.map_or("?", |s| s.label("state")).to_uppercase();
+                let style = match state.as_str() {
+                    "RUNNING" | "STARTING" => self.p.good(),
+                    "DRAINING" | "STOPPING" => self.p.warn(),
+                    _ => Default::default(),
+                };
+                let reason = st.map_or("", |s| s.label("reason"));
+                let hours = v(m, "hours_today").unwrap_or(0.0);
+                let today = match v(m, "max_hours_day") {
+                    Some(max) => format!("{hours:.1}/{max:.0} h"),
+                    None => format!("{hours:.1} h"),
+                };
+                let over = match m.get("override") {
+                    Some(o) if !matches!(o.label("action"), "" | "none") => format!(
+                        "{} until {}",
+                        o.label("action"),
+                        clock(o.value.unwrap_or(0.0) as i64, self.now)
+                    ),
+                    _ => "none".into(),
+                };
+                vec![
+                    host.clone().into(),
+                    cell(&state, style),
+                    today.into(),
+                    over.into(),
+                    match reason {
+                        "" | "none" => "-".into(),
+                        r => r.to_string().into(),
+                    },
+                ]
+            })
+            .collect();
+        let mut out = vec![self.heading(
+            "CLOUD RUNNERS",
+            "  the governor starts them for a deep queue; override on agent-web Infra".into(),
+        )];
+        out.extend(
+            Table {
+                header: vec!["HOST", "STATE", "TODAY", "OVERRIDE", "WHY"],
+                rows,
+                keep: vec![0, 1, 2, 3],
+                flex: Some(4),
+                flexmin: 10,
+                right: vec![2],
+                ..Default::default()
+            }
+            .fit(w, self.p.head()),
+        );
+        out
+    }
+
+    /// The governor (home-config apps/ci-runner-governor): up and OK, its queue, and per host
+    /// whether it acts for real, this cycle's verdict and action, and the slots it admits.
+    pub fn governor(&self, w: usize) -> Vec<Line<'static>> {
+        let global = |k: &str| {
+            self.infra
+                .get("governor")
+                .iter()
+                .find(|s| {
+                    s.label("__name__") == format!("ci_governor_{k}") && s.label("host").is_empty()
+                })
+                .and_then(|s| s.value)
+        };
+        let by = self.by_host("governor", "ci_governor_");
+        let up = global("up");
+        if up.is_none() && by.is_empty() {
+            return vec![self.heading("GOVERNOR", "  no governor series".into())];
+        }
+        let (word, style) = match (up, global("ok")) {
+            (Some(u), _) if u != 1.0 => ("DOWN", self.p.bad()),
+            (None, _) => ("DOWN", self.p.bad()),
+            (_, Some(1.0)) => ("OK", self.p.good()),
+            _ => (
+                "BLIND: a source did not answer, so it holds every host",
+                self.p.warn(),
+            ),
+        };
+        let queue = global("queue").map_or("?".into(), |q| format!("{q:.0}"));
+        let mut out = vec![clip_line(
+            Line::from(vec![
+                Span::styled("GOVERNOR", self.p.head()),
+                Span::raw("  "),
+                Span::styled(word.to_string(), style),
+                Span::styled(
+                    format!("  queue {queue}; a dry-run host is logged, never changed"),
+                    self.p.dim(),
+                ),
+            ]),
+            w,
+        )];
+        let rows = by
+            .iter()
+            .map(|(host, m)| {
+                let d = m.get("decision");
+                let action = d.map_or("-", |s| s.label("action")).to_uppercase();
+                let st = match action.as_str() {
+                    "WITHHOLD" | "STOP" => self.p.warn(),
+                    "ADMIT" | "START" => self.p.good(),
+                    _ => Default::default(),
+                };
+                vec![
+                    host.clone().into(),
+                    if m.get("live").and_then(|s| s.value) == Some(1.0) {
+                        "live"
+                    } else {
+                        "dry run"
+                    }
+                    .into(),
+                    lab_or(d.map_or("", |s| s.label("verdict"))).into(),
+                    cell(&action, st),
+                    m.get("admitted")
+                        .and_then(|s| s.value)
+                        .map_or("-".into(), |a| format!("{a:.0}"))
+                        .into(),
+                ]
+            })
+            .collect::<Vec<Vec<Cell>>>();
+        if !rows.is_empty() {
+            out.extend(
+                Table {
+                    header: vec!["HOST", "MODE", "VERDICT", "ACTION", "ADMITTED"],
+                    rows,
+                    keep: vec![0, 3, 1, 4],
+                    flex: Some(2),
+                    flexmin: 10,
+                    right: vec![4],
+                    ..Default::default()
+                }
+                .fit(w, self.p.head()),
+            );
+        }
+        out
+    }
+
+    /// The CI section's own line: what runs, waits and failed in the last day, green at zero.
+    fn ci_head(&self, w: usize) -> Line<'static> {
+        let running = self
+            .runners
+            .iter()
+            .filter(|s| s.label("state") == "running")
+            .count()
+            + self.infra.get("gates").len();
+        let queued = self
+            .infra
+            .get("waiting")
+            .iter()
+            .filter(|s| s.label("stuck") != "true")
+            .count();
+        let failed: f64 = self
+            .infra
+            .get("finished")
+            .iter()
+            .filter(|s| matches!(s.label("conclusion"), "failure" | "timed_out"))
+            .filter_map(|s| s.value)
+            .sum();
+        let rest = if running + queued == 0 && failed == 0.0 {
+            Span::styled(
+                "  green: nothing running, queued or failed in 24h",
+                self.p.good(),
+            )
+        } else {
+            Span::styled(
+                format!("  running {running}  queued {queued}  failed 24h {failed:.0}"),
+                if failed > 0.0 {
+                    self.p.bad()
+                } else {
+                    self.p.dim()
+                },
+            )
+        };
+        clip_line(Line::from(vec![Span::styled("CI", self.p.head()), rest]), w)
+    }
+}
+
+fn lab_or(s: &str) -> String {
+    if s.is_empty() {
+        "-".into()
+    } else {
+        s.into()
+    }
 }
 
 /// Machines listed even with no runner (`CC_HOSTS`, default the workstation).
@@ -931,79 +1069,77 @@ pub fn extra_hosts() -> Vec<String> {
         .collect()
 }
 
-/// The three Prometheus pages. A failed read shows the error and nothing else: a board never
-/// leaves the last (maybe green) numbers up.
-pub fn page(
-    tab: crate::app::Tab,
-    infra: &Infra,
-    p: Palette,
-    now: i64,
-    w: usize,
-    hosts: &[String],
-) -> Vec<Line<'static>> {
-    use crate::app::Tab;
+/// A section of the Infra page: its `hub_core::layout` name and its lines.
+pub type Section = (&'static str, Vec<Line<'static>>);
+
+/// The Infra page as named sections in `hub_core::layout` order, less `jobs`, which the app
+/// draws from its own job list. Exceptions lead: red items, then what runs, waits and failed;
+/// green workflows fold to a line. A failed read is one section with the error and nothing
+/// else: a board never leaves the last (maybe green) numbers up.
+pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) -> Vec<Section> {
     if !infra.ok {
-        return vec![
-            Line::from(vec![
-                Span::styled(" QUERY FAILED ", p.status(Some(2.0)).0),
-                Span::raw(format!(
-                    " {}",
-                    infra
-                        .error
-                        .as_deref()
-                        .unwrap_or("Prometheus did not answer")
-                )),
-            ]),
-            Line::raw(""),
-            Line::styled(
-                format!(
-                    "Nothing is shown rather than old numbers. Retrying every {}s; r retries now.",
-                    crate::app::PROM_REFRESH.as_secs()
+        return vec![(
+            "health",
+            vec![
+                Line::from(vec![
+                    Span::styled(" QUERY FAILED ", p.status(Some(2.0)).0),
+                    Span::raw(format!(
+                        " {}",
+                        infra
+                            .error
+                            .as_deref()
+                            .unwrap_or("Prometheus did not answer")
+                    )),
+                ]),
+                Line::raw(""),
+                Line::styled(
+                    format!(
+                        "Nothing is shown rather than old numbers. Retrying every {}s; r retries now.",
+                        crate::app::PROM_REFRESH.as_secs()
+                    ),
+                    p.dim(),
                 ),
-                p.dim(),
-            ),
-        ];
+            ],
+        )];
     }
     let b = Board::new(infra, p, now, hosts.to_vec());
     let blank = || Line::raw("");
-    let mut out = vec![];
-    match tab {
-        Tab::Home => {
-            out.extend(b.numbers(w));
-            out.push(blank());
-            out.extend(b.pools(w));
-            out.push(blank());
-            out.extend(b.machines(w, true));
-            out.push(blank());
-            out.extend(b.queued(w, Some(QUEUE_ROWS)));
-            out.extend(b.down(w));
-            out.push(blank());
-            out.extend(b.finished(w, Some(0)).into_iter().take(1));
-        }
-        Tab::Machines => out.extend(b.machines(w, false)),
-        Tab::Ci => {
-            out.extend(b.running(w));
-            out.push(blank());
-            out.extend(b.finished(w, None));
-            out.push(blank());
-            out.extend(b.recent(w));
-        }
-        Tab::Jobs
-        | Tab::Sessions
-        | Tab::Today
-        | Tab::History
-        | Tab::Fleet
-        | Tab::Queue
-        | Tab::Projects => {}
+    let mut health = vec![crate::hometab::health_line(&infra.health(), p, w)];
+    health.extend(b.numbers(w));
+    let mut ci = vec![b.ci_head(w)];
+    let running = b.running(w);
+    if running.len() > 1 {
+        ci.extend(running);
+        ci.push(blank());
     }
-    out.into_iter().map(|l| clip_line(l, w)).collect()
+    let queued = b.queued(w);
+    if queued.len() > 1 {
+        ci.extend(queued);
+        ci.push(blank());
+    }
+    ci.extend(b.finished(w));
+    ci.push(blank());
+    ci.extend(b.queues(w));
+    ci.push(blank());
+    ci.extend(b.recent(w));
+    let sections = vec![
+        ("health", health),
+        ("red", b.down(w)),
+        ("machines", b.machines(w)),
+        ("ci", ci),
+        ("cloud", b.cloud(w)),
+        ("governor", b.governor(w)),
+    ];
+    sections
+        .into_iter()
+        .map(|(n, ls)| (n, ls.into_iter().map(|l| clip_line(l, w)).collect()))
+        .collect()
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     //! The bash board's bats suite (command_center.bats), ported onto the same fixture data.
     use super::*;
-    use crate::app::Tab;
     use crate::fit::plain;
     use serde_json::{json, Value};
 
@@ -1232,10 +1368,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// The whole Infra page as plain text.
     fn text(i: &Infra, w: usize) -> String {
-        [Tab::Home, Tab::Machines, Tab::Ci]
-            .iter()
-            .flat_map(|t| page(*t, i, Palette { no_color: true }, 0, w, &hosts()))
+        infra(i, Palette { no_color: true }, 0, w, &hosts())
+            .into_iter()
+            .flat_map(|(_, ls)| ls)
             .map(|l| plain(&l))
             .collect::<Vec<_>>()
             .join("\n")
@@ -1257,12 +1394,20 @@ pub(crate) mod tests {
         assert!(has_line(out, want), "no line {want:?} in:\n{out}");
     }
 
-    fn tab(i: &Infra, t: Tab, w: usize) -> String {
-        page(t, i, Palette { no_color: true }, 0, w, &hosts())
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n")
+    /// The whole Infra page's styled lines at 160 columns.
+    fn all_lines(i: &Infra, p: Palette) -> Vec<Line<'static>> {
+        infra(i, p, 0, 160, &hosts())
+            .into_iter()
+            .flat_map(|s| s.1)
+            .collect()
+    }
+    /// One Infra section (`hub_core::layout` name) as plain text.
+    fn tab(i: &Infra, name: &str, w: usize) -> String {
+        infra(i, Palette { no_color: true }, 0, w, &hosts())
+            .into_iter()
+            .find(|s| s.0 == name)
+            .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
     }
 
     /// aws-burst-1 in the cloud with one of two unity runners busy, and 3 jobs on GitHub's own.
@@ -1288,8 +1433,11 @@ pub(crate) mod tests {
     #[test]
     fn the_ci_tab_lists_each_job_under_its_machine_with_repo_pr_job_time_and_title() {
         let i = fixture();
-        let ci = tab(&i, Tab::Ci, 160);
-        assert!(ci.starts_with("RUNNING  3 jobs"), "{ci}");
+        let ci = tab(&i, "ci", 160);
+        assert!(
+            ci.starts_with("CI  running 3  queued 4  failed 24h 91\nRUNNING  3 jobs"),
+            "{ci}"
+        );
         // The machine and its busy/slots head the group; the title stands in for the branch.
         assert_line(
             &ci,
@@ -1301,26 +1449,78 @@ pub(crate) mod tests {
         );
         // No PR shows the repo alone, and a title that only repeats the workflow is not shown.
         assert_line(&ci, "platform E2E 5m develop");
-        // Home has the per-machine rollup instead of the job list.
-        assert!(!tab(&i, Tab::Home, 160).contains("RUNNING"));
     }
 
     #[test]
-    fn home_has_one_row_per_machine_with_a_slot_up_busiest_first() {
+    fn infra_sections_come_in_layout_order_and_ci_leads_with_its_counts() {
+        let i = fixture();
+        let names: Vec<_> = infra(&i, Palette { no_color: true }, 0, 160, &hosts())
+            .into_iter()
+            .map(|s| s.0)
+            .collect();
+        // Jobs is the app's, drawn from its own job list between CI and Cloud runners.
+        let want: Vec<_> = hub_core::layout::resolve("infra")
+            .unwrap()
+            .sections
+            .iter()
+            .copied()
+            .filter(|s| *s != "jobs")
+            .collect();
+        assert_eq!(names, want);
+        let ci = tab(&i, "ci", 160);
+        assert!(ci.starts_with("CI  running 3  queued 4"), "{ci}");
+        assert!(has(&ci, "failed 24h"), "{ci}");
+        // Exceptions lead: what runs and waits before the day's results and the queues.
+        let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
+        assert!(at("RUNNING") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
+        assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RECENT RUNS"));
+    }
+
+    #[test]
+    fn a_quiet_ci_is_one_green_line_and_no_empty_tables() {
         let mut i = fixture();
-        with_cloud(&mut i, "0");
-        let out = tab(&i, Tab::Home, 160);
-        assert_line(&out, "MACHINE WHERE BUSY POOLS");
-        assert_line(&out, "razer-laptop local 3/4 unity 3/4");
-        assert_line(&out, "aws-burst-1 cloud 1/2 unity 1/2");
-        let sq = squash(&out);
-        assert!(sq.find("razer-laptop local").unwrap() < sq.find("aws-burst-1 cloud").unwrap());
-        // Nothing up: the offline mac-mini is DOWN's, and the workstation has no slot.
-        assert!(
-            !out.lines()
-                .any(|l| l.starts_with("mac-mini ") || l.starts_with("workstation ")),
-            "{out}"
+        for q in ["runners", "gates", "waiting", "finished"] {
+            i.instant.insert(q, vec![]);
+        }
+        let ci = tab(&i, "ci", 160);
+        assert_line(&ci, "CI green: nothing running, queued or failed in 24h");
+        assert!(!ci.contains("RUNNING") && !ci.contains("QUEUED"), "{ci}");
+    }
+
+    #[test]
+    fn cloud_runners_and_the_governor_read_from_their_series() {
+        let mut i = fixture();
+        i.instant.insert(
+            "power",
+            series(vec![
+                (json!({"__name__": "ci_governor_power_state", "host": "aws-burst-1", "state": "running", "reason": "deep queue"}), "1"),
+                (json!({"__name__": "ci_governor_power_hours_today", "host": "aws-burst-1"}), "1.5"),
+                (json!({"__name__": "ci_governor_power_max_hours_day", "host": "aws-burst-1"}), "6"),
+                (json!({"__name__": "ci_governor_power_override", "host": "aws-burst-1", "action": "none"}), "0"),
+            ]),
         );
+        i.instant.insert(
+            "governor",
+            series(vec![
+                (json!({"__name__": "ci_governor_up"}), "1"),
+                (json!({"__name__": "ci_governor_ok"}), "1"),
+                (json!({"__name__": "ci_governor_queue"}), "7"),
+                (json!({"__name__": "ci_governor_live", "host": "razer-laptop"}), "1"),
+                (json!({"__name__": "ci_governor_decision", "host": "razer-laptop", "verdict": "busy", "action": "admit"}), "1"),
+                (json!({"__name__": "ci_governor_admitted", "host": "razer-laptop"}), "4"),
+                (json!({"__name__": "ci_governor_live", "host": "mac-mini"}), "0"),
+            ]),
+        );
+        let cloud = tab(&i, "cloud", 160);
+        assert_line(&cloud, "aws-burst-1 RUNNING 1.5/6 h none deep queue");
+        let gov = tab(&i, "governor", 160);
+        assert!(gov.starts_with("GOVERNOR  OK  queue 7"), "{gov}");
+        assert_line(&gov, "razer-laptop live busy ADMIT 4");
+        assert_line(&gov, "mac-mini dry run - - -");
+        // No series: one line each, not an empty table.
+        let none = fixture();
+        assert_eq!(tab(&none, "cloud", 160).lines().count(), 1);
+        assert_eq!(tab(&none, "governor", 160).lines().count(), 1);
     }
 
     #[test]
@@ -1364,14 +1564,17 @@ pub(crate) mod tests {
             )]),
         );
         let out = text(&i, 160);
-        assert_line(&out, "razer-laptop local 3/3 unity 3/3 unity withheld 0/1");
+        assert_line(
+            &out,
+            "razer-laptop local 3/3 91% 31% 9.8/16 60% 84C unity 3/3 unity withheld 0/1",
+        );
     }
 
     #[test]
     fn a_machines_row_carries_where_busy_load_6h_cpu_and_busy_of_its_slots_per_pool() {
         let mut i = fixture();
         with_cloud(&mut i, "0");
-        let out = tab(&i, Tab::Machines, 160);
+        let out = tab(&i, "machines", 160);
         assert_line(&out, "MACHINE WHERE BUSY CPU 6H LOAD MEM TEMP POOLS");
         assert_line(
             &out,
@@ -1384,15 +1587,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pools_show_busy_waiting_oldest_done_pass_and_hosts_longest_queue_first() {
-        let out = text(&fixture(), 160);
-        assert_line(&out, "unity 3/4 3 2h28m 72 24% razer-laptop:4");
-        assert_line(&out, "light 0/2 1 1m 40 80% -");
-        assert_line(&out, "windows 0/1 0 - - - -");
+    fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
+        let out = tab(&fixture(), "ci", 160);
+        assert_line(&out, "unity 3 2h28m 72 24%");
+        assert_line(&out, "light 1 1m 40 80%");
+        assert_line(&out, "windows 0 - - -");
         let order: Vec<&str> = out
             .lines()
-            .skip_while(|l| !l.starts_with("POOL "))
-            .skip(1)
+            .skip_while(|l| !l.starts_with("QUEUES"))
+            .skip(2)
             .take_while(|l| !l.trim().is_empty())
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
@@ -1409,7 +1612,7 @@ pub(crate) mod tests {
         );
         assert!(!out.contains("36m!"));
         let p = Palette::default();
-        let lines = page(Tab::Ci, &i, p, 0, 160, &hosts());
+        let lines = all_lines(&i, p);
         let span = lines
             .iter()
             .flat_map(|l| &l.spans)
@@ -1424,8 +1627,8 @@ pub(crate) mod tests {
         assert!(has(&out, "stuck run: platform develop, 45d17h, no jobs"));
         assert!(has(&out, "QUEUED 4 jobs in 2 groups, oldest waiting 2h28m"));
         assert!(
-            has(&out, "DOWN mini-1 offline"),
-            "an offline runner is in DOWN by name"
+            has(&out, "RED NOW watch mac_studio_mlx, mini-1 offline"),
+            "red_now items lead, then an offline runner by name"
         );
     }
 
@@ -1437,17 +1640,6 @@ pub(crate) mod tests {
             "unity unity-core-playground #412 3 2h28m feat/apociseum-third",
         );
         assert_line(&out, "light platform - 1 1m develop");
-    }
-
-    #[test]
-    fn the_home_queue_counts_the_groups_it_does_not_list() {
-        let mut i = fixture();
-        let rows = (0..QUEUE_ROWS + 3)
-            .map(|n| (json!({"pool": "unity", "repo": "r", "branch": format!("b{n}"), "stuck": "false"}), "60"))
-            .collect();
-        i.instant.insert("waiting", series(rows));
-        let out = text(&i, 160);
-        assert!(has(&out, "+3 more groups"), "{out}");
     }
 
     #[test]
@@ -1490,7 +1682,7 @@ pub(crate) mod tests {
     #[test]
     fn a_pass_rate_is_red_under_70_and_amber_under_90() {
         let p = Palette::default();
-        let lines = page(Tab::Home, &fixture(), p, 0, 160, &hosts());
+        let lines = all_lines(&fixture(), p);
         let style = |t: &str| {
             lines
                 .iter()
@@ -1533,7 +1725,7 @@ pub(crate) mod tests {
     #[test]
     fn narrowing_the_machines_drops_temp_mem_6h_where_then_load() {
         let i = fixture();
-        let row = |w| tab(&i, Tab::Machines, w);
+        let row = |w| tab(&i, "machines", w);
         assert_line(
             &row(60),
             "razer-laptop local 3/4 91% 31% 9.8/16 60% unity 3/4",
@@ -1654,7 +1846,6 @@ pub(crate) mod tests {
         );
         // Without published local slots the machine counts its gates and invents no capacity.
         assert_line(&out, "workstation local - - - - - - 2 gates");
-        assert_line(&tab(&i, Tab::Home, 160), "workstation local - 2 gates");
         assert!(!out.lines().any(|l| l.starts_with("unity-local ")));
     }
 
@@ -1665,12 +1856,7 @@ pub(crate) mod tests {
         with_local_slots(&mut i);
         let out = text(&i, 160);
         assert_line(&out, "workstation local 2/4 - - - - - unity-local 2/4+6");
-        assert_line(&out, "unity-local 2/4+6 1 - 14 50% workstation");
-        // The gates' busy/open fold into the machine, as cc:site_slots folds them into local.
-        assert_line(
-            &tab(&i, Tab::Home, 160),
-            "workstation local 2/4 unity-local 2/4+6",
-        );
+        assert_line(&out, "unity-local on workstation 1 - 14 50%");
         assert!(has(&out, "waiting 5"));
     }
 
