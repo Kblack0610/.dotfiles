@@ -122,7 +122,7 @@ mod tests {
         );
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || serve(l, tx));
-        for t in [Tab::Sessions, Tab::Today, Tab::Overview] {
+        for t in [Tab::Fleet, Tab::Today, Tab::Overview] {
             request(&d.0, t).unwrap();
             match rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(Msg::Tab(got)) => assert_eq!(got, t),
