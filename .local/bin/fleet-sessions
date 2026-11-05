@@ -9,6 +9,8 @@
 #                                     eta from `fleet-bench eta`, and fleet_sessions.prom
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
+#                                     (both refuse, exit 3, outside the pass holding the
+#                                     shepherd lease: fleet-shepherd holds)
 #   fleet-sessions label <who> [+name|-name|^name ...]  set, clear, flip or (no ops) print a
 #                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
@@ -977,14 +979,18 @@ sessions_prom() {
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }
 
+# holds: the sibling fleet-shepherd's lease check, by path, so a test runs this checkout's.
+holds() { "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/fleet-shepherd" holds; }
+
 main() {
   case "${1:-}" in
-    mark) shift; mark "$@"; return ;;
-    escalate) shift; escalate "$@"; return ;;
+    # A ledger write is the shepherd acting: only the pass holding its lease may (fleet-shepherd holds).
+    mark) holds || return; shift; mark "$@"; return ;;
+    escalate) holds || return; shift; escalate "$@"; return ;;
     label) shift; label "$@"; return ;;
     tick) tick; return ;;
     explain) shift; explain "$@"; return ;;
-    -h|--help) sed -n '2,19p' "$0"; return ;;
+    -h|--help) sed -n '2,21p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows t0
