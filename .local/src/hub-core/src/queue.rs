@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session_actions::Runner;
+use crate::text::{cap, headline, TITLE_MAX};
 
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
@@ -93,12 +94,11 @@ impl Item {
     /// What the item is in a few words: the `title:` header, else the task's first sentence
     /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
-        let t = if self.title.trim().is_empty() {
-            first_sentence(&self.task)
+        if self.title.trim().is_empty() {
+            headline(&self.task).0
         } else {
-            self.title.trim().to_string()
-        };
-        cap(&t, TITLE_MAX)
+            cap(self.title.trim(), TITLE_MAX)
+        }
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -108,50 +108,6 @@ impl Item {
         let j = if up { i.checked_sub(1)? } else { i + 1 };
         PRIORITIES.get(j).copied()
     }
-}
-
-/// The longest title a view shows, in chars.
-pub const TITLE_MAX: usize = 100;
-
-/// The first non-empty line up to its first sentence end, with `/a/b/plan.md` as `plan`.
-fn first_sentence(task: &str) -> String {
-    let line = task
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    let words: Vec<String> = line.split_whitespace().map(short_path).collect();
-    let line = words.join(" ");
-    let end = line
-        .match_indices(". ")
-        .chain(line.match_indices("? "))
-        .chain(line.match_indices("! "))
-        .map(|(i, _)| i + 1)
-        .min()
-        .unwrap_or(line.len());
-    line[..end].trim_end_matches('.').to_string()
-}
-
-/// A word that is a file path, as the file's name without its extension; the punctuation after
-/// it is kept. Anything else as it is.
-fn short_path(w: &str) -> String {
-    let body = w.trim_end_matches([':', ',', ';', '.', ')']);
-    if !(body.starts_with('/') || body.starts_with("~/")) || !body[1..].contains('/') {
-        return w.to_string();
-    }
-    let name = body.rsplit('/').next().unwrap_or(body);
-    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-    format!("{stem}{}", &w[body.len()..])
-}
-
-/// `s` cut to `max` chars on a word boundary, with "..." when cut.
-fn cap(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let cut: String = s.chars().take(max).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a);
-    format!("{}...", cut.trim_end_matches([',', ';', ':']))
 }
 
 /// One group of `stats.by_project` or `stats.by_source`: the done items in it.
