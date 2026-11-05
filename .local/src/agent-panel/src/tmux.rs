@@ -217,6 +217,11 @@ pub fn jump(target: &str) {
     }
 }
 
+/// Show a line in the caller's tmux message bar.
+pub fn message(text: &str) {
+    let _ = Command::new("tmux").args(["display-message", text]).status();
+}
+
 /// `tmx` from PATH, else the dotfiles install location: Hyprland's `exec` PATH does
 /// not carry ~/.local/bin, and the pin launches this binary from there.
 fn tmx_path() -> PathBuf {
