@@ -35,7 +35,7 @@ Both surfaces move to the layout below in the phases of the plan `~/.agent/plans
 
 | # | Tab | Question | Status |
 |---|---|---|---|
-| 1 | Home | What needs me, and is everything ok? | landed (#PRNUM): `hub_core::home`, the front page on both surfaces |
+| 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the front page on both surfaces |
 | 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
 | 3 | Projects | Where is each project, and its tasks? | planned |
 | 4 | Sessions | What is each agent doing? Act on it. | planned |
@@ -64,5 +64,5 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 
 | Old name | Lands on | Since |
 |---|---|---|
-| `overview` (TUI, `hub --tab overview`) | Home | #PRNUM |
-| `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #PRNUM |
+| `overview` (TUI, `hub --tab overview`) | Home | #929 |
+| `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |
