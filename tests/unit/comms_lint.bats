@@ -146,6 +146,31 @@ EOF
   assert_line --partial "Comms, last 1d: 3 messages, 67% meet the standard."
 }
 
+@test "report scores merged PR bodies from gh, and says so when gh cannot answer" {
+  mkdir -p "$SANDBOX/bin"
+  cat > "$SANDBOX/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SANDBOX/gh.log"
+[ -f "$SANDBOX/gh.fail" ] && { echo "gh: offline" >&2; exit 1; }
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+long=$(printf 'word %.0s' $(seq 1 40))
+printf '[{"body":"Bodies are scored at land.\\n\\nRemoves: nothing.","closedAt":"%s","number":1,"repository":{"name":"r"}},' "$now"
+printf '{"body":"%s","closedAt":"%s","number":2,"repository":{"name":"r"}}]\n' "$long" "$now"
+EOF
+  chmod +x "$SANDBOX/bin/gh"
+  export SANDBOX PATH="$SANDBOX/bin:$PATH"
+  run "$SUBJECT" report --since 1d --channel pr-body --json
+  assert_success
+  run grep -c -- '--author=@me --merged-at >=' "$SANDBOX/gh.log"
+  assert_output 1
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['pr-body']; print(d['messages'], d['pass_pct'])" "$(COMMS_CHANNELS="$COMMS_CHANNELS" "$SUBJECT" report --since 1d --channel pr-body --json)"
+  assert_output "2 50"
+  touch "$SANDBOX/gh.fail"
+  run "$SUBJECT" report --since 1d --channel pr-body
+  assert_success
+  assert_output --partial "source unreadable: gh search prs"
+}
+
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success

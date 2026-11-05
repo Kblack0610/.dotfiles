@@ -192,6 +192,43 @@ fn cc_values(infra: &Infra) -> HashMap<String, f64> {
 /// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
 /// read). Needs come asks first, then sessions, queue items, nightly reds and red-now items,
 /// each newest first.
+/// The tmux target of session `name` in `sessions`, when exactly one window carries it.
+fn target_in(sessions: &[&Value], name: &str) -> Option<String> {
+    let mut m = sessions
+        .iter()
+        .map(|s| str_of(s, "target"))
+        .filter(|t| !t.is_empty() && tmux_name(t) == name);
+    let first = m.next()?;
+    // Two windows of one tmux session: the name alone cannot say which.
+    m.next().is_none().then(|| first.to_string())
+}
+
+/// The running queue items, each with its session's plan progress when it has a checklist:
+/// Home's running section and each Projects card's in-flight list.
+pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
+    let sessions: Vec<&Value> = state["sessions"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    let phases = boards::phases(state);
+    q.in_state(State::Running)
+        .map(|i| {
+            let target = i
+                .session
+                .as_deref()
+                .and_then(|s| target_in(&sessions, tmux_name(s)));
+            Running {
+                slug: i.slug.clone(),
+                title: i.title(),
+                project: i.project.clone(),
+                started: i.started.clone(),
+                phases: target.as_ref().and_then(|t| phases.get(t).cloned()),
+                target,
+            }
+        })
+        .collect()
+}
+
 pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Home {
     let mut h = Home {
         shown: SHOWN,
@@ -202,15 +239,7 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         .as_array()
         .map(|a| a.iter().collect())
         .unwrap_or_default();
-    let target_of = |name: &str| -> Option<String> {
-        let mut m = sessions
-            .iter()
-            .map(|s| str_of(s, "target"))
-            .filter(|t| !t.is_empty() && tmux_name(t) == name);
-        let first = m.next()?;
-        // Two windows of one tmux session: the name alone cannot say which.
-        m.next().is_none().then(|| first.to_string())
-    };
+    let target_of = |name: &str| target_in(&sessions, name);
     let items: Vec<&Item> = queue.map(|q| q.items.iter().collect()).unwrap_or_default();
     let item_of = |name: &str| {
         items.iter().copied().find(|i| {
@@ -313,20 +342,9 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         )
     });
 
-    let phases = boards::phases(state);
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
-        for i in q.in_state(State::Running) {
-            let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
-            h.running.push(Running {
-                slug: i.slug.clone(),
-                title: i.title(),
-                project: i.project.clone(),
-                started: i.started.clone(),
-                phases: target.as_ref().and_then(|t| phases.get(t).cloned()),
-                target,
-            });
-        }
+        h.running = running(state, q);
         let held = q
             .in_state(State::Queued)
             .filter(|i| i.hold.is_some())

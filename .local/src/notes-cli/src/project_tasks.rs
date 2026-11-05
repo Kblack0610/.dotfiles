@@ -972,10 +972,78 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    let on = done_token(chrono::Local::now().date_naive());
     Ok(edit(p, log, name, pick, "done", lane, |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+        let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
+        Some(md::add_marker(&ticked, &stamp))
     })?
     .0)
+}
+
+/// The marker token `done` stamps beside the proof: the day the row closed, what a project's
+/// pace counts (`notes projects --stats --json`). Before the proof, so a prose proof stays last.
+pub(crate) fn done_token(day: chrono::NaiveDate) -> String {
+    format!("done:{}", day.format("%Y-%m-%d"))
+}
+
+/// The day a closed row closed, from its `done:` marker token.
+pub(crate) fn done_on(line: &str) -> Option<chrono::NaiveDate> {
+    md::marker_token(line, "done:")
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+}
+
+/// `notes ptask <name> tag <query> [--add T]... [--remove T]...` - add or take hashtags off the
+/// first matching open task, before its marker. A version tag is refused: `move`, `promote`
+/// and `demote` own a row's release.
+pub fn tag(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    add: &[String],
+    remove: &[String],
+    lane: Lane,
+) -> Result<i32> {
+    let add: Vec<String> = add.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
+    let remove: Vec<String> = remove.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
+    if add.is_empty() && remove.is_empty() {
+        bail!("tag needs --add <tag> or --remove <tag>");
+    }
+    Ok(edit(p, log, name, pick, "tagged", lane, |l| {
+        Some(retag(l, &add, &remove))
+    })?
+    .0)
+}
+
+/// `t` as the `#tag` a row carries, or why it is not one. A release tag is refused: moving a
+/// row between versions is `move`, which also clears what is only legal in the open version.
+pub(crate) fn tag_token(t: &str) -> Result<String> {
+    let t = t.trim().trim_start_matches('#');
+    if t.is_empty() || t.contains(char::is_whitespace) {
+        bail!("not a tag: '{t}' (want one word, like size/s or requested)");
+    }
+    if md::is_version_tag(t) {
+        bail!("#{t} is a release: use move, promote or demote");
+    }
+    Ok(format!("#{t}"))
+}
+
+/// `line` with `remove` dropped and `add` added. A row has one size, so adding a
+/// `#size/<s>` replaces the size it had.
+pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
+    let sized = add.iter().any(|t| t.starts_with("#size/"));
+    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| a == t));
+    let l = old
+        .into_iter()
+        .chain(remove.iter().map(String::as_str))
+        .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+    add.iter().fold(l, |l, t| md::add_tag(&l, t))
+}
+
+/// The row's `#size/<s>` tag, read from its text before the marker comment.
+pub(crate) fn size_tag(line: &str) -> Option<&str> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().find(|w| w.starts_with("#size/"))
 }
 
 /// The marker text a `done` will stamp, or the error explaining that it needs one.
@@ -1645,6 +1713,37 @@ Version: v1.13.0
         assert!(proof_stamp(None, Some("")).is_err());
         // and the two doors are alternatives, not a belt-and-braces
         assert!(proof_stamp(Some("pr:1"), Some("why")).is_err());
+    }
+
+    #[test]
+    fn a_tag_edit_adds_and_removes_whole_tags_and_keeps_one_size() {
+        let row = "- [ ] row #size/s #ai <!-- id:ar-1 -->";
+        let t = |v: &[&str]| v.iter().map(|t| tag_token(t).unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            retag(row, &t(&["requested"]), &t(&["#ai"])),
+            "- [ ] row #size/s #requested <!-- id:ar-1 -->"
+        );
+        assert_eq!(
+            retag(row, &t(&["size/l"]), &[]),
+            "- [ ] row #ai #size/l <!-- id:ar-1 -->",
+            "a new size replaces the old one"
+        );
+        assert_eq!(retag(row, &t(&["ai"]), &[]), row, "a tag it has is a no-op");
+        assert!(tag_token("v0.2.0")
+            .unwrap_err()
+            .to_string()
+            .contains("move"));
+        assert!(tag_token("two words").is_err());
+        assert!(tag_token("#").is_err());
+    }
+
+    #[test]
+    fn done_stamps_the_day_it_closed_and_reads_it_back() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let row = md::add_marker("- [x] shipped <!-- id:ar-1 -->", &done_token(day));
+        assert_eq!(row, "- [x] shipped <!-- id:ar-1 done:2026-11-05 -->");
+        assert_eq!(done_on(&row), Some(day));
+        assert_eq!(done_on("- [x] shipped <!-- done:soon -->"), None);
     }
 
     #[test]
@@ -2322,7 +2421,9 @@ mod inbox_tests {
         let s = v.read();
         let row = s.lines().find(|l| l.contains("id:sc-4")).unwrap();
         assert!(
-            row.starts_with("- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"),
+            row.starts_with(
+                "- [ ] fix(ui): the menu flickers on resize #size/s #requested #tier/3"
+            ),
             "{row}"
         );
         assert!(!row.contains("#size/m") && !row.contains("#1469"), "{row}");

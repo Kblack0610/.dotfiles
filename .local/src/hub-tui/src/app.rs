@@ -22,6 +22,7 @@ use crate::controls::{Ask, Controls};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
+use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, hometab};
@@ -42,7 +43,7 @@ pub enum Tab {
     History,
     Fleet,
     Queue,
-    Board,
+    Projects,
 }
 
 impl Tab {
@@ -56,7 +57,8 @@ impl Tab {
         Tab::Today,
         Tab::History,
         Tab::Fleet,
-        Tab::Board,
+        // Board's slot and key 0 until the layout renumbers the digits once (dashboards.md).
+        Tab::Projects,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -69,7 +71,7 @@ impl Tab {
             Tab::History => "History",
             Tab::Fleet => "Fleet",
             Tab::Queue => "Queue",
-            Tab::Board => "Board",
+            Tab::Projects => "Projects",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -91,7 +93,7 @@ impl Tab {
             Tab::Home => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Board => {
+            Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Projects => {
                 None
             }
         }
@@ -155,7 +157,7 @@ pub enum Msg {
     Files,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
-    /// `hub tab <name> [search]` asked for a page (tabreq.rs); the search is the Board's.
+    /// `hub tab <name> [words]` asked for a page (tabreq.rs); the words name a project to open.
     Tab(Tab, Option<String>),
     Boards(Box<Boards>),
     Infra(Box<Infra>),
@@ -176,6 +178,8 @@ pub enum Msg {
     Tasks(Box<Result<Feed, String>>),
     /// A board write ended: notes' output, or why it failed.
     TasksActed(Result<String, String>),
+    /// `notes projects --stats --json` and the project map, for the Projects tab's cards.
+    Projects(Box<projtab::Loaded>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -220,9 +224,12 @@ pub struct App {
     pub qv: QueueView,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
-    /// Every project's open rows, for the Board tab; None until the first read.
+    /// Every project's open rows, for the Projects tab; None until the first read.
     pub tasks: Option<Result<Feed, String>>,
     pub tv: TaskView,
+    /// The Projects tab's card inputs; None until the first read.
+    pub projects: Option<projtab::Loaded>,
+    pub pv: ProjView,
     /// The Fleet tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -247,6 +254,7 @@ pub struct App {
     sessions_read: Read,
     queue_read: Read,
     tasks_read: Read,
+    projects_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -275,6 +283,8 @@ impl App {
             queue_dir: queue_dir(),
             tasks: None,
             tv: TaskView::default(),
+            projects: None,
+            pv: ProjView::default(),
             controls: Controls::default(),
             runner: Arc::new(actions::System),
             gather: actions::gather,
@@ -292,6 +302,7 @@ impl App {
             sessions_read: Read::default(),
             queue_read: Read::default(),
             tasks_read: Read::default(),
+            projects_read: Read::default(),
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -415,9 +426,10 @@ impl App {
         });
     }
 
-    /// The board is read through `notes board --json` (hub_core::tasks), never from the
-    /// sheets: on entering the Board tab, on `r`, after a write, and on the tick while shown.
-    /// The vault has no watch here; `notes` is its writer.
+    /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
+    /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
+    /// the Projects tab, on `r`, after a write, and on the tick while shown. The vault has no
+    /// watch here; `notes` is its writer.
     pub fn read_tasks(&mut self) {
         if self.tasks_read.want() {
             let tx = self.tx.clone();
@@ -425,6 +437,57 @@ impl App {
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Tasks(Box::new(hub_core::tasks::feed(runner.as_ref()))));
             });
+        }
+    }
+
+    /// Both of the Projects tab's reads: the rows and the cards.
+    pub fn read_projects(&mut self) {
+        self.read_tasks();
+        self.read_cards();
+    }
+
+    fn read_cards(&mut self) {
+        if self.projects_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Projects(Box::new(projtab::load(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// The cards, joined from the last reads (hub_core::projects::build).
+    pub fn cards(&self) -> hub_core::projects::Projects {
+        let Some(l) = &self.projects else {
+            return Default::default();
+        };
+        let stats = match &l.stats {
+            Ok(s) => s.as_slice(),
+            Err(e) => {
+                return hub_core::projects::Projects {
+                    errors: vec![e.clone()],
+                    ..Default::default()
+                }
+            }
+        };
+        let feed = match &self.tasks {
+            Some(Ok(f)) => Some(f),
+            _ => None,
+        };
+        let null = serde_json::Value::Null;
+        let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), &l.repos)
+    }
+
+    /// Open the project a `hub tab projects <name>` named, once the cards are read.
+    fn open_wanted(&mut self) {
+        if self.projects.is_none() {
+            return;
+        }
+        if let Some(name) = self.pv.want.take() {
+            let cards = self.cards().cards;
+            self.pv.go(&mut self.tv, &cards, &name);
+            self.scroll = 0;
         }
     }
 
@@ -489,8 +552,8 @@ impl App {
                     self.read_fleet();
                     self.read_sessions();
                 }
-                if self.tab == Tab::Board {
-                    self.read_tasks();
+                if self.tab == Tab::Projects {
+                    self.read_projects();
                 }
             }
             Msg::Files => {
@@ -501,8 +564,8 @@ impl App {
             }
             Msg::BoardFiles => self.read_boards(),
             Msg::Tab(t, q) => {
-                self.board_search(q);
                 self.go(t);
+                self.open_project(q);
             }
             Msg::Boards(b) => {
                 self.boards = Some(*b);
@@ -594,7 +657,14 @@ impl App {
             Msg::TasksActed(r) => {
                 self.tv.running = None;
                 self.tv.said = Some(r);
-                self.read_tasks();
+                self.read_projects();
+            }
+            Msg::Projects(l) => {
+                self.projects = Some(*l);
+                self.open_wanted();
+                if self.projects_read.done() {
+                    self.read_cards();
+                }
             }
         }
     }
@@ -624,7 +694,7 @@ impl App {
         if self.tab == Tab::Queue && self.queue_key(k) {
             return;
         }
-        if self.tab == Tab::Board && self.board_key(k) {
+        if self.tab == Tab::Projects && self.projects_key(k) {
             return;
         }
         let n = self.page.max(1);
@@ -652,8 +722,8 @@ impl App {
                     self.read_fleet();
                     self.read_sessions();
                 }
-                if self.tab == Tab::Board {
-                    self.read_tasks();
+                if self.tab == Tab::Projects {
+                    self.read_projects();
                 }
             }
             KeyCode::Char('o') => {
@@ -672,11 +742,12 @@ impl App {
         }
     }
 
-    /// Set the Board's search, as `/` would; None leaves it as it is.
-    pub fn board_search(&mut self, q: Option<String>) {
-        if let Some(q) = q {
-            self.tv.search = q;
-            self.tv.sel = 0;
+    /// `hub tab projects <name>`: open that project's rows (or All searched for the name)
+    /// once the cards are read; None leaves the tab as it is.
+    pub fn open_project(&mut self, q: Option<String>) {
+        if let Some(q) = q.filter(|q| !q.trim().is_empty()) {
+            self.pv.want = Some(q.trim().to_string());
+            self.open_wanted();
         }
     }
 
@@ -693,12 +764,39 @@ impl App {
         if t == Tab::Queue {
             self.read_queue();
         }
-        if t == Tab::Board {
-            self.read_tasks();
+        if t == Tab::Projects {
+            self.read_projects();
         }
     }
 
-    /// The Board tab's own keys (tasktab.rs). With a prompt open every key is its; the page keeps the selected row in view (draw).
+    /// The Projects tab's keys: the card list's (projtab.rs), or with the rows open theirs
+    /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
+    fn projects_key(&mut self, k: KeyEvent) -> bool {
+        if !self.pv.open {
+            let cards = self.cards().cards;
+            return self.pv.key(&mut self.tv, k, &cards, self.page);
+        }
+        if self.tv.prompt.is_none() {
+            let v = &self.tv;
+            let filtered = !v.search.is_empty() || v.lane.is_some() || v.said.is_some();
+            if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
+                self.pv.close(&mut self.tv);
+                self.scroll = 0;
+                return true;
+            }
+        }
+        // With no rows read there is nothing to clear: Esc still goes back.
+        if self.board_key(k) {
+            return true;
+        }
+        if k.code == KeyCode::Esc && self.tv.prompt.is_none() {
+            self.pv.close(&mut self.tv);
+            return true;
+        }
+        false
+    }
+
+    /// The rows' own keys (tasktab.rs). With a prompt open every key is its; the page keeps the selected row in view (draw).
     fn board_key(&mut self, k: KeyEvent) -> bool {
         let feed = match &self.tasks {
             Some(Ok(f)) => Some(f),
@@ -950,8 +1048,8 @@ impl App {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
-            // The Board's one section is its selected row, kept in view.
-            if let (Tab::Board, Some(&at)) = (self.tab, sections.first()) {
+            // The Projects tab's one section is its selected card or row, kept in view.
+            if let (Tab::Projects, Some(&at)) = (self.tab, sections.first()) {
                 let h = (body.height as usize).max(1);
                 if at < self.scroll {
                     self.scroll = at.saturating_sub(2);
@@ -1047,9 +1145,14 @@ impl App {
             Tab::Queue => format!(
                 "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
-            Tab::Board => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  +/- release  o open  Esc clear  r refresh  {tabs} tabs  q quit"
+            Tab::Projects if self.tv.prompt.is_some() => {
+                "type, Enter submits, Esc cancels".into()
+            }
+            Tab::Projects if self.pv.open => format!(
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Projects => format!(
+                "j/k pick  Enter open rows  / search all  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
@@ -1077,12 +1180,37 @@ impl App {
                 }
                 (l, vec![])
             }
-            (Tab::Board, ..) => match &self.tasks {
+            (Tab::Projects, ..) if !self.pv.open => match &self.projects {
+                None => reading("notes projects"),
+                Some(_) => {
+                    let feed = match &self.tasks {
+                        Some(Ok(f)) => Some(f),
+                        _ => None,
+                    };
+                    let (l, at) = projtab::page(&self.cards(), feed, &self.pv, self.p, w);
+                    (l, at.into_iter().collect())
+                }
+            },
+            // One project's card stays on top of its rows; All has none.
+            (Tab::Projects, ..) => match &self.tasks {
                 None => reading("notes board"),
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
                 Some(Ok(f)) => {
-                    let (l, at) = tasktab::page(f, &self.tv, self.p, w);
-                    (l, at.into_iter().collect())
+                    let mut l = vec![];
+                    if let Some((profile, name)) = &self.tv.project {
+                        let cards = self.cards().cards;
+                        if let Some(c) = cards
+                            .iter()
+                            .find(|c| c.profile == *profile && c.name == *name)
+                        {
+                            l = projtab::card_lines(c, self.p, w);
+                            l.push(Line::raw(""));
+                        }
+                    }
+                    let top = l.len();
+                    let (rows, at) = tasktab::page(f, &self.tv, self.p, w);
+                    l.extend(rows);
+                    (l, at.map(|a| a + top).into_iter().collect())
                 }
             },
             (Tab::Queue, ..) => match &self.queue {
@@ -1470,43 +1598,90 @@ mod tests {
         assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
     }
 
+    /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
+    fn loaded() -> projtab::Loaded {
+        let stat = |profile: &str, name: &str, done: u32, open: u32| hub_core::projects::Stats {
+            profile: profile.into(),
+            name: name.into(),
+            stage: "alpha".into(),
+            version: Some("v0.1.0".into()),
+            progress: hub_core::projects::Progress {
+                open,
+                done,
+                open_weight: open,
+                done_weight: done,
+                closed_28d: 1,
+                closed_weight_28d: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        projtab::Loaded {
+            stats: Ok(vec![
+                stat("personal", "garden", 1, 1),
+                stat("bnb", "demo", 1, 3),
+            ]),
+            repos: Default::default(),
+        }
+    }
+
+    /// Answer the reads entering the tab started (the fake prints nothing): wait for both.
+    fn settle(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        let (mut tasks, mut cards) = (false, false);
+        while !(tasks && cards) {
+            let m = rx.recv().unwrap();
+            tasks |= matches!(m, Msg::Tasks(_));
+            cards |= matches!(m, Msg::Projects(_));
+            a.handle(m);
+        }
+    }
+
     #[test]
-    fn the_board_tab_writes_through_notes_and_keeps_its_row_in_view() {
+    fn the_projects_tab_lists_cards_then_opens_one_projects_rows_under_its_card() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        assert_eq!(Tab::parse("board"), Some(Tab::Board));
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
-        assert_eq!(a.tab, Tab::Board, "Shift-Tab from Home is the last tab");
-        let s = screen(&mut a, 140, 12);
+        assert_eq!(Tab::parse("board"), Some(Tab::Projects), "board is retired");
+        // Projects has Board's slot and key: every other digit keeps its meaning.
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Projects);
+        let s = screen(&mut a, 140, 30);
+        let bar = s.lines().next().unwrap();
         assert!(
-            s.lines().next().unwrap().contains("9 Fleet  0 Board"),
+            bar.contains("3 Jobs") && bar.contains("9 Fleet  0 Projects"),
             "{s}"
         );
-        assert!(s.contains("Reading notes board..."), "{s}");
+        assert!(s.contains("Reading notes projects..."), "{s}");
+        settle(&mut a, &rx);
+        assert!(screen(&mut a, 140, 30).contains("notes projects --stats --json"));
 
-        // The read Shift-Tab started meets the fake's empty answer: wait for it, not a timer.
-        loop {
-            match rx.recv().unwrap() {
-                Msg::Tasks(f) => {
-                    a.handle(Msg::Tasks(f));
-                    break;
-                }
-                m => a.handle(m),
-            }
-        }
-        assert!(screen(&mut a, 140, 12).contains("notes board --json"));
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
-        for _ in 0..4 {
-            a.handle(key('j'));
-        }
-        let s = screen(&mut a, 140, 12);
+        a.handle(Msg::Projects(Box::new(loaded())));
+        let s = screen(&mut a, 140, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            s.contains("water the beds"),
-            "the last row scrolled into view:\n{s}"
+            at("ALL PROJECTS  5 open rows") < at("DEMO  bnb, alpha"),
+            "{s}"
         );
-        assert!(!s.contains("TASK BOARD"), "{s}");
+        assert!(
+            at("DEMO  bnb, alpha") < at("GARDEN  personal, alpha"),
+            "by name when none is in flight"
+        );
+        assert!(s.contains("v0.1.0 25% (1 of 4 by size)"), "{s}");
+        assert!(s.lines().last().unwrap().contains("Enter open rows"), "{s}");
+
+        // The card's numbers stay on top of its rows.
+        a.handle(key('j'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.tv.project, Some(("bnb".into(), "demo".into())));
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
+            "{s}"
+        );
+        assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
+        assert!(s.lines().last().unwrap().contains("t/T tag"), "{s}");
 
         a.handle(key('q'));
         assert!(a.quit, "q quits with no prompt open");
@@ -1516,7 +1691,7 @@ mod tests {
             a.handle(key(c));
         }
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.tv.running.as_deref(), Some("drop in personal/garden"));
+        assert_eq!(a.tv.running.as_deref(), Some("drop in bnb/demo"));
         loop {
             match rx.recv().unwrap() {
                 Msg::TasksActed(r) => {
@@ -1526,15 +1701,50 @@ mod tests {
                 m => a.handle(m),
             }
         }
-        assert_eq!(a.tv.said, Some(Ok("drop in personal/garden: done".into())));
+        assert_eq!(a.tv.said, Some(Ok("drop in bnb/demo: done".into())));
         let ran = fake.0.lock().unwrap().clone();
         assert!(
             ran.contains(
-                &"notes ptask garden --profile personal --exact drop --why stale -- - [ ] water the beds"
+                &"notes ptask demo --profile bnb --exact drop --why stale -- - [ ] fix the menu"
                     .to_string()
             ),
             "{ran:?}"
         );
+
+        // Esc clears what is said first, then goes back to the cards on the card it opened.
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        a.handle(esc());
+        assert!(a.pv.open && a.tv.said.is_none());
+        a.handle(esc());
+        assert!(!a.pv.open);
+        assert_eq!(a.pv.card, 1);
+
+        // All keeps the cross-project board, the last row scrolled into view.
+        a.handle(key('g'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.tv.project, None);
+        for _ in 0..4 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 140, 12);
+        assert!(
+            s.contains("water the beds"),
+            "the last row scrolled into view:\n{s}"
+        );
+        assert!(!s.contains("PROJECTS  2 projects"), "{s}");
+
+        // `hub tab projects garden` opens garden's rows.
+        a.handle(Msg::Tab(Tab::Projects, Some("garden".into())));
+        assert_eq!(a.tv.project, Some(("personal".into(), "garden".into())));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
+        assert_eq!(a.tab, Tab::Projects, "the last tab");
+    }
+
+    fn at_line(s: &str, t: &str) -> usize {
+        s.lines()
+            .position(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("{t} missing:\n{s}"))
     }
 
     #[test]
@@ -1599,8 +1809,8 @@ mod tests {
             assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
             at = i;
         }
-        let landed: Vec<&str> = hub_core::layout::landed().map(|t| t.title).collect();
-        assert_eq!(titles[..landed.len()], landed[..], "the landed tabs lead");
+        // Until the layout renumbers the digits once, a landed tab takes the slot of the tab it
+        // replaces, so the digits keep their meaning (rule 13): Projects is Board's key 0.
     }
 
     #[test]
