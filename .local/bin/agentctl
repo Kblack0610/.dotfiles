@@ -65,10 +65,17 @@ load_agent() {
         source "$conf"
         : "${NAME:?missing NAME}"
         : "${KIND:?missing KIND}"
-        : "${COMMAND:?missing COMMAND}"
+        # KIND=call is a model call another script makes (a judge): its caller starts it
+        # through `agentctl-run --agent <name>`, so it has no COMMAND, unit or timer. It is
+        # in the roster so every model call is defined, listed and scored the same way.
         case "$KIND" in
-            oneshot|persistent) ;;
-            *) printf 'invalid KIND=%s\n' "$KIND" >&2; exit 1 ;;
+            oneshot|persistent) : "${COMMAND:?missing COMMAND}" ;;
+            call)
+                [ -z "${SCHEDULE:-}" ] && [ "${AUTOSTART:-no}" = no ] \
+                    || { printf 'KIND=call is started by its caller: no SCHEDULE or AUTOSTART\n' >&2; exit 1; }
+                : "${ROLE:?missing ROLE (KIND=call)}"
+                COMMAND="agentctl-run --agent $NAME" ;;
+            *) printf 'invalid KIND=%s (oneshot|persistent|call)\n' "$KIND" >&2; exit 1 ;;
         esac
         [ "$NAME" = "$name" ] || { printf 'NAME=%s does not match filename %s\n' "$NAME" "$name" >&2; exit 1; }
         # Every runner says which lane it is in and what it is for, so `agentctl list` can
@@ -417,6 +424,7 @@ cmd_list() {
             [ "$header" -eq 1 ] || { printf '%s\n' "$lane"; header=1; }
             state=$(unit_state "$name")
             case "$state" in active) state=running ;; inactive|"") state=idle ;; esac
+            [ "$(kv_get KIND <<<"$conf")" = call ] && state=call
             [ "$(kv_get ENABLED <<<"$conf")" = no ] && [ "$state" != running ] && state=off
             last=-
             out=$(_outcome_file "$name")
@@ -522,6 +530,7 @@ cmd_start() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl start <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user start "agentctl@${name}.service"
 }
 
@@ -535,6 +544,7 @@ cmd_restart() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl restart <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user restart "agentctl@${name}.service"
 }
 
@@ -758,7 +768,7 @@ Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl status <name>         Detailed status for one agent
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
-  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)
+  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
   agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)
@@ -775,6 +785,8 @@ See ~/.config/agentctl/README.md for the schema.
 Headless LLM runs go through agentctl-run, the one launcher: it applies the role and
 route contract and refuses (exit 78) rather than degrade. A runner's COMMAND, or a script
 it calls, invokes it; the caller scores the run with proof_verdict (agent-proof.sh).
+A model call made inside a script (a judge) is a KIND=call conf, started by its caller as
+`agentctl-run --agent <name>`; each call is one line in ~/.local/state/agentctl/calls.jsonl.
 
 The status contract (what a headless runner publishes, and readers consume):
   agentctl report state=working project=bnb-platform item='queue: fix-login'

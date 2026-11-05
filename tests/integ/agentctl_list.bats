@@ -60,3 +60,24 @@ setup() {
   run "$AGENTCTL_BIN" list
   assert_line --regexp '^  alpha +.*missing DESCRIPTION'
 }
+
+@test "a KIND=call agent is listed as call and needs no COMMAND; its caller starts it, never agentctl" {
+  printf 'NAME=judge\nKIND=call\nLANE=observe\nROLE=observe\nDESCRIPTION=\047a judge\047\n' \
+    > "$HOME/.config/agentctl/agents/judge.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --regexp '^  judge +call +- +- +a judge$'
+  run "$AGENTCTL_BIN" start judge
+  assert_failure
+  assert_output --partial 'agentctl-run --agent judge'
+}
+
+@test "a KIND=call agent with a SCHEDULE or no ROLE is invalid (negative control)" {
+  printf 'NAME=judge\nKIND=call\nLANE=observe\nROLE=observe\nSCHEDULE=daily\nDESCRIPTION=x\n' \
+    > "$HOME/.config/agentctl/agents/judge.conf"
+  printf 'NAME=judge2\nKIND=call\nLANE=observe\nDESCRIPTION=x\n' > "$HOME/.config/agentctl/agents/judge2.conf"
+  run "$AGENTCTL_BIN" list
+  assert_line --partial 'no SCHEDULE or AUTOSTART'
+  assert_line --partial 'missing ROLE'
+  refute_line --regexp '^  judge2? +call'
+}

@@ -611,7 +611,7 @@ printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
 printf 'thinking...\nASK-JUDGE-START\n%s\nASK-JUDGE-END\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
-  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge" AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
 }
 
 @test "judge records its call and reason, and leaves the ask pending" {
@@ -624,10 +624,10 @@ SH
   assert_line 'judge_reason: landing is standing authorization'
   assert_line 'status: pending'
   assert_line --regexp '^judged_at: .+'
-  # the prompt carries the policy and the ask
+  # the input carries the ask; the policy is the agent's PROMPT, added by agentctl-run
   run cat "$BATS_TEST_TMPDIR/judge.calls"
   assert_output --partial 'open the PR?'
-  assert_output --partial 'Always `human`'
+  refute_output --partial 'Always `human`'
 }
 
 @test "judge never sends a gate to the model, and the gate's judge is the human" {
@@ -648,7 +648,7 @@ SH
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: human'
   "$AGENT_ASK" judge "$id"
-  run grep -c "^## The ask$" "$BATS_TEST_TMPDIR/judge.calls"
+  run grep -c "^question: no recommendation here?$" "$BATS_TEST_TMPDIR/judge.calls"
   assert_output '1'
 }
 
