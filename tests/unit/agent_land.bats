@@ -22,7 +22,7 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
-  *baseRefName*) printf '%s main\n' "$(cat "$NOTES_FIXTURE/state")" ;;
+  *baseRefName*) printf '%s main https://github.com/o/r/pull/42\n' "$(cat "$NOTES_FIXTURE/state")" ;;
   *mergeable*)
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
@@ -70,6 +70,7 @@ EOF
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  unset CLAUDE_CODE_SESSION_ID
 
   PLAN="$SANDBOX/plan.md"
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
@@ -158,7 +159,7 @@ landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
-gh pr view 42 --json state,baseRefName -q .state + " " + .baseRefName
+gh pr view 42 --json state,baseRefName,url -q .state + " " + .baseRefName + " " + .url
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 gh pr checks 42 --watch --fail-fast
@@ -281,14 +282,14 @@ EOF
 
 @test "--item: the item gets the PR and moves to done; a human item closes no row and needs no --project" {
   item tidy-loader
-  run "$LAND" 42 --item tidy-loader
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 4 'item: tidy-loader done with pr:42'
+  assert_line --index 4 'item: tidy-loader done with pr:o/r#42'
   assert_line --index 5 'landed #42'
   run grep -c '^notes' "$LOG"
   assert_output 0
   run agent-queue show tidy-loader --json
-  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr)"' <<<"$output")" 'done ok 42'
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
 @test "a hand-started session's own item is the record: no --item, no --project needed" {
@@ -298,9 +299,9 @@ EOF
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 4 'item: by-hand done with pr:42'
+  assert_line --index 4 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
-  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done 42'
+  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
 
 @test "two items recording this session are refused before the merge" {

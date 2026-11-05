@@ -18,6 +18,8 @@ setup() {
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
+  # The caller's Claude session stamps items and decides mine: a test sets it, never inherits it.
+  unset CLAUDE_CODE_SESSION_ID
 }
 
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
@@ -335,6 +337,57 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move second done --status ok
   run "$AQ" mine
   assert_failure 1
+}
+
+@test "mine: a waiting item of the same tmux session is not this one's; only a running one is" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug earlier "an earlier conversation"
+  "$AQ" move earlier waiting
+  run "$AQ" mine
+  assert_failure 1
+}
+
+@test "mine: the Claude session decides first, across tmux sessions and in waiting; none with a session id exits 1" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_success
+  assert_output ours
+  "$AQ" move ours waiting
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_output ours
+  unset TMUX
+  CLAUDE_CODE_SESSION_ID=sid-none run "$AQ" mine
+  assert_failure 1
+}
+
+@test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
+  f="$(item queued typed)"
+  [ "$(field "$f" sessions)" = sid-a ]
+  [ "$(field "$f" type)" = fix ]
+  [ "$(field "$f" area)" = agent-land ]
+  "$AQ" add --project game --slug untyped "Menu: pick sides"
+  [ -z "$(field "$(item queued untyped)" sessions)" ]
+  [ -z "$(field "$(item queued untyped)" type)" ]
+  "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
+  [ "$(field "$(item queued titled)" area)" = queue ]
+  run "$AQ" claim typed --sid sid-b
+  assert_success
+  CLAUDE_CODE_SESSION_ID=sid-b run "$AQ" claim typed
+  assert_output --partial "already claimed"
+  [ "$(field "$f" sessions)" = "sid-a sid-b" ]
+  run "$AQ" claim typed --sid 'x;rm'
+  assert_failure
+  run "$AQ" claim typed
+  assert_failure
+  assert_output --partial "no Claude session"
+  "$AQ" move typed done --status ok
+  run "$AQ" claim typed --sid sid-c
+  assert_failure
 }
 
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
