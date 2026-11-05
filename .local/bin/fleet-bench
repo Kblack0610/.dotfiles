@@ -769,16 +769,18 @@ forecast_section() {
 }
 
 # bottleneck_section <now>: the hours lost in the window, biggest first, and the branches behind the
-# failed runs. Waited hours come from the queue length sampled every 10 minutes.
+# failed runs. Waited hours come from the queue length sampled every 10 minutes, and low-water hours
+# from fleet-dispatch stats' under_low_water gauge, sampled the same way.
 bottleneck_section() {
-  local t="$1" win="${BENCH_WINDOW_H}h" pool queued
+  local t="$1" win="${BENCH_WINDOW_H}h" pool queued low
   pool=$(prom_map pool "sum_over_time(cc:pool_waiting[$win:10m]) / 6" "$t") || pool=null
   queued=$(prom_map host "sum_over_time(cc:host_local_queued[$win:10m]) / 6" "$t") || queued=null
+  low=$(prom_map topic "sum_over_time(max by (topic) (mqtt_under_low_water{topic=~\"agents_.+_summary_dispatch\"})[$win:10m]) / 6" "$t") || low=null
   echo "## Bottlenecks"
   echo
   echo "Hours lost over the last $win, from counts. The units differ, so the order says where to look first and the rows do not add up."
   echo
-  jq -rn --argjson pool "$pool" --argjson queued "$queued" --slurpfile w <(window_stats "$t") \
+  jq -rn --argjson pool "$pool" --argjson queued "$queued" --argjson low "$low" --slurpfile w <(window_stats "$t") \
       --rawfile r <(runs_between $((t - BENCH_WINDOW_H * 3600)) "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60;
     def top($k): map(select(.[$k] > 0)) | sort_by(-.[$k]) | .[:3] | map("\(.target) \(.[$k] / 60 | round1)h") | join(", ");
@@ -791,6 +793,8 @@ bottleneck_section() {
          else $pool | to_entries[] | select(.value >= 0.1) | {what: "Pool queue: \(.key)", h: .value, unit: "job-hours", detail: "jobs waiting, sampled every 10 minutes"} end),
         (if $queued == null then {what: "Local queue", unit: "run-hours", detail: "prometheus unreadable"}
          else $queued | to_entries[] | select(.value >= 0.1) | {what: "Local queue: \(.key)", h: .value, unit: "run-hours", detail: "runs waiting for a slot"} end),
+        (if $low == null then {what: "Queue under low water", unit: "hours", detail: "prometheus unreadable"}
+         else ([$low[]] | max // 0) as $h | select($h >= 0.1) | {what: "Queue under low water", h: $h, unit: "hours", detail: "runnable under DISPATCH_LOW_WATER, sampled every 10 minutes"} end),
         (select($lost > 0) | {what: "Local runs not passed", h: $lost, unit: "editor-hours", detail: "of \($editor | round1)h on all local runs"}),
         {what: "Sessions waiting on you", h: ($w | hours("waiting_min")), unit: "session-hours", detail: ($w | top("waiting_min"))},
         {what: "Sessions stalled", h: ($w | hours("stalled_min")), unit: "session-hours", detail: ($w | top("stalled_min"))} ]
