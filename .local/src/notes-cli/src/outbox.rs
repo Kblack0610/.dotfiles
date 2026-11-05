@@ -8,7 +8,7 @@
 //! its indented lines are its details. A `#p:<name>` word forces the project.
 //!
 //! The section is also a doc the human edits from agent-web's Outbox tab: `notes outbox show`
-//! gives its items and their hash, and `notes outbox put --base <hash>` replaces them only when
+//! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
 //! Every write here holds one lock (`.outbox.lock` beside the file).
 
@@ -105,21 +105,22 @@ fn hash(items: &[String]) -> String {
     format!("{h:016x}")
 }
 
-fn show_json(content: &str) -> serde_json::Value {
+fn show_json(p: &Profile, content: &str) -> serde_json::Value {
     let items = items(content);
     serde_json::json!({
+        "path": p.outbox,
         "hash": hash(&items),
         "text": items.join("\n"),
         "waiting": sheet::lines_in(content, HEADING).len(),
     })
 }
 
-/// `notes outbox show [--json]`: the items as text, or `{hash, text, waiting}`, `hash` the
+/// `notes outbox show [--json]`: the items as text, or `{path, hash, text, waiting}`, `hash` the
 /// value `put --base` takes.
 pub fn show(p: &Profile, json: bool) -> Result<i32> {
     let content = read(p)?;
     if json {
-        println!("{}", show_json(&content));
+        println!("{}", show_json(p, &content));
     } else {
         for l in items(&content) {
             println!("{l}");
@@ -139,7 +140,7 @@ pub(crate) fn put_items(p: &Profile, base: &str, text: &str) -> Result<Put> {
     let _lock = lock(p)?;
     let content = read(p)?;
     if hash(&items(&content)) != base {
-        return Ok(Put::Stale(show_json(&content)));
+        return Ok(Put::Stale(show_json(p, &content)));
     }
     let mut new: Vec<String> = text.lines().map(|l| l.trim_end().to_string()).collect();
     while new.last().is_some_and(|l| l.is_empty()) {
@@ -166,7 +167,7 @@ pub(crate) fn put_items(p: &Profile, base: &str, text: &str) -> Result<Put> {
         md::write_atomic(&p.outbox, &out)?;
         project_tasks::inbox_changed(p);
     }
-    Ok(Put::Written(show_json(&out)))
+    Ok(Put::Written(show_json(p, &out)))
 }
 
 /// `notes outbox put --base <hash>`: replace the outbox's items with stdin. Exit 3, with the
@@ -384,7 +385,7 @@ mod tests {
     }
 
     fn base(p: &Profile) -> String {
-        show_json(&read(p).unwrap())["hash"]
+        show_json(p, &read(p).unwrap())["hash"]
             .as_str()
             .unwrap()
             .to_string()
