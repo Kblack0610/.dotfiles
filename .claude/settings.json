@@ -112,7 +112,7 @@
     "defaultMode": "plan",
     "disableAutoMode": "disable"
   },
-  "model": "opus[1m]",
+  "model": "opus",
   "autoCompactWindow": 200000,
   "subagentPromptCacheTtl": "1h",
   "fallbackModel": [
@@ -156,6 +156,15 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
           }
         ]
       },
@@ -242,6 +251,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/plan-standard.sh"
           }
         ]
       }
@@ -310,6 +323,7 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "custom:ember",
+  "tui": "default",
   "cleanupPeriodDays": 365,
   "remoteControlAtStartup": true,
   "additionalDirectories": [

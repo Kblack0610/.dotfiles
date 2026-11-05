@@ -34,7 +34,8 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
           lands on its new tab; jobs, ci and machines open that section of Infra
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
-  --tab   start on this page; with --once, print only it
+  --tab   start on this page; with --once, print only it ('projects NAME' prints that card
+          over its open rows)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would)
@@ -221,6 +222,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tasks = Some(hub_core::tasks::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
+        // `--tab 'projects <name>'` prints that project's card over its rows, what Enter shows:
+        // the Prefix+p preview.
+        a.open_project(section);
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

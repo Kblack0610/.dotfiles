@@ -149,6 +149,10 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     let new_content = md::insert_under_heading(&content, "Focus", std::slice::from_ref(&line));
     md::write_atomic(&note, &new_content)?;
     log.info("focus", &format!("added to {}", note.display()));
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("added", "focus", "", "", &line),
+    );
     println!("{line}");
     Ok(0)
 }
@@ -174,6 +178,10 @@ pub fn done(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
         Some((new_content, closed)) => {
             md::write_atomic(&note, &new_content)?;
             log.info("focus", &format!("done in {}", note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("done", "focus", "", "", &closed),
+            );
             println!("done {}", closed.trim());
             Ok(0)
         }
@@ -205,6 +213,10 @@ pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
         Some((new_content, removed)) => {
             md::write_atomic(&note, &new_content)?;
             log.info("focus", &format!("removed in {}", note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("removed", "focus", "", "", &removed),
+            );
             println!("removed {}", removed.trim());
             Ok(0)
         }
@@ -221,6 +233,31 @@ pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_writes_leave_a_record() {
+        let root = std::env::temp_dir().join(format!("notes-focus-rec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let log = Logger::new(root.join(".state/log"), false);
+        let note = daily::today_path(&p);
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, "## Focus\n- [ ] keep this\n- [ ] drop this\n").unwrap();
+        add(&p, &log, "a new thing").unwrap();
+        done(&p, &log, "keep this").unwrap();
+        rm(&p, &log, "drop this").unwrap();
+        let events = crate::ingest::since(&p, 1);
+        let got: Vec<(&str, &str)> = events
+            .iter()
+            .map(|e| (e.action.as_str(), e.from.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [("added", "focus"), ("done", "focus"), ("removed", "focus")]
+        );
+        assert!(events[2].text.contains("drop this"), "{:?}", events[2]);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     const NOTE: &str = "\
 # 2026-07-16

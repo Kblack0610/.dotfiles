@@ -8,7 +8,7 @@
 @.dotfiles              Fleet tooling
 @.dotfiles-private      Fleet tooling
 
-barrage                                     Barrage
+barrage,shape-city                          Barrage
 raiders,story                               Raiders
 dodginballs,hometown,townsfolk              DodginBalls and Hometown
 animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics,anim,melee,weapons,throwables,online,server,burst  Engine

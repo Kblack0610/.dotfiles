@@ -218,6 +218,18 @@ project_lab_names() {
   ' "$map_file" 2>/dev/null || true
 }
 
+# project_inherited <repo or project> <field> -> its own value, else the one value shared by
+# every project under it, else "". `.dotfiles` has no type of its own, but both its projects
+# are infra.
+project_inherited() {
+  local own name vals
+  own="$(project_field "$1" "$2")"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  vals="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" "$2"; done | sort -u)"
+  [ -n "$vals" ] && [ "$(wc -l <<<"$vals")" -eq 1 ] && printf '%s\n' "$vals"
+  return 0
+}
+
 # project_keys -> every registered project key, sorted, one per line: the `paths` names
 # plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
 # and a string-valued `_comment*` key is documentation. The one definition of "the
