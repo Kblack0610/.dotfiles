@@ -197,7 +197,7 @@ cmd_archive() {
 }
 
 # --- Board ---
-# The hub's Board tab, searched to the project's group. `hub tab` reaches a running hub over
+# The hub's Projects tab, opened on the project's rows. `hub tab` reaches a running hub over
 # its socket, else the next hub to start takes the request.
 cmd_board() {
   panel_need hub tmx
