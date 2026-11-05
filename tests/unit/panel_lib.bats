@@ -238,6 +238,31 @@ load_lib() {
   refute_output --partial 'preview-window'
 }
 
+@test "panel_fzf_layout opens stacked by default and ctrl-/ cycles side, hidden, stacked" {
+  load_lib
+  unset PANEL_LAYOUT
+  panel_fzf_layout
+  [[ "$(declare -p PANEL_FZF_LAYOUT)" == "declare -a"* ]]
+  assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=down,60%,border-top,wrap'
+  assert_equal "${PANEL_FZF_LAYOUT[1]}" '--bind=ctrl-/:change-preview-window(right,55%,border-left,wrap|hidden|down,60%,border-top,wrap)'
+}
+
+@test "panel_fzf_layout follows PANEL_LAYOUT, and an argument beats it" {
+  load_lib
+  PANEL_LAYOUT=side panel_fzf_layout
+  assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=right,55%,border-left,wrap'
+  assert_equal "${PANEL_FZF_LAYOUT[1]}" '--bind=ctrl-/:change-preview-window(down,60%,border-top,wrap|hidden|right,55%,border-left,wrap)'
+  PANEL_LAYOUT=side panel_fzf_layout stacked
+  assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=down,60%,border-top,wrap'
+}
+
+@test "panel_fzf_layout rejects an unknown layout" {
+  load_lib
+  run panel_fzf_layout diagonal
+  assert_failure
+  refute_output --partial 'preview-window'
+}
+
 # ── tmux ─────────────────────────────────────────────────────────────────────
 
 @test "panel_in_tmux reflects TMUX, and tolerates it being unset under set -u" {

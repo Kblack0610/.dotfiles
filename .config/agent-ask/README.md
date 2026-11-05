@@ -19,7 +19,7 @@ An ask file is the only record that something waits on the human, for attended s
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone" and where the answer will go.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
-- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) shows a status-line notice with the question and "Prefix y to answer", never a popup. `Prefix y` opens every pending ask, one card after another. The `Prefix g` preview shows the card above the pane.
+- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) shows a status-line notice with the question and "Prefix y to answer", never a popup. `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, the selected one's card under it, answered in place. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
 
@@ -38,7 +38,7 @@ SECONDARY convenience for an attended agent only; producers never use it.
 - `--context "<why, what it blocks>"` is the `why:` line under the question.
 - `--options 'now=ship it today|later=wait for review'` gives each option a meaning. The slugs alone stay in `options:`, which agent-web, settle matching and the judge read; the meanings go to `option_notes:`, pipe-aligned with them.
 
-`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. `agent-ask pick [<id>]` is the card with keys: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `q` or Esc closes. Answering or dropping needs Enter, so a stray key sends nothing. With no id, `pick` lists every pending ask in fzf and comes back to the list after each card; Esc on the list closes it.
+`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. The questions panel shows that card for the selected ask: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `ctrl-/` moves the card beside the list or hides it, Esc closes. Answering or dropping needs Enter, so a stray key sends nothing.
 
 ## Verbs
 
@@ -59,7 +59,7 @@ agent-ask list [project|--all] [--pending]  TSV: id project profile status kind 
 agent-ask count [project|--all]             number of pending asks
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
-agent-ask pick [<id>]                        the card with keys to answer or drop; no id: fzf over every pending ask
+agent-ask live-sessions                      the Claude session ids running now; the questions panel marks the rest gone
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
 agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the background)
 agent-ask judge-report [project|--all]       each judged ask a human answered: agree | differ | unscored | asks-you, then totals

@@ -35,7 +35,7 @@ Bound in `~/.tmux.conf`:
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
   prompt (`!`) or holding a pending ask (`A`)
-- `Prefix + y` - every pending question, one card after another (`agent-ask pick`)
+- `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
 
 Arriving at a session with an `A` shows a status-line notice for a few seconds: the
 question and "Prefix y to answer". It is never a popup, so keys still go to the pane. The

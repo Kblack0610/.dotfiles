@@ -280,3 +280,9 @@ setup() {
   # 38;2;R;G;B would pin a surface to one theme and stop it tracking. No legacy: 0.
   panel_ratchet 0 "ANSI indices only, no truecolor" panel_assert_no_truecolor
 }
+
+@test "pickers take their preview layout from panel_fzf_layout" {
+  # Stacked by default, ctrl-/ to side by side and hidden, PANEL_LAYOUT to flip them all.
+  # One helper, so every panel opens the same way and one setting flips them all.
+  panel_ratchet 0 "preview layout from panel_fzf_layout" panel_assert_layout_from_lib
+}

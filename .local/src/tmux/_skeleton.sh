@@ -42,6 +42,7 @@ cmd_pick() {
 
   panel_fzf_opts
   panel_fzf_table
+  panel_fzf_layout
 
   local picked
   # $SELF, never a bare script name and never $0: fzf re-invokes this script from inside the
@@ -50,7 +51,7 @@ cmd_pick() {
     --with-nth=2 \
     --prompt='skeleton > ' \
     --bind="ctrl-r:reload($(printf '%q' "$SELF") --list)" \
-    "$(panel_fzf_preview right 40)" \
+    "${PANEL_FZF_LAYOUT[@]}" \
     --preview="printf 'row: %s' {1}" \
     | cut -f1)"
 
