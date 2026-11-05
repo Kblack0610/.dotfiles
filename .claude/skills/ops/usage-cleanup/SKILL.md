@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [tokens, cost, usage, agents, fleet, context]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-05"
 ---
 
 # Usage cleanup
@@ -33,25 +33,26 @@ The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no de
 3. **Find the burn.** Put the tokens in buckets. Each bucket gets a measured number and the file or behaviour behind it:
    - fixed context per turn: CLAUDE.md layers, MEMORY.md, preflight, skill, agent and command listings, MCP servers;
    - compaction;
-   - waiting turns (sleep loops, `--watch`, re-reading task output, background runs nothing else used: `tool-calls` `bg_short_idle`);
+   - waiting turns (sleep loops, `--watch`, background runs nothing else used: `tool-calls` `bg_short_idle`; task-output reads, which `tool-calls` splits into before the run's notice, which is polling, and after it, which is how the session sees the output);
    - tool calls (`claude-recall tool-calls`: failures by class, denied calls, serial reads, repeats, ToolSearch loads, Agent reports, MCP calls);
    - idle wakes (cache rewrites after a gap, sorted by what woke the session);
+   - turns a hook or a peer caused: burn's turns by trigger give the `stop-hook` and `peer-message` totals. Split Stop-hook bounces by the hook named in the `Stop hook feedback:` text and peer messages by the sender named in `Another Claude session sent a message`, then read what the session did after a sample of each: a block the session could only explain away is a false positive to fix in the hook;
    - duplicate work (a phase or gate run twice, an ask filed again);
    - oversized models for the lane (`model-lane`);
-   - subagent and workflow fan-out;
+   - subagent and workflow fan-out: split subagent transcripts by `agentType` in each `subagents/agent-*.meta.json`. Three accounts' `projects` dirs link to one directory, so dedupe by real path or every number comes out three times;
    - runner passes, including the shepherd and dream;
    - sessions with no merged PR.
 
    Use `claude-recall stats` for typed command and skill use before calling any listed text unused. Write down what you ruled out, with its number, so the next pass does not redo it.
 4. **Rank levers, deletion first.** A lever that removes a mechanism, a listed item, or a repeat run ranks above one that adds a guard. Then rank by tokens saved per day. Each 1K tokens of always-loaded text is paid on every turn of every session, so price it from the baseline's turn count. Behaviour that no single file causes (waiting, idle wakes) goes on the board for its owner; a new rule does not fix it.
-5. **Fix, one lever per PR,** through `dotfiles-land` for the dotfiles repos, with a test and a negative control for any script change. Before deleting listed text, grep both repos, the agentctl confs, the skills and the rule layers for references. A referenced item stays.
-6. **Re-measure the same way** after each lever lands: `agent-usage burn --days N --before <landing time>` for the before window, and the same command without `--before` once a day of data exists. A nightly lever (dream, a timer) needs the next night's log. Say what one day cannot show, and say which lever moved a number only when that lever was measured alone.
+5. **Fix, one lever per PR,** through `dotfiles-land` for the dotfiles repos, with a test and a negative control for any script change. Before deleting listed text, grep both repos, the agentctl confs, the skills and the rule layers for references. A referenced item stays. A pass with several PRs is one queue item: merge each earlier PR by hand once `gh pr checks <N>` is all green (`gh pr merge <N> --squash --match-head-commit <sha>`), and run `agent-land <N> --item <slug>` only on the last, because it closes the item. A hook test that scans every process (`/proc/*/fd`) needs ids unique to the test, since the unit tier runs tests in parallel.
+6. **Re-measure the same way** after each lever lands. A lever is live once the main checkout has its merge, since stow serves `~/.dotfiles`: check `git -C ~/.dotfiles log -1` before you start its window. Measure with `agent-usage burn --days N --before <landing time>` for the before window, and the same command without `--before` once a day of data exists. A nightly lever (dream, a timer) needs the next night's log. Say what one day cannot show, and say which lever moved a number only when that lever was measured alone.
 7. **Report.** Write `~/.notes/lab/projects/current/agent-runtime/docs/usage-cleanup-p<N>.md` with these sections:
    - spend and tokens by account, project, kind and model;
    - the top causes, each with its number;
    - what was fixed, with the PR and its measured saving;
    - what looks efficient;
-   - a before/after table for every step-2 metric;
+   - a table for every step-2 metric with one column per measured point (the baseline, then after each pass), so a later pass adds a column instead of a new table;
    - what is left for the next pass.
 
    Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t usage-cleanup '<link>'`.
