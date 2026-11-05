@@ -28,6 +28,7 @@ case "$1 $2" in
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
   *body*) cat "$NOTES_FIXTURE/body" ;;
+  *mergeCommit*) echo fedcba9876543210fedcba9876543210fedcba98 ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
@@ -46,12 +47,15 @@ EOF
   cat >"$SANDBOX/bin/git" <<'EOF'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+[ "$1" != -C ] || shift 2
 case "$1" in
 rev-list)
   # behind.seq: one count per call, popped as read; then behind
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) echo 0123456789abcdef ;;
+# not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
+merge-base) [ ! -f "$NOTES_FIXTURE/not.ancestor" ] ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 esac
 EOF
@@ -156,8 +160,9 @@ checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
 body: passes comms-lint --channel pr-body
+proof: evidence commit 0123456789abcdef is an ancestor of origin/main
 item: ship done with pr:o/r#42
-board: closed "ship it" with pr:42
+board: closed "ship it" with pr:42 commit:fedcba987654
 plan: ticked "6. agent-land"
 landed #42
 EOF
@@ -174,7 +179,14 @@ gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
 gh pr view 42 --json body -q .body
 comms-lint --channel pr-body -
-notes ptask dotfiles --agent done ship it --proof pr:42
+gh pr view 42 --json mergeCommit -q .mergeCommit.oid
+git -C . rev-parse --git-dir
+git -C . fetch -q origin +refs/heads/main:refs/remotes/origin/main
+git -C . rev-parse --verify --quiet refs/remotes/origin/main
+git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{commit}
+git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
+git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
+notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
 EOF
 }
 
@@ -267,9 +279,10 @@ EOF
   assert_line --index 1 --partial 'fetch: git fetch origin'
   assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
   assert_line --index 3 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 4 'item: agent-queue set ship pr=42 && agent-queue move ship done --status ok'
-  assert_line --index 5 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 6 --partial 'plan: tick'
+  assert_line --index 4 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 5 'item: agent-queue set ship pr=42 merged=<sha> && agent-queue move ship done --status ok'
+  assert_line --index 6 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 7 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -281,7 +294,7 @@ EOF
   run "$LAND" 42 --item ship
   assert_success
   assert_line --index 0 'merge: #42 already MERGED, recording it'
-  run grep -c 'pr merge\|pr checks\|^git' "$LOG"
+  run grep -c 'pr merge\|pr checks\|rev-list\|^git merge \|^git push' "$LOG"
   assert_output 0
 }
 
@@ -289,8 +302,8 @@ EOF
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 4 'item: tidy-loader done with pr:o/r#42'
-  assert_line --index 5 'landed #42'
+  assert_line --index 5 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 6 'landed #42'
   run grep -c '^notes' "$LOG"
   assert_output 0
   run agent-queue show tidy-loader --json
@@ -304,7 +317,7 @@ EOF
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 4 'item: by-hand done with pr:o/r#42'
+  assert_line --index 5 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
@@ -328,17 +341,17 @@ EOF
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 5 'board: closed "fix crash: on load" with pr:42'
+  assert_line --index 6 'board: closed "fix crash: on load" with pr:42 commit:fedcba987654'
   run grep '^notes' "$LOG"
-  assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42'
+  assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42 commit:fedcba987654'
 }
 
 @test "an agent-lane board item closes its row with --agent" {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 4 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
-  assert_line --index 5 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 5 'item: agent-queue set tidy pr=42 merged=<sha> && agent-queue move tidy done --status ok'
+  assert_line --index 6 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -368,10 +381,29 @@ EOF
   run "$LAND" 42 --item fix
   assert_success
   assert_line --index 0 'merge: #42 already MERGED, recording it'
-  assert_line --index 3 'board: closed "fix it" with pr:42'
+  assert_line --index 4 'board: closed "fix it" with pr:42 commit:fedcba987654'
   run "$LAND" 43 --item fix
   assert_failure 2
   assert_output --partial 'queue item fix is done ok, not open'
+}
+
+@test "a merge commit not on origin/<base> is refused: the item stays open and no row closes" {
+  item fix 'board:game:fix it' human
+  touch "$NOTES_FIXTURE/not.ancestor"
+  run "$LAND" 42 --item fix
+  assert_failure 1
+  assert_output --partial 'proof failed: merge_proof: REFUSING'
+  run grep -c '^notes' "$LOG"
+  assert_output 0
+  run agent-queue show fix --json
+  assert_equal "$(jq -r '"\(.state) \(.merged // "-")"' <<<"$output")" 'running -'
+}
+
+@test "the item records the proven merge commit" {
+  CLAUDE_CODE_SESSION_ID=sid-m run "$LAND" 42 --item ship
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '"\(.state) \(.merged)"' <<<"$output")" 'done fedcba9876543210fedcba9876543210fedcba98'
 }
 
 @test "no queue item: refused before any gh or git call, naming how to add one" {

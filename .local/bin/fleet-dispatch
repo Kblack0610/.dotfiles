@@ -106,6 +106,8 @@ prio_rank() {
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
+# shellcheck source=../lib/agent-merge-proof.sh
+. "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 
 # tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
 # Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
@@ -695,6 +697,29 @@ item_row() {
     | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
+# close_row <slug> -- a board item done ok whose row is still started: the session merged and died
+# before agent-land closed it. Closed only on merge proof (agent-merge-proof.sh) of the item's
+# merged: commit in the project's checkout, with proof "pr:<N> commit:<sha12>"; with no proof the
+# row is left started and the reason logged, so a false close never happens.
+close_row() {
+  local it row prof project lane key flag=() oid pr dir out
+  it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
+  row=$(item_row "$it"); [ -n "$row" ] || return 0
+  IFS=$'\x1f' read -r prof project lane key <<<"$row"
+  [ "$lane" = agent ] && flag=(--agent)
+  [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
+  oid=$(jq -r '.merged // empty' <<<"$it"); pr=$(jq -r '.pr // empty' <<<"$it")
+  dir=$(repo_dir "$project")
+  if [ -z "$oid" ] || [ -z "$dir" ] || ! out=$(merge_proof "$dir" "${pr##*#}" "$(merge_proof_branch "$dir")" "$oid" 2>&1); then
+    logline "queue item $1: $project row left started, no merge proof: ${out:-no merged commit or checkout}"
+    return 0
+  fi
+  np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
+    { logline "queue item $1: closing $project row $key failed"; return 0; }
+  logline "closed $project $lane row on merge proof ($out): $key"
+  echo "closed $project: $key (queue item $1, PR $pr merged)"
+}
+
 # settle_row <slug> -- a board item that ended failed or cancelled hands its row back: un-start it
 # and record `failed`, so it is not promoted again until its text
 # changes. Idempotent: a row no longer started is left alone (done by its session, or settled).
@@ -715,12 +740,37 @@ settle_row() {
 }
 
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
-# Still open: done, ok when it names a PR, else failed with the reason in note.
+# Still open, it goes by its PR's state, read from gh for an <owner>/<repo>#<N> pr: MERGED is done
+# ok (and a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for
+# the merge, CLOSED is failed; a state gh cannot read leaves it for the next pass. A bare-number
+# pr: names no repo, so it is taken as merged, as before. No PR is failed, the reason in note.
 settle_item() {
-  local st pr; st=$(item_state "$1")
+  local st pr info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   pr=$(agent-queue show "$1" --json 2>/dev/null | jq -r '.pr // empty')
-  if [ -n "$pr" ]; then
+  if [[ "$pr" == */*#* ]]; then
+    info=$(gh pr view "${pr##*#}" -R "${pr%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null) || info=''
+    read -r state oid <<<"$info"
+    case "$state" in
+    MERGED)
+      [ -z "$oid" ] || agent-queue set "$1" "merged=$oid" >/dev/null
+      agent-queue move "$1" "done" --status ok >/dev/null
+      logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
+      close_row "$1" ;;
+    OPEN)
+      [ "$st" = waiting ] && return 0
+      agent-queue set "$1" "note=session $2 ended with PR $pr open" >/dev/null
+      agent-queue move "$1" "waiting" >/dev/null
+      logline "reaped $2: session gone, queue item $1 waits on its open PR $pr"
+      echo "waiting queue item $1 (PR $pr open, $2 ended)" ;;
+    CLOSED)
+      agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended" >/dev/null
+      agent-queue move "$1" "done" --status failed >/dev/null
+      logline "reaped $2: session gone, queue item $1 failed: PR $pr closed unmerged"
+      echo "failed queue item $1 (PR $pr closed unmerged)" ;;
+    *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
+    esac
+  elif [ -n "$pr" ]; then
     agent-queue move "$1" "done" --status ok >/dev/null
     logline "reaped $2: session gone, queue item $1 done with PR $pr"
   else

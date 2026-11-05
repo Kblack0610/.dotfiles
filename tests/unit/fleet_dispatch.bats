@@ -1677,6 +1677,72 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
+# pr_item <state> -- a board item on a gone session, its PR o/game#12 in <state> per the gh stub,
+# its row started, and the project's checkout a real clone whose origin/main holds one commit (OID).
+pr_item() {
+  git init -q --bare "$SANDBOX/origin.git"
+  git -c init.defaultBranch=main init -q "$SANDBOX/repos/game"
+  git -C "$SANDBOX/repos/game" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "fix crash (#12)"
+  git -C "$SANDBOX/repos/game" remote add origin "$SANDBOX/origin.git"
+  git -C "$SANDBOX/repos/game" push -q origin HEAD:main
+  OID=$(git -C "$SANDBOX/repos/game" rev-parse HEAD)
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'fix crash' '- [/] fix crash'
+  started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
+  agent-queue set fix-crash pr=o/game#12 lane=agent >/dev/null
+  printf '%s %s\n' "$1" "${2:-$OID}" > "$NOTES_FIXTURE/pr.state"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ -s "$NOTES_FIXTURE/pr.state" ] || exit 1; cat "$NOTES_FIXTURE/pr.state"'
+}
+
+@test "reap: a gone session's merged PR closes the item ok with merged:, and its started row on merge proof" {
+  pr_item MERGED
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+}
+
+@test "reap: a merged PR whose commit is not on origin/main closes the item but never the row" {
+  pr_item MERGED 0123456789abcdef0123456789abcdef01234567
+  run cmd_reap
+  assert_success
+  refute_output --partial 'closed game'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
+  run grep -c ' done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+}
+
+@test "reap: a gone session's open PR moves its item to waiting once, row untouched" {
+  pr_item OPEN
+  run cmd_reap
+  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  run cmd_reap
+  refute_output --partial 'waiting queue item'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
+}
+
+@test "reap: a gone session's closed PR fails its item and hands the row back" {
+  pr_item CLOSED
+  run cmd_reap
+  assert_output --partial 'failed queue item fix-crash (PR o/game#12 closed unmerged)'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
+  grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
+}
+
+@test "reap: a PR gh cannot read leaves the item where it is" {
+  pr_item OPEN
+  : > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+}
+
 @test "reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back" {
   started_item shared-1 hub:dotfiles
   started_item shared-2 hub:dotfiles '' '' human waiting
