@@ -43,6 +43,12 @@ question and "Prefix y to answer". It is never a popup, so keys still go to the 
 from another server, sets the session too), and `Prefix G` runs it after its jump. The
 chooser preview prints the card above the pane tail.
 
+In the chooser:
+
+- The agent holding the live shepherd lease (its window's `shepherd` tag) sits in its own `shepherd` group above every project. A stopped pass loses the tag and drops back into its project.
+- `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
+- The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
+
 ## Why a binary (replacing the old bash scripts)
 
 This replaces `../tmux/agent-chooser.sh` + `agent-preview.sh`, which only ran on

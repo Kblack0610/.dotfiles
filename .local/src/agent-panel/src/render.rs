@@ -109,23 +109,44 @@ fn labels(labels: &str) -> String {
     }
 }
 
-/// Build the grouped fzf rows (projects sorted) and the preview map-file body.
-/// Returns `(rows, map_lines)`.
+/// The group pinned above every project: the agent holding the live shepherd lease. Its window
+/// carries the `shepherd` tag only while the lease is fresh (`tmux::list_panes`), so a stopped
+/// pass drops out of the group by itself.
+const SHEPHERD: &str = "shepherd";
+
+fn is_shepherd(a: &Agent) -> bool {
+    a.tags.split_whitespace().any(|t| t == SHEPHERD)
+}
+
+/// Build the grouped fzf rows (the shepherd first, then projects sorted) and the preview
+/// map-file body. Returns `(rows, map_lines)`.
 pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
-    let mut projects: Vec<&String> = agents.iter().map(|a| &a.project).collect();
+    let mut projects: Vec<&str> =
+        agents.iter().filter(|a| !is_shepherd(a)).map(|a| a.project.as_str()).collect();
     projects.sort();
     projects.dedup();
+
+    let shepherd: Vec<&Agent> = agents.iter().filter(|a| is_shepherd(a)).collect();
+    let mut groups: Vec<(&str, Vec<&Agent>)> = Vec::new();
+    if !shepherd.is_empty() {
+        groups.push((SHEPHERD, shepherd));
+    }
+    for project in projects {
+        groups.push((
+            project,
+            agents.iter().filter(|a| !is_shepherd(a) && a.project == project).collect(),
+        ));
+    }
 
     let mut rows = Vec::new();
     let mut map = Vec::new();
 
-    for project in projects {
-        let group: Vec<&Agent> = agents.iter().filter(|a| &a.project == project).collect();
+    for (title, group) in groups {
         let statuses: String = group.iter().map(|a| colorize(a.glyph)).collect();
         let count = group.len();
         rows.push(Row {
             target: String::new(),
-            text: format!("\t{TITLE}━━━ {project}{RESET} {statuses} {DIM}({count}){RESET}"),
+            text: format!("\t{TITLE}━━━ {title}{RESET} {statuses} {DIM}({count}){RESET}"),
         });
 
         for a in group {
@@ -195,31 +216,37 @@ pub fn preview(
     }
     println!("{CYAN}{BOLD}── {header} ──{RESET}");
 
-    // What it is asking comes first: the pane tail often has the question scrolled away.
+    // What it is asking comes first.
     // `agent-ask card` owns the ask format, so the panel prints it rather than parse it.
     if !ask.is_empty() {
         println!("{BLUE}{BOLD}── question ──{RESET}");
         print!("{}", crate::asks::card(ask));
-        println!("{BLUE}{BOLD}── pane ──{RESET}");
     }
 
-    // Live pane state — keep colour escapes so it renders like the real pane.
-    let pane = crate::tmux::capture_pane(target, true, -60);
-    let lines: Vec<&str> = pane.lines().collect();
-    for line in &lines[lines.len().saturating_sub(40)..] {
-        println!("{line}");
-    }
-    println!();
-
-    if let Some(path) = jsonl {
-        if path.exists() {
-            println!("{CYAN}{BOLD}── claude: recent events ──────────────────────{RESET}");
-            for ev in crate::jsonl::recent_events(path, 6) {
-                println!("{ev}");
-            }
+    // The session's last word, whole: the pane tail usually has it scrolled away under tool
+    // output. Then its last tool call, then a short pane tail for what only the pane shows
+    // (a permission dialog, a live prompt).
+    if let Some(path) = jsonl.filter(|p| p.exists()) {
+        let (message, tool) = crate::jsonl::preview_info(path);
+        if !message.is_empty() {
+            println!("{CYAN}{BOLD}── last message ──{RESET}");
+            println!("{message}");
+        }
+        if !tool.is_empty() {
+            println!("{DIM}last tool: {tool}{RESET}");
         }
     }
+
+    println!("{CYAN}{BOLD}── pane ──{RESET}");
+    let pane = crate::tmux::capture_pane(target, true, -PANE_TAIL);
+    let lines: Vec<&str> = pane.lines().collect();
+    for line in &lines[lines.len().saturating_sub(PANE_TAIL as usize)..] {
+        println!("{line}");
+    }
 }
+
+/// Pane lines at the foot of the preview.
+const PANE_TAIL: i32 = 12;
 
 #[cfg(test)]
 mod tests {
@@ -302,6 +329,31 @@ mod tests {
         assert!(row(&rows, "s:1").contains(&want), "{}", row(&rows, "s:1"));
         // Negative control: WORKING and no labels add nothing after the target.
         assert!(row(&rows, "s:2").ends_with(" s:2"), "{}", row(&rows, "s:2"));
+    }
+
+    fn headers(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .filter(|r| r.target.is_empty())
+            .map(|r| r.text.split("━━━ ").nth(1).unwrap().split(RESET).next().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn pins_the_shepherd_above_every_project() {
+        let mut a = agent("s:1", '✓', false, false);
+        a.project = "alpha".into();
+        let mut shep = agent("s:2", '~', false, false);
+        shep.project = "zulu".into();
+        shep.tags = "pinned shepherd".into();
+        let (rows, _) = build(&[a.clone(), shep]);
+        assert_eq!(headers(&rows), ["shepherd", "alpha"]);
+        assert_eq!(rows[1].target, "s:2");
+        // Negative control: without the lease tag it sorts into its project like any other row.
+        let mut plain = agent("s:2", '~', false, false);
+        plain.project = "zulu".into();
+        plain.tags = "pinned".into();
+        let (rows, _) = build(&[a, plain]);
+        assert_eq!(headers(&rows), ["alpha", "zulu"]);
     }
 
     #[test]
