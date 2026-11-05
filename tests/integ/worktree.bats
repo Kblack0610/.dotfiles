@@ -555,7 +555,7 @@ declare_in_lab() {
   assert_failure
   assert_output --partial 'dirty'
   [ -d "$WT_ROOT/repo-agent-1" ] || fail "refused and deleted it anyway"
-  assert_not_called 'kill-session'
+  assert_not_called 'close.sh session'
   assert_not_called 'run-shell'
 }
 
@@ -569,7 +569,7 @@ declare_in_lab() {
   run "$WT" done "$WT_ROOT/repo-agent-1"
   assert_failure
   assert_output --partial 'unpushed'
-  assert_not_called 'kill-session'
+  assert_not_called 'close.sh session'
 }
 
 @test "done schedules the kill and THEN the reap, backgrounded on the server" {
@@ -584,11 +584,11 @@ declare_in_lab() {
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial 'run-shell -b'
-  assert_output --partial "kill-session -t '=repo-agent-1'"
+  assert_output --partial "close.sh session 'repo-agent-1'"
   assert_output --partial 'reap'
 
   local chain="$output"
-  case "${chain%%kill-session*}" in
+  case "${chain%%close.sh session*}" in
   *reap*) fail "the reap is scheduled BEFORE the kill -- it would refuse every time" ;;
   esac
 }
@@ -604,8 +604,8 @@ declare_in_lab() {
   run "$WT" done "$WT_ROOT/repo-agent-1/tests"
   assert_success
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "kill-session -t '=repo-agent-1'"
-  refute_output --partial "'=tests'"
+  assert_output --partial "close.sh session 'repo-agent-1'"
+  refute_output --partial "session 'tests'"
 }
 
 @test "done takes a bare worktree NAME, not just a path" {
@@ -615,7 +615,7 @@ declare_in_lab() {
   run "$WT" done repo-agent-1
   assert_success
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "kill-session -t '=repo-agent-1'"
+  assert_output --partial "close.sh session 'repo-agent-1'"
 }
 
 @test "done outside tmux with no session reaps directly instead of deferring" {

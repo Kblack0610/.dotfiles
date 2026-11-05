@@ -8,7 +8,8 @@
 #       target now (arm time, while $TMUX_PANE is reliable) into a sentinel at
 #       ~/.agent/spin-down/<project>.request. The Stop hook (95-wind-down.sh)
 #       reads it after the normal Stop pipeline runs and fires the teardown.
-#       --session widens the kill from the window to the whole tmux session.
+#       --session widens the kill from the window to the whole tmux session, unless a world
+#       manifest declares it (tmux-close, close.sh): then only the window closes.
 #
 #   wind-down.sh fire <sentinel-path>
 #       Executor — called by the Stop hook, NOT by Claude. Saves the window
@@ -173,8 +174,9 @@ cmd_fire() {
   # Reach the SAME tmux server the window lives on. Pinning the socket (-S) makes
   # this work regardless of $TMPDIR/$TMUX in the Stop hook's environment, which is
   # how tmux otherwise locates its server (and a mismatch = silent no-op on macOS).
-  local TM="tmux"
-  [ -n "$socket" ] && [ -S "$socket" ] && TM="tmux -S $socket"
+  # An array, so a socket path with a space in it stays one word.
+  local TM=(tmux)
+  [ -n "$socket" ] && [ -S "$socket" ] && TM=(tmux -S "$socket")
 
   # `fire` is invoked by the Stop hook and may be the first thing to touch SPIN_DIR
   # (arm can have run on a different machine, or the dir can be swept). Without this,
@@ -184,12 +186,12 @@ cmd_fire() {
   mkdir -p "$SPIN_DIR"
   local logf="$SPIN_DIR/fire.log"
   printf '[%s] fire: scope=%s target=%s pane=%s socket=%s TM="%s"\n' \
-    "$(date '+%F %T' 2>/dev/null)" "$scope" "$target" "$pane" "$socket" "$TM" >> "$logf" 2>/dev/null || true
+    "$(date '+%F %T' 2>/dev/null)" "$scope" "$target" "$pane" "$socket" "${TM[*]}" >> "$logf" 2>/dev/null || true
 
   # Validate the target still exists before doing anything.
-  if ! $TM has-session -t "$session" 2>/dev/null; then
+  if ! "${TM[@]}" has-session -t "$session" 2>/dev/null; then
     echo "wind-down fire: session '$session' gone — nothing to do." >&2
-    printf '[%s] fire: session %s NOT found on %s — abort\n' "$(date '+%F %T' 2>/dev/null)" "$session" "$TM" >> "$logf" 2>/dev/null || true
+    printf '[%s] fire: session %s NOT found on %s - abort\n' "$(date '+%F %T' 2>/dev/null)" "$session" "${TM[*]}" >> "$logf" 2>/dev/null || true
     return 0
   fi
   # For window scope, target is a stable window_id (@N). If that exact window is
@@ -235,11 +237,15 @@ cmd_fire() {
   # backgrounded run-shell job reliably outlives the hook and fires the kill —
   # while the `sleep 1` still lets the Stop pipeline finish first. Kill by the
   # stable window_id (@N) so renumbering / active-window drift can't redirect it.
-  local kill_cmd
+  # tmux-close decides what a teardown may close: a `--session` teardown of a world session
+  # (hub dotfiles, where the shepherd pass and the human's chats live) closes this window only.
+  local kill_cmd close sock=''
+  close="$(printf '%q' "$SCRIPT_DIR/close.sh")"
+  [ "${#TM[@]}" -eq 1 ] || sock="-S $(printf '%q' "$socket") "
   if [ "$scope" = "session" ]; then
-    kill_cmd="$TM kill-session -t '$session'"
+    kill_cmd="$close ${sock}session '$session' --window '$target'"
   else
-    kill_cmd="$TM kill-window -t '$target'"
+    kill_cmd="$close ${sock}window '$target'"
   fi
 
   # Reap the worktree AFTER the kill, in the same chain, and never before: `wt reap` refuses
@@ -260,7 +266,7 @@ cmd_fire() {
   fi
 
   # `-c /`: the job would start in this hook's cwd, the worktree, and hold it against the reap.
-  $TM run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
+  "${TM[@]}" run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
   local sched_rc=$?
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"

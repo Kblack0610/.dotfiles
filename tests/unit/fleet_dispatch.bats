@@ -1511,6 +1511,22 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
+@test "reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back" {
+  started_item shared-1 hub:dotfiles
+  started_item shared-2 hub:dotfiles '' '' human waiting
+  started_item alone lab:game-agent-1
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'printf "%s\n" "{\"target\":\"hub/dotfiles:1\",\"status\":\"waiting\"}" "{\"target\":\"hub/dotfiles:2\",\"status\":\"busy\"}" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-1:2\",\"status\":\"shell\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running shared-1)" ] || fail "a shared session flipped its item to waiting"
+  [ -n "$(qitem running shared-2)" ] || fail "a false waiting on a shared session stayed"
+  # Negative control: a shell window does not make a session shared, so its one Claude still counts.
+  [ -n "$(qitem waiting alone)" ] || fail "a session with one Claude stopped reading as waiting"
+}
+
 # --- starved -----------------------------------------------------------------------------
 
 # queued_item <slug> <priority> <queued> [tags] [after]
@@ -1562,6 +1578,25 @@ queued_item() {
   printf -- '- %s started game-agent-3 on lab (run) for game: queue item other3\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_success
+  rm "$FLEET_DISPATCH_DIR/log.md"
+  # The load gates are fleet-thermal's alarm, so they hold rather than starve; any other gate trips.
+  run cmd_starved
+  assert_failure
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load (load 30.00 on'
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; exit 0'
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load (fleet-assess says HOLD)'
+  stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  stub claude-acct 'exit 1'
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  stub claude-acct 'exit 0'
   stub agent-hold 'exit 1'
   run cmd_starved
   assert_success

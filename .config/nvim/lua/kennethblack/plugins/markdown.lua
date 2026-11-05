@@ -18,6 +18,8 @@ return {
       -- tokyonight is configured `transparent = true`, so Normal has no bg to blend
       -- against -- pin the palette's night bg explicitly.
       local HEADING_BASE = "#1a1b26"
+      -- Bullet glyph per nesting level; deeper levels cycle back to the first.
+      local LIST_GLYPHS = { "●", "○", "◆", "◇" }
 
       -- Blend `hex` toward `base` (alpha 1.0 = pure `hex`), returning "#rrggbb".
       local function blend(hex, base, alpha)
@@ -43,6 +45,13 @@ return {
           -- level is legible from the words, not only from the bar behind them.
           vim.api.nvim_set_hl(0, "@markup.heading." .. i .. ".markdown", { fg = fg, bold = true })
         end
+        -- List markers take the heading accents by nesting level (level 1 = H1 blue, 2 = H2
+        -- purple, ...), so a list reads as part of the same system as the bars above it. The
+        -- plugin's own RenderMarkdownBullet links to Normal, i.e. no colour at all.
+        for i = 1, #LIST_GLYPHS do
+          vim.api.nvim_set_hl(0, "RenderMarkdownListBullet" .. i, { fg = HEADING_FG[i] })
+          vim.api.nvim_set_hl(0, "RenderMarkdownListNumber" .. i, { fg = HEADING_FG[i], bold = true })
+        end
       end
       set_heading_colors()
       vim.api.nvim_create_autocmd("ColorScheme", {
@@ -65,7 +74,37 @@ return {
           style = "normal",
           width = "block",
         },
+        -- `-` bullets and `1.` numbers. Checkbox items conceal their bullet and keep the
+        -- `checkbox` look, so none of this reaches a task line.
+        bullet = {
+          icons = LIST_GLYPHS,
+          highlight = function(ctx)
+            local lvl = (ctx.level - 1) % #LIST_GLYPHS + 1
+            local ordered = ctx.value:match "%d" ~= nil
+            return (ordered and "RenderMarkdownListNumber" or "RenderMarkdownListBullet") .. lvl
+          end,
+        },
+        -- `[/]` (in progress, see STATUS_NEXT) is not in the markdown grammar, so without this
+        -- it renders as a list bullet followed by a literal "/" and would take the bullet colour.
+        checkbox = {
+          custom = {
+            in_progress = { raw = "[/]", rendered = "󰦖 ", highlight = "RenderMarkdownTodo" },
+          },
+        },
       }
+
+      -- A wrapped list item hangs under its own text instead of under the marker.
+      -- `breakindent` is already on globally; `list:-1` indents by the length of the
+      -- 'formatlistpat' match. Checkbox items are excluded from the pattern (the `\@!`), so a
+      -- wrapped task keeps the continuation it has always had.
+      vim.api.nvim_create_autocmd("FileType", {
+        group = vim.api.nvim_create_augroup("MarkdownListIndent", {}),
+        pattern = "markdown",
+        callback = function()
+          vim.opt_local.formatlistpat = [[^\s*\%([-*+]\s\+\%(\[.\]\s\)\@!\|\d\+[.)]\s\+\)]]
+          vim.opt_local.breakindentopt = "list:-1"
+        end,
+      })
 
       -- Task priority tags. These are plain `#hashtags` at the END of a task
       -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
