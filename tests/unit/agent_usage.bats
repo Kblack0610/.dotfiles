@@ -223,7 +223,7 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 #
 # The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
 # two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
-# m4 follows a compaction), one subagent call, one headless call, a registry with a superseded
+# m4 follows a compaction; m1's request is recorded as an api-request-shape and two blobs), one subagent call, one headless call, a registry with a superseded
 # row, outcomes naming PR o/r#1 twice, and a dream log with one real and one dry run.
 
 burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
@@ -291,4 +291,13 @@ burn() {
   assert_output '[1,4000]'
   # Negative control: the whole day sees the session start, so it counts.
   assert_equal "$(burn '.first_turn_context.sessions')" '2'
+}
+
+@test "burn: the first request splits into its parts, in chars, from the recorded request" {
+  assert_equal "$(burn '.first_request_parts.parts | map_values(.median_chars)')" \
+    '{"skill_listing":200,"preflight":100,"system_prompt":100,"memory_md":90,"global_claude_md":80,"repo_claude_md":60,"tools_builtin":38,"tools_mcp":21,"instructions_other":18,"prompt":14,"system_other":0}'
+  assert_equal "$(burn '.first_request_parts.tools_mean_chars')" '{"Bash":38,"mcp__x__y":21}'
+  # Negative control: only the worktree session recorded its request, so the headless one,
+  # which still counts toward first_turn_context, adds no parts.
+  assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
 }
