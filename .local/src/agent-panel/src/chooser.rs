@@ -57,10 +57,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Waiting on the human: at a prompt or dialog (`!`), or holding a pending ask. A question
-    /// asked only in the conversation is not a source: the Stop check makes the session file it.
+    /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
+    /// prompt or dialog (`!`), holding a pending ask, or idle in plan mode, which is a plan
+    /// awaiting approval (`bucket_facts` in fleet-sessions). A question asked only in the
+    /// conversation is not a source: the Stop check makes the session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some()
+        self.glyph == '!' || self.ask.is_some() || (self.plan && self.glyph == '✓')
     }
 }
 
@@ -381,37 +383,40 @@ fn idle_since(last_entry: Option<u64>, mtime: u64, started_at: Option<u64>) -> u
     })
 }
 
-/// Jump to the next agent needing attention (`!` or a pending ask), else the next in the list.
+/// Prefix G: jump to the next agent that needs the human, after the current one. With none, it
+/// says so in the message bar and stays put; jumping somewhere else would read as "this one".
 pub fn run_next() -> Result<()> {
     let agents = collect();
-    if agents.is_empty() {
-        return Ok(());
-    }
     let current = tmux::current_target();
-    let cur_idx = current
-        .as_ref()
-        .and_then(|c| agents.iter().position(|a| &a.target == c));
-    let total = agents.len();
-    let start = cur_idx.map(|i| i as isize).unwrap_or(-1);
-
-    // First look for the next attention-needed agent after the current one.
-    let mut target: Option<&str> = None;
-    for step in 1..=total {
-        let idx = (((start + step as isize) % total as isize + total as isize)
-            % total as isize) as usize;
-        if agents[idx].needs_attention() {
-            target = Some(&agents[idx].target);
-            break;
-        }
+    match next_needing(&agents, current.as_deref()) {
+        Next::Jump(target) => tmux::jump(target),
+        Next::OnlyHere => tmux::message("only this session needs you"),
+        Next::Nobody => tmux::message("no session needs you"),
     }
-    // Otherwise just advance to the next agent.
-    let next_target = target.unwrap_or_else(|| {
-        let idx = (((start + 1) % total as isize + total as isize) % total as isize) as usize;
-        &agents[idx].target
-    });
-
-    tmux::jump(next_target);
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum Next<'a> {
+    Jump(&'a str),
+    OnlyHere,
+    Nobody,
+}
+
+/// The first agent needing attention after `current` in list order, wrapping around.
+fn next_needing<'a>(agents: &'a [Agent], current: Option<&str>) -> Next<'a> {
+    let start = current
+        .and_then(|c| agents.iter().position(|a| a.target == c))
+        .map_or(0, |i| i + 1);
+    let n = agents.len();
+    let hit = (0..n)
+        .map(|k| &agents[(start + k) % n])
+        .find(|a| a.needs_attention());
+    match hit {
+        None => Next::Nobody,
+        Some(a) if Some(a.target.as_str()) == current => Next::OnlyHere,
+        Some(a) => Next::Jump(&a.target),
+    }
 }
 
 /// fzf preview callback: render the pane state + recent events for one row.
@@ -512,6 +517,35 @@ mod tests {
             attached,
             ..Agent::default()
         }
+    }
+
+    #[test]
+    fn plan_mode_counts_only_while_idle() {
+        let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
+        let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
+        let idle = Agent { glyph: '✓', ..live_agent("hub", "c", false) };
+        assert!(plan_idle.needs_attention());
+        assert!(!plan_busy.needs_attention());
+        assert!(!idle.needs_attention());
+    }
+
+    #[test]
+    fn prefix_g_jumps_only_to_what_needs_you() {
+        let quiet = |s| Agent { glyph: '✓', ..live_agent("hub", s, false) };
+        let prompt = |s| Agent { glyph: '!', ..live_agent("hub", s, false) };
+        // Nothing needs you: no jump, with or without a current window.
+        let none = vec![quiet("a"), quiet("b")];
+        assert_eq!(next_needing(&none, Some("hub/a:1")), Next::Nobody);
+        assert_eq!(next_needing(&none, None), Next::Nobody);
+        assert_eq!(next_needing(&[], None), Next::Nobody);
+        // The next one after the current, wrapping past the end.
+        let agents = vec![prompt("a"), quiet("b"), prompt("c")];
+        assert_eq!(next_needing(&agents, Some("hub/a:1")), Next::Jump("hub/c:1"));
+        assert_eq!(next_needing(&agents, Some("hub/c:1")), Next::Jump("hub/a:1"));
+        assert_eq!(next_needing(&agents, None), Next::Jump("hub/a:1"));
+        // Only the current one: say so instead of jumping to itself.
+        let solo = vec![prompt("a"), quiet("b")];
+        assert_eq!(next_needing(&solo, Some("hub/a:1")), Next::OnlyHere);
     }
 
     #[test]
