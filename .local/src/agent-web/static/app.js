@@ -87,6 +87,10 @@ document.addEventListener("click", async (e) => {
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
 // here in the page; the confirm's own button sends it. Parked rows offer only unpark.
 const DANGER = ["stop", "cancel"];
+// The button for each session action (hub-core session_actions.rs names); an unknown one shows its name.
+const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpark session", move: "Move to account",
+  stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
+const actLabel = (n) => ACT_LABEL[n] || n;
 st.act = { confirm: null, busy: false, msg: "", err: false };
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
@@ -102,13 +106,13 @@ function renderActs() {
     const pick = c.action === "move"
       ? `<select id="act-acct">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : "";
     const danger = DANGER.includes(c.action) ? " danger" : "";
-    html += `<span class="q">${esc(c.action)} ${esc(a.target)}${a.attached ? " (you are attached to it)" : ""}: ${esc(st.opts.describe[c.action] || "")}</span>${pick}`
+    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(st.opts.describe[c.action] || "")}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
       + (c.action === "approve-plan" && a.question && a.question.kind === "plan"
         ? `<div class="planpeek md">${md(a.question.text.split("\n").filter((l) => l.trim()).slice(0, 6).join("\n"))}</div>` : "")
-      + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(c.action)}</button>`
+      + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(n)}</button>`).join("");
+    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
   }
   if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
   box.innerHTML = html;
@@ -124,13 +128,13 @@ $("acts").addEventListener("click", async (e) => {
   if (b.dataset.go === undefined || !st.act.confirm) return;
   const { action, target } = st.act.confirm;
   const account = action === "move" && $("act-acct") ? $("act-acct").value : "";
-  st.act = { confirm: null, busy: true, msg: `${action} ${target}: running`, err: false };
+  st.act = { confirm: null, busy: true, msg: `${actLabel(action)}: running... (${target})`, err: false };
   renderActs();
   try {
     const r = await post(`/api/session/${encodeURIComponent(target)}/${encodeURIComponent(action)}`, { account });
-    st.act.msg = `${action} ${target}: done${r && r.output ? "\n" + r.output : ""}`;
+    st.act.msg = `${actLabel(action)}: done (${target})${r && r.output ? "\n" + r.output : ""}`;
   } catch (err) {
-    st.act.msg = `${action} ${target}: ${err.message}`; st.act.err = true;
+    st.act.msg = `${actLabel(action)} failed (${target}). ${err.message}`; st.act.err = true;
   }
   st.act.busy = false;
   refreshAgents();
