@@ -119,7 +119,6 @@ a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px d
 a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
 #focus .opts a.wl { font: 12px var(--mono); }
 #focus pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
-#focus #f-out { flex: 1; min-width: 12em; }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 /* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and
@@ -355,3 +354,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; vertical-align: top; }
 .md th { background: var(--tool); font-weight: 600; }
 .md a { color: var(--accent); }
+
+/* The Outbox tab: one column, the doc as tall as the screen allows, on a phone too. */
+#outbox > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+#o-doc { display: block; width: 100%; box-sizing: border-box; min-height: 40vh; max-height: none; font: var(--fs-lg)/1.5 var(--mono); }
+#o-said { margin: 6px auto 14px; font-size: 12px; }
+.o-steps { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.o-steps li { padding: 3px 0; overflow-wrap: anywhere; }
+.o-steps li.warn { color: var(--wait); }
