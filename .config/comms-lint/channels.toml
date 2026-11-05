@@ -62,6 +62,12 @@ max_item = 200
 max_lead = 200
 source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "## Morning" }
 
+# The phone widget's rows (`hub phone --json`). No source: the retained MQTT message is the only copy.
+[channel.phone]
+max_lines = 14
+max_line = 100
+max_lead = 100
+
 # A fleet rundown: the answer to "where are we".
 [channel.rundown]
 prose = true

@@ -29,6 +29,10 @@ Each rule has its why. A rule a test checks names the test.
 - Folded section: `<details data-k>` on the web, with its open state kept by `static/ui.js`. In the TUI, a section head with a `+`/`-` marker. A folded head shows its count.
 - Long list: capped, with a "+N older" control. It is never unbounded at top level.
 
+## Phone widget
+
+The Companion app's Template widget is the main mobile view: Home, shortened to what fits at 4x4. `hub phone --json` (`hub_core::phone`) gives its rows from the same `home::build` join, `agent-mqtt-publish` sends them as `sensor.agent_overview`, and home-config's `phone_widget.jinja` lays them out, the only place with HTML or colours. The System block is read in the cluster, so it still shows with the workstation off. The widget clips at the bottom, so sections run most important first, a green section is one line and reds cap at 6. Row lengths are the `phone` channel in `channels.toml`.
+
 ## Hub layout
 
 Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones. The exception is rule 13's interim: a landed tab that replaces one sits in that tab's slot (TUI Projects at key 0, Sessions at key 6), and the TUI test exempts those interim slots from the order check until the renumbering.
