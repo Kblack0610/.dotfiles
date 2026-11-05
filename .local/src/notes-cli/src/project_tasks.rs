@@ -312,9 +312,7 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
-    if lane == Lane::Agent && crate::epics::is_epic(text) {
-        bail!("an epic belongs on the human sheet: add it without --agent");
-    }
+    refuse_epic_on_board(lane, &[text])?;
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !is_typed(text) {
@@ -612,6 +610,10 @@ pub(crate) fn file(
                 refuse_behind(v, cur)?;
             }
             details.extend(extra.iter().cloned());
+            refuse_epic_on_board(
+                dest_lane,
+                &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+            )?;
             let today = chrono::Local::now().date_naive();
             let block = new_rows(
                 dest_name,
@@ -1135,6 +1137,15 @@ pub fn drop(
     )
 }
 
+/// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
+/// one as a session. `add` and `file` both write rows, so both ask here.
+fn refuse_epic_on_board(lane: Lane, texts: &[&str]) -> Result<()> {
+    if lane == Lane::Agent && texts.iter().any(|t| crate::epics::is_epic(t)) {
+        bail!("an epic belongs on the human sheet: file it without --agent");
+    }
+    Ok(())
+}
+
 /// Refuse to close the row `pick` names while a child of it (`#of/<its id>`) is open: a
 /// parent weighs what its children weigh, so closing it first would report open work as
 /// done. Checked before the edit, so a refusal writes nothing.
@@ -1154,11 +1165,12 @@ fn refuse_open_children(
     let dir = projects::project_dir(p, name)?;
     let open = crate::epics::Index::of(&dir, projects::open_version(&dir)).open_children(&id);
     if !open.is_empty() {
+        // One line: agent-land reports only a failure's last line.
         bail!(
-            "{id} has {} open child row(s); {verb} them first, or re-parent them with \
-             `ptask tag <id> --remove of/{id} --add of/<other>`:\n  {}",
+            "{id} has {} open child row(s) ({}); {verb} them first, or re-parent them with \
+             `ptask tag <id> --remove of/{id} --add of/<other>`",
             open.len(),
-            open.join("\n  ")
+            open.join(", ")
         );
     }
     Ok(())

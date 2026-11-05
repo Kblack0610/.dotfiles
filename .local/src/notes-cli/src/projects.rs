@@ -1585,8 +1585,14 @@ fn sheet_to_release(dir: &Path, log: &Logger) -> Result<Option<PathBuf>> {
 /// `None` means the gate is satisfied. Separate from `release` so the rule is testable
 /// without a profile or a vault: this is the check that decides whether "released" means
 /// "finished", and a check nothing can exercise is a check that quietly stops holding.
-fn release_blocker(content: &str, name: &str, cur: V, next: V) -> Option<String> {
-    let open = gated_rows(content, cur);
+fn release_blocker(
+    content: &str,
+    name: &str,
+    cur: V,
+    next: V,
+    ix: &crate::epics::Index,
+) -> Option<String> {
+    let open = gated_rows(content, cur, ix);
     if open.is_empty() {
         return None;
     }
@@ -1609,10 +1615,14 @@ fn release_blocker(content: &str, name: &str, cur: V, next: V) -> Option<String>
 /// The open rows a release of `cur` gates on and carries: the open version's, less an untagged
 /// epic. An untagged epic spans releases, so it never holds one up or collects `carried:N`;
 /// one tagged for a release is a promise for it and gates like any row.
-fn gated_rows(content: &str, cur: V) -> Vec<(usize, &str)> {
+pub(crate) fn gated_rows<'a>(
+    content: &'a str,
+    cur: V,
+    ix: &crate::epics::Index,
+) -> Vec<(usize, &'a str)> {
     sheet::current_rows(content, Some(cur))
         .into_iter()
-        .filter(|(_, l)| crate::epics::in_some_version(l))
+        .filter(|(_, l)| ix.counts(l))
         .collect()
 }
 
@@ -1656,8 +1666,13 @@ fn bump_carried(line: &str) -> (String, u32) {
 ///
 /// This is what lets a tagged version close without leaving its unfinished work unaccounted
 /// for: the gate then passes honestly, and the frozen note lists what was carried.
-fn carry_open(content: &str, cur: V, next: V) -> (String, Vec<(String, u32)>) {
-    let rows: Vec<usize> = gated_rows(content, cur)
+fn carry_open(
+    content: &str,
+    cur: V,
+    next: V,
+    ix: &crate::epics::Index,
+) -> (String, Vec<(String, u32)>) {
+    let rows: Vec<usize> = gated_rows(content, cur, ix)
         .into_iter()
         .map(|(n, _)| n - 1)
         .collect();
@@ -1894,15 +1909,16 @@ pub fn release(
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
+    let ix = crate::epics::Index::of(&dir, Some(cur));
     let (content, carried) = if carry {
-        carry_open(&content, cur, next)
+        carry_open(&content, cur, next, &ix)
     } else {
         (content, Vec::new())
     };
 
     // 1. the gate
     if !force {
-        if let Some(why) = release_blocker(&content, name, cur, next) {
+        if let Some(why) = release_blocker(&content, name, cur, next, &ix) {
             bail!(why);
         }
     }
@@ -2482,19 +2498,23 @@ struct Release {
 /// A project's releases, the open version first, then every later version an open row on
 /// either lane is aimed at.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
-    let human = read_or_empty(project_tasks::task_sheet(dir));
+    let human = read_or_empty(sheet_path(dir));
     let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
     let cur = sheet_version(&human);
     let Some(c) = cur else {
         return Vec::new();
     };
     let ix = crate::epics::Index::of(dir, cur);
-    let mut later = sheet::later_versions(&human, cur);
-    later.extend(sheet::later_versions(&board, cur));
+    let planned = sheet::later_versions(&human, cur);
+    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
+    for v in sheet::later_versions(&board, cur) {
+        if !planned.contains(&v) {
+            later.push((v, "board"));
+        }
+    }
     later.sort_unstable();
-    later.dedup();
     std::iter::once((c, "current"))
-        .chain(later.into_iter().map(|v| (v, "planned")))
+        .chain(later)
         .map(|(v, state)| Release {
             version: fmt_version(v),
             state,
@@ -2788,6 +2808,10 @@ impl Progress {
             let (Some(task), Some(when)) = (cells.first(), cells.last()) else {
                 continue;
             };
+            // A Proof row has no id, so only an epic is told from a leaf here.
+            if !ix.counts(task) {
+                continue;
+            }
             if let Ok(d) = chrono::NaiveDate::parse_from_str(when, "%Y-%m-%d") {
                 self.close(Some(d), size_weight(task), today);
             }
@@ -3113,10 +3137,17 @@ Version: v1.13.0
             "- [ ] still open",
             "- [ ] still open #v1.13.0\n- [/] half done",
         );
-        let (out, moved) = carry_open(&s, (1, 13, 0), (1, 14, 0));
+        let (out, moved) = carry_open(&s, (1, 13, 0), (1, 14, 0), &crate::epics::Index::default());
         assert_eq!(moved.len(), 2, "{out}");
         assert!(
-            release_blocker(&out, "demo", (1, 13, 0), (1, 14, 0)).is_none(),
+            release_blocker(
+                &out,
+                "demo",
+                (1, 13, 0),
+                (1, 14, 0),
+                &crate::epics::Index::default()
+            )
+            .is_none(),
             "{out}"
         );
         assert!(
@@ -3140,14 +3171,24 @@ Version: v1.13.0
     // NEGATIVE CONTROL: a row already aimed past the closing version is not carried.
     #[test]
     fn carry_leaves_a_row_aimed_later_alone() {
-        let (out, moved) = carry_open(SHEET, (1, 13, 0), (1, 14, 0));
+        let (out, moved) = carry_open(
+            SHEET,
+            (1, 13, 0),
+            (1, 14, 0),
+            &crate::epics::Index::default(),
+        );
         assert_eq!(moved.len(), 1, "{out}");
         assert!(out.contains("- [ ] much later #v1.15.0\n"), "{out}");
     }
 
     #[test]
     fn carried_work_is_not_sealed_in_the_note() {
-        let (out, moved) = carry_open(SHEET, (1, 13, 0), (1, 13, 1));
+        let (out, moved) = carry_open(
+            SHEET,
+            (1, 13, 0),
+            (1, 13, 1),
+            &crate::epics::Index::default(),
+        );
         assert_eq!(moved.len(), 1);
         let (frozen, sheet) = rebuild_sheet(&out, (1, 13, 0), (1, 13, 1));
         assert!(!frozen.contains("still open"), "{frozen}");
@@ -3171,7 +3212,7 @@ Version: v1.13.0
     #[test]
     fn carry_on_a_finished_version_changes_nothing() {
         let f = finished();
-        let (out, moved) = carry_open(&f, (1, 13, 0), (1, 14, 0));
+        let (out, moved) = carry_open(&f, (1, 13, 0), (1, 14, 0), &crate::epics::Index::default());
         assert!(moved.is_empty());
         assert_eq!(out, f);
     }
@@ -3193,7 +3234,13 @@ Version: v1.13.0
     // that behaviour is back.
     #[test]
     fn a_version_with_open_work_refuses_to_close() {
-        let why = release_blocker(SHEET, "demo", (1, 13, 0), (1, 14, 0));
+        let why = release_blocker(
+            SHEET,
+            "demo",
+            (1, 13, 0),
+            (1, 14, 0),
+            &crate::epics::Index::default(),
+        );
         let why = why.expect("an open task must block the release");
         assert!(
             why.contains("still open"),
@@ -3205,7 +3252,14 @@ Version: v1.13.0
     // The positive half: an empty version closes, and a CHECKED task is not "open".
     #[test]
     fn a_finished_version_closes() {
-        assert!(release_blocker(&finished(), "demo", (1, 13, 0), (1, 14, 0)).is_none());
+        assert!(release_blocker(
+            &finished(),
+            "demo",
+            (1, 13, 0),
+            (1, 14, 0),
+            &crate::epics::Index::default()
+        )
+        .is_none());
     }
 
     // Work aimed at a LATER release is not work owed now.
@@ -3213,7 +3267,14 @@ Version: v1.13.0
     fn open_rows_aimed_later_do_not_block_the_release() {
         let s = finished();
         assert!(s.contains("- [ ] planned thing #ai"), "fixture sanity");
-        assert!(release_blocker(&s, "demo", (1, 13, 0), (1, 14, 0)).is_none());
+        assert!(release_blocker(
+            &s,
+            "demo",
+            (1, 13, 0),
+            (1, 14, 0),
+            &crate::epics::Index::default()
+        )
+        .is_none());
     }
 
     #[test]
@@ -3701,12 +3762,31 @@ Goal: the board reads itself
         // spanning releases blocked each one and collected carried:N forever.
         let sheet = "# demo\nVersion: v1.4.0\n\n## Tasks\n\
                      - [ ] epic(a): spans releases <!-- id:dm-1 -->\n";
-        assert_eq!(release_blocker(sheet, "demo", (1, 4, 0), (1, 4, 1)), None);
-        assert_eq!(carry_open(sheet, (1, 4, 0), (1, 4, 1)).1, vec![]);
+        assert_eq!(
+            release_blocker(
+                sheet,
+                "demo",
+                (1, 4, 0),
+                (1, 4, 1),
+                &crate::epics::Index::default()
+            ),
+            None
+        );
+        assert_eq!(
+            carry_open(sheet, (1, 4, 0), (1, 4, 1), &crate::epics::Index::default()).1,
+            vec![]
+        );
         let tagged = "# demo\nVersion: v1.4.0\n\n## Tasks\n\
                       - [ ] epic(a): due now #v1.4.0 <!-- id:dm-1 -->\n";
         assert!(
-            release_blocker(tagged, "demo", (1, 4, 0), (1, 4, 1)).is_some(),
+            release_blocker(
+                tagged,
+                "demo",
+                (1, 4, 0),
+                (1, 4, 1),
+                &crate::epics::Index::default()
+            )
+            .is_some(),
             "an epic aimed at the release is a promise for it"
         );
     }
@@ -3739,11 +3819,12 @@ Goal: the board reads itself
                 )
             })
             .collect();
-        // `agentctl-wave-roll` reads the first two columns: the board's own later release
-        // is a planned version like one on the human sheet.
+        // `agentctl-wave-roll` reads the first two columns and opens the first `planned`
+        // version next: only the human plans one, so a release only the board names is
+        // listed as `board`.
         assert_eq!(
             cols,
-            vec![("v1.4.0", "current", 2, 4), ("v1.5.0", "planned", 1, 1)]
+            vec![("v1.4.0", "current", 2, 4), ("v1.5.0", "board", 1, 1)]
         );
         assert_eq!(r[1].progress.unsized_open, 1);
     }

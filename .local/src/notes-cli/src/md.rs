@@ -1324,6 +1324,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     let (bare, due) = split_due(&bare);
     let (bare, _) = split_priority(&bare);
     let (bare, _) = split_version(&bare);
+    let (bare, parent) = split_parent(&bare);
     let no_day = strip_trailing_day(&bare);
     let day = bare[no_day.len()..].trim();
     let mut out = format!("{indent}{checkbox} {text}");
@@ -1341,6 +1342,10 @@ pub fn retext_task(line: &str, text: &str) -> String {
     }
     if let Some(w) = version_tag(before_marker) {
         out = add_tag(&out, &w);
+    }
+    // `task_text` strips the parent link, so a rewrite keeps it the way it keeps the release.
+    if let Some(id) = parent {
+        out = add_tag(&out, &format!("#of/{id}"));
     }
     out
 }

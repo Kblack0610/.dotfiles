@@ -232,26 +232,22 @@ impl Index {
             .collect()
     }
 
-    /// The leaves under node `i`, walked at most [`MAX_DEPTH`] levels and never twice, so a
-    /// cycle or an over-deep chain cannot hang a read (doctor names both).
+    /// The leaves under node `i`, each node walked once, so a loop cannot hang a read. The
+    /// same leaves [`Index::counts`] counts at any depth: an over-deep chain is a doctor
+    /// finding, never a second answer to which rows are leaves.
     fn leaves(&self, i: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut seen = HashSet::from([i]);
-        let mut stack = vec![(i, 0)];
-        while let Some((j, depth)) = stack.pop() {
+        let mut stack = vec![i];
+        while let Some(j) = stack.pop() {
             let kids = self.nodes[j]
                 .id
                 .as_deref()
                 .map_or(&[][..], |id| self.children(id));
-            if kids.is_empty() || depth > MAX_DEPTH {
+            if kids.is_empty() {
                 out.push(j);
-                continue;
             }
-            for &k in kids {
-                if seen.insert(k) {
-                    stack.push((k, depth + 1));
-                }
-            }
+            stack.extend(kids.iter().copied().filter(|&k| seen.insert(k)));
         }
         out
     }
@@ -329,20 +325,21 @@ impl Index {
                 )),
                 Some(_) => {}
             }
+            // A row that only leads into a loop is not named: the loop's own rows are.
             match self.depth(i) {
-                None => out.push(format!("{at}: #of/ loops back to this row")),
-                Some(d) if d > MAX_DEPTH => out.push(format!(
+                Err(k) if k == i => out.push(format!("{at}: #of/ loops back to this row")),
+                Ok(d) if d > MAX_DEPTH => out.push(format!(
                     "{at}: {d} levels deep (epic, story, subtask is the most)"
                 )),
-                Some(_) => {}
+                _ => {}
             }
         }
         out
     }
 
-    /// How many levels node `i` sits at, 1 for a row with no parent here; `None` when
-    /// following `#of/` up comes back to a row already passed.
-    fn depth(&self, i: usize) -> Option<usize> {
+    /// How many levels node `i` sits at, 1 for a row with no parent here; `Err(k)` when
+    /// following `#of/` up comes back to node `k`, which is `i` only for a row in the loop.
+    fn depth(&self, i: usize) -> Result<usize, usize> {
         let mut seen = HashSet::from([i]);
         let mut j = i;
         while let Some(&k) = self.nodes[j]
@@ -351,11 +348,11 @@ impl Index {
             .and_then(|p| self.by_id.get(p))
         {
             if !seen.insert(k) {
-                return None;
+                return Err(k);
             }
             j = k;
         }
-        Some(seen.len())
+        Ok(seen.len())
     }
 }
 
@@ -540,7 +537,8 @@ Version: v1.4.0 #alpha
                  - [ ] feat(e): story #of/dm-5 <!-- id:dm-8 -->\n\
                  - [ ] feat(e): subtask #of/dm-8 <!-- id:dm-9 -->\n\
                  - [ ] feat(e): too deep #of/dm-9 <!-- id:dm-10 -->\n\
-                 - [ ] feat(f): fine #of/dm-8 <!-- id:dm-11 -->\n",
+                 - [ ] feat(f): fine #of/dm-8 <!-- id:dm-11 -->\n\
+                 - [ ] feat(d): leads into the loop #of/dm-6 <!-- id:dm-12 -->\n",
             )],
         );
         let f = Index::of(&dir, V14).findings();
@@ -588,5 +586,39 @@ Version: v1.4.0 #alpha
         assert_eq!(projects::size_weight("- [ ] feat(a): odd #size/huge"), 1);
         assert!(is_epic("- [ ] epic(a): outcome #high"));
         assert!(!is_epic("- [ ] feat(epic): not one"));
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_parent_link() {
+        // NEGATIVE CONTROL: task_text strips #of/, so a rewrite whose old text is not a
+        // prefix of the row took the fallback path and dropped the link.
+        let l = "- [ ] feat(a): do it #of/dm-1 #size/m <!-- id:dm-3 -->";
+        let out = md::retext_task(l, "feat(a): do it better");
+        assert_eq!(parent_of(&out).as_deref(), Some("dm-1"), "{out}");
+        assert!(out.ends_with("<!-- id:dm-3 -->"), "{out}");
+    }
+
+    #[test]
+    fn a_parent_never_gates_a_release_its_leaves_do() {
+        // NEGATIVE CONTROL: a tagged epic (or a story) with a child aimed later gated its
+        // release, and `ptask done` refuses it while the child is open: a release it could
+        // never pass but by --force.
+        let dir = project(
+            "gate",
+            &[(
+                "README.md",
+                "# demo\nVersion: v1.4.0\n\n## Tasks\n\
+                 - [ ] epic(a): outcome #v1.4.0 <!-- id:dm-1 -->\n\
+                 - [ ] feat(a): story #of/dm-1 <!-- id:dm-2 -->\n\
+                 - [ ] feat(a): later part #of/dm-2 #v1.5.0 <!-- id:dm-3 -->\n\
+                 - [x] feat(a): done part #of/dm-2 <!-- id:dm-4 done:2026-11-05 pr:1 -->\n",
+            )],
+        );
+        let ix = Index::of(&dir, V14);
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(projects::gated_rows(&sheet, (1, 4, 0), &ix).is_empty());
+        let with_leaf = sheet.replace("#v1.5.0 ", "");
+        let ix = Index::of(&dir, V14);
+        assert_eq!(projects::gated_rows(&with_leaf, (1, 4, 0), &ix).len(), 1);
     }
 }
