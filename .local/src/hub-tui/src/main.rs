@@ -14,6 +14,7 @@ mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod outboxtab;
 mod projtab;
 mod queuetab;
 mod tabreq;

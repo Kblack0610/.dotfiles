@@ -6,7 +6,7 @@
 // rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "outbox", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 
@@ -302,9 +302,9 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
 // lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
 // test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "queue", "projects", "sessions", "infra", "focus", "actions", "log", "fleet"];
+const TAB_NAMES = ["outbox", "home", "queue", "projects", "sessions", "infra", "focus", "actions", "log", "fleet"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra" };
-const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || "home");
+const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
 // it paints; the first paint that has the section clears it.
@@ -337,7 +337,7 @@ function setTab(t, arg) {
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
   const frag = st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t;
-  try { history.replaceState(null, "", t === "home" && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
+  try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
