@@ -881,14 +881,15 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
 ///   in the outbox, and today's quick-captures (the bullet lines in `inbox/<today>.md`, each
 ///   with a short `(sess <id>)` suffix when it carried a session marker, so it links back to
 ///   its conversation via `claude -r <id>`).
-/// - Quiet: each line routed today, as `<words> -> <project> (<lane>) <id>`. A line moved out
-///   of the outbox or Focus and then filed reads as one row, the filing, noting where it came
-///   from.
+/// - Quiet: each line routed today, as `<words> -> <project> (<lane>) <id>`, and each row the
+///   planner planned, with what it added. A line moved out of the outbox or Focus and then
+///   filed reads as one row, the filing, noting where it came from. An outbox line the sweep
+///   left shows once, with its reason.
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
     let events = crate::ingest::on_day(p, &today);
     let mut rows: Vec<status::Row> = Vec::new();
-    let (mut routed, mut left) = (0, 0);
+    let (mut routed, mut left, mut planned) = (0, 0, 0);
     for (i, ev) in events.iter().enumerate() {
         let filed_later = |e: &crate::ingest::Event| {
             matches!(e.action.as_str(), "filed" | "dup") && e.from == ev.to && e.text == ev.text
@@ -927,6 +928,15 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
                     format!("{} -> {}{lane} {joined}{id}{via}", ev.text, ev.to),
                 )
             }
+            "planned" => {
+                planned += 1;
+                let id = ev.id.as_deref().unwrap_or("no id");
+                let what = ev.why.as_deref().unwrap_or("planned");
+                (
+                    false,
+                    format!("{} - planned in {} {id}: {what}", ev.text, ev.from),
+                )
+            }
             _ => {
                 left += 1;
                 let why = ev.why.as_deref().unwrap_or("no reason given");
@@ -944,7 +954,14 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
         });
     }
     let waiting = crate::outbox::lines(p).unwrap_or_default();
-    for (i, l) in waiting.iter().enumerate() {
+    let shown = |l: &crate::sheet::InboxLine| {
+        events.iter().any(|e| {
+            e.from == "outbox"
+                && e.text == l.text
+                && matches!(e.action.as_str(), "left" | "refused")
+        })
+    };
+    for (i, l) in waiting.iter().filter(|l| !shown(l)).enumerate() {
         rows.push(status::Row {
             attention: true,
             sort: (0, format!("o{i:04}")),
@@ -976,7 +993,7 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     status::Page {
         feed: status::Feed::Inbox,
         stat: Some(format!(
-            "{today}: {routed} routed, {left} left, {} in the outbox, {captured} captured",
+            "{today}: {routed} routed, {planned} planned, {left} left, {} in the outbox, {captured} captured",
             waiting.len()
         )),
         rows,
@@ -2319,11 +2336,19 @@ mod tests {
         let mut left = Event::new("left", "outbox", "", "a thought");
         left.why = Some("not a task".into());
         record(&p, &left);
+        let mut plan = Event::new("planned", "demo", "", "feat(ui): a brand kit #size/l");
+        plan.id = Some("dm-5".into());
+        plan.why = Some("3 plan lines, split into 2 rows".into());
+        record(&p, &plan);
         record(
             &p,
             &Event::new("moved", "focus", "demo", "still in the inbox"),
         );
-        std::fs::write(&p.outbox, "# Outbox\n\n## Outbox\n- [ ] new one\n").unwrap();
+        std::fs::write(
+            &p.outbox,
+            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n",
+        )
+        .unwrap();
         let page = inbox_page(&p);
         let heads: Vec<(bool, &str)> = page
             .rows
@@ -2338,6 +2363,10 @@ mod tests {
                 (true, "a thought - left in outbox: not a task"),
                 (
                     false,
+                    "feat(ui): a brand kit #size/l - planned in demo dm-5: 3 plan lines, split into 2 rows"
+                ),
+                (
+                    false,
                     "still in the inbox -> demo inbox, waiting to be filed (from focus)"
                 ),
                 (true, "new one - waiting in the outbox"),
@@ -2346,7 +2375,7 @@ mod tests {
         assert!(page
             .stat
             .unwrap()
-            .ends_with(": 2 routed, 1 left, 1 in the outbox, 0 captured"));
+            .ends_with(": 2 routed, 1 planned, 1 left, 2 in the outbox, 0 captured"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

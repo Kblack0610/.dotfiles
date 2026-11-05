@@ -27,6 +27,9 @@ setup() {
   export INBOX_TRIAGE_CMD=model-stub
   printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nprintf "%%s\\n" "$2" > "$NOTES_FIXTURE/prompt.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
+  # The planner's start, recorded: no unit ever starts from a test.
+  printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
+  chmod +x "$SANDBOX/bin/systemctl"
 }
 
 # sheet <inbox lines> <task lines>: scratch's sheet.
@@ -52,6 +55,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
+  [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
 }
 
 @test "end to end: a typed line is filed word for word, a typed row is left alone, and no model runs" {
@@ -212,6 +216,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'moved outbox scratch the menu flickers again'
   assert_line 'dup scratch scratch the menu flickers again'
   assert_line --regexp '^refused outbox  a line for nowhere'
+  grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log" || fail "the planner was not started"
 }
 
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {
