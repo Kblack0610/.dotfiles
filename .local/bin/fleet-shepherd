@@ -76,6 +76,7 @@ PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, 
 # there. Each run's pass is a window of this session.
 SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
 SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # hub, beside the human's chats; Prefix o jumps to it
+[ -n "$SERVER" ] || { echo "fleet-shepherd: no world declares session $SESSION" >&2; exit 1; }
 WINDOW="${FLEET_SHEPHERD_WINDOW:-shepherd}"
 PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
 ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
