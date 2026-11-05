@@ -668,3 +668,12 @@ EOF
   assert_success
   assert_output ''
 }
+
+@test "project_slug: the registry's slug wins, else a short name stays, else hyphen initials, else 8 characters" {
+  write_map '{"lunchtracker": {"slug": "lt"}}'
+  assert_equal "$(project_slug lunchtracker)" lt
+  assert_equal "$(project_slug dotfiles)" dotfiles
+  assert_equal "$(project_slug unity-core-playground)" ucp
+  assert_equal "$(project_slug agent-runtime)" ar
+  assert_equal "$(project_slug supercalifragilistic)" supercal
+}

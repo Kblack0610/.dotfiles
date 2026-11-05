@@ -39,6 +39,17 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$old $new $mine "
 }
 
+@test "rows name the asker by project slug and agent number, in a column as wide as its longest name" {
+  ask unity-core-playground unity-core-playground-agent-60 'a|b' 'long project?' >/dev/null
+  ask demo agent-1 'a|b' 'short project?' >/dev/null
+  ask demo hub 'a|b' 'no agent number?' >/dev/null
+  run bash -c '"$1" rows | sed "s/\x1b\[[0-9;]*m//g"' _ "$Q"
+  assert_success
+  assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]$'
+  assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]$'
+  assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]$'
+}
+
 @test "rows mark an ask whose Claude session has ended gone, and only that one" {
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
@@ -61,7 +72,7 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
 @test "a number only arms its option; enter sends exactly that one" {
   local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
   run "$Q" key 2 "$id"
-  assert_output --partial 'send 2 "later" to agent-1? enter sends'
+  assert_output --partial 'send 2 "later" to demo:1? enter sends'
   assert_equal "$(status_of "$id")" pending
   run "$Q" key enter "$id"
   assert_success
@@ -112,12 +123,16 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
   run "$Q" key t "$id"
   assert_output --partial 'show-input'
-  assert_output --partial "change-prompt~answer $id> ~"
+  # The header names what is answered; the prompt is only the line to type on.
+  assert_output --partial 'change-prompt~answer> ~'
+  assert_output --partial 'change-header~answering demo:1: run the sweep?~'
   # While typing, a digit or d is a character, not a key.
   run "$Q" key 1 "$id" 'go after 1'
   assert_output 'put(1)'
   run "$Q" key d "$id"
   assert_output 'put(d)'
+  run "$Q" key g "$id"
+  assert_output 'put(g)'
   run "$Q" key enter "$id" ''
   assert_output --partial 'type an answer first'
   assert_equal "$(status_of "$id")" pending
@@ -126,6 +141,47 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   assert_equal "$(status_of "$id")" answered
   run grep -c '^answer: go after lunch$' "$(ask_file "$id")"
   assert_output 1
+}
+
+@test "two typed answers in a row: each opens on an empty line, and the header goes back to the count" {
+  local a b; a="$(ask demo agent-1 'go|later' 'first?')"; b="$(ask demo agent-2 'go|later' 'second?')"
+  run "$Q" key t "$a"
+  assert_output --regexp '^show-input\+clear-query\+'
+  run "$Q" key enter "$a" 'one'
+  assert_output --partial 'hide-input'
+  assert_output --partial 'change-header~1 waiting~'
+  # A t that beats the reload lands on the row just answered: it refreshes, types nothing.
+  run "$Q" key t "$a"
+  assert_output --partial 'reload('
+  assert_output --partial 'that question was just answered'
+  refute_output --partial 'show-input'
+  run "$Q" key t "$b"
+  assert_output --regexp '^show-input\+clear-query\+'
+  assert_output --partial 'change-header~answering demo:2: second?~'
+  # esc out of typing puts the count back and closes nothing.
+  run "$Q" key esc "$b"
+  assert_output --partial 'hide-input+change-prompt~~'
+  assert_output --partial 'change-header~1 waiting~'
+  refute_output --partial 'abort'
+  run grep -c '^answer: one$' "$(ask_file "$a")"
+  assert_output 1
+  assert_equal "$(status_of "$b")" pending
+}
+
+@test "g goes to the asking session when it lives, and says why when it cannot" {
+  local live gone loose
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live ask demo agent-1 'go|later' 'live?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo agent-2 'go|later' 'gone?')"
+  loose="$(ask demo agent-3 'go|later' 'loose?')"
+  printf '%s\n' '{"session_id":"sid-live","target":"hub/demo:2"}' >"$NOTES_FIXTURE/agent-panel.list"
+  run "$Q" key g "$live"
+  assert_output 'execute-silent(agent-panel jump hub/demo:2)+abort'
+  run "$Q" key g "$gone"
+  assert_output 'change-footer~session ended; resume with claude --resume sid-gone~'
+  run "$Q" key g "$loose"
+  assert_output 'change-footer~no Claude session owns this ask~'
+  # Going nowhere answers nothing.
+  assert_equal "$(status_of "$live")$(status_of "$gone")" pendingpending
 }
 
 @test "d then enter drops the question; d then esc keeps it" {
@@ -144,9 +200,9 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
 }
 
 @test "a ~ in what the footer shows never reaches fzf as a delimiter" {
-  local id; id="$(ask demo 'a~b' 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'g~o|later' 'run the sweep?')"
   run "$Q" key 1 "$id"
-  assert_output --partial 'to ab?'
+  assert_output --partial 'send 1 "go" to demo:1?'
 }
 
 @test "an unknown verb or key fails instead of opening the picker" {
