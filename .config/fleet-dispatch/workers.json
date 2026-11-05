@@ -1,9 +1,9 @@
 {
-  "asks": {
-    "what": "/one-shot on an #ask row the human already decided, game work only",
+  "requested": {
+    "what": "/one-shot on a #requested row the human already decided, game work only",
     "max_tier": 2,
     "projects": ["unity-core-playground"],
-    "only_tag": "ask"
+    "only_tag": "requested"
   },
   "fleet": {
     "what": "/one-shot on a row the human assigned with #worker/fleet",
