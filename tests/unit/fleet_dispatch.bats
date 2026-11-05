@@ -750,6 +750,57 @@ two_items() {
   [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
 }
 
+# held_game_app_row: a game queue item a starved unity pool holds, and an app board row it does not
+held_game_app_row() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project game --slug fix-game --priority high "fix the game"
+  row app human 'fix app crash' "- [ ] fix app crash #high $T"
+  verdict app human 'fix app crash' dispatch
+  findings "$(finding starved pool:unity '["game"]')"
+}
+
+# 2026-11-05: held unity items kept every pass off the board for 7h, so the rows filed to fix the
+# hold never started.
+@test "every queue item a finding holds sends the pass on to the board, and an unheld row starts" {
+  held_game_app_row
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
+  assert_output --partial 'queued app: '
+  assert_output --partial 'started game-agent-1: app: '
+  assert_equal "$(outcome)" WORKED
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
+@test "a pass past held queue items that starts no board row either is BLOCKED by the hold, never NOOP" {
+  held_game_app_row
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits; the human is not away'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+  # No row qualifies: the hold still names the pass.
+  stub fleet-presence 'echo "away 45 tmux"'
+  : > "$NOTES_FIXTURE/rows.app.human"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+}
+
+@test "a held queue item whose board row is held too stays BLOCKED and starts nothing" {
+  held_game_app_row
+  findings "$(finding starved pool:unity '["game","app"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued app: '
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+}
+
 @test "a throughput drop holds only the items on that project's repo, an alias included" {
   two_items
   findings "$(finding throughput-drop game)"
@@ -1722,6 +1773,35 @@ queued_item() {
 board_item() {
   queued_item "$1" high "$2"
   sed -i "s/^from: human/from: board:game:$1/" "$AGENT_QUEUE_DIR/queued/20261103-100000-$1.md"
+}
+
+# 2026-11-05: 220 rows sat unjudged since 11-02 while every pass stopped at held queue items.
+@test "starved: board rows nobody judged while the human was away that long trip it; a recent judge or a short absence does not" {
+  game_ready
+  rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub fleet-presence 'echo "away 90 tmux"'
+  run cmd_starved
+  assert_failure
+  assert_output --partial '1 board rows unjudged, none judged since never'
+  # Away for less than the window: the first pass has not had its turn yet.
+  stub fleet-presence 'echo "away 10 tmux"'
+  run cmd_starved
+  assert_success
+  # The human is here: the board waits for them to leave, by design.
+  stub fleet-presence 'echo "here 0 tmux"'
+  run cmd_starved
+  assert_success
+  # A judge inside the window: the board is turning.
+  stub fleet-presence 'echo "away 90 tmux"'
+  verdict game human 'fix crash on load' dispatch
+  rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"; mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_starved
+  assert_success
+  # An old judge and an unjudged row: starved again.
+  touch -d '-2 hours' "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_starved
+  assert_failure
+  assert_output --partial '1 board rows unjudged, none judged since '"$(date -d '-2 hours' +%Y-%m-%d)"
 }
 
 @test "starved: a board item waits out the human's presence, and counts from when they left" {
