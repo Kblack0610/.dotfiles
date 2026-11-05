@@ -362,6 +362,51 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" theask
 }
 
+@test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game.md"
+  project app alpha "$SANDBOX/repos/app"
+  printf '## Inbox\n- [ ] a row that says #prio/high is not the head\n' >> "$SANDBOX/sheets/app.md"
+  row app agent 'app urgent' "- [ ] app urgent #urgent $T"
+  row app agent 'app due' "- [ ] app due #due1105 $T"
+  row game agent 'game low' "- [ ] game low #low $T #c1101"
+  row game agent 'game high new' "- [ ] game high new #high $T #c1104"
+  row game agent 'game high' "- [ ] game high #high $T #c1020"
+  run cmd_candidates
+  assert_success
+  run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.why)"' <<<"$output"
+  assert_output "game high: focus project, fleet, #high, beta, 16d old
+game high new: focus project, fleet, #high, beta, 1d old
+game low: focus project, fleet, #low, beta, 4d old
+app due: due today, fleet, alpha
+app urgent: fleet, #urgent, alpha"
+}
+
+@test "rank: with no project priority, due or created date, the order is worker, row priority, stage" {
+  c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" --arg st "$4" \
+    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
+  cands=$(c alpha-urgent 1 0 alpha; c prod-high 1 1 prod; c beta-high 1 1 beta; c asked 0 2 alpha)
+  run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
+  assert_output 'asked alpha-urgent prod-high beta-high'
+  # A low project's urgent row waits behind a normal project's normal row.
+  run jq -sr "$RANK_JQ"'[.[] | rank_fields("2026-11-05"; if .k == "l" then "low" else "" end)] | rank | map(.k) | join(" ")' \
+    <<<'{"k":"l","wrank":0,"prio":0,"stage":"prod"} {"k":"n","wrank":1,"prio":2,"stage":"alpha"}'
+  assert_output 'n l'
+}
+
+@test "picks: a focus project's row goes before a more urgent row elsewhere, one area each" {
+  c() { jq -cn --arg p "$1" --arg k "$2" --argjson pr "$3" --arg pp "$4" \
+    "$RANK_JQ"'{project: $p, stage: "beta", lane: "agent", key: $k, wrank: 1, prio: $pr, tier: 1, line: "", text: "- [ ] \($k)"} | rank_fields("2026-11-05"; $pp)'; }
+  cands=$(c app urgent 0 ""; c game later 2 focus)
+  verdict app agent urgent dispatch
+  verdict game agent later dispatch
+  run picks "$cands" 1
+  assert_equal "$(jq -r .key <<<"$output")" later
+  run picks "$cands" 2
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'later urgent'
+}
+
 @test "judge asks for an area and keeps it" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"agent\",\"key\":\"k\",\"verdict\":\"skip\",\"area\":\"wilds\"}" DISPATCH-VERDICTS-END'
@@ -428,16 +473,21 @@ EOF
   [ ! -e "$cwd" ]
 }
 
-@test "judge sends prod rows before alpha rows when the batch is capped" {
+@test "judge sends rows in rank order when the batch is capped: prod before alpha at one priority, an urgent alpha first" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'
-  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}
 {"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
   assert_success
   run grep -c '"project":"p"' "$NOTES_FIXTURE/prompt"
   assert_output 1
   run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
   assert_output 0
+  # The same cap picks the picks order, not a second one: row priority comes before stage.
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}
+{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
+  run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
+  assert_output 1
 }
 
 # --- run ---------------------------------------------------------------------------------
@@ -512,7 +562,7 @@ game_ready() {
   stub fleet-presence 'echo "here 0 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
   assert_success
-  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load, high: fix crash on load'
+  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load, high: fix crash on load [fleet, #high, beta]'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
   assert_success
@@ -609,7 +659,7 @@ game_ready() {
   verdict game human gm-5 dispatch S 1 load
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
   assert_success
-  assert_line --index 0 'ready     game (beta) human, fleet, load, low: gm-5'
+  assert_line --index 0 'ready     game (beta) human, fleet, load, low: gm-5 [fleet, #low, beta]'
 }
 
 @test "run starts nothing while dispatch is held" {
@@ -1561,7 +1611,7 @@ J
   row game human 'add a new map' "- [ ] add a new map $T"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
   assert_success
-  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load, high: fix crash on load'
+  assert_line --index 0 'ready     game (beta) human, fleet, fix crash on load, high: fix crash on load [fleet, #high, beta]'
   assert_line --index 1 'unjudged  game (beta) human: add a new map'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run --json
   assert_equal "$(jq -r '"\(.state) \(.key)"' <<<"$output" | paste -sd, -)" 'ready fix crash on load,unjudged add a new map'
