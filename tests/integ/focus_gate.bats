@@ -373,3 +373,35 @@ gate_t() {
   reason="$(gate s1 | jq -r '.reason')"
   [[ "$reason" == *'agent-queue add --running'* ]]
 }
+
+# ── a PR is a unit of work: only a queue item tracks it ──────────────────────
+# 2026-11-05 only 26% of merged PRs had a queue item: a board write or a Focus item in
+# progress let a PR session pass with nothing on the work ledger.
+
+@test "session: a PR with only a board write or a Focus item in progress blocks, once" {
+  focus '- [/] something in progress'
+  tcall s1 Edit
+  tcall s1 Bash 'notes ptask dotfiles --agent done "the row" --proof pr:42'
+  tcall s1 Bash 'gh pr create --title t --body b'
+  local out
+  out="$(gate_t s1)"
+  assert_blocks "$out"
+  [[ "$(jq -r .reason <<<"$out")" == *'agent-queue claim <slug>'* ]]
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: a PR with its own agent-queue add, claim or agent-land passes" {
+  tcall s1 Edit; tcall s1 Bash 'gh pr create --title t'; tcall s1 Bash 'agent-queue add --running --project dotfiles "fix(x): y"'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Bash 'gh pr merge 7 --squash'; tcall s2 Bash 'agent-queue claim fix-x-y'
+  refute_blocks "$(gate_t s2)"
+  tcall s3 Edit; tcall s3 Bash 'gh pr create'; tcall s3 Bash 'agent-land 7 --item fix-x-y'
+  refute_blocks "$(gate_t s3)"
+}
+
+@test "session: an earlier Edit nudge does not spend the PR nudge" {
+  tcall s1 Edit
+  assert_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  assert_blocks "$(gate_t s1)"
+}
