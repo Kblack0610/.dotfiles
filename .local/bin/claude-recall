@@ -800,21 +800,36 @@ def rewritten_ids():
     return ids
 
 
-def tool_output_file(path, since, windows, rewritten, emit):
-    """Stream one transcript: emit('turn', ...) per API response and emit('result', ...) per
-    tool result, with how many later turns re-read the result before a compaction drops it."""
-    uses, pending, seen_msgs, turns = {}, [], set(), 0
-    project = None
+# A stretch of this many responses with no compaction is a long run: every tool result in it is
+# re-read on each later response (about 32x its size on the 2026-11 fleet), so the longest are
+# where a /compact would have paid most. 150 was the p99 stretch in the week to 2026-11-05
+# (42 of 3,168; median 30). Tune with --long-turns.
+LONG_TURNS = 150
 
-    def settle():
+
+def tool_output_file(path, since, until, windows, rewritten, emit):
+    """Stream one transcript: emit('turn', ...) per API response, emit('result', ...) per tool
+    result, with how many later turns re-read the result before a compaction drops it, and
+    emit('segment', ...) per stretch between compactions that had a response in the window."""
+    uses, pending, seen_msgs, turns = {}, [], set(), 0
+    project, seg = None, {"start": 0, "in_win": 0, "carried": 0, "chars": 0, "last": ""}
+
+    def settle(compacted):
         for r in pending:
             r["carried_turns"] = turns - r.pop("at")
+            seg["carried"] += r["chars"] * max(r["carried_turns"], 0)
+            seg["chars"] += r["chars"]
             emit("result", r)
         pending.clear()
+        if seg["in_win"]:
+            emit("segment", {"session": path.stem, "project": project or "?",
+                             "turns": turns - seg["start"], "chars": seg["chars"],
+                             "carried": seg["carried"], "compacted": compacted, "last": seg["last"]})
+        seg.update(start=turns, in_win=0, carried=0, chars=0, last="")
 
     for line in path.open(errors="replace"):
         if '"compact_boundary"' in line:
-            settle()
+            settle(True)
             continue
         if '"type":"assistant"' not in line and '"tool_result"' not in line:
             continue
@@ -831,10 +846,9 @@ def tool_output_file(path, since, windows, rewritten, emit):
                 seen_msgs.add(mid)
                 turns += 1
                 u = msg.get("usage") or {}
-                if turns == 1 and ts[:10] >= since:
-                    emit("start", {"project": project or "?", "tokens": sum(
-                        int(u.get(f) or 0) for f in USAGE_FIELDS if f != "output_tokens")})
-                if ts[:10] >= since:
+                if since <= ts < until:
+                    seg["in_win"] += 1
+                    seg["last"] = ts
                     emit("turn", {"ts": ts, "project": project or "?",
                                   "method": method_at(windows, ts),
                                   **{f: int(u.get(f) or 0) for f in USAGE_FIELDS}})
@@ -844,7 +858,7 @@ def tool_output_file(path, since, windows, rewritten, emit):
                     cmd = bash_head((b.get("input") or {}).get("command") or "") if name == "Bash" else None
                     uses[b.get("id")] = (name, cmd)
             continue
-        if ts[:10] < since:
+        if not since <= ts < until:
             continue
         for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
             if not isinstance(b, dict) or b.get("type") != "tool_result":
@@ -859,22 +873,32 @@ def tool_output_file(path, since, windows, rewritten, emit):
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "chars": size, "at": turns, "method": method_at(windows, ts),
                             "rewritten": tid in rewritten})
-    settle()
+    settle(False)
+
+
+def window_bound(s):
+    """A --since/--until value as (string compared with transcript timestamps, epoch). A bare
+    date is a UTC day, as transcript timestamps are UTC; an ISO time is converted to UTC."""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s, datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    t = t.astimezone(timezone.utc) if t.tzinfo else t.astimezone().astimezone(timezone.utc)
+    return t.strftime("%Y-%m-%dT%H:%M:%S"), t.timestamp()
 
 
 def cmd_tool_output(a):
     """Token use as a whole (API usage per response) and the tool output behind it."""
-    since = a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d")
-    since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    since, since_epoch = window_bound(
+        a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
+    until = window_bound(a.until)[0] if a.until else "9999"
     windows, rewritten = method_windows(), rewritten_ids()
     bucket_of = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
                  "method": lambda r: r["method"], "day": lambda r: r["ts"][:10],
                  "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
                  "project": lambda r: r["project"]}[a.by]
     totals = {f: 0 for f in USAGE_FIELDS}
-    totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0,
-                  sessions=0, start_context=0)
-    rows = {}
+    totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0)
+    rows, segments = {}, []
 
     def row(k):
         return rows.setdefault(k, {"key": k, "turns": 0, **{f: 0 for f in USAGE_FIELDS},
@@ -884,9 +908,8 @@ def cmd_tool_output(a):
     def emit(kind, r):
         if a.project and a.project not in r["project"]:
             return
-        if kind == "start":
-            totals["sessions"] += 1
-            totals["start_context"] += r["tokens"]
+        if kind == "segment":
+            segments.append(r)
             return
         if kind == "turn":
             totals["turns"] += 1
@@ -930,15 +953,20 @@ def cmd_tool_output(a):
             continue
         seen.add(real)
         files += 1
-        tool_output_file(real, since, windows, rewritten, emit)
+        tool_output_file(real, since, until, windows, rewritten, emit)
 
     order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week", "method") \
         else sorted(rows.values(), key=lambda r: -r["chars"])
     if a.top and a.by not in ("day", "week", "method"):
         order = order[:a.top]
+    # Compaction cadence: the stretches that ran longest without one, by what they re-read.
+    long = sorted((x for x in segments if x["turns"] >= a.long_turns), key=lambda x: -x["carried"])
+    long_runs = {"turns_over": a.long_turns, "stretches": len(segments), "long": len(long),
+                 "rows": long[:10]}
     if a.json:
-        print(json.dumps({"since": since, "by": a.by, "transcripts": files, "totals": totals,
-                          "rows": order}, indent=1))
+        print(json.dumps({"since": since, "until": a.until and until, "by": a.by,
+                          "transcripts": files, "totals": totals, "rows": order,
+                          "long_runs": long_runs}, indent=1))
         return 0
     t = totals
     billed_in = t["input_tokens"] + t["cache_creation_input_tokens"] + t["cache_read_input_tokens"]
@@ -948,14 +976,14 @@ def cmd_tool_output(a):
     if t["turns"]:
         print(f"  context per response {billed_in // t['turns']:,} tokens; "
               f"cache read is {100 * t['cache_read_input_tokens'] / max(billed_in, 1):.0f}% of input")
-    if t["sessions"]:
-        start = t["start_context"] // t["sessions"]
-        print(f"  first response of a transcript reads {start:,} tokens (system prompt, tools, rules, "
-              f"memory, skill list); carried on every response that is ~{100 * start * t['turns'] / max(billed_in, 1):.0f}% of input")
     print(f"  tool results {t['calls']:,} calls, {t['chars']:,} chars (~{t['chars'] // 4:,} tokens); "
           f"Bash {t['bash_calls']:,} calls, {t['bash_chars'] // max(t['bash_calls'], 1):,} chars/call")
     print(f"  carried: tool output re-read {t['carried'] // 4:,} tokens' worth before compaction "
-          f"({t['carried'] // max(t['chars'], 1)}x its size), ~{100 * t['carried'] / 4 / max(billed_in, 1):.0f}% of input\n")
+          f"({t['carried'] // max(t['chars'], 1)}x its size), ~{100 * t['carried'] / 4 / max(billed_in, 1):.0f}% of input")
+    print(f"  compaction: {len(long)} of {len(segments)} stretches ran {a.long_turns}+ responses without one"
+          + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
+                    f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
+                    for x in long[:3]) + "\n")
     if a.by in ("tool", "command"):
         print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13} {'filtered':>8}  {a.by}"))
         for r in order:
@@ -1025,7 +1053,11 @@ def main():
 
     to = sub.add_parser("tool-output", help="token use and the tool output behind it")
     to.add_argument("--days", type=int, default=7, help="window in days (default 7)")
-    to.add_argument("--since", help="window start YYYY-MM-DD (overrides --days)")
+    to.add_argument("--since", help="window start: YYYY-MM-DD (a UTC day) or an ISO time "
+                                     "(overrides --days)")
+    to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
+    to.add_argument("--long-turns", type=int, default=LONG_TURNS,
+                    help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
     to.add_argument("--by", choices=["tool", "command", "method", "day", "week", "project"],
                     default="tool", help="command = Bash calls by command head; "
                                          "method = token-filter method windows")

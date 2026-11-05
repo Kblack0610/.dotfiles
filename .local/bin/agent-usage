@@ -8,6 +8,7 @@
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #   agent-usage burn [--days 7] [--before DATE] [--json]     where the window's tokens went (usage-cleanup)
+#   agent-usage tokens snapshot|line|check [--date D]        the nightly token-usage record per day
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.
 #
@@ -598,9 +599,18 @@ cmd_burn() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-burn.py" "$@"
 }
 
+# --- tokens ----------------------------------------------------------------
+
+# One JSON per day under ~/.agent/token-usage/ joined from claude-recall tool-output, burn and
+# token-filter verify; its one-line row; the drift check the token-usage-drift watch runs.
+# Written nightly by the agentctl token-usage schedule. Logic: ../lib/agent-usage-tokens.py.
+cmd_tokens() {
+  python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-tokens.py" "$@"
+}
+
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -614,6 +624,7 @@ case "$sub" in
   backfill)  cmd_backfill "$@" ;;
   wakes)     cmd_wakes "$@" ;;
   burn)      cmd_burn "$@" ;;
+  tokens)    cmd_tokens "$@" ;;
   -h|--help|help|'') usage ;;
   *) echo "agent-usage: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac
