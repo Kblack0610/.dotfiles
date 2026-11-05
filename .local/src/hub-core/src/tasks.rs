@@ -88,6 +88,19 @@ pub enum Verb {
         why: Option<String>,
         dup: Option<String>,
     },
+    /// Onto another project's sheet (its current wave, or the existing wave `to`), or with no
+    /// project into the wave `to` on its own sheet. At least one of the two.
+    Move {
+        raw: String,
+        project: Option<String>,
+        to: Option<String>,
+    },
+    /// One wave sooner (clamped at the current wave).
+    Promote { raw: String },
+    /// One wave later (opens the next patch wave past the last).
+    Demote { raw: String },
+    /// New text; the checkbox, place and tags stay.
+    Edit { raw: String, text: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +227,54 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
                 (None, Some(d)) if one_line(d) => a.extend(["--dup".into(), d.into()]),
                 _ => return Err("drop needs why, or the id of the row it duplicates".into()),
             }
+            raw.clone()
+        }
+        Verb::Move { .. } | Verb::Promote { .. } | Verb::Demote { .. } | Verb::Edit { .. }
+            if playtest =>
+        {
+            return Err(
+                "a playtest check has no waves and no edit: drop it and add it again".into(),
+            );
+        }
+        Verb::Move { raw, project, to } => {
+            let project = project.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let to = to.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            if project.is_none() && to.is_none() {
+                return Err("move to a project, a wave (vX.Y.Z), or both".into());
+            }
+            a.extend(["--exact".into(), "move".into()]);
+            if let Some(p) = project {
+                if !is_name(p) {
+                    return Err("that is not a project name".into());
+                }
+                a.extend(["--project".into(), p.into()]);
+            }
+            if let Some(v) = to {
+                if !is_version(v) {
+                    return Err("a wave is vX.Y.Z".into());
+                }
+                a.extend(["--to".into(), v.into()]);
+            }
+            raw.clone()
+        }
+        Verb::Promote { raw } => {
+            a.extend(["--exact".into(), "promote".into()]);
+            raw.clone()
+        }
+        Verb::Demote { raw } => {
+            a.extend(["--exact".into(), "demote".into()]);
+            raw.clone()
+        }
+        Verb::Edit { raw, text } => {
+            if !one_line(text) {
+                return Err("type the new text, on one line".into());
+            }
+            a.extend([
+                "--exact".into(),
+                "edit".into(),
+                "--text".into(),
+                text.trim().into(),
+            ]);
             raw.clone()
         }
     };
@@ -369,6 +430,54 @@ mod tests {
     }
 
     #[test]
+    fn move_wave_and_edit_pass_the_row_after_the_separator() {
+        let mv = |project: Option<&str>, to: Option<&str>| Verb::Move {
+            raw: RAW.into(),
+            project: project.map(String::from),
+            to: to.map(String::from),
+        };
+        assert_eq!(
+            argv(&w("human", mv(Some("other"), None))).unwrap()[5..],
+            ["--exact", "move", "--project", "other", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("agent", mv(Some("other"), Some("v2.0.0")))).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "move",
+                "--project",
+                "other",
+                "--to",
+                "v2.0.0",
+                "--",
+                RAW
+            ]
+        );
+        assert_eq!(
+            argv(&w("human", mv(Some(" "), Some("v1.3.0")))).unwrap()[5..],
+            ["--exact", "move", "--to", "v1.3.0", "--", RAW],
+            "a blank project is no project"
+        );
+        assert_eq!(
+            argv(&w("human", Verb::Promote { raw: RAW.into() })).unwrap()[5..],
+            ["--exact", "promote", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("agent", Verb::Demote { raw: RAW.into() })).unwrap()[5..],
+            ["--agent", "--exact", "demote", "--", RAW]
+        );
+        let edit = Verb::Edit {
+            raw: RAW.into(),
+            text: " -ship it today ".into(),
+        };
+        assert_eq!(
+            argv(&w("human", edit)).unwrap()[5..],
+            ["--exact", "edit", "--text", "-ship it today", "--", RAW]
+        );
+    }
+
+    #[test]
     fn writes_refuse_what_notes_would_misread() {
         let gone = |raw: &str| Verb::Drop {
             raw: raw.into(),
@@ -388,6 +497,53 @@ mod tests {
             w("human", add("x", "high", Some("next"), None)),
             w("playtest", add("x", "high", Some("v1.0.0"), None)),
             w("human", add("x", "high", None, Some("Arena"))),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: None,
+                    to: Some(" ".into()),
+                },
+            ),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: Some("a b".into()),
+                    to: None,
+                },
+            ),
+            w(
+                "human",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: None,
+                    to: Some("next".into()),
+                },
+            ),
+            w(
+                "playtest",
+                Verb::Move {
+                    raw: RAW.into(),
+                    project: Some("other".into()),
+                    to: None,
+                },
+            ),
+            w("playtest", Verb::Promote { raw: RAW.into() }),
+            w(
+                "human",
+                Verb::Edit {
+                    raw: RAW.into(),
+                    text: "two\nlines".into(),
+                },
+            ),
+            w(
+                "human",
+                Verb::Edit {
+                    raw: "not a row".into(),
+                    text: "x".into(),
+                },
+            ),
             w(
                 "human",
                 Verb::Done {
