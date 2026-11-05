@@ -35,6 +35,15 @@ Bound in `~/.tmux.conf`:
 - `Prefix + g` — interactive chooser (fzf popup)
 - `Prefix + G` — jump straight to the next agent needing attention: waiting at a
   prompt (`!`) or holding a pending ask (`A`)
+- `Prefix + y` - the question card of the session you are on (`agent-ask pick`), or the
+  list of every pending ask when it asks nothing
+
+Arriving at a session with an `A` opens its question card in a popup: the
+`client-session-changed` hook runs `agent-panel ask-here` (an attach, including the hop
+from another server, sets the session too), `Prefix G`
+runs it after its jump, and the chooser turns its own popup into the card after a jump on
+the same server (a client has one popup, so the hook cannot open a second one there). The
+chooser preview prints the card above the pane tail.
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -63,6 +72,7 @@ string rather than `claude` (observed on macOS).
 | `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
+| `agent-panel ask-here --socket S --client C --session S --window W [--key]` | Popup with the question card of the agent in that window, else in that session; silent when none asks, unless `--key` (then every pending ask) |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 

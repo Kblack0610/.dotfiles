@@ -8,7 +8,8 @@
 #   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
-#   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
+#   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
+#                                    or board rows no pass has judged in that time while the human was away
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M]
 #       (--item SLUG | --brief FILE --row KEY [--cwd REPO]
@@ -763,6 +764,8 @@ start_items() {
       # Every item too heavy for the units left is a full fleet, not a block: NOOP, as cmd_run says.
       if [ "$n" -gt 0 ]; then say "$PICK_WHY"
       elif [ "$PICK_FULL" = 1 ]; then settle NOOP "$PICK_WHY"
+      # cmd_run goes on to the board and settles the pass there, BLOCKED by this unless a row starts.
+      elif [ "${HELD_FALLS_THROUGH:-0}" = 1 ] && [ "${FIRING+set}" = set ]; then QUEUE_HELD=$PICK_WHY; say "$PICK_WHY"
       else settle BLOCKED "$PICK_WHY"; fi
       return 0
     fi
@@ -900,9 +903,11 @@ start_item() {
 # the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
-# the Sentinel watch queue-starved runs it.
+# the Sentinel watch queue-starved runs it. The board starves too: rows nobody judges never reach the
+# queue, so it trips when rows wait unjudged and no pass has judged any while the human was away that
+# long (2026-11-05: 220 rows, no judge since 11-02, every pass stopped at held queue items).
 cmd_starved() {
-  local items last cut started why
+  local items board last cut started why
   agent-hold check dispatch >/dev/null 2>&1 || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   started=$(last_run_start)
@@ -910,7 +915,8 @@ cmd_starved() {
   items=$(runnable | jq -rs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
-  [ -n "$items" ] || return 0
+  board=$(board_starved "$cut")
+  [ -n "$items$board" ] || return 0
   why=$(gate any)
   case "$why" in
     'fleet-assess says HOLD' | 'load '* | 'real idle '*) echo "held by load ($why), so nothing is starved"; return 0 ;;
@@ -918,10 +924,28 @@ cmd_starved() {
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
     last=$(tail -n 1 "$(proof_state_dir)/fleet-dispatch/activity.log" 2>/dev/null)
-  echo "runnable over ${DISPATCH_STARVED_MIN} min and not started:"
-  sed 's/^/  /' <<<"$items"
+  if [ -n "$items" ]; then
+    echo "runnable over ${DISPATCH_STARVED_MIN} min and not started:"
+    sed 's/^/  /' <<<"$items"
+  fi
+  [ -z "$board" ] || echo "$board"
   echo "last run start: ${started:-none in the log}; last pass: ${last:-none recorded}"
   return 1
+}
+
+# board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
+# was written since <cut>, and the human has been away since before <cut> (rows judge only then);
+# else nothing.
+board_starved() {
+  local judged state mins n
+  judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
+  [ "$judged" -lt "$1" ] || return 0
+  read -r state mins _ < <(fleet-presence 2>/dev/null)
+  [ "$state" = away ] && [ "${mins:-0}" -ge "$DISPATCH_STARVED_MIN" ] 2>/dev/null || return 0
+  n=$(unjudged_rows | grep -c . || true)
+  [ "$n" -gt 0 ] || return 0
+  if [ "$judged" = 0 ]; then judged=never; else judged=$(date -d "@$judged" -Iminutes); fi
+  echo "$n board rows unjudged, none judged since $judged"
 }
 
 # headroom [--json] -- the window over the limits: how many more queue items a start could take now
@@ -1144,6 +1168,12 @@ settle() {
   proof_report fleet-dispatch "$1" "$2" 2>/dev/null || true
 }
 
+# settle_board <outcome> <why> -- settle a pass on its board step. A pass that came here past held
+# queue items and starts nothing is BLOCKED by the hold, never a NOOP that dashboards read as green.
+settle_board() {
+  if [ -n "${QUEUE_HELD:-}" ] && [ "$1" = NOOP ]; then settle BLOCKED "$QUEUE_HELD; $2"; else settle "$@"; fi
+}
+
 cmd_run() {
   local why live room
   DRY=0
@@ -1159,24 +1189,34 @@ cmd_run() {
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
   # A full fleet is working, not blocked: NOOP.
   if [ "$room" -le 0 ]; then settle NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
-  # The queue comes first; board rows are only looked at while nothing in it is runnable.
-  local items; items=$(next_items)
-  if [ -n "$items" ]; then run_queue "$items" "$room"; return; fi
+  # The queue comes first; board rows are only looked at while nothing in it is runnable. An item a
+  # firing finding holds is not runnable, so the pass goes on to the board, whose rows pass the same
+  # holds. On 2026-11-05 held unity items kept every pass off the board for 7h: the rows filed to fix
+  # the hold never started, and 220 rows sat unjudged.
+  local items rc; items=$(next_items)
+  QUEUE_HELD=''
+  if [ -n "$items" ]; then
+    HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
+    [ -n "$QUEUE_HELD" ] || return "$rc"
+  fi
   why=$(gate)
   if [ -n "$why" ]; then
-    settle NOOP "$why, starting nothing"
+    settle_board NOOP "$why, starting nothing"
     [ "$DRY" = 1 ] || return 0
   fi
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
   load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
   fill_now "$room" || { settle FAILED "could not judge the new rows"; return 1; }
-  if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle NOOP "no row qualifies this pass"; return 0; fi
+  if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items)
-  [ -n "$items" ] || { settle NOOP "no row qualifies this pass"; return 0; }
+  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
   start_items "$items" "$room" away
 }
+
+# unjudged_rows -> the open rows no verdict covers yet, day candidates and night rows, once each.
+unjudged_rows() { { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]'; }
 
 # fill_now <room> -- judge the new rows, then promote the picks into the queue, `from: board:`:
 # up to <room> rows a merging session may take, and tier-3 rows (night_picks) tagged
@@ -1184,7 +1224,7 @@ cmd_run() {
 fill_now() {
   local room="$1" picked night active c
   FILLED=0
-  judge "$( { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]')" || return 1
+  judge "$(unjudged_rows)" || return 1
   # Every open row again, judged ones included: a row judged on an earlier pass can be picked now.
   picked=$(picks "$(all_open)" "$room")
   active=$(agent-queue list --json --state active 2>/dev/null |
@@ -1285,7 +1325,7 @@ cmd_fill() {
   open=$(all_open)
   ready=$(picks "$open" 999)
   night=$(night_picks "$(night_rows '')")
-  unj=$( { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]')
+  unj=$(unjudged_rows)
   if [ -n "$json" ]; then
     { [ -z "$ready" ] || jq -c '. + {state: "ready"}' <<<"$ready"
       [ -z "$night" ] || jq -c '. + {state: "night"}' <<<"$night"

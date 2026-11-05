@@ -52,7 +52,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   [ "$(jq -r .decision <<<"$output")" = block ]
 }
 
-@test "a prompt typed into the session answers its asks; ending the session stales them" {
+@test "a prompt typed into the session answers its asks; ending the session leaves the rest pending" {
   local a b
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'merge it?')"
   b="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
@@ -63,11 +63,12 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'answer: in session: merge it'
   run "$AGENT_ASK" show "$b"
   assert_line 'status: pending'
+  # The old SessionEnd call: it no longer closes anything or copies the question to a board.
   run bash "$SETTLE" stale <<<'{"session_id":"sid-2","reason":"prompt_input_exit"}'
   assert_success
   run "$AGENT_ASK" show "$b"
-  assert_line 'status: stale'
-  assert_line 'closed_reason: session ended (prompt_input_exit)'
+  assert_line 'status: pending'
+  assert_not_called 'ptask'
 }
 
 @test "a task notification or a peer message is not the human answering" {
@@ -102,56 +103,36 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: answered'
 }
 
-@test "a shepherd pass ending leaves its asks pending for the next pass" {
-  local a
-  a="$(CLAUDE_CODE_SESSION_ID=sid-3 "$AGENT_ASK" post --project demo 'cancel the sweep?')"
-  FLEET_SHEPHERD_HOLDER=runner run bash "$SETTLE" stale <<<'{"session_id":"sid-3","reason":"other"}'
-  assert_success
-  run "$AGENT_ASK" show "$a"
-  assert_line 'status: pending'
-  assert_not_called "ptask demo --agent add unanswered ask"
-  FLEET_SHEPHERD_HOLDER=runner run bash "$SETTLE" answered <<<'{"session_id":"sid-3","prompt":"yes"}'
-  run "$AGENT_ASK" show "$a"
-  assert_line 'status: answered'
-}
-
-@test "an ask its session left unanswered lands on the agent board as a plain row" {
+@test "an answer no live session takes and nothing resumes becomes one plain board row" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"
-  run bash "$SETTLE" stale <<<'{"session_id":"sid-2","reason":"other"}'
+  run "$AGENT_ASK" answer "$a" now
   assert_success
-  assert_called "ptask demo --agent add unanswered ask $a: ship it?"
-  assert_not_called '#ask'
+  assert_called "ptask demo --agent add ship it? -> answered: now (ask $a)"
+  [ "$(calls | grep -c 'ptask demo --agent add')" -eq 1 ]
+  assert_not_called '#'
 }
 
-@test "an ask that expires lands on the agent board too" {
+@test "an answer a live session takes or a resume consumes files no row, and neither does a cancel" {
+  local live resumed dropped
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'one?')"
+  resumed="$("$AGENT_ASK" post --project demo --resume '/captain resume' 'two?')"
+  dropped="$("$AGENT_ASK" post --project demo 'three?')"
+  "$AGENT_ASK" answer "$live" yes 2>/dev/null
+  AGENT_ASK_NO_RESUME=1 "$AGENT_ASK" answer "$resumed" yes 2>/dev/null
+  "$AGENT_ASK" cancel "$dropped" 'on the human sheet' 2>/dev/null
+  assert_not_called 'ptask'
+}
+
+@test "a board that refuses the row does not fail the answer" {
   local a
-  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
-  sed -i -E 's/^created: .*/created: 2026-01-01T00:00:00+0000/' "$HOME"/.agent/asks/demo/*
-  run "$AGENT_ASK" expire --days 14
-  assert_success
-  assert_called "ptask demo --agent add unanswered ask $a: ship it?"
-}
-
-@test "an answered ask, a cancelled ask and a shipped wave file no row" {
-  local a b c
-  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'one?')"
-  b="$("$AGENT_ASK" post --project demo 'two?')"
-  c="$("$AGENT_ASK" post --project demo 'three?')"
-  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes"}'
-  "$AGENT_ASK" cancel "$b" 'on the human sheet' 2>/dev/null
-  "$AGENT_ASK" stale "$c" 'wave v1 shipped' 2>/dev/null
-  assert_not_called 'unanswered ask'
-}
-
-@test "a board that refuses the row does not stop the ask going stale" {
-  local a
-  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
+  a="$("$AGENT_ASK" post --project demo 'ship it?')"
   printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/notes"
-  run bash "$SETTLE" stale <<<'{"session_id":"sid-2","reason":"other"}'
+  run "$AGENT_ASK" answer "$a" yes
   assert_success
   run "$AGENT_ASK" show "$a"
-  assert_line 'status: stale'
+  assert_line 'status: answered'
 }
 
 @test "the settle hook never fails its caller" {

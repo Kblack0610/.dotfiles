@@ -35,10 +35,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The unit and integ tiers run as two jobs at once: back to back they took 4m47s and
+  # 5m10s on 2026-11-05 and the shared 10-minute cap cut the job off on its last test.
   fast:
-    name: fast tier (unit + contract)
+    name: fast tier (${{ matrix.tier }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [unit, integ]
     steps:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
@@ -50,7 +56,7 @@ jobs:
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
       - name: Fast tier
-        run: make -C tests test-fast
+        run: make -C tests test-${{ matrix.tier }}
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)

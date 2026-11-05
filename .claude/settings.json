@@ -288,17 +288,6 @@
         ]
       }
     ],
-    "SessionEnd": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/ask-settle.sh stale"
-          }
-        ]
-      }
-    ],
     "PostToolUseFailure": [
       {
         "matcher": "Bash",

@@ -73,7 +73,9 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   [ -f "$HOME/.agent/asks/demo/$id.md" ]
   [[ "$stderr" == *"ASK $id (question) - waiting on you"* ]]
   [[ "$stderr" == *"merge it?"* ]]
-  [[ "$stderr" == *"options: [now] [later] (recommended)"* ]]
+  [[ "$stderr" == *"  1  now"* ]]
+  [[ "$stderr" == *"  2  later  (recommended)"* ]]
+  [[ "$stderr" == *"never on 'filed as ask $id'"* ]]
   ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
@@ -118,10 +120,11 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'status: pending'
   run "$AGENT_ASK" show "$done_"
   assert_line 'answer: yes'
+  # Only the human typing settles an ask; there is no session-end close any more.
   run "$AGENT_ASK" settle-session sid-2 stale "session ended (exit)"
+  assert_failure 2
   run "$AGENT_ASK" show "$other"
-  assert_line 'status: stale'
-  assert_line 'closed_reason: session ended (exit)'
+  assert_line 'status: pending'
   run "$AGENT_ASK" settle-session sid-2 bogus
   assert_failure 2
 }
@@ -139,16 +142,98 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 }
 
 @test "a multi-line question is collapsed to one physical line" {
-  local id; id="$("$AGENT_ASK" post --project demo "$(printf 'line one\nline two')")"
+  local id; id="$("$AGENT_ASK" post --project demo "$(printf 'line one\nline two?')")"
   run bash -c '"$AGENT_ASK" show "$1" | grep -c "^question: "' _ "$id"
   assert_output '1'
   run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^question: //p"' _ "$id"
-  assert_output --partial 'line one line two'
+  assert_output --partial 'line one line two?'
+}
+
+@test "post refuses a question that is not one line ending in ?, and says where the detail goes" {
+  run --separate-stderr "$AGENT_ASK" post --project demo 'merge it, or wait'
+  assert_failure 2
+  [[ "$stderr" == *"--context"* ]]
+  run --separate-stderr "$AGENT_ASK" post --project demo "$(printf 'x%.0s' $(seq 1 160))?"
+  assert_failure 2
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  # Negative control: the same post as a short question is filed.
+  run "$AGENT_ASK" post --project demo 'merge it?'
+  assert_success
+}
+
+@test "slug=meaning options keep the slugs alone in options: and the meanings in option_notes:" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=after the release' \
+    --recommend go --context 'the sweep is ready' 'run the sweep?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'options: go|later'
+  assert_line 'option_notes: run it now|after the release'
+  assert_line 'context: the sweep is ready'
+  # Plain options carry no notes.
+  id="$("$AGENT_ASK" post --project demo --options 'a|b' 'which?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'options: a|b'
+  assert_line 'option_notes: '
+}
+
+@test "card shows the question, numbered options with meanings, the recommendation, context and judge" {
+  local id; id="$("$AGENT_ASK" post --project demo --session agent-1 --options 'go=run it now|later=after the release' \
+    --recommend later --context 'the sweep is ready' 'run the sweep?')"
+  printf 'judge: take-recommend\njudge_reason: the policy says wait\n' >> "$HOME/.agent/asks/demo/$id.md"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line --partial "ASK $id (question) - waiting on you  demo . agent-1"
+  assert_line 'run the sweep?'
+  assert_line '  1  go     run it now'
+  assert_line '  2  later  after the release  (recommended)'
+  assert_line 'why: the sweep is ready'
+  assert_line 'judge: would take the recommendation - the policy says wait'
+  # No colour off a terminal: the card lands in a session's tool output as plain text.
+  ! grep -q $'\e' <<< "$output"
+}
+
+@test "card of an old ask with bare options and no notes still lists the options" {
+  mkdir -p "$HOME/.agent/asks/demo"
+  printf 'id: old1\nproject: demo\nkind: question\nstatus: pending\nquestion: a long old paragraph\noptions: x|y\nrecommend: y\n' \
+    > "$HOME/.agent/asks/demo/old1.md"
+  run "$AGENT_ASK" card old1
+  assert_line 'a long old paragraph'
+  assert_line '  1  x'
+  assert_line '  2  y  (recommended)'
+}
+
+@test "pick answers the chosen option only after Enter, and q leaves the ask pending" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'go|later' 'run the sweep?')"
+  # Negative control: a digit then a non-Enter key sends nothing; q closes.
+  run bash -c 'printf "2xq" | "$AGENT_ASK" pick "$1"' _ "$id"
+  assert_success
+  assert_output --partial 'not sent'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # A digit out of range is ignored.
+  run bash -c 'printf "9q" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  run bash -c 'printf "2\n" | "$AGENT_ASK" pick "$1"' _ "$id"
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answer: later'
+}
+
+@test "pick drops a question only after Enter" {
+  local id; id="$("$AGENT_ASK" post --project demo 'run the sweep?')"
+  run bash -c 'printf "dxq" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  run bash -c 'printf "d\n" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: cancelled'
+  assert_line 'closed_reason: dropped by the human'
 }
 
 @test "ids are unique across rapid successive posts" {
   local a b c
-  a="$(post demo one)"; b="$(post demo two)"; c="$(post demo three)"
+  a="$(post demo one?)"; b="$(post demo two?)"; c="$(post demo three?)"
   local n; n="$(printf '%s\n%s\n%s\n' "$a" "$b" "$c" | sort -u | wc -l)"
   assert_equal "$n" '3'
 }
@@ -364,62 +449,45 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
 }
 
-# ── lifecycle: stale ─────────────────────────────────────────────────────────
-# Every "waiting on you" surface reads --pending, so stale is how an ask nobody will answer
-# leaves the human's queue without anyone deciding it.
+# ── lifecycle: one home ──────────────────────────────────────────────────────
+# An ask stays pending until the human answers or drops it, however old and whether or not its
+# session lives. Nothing marks it stale or copies it to a board.
 
 ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
-age_days() { sed -i "s/^created: .*/created: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$1")"; }
 
-@test "stale: leaves --pending and the count, keeps the reason, and can still be answered" {
+@test "stale and expire are gone, and an old ask stays pending" {
   local id; id="$(post demo 'ship it?')"
-  run "$AGENT_ASK" stale "$id" wave v1.0.0 shipped
-  assert_success
-  assert_equal "$("$AGENT_ASK" count demo)" 0
-  run "$AGENT_ASK" list demo --stale
-  assert_output --partial "$id"
-  [ "$(cut -f15 <<<"$output")" = 'wave v1.0.0 shipped' ]
-  [ -n "$(cut -f14 <<<"$output")" ]
-  AGENT_ASK_NO_RESUME=1 run "$AGENT_ASK" answer "$id" yes
-  assert_success
-  grep -q '^status: answered$' "$(ask_file "$id")"
-}
-
-@test "stale refuses an ask that was already decided" {
-  local id; id="$(post demo 'ship it?')"
-  "$AGENT_ASK" cancel "$id" 2>/dev/null
+  sed -i "s/^created: .*/created: 2026-01-01T00:00:00+0000/" "$(ask_file "$id")"
   run "$AGENT_ASK" stale "$id"
   assert_failure
-  grep -q '^status: cancelled$' "$(ask_file "$id")"
+  run "$AGENT_ASK" expire
+  assert_failure
+  grep -q '^status: pending$' "$(ask_file "$id")"
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+}
+
+@test "the card says where the answer goes once the session is gone" {
+  local gone live loose resumed
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
+  resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
+  loose="$(post demo 'headless?')"
+  run "$AGENT_ASK" card "$gone"
+  assert_output --partial 'session gone: the answer becomes a row on the demo board'
+  run "$AGENT_ASK" card "$resumed"
+  assert_output --partial 'session gone: the answer starts `/captain resume`'
+  # Negative controls: a live session, and an ask no session owns.
+  run "$AGENT_ASK" card "$live"
+  refute_output --partial 'session gone'
+  run "$AGENT_ASK" card "$loose"
+  refute_output --partial 'session gone'
 }
 
 @test "cancel records its reason" {
   local id; id="$(post demo 'ship it?')"
   "$AGENT_ASK" cancel "$id" superseded by the v1.19 gate 2>/dev/null
   grep -q '^closed_reason: superseded by the v1.19 gate$' "$(ask_file "$id")"
-}
-
-@test "expire: an ask older than the TTL goes stale and is printed; a younger one stays pending" {
-  local old young
-  old="$(post demo 'old?')"; young="$(post demo 'young?')"
-  age_days "$old" 20; age_days "$young" 3
-  run "$AGENT_ASK" expire
-  assert_success
-  assert_equal "$(cut -f1 <<<"$output")" "$old"
-  grep -q '^status: stale$' "$(ask_file "$old")"
-  grep -q '^status: pending$' "$(ask_file "$young")"
-  grep -q '^closed_reason: no answer in 14d$' "$(ask_file "$old")"
-  # a second pass changes nothing and prints nothing
-  run "$AGENT_ASK" expire
-  assert_output ''
-  # the TTL is a knob
-  AGENT_ASK_STALE_DAYS=2 run "$AGENT_ASK" expire
-  assert_equal "$(cut -f1 <<<"$output")" "$young"
-}
-
-@test "expire --days takes a number" {
-  run "$AGENT_ASK" expire --days soon
-  assert_failure 2
 }
 
 # ── post: where an ask is filed ──────────────────────────────────────────────
