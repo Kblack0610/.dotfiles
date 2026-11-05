@@ -1,5 +1,5 @@
 "use strict";
-// The Watch tab: the hub board's Sessions tab (Prefix o) for the browser. It reads
+// The Watch tab: the sessions part of the hub board's Fleet tab, for the browser. It reads
 // what fleet-state.timer writes, `state.json` and `watch.log`, through /api/watch; nothing is judged here.
 
 const WATCH_HOURS = 24;
