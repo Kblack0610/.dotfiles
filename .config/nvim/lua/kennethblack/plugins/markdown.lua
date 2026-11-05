@@ -18,6 +18,8 @@ return {
       -- tokyonight is configured `transparent = true`, so Normal has no bg to blend
       -- against -- pin the palette's night bg explicitly.
       local HEADING_BASE = "#1a1b26"
+      -- Bullet glyph per nesting level; deeper levels cycle back to the first.
+      local LIST_GLYPHS = { "●", "○", "◆", "◇" }
 
       -- Blend `hex` toward `base` (alpha 1.0 = pure `hex`), returning "#rrggbb".
       local function blend(hex, base, alpha)
@@ -43,6 +45,13 @@ return {
           -- level is legible from the words, not only from the bar behind them.
           vim.api.nvim_set_hl(0, "@markup.heading." .. i .. ".markdown", { fg = fg, bold = true })
         end
+        -- List markers take the heading accents by nesting level (level 1 = H1 blue, 2 = H2
+        -- purple, ...), so a list reads as part of the same system as the bars above it. The
+        -- plugin's own RenderMarkdownBullet links to Normal, i.e. no colour at all.
+        for i = 1, #LIST_GLYPHS do
+          vim.api.nvim_set_hl(0, "RenderMarkdownListBullet" .. i, { fg = HEADING_FG[i] })
+          vim.api.nvim_set_hl(0, "RenderMarkdownListNumber" .. i, { fg = HEADING_FG[i], bold = true })
+        end
       end
       set_heading_colors()
       vim.api.nvim_create_autocmd("ColorScheme", {
@@ -65,7 +74,37 @@ return {
           style = "normal",
           width = "block",
         },
+        -- `-` bullets and `1.` numbers. Checkbox items conceal their bullet and keep the
+        -- `checkbox` look, so none of this reaches a task line.
+        bullet = {
+          icons = LIST_GLYPHS,
+          highlight = function(ctx)
+            local lvl = (ctx.level - 1) % #LIST_GLYPHS + 1
+            local ordered = ctx.value:match "%d" ~= nil
+            return (ordered and "RenderMarkdownListNumber" or "RenderMarkdownListBullet") .. lvl
+          end,
+        },
+        -- `[/]` (in progress, see STATUS_NEXT) is not in the markdown grammar, so without this
+        -- it renders as a list bullet followed by a literal "/" and would take the bullet colour.
+        checkbox = {
+          custom = {
+            in_progress = { raw = "[/]", rendered = "󰦖 ", highlight = "RenderMarkdownTodo" },
+          },
+        },
       }
+
+      -- A wrapped list item hangs under its own text instead of under the marker.
+      -- `breakindent` is already on globally; `list:-1` indents by the length of the
+      -- 'formatlistpat' match. Checkbox items are excluded from the pattern (the `\@!`), so a
+      -- wrapped task keeps the continuation it has always had.
+      vim.api.nvim_create_autocmd("FileType", {
+        group = vim.api.nvim_create_augroup("MarkdownListIndent", {}),
+        pattern = "markdown",
+        callback = function()
+          vim.opt_local.formatlistpat = [[^\s*\%([-*+]\s\+\%(\[.\]\s\)\@!\|\d\+[.)]\s\+\)]]
+          vim.opt_local.breakindentopt = "list:-1"
+        end,
+      })
 
       -- Task priority tags. These are plain `#hashtags` at the END of a task
       -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
@@ -626,8 +665,6 @@ return {
         return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
       end
 
-      -- Apply the on-save sweep to the current buffer (inherit ON: a task dragged into a
-      -- column gets that column's tag), restoring the cursor row.
       -- A buffer is a project SHEET when it declares a `Version:` and holds a `## Wave`;
       -- anything else with a `## Focus` is a daily note. One dispatcher so the keymaps and
       -- the save hook cannot disagree about which sweep a buffer gets.
@@ -650,12 +687,12 @@ return {
       -- so the cursor stays on the task it was on instead of on the old row number. Matched
       -- by exact text first, then by `task_key` (the save sweep rewrites tags). Falls back to
       -- a row-clamp when the line can't be found, or is blank (a blank would match the first
-      -- blank anywhere). No-op when the sweep changes nothing. `inherit` is passed to the
-      -- sweep: OFF for the live cycles, ON for save (see rebuild_focus_body).
-      local function sweep_and_follow(track_lnum, inherit)
+      -- blank anywhere). No-op when the sweep changes nothing. Used by the live cycles, so
+      -- drop-to-tag is OFF (see rebuild_focus_body); the save sweep is file_focus_done.
+      local function sweep_and_follow(track_lnum)
         local target = vim.fn.getline(track_lnum)
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local out, changed = sweep_buffer(lines, inherit or false)
+        local out, changed = sweep_buffer(lines, false)
         if not changed then
           return
         end
@@ -683,9 +720,20 @@ return {
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
       end
 
-      -- The on-save sweep: drop-to-tag ON, cursor follows the task it was on.
+      -- The on-save sweep: drop-to-tag ON, and the window does not move. A finished task
+      -- still goes to Done, but the cursor keeps its row (clamped to the buffer) and the
+      -- view its scroll, instead of following the task down there like the cycles do.
       local function file_focus_done()
-        sweep_and_follow(vim.api.nvim_win_get_cursor(0)[1], true)
+        local out, changed = sweep_buffer(vim.api.nvim_buf_get_lines(0, 0, -1, false), true)
+        if not changed then
+          return
+        end
+        local view = vim.fn.winsaveview()
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, out)
+        local last = vim.api.nvim_buf_line_count(0)
+        view.lnum = math.min(view.lnum, last)
+        view.topline = math.min(view.topline, last)
+        vim.fn.winrestview(view)
       end
 
       -- Date a hand-typed task the day it was written: in a daily note, every open Focus
