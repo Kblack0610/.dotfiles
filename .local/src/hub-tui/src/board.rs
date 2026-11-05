@@ -989,7 +989,7 @@ pub fn page(
             out.extend(b.recent(w));
         }
         Tab::Jobs
-        | Tab::Forecast
+        | Tab::Sessions
         | Tab::Today
         | Tab::History
         | Tab::Fleet

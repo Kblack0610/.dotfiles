@@ -206,6 +206,24 @@ panel_fzf_preview() {
   printf -- '--preview-window=%s,%s%%,%s,wrap\n' "$side" "$pct" "$border"
 }
 
+# panel_fzf_layout [stacked|side] -- sets PANEL_FZF_LAYOUT, the one preview layout every
+# picker uses: the window it opens with, and ctrl-/ cycling to the other one, then hidden,
+# then back. stacked = list on top at full width, preview below; side = list left, preview
+# right. The default is ${PANEL_LAYOUT:-stacked}, so `set-environment -g PANEL_LAYOUT side`
+# in .tmux.conf flips every panel at once. agent-panel (Rust) emits these same strings.
+panel_fzf_layout() {
+  local first="${1:-${PANEL_LAYOUT:-stacked}}" a b
+  local stacked side
+  stacked="$(panel_fzf_preview down 60)"; stacked="${stacked#--preview-window=}"
+  side="$(panel_fzf_preview right 55)"; side="${side#--preview-window=}"
+  case "$first" in
+  stacked) a="$stacked" b="$side" ;;
+  side) a="$side" b="$stacked" ;;
+  *) panel_fail "unknown layout: $first (stacked or side)" || return 1 ;;
+  esac
+  PANEL_FZF_LAYOUT=(--preview-window="$a" "--bind=ctrl-/:change-preview-window($b|hidden|$a)")
+}
+
 # ── tmux ─────────────────────────────────────────────────────────────────────
 panel_in_tmux() { [ -n "${TMUX:-}" ]; }
 

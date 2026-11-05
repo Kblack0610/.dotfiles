@@ -29,8 +29,9 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
        hub actions --since WHEN [--json]
-  TAB     home|queue|jobs|ci|machines|forecast|today|history|fleet|projects, or a retired
-          name (overview, waiting, asks, board) that lands on its new tab
+  TAB     home|queue|jobs|ci|machines|sessions|today|history|fleet|projects, or a retired
+          name (overview, waiting, asks, board, forecast, watch, shepherd) that lands on its
+          new tab
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
@@ -145,12 +146,19 @@ fn print_once(tab: Option<Tab>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Fleet | Tab::Today | Tab::History)) = tab {
+    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Today | Tab::History)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
-        if t == Tab::Fleet {
+        if t == Tab::Sessions {
+            let b = a.boards.as_ref().expect("just read");
+            let state = b.watch.state["sessions"].as_array().cloned();
+            let f = forecast::Forecast::read();
+            a.controls.read(state, Some(forecast::schedule(&f)));
+            a.forecast = Some(f);
             a.controls.set(hub_core::session_actions::gather(
                 &hub_core::session_actions::System,
             ));
+        }
+        if t == Tab::Fleet {
             a.fleet = Some(hub_core::fleet::collect());
         }
         a.tab = t;
@@ -178,14 +186,6 @@ fn print_once(tab: Option<Tab>) -> i32 {
         a.tasks = Some(hub_core::tasks::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
-        for l in a.page_lines(w) {
-            let _ = writeln!(out, "{}", plain(&l));
-        }
-        return 0;
-    }
-    if tab == Some(Tab::Forecast) {
-        a.forecast = Some(forecast::Forecast::read());
-        a.tab = Tab::Forecast;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -292,12 +292,12 @@ fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     app.read_jobs();
     app.read_boards();
     app.read_queue();
-    if app.tab == Tab::Forecast {
+    if app.tab == Tab::Sessions {
         app.read_forecast();
+        app.read_sessions();
     }
     if app.tab == Tab::Fleet {
         app.read_fleet();
-        app.read_sessions();
     }
     let mut term = ratatui::init();
     let res = (|| {

@@ -155,6 +155,7 @@ cmd_pick() {
 
   panel_fzf_opts
   panel_fzf_table
+  panel_fzf_layout
 
   local picked repo number url
   picked="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" \
@@ -163,7 +164,7 @@ cmd_pick() {
     --header=$'enter=open in browser | ctrl-d=details | ctrl-r=reload\n' \
     --bind="ctrl-r:reload($(printf '%q' "$SELF") --list)" \
     --bind="ctrl-d:execute($(printf '%q' "$SELF") --show {1} {2} | less -R)" \
-    "$(panel_fzf_preview right 45)" \
+    "${PANEL_FZF_LAYOUT[@]}" \
     --preview="$(printf '%q' "$SELF") --show {1} {2}")"
 
   [ -n "$picked" ] || return 0

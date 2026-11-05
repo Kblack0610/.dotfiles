@@ -1,6 +1,7 @@
-//! The Forecast tab: `fleet-bench forecast`, `vs` and `flow` on one page. The all-done-by band
-//! and the drain, a phase timeline per session, the burn-up of scope against done, and the
-//! frozen baseline against what happened since. Every number comes from fleet-bench; this page
+//! `fleet-bench forecast`, `vs` and `flow` on the Sessions tab (the retired Forecast tab's
+//! content). The all-done-by band and the drain, the burn-up of scope against done and the frozen
+//! baseline against what happened since sit at the bottom, folded; a session's phase timeline is
+//! its detail pane. Every number comes from fleet-bench; this page
 //! only lays them out, with the words its text output uses.
 
 use std::process::{Command, Stdio};
@@ -106,14 +107,20 @@ fn at(v: &Value, k: &str, now: i64) -> String {
     i(v, k).map_or("-".into(), |t| clock(t, now))
 }
 
-/// The whole tab, top to bottom.
+/// The schedule rows: each session's phases, finish p50 and lateness.
+pub fn schedule(f: &Forecast) -> Vec<Value> {
+    match &f.forecast {
+        Ok(fc) => fc["schedule"].as_array().cloned().unwrap_or_default(),
+        Err(_) => vec![],
+    }
+}
+
+/// The band, the drain, the burn-up and the baseline, top to bottom.
 pub fn page(f: &Forecast, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![];
     match &f.forecast {
         Ok(fc) if fc.is_object() => {
             out.extend(header(fc, p, now, f.at, w));
-            out.push(Line::raw(""));
-            out.extend(timeline(fc, p, now, w));
         }
         Ok(_) => out.push(Line::styled(
             "No forecast: fleet-bench forecast --json gave no object",
@@ -285,78 +292,51 @@ fn axis(t0: i64, t1: i64, cols: usize, now: i64) -> String {
     a.into_iter().collect()
 }
 
-fn timeline(fc: &Value, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let rows = fc["schedule"].as_array().map_or(&[][..], |a| a.as_slice());
+/// One session's schedule row as a timeline from now to its slow finish: the axis, its bar
+/// (= and # one phase each, to its p50; - out to slow; ! due now), then each phase's times.
+pub fn timeline(s: &Value, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let t0 = now;
-    let t1 = i(fc, "last_slow").filter(|t| *t > t0).unwrap_or(t0 + 3600);
-    let mut out = vec![clip_line(
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "TIMELINE  {} -> {} (last slow)",
-                    clock(t0, now),
-                    clock(t1, now)
-                ),
-                p.head(),
-            ),
-            Span::styled(
-                "   = and # one phase each, to its p50; - out to slow; ! due now",
-                p.dim(),
-            ),
-        ]),
-        w,
-    )];
-    if rows.is_empty() {
-        out.push(Line::styled("  no session has a plan to schedule", p.dim()));
-        return out;
-    }
-    let names: Vec<String> = rows
-        .iter()
-        .map(|s| short(s["target"].as_str().unwrap_or("-")))
-        .collect();
-    let nw = names
-        .iter()
-        .map(|s| unicode_width::UnicodeWidthStr::width(s.as_str()))
-        .max()
-        .unwrap_or(0)
-        .max("SESSION".len());
+    let t1 = i(s, "finish_slow").filter(|t| *t > t0).unwrap_or(t0 + 3600);
     // After the bar: "  12/12  11-04 06:03  late 22h45m  " then the next phase's name.
     let fixed = 2 + 5 + 2 + 11 + 2;
-    let avail = w.saturating_sub(nw + 2 + fixed);
-    let cols = (avail * 2 / 3).max(10);
-    out.push(clip_line(
+    let cols = (w.saturating_sub(4 + fixed) * 2 / 3).max(10);
+    let mut out = vec![clip_line(
         Line::from(vec![
-            Span::styled(format!("{:<nw$}  ", "SESSION"), p.head()),
+            Span::raw("  "),
             Span::styled(axis(t0, t1, cols, now), p.dim()),
             Span::styled("  DONE   FINISH P50   NEXT", p.head()),
         ]),
         w,
-    ));
-    for (s, name) in rows.iter().zip(names) {
-        let late = i(s, "late_min");
-        let mut spans = vec![Span::styled(
-            format!("{name:<nw$}  "),
-            if late.is_some() {
-                p.bad()
-            } else {
-                Style::new()
-            },
-        )];
-        spans.extend(bar_spans(&bar(s, t0, t1, cols), p));
-        spans.push(Span::raw(format!(
-            "  {:>5}  {:<11}  ",
-            format!("{}/{}", n(s, "phases_done"), n(s, "phases_total")),
-            at(s, "finish_p50", now)
-        )));
-        if let Some(m) = late {
-            spans.push(Span::styled(
-                format!("late {}  ", dur(m as f64 * 60.0)),
-                p.bad(),
-            ));
-        }
-        let next = s["phases"][0]["name"].as_str().unwrap_or("-").to_string();
-        spans.push(Span::styled(next, p.dim()));
-        out.push(clip_line(Line::from(spans), w));
+    )];
+    let mut spans = vec![Span::raw("  ")];
+    spans.extend(bar_spans(&bar(s, t0, t1, cols), p));
+    spans.push(Span::raw(format!(
+        "  {:>5}  {:<11}  ",
+        format!("{}/{}", n(s, "phases_done"), n(s, "phases_total")),
+        at(s, "finish_p50", now)
+    )));
+    if let Some(m) = i(s, "late_min") {
+        spans.push(Span::styled(
+            format!("late {}  ", dur(m as f64 * 60.0)),
+            p.bad(),
+        ));
+    }
+    let next = s["phases"][0]["name"].as_str().unwrap_or("-").to_string();
+    spans.push(Span::styled(next, p.dim()));
+    out.push(clip_line(Line::from(spans), w));
+    for ph in s["phases"].as_array().into_iter().flatten() {
+        out.push(clip_line(
+            Line::styled(
+                format!(
+                    "    {}  p50 {}  slow {}",
+                    ph["name"].as_str().unwrap_or("-"),
+                    at(ph, "p50", now),
+                    at(ph, "slow", now)
+                ),
+                p.dim(),
+            ),
+            w,
+        ));
     }
     out
 }
@@ -624,7 +604,7 @@ pub mod tests {
     }
 
     #[test]
-    fn the_page_shows_the_band_the_timeline_the_burnup_and_the_baseline() {
+    fn the_page_shows_the_band_the_burnup_and_the_baseline() {
         let f = fixture();
         let now = f.at;
         let out = text(&page(&f, Palette { no_color: true }, now, 180));
@@ -642,7 +622,10 @@ pub mod tests {
             "no queue line when the queue is null"
         );
         assert!(out.contains("unscheduled  3"), "{out}");
-        assert!(out.contains("late 5h35m"), "{out}");
+        assert!(
+            !out.contains("late 5h35m"),
+            "a session's lateness is its own row's"
+        );
         assert!(out.contains("BURN-UP 24h") && out.contains("open 86 -> 97"));
         assert!(out.contains("ticked 5 of 14 expected"), "{out}");
         assert!(out.contains("1 finished, 3 behind, 1 gone"), "{out}");
@@ -729,6 +712,25 @@ pub mod tests {
             "{out}"
         );
         assert!(out.contains("no samples yet"), "{out}");
+    }
+
+    #[test]
+    fn a_sessions_timeline_has_its_bar_lateness_and_each_phase() {
+        let f = fixture();
+        let row = schedule(&f)
+            .into_iter()
+            .find(|s| s["late_min"].is_i64())
+            .unwrap();
+        let out = text(&timeline(&row, Palette { no_color: true }, f.at, 160));
+        assert!(out.contains("DONE   FINISH P50   NEXT"), "{out}");
+        assert!(out.contains("late "), "{out}");
+        let first = row["phases"][0]["name"].as_str().unwrap();
+        assert!(out.contains(&format!("    {first}  p50 ")), "{out}");
+        for w in [40, 80] {
+            for l in timeline(&row, Palette { no_color: true }, f.at, w) {
+                assert!(unicode_width::UnicodeWidthStr::width(plain(&l).as_str()) <= w);
+            }
+        }
     }
 
     #[test]

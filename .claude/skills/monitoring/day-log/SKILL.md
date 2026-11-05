@@ -22,7 +22,7 @@ What a day shipped, from the day-log record: every PR merged in any repo grouped
 - The user asks for the week or what moved: `day-log week`, a table of 7 finished days against the 7 before (`--line` is the one-liner fleet-bench shows, `--json` the data, `--date D` a week ending on D).
 - The user wants the day as a page to look at or share.
 
-Not for what sessions are doing right now (`shepherd status`, the hub Fleet tab) and not for how the scorecard is computed (`fleet-bench`).
+Not for what sessions are doing right now (`shepherd status`, the hub Sessions tab) and not for how the scorecard is computed (`fleet-bench`).
 
 ## Steps
 

@@ -155,7 +155,7 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --tab fleet",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --tab sessions",
         "tooltip": true
     },
     "custom/fleet": {

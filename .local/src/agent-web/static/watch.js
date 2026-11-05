@@ -1,12 +1,14 @@
 "use strict";
-// The Watch tab: the sessions part of the hub board's Fleet tab, for the browser. It reads
-// what fleet-state.timer writes, `state.json` and `watch.log`, through /api/watch; nothing is judged here.
+// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each row's bucket
+// and card fields, the folded facts card above an open transcript, and the overview shown while
+// no session is open. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
+// through /api/watch; nothing is judged here.
 
 const WATCH_HOURS = 24;
 // Fields that move on almost every tick and drown the stage changes; the feed hides lines that
 // change only these until "all changes" is on.
 const NOISY = ["sync", "tree"];
-const wst = { data: null, filter: null, allChanges: false, ended: false };
+const wst = { data: null, filter: null, allChanges: false, ended: false, open: {} };
 
 // watch.log targets carry no tmux server ("dotfiles:2"); state.json's do ("hub/dotfiles:2").
 const shortTarget = (t) => String(t).split("/").pop();
@@ -15,7 +17,7 @@ const logTime = (ts) => new Date(ts.replace(" ", "T")).getTime();
 
 const refreshWatch = coalesce(async () => {
   wst.data = await api("/api/watch");
-  if (st.tab === "watch") renderWatch();
+  if (st.tab === "sessions") { renderList(); renderFacts(); renderOverview(); }
 });
 
 function sessionsOf() {
@@ -98,7 +100,7 @@ function card(s, maxCtx, now) {
   const blockers = (s.blockers || []).length ? `<details><summary>${s.blockers.length} reason(s)</summary><ul>${s.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></details>` : "";
   return `
     <div class="wcard" data-sid="${esc(s.session_id || "")}" data-t="${esc(s.target)}" style="--c:${bucketColor(s.bucket)}">
-      <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span><span class="open">Open session</span></div>
+      <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span></div>
       ${s.topic ? `<div class="wtask">${esc(s.topic)}</div>` : ""}
       <div class="wm">${esc(s.branch || "-")}, ${pr}${git ? ", " + git : ""}</div>
       <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
@@ -131,53 +133,95 @@ function feed(now) {
   }).join("");
 }
 
-function renderWatch() {
-  const el = $("watch");
-  if (!wst.data) { el.innerHTML = '<div class="empty">Loading...</div>'; return; }
-  const state = wst.data.state;
-  if (!state) { el.innerHTML = '<div class="empty">No fleet state yet: fleet-state.timer has not written ~/.local/state/fleet/state.json.</div>'; return; }
-  const now = Date.now();
-  const sessions = sessionsOf();
-  const shown = sessions.filter((s) => !wst.filter || s.bucket === wst.filter);
-  const maxCtx = Math.max(200e3, ...sessions.map((s) => s.context_tokens || 0));
-  const { t0, lanes } = buildLanes(now);
-  const keep = lanes.filter((l) => wst.ended || !l.gone);
-  const ended = lanes.length - lanes.filter((l) => !l.gone).length;
-  const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
+// The order of the list's groups: the shepherd first, then the buckets, then sessions fleet-state
+// has no row for, which read as PARKED as they do on the hub's Sessions tab.
+const LIST_ORDER = ["SHEPHERD", ...BUCKETS, "PARKED"];
 
-  let html = `<div class="bhead"><span>fleet ${sessions.length} session(s)</span><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
-  html += tiles(sessions, state);
-  html += `<h2 class="sec">Last ${WATCH_HOURS}h ${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></h2>`;
-  html += `<div class="panel">${swimlanes(keep.map((l) => ({
-    label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs,
-  })), t0, now, bucketColor)}</div>`;
-  for (const b of BUCKETS) {
-    const list = shown.filter((s) => s.bucket === b);
-    if (!list.length) continue;
-    html += `<h2 class="sec">${b} <span class="muted">${list.length}</span></h2><div class="wgrid">${list.map((s) => card(s, maxCtx, now)).join("")}</div>`;
-  }
-  html += `<h2 class="sec">Changes <label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></h2><div class="panel feed">${feed(now)}</div>`;
-  paint(el, html);
+// One row per session: every live or parked session here with its fleet-state row (matched by
+// session id, then target), then the fleet-state rows with no session on this machine. Grouped
+// in LIST_ORDER; a stable sort keeps each group in the server's order.
+function sessionRows() {
+  const states = sessionsOf(), used = new Set();
+  const shep = shst.data && shst.data.target;
+  const rows = st.agents.map((a) => {
+    const s = states.find((x) => (x.session_id && x.session_id === a.session) || x.target === a.target);
+    if (s) used.add(s);
+    return { a, s, group: shep && a.target === shep ? "SHEPHERD" : s ? s.bucket : "PARKED" };
+  });
+  for (const s of states) if (!used.has(s)) rows.push({ a: null, s, group: s.bucket });
+  const rank = (g) => { const i = LIST_ORDER.indexOf(g); return i < 0 ? LIST_ORDER.indexOf("UNCLEAR") : i; };
+  return rows.sort((x, y) => rank(x.group) - rank(y.group));
 }
 
-$("watch").addEventListener("click", (e) => {
-  const tile = e.target.closest("[data-bucket]");
-  if (tile) { wst.filter = wst.filter === tile.dataset.bucket ? null : tile.dataset.bucket; renderWatch(); return; }
-  const c = e.target.closest(".wcard");
-  if (c && e.target.closest(".open")) {
-    const a = st.agents.find((x) => (c.dataset.sid && x.session === c.dataset.sid) || x.target === c.dataset.t);
-    if (a) { setTab("sessions"); select(a); }
+const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_tokens || 0));
+
+// The open session's fleet-state card, folded to one line above its transcript.
+function renderFacts() {
+  const el = $("facts");
+  const r = st.sel && sessionRows().find((x) => x.a && x.a.target === st.sel.target);
+  const s = r && r.s;
+  el.hidden = !s;
+  if (!s) return;
+  const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
+  const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
+  const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
+  paint(el, `<details data-k="facts"${wst.open.facts ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
+}
+
+// The detail pane while no session is open: the bucket tiles (they filter the list), then the
+// last day's swimlanes, the change feed and the shepherd's pass, due lines and rundowns, each
+// folded.
+function renderOverview() {
+  if (st.sel || st.tab !== "sessions") return;
+  const el = $("scroll");
+  if (!wst.data) { el.innerHTML = '<div class="empty">Loading the overview.</div>'; return; }
+  const state = wst.data.state;
+  const now = Date.now();
+  let html = "";
+  if (!state) html += '<div class="empty">No fleet state yet: fleet-state.timer has not written ~/.local/state/fleet/state.json.</div>';
+  else {
+    const sessions = sessionsOf();
+    const { t0, lanes } = buildLanes(now);
+    const keep = lanes.filter((l) => wst.ended || !l.gone);
+    const ended = lanes.length - lanes.filter((l) => !l.gone).length;
+    const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
+    html += `<div class="bhead"><span>fleet ${sessions.length} session(s)</span><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
+    html += tiles(sessions, state);
+    html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
+      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
+    html += fold("changes", "Changes", `<div class="ovbar"><label class="tog"><input type="checkbox" data-all${wst.allChanges ? " checked" : ""}> sync and tree too</label></div><div class="panel feed">${feed(now)}</div>`);
   }
+  html += shepherdOverview();
+  paint(el, html, wst.open);
+}
+
+// A folded overview section; the fold is remembered across re-renders by its key.
+const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open[k] ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
+
+$("scroll").addEventListener("click", (e) => {
+  if (st.sel) return;
+  const tile = e.target.closest("[data-bucket]");
+  if (tile) { wst.filter = wst.filter === tile.dataset.bucket ? null : tile.dataset.bucket; renderList(); renderOverview(); }
 });
-$("watch").addEventListener("change", (e) => {
+$("scroll").addEventListener("change", (e) => {
+  if (st.sel) return;
   if (e.target.matches("[data-ended]")) wst.ended = e.target.checked;
   if (e.target.matches("[data-all]")) wst.allChanges = e.target.checked;
-  renderWatch();
+  renderOverview();
 });
+// A fold the reader opens stays open through the next push (paint reads it before a repaint;
+// this catches the ones toggled between repaints).
+for (const id of ["scroll", "facts", "list"]) {
+  $(id).addEventListener("toggle", (e) => { const k = e.target.dataset && e.target.dataset.k; if (k) wst.open[k] = e.target.open; }, true);
+}
 
-// fleet-state writes every minute; only the open tab reads it.
-const watchFeed = pushed("watch", ["watch"], refreshWatch);
-TABS.watch = {
-  show() { renderWatch(); watchFeed.show(!wst.data); },
-  onEvent: watchFeed.onEvent,
+// fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
+const watchFeed = pushed("sessions", ["watch"], refreshWatch);
+const shepFeed = pushed("sessions", ["shepherd", "sessions"], () => refreshShepherd()); // shepherd.js loads after this file
+TABS.sessions = {
+  show() {
+    if (!st.sel) overview(false);
+    watchFeed.show(!wst.data); shepFeed.show(!shst.data);
+  },
+  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); },
 };
