@@ -498,6 +498,9 @@ struct AgentOut {
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
+    /// When a `waiting` agent started waiting, unix seconds: its transcript's last write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waiting_since: Option<u64>,
 }
 
 async fn collect() -> Vec<chooser::Agent> {
@@ -551,6 +554,14 @@ async fn agents() -> Json<Vec<AgentOut>> {
                 ask: a.ask,
                 question: match (a.status.as_str(), &a.jsonl) {
                     ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
+                    _ => None,
+                },
+                waiting_since: match (a.status.as_str(), &a.jsonl) {
+                    ("waiting", Some(p)) => std::fs::metadata(p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()),
                     _ => None,
                 },
                 target: a.target,
@@ -810,6 +821,13 @@ struct Ask {
     session: String,
     /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
     judge: String,
+    /// When it was filed, unix seconds.
+    created: Option<i64>,
+    /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
+    agent: String,
+    /// The question's first sentence, and the question after it (hub-core `text::headline`).
+    title: String,
+    body: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
@@ -819,19 +837,27 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            (f.len() >= 7 && !f[0].is_empty()).then(|| Ask {
-                id: f[0].into(),
-                project: f[1].into(),
-                kind: f[4].into(),
-                question: f[5].into(),
-                options: f[6]
-                    .split('|')
-                    .filter(|o| !o.is_empty())
-                    .map(String::from)
-                    .collect(),
-                recommend: f.get(10).copied().unwrap_or("").into(),
-                session: f.get(15).copied().unwrap_or("").into(),
-                judge: f.get(16).copied().unwrap_or("").into(),
+            let col = |i: usize| f.get(i).copied().unwrap_or("");
+            (f.len() >= 7 && !f[0].is_empty()).then(|| {
+                let (title, body) = hub_core::text::headline(f[5]);
+                Ask {
+                    id: f[0].into(),
+                    project: f[1].into(),
+                    kind: f[4].into(),
+                    question: f[5].into(),
+                    options: f[6]
+                        .split('|')
+                        .filter(|o| !o.is_empty())
+                        .map(String::from)
+                        .collect(),
+                    recommend: col(10).into(),
+                    session: col(15).into(),
+                    judge: col(16).into(),
+                    created: hub_core::fleet::ts(col(11)),
+                    agent: col(12).into(),
+                    title,
+                    body,
+                }
             })
         })
         .collect()
@@ -1180,6 +1206,17 @@ mod tests {
         let judged =
             "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
         assert_eq!(parse_asks(judged)[0].judge, "answer:b");
+        let full = "F1\tbnb\t\tpending\tquestion\tShip it? CI is green.\ta|b\t\t\t\ta\t2026-11-05T05:51:30-0800\tshepherd\t\t\tsid\t\t\n";
+        let a = &parse_asks(full)[0];
+        assert_eq!(
+            (a.title.as_str(), a.body.as_str()),
+            ("Ship it?", "CI is green.")
+        );
+        assert_eq!(
+            (a.created, a.agent.as_str()),
+            (Some(1_793_886_690), "shepherd")
+        );
+        assert_eq!(asks[0].created, None);
     }
 
     #[test]

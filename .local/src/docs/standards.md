@@ -1,6 +1,6 @@
 # Agent runtime standards
 
-The invariants the agentctl fleet holds, one per line with its why and the test that fails when it breaks. The global rules link here; the shape is in `~/.config/agentctl/ARCHITECTURE.md` and the state words in `fleet-states.md` beside this file.
+The invariants the agentctl fleet holds, one per line with its why and the test that fails when it breaks. The global rules link here; the shape is in `~/.config/agentctl/ARCHITECTURE.md` and the state words in `fleet-states.md` beside this file. Dashboards (the hub TUI, agent-web, waybar chips, Grafana) follow `dashboards.md` beside this file.
 
 - A headless model run goes through `agentctl-run`, never `claude -p` directly. Why: only `agentctl-run` applies the role (what it may do) and the route (which model and endpoint), so a direct call silently inherits whatever the calling shell has. Test: `tests/unit/runner_contract.bats` "nothing in the repo launches a headless claude except agentctl-run".
 - A runner ends every pass with one `last-outcome` word from `WORKED NOOP BLOCKED FAILED STALLED`, written by `proof_report` or `proof_verdict` in `agent-proof.sh`. Why: `fleet-liveness` and the KPI table read that word, and a free-text verdict was invisible to both. Test: `tests/unit/agent_proof.bats` "proof_report records a word outside the vocabulary as FAILED, naming it".

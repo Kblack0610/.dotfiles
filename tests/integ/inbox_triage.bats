@@ -190,9 +190,11 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --partial 'chore(build): drop the old cache #low -> scratch (human) sc-1'
-  assert_output --partial 'stays for the model - left in outbox: no project named'
-  assert_output --partial 'triage: 1 of 1 kept as filed (7d)'
+  assert_output --regexp '[0-9]{2}:[0-9]{2} filed sc-1 in \[\[[^]]*\|scratch\]\] \(human\): chore\(build\): drop the old cache'
+  assert_output --partial '  - from: outbox'
+  assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
+  assert_output --partial '  - why: no project named'
+  assert_output --partial 'triage kept 1 of 1 as filed (7d)'
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
 }
 
