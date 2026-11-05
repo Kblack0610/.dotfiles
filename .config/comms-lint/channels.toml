@@ -73,7 +73,9 @@ source = { kind = "files", glob = "~/.agent/shepherd/rundowns/*.md" }
 [channel.status]
 prose = true
 max_item = 200
-require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section']]
+# A section is a heading or a "Done:" label, so a one-line lab status passes in the same shape.
+require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
+source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
 
 # A pull request body.
 [channel.pr-body]

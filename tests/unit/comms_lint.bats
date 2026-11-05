@@ -112,6 +112,43 @@ EOF
   assert_success
 }
 
+@test "a wind-down note and a one-line lab status pass status; the old wrap-up shape does not" {
+  cat > "$SANDBOX/note.md" <<'EOF'
+# Session wrap-up - 2026-11-05
+
+**Project:** dotfiles
+
+The rundown and the shipped page now read in the status shape.
+
+## Done
+- The rundown reads as Done, Doing, Next and Needs you (dotfiles#946)
+
+## Doing
+- Nothing.
+
+## Next
+- Score PR bodies at land.
+
+## Needs you
+- Nothing.
+EOF
+  run "$SUBJECT" --channel status "$SANDBOX/note.md"
+  assert_success
+  run "$SUBJECT" --channel status - <<< "The status shape is in. Done: rundown (#946). Doing: nothing. Next: PR bodies. Needs you: nothing."
+  assert_success
+  run "$SUBJECT" --channel status - <<'EOF'
+# Session wrap-up - 2026-11-04
+
+## What happened
+- Did the rundown.
+
+## Next step
+- PR bodies.
+EOF
+  assert_failure 1
+  assert_output --partial "missing: Done section"
+}
+
 @test "a missing prose checker is a usage error, never a silent pass" {
   export COMMS_PROSE_CHECK="$SANDBOX/nope.py"
   run "$SUBJECT" --channel status - <<< $'Done\n- x\nNext\n- y'
