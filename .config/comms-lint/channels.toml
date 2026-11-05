@@ -30,7 +30,7 @@ patterns = [
 
 [report]
 buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
-buzz_per_day_target = 15
+# The buzzes-a-day target is buzzes_per_day_max in ~/.config/agentctl/kpi-thresholds.
 
 # A push to the phone. The lock screen shows the title and about two lines.
 [channel.page]

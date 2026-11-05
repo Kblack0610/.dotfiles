@@ -183,6 +183,37 @@ EOF
   assert_line --partial "Comms, last 1d: 3 messages, 67% meet the standard."
 }
 
+@test "snapshot stores the 7d and 28d reports; line and kpi read the newest, and kpi refuses a stale one" {
+  export COMMS_SNAPSHOT_DIR="$SANDBOX/comms" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"   # no PR bodies reach the sandbox
+  run "$SUBJECT" kpi --json
+  assert_failure 1
+  assert_output --partial "no comms snapshot"
+  now=$(date -Iseconds)
+  mkdir -p "$HOME/.local/state/agent-notify"
+  printf '%s\thigh\tSentinel: x\t[x] RECOVERED - exit 0\n' "$now" >> "$HOME/.local/state/agent-notify/log"
+  printf '%s\thigh\task\tAnswer the trader question.\n' "$now" >> "$HOME/.local/state/agent-notify/log"
+  echo buzzes_per_day_max=15 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" snapshot --date 2026-11-05
+  assert_success
+  assert_output --partial "comms 2026-11-05: 7d 50% of 2 messages meet the standard, phone buzzed 0.3 times a day (most 15); lowest: page 50%."
+  run "$SUBJECT" kpi --json
+  assert_success
+  assert_output '{"buzzes_per_day": {"7d": 0.3, "28d": 0.1}, "comms_pass_pct": {"7d": 50, "28d": 50}, "date": "2026-11-05"}'
+  # an older day's file never wins over the newest
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['date']='2026-11-01'; json.dump(d, open(sys.argv[2],'w'))" \
+    "$COMMS_SNAPSHOT_DIR/2026-11-05.json" "$COMMS_SNAPSHOT_DIR/2026-11-01.json"
+  run "$SUBJECT" line
+  assert_output --partial "comms 2026-11-05:"
+  python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['made_epoch']-=3*86400; json.dump(d, open(p,'w'))" \
+    "$COMMS_SNAPSHOT_DIR/2026-11-05.json"
+  run "$SUBJECT" kpi --json
+  assert_failure 1
+  assert_output --partial "72h old"
+  run "$SUBJECT" line
+  assert_success
+}
+
 @test "report scores merged PR bodies from gh, and says so when gh cannot answer" {
   mkdir -p "$SANDBOX/bin"
   cat > "$SANDBOX/bin/gh" <<'EOF'
