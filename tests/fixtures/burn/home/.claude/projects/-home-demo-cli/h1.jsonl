@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-01-01T03:00:00.000Z","cwd":"/home/demo","entrypoint":"sdk-cli","message":{"content":"nightly sweep"}}
+{"type":"assistant","timestamp":"2026-01-01T03:00:01.000Z","message":{"id":"h1","model":"claude-opus-5-5","content":[{"type":"text","text":"swept"}],"usage":{"input_tokens":7,"output_tokens":30,"cache_creation_input_tokens":4000,"cache_read_input_tokens":0}}}
