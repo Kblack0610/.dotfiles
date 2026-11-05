@@ -204,3 +204,13 @@ fi
 
 # metavr
 [ -d "$HOME/.metavr/bin" ] && export PATH="$HOME/.metavr/bin:$PATH"
+
+# Keep this last. A shell that reads this file without being interactive is an agent's Bash tool
+# taking its snapshot. Aliases there break `g() { ...; }`, a nomatch glob kills the command and
+# `echo ==` is a lookup, and agents write bash. grep stays for its --exclude-dir, which keeps
+# .git out of grep -r.
+if [[ ! -o interactive ]]; then
+  for a in ${(k)aliases:#grep}; do unalias "$a"; done
+  unset a
+  setopt no_nomatch no_equals
+fi
