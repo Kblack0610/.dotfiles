@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""Check a message against its channel, or report on every message the fleet sent.
+
+  comms-lint --channel <name> [--priority P] [--title T] <file|->
+  comms-lint report [--since 7d] [--channel C] [--json]
+  comms-lint channels
+
+Channels and their numbers: ~/.config/comms-lint/channels.toml. The rules behind them:
+the comms-standard skill. Exit: 0 clean, 1 findings, 2 usage error.
+"""
+import argparse
+import collections
+import datetime as dt
+import glob
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import tomllib
+import unicodedata
+
+CONFIG = os.path.expanduser(os.environ.get("COMMS_CHANNELS", "~/.config/comms-lint/channels.toml"))
+PROSE_CHECK = os.path.expanduser(
+    os.environ.get("COMMS_PROSE_CHECK", "~/.claude/skills/de-ai-writing/scripts/check.py"))
+QUIET_OK = {"low", "normal", "default", "min"}
+KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
+        "prose", "stop_at", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
+        "max_title"}
+
+
+def die(msg):
+    print(f"comms-lint: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def load_config():
+    try:
+        with open(CONFIG, "rb") as f:
+            cfg = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        die(f"cannot read {CONFIG}: {e}")
+    defaults = cfg.get("defaults", {})
+    channels = {name: {**defaults, **ch} for name, ch in cfg.get("channel", {}).items()}
+    for name, ch in channels.items():
+        if unknown := set(ch) - KEYS:
+            die(f"channel {name}: unknown key(s) {', '.join(sorted(unknown))}")
+    ids = [re.compile(p) for p in cfg.get("ids", {}).get("patterns", [])]
+    return channels, ids, cfg.get("report", {})
+
+
+def is_emoji(ch):
+    o = ord(ch)
+    return (0x1F000 <= o <= 0x1FAFF or 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF
+            or unicodedata.category(ch) == "So")
+
+
+def body_lines(text, stop_at):
+    """Lines that count: no frontmatter, no fenced code, nothing from stop_at on."""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end is not None:
+            lines = lines[end + 1:]
+    out, fenced = [], False
+    stop = re.compile(stop_at) if stop_at else None
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if stop and stop.search(line):
+            break
+        out.append(line)
+    return out
+
+
+def lead_of(line, item_re):
+    text = item_re.sub("", line, count=1).strip() if item_re.match(line) else line.strip()
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0], text
+
+
+def opens_with_id(text, ids):
+    return next((p.pattern for p in ids if p.search(text)), None)
+
+
+def prose_findings(text):
+    if not os.path.isfile(PROSE_CHECK):
+        raise FileNotFoundError(PROSE_CHECK)
+    r = subprocess.run([sys.executable, PROSE_CHECK, "-"], input=text, capture_output=True, text=True)
+    if r.returncode != 1:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"\s+(line \d+|overall): (.+)", line)
+        if m and not m.group(2).startswith(("SUSPECT WORD", "RHYTHM")):
+            out.append(("prose", f"{m.group(1)}: {m.group(2)}"))
+    return out
+
+
+def lint(text, ch, ids, priority=None, title=None):
+    """Findings for one message, as (code, detail) pairs."""
+    f = []
+    item_re = re.compile(ch["item"])
+    lines = body_lines(text, ch.get("stop_at"))
+    scoped = "\n".join(lines)
+    content = [l for l in lines if l.strip() and not l.lstrip().startswith("#")]
+
+    bad = [c for c in scoped if ord(c) > 127]
+    emoji = [c for c in bad if is_emoji(c)]
+    other = [c for c in bad if not is_emoji(c) and ord(c) not in (0xFE0F, 0x200D)]
+    if ch["ascii"] and other:
+        f.append(("non-ascii", " ".join(sorted({f"U+{ord(c):04X}" for c in other}))))
+    if emoji and not ch["emoji"]:
+        f.append(("emoji", f"{len(emoji)} emoji where the channel allows none"))
+    elif emoji and ch["max_emoji"] and len(emoji) > ch["max_emoji"]:
+        f.append(("emoji", f"{len(emoji)} emoji, budget {ch['max_emoji']}"))
+
+    total = len(scoped.strip())
+    if ch["max_chars"] and total > ch["max_chars"]:
+        f.append(("too-long", f"{total} chars, budget {ch['max_chars']}"))
+    if ch["max_lines"] and len(content) > ch["max_lines"]:
+        f.append(("too-many-lines", f"{len(content)} lines, budget {ch['max_lines']}"))
+    if ch["max_line"]:
+        for i, l in enumerate(content, 1):
+            if len(l) > ch["max_line"]:
+                f.append(("line-too-long", f"line {i}: {len(l)} chars, budget {ch['max_line']}"))
+
+    if content:
+        lead, _ = lead_of(content[0], item_re)
+        if ch["max_lead"] and len(lead) > ch["max_lead"]:
+            f.append(("lead-too-long", f"{len(lead)} chars before the first sentence ends, budget {ch['max_lead']}"))
+        if ch["lead_ids"] and (p := opens_with_id(lead, ids)):
+            f.append(("lead-id", f"opens with an id: {lead[:40]!r}"))
+    else:
+        f.append(("empty", "nothing to read"))
+
+    items = [l for l in content if item_re.match(l)]
+    if ch["max_items"] and len(items) > ch["max_items"]:
+        f.append(("items", f"{len(items)} items, budget {ch['max_items']}"))
+    for l in items:
+        _, text_ = lead_of(l, item_re)
+        if ch["max_item"] and len(text_) > ch["max_item"]:
+            f.append(("item-too-long", f"{len(text_)} chars, budget {ch['max_item']}: {text_[:50]!r}"))
+        if ch["lead_ids"] and opens_with_id(text_, ids):
+            f.append(("item-id", f"opens with an id: {text_[:40]!r}"))
+
+    for pat, name in ch.get("require", []):
+        if not re.search(pat, scoped):
+            f.append(("missing", name))
+    for pat, why in ch.get("forbid", []):
+        if re.search(pat, scoped):
+            f.append(("forbid", why))
+    if priority and priority not in QUIET_OK and any(re.search(p, scoped) for p in ch.get("quiet", [])):
+        f.append(("quiet-buzzed", f"sent at {priority}; this kind of message goes at normal or lower"))
+    if title is not None and ch.get("max_title") and len(title) > ch["max_title"]:
+        f.append(("title-too-long", f"{len(title)} chars, budget {ch['max_title']}"))
+    if ch["prose"]:
+        f.extend(prose_findings(scoped))
+    return f
+
+
+def parse_since(s):
+    m = re.fullmatch(r"(\d+)([hd])", s)
+    if not m:
+        die(f"--since wants Nd or Nh, got {s!r}")
+    n = int(m.group(1))
+    return dt.timedelta(hours=n) if m.group(2) == "h" else dt.timedelta(days=n)
+
+
+def read_source(src, since):
+    # The report lints what each source already recorded, so nothing logs twice.
+    """Yield (when, text, meta) for every message in a channel's source since `since`."""
+    kind = src.get("kind")
+    if kind == "ledger":
+        path = os.path.expanduser(src["path"])
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        with fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 4:
+                    continue
+                try:
+                    when = dt.datetime.fromisoformat(parts[0])
+                except ValueError:
+                    continue
+                if when.tzinfo is None:
+                    when = when.astimezone()
+                if when < since:
+                    continue
+                title = parts[2]
+                yield when, parts[3].replace("\\n", "\n"), {
+                    "priority": parts[1], "title": title, "sender": title.split(":")[0].strip() or "?"}
+        return
+    for path in sorted(glob.glob(os.path.expanduser(src["glob"]))):
+        when = dt.datetime.fromtimestamp(os.path.getmtime(path)).astimezone()
+        if when < since:
+            continue
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if kind == "section":
+            text = section(text, src["heading"])
+            if text is None:
+                continue
+        yield when, text, {"path": path}
+
+
+def section(text, heading):
+    level = len(heading) - len(heading.lstrip("#"))
+    out, inside = [], False
+    for line in text.splitlines():
+        if line.strip() == heading:
+            inside = True
+            continue
+        if inside and re.match(rf"^#{{1,{level}}}\s", line):
+            break
+        if inside:
+            out.append(line)
+    return "\n".join(out).strip() if inside else None
+
+
+def short(code, detail):
+    if code in ("forbid", "missing"):
+        return f"{code}: {detail.split(':')[0]}"
+    if code == "prose":
+        return "prose: " + re.sub(r"^(line \d+|overall): ", "", detail).split(":")[0]
+    return code
+
+
+def report(args, channels, ids, rcfg):
+    since = dt.datetime.now().astimezone() - parse_since(args.since)
+    days = max(parse_since(args.since).total_seconds() / 86400, 1 / 24)
+    buzz = set(rcfg.get("buzz", ["high", "urgent"]))
+    out = {"since": since.isoformat(timespec="minutes"), "window_days": days, "channels": {}}
+    prose_missing = False
+    for name, ch in channels.items():
+        if args.channel and name != args.channel:
+            continue
+        src = ch.get("source")
+        if not src:
+            continue
+        n = passed = 0
+        codes, lengths, worst = collections.Counter(), [], []
+        buzzed, buzz_by, quiet_buzz = 0, collections.Counter(), 0
+        senders = collections.Counter()
+        for when, text, meta in read_source(src, since):
+            pri = meta.get("priority")
+            try:
+                f = lint(text, ch, ids, priority=pri)
+            except FileNotFoundError:
+                prose_missing = True
+                f = lint(text, {**ch, "prose": False}, ids, priority=pri)
+            n += 1
+            lengths.append(len(text))
+            if not f:
+                passed += 1
+            for code, detail in f:
+                codes[short(code, detail)] += 1
+            if f:
+                worst.append((len(f), when.isoformat(timespec="minutes"),
+                              meta.get("title") or meta.get("path", ""), text[:160]))
+            if pri is not None:
+                senders[meta["sender"]] += 1
+                if pri in buzz:
+                    buzzed += 1
+                    buzz_by[meta["sender"]] += 1
+                    if any(c == "quiet-buzzed" for c, _ in f):
+                        quiet_buzz += 1
+        if not n:
+            out["channels"][name] = {"messages": 0}
+            continue
+        q = statistics.quantiles(lengths, n=10) if len(lengths) > 1 else [lengths[0]] * 9
+        row = {"messages": n, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
+               "p90_chars": int(q[8]), "findings": dict(codes.most_common(8)),
+               "worst": [{"findings": w[0], "when": w[1], "from": w[2], "text": w[3]}
+                         for w in sorted(worst, key=lambda w: -w[0])[:3]]}
+        if src.get("kind") == "ledger":
+            row.update({"buzzed": buzzed, "buzzed_per_day": round(buzzed / days, 1),
+                        "buzz_target_per_day": rcfg.get("buzz_per_day_target"),
+                        "quiet_that_buzzed": quiet_buzz,
+                        "buzzed_by_sender_per_day": {k: round(v / days, 1) for k, v in buzz_by.most_common(8)}})
+        out["channels"][name] = row
+    if prose_missing:
+        out["warning"] = f"prose check skipped: {PROSE_CHECK} not found"
+    if args.json:
+        json.dump(out, sys.stdout, indent=2)
+        print()
+        return 0
+    print_report(out, args.since)
+    return 0
+
+
+def print_report(out, since):
+    rows = {k: v for k, v in out["channels"].items() if v.get("messages")}
+    total = sum(v["messages"] for v in rows.values())
+    passed = sum(round(v["messages"] * v["pass_pct"] / 100) for v in rows.values())
+    head = f"Comms, last {since}: {total} messages, {round(100 * passed / total) if total else 0}% meet the standard."
+    page = rows.get("page")
+    if page:
+        head += (f" Phone buzzed {page['buzzed_per_day']} times a day"
+                 f" (target under {page['buzz_target_per_day']}).")
+    print(head)
+    if out.get("warning"):
+        print(f"Warning: {out['warning']}")
+    for name, v in rows.items():
+        print(f"\n{name}: {v['messages']} messages, {v['pass_pct']}% pass, "
+              f"median {v['p50_chars']} chars, p90 {v['p90_chars']}")
+        for code, c in v["findings"].items():
+            print(f"  {c:5d}  {code}")
+        if "buzzed" in v:
+            by = ", ".join(f"{k} {n}" for k, n in v["buzzed_by_sender_per_day"].items())
+            print(f"  buzzes a day by sender: {by}")
+            print(f"  buzzed for a recovery or all-clear: {v['quiet_that_buzzed']}")
+        for w in v["worst"]:
+            print(f"  worst ({w['findings']} findings, {w['when']}, {w['from']}): {w['text'][:110]!r}")
+    empty = [k for k, v in out["channels"].items() if not v.get("messages")]
+    if empty:
+        print(f"\nNo messages in the window: {', '.join(empty)}")
+
+
+def main():
+    argv = sys.argv[1:]
+    channels, ids, rcfg = load_config()
+    if argv[:1] == ["channels"]:
+        for name, ch in channels.items():
+            src = ch.get("source", {})
+            print(f"{name:14s} {src.get('path') or src.get('glob') or '(no source)'}")
+        return 0
+    if argv[:1] == ["report"]:
+        ap = argparse.ArgumentParser(prog="comms-lint report")
+        ap.add_argument("--since", default="7d")
+        ap.add_argument("--channel")
+        ap.add_argument("--json", action="store_true")
+        args = ap.parse_args(argv[1:])
+        if args.channel and args.channel not in channels:
+            die(f"unknown channel {args.channel!r}")
+        return report(args, channels, ids, rcfg)
+    ap = argparse.ArgumentParser(prog="comms-lint", usage=__doc__.split("\n\n")[1])
+    ap.add_argument("--channel", required=True)
+    ap.add_argument("--priority")
+    ap.add_argument("--title")
+    ap.add_argument("path")
+    args = ap.parse_args(argv)
+    if args.channel not in channels:
+        die(f"unknown channel {args.channel!r} (see: comms-lint channels)")
+    text = sys.stdin.read() if args.path == "-" else open(args.path, encoding="utf-8").read()
+    if not text.strip():
+        die("empty input")
+    try:
+        f = lint(text, channels[args.channel], ids, priority=args.priority, title=args.title)
+    except FileNotFoundError as e:
+        die(f"prose checker not found: {e} (set COMMS_PROSE_CHECK)")
+    for code, detail in f:
+        print(f"  {code}: {detail}")
+    if f:
+        print(f"\n{len(f)} finding(s) for channel {args.channel}.")
+    return 1 if f else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

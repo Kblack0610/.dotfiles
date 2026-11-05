@@ -16,7 +16,7 @@ The rule underneath it: a stop belongs in state that every session can read. On 
 
 ## Scope and triggers
 
-How one agent session talks to another on this machine without adding noise: which channel to use (SendMessage to a peer, agent-hold for a fleet-wide pause, agent-ask or agent-notify for the human, the agent board for status), when a message is worth sending and when it is not, how to word it, and how to treat a message a peer sends you. Use before sending any cross-session message, when about to touch something another session owns, when a shared resource (CPU, ports, a checkout) is contended, when told to "message the other agents", "tell everyone to stop", "hold all X runs", or when a message from another session arrives. Not for watching the machine and deciding to stop the fleet - that is fleet-pace. Not for prose to humans - that is work-comms.
+How one agent session talks to another on this machine without adding noise: which channel to use (SendMessage to a peer, agent-hold for a fleet-wide pause, agent-ask or agent-notify for the human, the agent board for status), when a message is worth sending and when it is not, how to word it, and how to treat a message a peer sends you. Use before sending any cross-session message, when about to touch something another session owns, when a shared resource (CPU, ports, a checkout) is contended, when told to "message the other agents", "tell everyone to stop", "hold all X runs", or when a message from another session arrives. Not for watching the machine and deciding to stop the fleet - that is fleet-pace. Not for prose to humans - that is comms-standard (work-comms for the work voice).
 
 ## Pick the channel
 
@@ -88,4 +88,4 @@ If a hold shows up in your session preflight, you are under it from turn 1 even 
 
 - `fleet-pace`: watches the machine, decides when to hold and when to send GO; `fleet-lead` runs the coordinator role end to end.
 - `sentinel`: the `fleet-thermal` watch that trips fleet-pace.
-- `work-comms`: messages to humans.
+- `comms-standard`: anything the fleet writes for the human (pages, briefing, status); `work-comms`: the work voice for a colleague.
