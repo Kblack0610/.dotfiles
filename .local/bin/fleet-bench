@@ -1056,7 +1056,9 @@ cmd_asks() {
 LEDGER_GATED="runners timers launches_direct"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
-# claude outside agentctl-run. Comments, echo lines, docs and tests are not call sites.
+# claude outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
+# Anthropic /v1/messages URL) with no registered agent at all. Comments, echo lines, docs and
+# tests are not call sites.
 # git grep honours .gitignore, so 1.8G of build output under .local/src is never read;
 # it works on a plain directory too. runner_contract.bats calls this through
 # `ledger --launches`, so there is one scan.
@@ -1065,17 +1067,20 @@ headless_launches() {
   for d in "$@"; do
     [ -d "$d" ] || continue
     (cd "$d" && git grep --no-index --exclude-standard -nIiE \
-      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")' -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
+      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
+      -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )'
 }
 
 # ledger_counts -> key=value lines
 ledger_counts() {
-  local c n_conf=0 n_on=0 n_bad=0 t rows src sd="" name
+  local c n_conf=0 n_on=0 n_bad=0 n_call=0 t rows src sd="" name
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
+    # A KIND=call agent is a model call its caller starts, not a runner: no unit, no timer.
+    grep -qE '^KIND=["'"'"']?call' "$c" && { n_call=$((n_call + 1)); continue; }
     n_conf=$((n_conf + 1))
     grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
     n_on=$((n_on + 1))
@@ -1088,6 +1093,7 @@ ledger_counts() {
   echo "runners=$n_conf"
   echo "runners_on=$n_on"
   echo "runners_bad=$n_bad"
+  echo "agents_call=$n_call"
   echo "timers=$(find "$LEDGER_TIMER_DIR" -maxdepth 1 -name 'agentctl-*.timer' 2>/dev/null | wc -l)"
   IFS=: read -ra src <<<"$LEDGER_SRC"
   echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"

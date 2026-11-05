@@ -22,6 +22,7 @@
 # Usage:
 #   ROLE=build HARNESS=claude agentctl-run -p "<prompt>" [--max-turns N ...]
 #   agentctl-run --role observe --harness claude -p "<prompt>"
+#   agentctl-run --agent ask-judge -p "<input>"   # a registered agent: its conf sets role, model, prompt
 #   agentctl-run --explain build            # print the resolved invocation, run nothing
 #
 # Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
@@ -34,6 +35,8 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/role.sh"
 . "$SELF_DIR/lib/scrub.sh"
 . "$SELF_DIR/lib/route.sh"
+. "$SELF_DIR/lib/agent.sh"
+. "$SELF_DIR/lib/calls.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
 # MODEL is the conf key (it arrives as environment on a supervised runner);
@@ -41,18 +44,41 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
+agent="" cli_role="" cli_route="" cli_class=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --role)    role="${2:?--role needs a value}"; shift 2 ;;
-    --route)      AGENTCTL_ROUTE="${2:?--route needs a value}"; shift 2 ;;
-    --data-class) AGENTCTL_DATA_CLASS="${2:?--data-class needs a value}"; shift 2 ;;
+    --agent)   agent="${2:?--agent needs a value}"; shift 2 ;;
+    --role)    cli_role="${2:?--role needs a value}"; shift 2 ;;
+    --route)      cli_route="${2:?--route needs a value}"; shift 2 ;;
+    --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) harness="${2:?--harness needs a value}"; shift 2 ;;
-    --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { role="$2"; shift; }; shift ;;
+    --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
 done
 export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
+
+# --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE and
+# DATA_CLASS replace whatever a parent runner's conf left in the environment; only this
+# call's own flags (--role, --route, --data-class) still win over it.
+if [ -n "$agent" ]; then
+  agent_load "$agent"
+  role="$AGENT_ROLE"
+  AGENTCTL_MODEL="$AGENT_MODEL"
+  ROUTE="$AGENT_ROUTE"
+  DATA_CLASS="$AGENT_DATA_CLASS"
+  AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
+  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA
+  agent_otel_runner "$agent"
+  if [ -z "$AGENTCTL_EXPLAIN" ]; then
+    agent_prompt_args "${args[@]+"${args[@]}"}"
+    args=("${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}")
+  fi
+fi
+[ -n "$cli_role" ]  && role="$cli_role"
+[ -n "$cli_route" ] && AGENTCTL_ROUTE="$cli_route"
+[ -n "$cli_class" ] && AGENTCTL_DATA_CLASS="$cli_class"
 
 # Every caller of this script is a runner on a timer with no human attached — that
 # is the premise the whole role contract rests on (see harnesses/claude.sh, which
@@ -135,6 +161,12 @@ _model="$(role_run_model)"
 [ -n "$_model" ] && export ANTHROPIC_MODEL="$_model"
 
 if [ -n "$AGENTCTL_EXPLAIN" ]; then
+  if [ -n "$agent" ]; then
+    printf 'agent:       %s (%s)\n' "$agent" "${AGENT_KIND:-?}"
+    printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}}"
+    printf 'live rules:  %s\n' "${AGENT_LIVE_RULES:-(none)}"
+    printf 'call log:    %s\n' "$AGENTCTL_CALLS"
+  fi
   printf 'role:        %s\n'  "$ROLE_NAME"
   printf 'description: %s\n'  "$ROLE_DESC"
   printf 'write:       %s\n'  "$ROLE_WRITE"
