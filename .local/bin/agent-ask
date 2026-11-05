@@ -5,6 +5,7 @@
 #   agent-ask post [opts] "question?"   create a pending ask; print its id
 #     --options a|b|c   the fixed answer vocabulary; `a=what a means|b=...` adds each meaning
 #     --recommend b     which of them YOU recommend; shown marked on the card
+#     --why "reason"    why you recommend it, one sentence; shown under that option
 #     --context "why"   the background the human needs; the question itself stays one line
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
@@ -21,7 +22,8 @@
 #   agent-ask count [project|--all]     number of pending asks (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
-#   agent-ask recommend <id> <option>   set/replace the recommended option
+#   agent-ask recommend <id> <option> [why...]
+#                                       set/replace the recommended option and its why
 #   agent-ask settle-session <sid> answered [text...]
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
@@ -203,6 +205,9 @@ render_ask() {
       n=$((i + 1)); note="${notes[i]:-}"
       [ "${opts[i]}" = "$rec" ] && note="${note:+$note  }${g}(recommended)${x}"
       printf '  %s%d%s  %-*s  %s\n' "$b" "$n" "$x" "$w" "${opts[i]}" "$note" | sed 's/ *$//'
+      if [ "${opts[i]}" = "$rec" ] && [ -n "${ASK[recommend_why]:-}" ]; then
+        printf '%s' "$g"; wrap "     " "because: ${ASK[recommend_why]}"; printf '%s' "$x"
+      fi
     done
   fi
   ctx="${ASK[context]:-}"
@@ -228,7 +233,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" resume="" wait=0 question="" context=""
+        options="" recommend="" why="" resume="" wait=0 question="" context=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -239,6 +244,7 @@ cmd_post() {
       --kind)    kind="$2"; shift 2 ;;
       --options) options="$2"; shift 2 ;;
       --recommend) recommend="$2"; shift 2 ;;
+      --why)     why="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
@@ -250,7 +256,7 @@ cmd_post() {
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
   if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
-    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\" and what each option does in --options 'slug=meaning|slug=meaning'." >&2
+    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
     return 2
   fi
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
@@ -317,6 +323,8 @@ cmd_post() {
       *) echo "agent-ask post: --recommend '$recommend' is not one of '$options'" >&2; return 2 ;;
     esac
   fi
+  [ -z "$why" ] || [ -n "$recommend" ] ||
+    { echo "agent-ask post: --why says why the --recommend option is the one; give --recommend too" >&2; return 2; }
 
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
@@ -346,6 +354,7 @@ cmd_post() {
     # recommendation the human reads only if they open the ask. As a field the picker can
     # mark it, the way any decent approval UI does.
     printf 'recommend: %s\n'  "$(oneline "$recommend")"
+    printf 'recommend_why: %s\n' "$(oneline "$why")"
     printf 'answer: \n'
     printf 'answered_at: \n'
     printf 'answered_by: \n'
@@ -543,6 +552,7 @@ cmd_card() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
   session_gone_note "$f"
+  render_story "$f"
 }
 
 # session_alive <claude session id>: a Claude process holding that session is running. Reads
@@ -583,6 +593,91 @@ session_gone_note() {
   else
     echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
   fi
+}
+
+# render_story <file>: what a panel's card adds under render_ask, each block only with data:
+# where the ask came from, the request that started the session, the agent's own words in
+# the turn that posted it, and the session's nightly telemetry. post leaves it out of the
+# asking pane's copy: that session already holds all of it.
+render_story() {
+  local f="$1" d="" b="" x="" sid src tele
+  load_ask "$f"
+  if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
+    b=$'\e[1m' d=$'\e[2m' x=$'\e[0m'
+  fi
+  local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
+  [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
+  local CARD_WIDTH="$cols"
+  sid="${ASK[claude_session]:-}"
+  src=""
+  [ -n "${ASK[task]:-}" ] && src="queue item ${ASK[task]}"
+  [ -n "${ASK[agent]:-}" ] && src+="${src:+, }runner ${ASK[agent]}"
+  [ -n "${ASK[session]:-}" ] && src+="${src:+, }tmux ${ASK[session]}"
+  if [ -n "$sid" ]; then
+    src+="${src:+, }claude ${sid:0:8}"
+    if session_alive "$sid"; then src+=" (live)"; else src+=" (ended)"; fi
+  fi
+  story_block from "$src"
+  [ -n "$sid" ] || return 0
+  # The registry's title names the session. The transcript gives the request (its first typed
+  # prompt), the prompt the asking turn answered, and that turn's own words.
+  local title="" first="" prompt="" words="" t said
+  title="$(grep -hF "\"session_id\":\"$sid\"" "$HOME"/.agent/sessions/*/sessions.jsonl 2>/dev/null |
+    tail -1 | jq -r '.title // ""' 2>/dev/null)"
+  t="$(ls "$HOME"/.claude*/projects/*/"$sid".jsonl 2>/dev/null | head -1)"
+  if [ -n "$t" ] && command -v agent-panel >/dev/null 2>&1 &&
+     said="$(agent-panel said "$t" --around "${ASK[id]:-}" 2>/dev/null)"; then
+    first="$(jq -r '.first // ""' <<<"$said")"
+    prompt="$(jq -r '.prompt // ""' <<<"$said")"
+    words="$(jq -r '.said // ""' <<<"$said")"
+  fi
+  [ "$prompt" = "$first" ] && prompt=""
+  local req="$title"; [ -n "$first" ] && req="${title:+$title: }$(story_cap "$first")"
+  story_block request "$req"
+  story_block "asked after" "$(story_cap "$prompt")"
+  story_block "in its words" "$words"
+  tele="$(story_telemetry "$sid")"
+  story_block telemetry "$tele"
+  return 0
+}
+
+# A prompt can be pages long; the card keeps its start, and the session holds the rest.
+story_cap() { if [ "${#1}" -gt 700 ]; then printf '%s...' "${1:0:700}"; else printf '%s' "$1"; fi; }
+
+# story_block <label> <text>: a dim label line, then the text wrapped two spaces in.
+story_block() {
+  [ -n "$2" ] || return 0
+  printf '\n%s%s%s\n' "$b$d" "$1" "$x"
+  wrap "  " "$2"
+}
+
+# story_telemetry <sid>: one line from the nightly outcome row (agentctl-session-outcomes), and
+# where its friction ranks among this week's sessions with any. Friction's terms are its own
+# "why"; the rest is size. Nothing when the session has no row yet.
+story_telemetry() {
+  command -v agentctl-session-outcomes >/dev/null 2>&1 || return 0
+  local row rank
+  # The week's ranking holds the row of any session with friction; one with none has no rank,
+  # so its row comes from its card.
+  rank="$(agentctl-session-outcomes worst --days 7 -n 100000 --json 2>/dev/null |
+    jq -cs --arg s "$1" '(map(.session_id) | index($s)) as $i
+      | if $i == null then empty else {rank: "#\($i + 1) of \(length) this week", row: .[$i]} end')"
+  if [ -n "$rank" ]; then
+    row="$(jq -c .row <<<"$rank")"; rank="$(jq -r .rank <<<"$rank")"
+  else
+    row="$(agentctl-session-outcomes card "$1" --json 2>/dev/null)" && [ -n "$row" ] || return 0
+  fi
+  jq -r --arg rank "$rank" --arg seen "$(age_of "$(jq -r '.observed // ""' <<<"$row")")" '
+    def dur: if . == null then empty elif . >= 3600 then "\(. / 3600 | floor)h\(. % 3600 / 60 | floor)m"
+             else "\(. / 60 | floor)m" end;
+    [ "friction \(.friction // 0)" + (if $rank != "" then " (\($rank))" else "" end)
+        + (if (.why // "") != "" then ": \(.why)" else "" end),
+      (if .cost_usd then (.cost_usd * 100 | round) as $c
+         | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)" else empty end),
+      (.duration_s | dur),
+      "\(.prs_merged // 0) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end),
+      (if $seen != "" then "seen \($seen) ago" else empty end)
+    ] | join(" . ")' <<<"$row"
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
@@ -645,7 +740,8 @@ close_ask() {
 cmd_cancel() { close_ask cancelled "$@"; }
 cmd_recommend() {
   local id="${1:-}" opt="${2:-}"
-  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option> [why...]" >&2; return 2; }
+  shift 2
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local options; options="$(field "$f" options)"
@@ -654,7 +750,9 @@ cmd_recommend() {
     *) echo "agent-ask recommend: '$opt' is not one of '$options'" >&2; return 2 ;;
   esac
   set_field "$f" recommend "$opt"
-  echo "recommend $id: $opt" >&2
+  # A why belongs to the option it argued for, so a new recommendation replaces or clears it.
+  set_field "$f" recommend_why "$(oneline "$*")"
+  echo "recommend $id: $opt${*:+ ($*)}" >&2
 }
 
 # --- the producer half of the loop -----------------------------------------
@@ -733,6 +831,7 @@ task: $(field "$f" task)
 question: $(field "$f" question)
 options: $(field "$f" options)
 recommend: $(field "$f" recommend)
+recommend_why: $(field "$f" recommend_why)
 
 ## Answer
 

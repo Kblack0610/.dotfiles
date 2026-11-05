@@ -27,7 +27,8 @@ const KPI_LABELS: [(&str, &str); 2] =
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
     pub level: Level,
-    /// The section: red, error, needs, agents, queue or ci. A section's first row is its head line.
+    /// The section: red, error, needs, agents, queue or ci. A section's first row is its head line,
+    /// `Title: value`, and the widget bolds what is before the colon.
     pub head: &'static str,
     pub text: String,
 }
@@ -100,7 +101,7 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     let mut out = vec![row(
         Level::Warn,
         "needs",
-        format!("Needs you {}: {split}", waiting.len()),
+        format!("Needs you: {} ({split})", waiting.len()),
     )];
 
     let mut by: BTreeMap<&str, usize> = BTreeMap::new();
@@ -193,7 +194,7 @@ fn agents(i: &Inputs) -> Vec<Row> {
         return vec![];
     };
     let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
-    let mut head = format!("Agents {} working", n("WORKING"));
+    let mut head = format!("Agents: {} working", n("WORKING"));
     let rest = counted(&[
         (n("STALLED"), "stalled", "stalled"),
         (n("UNCLEAR"), "unclear", "unclear"),
@@ -249,7 +250,7 @@ fn agents(i: &Inputs) -> Vec<Row> {
 
 fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
     let count = home.numbers.iter().find(|n| n.label == "queue")?;
-    let mut text = format!("Queue {}", count.value);
+    let mut text = format!("Queue: {}", count.value);
     let sitting = q
         .and_then(|q| q.stats.as_ref())
         .and_then(|s| s.sitting.as_ref());
@@ -262,7 +263,7 @@ fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
     Some(row(Level::Ok, "queue", text))
 }
 
-/// "CI 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
+/// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
     let v = infra.cc_values();
     let sum = |name: &str| -> f64 {
@@ -275,7 +276,7 @@ fn ci(infra: &Infra) -> Option<Row> {
     if slots == 0.0 {
         return None;
     }
-    let mut said = vec![format!("CI {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
+    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
     let queued = sum("cc:pool_waiting");
     if queued > 0.0 {
         said.push(format!("{queued:.0} queued"));
@@ -535,7 +536,7 @@ mod tests {
             .count();
         let needs = texts(&p, "needs");
         assert_eq!(shown, 4);
-        assert_eq!(needs[0], "Needs you 4: 2 asks, 1 session, 1 queue item");
+        assert_eq!(needs[0], "Needs you: 4 (2 asks, 1 session, 1 queue item)");
         assert!(needs[1].starts_with("dotfiles 1"), "{}", needs[1]);
     }
 
@@ -551,7 +552,7 @@ mod tests {
         assert_eq!(
             agents,
             [
-                "Agents 8 working, 1 stalled, 3 unclear".to_string(),
+                "Agents: 8 working, 1 stalled, 3 unclear".to_string(),
                 "waited on you 193h in 24h".to_string(),
                 format!("2 past ETA, worst 2h, next done {next}"),
                 "over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
@@ -571,7 +572,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI 6/29 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
         );
     }
 
@@ -586,10 +587,10 @@ mod tests {
             p.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
             [
                 "Needs you: nothing",
-                "Agents 2 working",
+                "Agents: 2 working",
                 "85 merged today",
-                "Queue 1 running, 0 up next",
-                "CI 6/29 busy, 80% passed",
+                "Queue: 1 running, 0 up next",
+                "CI: 6/29 busy, 80% passed",
             ]
         );
     }
@@ -612,7 +613,7 @@ mod tests {
         assert_eq!(texts(&p, "error"), ["Prometheus: cannot read https://p"]);
         assert!(texts(&p, "ci").is_empty());
         let agents = texts(&p, "agents");
-        assert_eq!(agents[0], "Agents 8 working, 1 stalled, 3 unclear");
+        assert_eq!(agents[0], "Agents: 8 working, 1 stalled, 3 unclear");
         assert_eq!(agents.last().unwrap(), "85 merged today");
     }
 
