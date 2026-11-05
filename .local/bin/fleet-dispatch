@@ -3,6 +3,7 @@
 #
 #   fleet-dispatch run [--dry-run]   one pass: start up to DISPATCH_PER_PASS queue items, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
+#   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
@@ -146,7 +147,7 @@ def rank_fields($today; $pprio):
   | . + {why: ([(if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
                  elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
-                (.worker // empty),
+                (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
@@ -346,7 +347,11 @@ cmd_candidates() {
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
-          read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text") || continue
+          if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
+            # suggest shows the agent rows no worker takes too, after the ones one does.
+            [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
+            rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
+          fi
           line=$(printf '%s' "$text" | sig)
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t'"$line" <<<"$judged" && continue
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t*' <<<"$judged" && continue
@@ -404,6 +409,31 @@ Copy project, lane and key exactly as given."
   [ -n "$verdicts" ] || { say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1; }
   mkdir -p "$DIR"
   printf '%s\n' "$verdicts" >> "$VERDICTS"
+}
+
+# suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
+# of each project from dev up with a repo, in every notes profile, in RANK_JQ order. Each
+# carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
+# `verdict`, the latest under this policy for this text, or `unjudged`; and `held`, whether an active
+# queue item holds its area. Display only: it never judges, claims or queues.
+cmd_suggest() {
+  local profs cands
+  profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[].profile] | unique | join(" ")' 2>/dev/null)
+  [ -n "$profs" ] || profs=$DISPATCH_PROFILES
+  cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
+  [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
+  jq -sc --arg sig "$(policy_sig)" --slurpfile v <(latest_verdicts) \
+    --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ"'
+    ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
+      | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase),
+             verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
+                       elif $d.policy != $sig or $d.line != $c.line then "unjudged" else $d.verdict end)}
+      | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null)})
+    | rank | .[]' <<<"$cands" |
+    if [ "${1:-}" = --json ]; then cat; else
+      jq -r '"\(if .auto then "auto" else "man " end)  \(.verdict | .[0:8] | . + " " * (8 - length))  \(.project) \(.key)\(if .held then " (area held)" else "" end)  [\(.why)]"'
+    fi
 }
 
 # latest verdict per row, as JSON lines
@@ -1603,6 +1633,7 @@ main() {
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
       return "$rc" ;;
     candidates) cmd_candidates ;;
+    suggest) shift; cmd_suggest "$@" ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;
