@@ -45,6 +45,7 @@ Current post-checks, in order:
 - `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
 - `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), a board write, or a Focus item in progress.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
+- `88-ask-filed.sh`: when an attended session ends its turn asking the human something and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. A fired request stays as `.fired`, which `fleet-dispatch restore` reads to leave that conversation closed, and the next prompt in that session clears it. It also deletes any request or `.fired` older than a day.
 
 ## Session evaluation (not Stop-time)
