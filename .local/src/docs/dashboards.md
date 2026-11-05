@@ -1,0 +1,67 @@
+# Dashboard standards
+
+How we build and change a dashboard: the `hub` TUI (`../hub-tui`), agent-web (`../agent-web`), the waybar chips, Grafana boards in home-config, and any new one in any repo. Read this before adding a tab, a section, a tile or a new dashboard. The agent runtime's own invariants are in `standards.md` beside this file.
+
+## Rules
+
+Each rule has its why. A rule a test checks names the test.
+
+1. One tab per question the human asks, never one tab per data source. Each tab title answers a question ("what needs me?", "where is each project?"). A new data source joins the tab whose question it answers. Why: tabs grouped by source left the same session on four tabs and the reader assembling the answer in their head.
+2. Each fact has one home. Anywhere else it shows only as a count or badge that links to that home. Why: pending asks had six homes on agent-web and three in the TUI, and they disagreed whenever one lagged.
+3. Summary first, details on demand. The summary goes at the top. Detail opens when a row is opened. Logs and audit trails sit behind a click or in a folded section, and trends live in Grafana (`o` on a TUI tab, a link on the web). Why: a 1000-row ledger at top level buries the three rows that need action.
+4. Exceptions first. Red and amber sections start open; a green section collapses to one line ("CI ok: 8/10 slots, 0 failed in 24h"). Why: the glance is for what is wrong; green detail is noise until it is asked for.
+5. Green, amber and red mean ok, needs attention and broken, and nothing else uses those hues. Categorical series take the chart palette in agent-web `static/charts.js`. Anything past its slots folds into "Other"; a hue is never generated. Why: a red that means "category 3" teaches the reader to ignore red.
+6. Every number is counted; no model writes a tile or a card. A percent, ETA or status comes from a deterministic function over files, CLIs or metrics, and the card says what it counted. Why: the agent-written "where we are" note did not help the human (2026-11-05), and a model score cannot be checked.
+7. A card answers four things in its first line: what it is, its state and since when, what it needs from the human, and when it will be done. Everything else is folded under it. Why: slug-headed cards with a comma-separated meta line were unreadable (agent-web #920).
+8. Both hub surfaces show the same tabs in the same order with the same section names, from one reader in hub-core. A view that needs data the reader lacks adds it to hub-core; the view never reads a store's files itself. Why: two readers of one store drift; `hub-core` exists so the terminal and the browser cannot disagree.
+9. Update on the store's own event and poll only what has none. Agent-web pushes on file change. Prometheus-backed tabs poll at one named cadence with a server-side cache. A hidden tab refetches only when it is shown again. Why: the global no-sleep-and-hope rule, and a phone on the web view.
+10. Load heavy detail only when it is opened. Transcripts, logs and screens are fetched on select, never for every row up front. Why: the human asked that sessions not all load until clicked (2026-11-03).
+11. It works at phone width and in an 80-column terminal. Tables scroll inside their own box and the page never scrolls sideways. Why: agent-web is mostly read from a phone, and the hub runs in a tmux pane.
+12. Mock it up before you build it. A new tab or a reshaped one starts as an ASCII mockup the human approves, in the plan. Why: lesson 2026-10-15, where a board built without one missed what the human pictured.
+13. A layout change says what moved, where to, and why. A PR that removes, merges, moves or renames a tab or section carries a "Moved and removed" table in its body: old place, new home, why. It updates the "Retired names" table below in the same PR, and the old name keeps working as an alias: `#old` on the web and `hub --tab old`. Why: a view that disappears without a note looks like a regression, and waybar, tmux and bookmarks still point at the old name.
+14. Done means the human can see it. A dashboard change is done when it shows on the live surface (the agent-web site after the stowed main checkout rebuilds, `hub` in its tmux window), checked with a screenshot. Passing tests are not enough. Why: lesson 2026-10-15, and the 2026-11-03 note "does not close till I can see it".
+
+## Patterns
+
+- Tile: a label, one big number or word, and its colour by rule 5. Clicking it opens the section that explains it.
+- Progress bar: counted done over total, with the raw counts beside the percent and the unit named ("17/25 rows, weighted by size"). An ETA is shown only when its rate is above zero, and it says which window it used.
+- Needs-you list: one list, newest first. Each row is a kind (ask, plan, dialog, red), its owner, what to do, and the key or button that does it in place.
+- Folded section: `<details data-k>` on the web, with its open state kept by `static/ui.js`. In the TUI, a section head with a `+`/`-` marker. A folded head shows its count.
+- Long list: capped, with a "+N older" control. It is never unbounded at top level.
+
+## Hub layout
+
+Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names.
+
+| # | Tab | Question | Status |
+|---|---|---|---|
+| 1 | Home | What needs me, and is everything ok? | planned |
+| 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
+| 3 | Projects | Where is each project, and its tasks? | planned |
+| 4 | Sessions | What is each agent doing? Act on it. | planned |
+| 5 | Infra | Is the machinery healthy? | planned |
+| 6 | Log | What happened? | planned |
+| 7 | Fleet | Can I afford more agents; are the judges right? | planned |
+
+### What moves, and why
+
+| From | To | Why |
+|---|---|---|
+| TUI Overview header, web Infra header, web Waiting, Watch tiles, Today "waiting on you", Fleet NIGHTLY and ASKS | Home: Needs you, Numbers, Health | Asks had six homes (rule 2); the human's first question is "what needs me?" |
+| TUI Overview body (pools, machines, queued, down) | Infra | One machines table instead of three |
+| Board (both surfaces) | Projects: a project's rows, plus an All view | The human asked for project progress next to the tasks (2026-11-04) |
+| TUI Fleet session controls and stage table, web Sessions and Watch | Sessions: one list with stages and actions | The same sessions were listed twice on one TUI tab and on two web tabs |
+| TUI Forecast timeline | Sessions: ETA column and detail pane | A session's ETA belongs on its row |
+| TUI CI and Machines, web Jobs | Infra sections | One question: is the machinery healthy (rule 1) |
+| TUI Today and History | Log | One question: what happened |
+| Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections | Audit trails behind a click (rule 3) |
+| Web Shepherd pass card | Sessions, one line | It is one status line, too small for a tab |
+| Web Shepherd chat | Sessions: the shepherd session pinned first, opened like any session | The chat is that session's transcript and compose box, which Sessions already has |
+
+### Retired names
+
+Old tab names that still resolve, and where they land. Each phase adds its rows.
+
+| Old name | Lands on | Since |
+|---|---|---|
+| _(none yet)_ | | |
