@@ -1743,6 +1743,55 @@ pr_item() {
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
 }
 
+# ── orphan rows: started with no queue item ─────────────────────────────────
+# orphan_seen <project> <key> <hours ago> -- reap first saw that agent row orphaned that long ago.
+orphan_seen() {
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf 'bnb\t%s\t%s\t%s\n' "$1" "$2" "$(( $(date +%s) - $3 * 3600 ))" >> "$FLEET_DISPATCH_DIR/orphans.tsv"
+}
+
+@test "reap: an agent row started with no queue item is un-started only once it stays orphaned DISPATCH_ORPHAN_HOURS" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [/] fix x <!-- id:gm-1 -->'
+  run cmd_reap
+  assert_success
+  grep -qF -- '- [/] fix x' "$NOTES_FIXTURE/rows.game.agent" || fail "un-started on first sight"
+  grep -qP '^bnb\tgame\tgm-1\t[0-9]+$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "first sighting not recorded"
+  : > "$FLEET_DISPATCH_DIR/orphans.tsv"; orphan_seen game gm-1 73
+  run cmd_reap
+  assert_output --partial 'un-started game: gm-1'
+  grep -qF -- '- [ ] fix x' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
+  assert_equal "$(jq -r 'select(.key == "gm-1") | .verdict + ": " + .reason' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'failed: started 72h with no queue item'
+  ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
+}
+
+@test "reap: a row an active item names, and a human-lane row, are never orphans" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-2 '- [/] linked <!-- id:gm-2 -->'
+  row game human 'mine' '- [/] the human is on it'
+  started_item linked lab:game-agent-9 '' '' 'board:game:gm-2' queued
+  sed -i 's/^lane: human$/lane: agent/' "$AGENT_QUEUE_DIR"/queued/*-linked.md
+  orphan_seen game gm-2 96
+  run cmd_reap
+  assert_success
+  grep -qF -- '- [/] linked' "$NOTES_FIXTURE/rows.game.agent" || fail "a linked row was un-started"
+  grep -qF -- '- [/] the human is on it' "$NOTES_FIXTURE/rows.game.human" || fail "a human row was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+@test "reap: a queue it cannot read un-starts no orphan" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-3 '- [/] fix y <!-- id:gm-3 -->'
+  orphan_seen game gm-3 96
+  stub agent-queue 'exit 1'
+  run cmd_reap
+  grep -qF -- '- [/] fix y' "$NOTES_FIXTURE/rows.game.agent" || fail "un-started blind"
+  grep -q gm-3 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "first sighting lost"
+}
+
 @test "reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back" {
   started_item shared-1 hub:dotfiles
   started_item shared-2 hub:dotfiles '' '' human waiting

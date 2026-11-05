@@ -14,11 +14,11 @@ use crate::infra::Infra;
 use crate::queue::Queue;
 use crate::text::cap;
 
-/// How much of an ask one row keeps: about two lines at 4x4.
-const ASK_MAX: usize = 70;
+/// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
+const ASK_MAX: usize = 44;
 /// How many projects the needs row names before the rest fold under "+N more".
 const PROJECTS: usize = 3;
-/// How many KPIs the over-limit row names before the rest fold under "+N more": one line at 4x4.
+/// How many KPIs the over-limit row names, beside the count of all of them: one line at 4x4.
 const KPIS: usize = 2;
 /// Fleet-state buckets of a session that has stopped, so its ETA means nothing.
 const FINISHED: [&str; 3] = ["DONE", "LANDED", "PARKED"];
@@ -170,7 +170,7 @@ fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
         .and_then(|s| s.value)
 }
 
-/// "over limit: CI reds per PR 0.86 (0.5), board 372 (60)". fleet-bench judges, this only words it.
+/// "5 over limit: CI reds per PR 0.86 (0.5), board 372 (60)". fleet-bench judges, this only words it.
 fn over_limit(infra: &Infra) -> Option<String> {
     let mut said: Vec<String> = infra
         .get("bench")
@@ -188,12 +188,9 @@ fn over_limit(infra: &Infra) -> Option<String> {
         })
         .collect();
     said.sort();
-    let more = said.len().saturating_sub(KPIS);
+    let past = said.len();
     said.truncate(KPIS);
-    if more > 0 {
-        said.push(format!("+{more} more"));
-    }
-    (!said.is_empty()).then(|| format!("over limit: {}", said.join(", ")))
+    (past > 0).then(|| format!("{past} over limit: {}", said.join(", ")))
 }
 
 fn agents(i: &Inputs) -> Vec<Row> {
@@ -228,7 +225,7 @@ fn agents(i: &Inputs) -> Vec<Row> {
             out.push(row(
                 Level::Ok,
                 "agents",
-                format!("waited on you {waited:.0}h in 24h"),
+                format!("agents waited {waited:.0}h on you in 24h"),
             ));
         }
     }
@@ -560,9 +557,9 @@ mod tests {
             agents,
             [
                 "Agents: 8 working, 1 stalled, 3 unclear".to_string(),
-                "waited on you 193h in 24h".to_string(),
+                "agents waited 193h on you in 24h".to_string(),
                 format!("2 past ETA, worst 2h, next done {next}"),
-                "over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
+                "2 over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
                 "$6.54 per PR (28d $7.00), 85 merged today".to_string(),
             ]
         );
@@ -582,7 +579,7 @@ mod tests {
         ]);
         assert_eq!(
             over_limit(&infra(vec![("bench", bench)])).as_deref(),
-            Some("over limit: CI reds per PR 0.86 (0.5), board 372 (60), +1 more")
+            Some("3 over limit: CI reds per PR 0.86 (0.5), board 372 (60)")
         );
     }
 
