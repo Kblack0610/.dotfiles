@@ -906,6 +906,21 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output '["unity-core-playground"]'
 }
 
+@test "findings: a starved pool says what binds it; pool other is always labels" {
+  use_fixture
+  eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "capacity oldest job waited 1.1h with 5/6 slots busy: demand is over the pool's capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # 2026-11-05: jobs pinned to one host carry no pool label, so the exporter files them under other.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_oldest_wait_seconds\tother\t%s\t7200\ncc:pool_waiting\tother\t%s\t5\n' "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_busy\tother\t%s\t2\ncc:pool_slots\tother\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
+}
+
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
   use_fixture
   eval_at 09:30; eval_at 10:30

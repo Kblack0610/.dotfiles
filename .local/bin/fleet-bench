@@ -1458,11 +1458,14 @@ finding_rows() {
             | select($w >= $l.finding_pool_wait_s and $n > 0)
             | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
                | if length > 0 then . else null end) as $repos
+            # bind: capacity when the pool is full, labels when slots sit free or the jobs carry no
+            # pool label (pool "other": pinned to one host, say), so more sessions add no demand to it.
+            | (if $pool == "other" or ($u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share)
+               then "labels" else "capacity" end) as $bind
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $u, slots: $s, oldest_s: $w}; "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($u // "?")/\($s // "?") slots busy: "
-                + (if $u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share
-                   then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
-                "\($n) jobs waiting") + {repos: $repos} ),
+                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
+                "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
             | [$v, ($b["cc:host_load1"][$h]), ($c["cc:host_load1"][$h])] as $vs

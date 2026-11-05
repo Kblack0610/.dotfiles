@@ -847,8 +847,11 @@ scope_dir() {
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
 # comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all
-# of them when the finding names no repos); a throughput drop, the items on that project's repo; a
-# starved host (local test slots, no repo known) every item.
+# of them when the finding names no repos), and only when capacity binds: a pool starved on labels
+# (bind "labels": slots sit free, or the jobs are pinned to one host) gains nothing from a session
+# not starting, since its gate asks for a different label. On 2026-11-05 a frame sweep pinned to the
+# razer laptop held 6 unity-core-playground items for 7h with the box 80% idle. A throughput drop
+# holds the items on that project's repo; a starved host (local test slots, no repo known) every item.
 held_by() {
   local project dir repo f rule scope out=()
   project=$(jq -r .project <<<"$1"); dir=$(repo_dir "$project"); repo=$(item_repo "$project")
@@ -857,7 +860,7 @@ held_by() {
     rule=$(jq -r .rule <<<"$f"); scope=$(jq -r .scope <<<"$f")
     case "$rule:$scope" in
       starved:pool:*)
-        jq -e --arg r "$repo" '.repos == null or (.repos | index($r)) != null' <<<"$f" >/dev/null || continue ;;
+        jq -e --arg r "$repo" '.bind != "labels" and (.repos == null or (.repos | index($r)) != null)' <<<"$f" >/dev/null || continue ;;
       throughput-drop:*)
         [ "$scope" = "$project" ] || { [ -n "$dir" ] && [ "$(scope_dir "$scope")" = "$dir" ]; } || continue ;;
     esac
@@ -1085,11 +1088,11 @@ real_idle() { [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }; LC_ALL=C 
 # open for an hour after its last sample, which would hold starts long after the fault cleared.
 # A blind finding is not one: it says a reader has a gap (a worktree name the merges source cannot
 # map, say), not that new work would make anything worse, so it holds nothing. Each line is
-# {rule, scope, repos}; held_by decides which items a finding is about.
+# {rule, scope, repos, bind}; held_by decides which items a finding is about.
 firing_findings() {
   jq -c --argjson now "$(date +%s)" --argjson fresh "$DISPATCH_FINDING_FRESH_MIN" '
     select(.rule == "starved" or .rule == "throughput-drop")
-    | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos}'
+    | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos, bind}'
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
