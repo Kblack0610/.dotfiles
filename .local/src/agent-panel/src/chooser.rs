@@ -88,15 +88,16 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> 
     let mut agents = Vec::new();
     for pane in panes {
         let target = tmux::qualify(&pane.server, &pane.session, &pane.window_index);
-        if !seen.insert(target.clone()) {
-            continue;
-        }
         let Some(&cpid) = pane_to_claude.get(&pane.pid) else {
             continue; // not a Claude agent
         };
         let Some(sess) = sessions.get(&cpid) else {
             continue;
         };
+        // One row per window, and that row is its Claude pane wherever the split put it.
+        if !seen.insert(target.clone()) {
+            continue;
+        }
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
         let (mut summary, plan, plan_slug) = if jsonl_path.exists() {

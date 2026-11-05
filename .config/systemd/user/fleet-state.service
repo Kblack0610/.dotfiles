@@ -3,6 +3,9 @@ Description=Fleet state document and stage changes (fleet-sessions tick)
 
 [Service]
 Type=oneshot
+# Each world's pane record, and the page when a server died. First, and allowed to fail: the
+# minute this keeps is what `fleet-dispatch restore` reopens from.
+ExecStartPre=-%h/.local/bin/fleet-dispatch record
 ExecStart=%h/.local/bin/fleet-sessions tick
 StandardOutput=null
 TimeoutStartSec=120
