@@ -89,11 +89,11 @@ prose = true
 emoji = true
 max_emoji = 8
 max_item = 400
-source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-eod.md" }
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-eod.md" }
 
 # A client weekly recap.
 [channel.client-weekly]
 prose = true
 emoji = true
 max_emoji = 5
-source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-weekly.md" }
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-weekly.md" }

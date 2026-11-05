@@ -216,7 +216,7 @@ def read_source(src, since):
                 continue
             yield when, pr.get("body") or "", {"path": f"{pr['repository']['name']}#{pr['number']}"}
         return
-    for path in sorted(glob.glob(os.path.expanduser(src["glob"]))):
+    for path in sorted(glob.glob(os.path.expanduser(src["glob"]), recursive=True)):
         when = dt.datetime.fromtimestamp(os.path.getmtime(path)).astimezone()
         if when < since:
             continue
