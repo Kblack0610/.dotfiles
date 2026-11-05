@@ -379,6 +379,51 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" theask
 }
 
+@test "suggest: every open agent row and each human row a worker takes, auto or not, with its verdict and held area; it never judges" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  project app alpha "$SANDBOX/repos/app"
+  mkdir -p "$SANDBOX/repos/sketch"
+  project sketch draft "$SANDBOX/repos/sketch"
+  row game agent 'game judged' "- [ ] game judged #high $T"
+  row game agent 'game busy' "- [ ] game busy $T"
+  row game agent 'game new' "- [ ] game new $T"
+  row app agent 'app row' "- [ ] app row #high $T"
+  row game human 'game human' "- [ ] game human $T"
+  row app human 'app human' "- [ ] app human $T"
+  row sketch agent 'sketch row' "- [ ] sketch row $T"
+  verdict game agent 'game judged' dispatch
+  verdict game agent 'game busy' dispatch S 1 combat
+  started_item other lab:other-1 run combat
+  run cmd_suggest
+  assert_success
+  assert_output "auto  dispatch  game game judged  [fleet, #high, beta]
+auto  unjudged  game game human  [fleet, beta]
+auto  dispatch  game game busy (area held)  [fleet, beta]
+auto  unjudged  game game new  [fleet, beta]
+man   unjudged  app app row  [#high, alpha]"
+  refute_output --partial 'app human'
+  refute_output --partial 'sketch'
+  run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A changed policy makes every cached verdict stale, so the list says unjudged, not dispatch.
+  echo 'policy v2' > "$DISPATCH_POLICY"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.verdict)/\(.auto)"' <<<"$output" | paste -sd' ')" \
+    'game judged=unjudged/true game human=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
+}
+
+@test "suggest: says so when no project has an open agent row" {
+  project game beta "$SANDBOX/repos/game"
+  run cmd_suggest
+  assert_success
+  assert_output 'suggest: no open agent row'
+  run cmd_suggest --json
+  assert_success
+  assert_output ''
+}
+
 @test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
