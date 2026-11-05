@@ -159,6 +159,11 @@ fn is_placeholder(t: &str) -> bool {
 /// against git, and leaves the ranking alone.
 pub(crate) const STAGES: [&str; 4] = ["draft", "alpha", "beta", "prod"];
 
+/// A project's priority, the human's call on which projects agents should work first.
+/// Unset is normal. `fleet-dispatch` ranks a project's board rows by it before anything
+/// else. The `prio/` prefix keeps it apart from a row's `#high` / `#low` priority words.
+pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
+
 // -- stage and group: hashtags on the project's front page --------------------
 //
 // A project's maturity is a HASHTAG on its sheet (`#prod`, `#alpha`), in the head above
@@ -208,6 +213,11 @@ pub(crate) fn stage_of(dir: &Path) -> Option<String> {
 /// head's machine-read line and it puts the two facts you scan for side by side. Otherwise
 /// it goes on the title.
 fn set_head_tag(content: &str, vocab: &[&str], value: &str) -> Result<String> {
+    replace_head_tag(content, vocab, Some(value))
+}
+
+/// [`set_head_tag`], or with `None` only drop the vocabulary's tag (a cleared priority).
+fn replace_head_tag(content: &str, vocab: &[&str], value: Option<&str>) -> Result<String> {
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let head_len = head_lines(content).count();
 
@@ -243,10 +253,12 @@ fn set_head_tag(content: &str, vocab: &[&str], value: &str) -> Result<String> {
                 .take(head_len)
                 .position(|l| l.trim_start().starts_with("# "))
         });
-    let Some(i) = target else {
-        bail!("no `Version:` or `# title` line to tag in the project's head");
-    };
-    lines[i] = format!("{} #{value}", lines[i].trim_end());
+    if let Some(value) = value {
+        let Some(i) = target else {
+            bail!("no `Version:` or `# title` line to tag in the project's head");
+        };
+        lines[i] = format!("{} #{value}", lines[i].trim_end());
+    }
 
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -310,6 +322,45 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
         }
     }
     tag_verb(p, log, name, &refs, value)
+}
+
+/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
+/// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
+pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let page = front_page(&dir);
+    let content =
+        fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
+    let Some(v) = value else {
+        println!("{}", prio_of_str(&content));
+        return Ok(());
+    };
+    let tag = match v {
+        "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "normal" => None,
+        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
+    };
+    let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    if updated != content {
+        fs::write(&page, &updated)?;
+        log.info("projects", &format!("{name}: prio {v}"));
+    }
+    println!("{} prio {v}", page.display());
+    Ok(())
+}
+
+/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+fn prio_of_str(content: &str) -> String {
+    head_tag(content, &PRIOS)
+        .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// A project's declared priority word, empty for normal.
+pub(crate) fn prio_of(dir: &Path) -> String {
+    fs::read_to_string(front_page(dir))
+        .map(|c| prio_of_str(&c))
+        .unwrap_or_default()
 }
 
 /// Every name that may act as an index group: the configured orgs, plus the `dev` lane for
@@ -2461,6 +2512,9 @@ struct ProjectStats {
     name: String,
     dir: PathBuf,
     stage: String,
+    /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
+    /// TSV keeps its columns, which several scripts read by position.
+    prio: String,
     version: String,
     open: usize,
     done: usize,
@@ -2652,6 +2706,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         name: name.to_string(),
         dir: dir.to_path_buf(),
         stage: stage_of(dir).unwrap_or_default(),
+        prio: prio_of(dir),
         version: version_str(dir),
         open: c.open,
         done: c.done,
@@ -3350,6 +3405,34 @@ mod stage_tag_tests {
     fn writing_the_same_stage_twice_is_byte_identical() {
         let once = set_head_tag(SHEET, &STAGES, "beta").unwrap();
         assert_eq!(set_head_tag(&once, &STAGES, "beta").unwrap(), once);
+    }
+
+    #[test]
+    fn a_prio_is_set_replaced_and_cleared_beside_the_stage() {
+        let s = "# demo\nVersion: v1.0.0 #alpha #dev\n\n## Tasks\n- [ ] a row #high\n";
+        let one = replace_head_tag(s, &PRIOS, Some("prio/focus")).unwrap();
+        assert!(one.contains("Version: v1.0.0 #alpha #dev #prio/focus\n"), "{one}");
+        assert_eq!(prio_of_str(&one), "focus");
+        let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
+        assert_eq!(two.matches("#prio/").count(), 1, "{two}");
+        assert_eq!(prio_of_str(&two), "low");
+        let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
+        assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
+        assert_eq!(prio_of_str(&cleared), "");
+        // the stage and group still read, and the row's #high is not the project's prio
+        assert_eq!(head_tag(&two, &STAGES).as_deref(), Some("alpha"));
+        assert_eq!(head_tag(&two, &["dev"]).as_deref(), Some("dev"));
+        assert_eq!(prio_of_str(s), "");
+    }
+
+    #[test]
+    fn a_roll_keeps_the_prio_on_the_new_version_line() {
+        let (_, sheet) = rebuild_sheet(
+            "# d\nVersion: v0.1.0 #alpha #prio/focus\n\n## Tasks\n",
+            (0, 1, 0),
+            (0, 1, 1),
+        );
+        assert!(sheet.contains("Version: v0.1.1 #alpha #prio/focus\n"), "{sheet}");
     }
 
     #[test]

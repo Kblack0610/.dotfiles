@@ -29,7 +29,7 @@ function pCard(c, rowsOpen) {
     `${c.requested} rows #requested, ${c.inbox} in the inbox`;
   return `<div class="card qitem pcard"${rowsOpen ? "" : ` data-open="${esc(pKey(c))}"`}>` +
     cardHead(c.name.toUpperCase(), chips) +
-    cardLine([esc(c.profile), esc(c.stage)]) +
+    cardLine([esc(c.profile), esc(c.stage)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
     `<div class="pprog">${meter((c.percent || 0) / 100)}<span>${esc(c.summary)}</span></div>` +
     (c.goal ? `<div class="pline"><span class="plead">goal</span><span>${esc(c.goal)}</span></div>` : "") +
     c.running.map(pRunning).join("") +

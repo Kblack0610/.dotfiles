@@ -40,11 +40,51 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
+    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    pub prio: String,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
     pub status: String,
     pub status_date: String,
+}
+
+/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low.
+pub fn next_prio(cur: &str) -> &'static str {
+    match cur {
+        "" => "focus",
+        "focus" => "high",
+        "high" => "low",
+        _ => "normal",
+    }
+}
+
+/// `notes projects --prio <name> --profile <profile> --set <value>`: the one writer.
+pub fn set_prio(
+    runner: &dyn Runner,
+    profile: &str,
+    name: &str,
+    value: &str,
+) -> Result<String, String> {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('-')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !ok(profile) || !ok(name) || !["focus", "high", "low", "normal"].contains(&value) {
+        return Err(format!("refusing prio {value} for {profile}/{name}"));
+    }
+    runner.run(&[
+        "notes".into(),
+        "projects".into(),
+        "--prio".into(),
+        name.into(),
+        "--profile".into(),
+        profile.into(),
+        "--set".into(),
+        value.into(),
+    ])
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
@@ -83,6 +123,7 @@ pub struct Card {
     pub profile: String,
     pub name: String,
     pub stage: String,
+    pub prio: String,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -166,6 +207,7 @@ pub fn build(
             profile: s.profile.clone(),
             name: s.name.clone(),
             stage: s.stage.clone(),
+            prio: s.prio.clone(),
             version: s.version.clone(),
             goal: s.goal.clone(),
             progress: s.progress,
@@ -258,6 +300,53 @@ mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    struct Argv(std::cell::RefCell<Vec<String>>);
+    impl Runner for Argv {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            *self.0.borrow_mut() = argv.to_vec();
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn the_prio_key_cycles_and_writes_through_the_cli_only() {
+        assert_eq!(next_prio(""), "focus");
+        assert_eq!(next_prio("focus"), "high");
+        assert_eq!(next_prio("high"), "low");
+        assert_eq!(next_prio("low"), "normal");
+        let r = Argv(Default::default());
+        set_prio(&r, "bnb", "shape-city", "focus").unwrap();
+        assert_eq!(
+            *r.0.borrow(),
+            [
+                "notes",
+                "projects",
+                "--prio",
+                "shape-city",
+                "--profile",
+                "bnb",
+                "--set",
+                "focus"
+            ]
+        );
+        // nothing that could read as a flag, and no value outside the vocabulary, reaches argv
+        r.0.borrow_mut().clear();
+        assert!(set_prio(&r, "bnb", "--all", "focus").is_err());
+        assert!(set_prio(&r, "bnb", "demo", "urgent").is_err());
+        assert!(r.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_card_carries_the_sheet_prio() {
+        let s: Vec<Stats> =
+            serde_json::from_value(json!([{"profile": "bnb", "name": "a", "prio": "focus"}, {"profile": "bnb", "name": "b"}]))
+                .unwrap();
+        let p = build(&s, None, &json!({}), None, &HashMap::new());
+        let prio = |n: &str| p.cards.iter().find(|c| c.name == n).unwrap().prio.clone();
+        assert_eq!(prio("a"), "focus");
+        assert_eq!(prio("b"), "");
+    }
 
     fn prog(open_w: u32, done_w: u32, closed_28: u32) -> Progress {
         Progress {
