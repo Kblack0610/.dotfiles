@@ -100,7 +100,7 @@ current/<name>/
   agent/README.md          the agent board (`ptask --agent`): the same `## Wave:` blocks, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project (`#idea:<name>` in Focus lands here)
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
-  agent/versions/vX.Y.Z.md proof table for a version, and the done rows `ptask --agent archive` or a roll moves off the board
+  agent/versions/vX.Y.Z.md notes for a version, and the done rows `ptask --agent archive` or a roll moves off the board
   versions/vX.Y.Z.md       frozen sheet of a closed version
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
@@ -181,7 +181,7 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 | detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
 | priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
 | created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
-| id | yes, stamped | `id:<code>-<n>` in the marker, stamped by `ptask add`. `code` is the project's `trackers.<name>.code` in the registry (2-4 lowercase letters, unique; `project-map-doctor` checks it). `n` is one past the highest id anywhere under the project dir, both lanes, playtest and `versions/`, so an id is never reused. A project with no code gets no id, and `ptask add` says so. |
+| id | yes, stamped | `id:<code>-<n>` in the marker, stamped by `ptask add`, or by `ptask start` on a row with none. `code` is the project's `trackers.<name>.code` in the registry (2-4 lowercase letters, unique; `project-map-doctor` checks it). `n` is one past the highest id anywhere under the project dir, both lanes, playtest and `versions/`, so an id is never reused. A project with no code gets no id, and `ptask add` says so. |
 | size | no | `#size/s` (small single PR), `#size/m` (one PR), `#size/l` (needs a plan); there is no hour estimate |
 | `#tier/N` `#worker/X` `#vX.Y.Z` `#dueMMDD` | no | as the feed above reads them |
 | `#ask` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
@@ -191,7 +191,7 @@ No assignee field: the lane is the assignee. No comment thread: detail lines plu
 
 Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
 
-Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or roll. A board row that runs as a session goes row -> `ptask start` or a dispatch promote -> queue item -> session -> PR -> `agent-land` closes the queue item and the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
+Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or roll. A board row that runs as a session goes row -> `fleet-dispatch promote` -> queue item (its slug and `from` are the row's id, its priority the row's, high on a bare row) -> session -> PR carrying `Task: <id>` -> `agent-land` closes the queue item and, by id, the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --roll` into `versions/`. The proof lives on the row and travels with it.
 
 `notes doctor --projects` checks this per sheet, one line per finding, and writes nothing: a priority word no reader knows (`#normal`, `#medium`, `#p0`-`#p3`), two priorities on one row, a retired tag (`#oneshot`, `#ci`, `#ai`, `#high-priority`), a `since:` stamp, a tier that is not `#tier/1`, `2` or `3`, and an agent-board done row with no proof marker (an `id:` alone is not proof). On the agent board it also counts the open rows not in `type(area): title` form, those with a title over 80 chars and those with no id, one line each. Human sheet rows are free text and closed by hand, so those checks skip them.
 
