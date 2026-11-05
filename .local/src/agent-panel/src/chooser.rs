@@ -280,16 +280,10 @@ pub fn ask_here<'a>(agents: &'a [Agent], server: &str, session: &str, window: &s
         .min_by_key(|a| a.target != here)
 }
 
-/// `ask-here`: the tmux arrival hook runs it with `key` false, and a session that is asking
-/// something gets a status-line notice on that client, never a popup: the human is working and
-/// their next keystroke belongs to the pane. Prefix y runs it with `key` true and opens the list
-/// of every pending ask in a popup, to answer them one after another.
-pub fn run_ask_here(socket: &str, client: &str, session: &str, window: &str, key: bool) -> Result<()> {
-    if key {
-        let cmd = vec![asks::agent_ask_path().to_string_lossy().into_owned(), "pick".to_string()];
-        tmux::popup(socket, client, " questions ", &cmd);
-        return Ok(());
-    }
+/// `ask-here`: the tmux arrival hook runs it, and a session that is asking something gets a
+/// status-line notice on that client, never a popup: the human is working and their next
+/// keystroke belongs to the pane. Prefix y (the questions panel) is where it is answered.
+pub fn run_ask_here(socket: &str, client: &str, session: &str, window: &str) -> Result<()> {
     let server = Path::new(socket)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
