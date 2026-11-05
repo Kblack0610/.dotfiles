@@ -25,7 +25,7 @@ Scaling: a section that does not apply says `n/a: <reason>`, except Context and 
 
 Depth: a plan with phases or one that crosses systems runs the standards, telemetry and overlap checks as parallel Explore agents before writing, and cites what they found in `## Reviewed`.
 
-Client work adds the rows in `~/.config/agentctl/PLANNING-CLIENT.md`, kept private.
+Client work adds the rows in `~/.config/agentctl/PLANNING-CLIENT.md`, kept private. Their Applies column is the `client` value in `project-map.json`.
 
 ## Where to look
 

@@ -637,28 +637,34 @@ EOF
   assert_output 'mono-canon'
 }
 
-@test "project_type: a project's own type wins" {
+@test "project_inherited: a project's own type wins" {
   write_map '{"mono": {"type": "game"}, "app": {"repo": "mono", "path": "apps/a", "type": "app"}}'
-  run project_type mono
+  run project_inherited mono type
   assert_output game
 }
 
-@test "project_type: a repo with no type takes the one its projects share" {
+@test "project_inherited: a repo with no type takes the one its projects share" {
   write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "infra"}}'
-  run project_type mono
+  run project_inherited mono type
   assert_output infra
 }
 
-@test "project_type: a repo whose projects disagree has no type" {
+@test "project_inherited: a repo whose projects disagree has no type" {
   write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "game"}}'
-  run project_type mono
+  run project_inherited mono type
   assert_success
   assert_output ''
 }
 
-@test "project_type: an unknown project has no type" {
+@test "project_inherited: any field inherits, so a client repo takes its projects' client" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "client": "acme"}}'
+  run project_inherited mono client
+  assert_output acme
+}
+
+@test "project_inherited: an unknown project has no type" {
   write_map '{}'
-  run project_type nothing
+  run project_inherited nothing type
   assert_success
   assert_output ''
 }

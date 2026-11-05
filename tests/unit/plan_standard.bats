@@ -157,10 +157,11 @@ prompt() { # prompt <project> <mode>
   assert_output --partial 'Missing ## Risks'
 }
 
-@test "client rows apply only to a project with a client field" {
-  printf '| `## Ticket` | client | The ticket | Existing rule |\n' > "$HOME/.config/agentctl/PLANNING-CLIENT.md"
+@test "client rows apply only to the project with that client" {
+  printf '| `## Ticket` | acme | The ticket | Existing rule |\n| `## Other` | globex | Theirs | Existing rule |\n' > "$HOME/.config/agentctl/PLANNING-CLIENT.md"
   run gate gig "$(base)"
   assert_output --partial 'Missing ## Ticket'
+  refute_output --partial '## Other'
   run gate untyped "$(base)"
   assert_output ''
 }

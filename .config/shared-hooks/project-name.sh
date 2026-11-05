@@ -218,14 +218,15 @@ project_lab_names() {
   ' "$map_file" 2>/dev/null || true
 }
 
-# project_type <repo or project> -> its `type`, else the one type shared by every project
-# under it, else "". `.dotfiles` has no type of its own, but both its projects are infra.
-project_type() {
-  local own name types
-  own="$(project_field "$1" type)"
+# project_inherited <repo or project> <field> -> its own value, else the one value shared by
+# every project under it, else "". `.dotfiles` has no type of its own, but both its projects
+# are infra.
+project_inherited() {
+  local own name vals
+  own="$(project_field "$1" "$2")"
   [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
-  types="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" type; done | sort -u)"
-  [ -n "$types" ] && [ "$(wc -l <<<"$types")" -eq 1 ] && printf '%s\n' "$types"
+  vals="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" "$2"; done | sort -u)"
+  [ -n "$vals" ] && [ "$(wc -l <<<"$vals")" -eq 1 ] && printf '%s\n' "$vals"
   return 0
 }
 

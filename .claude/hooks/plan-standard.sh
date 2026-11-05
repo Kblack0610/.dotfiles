@@ -26,13 +26,13 @@ esac
 cwd=$(jq -r '.cwd // empty' <<<"$INPUT")
 [ -n "$cwd" ] || cwd=$PWD
 project=$(resolve_project_name "$cwd")
-type=$(project_type "$project")
-client=$(project_field "$project" client)
+type=$(project_inherited "$project" type)
+client=$(project_inherited "$project" client)
 label="$project${type:+ ($type)}"
 
 # rows -> "<section><TAB><must answer>" for each row of the tables that applies here.
 rows() {
-  cat "$DOC" "$CLIENT_DOC" 2>/dev/null | awk -F' *[|] *' -v want=" base $type ${client:+client} " '
+  cat "$DOC" "$CLIENT_DOC" 2>/dev/null | awk -F' *[|] *' -v want=" base $type $client " '
     /^[|] `## / {
       n = split($3, applies, /, */)
       for (i = 1; i <= n; i++) if (index(want, " " applies[i] " ")) {
