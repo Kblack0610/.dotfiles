@@ -364,6 +364,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure 1
 }
 
+@test "mine --sid: that Claude session's item only, never the tmux session's; two exit 2" {
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
+  run "$AQ" mine --sid sid-none
+  assert_failure 1
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug ours "this conversation's item"
+  CLAUDE_CODE_SESSION_ID=sid-other run "$AQ" mine --sid sid-a
+  assert_success
+  assert_output ours
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug second "another"
+  run "$AQ" mine --sid sid-a
+  assert_failure 2
+}
+
 @test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item queued typed)"
