@@ -58,6 +58,14 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 
 **PR body.** The change and why it was made, in the first line. What it removed (or why nothing could be removed). How it was verified.
 
+**UI text** (agent-web, the hub TUI, trader, any page the human reads):
+- A label or heading is a noun the human already uses ("Queue", "Questions for you"). Internal terms ("ptask", "oneshot", "lane") stay out of it.
+- A chip is a state in one or two words ("running", "waiting on you").
+- A button is the verb for what happens ("Approve", "Restart session").
+- An error says what failed and what to do next ("Could not load the queue. Reload, or check agent-web's log.").
+- A summary line is a sentence that starts with its subject ("Queue: nothing can start now."), and an id comes after the point (rule 3).
+- An empty state says what would appear there and why it is empty.
+
 ## Steps
 
 1. Writing or changing a generator: find its channel in `channels.toml`, or add one along with a `source` that the report can read. Shape the output to the channel, then add a test that runs `comms-lint --channel <c>` on the generated output.

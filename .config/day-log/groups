@@ -11,8 +11,9 @@
 barrage                                     Barrage
 raiders,story                               Raiders
 dodginballs,hometown,townsfolk              DodginBalls and Hometown
-animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics  Engine
+animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics,anim,melee,weapons,throwables,online,server,burst  Engine
 test,ci,bench,scaling,game-eval,eval        Tests, CI and benches
+runners,store,steam,release,registry,build  Ops
 
 tmux,fleet-sessions,fleet,fleet-shepherd,fleet-dispatch,agent-mqtt   Fleet boards and shepherd
 fleet-bench,briefing,agent-ask              Metrics, asks and briefing

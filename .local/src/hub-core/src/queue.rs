@@ -196,27 +196,47 @@ impl Stats {
         )
     }
 
-    /// What sits in the queue now: how many could start and for how long, and what holds the rest.
+    /// What sits in the queue now, in plain words: how many could start and the oldest of them,
+    /// then what holds the rest. The item slug comes after the point.
     pub fn sitting_line(&self) -> Option<String> {
         let s = self.sitting.as_ref()?;
         if s.queued == 0 {
-            return Some("sitting: nothing queued".into());
+            return Some("Queue: nothing waiting.".into());
         }
-        let mut out = format!("sitting: {} can start", s.runnable);
-        if let Some(o) = s.oldest_runnable.first() {
-            out += &format!(
-                ", oldest {} ({}), median {}",
+        let mut out = match (s.runnable, s.oldest_runnable.first()) {
+            (0, _) => "Queue: nothing can start now.".to_string(),
+            (n, Some(o)) => format!(
+                "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
                 dur(Some(o.minutes)),
                 o.slug,
                 dur(s.runnable_age_minutes_median)
-            );
-        }
-        out += &format!("; {} held", s.held);
-        if !s.held_by.is_empty() {
-            let by: Vec<String> = s.held_by.iter().map(|(k, v)| format!("{k} {v}")).collect();
-            out += &format!(" ({})", by.join(", "));
+            ),
+            (n, None) => format!("Queue: {n} can start now."),
+        };
+        if s.held > 0 {
+            let by: Vec<String> = s
+                .held_by
+                .iter()
+                .map(|(k, v)| format!("{v} {}", hold_reason(k)))
+                .collect();
+            out += &format!(" {} held", s.held);
+            if !by.is_empty() {
+                out += &format!(": {}", by.join(", "));
+            }
+            out += ".";
         }
         Some(out)
+    }
+}
+
+/// Why a queued item is held, from the first word of its `hold` (agent-queue `hold_for`).
+fn hold_reason(kind: &str) -> String {
+    match kind {
+        "after" => "after another item".into(),
+        "night" => "until night".into(),
+        "at" => "until a set time".into(),
+        "pr" => "until a PR merges".into(),
+        k => format!("held by {k}"),
     }
 }
 
@@ -483,12 +503,23 @@ mod tests {
         );
         assert_eq!(
             s.sitting_line().as_deref(),
-            Some("sitting: 1 can start, oldest 3h (q1), median 3h; 2 held (after 1, pr 1)")
+            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h. 2 held: 1 after another item, 1 until a PR merges.")
         );
         assert_eq!(
             Stats::default().sitting_line(),
             None,
             "an older agent-queue without `sitting` says nothing, never that the queue is empty"
+        );
+        let held: Stats = serde_json::from_str(
+            r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            held.sitting_line().as_deref(),
+            Some(
+                "Queue: nothing can start now. 13 held: 12 after another item, 1 held by vacation."
+            ),
+            "nothing runnable says so plainly, and a hold kind it does not know still reads"
         );
 
         let q = Queue::read(&Fake::default());

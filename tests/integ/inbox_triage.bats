@@ -223,6 +223,19 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log" || fail "the planner was not started"
 }
 
+@test "outbox: the routing prompt names the homes and the shared-code rule, as --backlog does" {
+  echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
+  sheet '' ''
+  outbox '- [ ] other needs a logo\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(brand): a logo #size/s"], "project": "other"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  assert_output --partial 'other (in scratch)'
+  assert_output --partial "the shared code under them, belongs on the repo's project"
+  assert_output --partial 'a host or the cluster belongs on home-config'
+}
+
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {
   sheet '' ''
   outbox ''

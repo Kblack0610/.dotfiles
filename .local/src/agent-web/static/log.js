@@ -156,9 +156,9 @@ function openList(rec) {
 function waiting(rec) {
   const w = rec.waiting || {};
   const rows = [
-    ...(w.main || []).map((m) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">NIGHTLY</span><span class="pt">${esc(m.reason)}</span></div>`),
-    ...(w.needs || []).map((n) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">NEEDS</span><span class="pt">${esc(n.who)}: ${esc(n.reason)}</span><span class="muted">idle ${dur(n.idle_min)}</span></div>`),
-    ...(w.asks || []).map((a) => `<div class="pr"><span class="chip sm" style="--c:var(--b-stalled)">ASK</span><span class="pt">${esc(a.project)}: ${esc(a.question)}</span><a href="#" data-asks>answer</a></div>`),
+    ...(w.main || []).map((m) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">nightly failed</span><span class="pt">${esc(m.reason)}</span></div>`),
+    ...(w.needs || []).map((n) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">needs you</span><span class="pt">${esc(n.who)}: ${esc(n.reason)}</span><span class="muted">idle ${dur(n.idle_min)}</span></div>`),
+    ...(w.asks || []).map((a) => `<div class="pr"><span class="chip sm" style="--c:var(--b-stalled)">question</span><span class="pt">${esc(a.project)}: ${esc(a.question)}</span><a href="#" data-asks>answer</a></div>`),
   ];
   return rows.length ? `<h2 class="sec">Waiting on you <span class="muted">${rows.length}</span></h2><div class="panel">${rows.join("")}</div>` : "";
 }
@@ -181,10 +181,10 @@ function renderLog() {
   const nWait = (w.main || []).length + (w.needs || []).length + (w.asks || []).length;
   const repos = new Set((rec.merged || []).map((m) => m.repo)).size;
   let html = `<div class="bhead daynav">
-    <span><button class="btn" data-step="-1"${i > 0 ? "" : " disabled"}>&lsaquo;</button>
+    <span><button class="btn" data-step="-1"${i > 0 ? "" : " disabled"}>Previous day</button>
     <b>${weekday(day)} ${esc(day)}</b> <span class="muted">${rec.live ? "live" : "closed"}, gathered ${rec.gathered_at ? hm(rec.gathered_at) : "?"}</span>
-    <button class="btn" data-step="1"${i >= 0 && i < ds.length - 1 ? "" : " disabled"}>&rsaquo;</button>
-    <button class="btn" data-today${lst.day ? "" : " disabled"}>today</button></span>
+    <button class="btn" data-step="1"${i >= 0 && i < ds.length - 1 ? "" : " disabled"}>Next day</button>
+    <button class="btn" data-today${lst.day ? "" : " disabled"}>Today</button></span>
     <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? ", could not read " + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
   html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${

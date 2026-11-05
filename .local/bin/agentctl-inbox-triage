@@ -85,11 +85,21 @@ move_out() {
 # The flag every notes inbox writer touches (`ptask add`, the Focus sweep): its stamp, or empty.
 flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 
+# The routing rule both model calls carry, from the registry: which projects live in another
+# project's repo, and where a row about one of them, or the code they share, belongs.
+homes_rule() {
+  local homes
+  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  [ -z "$homes" ] || printf " Projects whose code lives in another project's repo: %s. A row about only one of those belongs on that project, not on the repo's; a row about several of them, or the shared code under them, belongs on the repo's project." "$homes"
+  printf ' A row about a host or the cluster belongs on home-config.'
+}
+
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names srcs wide batch open prompt out rc wd
+  local lines="$1" board="$2" names homes srcs wide batch open prompt out rc wd
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
+  homes="$(homes_rule)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
   wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
   local -a froms=() raws=() texts=()
@@ -103,7 +113,7 @@ route() {
     [.rows[] | select(.project != null and .state != "done" and .id != null)] | group_by(.project)[]
     | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
-  prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.
+  prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
 A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
@@ -213,7 +223,7 @@ backlog_batch() {
   mapfile -t states < <(jq -r '.[] | .state' <<<"$batch")
   mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
-  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.${homes:+ Projects whose code lives in another project's repo: $homes. A row about only one of those belongs on that project, not on the repo's.}
+  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
 A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
@@ -296,7 +306,7 @@ backlog_pass() {
   local board names homes rc=0 p lane
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
-  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  homes="$(homes_rule)"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
