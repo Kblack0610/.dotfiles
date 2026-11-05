@@ -58,7 +58,7 @@ test("the cards list All first, then each card with its bar, summary, goal and c
 
 test("opening a card shows its rows under it, with Tags... among the row actions", () => {
   const { head, rows } = draw({ cards: [card()], unlinked: [], errors: [] }, "bnb/demo");
-  assert.match(head, /&larr; Projects.*DEMO.*v0\.1\.0 25%/s);
+  assert.match(head, /Back to projects.*DEMO.*v0\.1\.0 25%/s);
   assert.doesNotMatch(head, /Open rows/);
   assert.match(rows, /fix the menu/);
   assert.doesNotMatch(rows, /water the beds/, "another project's row is filtered out");
