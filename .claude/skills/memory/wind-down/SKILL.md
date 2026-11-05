@@ -1,11 +1,11 @@
 ---
 name: wind-down
 description: >-
-  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
+  Wrap up: write a status note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-05"
 ---
 
 # wind-down
@@ -17,7 +17,7 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 
@@ -64,32 +64,38 @@ resolution matches the hook:
 # -> /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
 ```
 
-Write that file with this shape (no frontmatter - plain markdown, like the lessons/eval files):
+Write that file in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
 
 **Project:** <repo / project name>
 
-## What happened
-- <bullet per meaningful thing done this session>
+<One sentence that stands alone: where the work is now.>
 
-## Files touched
-- `path/to/file` - <one-line why>
+## Done
+- <what landed, one plain line each, link last: "The rundown reads as Done, Doing, Next, Needs you (dotfiles#946)">
 
-## Verification
-- <what was tested / proven, or "not verified - why">
+## Doing
+- <what is still open and how far along: an unmerged PR, a phase half done; "Nothing." when the session finished>
+
+## Next
+- <what comes next, in order; the first line is the single most useful next action>
+
+## Needs you
+- <one verb, one action, where to do it: an open ask, a human-sheet row; else "Nothing.">
 
 ## Deferred phases
 - <each `[-]` phase in the plan's ## Phases checklist, and the board row it went to; omit the section when there are none>
 
-## Next step
-- <the single most useful next action, if any>
+## Verification
+- <what was tested and proven, or "not verified - why">
+
+## Files touched
+- `path/to/file` - <one-line why>
 ```
 
-Keep it concise and factual - it's a memory aid, not a changelog. If the file already exists for
-today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked,
-so the note becomes durable, recallable knowledge.
+Lint it: `comms-lint --channel status <note>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. If the file already exists for today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 
@@ -105,7 +111,7 @@ Skip if the repo has no lab project.
 See the `lab-sync` skill.
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
-"where we are" line from this session's work into the cockpit's `STATUS` block - the narrative
+"where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
 `lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
