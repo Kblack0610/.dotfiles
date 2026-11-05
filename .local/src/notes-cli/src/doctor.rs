@@ -142,7 +142,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // 7. Version pairing: an agent note belongs to a version that was frozen or is open
     let pairing = projects::pairing_findings(p);
     if pairing.is_empty() {
-        r.add(Status::Pass, "version pairing", "every frozen version matches its agent note");
+        r.add(Status::Pass, "version pairing", "every agent note has its version");
     } else {
         r.add(
             Status::Warn,

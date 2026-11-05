@@ -725,8 +725,8 @@ pub fn step(
 ///   leaving it blank until it means nothing. The manual walk has the same
 ///   instinct: `n/a - <why>` mandatory rather than blank.
 ///
-/// Either way the row lands in the version's agent note (`agent/versions/<vX.Y.Z>.md`), which is what
-/// turns a pile of ticked boxes into an evidence trail somebody can audit.
+/// Either way the stamp stays on the row, which is what turns a pile of ticked boxes into an
+/// evidence trail somebody can audit.
 pub fn done(
     p: &Profile,
     log: &Logger,
@@ -863,7 +863,7 @@ pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> 
         Some(toggle_started(l, id.as_deref()))
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
-        if toggle_started(&line, Some(&id)).contains(&format!("id:{id}")) {
+        if md::row_id(&toggle_started(&line, Some(&id))).as_deref() == Some(id.as_str()) {
             println!("  id:{id}");
         }
     }
@@ -968,8 +968,8 @@ fn append_done_rows(content: &str, rows: &[String]) -> String {
 }
 
 /// `notes ptask <name> --agent archive [--dry-run]` - move the agent board's done rows into
-/// `agent/versions/<vX.Y.Z>.md`, the note `done` writes their proof into (the human sheet's
-/// open version), under `## Done rows`, verbatim and in board order.
+/// `agent/versions/<vX.Y.Z>.md` (the human sheet's open version), under `## Done rows`, verbatim
+/// and in board order, each with the proof stamp `done` put on it.
 ///
 /// What keeps an agent board inside its budget (`notes doctor --projects`). The human
 /// sheet has no archive: its done rows freeze with its version in `notes projects --roll`.

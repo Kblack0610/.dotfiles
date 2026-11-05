@@ -959,8 +959,8 @@ fn has_proof(line: &str) -> bool {
 }
 
 /// The agent board's size budget. Past it the board is slow to scan and costly to load
-/// into a session; done rows are the first thing to go, because `ptask done` already
-/// wrote their proof to `agent/versions/`.
+/// into a session; done rows are the first thing to go, because archiving moves them to
+/// `agent/versions/` with their proof stamps on.
 pub(crate) const AGENT_BOARD_BUDGET: usize = 32 * 1024;
 
 /// Open rows whose [`md::task_key`] appears more than once on a sheet, with the count, in
@@ -1733,9 +1733,9 @@ fn rebuild_sheet(content: &str, cur: (u32, u32, u32), next: (u32, u32, u32)) -> 
 }
 
 /// Roll a project's agent board from `cur` to `next`, the way the sheet rolls: done rows go
-/// to `agent/versions/<cur>.md` (the note `ptask done` wrote their proof into), open rows
-/// take the sheet's carry to `next`, and anything else left in the closing wave (prose, a
-/// note under a carried row) is appended to that note, so nothing on the board is dropped.
+/// to `agent/versions/<cur>.md`, open rows take the sheet's carry to `next`, and anything else
+/// left in the closing wave (prose, a note under a carried row) is appended to that note, so
+/// nothing on the board is dropped.
 /// Returns `(archived, carried)`, or `None` when there is no board with a wave to roll.
 ///
 /// No gate: board rows are the agents' subtasks under the human queue, and the sheet's gate
@@ -1877,31 +1877,6 @@ fn align_agent_board(dir: &Path, name: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Did this version actually have agent work? Two sources, because the lane moved.
-///
-/// The agent SHEET holding any real row is the live answer: that is where an agent's working
-/// state lives now. A completed legacy `#ai` row in the frozen human wave is the historical
-/// one, and it stays load-bearing - versions opened before the move carry their evidence
-/// only as that tag.
-///
-/// The pairing invariant keys off this: `agent/versions/<ver>.md` exists exactly when the
-/// version has agent evidence to hold. Creating one unconditionally would file an empty note
-/// for every human-only version and make an orphan report meaningless.
-fn version_had_agent_work(frozen_body: &str, dir: &Path) -> bool {
-    if frozen_body
-        .lines()
-        .any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
-    {
-        return true;
-    }
-    fs::read_to_string(crate::agent_sheet::sheet_path(dir))
-        .map(|c| {
-            c.lines()
-                .any(|l| md::is_task(l) && !md::task_text(l).trim().is_empty())
-        })
-        .unwrap_or(false)
-}
-
 /// A sheet's content with its title line and `Version:` line dropped - the part that gets
 /// re-attached under a freshly written head.
 fn body_after_head(content: &str) -> Vec<String> {
@@ -1945,9 +1920,7 @@ Declare it beta first: notes projects --stage {name} --set beta"
 ///    frozen note, on no list anyone reads. `--force` is the deliberate override.
 /// 2. **Freeze.** The current wave alone goes into `versions/<vX.Y.Z>.md` (never
 ///    overwriting a frozen one), stamped with the epoch that bounds this version's work.
-/// 3. **Pair.** The version's `agent/versions/<vX.Y.Z>.md` is created if absent, so a frozen version
-///    always has its evidence note even when no AI task was tagged during it.
-/// 4. **Promote.** A planned `## Wave: <next>` becomes current, carrying its tasks; the
+/// 3. **Promote.** A planned `## Wave: <next>` becomes current, carrying its tasks; the
 ///    rest of the roadmap carries over untouched.
 ///
 /// No sheet means no roll: the `Version:` line is the only thing naming the open version.
@@ -2045,15 +2018,10 @@ pub fn roll(
         fs::write(&frozen, &stamped)?;
     }
 
-    // 3. the pair
-    if version_had_agent_work(&frozen_body, &dir) {
-        ensure_agent_note(&dir, name, &fmt_version(cur))?;
-    }
-
-    // 3b. the agent board follows: same version, same carry, its done rows to the pair note
+    // the agent board follows: same version, same carry, its done rows to the version's note
     let agent = roll_agent_board(&dir, name, cur, next)?;
 
-    // 4. the promote
+    // 3. the promote
     md::write_atomic(&sheet, &new_sheet)?;
 
     let next_s = fmt_version(next);
@@ -2397,12 +2365,6 @@ fn relocate_ai_dir(dir: &Path) -> Result<usize> {
     Ok(n)
 }
 
-/// Every violation of the version-pairing invariant, as `"<project> <detail>"` lines.
-///
-/// The invariant: `agent/versions/<ver>.md` exists exactly when `versions/<ver>.md` records completed
-/// `#ai` work. Both directions are findings - a version with agent work and no evidence
-/// note, and an evidence note for a version that was never frozen. The OPEN version is
-/// exempt in the second direction: its human side is the live sheet, not a frozen note.
 /// Sheets where the roadmap's first `## Wave` does NOT name the declared `Version:`.
 ///
 /// This is the invariant every reader leans on without checking: `project_tasks::current_wave`,
@@ -2557,6 +2519,8 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
         .collect()
 }
 
+/// Agent notes for a version that was never frozen, as `"<project> <detail>"` lines. The OPEN
+/// version is exempt: its human side is the live sheet, not a frozen note.
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     for (name, summary) in indexed(p) {
@@ -2565,20 +2529,6 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
         };
         let open = open_version(dir).map(fmt_version);
 
-        let mut frozen: Vec<String> = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir.join("versions")) {
-            for e in entries.flatten() {
-                let path = e.path();
-                let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if parse_version(ver).is_none() {
-                    continue;
-                }
-                frozen.push(ver.to_string());
-            }
-        }
-
         if let Ok(entries) = fs::read_dir(agent_dir(dir).join("versions")) {
             for e in entries.flatten() {
                 let path = e.path();
@@ -2586,7 +2536,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                     continue;
                 };
                 if parse_version(ver).is_none()
-                    || frozen.iter().any(|f| f == ver)
+                    || dir.join("versions").join(format!("{ver}.md")).exists()
                     || open.as_deref() == Some(ver)
                 {
                     continue;
@@ -3215,15 +3165,6 @@ Version: v1.13.0
         );
     }
 
-    /// A scratch project dir with no agent sheet, so `version_had_agent_work` is deciding on
-    /// the frozen body alone.
-    fn no_agent_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("notes-pair-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
-
     // The boards render only the CURRENT wave, so sizing this off what a board shows would
     // leave every planned wave tagged with nothing to say so. On the live vault that is 14
     // of 34 open rows.
@@ -3288,50 +3229,6 @@ Version: v1.13.0
         let (twice, n2) = strip_ai_tags(&once);
         assert_eq!((n1, n2), (1, 0));
         assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn a_version_pairs_only_when_it_actually_closed_agent_work() {
-        let d = no_agent_dir("legacy");
-        // Completed and tagged: a version opened before the lane moved has evidence to hold.
-        assert!(version_had_agent_work("- [x] ship the thing #ai\n", &d));
-        // Tagged but not finished, and finished but not tagged: neither is agent evidence.
-        assert!(!version_had_agent_work("- [ ] ship the thing #ai\n", &d));
-        assert!(!version_had_agent_work("- [x] ship the thing\n", &d));
-        // A human-only version must NOT get an empty agent note, or an orphan report that
-        // reads "unpaired" stops meaning anything.
-        assert!(!version_had_agent_work(
-            "# d\nVersion: v1.0.0\n\n- [x] a\n- [ ] b #ai\n",
-            &d
-        ));
-        // The `#aid` trap: a substring match here would pair a version with no agent work.
-        assert!(!version_had_agent_work(
-            "- [x] fix the first-aid page #aid\n",
-            &d
-        ));
-        let _ = fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn an_agent_sheet_with_real_work_pairs_a_version_that_carries_no_tag() {
-        let d = no_agent_dir("sheet");
-        fs::create_dir_all(d.join("agent")).unwrap();
-        // The scaffold's empty placeholder is not work, so it must not pair a version.
-        fs::write(
-            d.join("agent/README.md"),
-            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n- [ ] \n",
-        )
-        .unwrap();
-        assert!(!version_had_agent_work("- [x] a human row\n", &d));
-
-        fs::write(
-            d.join("agent/README.md"),
-            "# d - agent board\nVersion: v1.0.0\n\n## Wave: v1.0.0 (current)\n\
-             - [x] broke the 413 path into three cases\n",
-        )
-        .unwrap();
-        assert!(version_had_agent_work("- [x] a human row\n", &d));
-        let _ = fs::remove_dir_all(&d);
     }
 
     /// A scratch project dir, unique per test and per thread.

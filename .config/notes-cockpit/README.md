@@ -126,8 +126,7 @@ v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> work the promoted v1.14.
 
 ### Agent notes and the proof gate (`agent/versions/<vX.Y.Z>.md`)
 
-Each version gets an agent note. The agents' half of a project lives under `agent/`, the same
-shape as the human's half one level down:
+A version's agent note is made the first time something goes into it: archived board rows, or what agents noted. The agents' half of a project lives under `agent/`, the same shape as the human's half one level down:
 
 ```
 myapp/
