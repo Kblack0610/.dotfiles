@@ -178,6 +178,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/block-poll.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Grep|Glob|Bash",
         "hooks": [
           {

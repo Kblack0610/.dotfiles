@@ -12,7 +12,7 @@ metadata:
 
 One pass that spends fewer tokens on the same work. It produces a measured baseline, a ranked list of where the tokens go, one PR per lever that removes the waste, and the same numbers again afterwards, so the next pass starts from a counted line rather than a feeling.
 
-The numbers come from `agent-usage burn` (`.local/bin/agent-usage`, `.local/lib/agent-usage-burn.py`). It owns cost, PRs and the session splits; per-response tokens and tool output are `claude-recall tool-output`'s. The nightly `agent-usage tokens snapshot` keeps both per day in `~/.agent/token-usage/`, so read the last 7 for a trend before measuring anew. When a tool lacks a number you need, extend it with a fixture test instead of counting by hand. This file holds only the procedure.
+The numbers come from `agent-usage burn` (`.local/bin/agent-usage`, `.local/lib/agent-usage-burn.py`). It owns cost, PRs and the session splits; per-response tokens and tool output are `claude-recall tool-output`'s, and what each call costs in responses is `claude-recall tool-calls`'s. The nightly `agent-usage tokens snapshot` keeps both per day in `~/.agent/token-usage/`, so read the last 7 for a trend before measuring anew. When a tool lacks a number you need, extend it with a fixture test instead of counting by hand. This file holds only the procedure.
 
 ## When to Use
 
@@ -33,7 +33,8 @@ The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no de
 3. **Find the burn.** Put the tokens in buckets. Each bucket gets a measured number and the file or behaviour behind it:
    - fixed context per turn: CLAUDE.md layers, MEMORY.md, preflight, skill, agent and command listings, MCP servers;
    - compaction;
-   - waiting turns (sleep loops, `--watch`, re-reading task output);
+   - waiting turns (sleep loops, `--watch`, re-reading task output, background runs nothing else used: `tool-calls` `bg_short_idle`);
+   - tool calls (`claude-recall tool-calls`: failures by class, denied calls, serial reads, repeats, ToolSearch loads, Agent reports, MCP calls);
    - idle wakes (cache rewrites after a gap, sorted by what woke the session);
    - duplicate work (a phase or gate run twice, an ask filed again);
    - oversized models for the lane (`model-lane`);
