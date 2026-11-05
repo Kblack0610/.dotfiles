@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
-# Tier 3: `fleet-shepherd run` starts its pass as window shepherd of the dotfiles session on a
-# REAL tmux server, in ~/.dotfiles, and respawns that window in place on the next run. Every
-# other collaborator is a stub; the pass's agentctl-run records its cwd and signals the test
-# through tmux wait-for instead of calling a model. Container only, like every ui test.
+# Tier 3: `fleet-shepherd run` on a REAL tmux server. Every run starts a pass in a window of the
+# shepherd session, in ~/.dotfiles; a conversation with an older pass stays in its pane, and a pass
+# is found by its pane wherever a resume put it. Every other collaborator is a stub; the pass's
+# agentctl-run records what it was given and signals the test through tmux wait-for instead of
+# calling a model. Container only, like every ui test.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -22,22 +23,29 @@ setup() {
   stub fleet-sessions ':'
   stub fleet-assess '[ "${1:-}" = --blocked ] || echo "verdict: CLEAR load 0.5x"'
   stub agent-hold ':'
-  stub agent-notify ':'
+  stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub watch-companion-loop ':'
   stub fleet-bench ':'
-  stub claude-acct 'exit 0'
+  stub claude-acct 'case "$1" in
+  room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM:-}" ;;
+  pick) echo "$HOME/.claude-best" ;;
+esac'
   stub agentctl ':'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
-  stub agentctl-run "pwd >> \"\$HOME/pass.cwd\"; \"$REAL_TMUX\" -L $SRV wait-for -S pass"
+  # With $HOME/hold there, the pass stays in its pane the way a claude does, until the server goes.
+  stub agentctl-run "pwd >> \"\$HOME/pass.cwd\"
+echo \"\${CLAUDE_CONFIG_DIR:-}\" >> \"\$HOME/pass.config\"
+printf '%s' \"\${@: -1}\" > \"\$HOME/last-prompt\"
+\"$REAL_TMUX\" -L $SRV wait-for -S pass
+[ ! -e \"\$HOME/hold\" ] || exec \"$REAL_TMUX\" -L $SRV wait-for hold"
   export PROM_LIB="$HOME/prom-stub.sh"
   echo 'prom_q() { printf %s "{\"status\":\"success\",\"data\":{\"result\":[{\"value\":[0,\"0\"]}]}}"; }' > "$PROM_LIB"
 
-  # The hub's dotfiles session with an agent window, a decoy named like the pass window, and the
-  # session passes ran in before the move.
+  # The hub's dotfiles world with an agent window, and the shepherd's with its shell window.
   t new-session -d -s dotfiles -n claude -c "$HOME"
   t set-option -g remain-on-exit on
-  t new-window -d -t '=dotfiles:' -n shepherd-old
-  t new-session -d -s shepherd
+  t set-hook -g pane-died 'wait-for -S died'
+  t new-session -d -s shepherd -n base
 }
 
 teardown() {
@@ -47,36 +55,138 @@ teardown() {
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 t() { "$REAL_TMUX" -L "$SRV" -f /dev/null "$@"; }
-windows() { t list-windows -t '=dotfiles' -F '#{window_name}' | paste -sd' '; }
+windows() { t list-windows -t "=$1" -F '#{window_name}' | paste -sd' '; }
 # ran: block until the pass's stub has run in its pane (it signals channel pass), 10s guard.
 ran() { timeout 10 "$REAL_TMUX" -L "$SRV" wait-for pass || fail "the pass never ran in its pane"; }
+# ended: the same, then block until its pane is dead (the pane-died hook signals channel died).
+ended() { ran; timeout 10 "$REAL_TMUX" -L "$SRV" wait-for died || fail "the pass's pane never died"; }
+pass_id() { cut -f1 "$FLEET_SHEPHERD_DIR/.pass"; }
+pass_pane() { cut -f4 "$FLEET_SHEPHERD_DIR/.pass"; }
+# window_of <pane>: its window name; empty when the pane is gone.
+window_of() { t list-panes -a -F '#{pane_id} #{window_name}' | awk -v p="$1" '$1 == p { print $2 }'; }
+live() {
+  mkdir -p "$HOME/.claude/sessions"
+  jq -n --argjson p "$$" --arg s "$1" --arg st "$2" --arg t "${3:-}" '{pid:$p, sessionId:$s, status:$st} + (if $t == "" then {} else {tmux:$t} end)' > "$HOME/.claude/sessions/$1.json"
+}
+said() {
+  mkdir -p "$HOME/.claude/projects/-home"
+  jq -nc --arg at "$(date -u -d "@$2" +%FT%T.000Z)" --arg text "$3" '{type:"user", turnOrigin:"human", timestamp:$at, message:{content:$text}}' >> "$HOME/.claude/projects/-home/$1.jsonl"
+}
 
-@test "the pass is window shepherd of the dotfiles session, in ~/.dotfiles, and the next run respawns it in place" {
+@test "every run starts a pass in a window of session shepherd, in ~/.dotfiles; a finished one closes and session dotfiles is untouched" {
   run "$SH" run
   assert_success
-  assert_output --partial "attach -t dotfiles:shepherd"
-  ran
-  assert_equal "$(windows)" 'claude shepherd-old shepherd'
+  assert_output --partial 'attach -t shepherd:shepherd'
+  ended
+  assert_equal "$(windows shepherd)" 'base shepherd'
+  assert_equal "$(windows dotfiles)" 'claude'
   assert_equal "$(cat "$HOME/pass.cwd")" "$HOME/.dotfiles"
-  # no session was made, and the old session stays: no pass was ever recorded in it
-  assert_equal "$(t list-sessions -F '#{session_name}' | sort | paste -sd' ')" 'dotfiles shepherd'
   [ ! -e "$HOME/tmx.calls" ]
-  # The pass ended (gone) having logged a move: the next run scores it WORKED and respawns the
-  # same window, not a second one.
+  # The pass ended having logged a move: the next run scores it WORKED, starts another, and only
+  # the finished pass's pane goes.
   echo "- moved a" >> "$FLEET_SHEPHERD_DIR/log.md"
   run "$SH" run
   assert_success
-  ran
-  assert_equal "$(windows)" 'claude shepherd-old shepherd'
+  ended
+  assert_equal "$(windows shepherd)" 'base shepherd'
+  assert_equal "$(windows dotfiles)" 'claude'
   assert_equal "$(wc -l < "$HOME/pass.cwd")" 2
 }
 
-@test "an idle pass recorded in the old shepherd session closes that session; the new pass is a window" {
-  printf '%s\t%s\t1\n' 11111111-2222-3333-4444-555555555555 "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
-  # it has no proof mark, so it scores STALLED; the verdict is not what this test is about
+@test "the human talking to a pass: the sweep still runs and the conversation's pane is left as it was, then closes once idle" {
+  touch "$HOME/hold"
   run "$SH" run
-  assert_output --partial 'closed session shepherd'
   ran
-  assert_equal "$(t list-sessions -F '#{session_name}')" dotfiles
-  assert_equal "$(windows)" 'claude shepherd-old shepherd'
+  local id pane new
+  id="$(pass_id)" pane="$(pass_pane)"
+  live "$id" busy
+  said "$id" $(( $(date +%s) - 120 )) '/fleet-lead pass'
+  said "$id" $(( $(date +%s) - 60 )) 'why is agent-47 stalled?'
+  run "$SH" run
+  assert_success
+  refute_output --partial 'talking'
+  ran
+  new="$(pass_id)"
+  [ "$new" != "$id" ]
+  # it was not touched: same pane, alive, under a name of its own, and nothing typed into it
+  assert_equal "$(window_of "$pane")" "shepherd-${id:0:8}"
+  assert_equal "$(t list-panes -a -f "#{==:#{pane_id},$pane}" -F '#{pane_dead}')" 0
+  assert_equal "$(t capture-pane -p -t "$pane" | tr -d '[:space:]')" ''
+  run cat "$HOME/last-prompt"
+  assert_line "Handover: $FLEET_SHEPHERD_DIR/.handover-$new"
+  grep -qxF 'why is agent-47 stalled?' "$FLEET_SHEPHERD_DIR/.handover-$new"
+  assert_equal "$(windows shepherd)" "base shepherd-${id:0:8} shepherd"
+  # the human moved on with the new pass: the old one, idle, winds down
+  echo "- answered the human" >> "$FLEET_SHEPHERD_DIR/log.md"
+  live "$id" idle
+  live "$new" busy
+  run "$SH" run
+  assert_success
+  ran
+  assert_equal "$(window_of "$pane")" ''
+  # Negative control: the pass that was only working stays, under its own name.
+  assert_equal "$(windows shepherd)" "base shepherd-${new:0:8} shepherd"
+}
+
+@test "a pass hub resumed in a window named by its id, in another session, is found by its pane and named back" {
+  touch "$HOME/hold"
+  run "$SH" run
+  ran
+  local id old where
+  id="$(pass_id)" old="$(pass_pane)"
+  where="$(t new-window -d -P -F '#{window_id}.#{pane_id}' -t '=dotfiles:' -n "${id:0:8}" "'$REAL_TMUX' -L $SRV wait-for hold")"
+  t kill-pane -t "$old"
+  live "$id" busy "dotfiles:$where"
+  run "$SH" stats
+  assert_success
+  assert_equal "$(jq -c '[.pass_running, .pass_status, .attach]' <<< "$output")" "[true,\"busy\",\"tmux -L $SRV attach -t dotfiles:$(t list-windows -t =dotfiles -F '#{window_index} #{window_name}' | awk -v n="${id:0:8}" '$2 == n { print $1 }')\"]"
+  # Negative control: the registry naming another session's pane is not the pass.
+  live "$id" busy "other:$where"
+  run "$SH" stats
+  assert_equal "$(jq -r .attach <<< "$output")" "tmux -L $SRV attach -t shepherd:shepherd"
+  live "$id" busy "dotfiles:$where"
+  run "$SH" run
+  assert_success
+  ran
+  assert_equal "$(windows dotfiles)" "claude shepherd-${id:0:8}"
+  assert_equal "$(windows shepherd)" 'base shepherd'
+}
+
+@test "the launcher a pane runs is on the account with room; with none it is the best one, and the human is paged once" {
+  STUB_ROOM="$HOME/.claude-acct2" run "$SH" run
+  assert_success
+  ended
+  assert_equal "$(tail -n 1 "$HOME/pass.config")" "$HOME/.claude-acct2"
+  [ ! -e "$HOME/pages" ]
+  echo "- moved a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  STUB_NO_ROOM=1 run "$SH" run
+  assert_success
+  ended
+  assert_equal "$(tail -n 1 "$HOME/pass.config")" "$HOME/.claude-best"
+  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 1
+}
+
+@test "killing session dotfiles leaves the pass running" {
+  touch "$HOME/hold"
+  run "$SH" run
+  ran
+  local pane; pane="$(pass_pane)"
+  t kill-session -t '=dotfiles'
+  assert_equal "$(window_of "$pane")" shepherd
+  # Negative control: the same kill on the pass's own session does take it.
+  t kill-session -t '=shepherd'
+  assert_equal "$(window_of "$pane")" ''
+}
+
+@test "with no session shepherd the pass still starts: hub's manifest makes it" {
+  export TMUX_SERVERS_DIR="$HOME/servers"
+  mkdir -p "$TMUX_SERVERS_DIR"
+  cp "$REPO_ROOT/.config/tmux-servers/hub.conf" "$TMUX_SERVERS_DIR/$SRV.conf"
+  stub tmx "exec \"$REPO_ROOT/.local/bin/tmx\" \"\$@\""
+  t kill-session -t '=shepherd'
+  run "$SH" run
+  assert_success
+  ended
+  t has-session -t '=shepherd'
+  assert_equal "$(t list-windows -t =shepherd | wc -l)" 2
 }
