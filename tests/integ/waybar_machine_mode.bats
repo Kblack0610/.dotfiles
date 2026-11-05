@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# machine_mode.sh: the waybar chip. What these pin: the bar is the mode word, neutral in every
-# mode because a mode is a choice and not a health state (dashboards.md rule 5); amber only when
+# machine_mode.sh: the waybar chip. What these pin: the bar is the mode's initial, because the bar
+# has no width to spare, and neutral in every mode because a mode is a choice and not a health
+# state (dashboards.md rule 5); amber only when
 # the runner part never reached the cluster; the hover is the command's own output, escaped; the
 # chip has no text on a machine with no pool runners; the module is wired for the toggle.
 
@@ -22,20 +23,20 @@ setup() {
 
 mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME/.agent/machine-mode.env"; }
 
-@test "the bar is the mode word, neutral in every mode" {
-  for m in reserved shared open; do
-    mode "$m"
+@test "the bar is the mode's initial, neutral in every mode" {
+  for m in reserved:R shared:S open:O; do
+    mode "${m%:*}"
     run "$MODULE"
     assert_success
-    assert_equal "$(jq -r .text <<< "$output")" "$ICON $m"
+    assert_equal "$(jq -r .text <<< "$output")" "$ICON ${m#*:}"
     assert_equal "$(jq -r .class <<< "$output")" ok
   done
 }
 
-@test "a switch that never reached the cluster paints the word amber" {
+@test "a switch that never reached the cluster paints the initial amber" {
   mode reserved no
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "$ICON <span color='#ffcc2f'>reserved</span>"
+  assert_equal "$(jq -r .text <<< "$output")" "$ICON <span color='#ffcc2f'>R</span>"
   assert_equal "$(jq -r .class <<< "$output")" warn
   assert_equal "$(jq -r '.tooltip | contains("was not applied")' <<< "$output")" true
 }
