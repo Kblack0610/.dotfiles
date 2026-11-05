@@ -84,6 +84,24 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
+@test "settle-session answers an ask with options only when the message names exactly one" {
+  local id both
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'go|later' --recommend go 'run the cleanup now?')"
+  # Negative controls: an unrelated message, a word that only contains an option, and a message
+  # naming both options all leave it pending.
+  "$AGENT_ASK" settle-session sid-1 answered "whats going on here?"
+  "$AGENT_ASK" settle-session sid-1 answered "ok how many phases left?"
+  "$AGENT_ASK" settle-session sid-1 answered "go now or later, you pick"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  run "$AGENT_ASK" settle-session sid-1 answered "Go, run it"
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answer: go'
+  assert_line 'answered_by: human'
+}
+
 @test "settle-session closes only that session's pending asks" {
   local mine other done_
   mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
