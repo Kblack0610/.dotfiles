@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # Tier 3: Prefix y, the questions panel, through real fzf on a real tmux server at a laptop
-# size and a desk size. The list and the card share one screen, ctrl-/ moves the card beside
-# the list and then hides it, and an answer is given without leaving. Container only.
+# size and a desk size. The list and the card share one screen, the card beside the list by
+# default; ctrl-/ moves it under the list, then hides it, and an answer is given without
+# leaving. Container only.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -30,28 +31,47 @@ open_panel() { tmux_start "$REPO_ROOT/.local/src/tmux/questions.sh"; }
 # keep_screen <name>: the capture the PR body shows (dashboards.md rule 14).
 keep_screen() { mkdir -p "$REPO_ROOT/tests/artifacts"; screen >"$REPO_ROOT/tests/artifacts/questions_$1.screen"; }
 
-@test "at 80x24 the list sits on top, the card below, and the keys in the footer" {
+# side_by_side: the card's first line has list text and a border to its left. Stacked, the
+# card line starts at the panel's own border.
+side_by_side() { screen_matches '^│.+│ asking you'; }
+# card_col: the screen column the card starts at (its border), ASCII-folded so awk counts columns.
+card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "| asking you"); exit }'; }
+
+@test "at 80x24 the card opens beside the list, and the keys sit in the footer" {
   local t0; t0="$(date +%s%N)"
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   echo "# first paint with the card: $((($(date +%s%N) - t0) / 1000000)) ms" >&3
   screen_has '3 waiting'
-  screen_has 'Make stacked the default?'
-  screen_has 'Ship the map?'
   screen_has '1-9 pick . enter send'
-  # Stacked: no row has the card beside it.
-  run screen_matches 'Keep the merge queue\?.*│ Make stacked the default\?'
-  assert_failure
-  keep_screen stacked_80x24
+  side_by_side
+  keep_screen side_80x24
 }
 
-@test "ctrl-/ puts the card beside the list, then hides it" {
+@test "side by side the card takes most of the screen and a long question is not cut" {
+  local long size w
+  long="$("$AGENT_ASK" post --project delta --session agent-4 --options 'now=start the sweep before the nightly run|later=wait for the nightly run to finish first' 'The nightly sweep and the cache rebuild both want the runner pool tonight, so which one goes first and which one waits for the other to finish?')"
+  sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$long")"
+  for size in 144x33 200x50; do
+    w="${size%x*}"
+    TM_WIDTH="$w" TM_HEIGHT="${size#*x}" open_panel
+    wait_until 'side_by_side && screen_has "waits for the other to finish?"'
+    screen_has 'wait for the nightly run to finish first'
+    [ "$(card_col)" -le $((w * 40 / 100)) ] || { echo "card starts at col $(card_col) of $w"; false; }
+    keep_screen "side_$size"
+    close_panel
+  done
+}
+
+@test "ctrl-/ puts the card under the list, then hides it" {
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
-  wait_until 'screen_has "list on top, card below"'
-  keep_screen stacked_200x50
-  tmux_keys C-/
-  wait_until 'screen_matches "Keep the merge queue\?.*│ Make stacked the default\?"'
+  wait_until 'side_by_side'
   keep_screen side_200x50
+  tmux_keys C-/
+  wait_until 'screen_has "list on top, card below" && ! side_by_side'
+  run screen_matches 'Keep the merge queue\?.*│ Make stacked the default\?'
+  assert_failure
+  keep_screen stacked_200x50
   tmux_keys C-/
   wait_until 'screen_lacks "list on top, card below"'
   screen_has 'Make stacked the default?'
@@ -62,25 +82,25 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
 
 @test "the panel reopens in the layout ctrl-/ left it in, and hidden is never kept" {
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
-  wait_until 'screen_has "list on top, card below"'
+  wait_until 'side_by_side'
   tmux_keys C-/
-  wait_until 'screen_matches "Keep the merge queue\?.*│ Make stacked the default\?"'
-  close_panel
-  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = side ]
-  TM_WIDTH=200 TM_HEIGHT=50 open_panel
-  wait_until 'screen_matches "Keep the merge queue\?.*│ Make stacked the default\?"'
-  keep_screen reopened_side_200x50
-  # side -> stacked -> hidden: closed while hidden, it reopens stacked, the last one shown.
-  tmux_keys C-/
-  wait_until 'screen_has "list on top, card below" && ! screen_matches "Keep the merge queue\?.*│ Make stacked"'
-  tmux_keys C-/
-  wait_until 'screen_lacks "list on top, card below"'
+  wait_until 'screen_has "list on top, card below" && ! side_by_side'
   close_panel
   [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = stacked ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'screen_has "list on top, card below"'
-  run screen_matches 'Keep the merge queue\?.*│ Make stacked the default\?'
+  run side_by_side
   assert_failure
+  keep_screen reopened_stacked_200x50
+  # stacked -> side -> hidden: closed while hidden, it reopens side, the last one shown.
+  tmux_keys C-/
+  wait_until 'side_by_side'
+  tmux_keys C-/
+  wait_until 'screen_lacks "list on top, card below"'
+  close_panel
+  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = side ]
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'side_by_side'
 }
 
 @test "a number then enter answers in place: the row leaves and the count drops" {
@@ -92,7 +112,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
   wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
-  screen_has 'sent "stacked" to agent-1'
+  screen_has 'sent "stacked" to'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
 }
@@ -112,9 +132,49 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys t
-  wait_until "screen_has 'answer $OLD>'"
+  wait_until "screen_has 'answering alpha:1:'"
+  screen_matches '^│ answer> +│'
+  keep_screen typing_80x24
   tmux_type 'both, stacked first'
   tmux_keys Enter
   wait_until 'screen_has "2 waiting"'
   grep -qx 'answer: both, stacked first' "$(ask_file "$OLD")"
+}
+
+@test "a second typed answer starts on an empty line, not the last one's text" {
+  TM_WIDTH=80 TM_HEIGHT=24 open_panel
+  wait_until 'screen_has "list on top, card below"'
+  tmux_keys t
+  wait_until "screen_has 'answering alpha:1'"
+  tmux_type 'stacked'
+  tmux_keys Enter
+  wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
+  tmux_keys t
+  wait_until "screen_has 'answering beta:2:'"
+  screen_matches '^│ answer> +│'
+  screen_lacks 'stacked'
+  tmux_type 'keep'
+  tmux_keys Enter
+  wait_until 'screen_has "1 waiting" && screen_lacks "Keep the merge queue?"'
+  grep -qx 'answer: keep' "$(ask_file "$MID")"
+  # esc from typing puts the count back in the header.
+  tmux_keys t
+  wait_until "screen_has 'answering gamma:3'"
+  tmux_keys Escape
+  wait_until 'screen_has "1 waiting" && screen_lacks "answering"'
+}
+
+@test "g goes to the asking session and closes the panel" {
+  sed -i 's/^claude_session: .*/claude_session: sid-old/' "$(ask_file "$OLD")"
+  printf '%s\n' '{"session_id":"sid-old","target":"hub/alpha:3"}' >"$NOTES_FIXTURE/agent-panel.list"
+  TM_WIDTH=80 TM_HEIGHT=24 open_panel
+  wait_until 'screen_has "list on top, card below"'
+  tmux_keys Down
+  tmux_keys g
+  wait_until 'screen_has "no Claude session owns"'
+  tmux_keys Up
+  tmux_keys g
+  wait_until 'grep -qx "agent-panel jump hub/alpha:3" "$NOTES_FIXTURE/calls.log"'
+  wait_until '! _tm has-session 2>/dev/null'
+  [ "$(status_of "$OLD")" = pending ]
 }

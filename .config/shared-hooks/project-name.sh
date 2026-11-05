@@ -123,6 +123,22 @@ project_of_repos_json() {
        | {key: ., value: ($by_base[.] // $map.aliases[.] // $map.aliases[$b] // $b)}] | from_entries'
 }
 
+# project_slug <project> -> a short name for a row that has no room: `trackers.<project>.slug`
+# when the registry sets one, else the name itself up to 8 characters, else the initials of
+# its hyphenated parts (unity-core-playground -> ucp), else its first 8 characters.
+project_slug() {
+  local own name="$1" part out=""
+  own="$(project_field "$name" slug)"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  if [ "${#name}" -le 8 ]; then printf '%s\n' "$name"; return 0; fi
+  if [[ "$name" == *-* ]]; then
+    for part in ${name//-/ }; do out+="${part:0:1}"; done
+    printf '%s\n' "$out"
+    return 0
+  fi
+  printf '%s\n' "${name:0:8}"
+}
+
 # ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
