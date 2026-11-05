@@ -285,10 +285,16 @@ fn rows_text(rows: &[render::Row]) -> String {
 }
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
-/// from a key shows without leaving the chooser.
-pub fn run_rows(map_file: &Path) -> Result<()> {
-    println!("{}", rows_text(&write_rows(&collect(), map_file)?));
+/// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
+/// the human (ctrl-y).
+pub fn run_rows(map_file: &Path, asking: bool) -> Result<()> {
+    println!("{}", rows_text(&write_rows(&only_asking(collect(), asking), map_file)?));
     Ok(())
+}
+
+/// The agents ctrl-y shows: all of them, or with `asking` only those that need the human.
+fn only_asking(agents: Vec<Agent>, asking: bool) -> Vec<Agent> {
+    agents.into_iter().filter(|a| !asking || a.needs_attention()).collect()
 }
 
 /// Jump to one `<server>/<session>:<window>` target, for surfaces that list agents
@@ -506,6 +512,18 @@ mod tests {
             attached,
             ..Agent::default()
         }
+    }
+
+    #[test]
+    fn ctrl_y_keeps_only_the_sessions_waiting_on_the_human() {
+        let prompt = Agent { glyph: '!', ..live_agent("hub", "a", false) };
+        let busy = Agent { glyph: '~', ..live_agent("hub", "b", false) };
+        let pending = Agent { ask: Some("x1".into()), ..live_agent("hub", "c", false) };
+        let agents = vec![pending, busy, prompt];
+        let kept: Vec<_> = only_asking(agents.clone(), true).into_iter().map(|a| a.target).collect();
+        assert_eq!(kept, ["hub/c:1", "hub/a:1"]);
+        // Off: every agent, in order.
+        assert_eq!(only_asking(agents, false).len(), 3);
     }
 
     #[test]

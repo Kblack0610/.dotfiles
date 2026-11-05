@@ -4,6 +4,15 @@ license: Apache-2.0
 description: >-
   Reference for the metavr (Meta VR) CLI: install, devices, commands, MCP mode, docs search, deploy, perf. Use for metavr install, syntax, or "what can metavr do". Unclear build path: hz-quest-verify-first.
 allowed-tools: Bash(metavr:*), Bash(npx:*)
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, cli]

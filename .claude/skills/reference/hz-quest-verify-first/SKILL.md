@@ -4,6 +4,15 @@ license: Apache-2.0
 description: >-
   MANDATORY before answering or coding for Meta Quest or Horizon OS: check Meta sources via metavr before trusting memory. Applies in any Quest project (OVR, Meta XR, com.oculus.*).
 allowed-tools: Bash(metavr:*), Bash(npx:*)
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, docs]

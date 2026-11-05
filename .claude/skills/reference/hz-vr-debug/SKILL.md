@@ -3,6 +3,15 @@ name: hz-vr-debug
 license: Apache-2.0
 description: "Debugs Meta VR and Horizon OS VR, MR, and Android applications using the metavr CLI - view logs, capture screenshots, and diagnose common issues. Use when troubleshooting crashes, errors, or unexpected behavior on Meta VR devices. Build paths: All; use hz-quest-verify-first if the path is unclear."
 allowed-tools: Bash(metavr:*), Bash(hzdb:*), Bash(npx:*)
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, debugging]
