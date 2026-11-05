@@ -924,7 +924,7 @@ pub fn step(
 /// checkboxes it counts mean something. Two doors, deliberately:
 ///
 /// - `--proof <ref>` — something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped
-///   into the line's marker comment beside any existing `vk:`/`ask:` id.
+///   into the line's marker comment beside any existing `id:`/`ask:` key.
 /// - `--unverified "<why>"` — no checkable artifact exists. Also stamped, and visibly so,
 ///   because the failure mode of a proof field is not people lying in it, it is people
 ///   leaving it blank until it means nothing. The manual walk has the same
@@ -1627,12 +1627,12 @@ Version: v1.13.0
     }
 
     // The stamp joins whatever marker the line already carries rather than opening a
-    // second comment - `vk:`/`ask:` readers scan inside the one comment.
+    // second comment - `id:`/`ask:` readers scan inside the one comment.
     #[test]
     fn the_stamp_merges_into_an_existing_marker() {
-        let line = "- [ ] facility save 400 #ai <!-- vk:602 -->";
+        let line = "- [ ] facility save 400 #ai <!-- id:pmp-602 -->";
         let out = md::add_marker(&md::set_checkbox(line, 'x'), "pr:1142");
-        assert_eq!(out, "- [x] facility save 400 #ai <!-- vk:602 pr:1142 -->");
+        assert_eq!(out, "- [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->");
         assert_eq!(out.matches("<!--").count(), 1);
     }
 

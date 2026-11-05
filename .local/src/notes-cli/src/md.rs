@@ -228,12 +228,12 @@ pub fn cu_marker(line: &str) -> Option<String> {
 /// comment when the line has none:
 ///
 /// ```text
-/// - [x] facility save 400 #ai <!-- vk:602 -->   + "pr:1142"
-/// - [x] facility save 400 #ai <!-- vk:602 pr:1142 -->
+/// - [x] facility save 400 #ai <!-- id:pmp-602 -->   + "pr:1142"
+/// - [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->
 /// ```
 ///
-/// ONE comment per line is the established shape (`vk:`, `ask:`, `pr:` all share it), and
-/// the cockpit's `ask:`/`vk:` readers scan for their own key inside it — so a second
+/// ONE comment per line is the established shape (`id:`, `ask:`, `pr:` all share it), and
+/// the cockpit's `ask:`/`id:` readers scan for their own key inside it, so a second
 /// `<!-- … -->` appended alongside would still parse but would drift out of sync the first
 /// time anything rewrote one of them. A `-->` inside `token` would close the comment early
 /// and swallow the rest of the line, so it is neutralised rather than trusted.
@@ -253,7 +253,7 @@ pub fn add_marker(line: &str, token: &str) -> String {
     }
 }
 
-/// The inner text of a line's trailing `<!-- ... -->` comment, where `pr:`, `ask:`, `vk:` and
+/// The inner text of a line's trailing `<!-- ... -->` comment, where `pr:`, `ask:`, `id:` and
 /// a `done` proof all live. `None` when it has none or it is empty.
 pub fn marker_of(line: &str) -> Option<String> {
     let t = line.trim_end().strip_suffix("-->")?;

@@ -101,8 +101,12 @@ fi
 # tracker line
 TRACKER=""
 if command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
-  TRACKER=$(jq -r --arg n "$PROJECT" '(.trackers[$n] // .trackers.default) | "\(.system) — \(.instance)"' "$MAP_FILE" 2>/dev/null)
+  TRACKER=$(jq -r --arg n "$PROJECT" '(.trackers[$n] // .trackers.default // {}) | .system // "none"' "$MAP_FILE" 2>/dev/null)
 fi
+case "$TRACKER" in
+  none) TRACKER="" ;;
+  board) TRACKER="board - \`notes ptask $PROJECT --agent list\`" ;;
+esac
 # newest outcomes month (agentctl-session-outcomes, nightly). Names sort by date.
 LATEST_OUTCOMES=$(ls "$OUTCOMES_DIR" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}\.jsonl$' | tail -1 || true)
 # Lab facts: ONE call, `notes projects --stats --json` (every profile, about 8 ms), kept
