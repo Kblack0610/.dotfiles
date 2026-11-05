@@ -907,16 +907,11 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
         for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
             if not isinstance(b, dict) or b.get("type") != "tool_result":
                 continue
-            rc = b.get("content")
-            if isinstance(rc, list):
-                size = sum(len(x.get("text") or "") for x in rc if isinstance(x, dict))
-            else:
-                size = len(str(rc or ""))
             tid = b.get("tool_use_id")
             name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "filetype": ftype, "kind": kind,
-                            "chars": size, "at": turns, "method": method_at(windows, ts),
+                            "chars": len(result_text(b)), "at": turns, "method": method_at(windows, ts),
                             "rewritten": tid in rewritten})
     settle(False)
 
@@ -1047,6 +1042,296 @@ def cmd_tool_output(a):
     return 0
 
 
+# --- tool-calls: what each call costs in responses ---------------------------
+# A response pays for the whole context, so a call's real price is the response after it. Each
+# count below carries `ctx`: the context tokens of the responses that pattern caused.
+FAIL_CLASSES = (
+    ("denied", re.compile(r"^(The user doesn't want to proceed|Permission (to use|for this)|User rejected)")),
+    ("hook", re.compile(r"^(<tool_use_error>)?\w*(Pre|Post)ToolUse\S* hook error")),
+    ("no-tool", re.compile(r"No such tool available")),
+    ("bad-input", re.compile(r"InputValidationError")),
+    ("not-read", re.compile(r"has not been read yet|modified since read")),
+    ("edit-miss", re.compile(r"String to replace not found|Found \d+ matches")),
+    ("no-file", re.compile(r"File does not exist|EISDIR|Path does not exist")),
+    ("zsh", re.compile(r"\(eval\):\d+: (no matches found|defining function based on alias|parse error|bad math)")),
+    ("exit-empty", re.compile(r"^Exit code \d+\s*$")),
+    ("exit", re.compile(r"^Exit code \d+")),
+)
+READONLY_HEADS = set("sed cat head tail ls rg grep find wc cut sort uniq jq awk stat file tree du df which pwd "
+                     "echo printf nl diff readlink basename dirname date tr fd less bat".split())
+READONLY_SUB = re.compile(r"^(git (status|log|show|diff|branch|rev-parse|rev-list|grep|ls-files|blame|worktree|remote"
+                          r"|cat-file|merge-base|describe|shortlog)|gh (pr|run|issue|repo|api|release) ?(view|list|"
+                          r"checks|diff|status)?$|agent-queue list|notes (list|show|board|ptask)|claude-recall .*)")
+TASK_DONE = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
+BG_OUTPUT = re.compile(r"/tasks/[\w.-]+\.output")
+WORD = re.compile(r"[\w./~@:-]{5,}")
+RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
+
+
+def readonly_call(name, inp):
+    if name in ("Read", "Grep", "Glob", "WebFetch", "WebSearch", "ToolSearch"):
+        return True
+    if name != "Bash" or inp.get("run_in_background"):
+        return False
+    cmd = inp.get("command") or ""
+    if re.search(r"(?<![0-9&])>(?!&)|\btee\b|sed -i|-delete|-exec|<<", cmd):
+        return False
+    for seg in SEGMENTS.split(cmd.strip()):
+        h = bash_head(seg)
+        if h != "?" and h not in READONLY_HEADS and not READONLY_SUB.match(h):
+            return False
+    return True
+
+
+def session_kind(path, entrypoint, prompt):
+    if "subagents" in path.parts:
+        return "subagent"
+    m = re.match(r"\s*<command-message>([\w:-]+)", prompt or "")
+    if entrypoint == "sdk-cli" or (m and m.group(1) in RUNNER_COMMANDS):
+        return "runner"
+    return "dispatched" if m and m.group(1) == "one-shot" else "hand"
+
+
+def fail_class(text):
+    for name, pat in FAIL_CLASSES:
+        if pat.search(text[:300]):
+            return name
+    return "other"
+
+
+def result_text(b):
+    rc = b.get("content")
+    if isinstance(rc, list):
+        return "".join(x.get("text") or "" for x in rc if isinstance(x, dict))
+    return str(rc or "")
+
+
+def tool_calls_file(path, since, until, seen_msgs, emit):
+    """Stream one transcript into responses and results, then emit('stat', key, n) per measure."""
+    resps, results, seg, entry, prompt, project = [], {}, 0, None, None, None
+    by_mid, notified = {}, {}
+    for line in path.open(errors="replace"):
+        if '"compact_boundary"' in line:
+            seg += 1
+            continue
+        if "<task-notification>" in line and '"tool_result"' not in line:
+            rec = parse_line(line)
+            m = rec and TASK_DONE.search(json.dumps(rec.get("message") or rec.get("content") or ""))
+            if m and rec.get("timestamp"):
+                notified.setdefault(m.group(1), (str(rec.get("timestamp") or ""), len(resps)))
+            continue
+        if '"type":"assistant"' not in line and '"type":"user"' not in line:
+            continue
+        rec = parse_line(line)
+        if not rec:
+            continue
+        if project is None and rec.get("cwd"):
+            project = stats_repo(project_of(rec, path))
+        msg = rec.get("message") or {}
+        if rec.get("type") == "user":
+            if prompt is None and not rec.get("isMeta"):
+                entry, prompt = rec.get("entrypoint"), user_text(rec) or None
+            for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    results[b.get("tool_use_id")] = (result_text(b), bool(b.get("is_error")))
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        mid = msg.get("id")
+        if not mid or (mid in seen_msgs and mid not in by_mid):
+            continue
+        r = by_mid.get(mid)
+        if r is None:
+            seen_msgs.add(mid)
+            u = msg.get("usage") or {}
+            r = by_mid[mid] = {"ts": str(rec.get("timestamp") or ""), "seg": seg, "calls": [],
+                               "ctx": sum(int(u.get(f) or 0) for f in USAGE_FIELDS[:3])}
+            resps.append(r)
+        for b in msg.get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                r["calls"].append((b.get("id"), b.get("name") or "?", b.get("input") or {}))
+    kind = session_kind(path, entry, prompt)
+    project = project or "?"
+    emit("session", kind, project)
+    last_in_seg, seen_words, repeats, edits = {}, set(), {}, 0
+    for i, r in enumerate(resps):
+        last_in_seg[r["seg"]] = i
+    for i, r in enumerate(resps):
+        nxt = resps[i + 1] if i + 1 < len(resps) and resps[i + 1]["seg"] == r["seg"] else None
+        later = last_in_seg[r["seg"]] - i
+        win = since <= r["ts"] < until
+        if win:
+            emit("n", kind, project, "responses", 1, r["ctx"])
+            if r["calls"]:
+                emit("n", kind, project, "tool_responses", 1, r["ctx"])
+            if len(r["calls"]) > 1:
+                emit("n", kind, project, "parallel_responses", 1, r["ctx"])
+        mutated = False
+        for tid, name, inp in r["calls"]:
+            text, err = results.get(tid, ("", False))
+            ro = readonly_call(name, inp)
+            mutated = mutated or not ro
+            seen_words.update(WORD.findall(json.dumps(inp)))
+            key = None
+            if name == "Bash":
+                key = ("Bash", inp.get("command"))
+            elif name == "Read":
+                key = ("Read", inp.get("file_path"), inp.get("offset"), inp.get("limit"))
+            elif name in ("Grep", "Glob"):
+                key = (name, json.dumps(inp, sort_keys=True))
+            prior = repeats.get(key) if key else None
+            if key:
+                repeats[key] = (r["seg"], edits)
+            if not win:
+                continue
+            nctx = nxt["ctx"] if nxt else 0
+            head = bash_head(inp.get("command") or "") if name == "Bash" else name
+            emit("tool", name, len(text), len(text) * later, nctx)
+            emit("n", kind, project, "calls", 1, nctx)
+            if name.startswith("mcp__"):
+                emit("group", "mcp", name.split("__")[1], 1, len(text) * later, nctx)
+            if prior and prior[0] == r["seg"] and ro:
+                emit("n", kind, project, "repeat_calls", 1, nctx)
+                emit("group", "repeat", head, 1, len(text) * later, nctx)
+                if prior[1] == edits:
+                    emit("n", kind, project, "repeat_unchanged", 1, nctx)
+            if err:
+                fc = fail_class(text)
+                emit("n", kind, project, "failed", 1, nctx)
+                emit("group", "fail", fc, 1, len(text) * later, nctx)
+                masked = re.sub(r"\d+", "N", re.sub(r"^Exit code \d+\s*", "", text)[:56]).replace("\n", " ")
+                emit("group", "fail_text", f"{fc}: {head}: {masked}", 1, 0, nctx)
+                if nxt and any(n == name for _, n, _ in nxt["calls"]):
+                    same = any(n == name and x == inp for _, n, x in nxt["calls"])
+                    emit("group", "retry", "same input" if same else "changed input", 1, 0, nctx)
+            if name == "ToolSearch":
+                emit("n", kind, project, "toolsearch", 1, nctx)
+            if name == "Agent":
+                emit("group", "agent", inp.get("subagent_type") or "general-purpose", 1,
+                     len(text) * later, nctx)
+            if name == "Bash" and inp.get("run_in_background"):
+                emit("group", "background", "started", 1, 0, nctx)
+                done = notified.get(tid)
+                if done:
+                    secs = (datetime.fromisoformat(done[0].replace("Z", "+00:00"))
+                            - datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))).total_seconds()
+                    busy = done[1] - i - 2  # responses beyond the start's ack
+                    wake = resps[done[1]]["ctx"] if done[1] < len(resps) else 0
+                    band = "under 2m" if secs < 120 else "2-10m" if secs < 600 else "over 10m"
+                    state = "worked meanwhile" if busy > 0 else "idle"
+                    emit("group", "bg_wait", f"{band}, {state}", 1, 0, wake + nctx)
+                    if band != "over 10m" and busy <= 0:
+                        emit("group", "bg_short_idle", head, 1, 0, wake + nctx)
+                else:
+                    emit("group", "bg_wait", "no notification", 1, 0, nctx)
+            elif name == "Bash" and "moved to the background" in text[:400]:
+                emit("group", "background", "timed out into background", 1, 0, nctx)
+            cmd = str(inp.get("command") or inp.get("file_path") or "")
+            if BG_OUTPUT.search(cmd):
+                emit("group", "background", "read task output", 1, len(text) * later, nctx)
+            elif name == "Bash" and re.search(r"\bsleep\b|\buntil\b", cmd):
+                emit("group", "background", "sleep or until loop", 1, len(text) * later, nctx)
+            elif name in ("Monitor", "TaskOutput"):
+                emit("group", "background", name, 1, 0, nctx)
+        # Serial: this response and the next were read-only, none of this one's calls failed and
+        # the next used nothing new from their results, so one response could have carried both.
+        # An upper bound: a model can pick its next look from a result without quoting it.
+        if win and nxt and r["calls"] and nxt["calls"] \
+                and all(readonly_call(n, x) for _, n, x in r["calls"] + nxt["calls"]) \
+                and not any(results.get(t, ("", False))[1] for t, _, _ in r["calls"]):
+            shown = " ".join(results.get(t, ("", False))[0] for t, _, _ in r["calls"])
+            words = {w for _, _, x in nxt["calls"] for w in WORD.findall(json.dumps(x))} - seen_words
+            if not any(w in shown for w in words):
+                emit("n", kind, project, "serial_batchable", 1, nxt["ctx"])
+                emit("group", "serial", bash_head(nxt["calls"][0][2].get("command") or "")
+                     if nxt["calls"][0][1] == "Bash" else nxt["calls"][0][1], 1, 0, nxt["ctx"])
+        edits += mutated
+
+
+def cmd_tool_calls(a):
+    since = window_bound(a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
+    until = window_bound(a.until)[0] if a.until else "9999"
+    buckets, groups, tools, sessions = {}, {}, {}, {}
+
+    def emit(what, *v):
+        if what == "session":
+            if not a.project or a.project in v[1]:
+                for k in (f"kind:{v[0]}", f"project:{v[1]}", "all"):
+                    sessions[k] = sessions.get(k, 0) + 1
+        elif what == "n":
+            kind, project, field, n, ctx = v
+            if a.project and a.project not in project:
+                return
+            for k in (f"kind:{kind}", f"project:{project}", "all"):
+                b = buckets.setdefault(k, {})
+                b[field] = b.get(field, 0) + n
+                b[field + "_ctx"] = b.get(field + "_ctx", 0) + ctx
+        elif what == "tool":
+            name, chars, carried, nctx = v
+            t = tools.setdefault(name, {"key": name, "calls": 0, "chars": 0, "carried": 0, "next_ctx": 0})
+            t["calls"] += 1
+            t["chars"] += chars
+            t["carried"] += carried
+            t["next_ctx"] += nctx
+        else:
+            group, key, n, carried, ctx = v
+            g = groups.setdefault(group, {}).setdefault(key, {"key": key, "calls": 0, "carried": 0, "ctx": 0})
+            g["calls"] += n
+            g["carried"] += carried
+            g["ctx"] += ctx
+
+    seen, seen_msgs = set(), set()
+    for f in iter_files():
+        try:
+            real = f.resolve()
+            if real in seen or real.stat().st_mtime < since[1]:
+                continue
+        except OSError:
+            continue
+        seen.add(real)
+        tool_calls_file(real, since[0], until, seen_msgs, emit)
+    out = {"since": since[0], "until": a.until and until, "sessions": sessions, "buckets": buckets,
+           "tools": sorted(tools.values(), key=lambda t: -t["next_ctx"])[:a.top or None],
+           "groups": {g: sorted(v.values(), key=lambda r: -r["ctx"])[:a.top or None]
+                      for g, v in groups.items()}}
+    if a.json:
+        print(json.dumps(out, indent=1))
+        return 0
+    al = buckets.get("all", {})
+    resp, ctx = al.get("responses", 0), al.get("responses_ctx", 0)
+    print(c(BOLD, f"since {since[0]}: {sessions.get('all', 0):,} sessions, {resp:,} responses, "
+                  f"{al.get('calls', 0):,} tool calls"))
+    print(f"  {ctx // max(resp, 1):,} context tokens per response, {ctx:,} in all; "
+          f"{100 * al.get('parallel_responses', 0) / max(al.get('tool_responses', 0), 1):.1f}% of "
+          f"tool responses carried more than one call\n")
+    head = f"  {'sessions':>8} {'responses':>9} {'calls':>8} {'ctx/resp':>8} {'parallel':>8} {'serial':>7} {'failed':>7} {'repeat':>6} {'search':>6}  bucket"
+    print(c(DIM, head))
+    rows = sorted((k for k in buckets if k != "all"), key=lambda k: (k[0] != "k", -buckets[k].get("responses_ctx", 0)))
+    for k in [x for x in rows if x.startswith("kind:")] + [x for x in rows if x.startswith("project:")][:a.top or None]:
+        b = buckets[k]
+        print(f"  {sessions.get(k, 0):>8,} {b.get('responses', 0):>9,} {b.get('calls', 0):>8,} "
+              f"{b.get('responses_ctx', 0) // max(b.get('responses', 0), 1):>8,} {b.get('parallel_responses', 0):>8,} "
+              f"{b.get('serial_batchable', 0):>7,} {b.get('failed', 0):>7,} {b.get('repeat_calls', 0):>6,} "
+              f"{b.get('toolsearch', 0):>6,}  {k}")
+    print(c(DIM, f"\n  {'calls':>8} {'ctx tokens':>14} {'carried~tok':>12}  tool, by the response after it"))
+    for t in out["tools"]:
+        print(f"  {t['calls']:>8,} {t['next_ctx']:>14,} {t['carried'] // 4:>12,}  {t['key']}")
+    titles = (("serial", "serial reads one response could have carried (upper bound), by the later call"),
+              ("repeat", "exact repeats in one stretch, by call"), ("fail", "failed calls, by class"),
+              ("fail_text", "failed calls, by message"), ("retry", "the response after a failure"),
+              ("background", "background shells and how they are waited on"),
+              ("bg_wait", "background shells by run time; ctx is the start ack plus the wake"),
+              ("bg_short_idle", "background runs under 10m with nothing else done, by command"),
+              ("agent", "Agent spawns; carried is the parent's cost of the report"),
+              ("mcp", "MCP calls by server"))
+    for g, title in titles:
+        if out["groups"].get(g):
+            print(c(DIM, f"\n  {'calls':>8} {'ctx tokens':>14} {'carried~tok':>12}  {title}"))
+            for r in out["groups"][g]:
+                print(f"  {r['calls']:>8,} {r['ctx']:>14,} {r['carried'] // 4:>12,}  {r['key']}")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1113,6 +1398,15 @@ def main():
     to.add_argument("--project", "-p", help="substring match on repo")
     to.add_argument("--json", action="store_true")
     to.set_defaults(func=cmd_tool_output)
+
+    tc = sub.add_parser("tool-calls", help="what tool calls cost in responses, by session kind")
+    tc.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    tc.add_argument("--since", help="window start, as tool-output (overrides --days)")
+    tc.add_argument("--until", help="window end, exclusive, as tool-output")
+    tc.add_argument("--top", type=int, default=15, help="rows per group (0 = all)")
+    tc.add_argument("--project", "-p", help="substring match on repo")
+    tc.add_argument("--json", action="store_true")
+    tc.set_defaults(func=cmd_tool_calls)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)
