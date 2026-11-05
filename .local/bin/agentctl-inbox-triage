@@ -99,9 +99,9 @@ $open"
   local -a args rowv
   while IFS=$'\x1f' read -r n action id dest lane rows; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
-    raw="${raws[$((n - 1))]}"
+    raw="${raws[n - 1]}"
     [ -n "$raw" ] || continue
-    raws[$((n - 1))]=""   # one answer per line
+    raws[n - 1]=""   # one answer per line
     case "$action" in
       file)
         args=()
