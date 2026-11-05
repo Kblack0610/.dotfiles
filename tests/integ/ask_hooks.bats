@@ -102,6 +102,19 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: answered'
 }
 
+@test "a shepherd pass ending leaves its asks pending for the next pass" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-3 "$AGENT_ASK" post --project demo 'cancel the sweep?')"
+  FLEET_SHEPHERD_HOLDER=runner run bash "$SETTLE" stale <<<'{"session_id":"sid-3","reason":"other"}'
+  assert_success
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  assert_not_called "ptask demo --agent add unanswered ask"
+  FLEET_SHEPHERD_HOLDER=runner run bash "$SETTLE" answered <<<'{"session_id":"sid-3","prompt":"yes"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+}
+
 @test "an ask its session left unanswered lands on the agent board as a plain row" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"

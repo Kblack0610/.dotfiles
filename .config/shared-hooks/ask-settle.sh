@@ -5,7 +5,11 @@
 #                       only when the message names exactly one option; others take the message
 #                       as the answer (`agent-ask answer` from a board types its answer in too).
 #   SessionEnd       -> stale: nobody is left to act on it; still answerable, and the briefing
-#                       lists it once.
+#                       lists it once. Not for a shepherd pass the runner started
+#                       (FLEET_SHEPHERD_HOLDER=runner): its asks belong to the shepherd, and the
+#                       next pass picks them up. 2026-11-05 two dispatch asks went stale 12 and 16
+#                       minutes after posting, when their pass windows closed, and left the
+#                       human's pending list while dispatch stayed blocked for 7h.
 #
 # Without this an ask outlives what it asked about: 2026-10-28 an ask held its session open
 # after the human had answered in the conversation, and another sat pending after its session
@@ -39,7 +43,7 @@ if [ "$to" = answered ]; then
       | any(.[]; . == ($p | trim))' >/dev/null 2>&1 && exit 0
   fi
   agent-ask settle-session "$sid" answered "$prompt" >/dev/null 2>&1
-else
+elif [ -z "${FLEET_SHEPHERD_HOLDER:-}" ]; then
   agent-ask settle-session "$sid" stale "session ended ($(jq -r '.reason // "exit"' <<<"$payload" 2>/dev/null))" >/dev/null 2>&1
 fi
 exit 0
