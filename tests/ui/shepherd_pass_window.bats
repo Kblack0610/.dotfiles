@@ -2,7 +2,8 @@
 # Tier 3: `fleet-shepherd run` on a REAL tmux server. Every run starts a pass in a window of the
 # shepherd session, in ~/.dotfiles, unless the last pass is mid-sweep with nobody talking to it; a
 # conversation with an older pass stays in its pane, renamed handed-<id> and told where it went, and
-# a pass is found by its pane wherever a resume put it. Every other collaborator is a stub; the pass's
+# a pass is found by its pane wherever a resume put it. The shipped manifests put the session on a
+# server of its own, away from hub's. Every other collaborator is a stub; the pass's
 # agentctl-run records what it was given and signals the test through tmux wait-for instead of
 # calling a model. Container only, like every ui test.
 
@@ -50,7 +51,7 @@ printf '%s' \"\${@: -1}\" > \"\$HOME/last-prompt\"
 }
 
 teardown() {
-  tmux_kill_named "${SRV:-}"
+  tmux_kill_named "${SRV:-}" "${SHEP:-}"
   return 0
 }
 
@@ -191,10 +192,10 @@ said() {
   assert_equal "$(window_of "$pane")" ''
 }
 
-@test "with no session shepherd the pass still starts: hub's manifest makes it" {
+@test "with no session shepherd the pass still starts: its world's manifest makes it" {
   export TMUX_SERVERS_DIR="$HOME/servers"
   mkdir -p "$TMUX_SERVERS_DIR"
-  cp "$REPO_ROOT/.config/tmux-servers/hub.conf" "$TMUX_SERVERS_DIR/$SRV.conf"
+  cp "$REPO_ROOT/.config/tmux-servers/shepherd.conf" "$TMUX_SERVERS_DIR/$SRV.conf"
   stub tmx "exec \"$REPO_ROOT/.local/bin/tmx\" \"\$@\""
   t kill-session -t '=shepherd'
   run "$SH" run
@@ -202,4 +203,41 @@ said() {
   ended
   t has-session -t '=shepherd'
   assert_equal "$(t list-windows -t =shepherd | wc -l)" 2
+}
+
+@test "with the shipped manifests the pass runs on the shepherd world's own server: closing its window or losing that server leaves hub's sessions" {
+  # $SRV plays hub, with the human's dotfiles and a shepherd session left from before the move.
+  # The manifests are the repo's, under these servers' names: hub's sorts first, as it does live.
+  SHEP="batsworld$$"
+  export TMUX_SERVERS_DIR="$HOME/servers"
+  mkdir -p "$TMUX_SERVERS_DIR"
+  cp "$REPO_ROOT/.config/tmux-servers/hub.conf" "$TMUX_SERVERS_DIR/$SRV.conf"
+  cp "$REPO_ROOT/.config/tmux-servers/shepherd.conf" "$TMUX_SERVERS_DIR/$SHEP.conf"
+  unset FLEET_SHEPHERD_SERVER
+  stub tmux-world "exec \"$REPO_ROOT/.local/bin/tmux-world\" \"\$@\""
+  stub tmx "exec \"$REPO_ROOT/.local/bin/tmx\" \"\$@\""
+  # No server yet: the run boots it in a scope; here the scope is the command itself.
+  stub systemd-run 'shift 3; exec "$@"'
+  touch "$HOME/hold"
+  run "$SH" run
+  assert_success
+  assert_output --partial "tmux -L $SHEP attach -t shepherd:shepherd"
+  ran
+  local pane; pane="$(pass_pane)"
+  assert_equal "$("$REAL_TMUX" -L "$SHEP" list-panes -a -F '#{pane_id} #{session_name} #{window_name}' | awk -v p="$pane" '$1 == p { print $2, $3 }')" 'shepherd shepherd'
+  assert_equal "$(windows dotfiles)" 'claude'
+  assert_equal "$(windows shepherd)" 'base'
+  # The pass's window closes, then its whole server goes: hub is as it was.
+  "$REAL_TMUX" -L "$SHEP" kill-window -t "$pane"
+  tmux_kill_named "$SHEP"
+  assert_equal "$(windows dotfiles)" 'claude'
+  assert_equal "$(windows shepherd)" 'base'
+  # Negative control: a hub manifest that declares the session again puts the pass back in hub.
+  echo 'shepherd ~/.dotfiles' >> "$TMUX_SERVERS_DIR/$SRV.conf"
+  echo "- moved a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  run "$SH" run
+  assert_success
+  assert_output --partial "tmux -L $SRV attach -t shepherd:shepherd"
+  ran
+  assert_equal "$(window_of "$(pass_pane)")" shepherd
 }

@@ -238,7 +238,8 @@ cmd_fire() {
   # while the `sleep 1` still lets the Stop pipeline finish first. Kill by the
   # stable window_id (@N) so renumbering / active-window drift can't redirect it.
   # tmux-close decides what a teardown may close: a `--session` teardown of a world session
-  # (hub dotfiles, where the shepherd pass and the human's chats live) closes this window only.
+  # (hub dotfiles, where the human's chats live, or shepherd, where the passes run) closes this
+  # window only.
   local kill_cmd close sock=''
   close="$(printf '%q' "$SCRIPT_DIR/close.sh")"
   [ "${#TM[@]}" -eq 1 ] || sock="-S $(printf '%q' "$socket") "
