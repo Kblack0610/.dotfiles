@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, dispatch, queue, board]
-  reviewed: 2026-11-04
+  reviewed: 2026-11-05
 ---
 
 # fleet-dispatch
@@ -30,7 +30,7 @@ The human sheet stays opt-in: `board` never reads it. Tier 3 (CI, gates, runners
 
 ## A pass, in order
 
-1. Reap: an item whose session is gone is closed, and a live one moves to `waiting/` while its Claude waits on the human (agent-panel `waiting`, an open plan or dialog) or has a pending ask, back to `running/` after. Room is `DISPATCH_MAX_LIVE` minus live sessions the runner started (`origin: run`), capped at `DISPATCH_PER_PASS`.
+1. Reap: an item whose session is gone is closed, and a live one moves to `waiting/` while its Claude waits on the human (agent-panel `waiting`, an open plan or dialog) or has a pending ask, back to `running/` after. An agent-lane row started with no active item naming it is un-started, with a `failed` verdict, once reap has seen it that way for `DISPATCH_ORPHAN_HOURS` (72); first sightings are in `~/.agent/dispatch/orphans.tsv`. Room is `DISPATCH_MAX_LIVE` minus live sessions the runner started (`origin: run`), capped at `DISPATCH_PER_PASS`.
 2. Gates, each refusing when it cannot read its source: no `dispatch` hold; `fleet-presence` says away; `fleet-assess` not HOLD; cluster not red; 1-minute load under `DISPATCH_MAX_LOAD` per core; GitHub budget not LOW; real idle above `DISPATCH_MIN_IDLE` percent on a two-frame `top` sample. At launch, `claude-acct room` must name an account under its weekly pace, or the row waits. A nightly red is deliberately not a gate: nightlies stay red while sessions merge normally, and the NIGHTLY row handles it.
    Findings sampled in the last `DISPATCH_FINDING_FRESH_MIN` minutes hold only the items they are about, and the pass starts up to room queued items nothing holds, reading the gates again before each start after the first (`run --dry-run` names each held one): `starved pool:<pool>` holds items whose repo (origin's name) has jobs waiting in that pool, every item when the finding names no `repos`; `throughput-drop <project>` holds items on that project's repo; `starved <host>` holds every item. A `blind` finding holds nothing: it is a reader's gap, not a fault. Unreadable findings hold everything.
 3. Candidates: every open `[ ]` row a worker may take, of each `alpha`, `beta` or `prod` project in `DISPATCH_PROFILES`. A project is left out while its wave lock is held, or when `project-map.json` has no repo for it.
