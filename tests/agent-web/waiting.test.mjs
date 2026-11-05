@@ -1,4 +1,4 @@
-// Unit tests for the Waiting tab's cards (.local/src/agent-web/static/waiting.js), run by
+// Unit tests for the answer cards (.local/src/agent-web/static/waiting.js), run by
 // `node --test` from tests/unit/agent_web_queue.bats. The page's real scripts load into one vm
 // context, as the browser loads them into one global scope; only the DOM is a stub.
 import { test } from "node:test";
@@ -82,17 +82,6 @@ test("an ask from an older server with no title shows the whole question as the 
   const html = askHtml(ask({ title: undefined, body: undefined }));
   assert.match(html, /<span class="ctitle">Ship it\? CI is green\.<\/span>/);
   assert.doesNotMatch(html, /class="q md"/);
-});
-
-test("Waiting folds into Sessions and Asks, each longest-waiting first", () => {
-  const html = run(`st.agents = input.agents; st.asks = input.asks; drawAsks(); $("asks").innerHTML`, {
-    agents: [agent({ target: "lab:new", summary: "New", waiting_since: now() - 60 }), agent({ target: "lab:old", summary: "Old", waiting_since: now() - 6000 })],
-    asks: [ask({ id: "n", title: "Newer" }), ask({ id: "o", title: "Older", created: now() - 86400 })],
-  });
-  assert.match(html, /^<details class="csec" data-k="sec:sessions" open><summary><h2 class="sec">Sessions <span class="muted">2<\/span>/);
-  assert.match(html, /Old.*New.*<details class="csec" data-k="sec:asks" open>.*Older.*Newer/s);
-  const empty = run(`st.agents = []; st.asks = []; drawAsks(); $("asks").innerHTML`, {});
-  assert.match(empty, /Nothing is waiting on you/);
 });
 
 test("a re-render keeps the reply being typed into a card", () => {

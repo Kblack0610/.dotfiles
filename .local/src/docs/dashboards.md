@@ -31,11 +31,11 @@ Each rule has its why. A rule a test checks names the test.
 
 ## Hub layout
 
-Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names.
+Both surfaces move to the layout below in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. Each phase's PR flips its rows from planned to landed and adds its retired names. The list itself is `hub-core/src/layout.rs`: the TUI's `the_landed_layout_tabs_lead_in_hub_core_order` and agent-web's `tab_names_lead_with_the_landed_layout` fail when a surface drifts from it. Until a tab lands, each surface keeps its older tabs for that question after the landed ones.
 
 | # | Tab | Question | Status |
 |---|---|---|---|
-| 1 | Home | What needs me, and is everything ok? | planned |
+| 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the front page on both surfaces |
 | 2 | Queue | What will agents do next? Add work. | landed (#920 cards) |
 | 3 | Projects | Where is each project, and its tasks? | planned |
 | 4 | Sessions | What is each agent doing? Act on it. | planned |
@@ -64,4 +64,5 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 
 | Old name | Lands on | Since |
 |---|---|---|
-| _(none yet)_ | | |
+| `overview` (TUI, `hub --tab overview`) | Home | #929 |
+| `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |

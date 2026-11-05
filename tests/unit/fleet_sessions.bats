@@ -418,6 +418,16 @@ MD
   assert_failure
 }
 
+@test "escalating a finding to the human records a page on its episode; a session or shepherd-class one does not" {
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/bench.calls"\n' "$SANDBOX" > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-bench"
+  escalate finding-starved-pool-other 'starved pool:other @1700000000 human'
+  escalate finding-starved-pool-other 'starved pool:other @1700000000 shepherd'
+  escalate sid-2 'STALLED PR #9 CI red @feat/x human'
+  run cat "$SANDBOX/bench.calls"
+  assert_output 'respond starved pool:other @1700000000 shepherd paged'
+}
+
 @test "mark refuses a session id that would escape the ledger" {
   run mark ../evil 'x'
   assert_failure 2

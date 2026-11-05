@@ -24,7 +24,7 @@ use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
-use crate::{board, day, fleet, fleettab};
+use crate::{board, day, fleet, fleettab, hometab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -33,7 +33,7 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
-    Overview,
+    Home,
     Jobs,
     Ci,
     Machines,
@@ -47,7 +47,8 @@ pub enum Tab {
 
 impl Tab {
     pub const ALL: [Tab; 10] = [
-        Tab::Overview,
+        Tab::Home,
+        Tab::Queue,
         Tab::Jobs,
         Tab::Ci,
         Tab::Machines,
@@ -55,12 +56,11 @@ impl Tab {
         Tab::Today,
         Tab::History,
         Tab::Fleet,
-        Tab::Queue,
         Tab::Board,
     ];
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Overview => "Overview",
+            Tab::Home => "Home",
             Tab::Jobs => "Jobs",
             Tab::Ci => "CI",
             Tab::Machines => "Machines",
@@ -72,10 +72,15 @@ impl Tab {
             Tab::Board => "Board",
         }
     }
+    /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
+    /// `overview`), so `hub --tab <old>` still lands.
     pub fn parse(s: &str) -> Option<Tab> {
-        Tab::ALL
-            .into_iter()
-            .find(|t| t.title().eq_ignore_ascii_case(s))
+        let by_title = |n: &str| {
+            Tab::ALL
+                .into_iter()
+                .find(|t| t.title().eq_ignore_ascii_case(n))
+        };
+        by_title(s).or_else(|| hub_core::layout::resolve(s).and_then(|t| by_title(t.title)))
     }
     fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
@@ -83,7 +88,7 @@ impl Tab {
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
         match self {
-            Tab::Overview => Some("kb-command-center"),
+            Tab::Home => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
             Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Board => {
@@ -210,7 +215,7 @@ pub struct App {
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
     pub fleet: Option<hub_core::fleet::Fleet>,
-    /// agent-queue's items and week, for the Queue tab and the Overview's counts.
+    /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
     pub qv: QueueView,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
@@ -382,7 +387,7 @@ impl App {
     }
 
     /// The queue is read through agent-queue (hub_core::queue), never from its files: on
-    /// start (the Overview counts it), on a write under the queue dir, on `r`, after an action,
+    /// start (Home counts it), on a write under the queue dir, on `r`, after an action,
     /// and on the tick when there is no file watch.
     pub fn read_queue(&mut self) {
         if self.queue_read.want() {
@@ -1059,7 +1064,19 @@ impl App {
                 vec![],
             )
         };
-        let (mut lines, sections) = match (self.tab, &self.boards, &self.infra) {
+        let (lines, sections) = match (self.tab, &self.boards, &self.infra) {
+            // What needs you first, then the machines and pools until the Infra tab takes them.
+            (Tab::Home, b, i) => {
+                let null = serde_json::Value::Null;
+                let state = b.as_ref().map_or(&null, |b| &b.watch.state);
+                let home = hub_core::home::build(state, self.queue.as_ref(), i.as_ref());
+                let mut l = hometab::page(&home, self.p, now, w);
+                if let Some(i) = i.as_ref().filter(|i| i.ok) {
+                    l.push(Line::raw(""));
+                    l.extend(board::page(self.tab, i, self.p, now, w, &self.hosts));
+                }
+                (l, vec![])
+            }
             (Tab::Board, ..) => match &self.tasks {
                 None => reading("notes board"),
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
@@ -1101,15 +1118,6 @@ impl App {
             (_, _, None) => reading("Prometheus"),
             (t, _, Some(i)) => (board::page(t, i, self.p, now, w, &self.hosts), vec![]),
         };
-        if self.tab == Tab::Overview {
-            let what = match &self.queue {
-                None => Span::styled("reading...", self.p.dim()),
-                Some(q) if !q.errors.is_empty() => Span::styled(q.errors.join("; "), self.p.warn()),
-                Some(q) => Span::raw(queuetab::counts(q)),
-            };
-            let l = Line::from(vec![Span::styled("AGENT QUEUE  ", self.p.head()), what]);
-            lines.splice(0..0, [crate::fit::clip_line(l, w), Line::raw("")]);
-        }
         (lines, sections)
     }
 
@@ -1402,20 +1410,20 @@ mod tests {
     }
 
     #[test]
-    fn nine_opens_the_queue_tab_and_the_overview_counts_the_queue() {
-        let mut a = app(Tab::Overview);
-        assert!(screen(&mut a, 140, 30).contains("AGENT QUEUE  reading..."));
+    fn two_opens_the_queue_tab_and_home_counts_the_queue() {
+        let mut a = app(Tab::Home);
+        assert!(screen(&mut a, 140, 30).contains("Prometheus: reading"));
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("8 Fleet  9 Queue  0 Board"), "{s}");
-        assert_eq!(
-            lines[1].trim_end(),
-            "AGENT QUEUE  1 waiting for you, 1 running, 2 up next (1 held), 1 done today"
+        assert!(lines[0].contains("1 Home  2 Queue  3 Jobs"), "{s}");
+        assert!(
+            s.contains("NUMBERS  queue 1 running, 2 up next (1 held) | done today 1"),
+            "{s}"
         );
-        assert!(lines[3].contains("Reading Prometheus..."), "{s}");
+        assert!(s.contains("RUNNING (1)"), "{s}");
 
-        a.handle(key('9'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
@@ -1427,7 +1435,7 @@ mod tests {
             "{s}"
         );
         a.handle(key('1'));
-        assert_eq!(a.tab, Tab::Overview);
+        assert_eq!(a.tab, Tab::Home);
     }
 
     #[test]
@@ -1465,19 +1473,15 @@ mod tests {
     #[test]
     fn the_board_tab_writes_through_notes_and_keeps_its_row_in_view() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut a = with_tx(Tab::Overview, tx);
+        let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         assert_eq!(Tab::parse("board"), Some(Tab::Board));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
-        assert_eq!(
-            a.tab,
-            Tab::Board,
-            "Shift-Tab from the Overview is the last tab"
-        );
+        assert_eq!(a.tab, Tab::Board, "Shift-Tab from Home is the last tab");
         let s = screen(&mut a, 140, 12);
         assert!(
-            s.lines().next().unwrap().contains("9 Queue  0 Board"),
+            s.lines().next().unwrap().contains("9 Fleet  0 Board"),
             "{s}"
         );
         assert!(s.contains("Reading notes board..."), "{s}");
@@ -1557,17 +1561,46 @@ mod tests {
     }
 
     #[test]
-    fn the_overview_draws_the_board_under_the_tab_bar() {
-        let mut a = app(Tab::Overview);
+    fn home_draws_what_needs_you_then_the_machines_and_green_collapses() {
+        let mut a = app(Tab::Home);
         a.infra = Some(board::tests::fixture());
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Overview") && first.contains("4 Machines") && first.contains(" RED "),
+            first.contains("1 Home") && first.contains("5 Machines") && first.contains(" RED "),
             "{s}"
         );
-        assert!(s.contains("OVERALL RED"), "{s}");
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
+        // cc:red_now is a need; the strip draws only what is not green.
+        assert!(at("NEEDS YOU (1)") < at("watch mac_studio_mlx"));
+        assert!(s.contains("ci NODATA") && s.contains("llm RED") && s.contains("1 green"));
+        assert!(!s.contains("k3s OK"), "{s}");
+        assert!(at("HEALTH") < at("POOL "), "the machines stay under Home");
         assert!(s.lines().last().unwrap().contains("r refresh"));
+    }
+
+    #[test]
+    fn a_retired_tab_name_opens_its_new_home() {
+        assert_eq!(Tab::parse("overview"), Some(Tab::Home));
+        assert_eq!(Tab::parse("waiting"), Some(Tab::Home));
+        assert_eq!(Tab::parse("ci"), Some(Tab::Ci));
+    }
+
+    #[test]
+    fn the_landed_layout_tabs_lead_in_hub_core_order() {
+        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs in its order.
+        let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
+        let mut at = 0;
+        for t in hub_core::layout::landed() {
+            let i = titles
+                .iter()
+                .position(|x| *x == t.title)
+                .unwrap_or_else(|| panic!("{} is landed but not a TUI tab", t.title));
+            assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
+            at = i;
+        }
+        let landed: Vec<&str> = hub_core::layout::landed().map(|t| t.title).collect();
+        assert_eq!(titles[..landed.len()], landed[..], "the landed tabs lead");
     }
 
     #[test]
@@ -1576,7 +1609,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("9 Fleet"), "{s}");
         for want in [
             "CLAUDE ACCOUNTS",
             "WORKERS",
@@ -1601,7 +1634,7 @@ mod tests {
         assert!(screen(&mut a, 100, 10).contains("Reading fleet-bench forecast..."));
         a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
         let s = screen(&mut a, 200, 60);
-        assert!(s.lines().next().unwrap().contains("5 Forecast"), "{s}");
+        assert!(s.lines().next().unwrap().contains("6 Forecast"), "{s}");
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(
             s.contains("dotfiles:4") && s.contains("Step 0 board row"),
@@ -1632,16 +1665,16 @@ mod tests {
 
     #[test]
     fn a_tab_request_switches_the_running_board() {
-        let mut a = app(Tab::Overview);
+        let mut a = app(Tab::Home);
         // Entering Fleet and Forecast read the fleet and fleet-bench; mark them already reading
         // so no test runs them.
         a.fleet_read.busy = true;
         a.forecast_read.busy = true;
         a.handle(Msg::Tab(Tab::Fleet, None));
         assert_eq!(a.tab, Tab::Fleet);
-        a.handle(key('5'));
-        assert_eq!(a.tab, Tab::Forecast);
         a.handle(key('6'));
+        assert_eq!(a.tab, Tab::Forecast);
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Today);
     }
 
@@ -1668,9 +1701,9 @@ mod tests {
 
     #[test]
     fn number_keys_switch_pages_and_q_quits() {
-        let mut a = app(Tab::Overview);
+        let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
-        a.handle(key('3'));
+        a.handle(key('4'));
         assert_eq!(a.tab, Tab::Ci);
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Machines);

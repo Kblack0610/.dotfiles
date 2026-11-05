@@ -31,7 +31,7 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 | Key | What it does |
 |-----|--------------|
 | `Prefix+p` | Projects finder: every project with its open counts. Enter, `o` or a digit opens it on the hub Board, `e` opens its sheet in the hub notes editor |
-| `Prefix+i` | The hub board (`hub:board`), on its Board tab. Digits inside reach the other tabs |
+| `Prefix+i` | The hub (`hub:board`), on its Home tab. Digits inside reach the other tabs, Board among them |
 | `Prefix+o` | The shepherd pass running now, window `hub:shepherd`. Never starts one |
 | `Prefix+P` | Open PRs from the configured repos, with their status |
 | `Prefix+L` | Back to the window you left, across worlds; never back to the board |
@@ -41,7 +41,7 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 | `Prefix+X` | Kill this session and reap its worktree, from inside it |
 | `Prefix+S` | Sessions of the current world |
 | `Prefix+C-s` | The worlds, sessions in the preview (bare `tmx` too) |
-| `Prefix+A` | Every session and window on every server |
+| `Prefix+A` | Every world, session and window on every server, stranded sessions first |
 | `Prefix+C-h` / `Prefix+C-n` | Resume lab / hub, back where you left off |
 | `Prefix+H` / `Prefix+N` | Root of lab / hub: its landing page (projects index / today's daily) |
 | `Prefix+g` | Agent windows (`agent-panel`) |
@@ -143,23 +143,29 @@ and lab *together* has to be assembled from outside both, which is what
 `tmx pick-all` does. Three selectable levels in one list:
 
 ```
-hub  3 session(s)
-  dotfiles      ~/.dotfiles             8 win  claude x6, zsh, chromium  (attached)
-       2  feat/tmux-cockp~ claude   kill-orphan-sessions-rebuild-views
-       5* main             claude   Research best image viewing library options
-  hub           ~/.notes                1 win  nvim
-       1* master           nvim     2026-07-26.md (~/.notes/journal/daily)
-lab  2 session(s)
-  platform      ~/dev/bnb/platform      1 win  nvim
-       1* fix/placemypare~ nvim     neo-tree filesystem
+STRANDED  1  no agent, no manifest
+  lab  freqtrade_trading_a~pt-agent-2 zsh  idle 2h  stranded
+hub  2 sessions  2 need you
+  dotfiles      ~/.dotfiles            10 win  zsh x8, claude x2
+       2  main             NEEDS    1m rebind-tmux-project-keys
+      11* main             WORKING  0m tmux-pick-all-overview
+  hub           ~/.notes                2 win  nvim, hub
+       1* master           nvim        2026-11-05.md (~/.notes/journal/daily)
+lab  23 sessions  10 need you
+  dotfiles-agent-3               NEEDS    9h  Dotfiles overnight report phase 4
+  lab           ~/.notes/lab            1 win  nvim
+work  not running
 ```
 
-A **session** row explains itself - where it is and what is running in it, both
-derived, so an ad-hoc session is described as well as a declared one and no manifest
-has to be kept in sync. A **window** row carries the branch, the command, and the
-pane title, which is where a program puts its context: claude windows read as their
-task, nvim windows as their file. A **server** row hops the whole world, which is why
-this list can also stand in for the compact picker when you want everything at once.
+A **stranded** row is a session with no agent in the fleet state that no manifest declares, or a live server with no manifest. Nothing will come back for those, so they come first, and a stranded session shows only there. Close one by hand once you have looked at it. A session newer than the fleet state is not stranded yet.
+
+A **session** row with one agent window reads as its state, idle time and task; the state comes from the fleet state document, never recomputed here. Any other session row says where it is and what is running in it, both derived, so an ad-hoc session is described as well as a declared one and no manifest has to be kept in sync. A session with one window has no window row. A **window** row carries the branch, then the agent's state or the command, then the pane title, which is where a program puts its context: claude windows read as their task, nvim windows as their file. A **server** row hops the whole world, and starts it when it is down, which is why this list can also stand in for the compact picker.
+
+Type `needs` or `stranded` to filter to those rows. Rows stop at 80 columns.
+
+| symptom | cause | fix |
+|---|---|---|
+| `fleet state is old` at the top, no states or stranded marks | the fleet state is over 5 minutes old, or its last pass could not read agent-panel, so every agent would look stranded | `systemctl --user status fleet-state.service`, then `fleet-sessions tick` |
 
 **Two views on purpose.** `Prefix+C-s` (and a bare `tmx`) is the COMPACT one - just the
 worlds, two rows, with that world's sessions in the preview; use it when the question is
