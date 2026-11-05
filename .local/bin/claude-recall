@@ -19,6 +19,8 @@ Usage:
   claude-recall stats [--days N | --since YYYY-MM-DD] [--kind slash,skill,agent,prompt]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
+  claude-recall tool-output [--days N | --since YYYY-MM-DD]
+                            [--by tool|command|method|day|week|project] [--top K] [--json]
 
 Examples:
   claude-recall search "privacy overlay" --project dotfiles --since 2026-07-01
@@ -27,6 +29,7 @@ Examples:
   claude-recall show 15eeee34
   claude-recall stats --kind prompt --origin interactive --min 3   # skill candidates
   claude-recall stats --kind agent --by week
+  claude-recall tool-output --by command          # which Bash commands fill the context
 """
 import argparse
 import json
@@ -541,8 +544,9 @@ HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
 
 
 def stats_repo(label):
-    """dotfiles-agent-6 -> dotfiles: a numbered worktree counts toward its repo."""
-    return re.sub(r"-agent-\d+(?:-[a-z])?$", "", label)
+    """dotfiles-agent-6 (a fleet worktree) and dotfiles-agent-a70248... (an Agent-tool worktree)
+    -> dotfiles: a worktree counts toward its repo."""
+    return re.sub(r"-agent-(?:\d+(?:-[a-z])?|a[0-9a-f]{12,})$", "", label)
 
 
 def stats_events(path, since):
@@ -730,6 +734,245 @@ def session_meta_project(path):
     return path.parent.name.lstrip("-").split("-")[-1]
 
 
+# --- tool-output: where the tokens go ---------------------------------------
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+                "output_tokens")
+SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl", "rtk")
+TF_STATE = Path(os.environ.get("TOKEN_FILTER_STATE", HOME / ".agent" / "token-filter"))
+TF_CACHE = Path(os.environ.get("TOKEN_FILTER_CACHE",
+                               Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "token-filter"))
+
+
+def bash_head(cmd):
+    """grep, sed, git show: the first real command of a Bash call, past env, cd and wrappers."""
+    for seg in re.split(r"\s*(?:&&|;|\|\||\|)\s*", cmd.strip()):
+        w = seg.split()
+        while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
+            w = w[1:]
+            while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
+                w = w[1:]  # timeout 30, env -i
+        if not w or w[0] == "cd":
+            continue
+        head = os.path.basename(w[0])
+        if head == "rtk" and len(w) > 1:  # count a filtered call under the tool it ran
+            w, head = w[1:], w[1]
+        if head in SUBCMD_HEADS:
+            rest = [x for x in w[1:] if not x.startswith("-")]
+            if head == "git" and w[1:2] == ["-C"]:
+                rest = rest[1:]
+            if rest:
+                head += " " + rest[0]
+        return head
+    return "?"
+
+
+def method_windows():
+    """[(ts, method)] from the token-filter switch log; before the first switch it was off."""
+    out = []
+    try:
+        for line in (TF_STATE / "methods.jsonl").open():
+            rec = parse_line(line)
+            if rec and rec.get("ts") and rec.get("method"):
+                out.append((rec["ts"], rec["method"]))
+    except OSError:
+        pass
+    return sorted(out)
+
+
+def method_at(windows, ts):
+    m = "off"
+    for t, meth in windows:
+        if t > ts:
+            break
+        m = meth
+    return m
+
+
+def rewritten_ids():
+    ids = set()
+    try:
+        for line in (TF_CACHE / "rewrites.jsonl").open(errors="replace"):
+            rec = parse_line(line)
+            if rec and rec.get("id"):
+                ids.add(rec["id"])
+    except OSError:
+        pass
+    return ids
+
+
+def tool_output_file(path, since, windows, rewritten, emit):
+    """Stream one transcript: emit('turn', ...) per API response and emit('result', ...) per
+    tool result, with how many later turns re-read the result before a compaction drops it."""
+    uses, pending, seen_msgs, turns = {}, [], set(), 0
+    project = None
+
+    def settle():
+        for r in pending:
+            r["carried_turns"] = turns - r.pop("at")
+            emit("result", r)
+        pending.clear()
+
+    for line in path.open(errors="replace"):
+        if '"compact_boundary"' in line:
+            settle()
+            continue
+        if '"type":"assistant"' not in line and '"tool_result"' not in line:
+            continue
+        rec = parse_line(line)
+        if not rec:
+            continue
+        if project is None and rec.get("cwd"):
+            project = stats_repo(project_of(rec, path))
+        ts = str(rec.get("timestamp") or "")
+        msg = rec.get("message") or {}
+        if rec.get("type") == "assistant":
+            mid = msg.get("id")
+            if mid and mid not in seen_msgs:
+                seen_msgs.add(mid)
+                turns += 1
+                u = msg.get("usage") or {}
+                if turns == 1 and ts[:10] >= since:
+                    emit("start", {"project": project or "?", "tokens": sum(
+                        int(u.get(f) or 0) for f in USAGE_FIELDS if f != "output_tokens")})
+                if ts[:10] >= since:
+                    emit("turn", {"ts": ts, "project": project or "?",
+                                  "method": method_at(windows, ts),
+                                  **{f: int(u.get(f) or 0) for f in USAGE_FIELDS}})
+            for b in msg.get("content") or []:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    name = b.get("name") or "?"
+                    cmd = bash_head((b.get("input") or {}).get("command") or "") if name == "Bash" else None
+                    uses[b.get("id")] = (name, cmd)
+            continue
+        if ts[:10] < since:
+            continue
+        for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            rc = b.get("content")
+            if isinstance(rc, list):
+                size = sum(len(x.get("text") or "") for x in rc if isinstance(x, dict))
+            else:
+                size = len(str(rc or ""))
+            tid = b.get("tool_use_id")
+            name, cmd = uses.get(tid, ("?", None))
+            pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
+                            "chars": size, "at": turns, "method": method_at(windows, ts),
+                            "rewritten": tid in rewritten})
+    settle()
+
+
+def cmd_tool_output(a):
+    """Token use as a whole (API usage per response) and the tool output behind it."""
+    since = a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d")
+    since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    windows, rewritten = method_windows(), rewritten_ids()
+    bucket_of = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
+                 "method": lambda r: r["method"], "day": lambda r: r["ts"][:10],
+                 "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
+                 "project": lambda r: r["project"]}[a.by]
+    totals = {f: 0 for f in USAGE_FIELDS}
+    totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0,
+                  sessions=0, start_context=0)
+    rows = {}
+
+    def row(k):
+        return rows.setdefault(k, {"key": k, "turns": 0, **{f: 0 for f in USAGE_FIELDS},
+                                   "calls": 0, "chars": 0, "carried": 0, "rewritten": 0,
+                                   "bash_calls": 0, "bash_chars": 0})
+
+    def emit(kind, r):
+        if a.project and a.project not in r["project"]:
+            return
+        if kind == "start":
+            totals["sessions"] += 1
+            totals["start_context"] += r["tokens"]
+            return
+        if kind == "turn":
+            totals["turns"] += 1
+            for f in USAGE_FIELDS:
+                totals[f] += r[f]
+            if a.by in ("method", "day", "week", "project"):
+                x = row(bucket_of(r))
+                x["turns"] += 1
+                for f in USAGE_FIELDS:
+                    x[f] += r[f]
+            return
+        if a.by == "command" and r["tool"] != "Bash":
+            key = None
+        else:
+            key = bucket_of(r)
+        carried = r["chars"] * max(r["carried_turns"], 0)
+        totals["calls"] += 1
+        totals["chars"] += r["chars"]
+        totals["carried"] += carried
+        if r["tool"] == "Bash":
+            totals["bash_calls"] += 1
+            totals["bash_chars"] += r["chars"]
+        if key is None:
+            return
+        x = row(key)
+        x["calls"] += 1
+        x["chars"] += r["chars"]
+        x["carried"] += carried
+        x["rewritten"] += r["rewritten"]
+        if r["tool"] == "Bash":
+            x["bash_calls"] += 1
+            x["bash_chars"] += r["chars"]
+
+    seen, files = set(), 0
+    for f in iter_files():
+        try:
+            real = f.resolve()
+            if real in seen or real.stat().st_mtime < since_epoch:
+                continue
+        except OSError:
+            continue
+        seen.add(real)
+        files += 1
+        tool_output_file(real, since, windows, rewritten, emit)
+
+    order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week", "method") \
+        else sorted(rows.values(), key=lambda r: -r["chars"])
+    if a.top and a.by not in ("day", "week", "method"):
+        order = order[:a.top]
+    if a.json:
+        print(json.dumps({"since": since, "by": a.by, "transcripts": files, "totals": totals,
+                          "rows": order}, indent=1))
+        return 0
+    t = totals
+    billed_in = t["input_tokens"] + t["cache_creation_input_tokens"] + t["cache_read_input_tokens"]
+    print(c(BOLD, f"since {since}: {files} transcripts, {t['turns']:,} API responses"))
+    print(f"  input {t['input_tokens']:,}  cache write {t['cache_creation_input_tokens']:,}  "
+          f"cache read {t['cache_read_input_tokens']:,}  output {t['output_tokens']:,} tokens")
+    if t["turns"]:
+        print(f"  context per response {billed_in // t['turns']:,} tokens; "
+              f"cache read is {100 * t['cache_read_input_tokens'] / max(billed_in, 1):.0f}% of input")
+    if t["sessions"]:
+        start = t["start_context"] // t["sessions"]
+        print(f"  first response of a transcript reads {start:,} tokens (system prompt, tools, rules, "
+              f"memory, skill list); carried on every response that is ~{100 * start * t['turns'] / max(billed_in, 1):.0f}% of input")
+    print(f"  tool results {t['calls']:,} calls, {t['chars']:,} chars (~{t['chars'] // 4:,} tokens); "
+          f"Bash {t['bash_calls']:,} calls, {t['bash_chars'] // max(t['bash_calls'], 1):,} chars/call")
+    print(f"  carried: tool output re-read {t['carried'] // 4:,} tokens' worth before compaction "
+          f"({t['carried'] // max(t['chars'], 1)}x its size), ~{100 * t['carried'] / 4 / max(billed_in, 1):.0f}% of input\n")
+    if a.by in ("tool", "command"):
+        print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13} {'filtered':>8}  {a.by}"))
+        for r in order:
+            print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
+                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,} "
+                  f"{r['rewritten']:>8,}  {r['key']}")
+    else:
+        print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
+                     f"{'bash calls':>10} {'chars/call':>10} {'filtered':>8} {'carried~tok':>13}  {a.by}"))
+        for r in order:
+            print(f"  {r['turns']:>9,} {r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
+                  f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,} {r['bash_calls']:>10,} "
+                  f"{r['bash_chars'] // max(r['bash_calls'], 1):>10,} {r['rewritten']:>8,} "
+                  f"{r['carried'] // 4:>13,}  {r['key']}")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -779,6 +1022,17 @@ def main():
     st.add_argument("--project", "-p", help="substring match on repo")
     st.add_argument("--json", action="store_true")
     st.set_defaults(func=cmd_stats)
+
+    to = sub.add_parser("tool-output", help="token use and the tool output behind it")
+    to.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    to.add_argument("--since", help="window start YYYY-MM-DD (overrides --days)")
+    to.add_argument("--by", choices=["tool", "command", "method", "day", "week", "project"],
+                    default="tool", help="command = Bash calls by command head; "
+                                         "method = token-filter method windows")
+    to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
+    to.add_argument("--project", "-p", help="substring match on repo")
+    to.add_argument("--json", action="store_true")
+    to.set_defaults(func=cmd_tool_output)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)
