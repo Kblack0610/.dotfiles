@@ -38,6 +38,11 @@ setup() {
   export BENCH_WEEK_CMD=week-stub WEEKLINE="$SANDBOX/weekline"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$WEEKLINE" > "$SANDBOX/bin/week-stub"
   chmod +x "$SANDBOX/bin/week-stub"
+  # comms-lint line and kpi --json, canned: serve $COMMSLINE and $COMMSKPI when they exist, else fail like no snapshot
+  export BENCH_COMMS_CMD=comms-stub COMMSLINE="$SANDBOX/commsline" COMMSKPI="$SANDBOX/commskpi"
+  printf '#!/usr/bin/env bash\ncase "$*" in line) cat "%s" ;; "kpi --json") cat "%s" ;; *) exit 9 ;; esac 2>/dev/null\n' \
+    "$COMMSLINE" "$COMMSKPI" > "$SANDBOX/bin/comms-stub"
+  chmod +x "$SANDBOX/bin/comms-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -660,12 +665,29 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
   assert_line '| prs_per_session | 4 | 2.5 | min 1 | ok |'
   assert_line '| cost_per_pr | 2 | 2 | - | - |'
+}
+
+@test "kpi: the comms KPIs come from the comms snapshot, and retro files the one past its threshold" {
+  kpi_setup
+  printf '%s\n' buzzes_per_day_max=15 comms_pass_pct_min=60 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| buzzes_per_day | - | - | max 15 | - |'
+  echo '{"buzzes_per_day":{"7d":63.1,"28d":28.5},"comms_pass_pct":{"7d":61,"28d":40},"date":"2026-11-05"}' > "$COMMSKPI"
+  run "$SUBJECT" kpi
+  assert_line '| buzzes_per_day | 63.1 | 28.5 | max 15 | past |'
+  assert_line '| comms_pass_pct | 61 | 40 | min 60 | ok |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'kpi: buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #high' "$BOARD"
+  assert_output 1
+  run grep -c 'kpi: comms_pass_pct' "$BOARD"
+  assert_output 0
 }
 
 @test "kpi: an empty window and zero merged PRs print - and null, never an error" {
@@ -1738,6 +1760,19 @@ requests_setup() {
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- tokens 2026-10-28: 3.3B context over 28,337 responses'
+}
+
+@test "scorecard KPIs carry the comms snapshot row, and say so when there is none" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- comms: ? (`comms-stub line` unreadable)'
+  echo 'comms 2026-11-05: 7d 44% of 1,949 messages meet the standard' > "$COMMSLINE"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- comms 2026-11-05: 7d 44% of 1,949 messages meet the standard'
 }
 
 @test "scorecard KPIs carry what moved this week, and say so when day-log has none" {

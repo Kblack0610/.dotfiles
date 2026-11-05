@@ -3,10 +3,17 @@
 
   comms-lint --channel <name> [--priority P] [--title T] <file|->
   comms-lint report [--since 7d] [--channel C] [--json]
+  comms-lint snapshot [--date D]
+  comms-lint line
+  comms-lint kpi --json
   comms-lint channels
 
 Channels and their numbers: ~/.config/comms-lint/channels.toml. The rules behind them:
 the comms-standard skill. Exit: 0 clean, 1 findings, 2 usage error.
+
+snapshot writes the 7d and 28d reports to COMMS_SNAPSHOT_DIR/<date>.json (nightly, from the
+briefing's evening run); line and kpi read the newest one, so the fleet-bench scorecard never waits on a
+report run. kpi exits 1 when the newest snapshot is older than COMMS_SNAPSHOT_MAX_AGE_H.
 """
 import argparse
 import collections
@@ -24,15 +31,20 @@ import unicodedata
 CONFIG = os.path.expanduser(os.environ.get("COMMS_CHANNELS", "~/.config/comms-lint/channels.toml"))
 PROSE_CHECK = os.path.expanduser(
     os.environ.get("COMMS_PROSE_CHECK", "~/.claude/skills/de-ai-writing/scripts/check.py"))
+SNAPSHOT_DIR = os.path.expanduser(os.environ.get("COMMS_SNAPSHOT_DIR", "~/.agent/comms"))
+SNAPSHOT_MAX_AGE_H = float(os.environ.get("COMMS_SNAPSHOT_MAX_AGE_H", "48"))
+# The buzz target is a KPI threshold, so it has one home: fleet-bench's thresholds file.
+KPI_THRESHOLDS = os.path.expanduser(os.environ.get("KPI_THRESHOLDS", "~/.config/agentctl/kpi-thresholds"))
+SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
         "prose", "stop_at", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
         "max_title"}
 
 
-def die(msg):
+def die(msg, code=2):
     print(f"comms-lint: {msg}", file=sys.stderr)
-    sys.exit(2)
+    sys.exit(code)
 
 
 def load_config():
@@ -253,14 +265,14 @@ def short(code, detail):
     return code
 
 
-def report(args, channels, ids, rcfg):
-    since = dt.datetime.now().astimezone() - parse_since(args.since)
-    days = max(parse_since(args.since).total_seconds() / 86400, 1 / 24)
+def build_report(window, only, channels, ids, rcfg):
+    since = dt.datetime.now().astimezone() - parse_since(window)
+    days = max(parse_since(window).total_seconds() / 86400, 1 / 24)
     buzz = set(rcfg.get("buzz", ["high", "urgent"]))
     out = {"since": since.isoformat(timespec="minutes"), "window_days": days, "channels": {}}
     prose_missing = False
     for name, ch in channels.items():
-        if args.channel and name != args.channel:
+        if only and name != only:
             continue
         src = ch.get("source")
         if not src:
@@ -296,18 +308,48 @@ def report(args, channels, ids, rcfg):
             out["channels"][name] = {"messages": 0}
             continue
         q = statistics.quantiles(lengths, n=10) if len(lengths) > 1 else [lengths[0]] * 9
-        row = {"messages": n, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
+        row = {"messages": n, "passed": passed, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
                "p90_chars": int(q[8]), "findings": dict(codes.most_common(8)),
                "worst": [{"findings": w[0], "when": w[1], "from": w[2], "text": w[3]}
                          for w in sorted(worst, key=lambda w: -w[0])[:3]]}
         if src.get("kind") == "ledger":
             row.update({"buzzed": buzzed, "buzzed_per_day": round(buzzed / days, 1),
-                        "buzz_target_per_day": rcfg.get("buzz_per_day_target"),
                         "quiet_that_buzzed": quiet_buzz,
                         "buzzed_by_sender_per_day": {k: round(v / days, 1) for k, v in buzz_by.most_common(8)}})
         out["channels"][name] = row
     if prose_missing:
         out["warning"] = f"prose check skipped: {PROSE_CHECK} not found"
+    out["summary"] = summary(out)
+    return out
+
+
+def summary(out):
+    """Every channel's messages in one pass rate, and the phone's buzzes a day."""
+    rows = [v for v in out["channels"].values() if v.get("messages")]
+    total = sum(v["messages"] for v in rows)
+    passed = sum(v["passed"] for v in rows)
+    page = out["channels"].get("page", {})
+    return {"messages": total, "pass_pct": round(100 * passed / total) if total else None,
+            "buzzes_per_day": page.get("buzzed_per_day")}
+
+
+def kpi_threshold(key):
+    try:
+        for line in open(KPI_THRESHOLDS, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k == key:
+                return float(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def num(v):
+    return int(v) if isinstance(v, float) and v.is_integer() else v
+
+
+def report(args, channels, ids, rcfg):
+    out = build_report(args.since, args.channel, channels, ids, rcfg)
     if args.json:
         json.dump(out, sys.stdout, indent=2)
         print()
@@ -318,13 +360,12 @@ def report(args, channels, ids, rcfg):
 
 def print_report(out, since):
     rows = {k: v for k, v in out["channels"].items() if v.get("messages")}
-    total = sum(v["messages"] for v in rows.values())
-    passed = sum(round(v["messages"] * v["pass_pct"] / 100) for v in rows.values())
-    head = f"Comms, last {since}: {total} messages, {round(100 * passed / total) if total else 0}% meet the standard."
-    page = rows.get("page")
-    if page:
-        head += (f" Phone buzzed {page['buzzed_per_day']} times a day"
-                 f" (target under {page['buzz_target_per_day']}).")
+    sm = out["summary"]
+    head = f"Comms, last {since}: {sm['messages']} messages, {sm['pass_pct'] or 0}% meet the standard."
+    if sm["buzzes_per_day"] is not None:
+        mx = kpi_threshold("buzzes_per_day_max")
+        head += f" Phone buzzed {sm['buzzes_per_day']} times a day" + (
+            f" (most {num(mx)})." if mx is not None else ".")
     print(head)
     if out.get("warning"):
         print(f"Warning: {out['warning']}")
@@ -344,6 +385,42 @@ def print_report(out, since):
         print(f"\nNo messages in the window: {', '.join(empty)}")
 
 
+def snapshot(day, channels, ids, rcfg):
+    snap = {"date": day, "made_epoch": int(dt.datetime.now().timestamp()),
+            "windows": {w: build_report(w, None, channels, ids, rcfg) for w in SNAPSHOT_WINDOWS}}
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    path = os.path.join(SNAPSHOT_DIR, f"{day}.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(snap, f, indent=1)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+    print(snapshot_line(snap))
+    return 0
+
+
+def newest_snapshot():
+    days = sorted(glob.glob(os.path.join(SNAPSHOT_DIR, "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json")))
+    if not days:
+        return None
+    try:
+        return json.load(open(days[-1], encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def snapshot_line(snap):
+    w = snap["windows"]["7d"]
+    sm = w["summary"]
+    line = f"comms {snap['date']}: 7d {sm['pass_pct'] if sm['pass_pct'] is not None else '-'}% of {sm['messages']:,} messages meet the standard"
+    if sm["buzzes_per_day"] is not None:
+        mx = kpi_threshold("buzzes_per_day_max")
+        line += f", phone buzzed {sm['buzzes_per_day']} times a day" + (f" (most {num(mx)})" if mx is not None else "")
+    low = sorted(((v["pass_pct"], k) for k, v in w["channels"].items() if v.get("messages")))[:3]
+    if low:
+        line += "; lowest: " + ", ".join(f"{k} {p}%" for p, k in low)
+    return line + "."
+
+
 def main():
     argv = sys.argv[1:]
     channels, ids, rcfg = load_config()
@@ -351,6 +428,28 @@ def main():
         for name, ch in channels.items():
             src = ch.get("source", {})
             print(f"{name:14s} {src.get('path') or src.get('glob') or '(no source)'}")
+        return 0
+    if argv[:1] == ["snapshot"]:
+        ap = argparse.ArgumentParser(prog="comms-lint snapshot")
+        ap.add_argument("--date", default=dt.date.today().isoformat())
+        return snapshot(ap.parse_args(argv[1:]).date, channels, ids, rcfg)
+    if argv[:1] in (["line"], ["kpi"]):
+        snap = newest_snapshot()
+        if snap is None:
+            die(f"no comms snapshot in {SNAPSHOT_DIR} (comms-lint snapshot writes one)", 1)
+        if argv[:1] == ["line"]:
+            print(snapshot_line(snap))
+            return 0
+        if argv[1:] != ["--json"]:
+            die("usage: comms-lint kpi --json")
+        age_h = (dt.datetime.now().timestamp() - snap["made_epoch"]) / 3600
+        if age_h > SNAPSHOT_MAX_AGE_H:
+            die(f"newest comms snapshot is {age_h:.0f}h old ({snap['date']}); a stale number is not a KPI", 1)
+        ws = snap["windows"]
+        # Keyed by fleet-bench KPI name: buzzes_per_day, comms_pass_pct.
+        print(json.dumps({kpi: {w: ws[w]["summary"][k] for w in SNAPSHOT_WINDOWS if w in ws}
+                          for kpi, k in (("buzzes_per_day", "buzzes_per_day"), ("comms_pass_pct", "pass_pct"))}
+                         | {"date": snap["date"]}))
         return 0
     if argv[:1] == ["report"]:
         ap = argparse.ArgumentParser(prog="comms-lint report")

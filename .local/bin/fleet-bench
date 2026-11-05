@@ -87,6 +87,7 @@ set -uo pipefail
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
+: "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
@@ -669,6 +670,7 @@ cmd_scorecard() {
     wakes_lines
     report_line "$BENCH_TOKENS_CMD" tokens
     report_line "$BENCH_WEEK_CMD" week
+    report_line "$BENCH_COMMS_CMD line" comms
     echo
     bottleneck_section "$t"
     echo
@@ -1084,11 +1086,17 @@ cmd_ledger() {
   esac
 }
 
-# KPIs: ratios over the human sessions session-outcomes saw in the last 7 and 28 days, plus three
+# KPIs: ratios over the human sessions session-outcomes saw in the last 7 and 28 days, the comms
+# standard's 7d and 28d numbers from the nightly comms snapshot (comms-lint owns the formulas), plus
 # counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
 KPI_NOW="runners_bad asks_stale board_open loop_dark"
+KPI_COMMS="buzzes_per_day comms_pass_pct"
+
+# comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
+# KPIs show - rather than an old number
+comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 
 # kpi_json <now> <ledger counts> -> one object keyed by KPI, in table order
 kpi_json() {
@@ -1096,7 +1104,8 @@ kpi_json() {
   [ -s "$ci" ] || ci=/dev/null
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$ci" \
-     --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" '
+     --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
+     --argjson cm "$(comms_kpi)" --arg commskeys "$KPI_COMMS" '
     def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;
     def total(f): map(f // 0) | add // 0;
     def win($d; $human; $bot): ($t - $d * 86400) as $since
@@ -1113,6 +1122,8 @@ kpi_json() {
     | ($o | map(select($bot[.session_id] | not))) as $human
     | win(7; $human; $bot) as $w7 | win(28; $human; $bot) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
+       ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
+                                                     "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
        ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
