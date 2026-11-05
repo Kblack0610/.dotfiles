@@ -56,6 +56,9 @@ pub struct Item {
     /// `<server>:<tmux session>`, or a bare tmux session on agent-queue's server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// The `@N` window a hand-started item runs in, on the session's server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
     /// `ok`, `failed` or `cancelled`, once done.

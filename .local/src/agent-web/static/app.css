@@ -115,6 +115,7 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 .qbad { color: var(--b-needs); font-weight: 600; }
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
 .qneed > .card { margin: 6px 0; border-color: var(--b-stalled); }
+.qitem .btn.quiet { margin-left: auto; border-color: transparent; background: none; color: var(--muted); }
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
 .qadd select, .qitem select, .bfilter select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
