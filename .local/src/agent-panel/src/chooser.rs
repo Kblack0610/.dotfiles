@@ -265,8 +265,59 @@ pub fn run_interactive() -> Result<()> {
         let target = line.split('\t').next().unwrap_or("");
         if !target.is_empty() {
             tmux::jump(target);
+            // Landed on a session that is asking something: this popup becomes its question
+            // card. tmux keeps one popup per client and ignores a second, so the arrival hook
+            // (`ask-here`) is a no-op while this one is open, and there is no race between them.
+            // A hop to another server detaches this client and closes the popup; the hook on
+            // the other server shows the card there.
+            if let Some(id) = agents.iter().find(|a| a.target == target).and_then(|a| a.ask.as_ref()) {
+                if tmux::is_local(target) {
+                    return Err(exec_pick(id));
+                }
+            }
         }
     }
+    Ok(())
+}
+
+/// Replace this process with `agent-ask pick <id>`; returns only when exec failed.
+fn exec_pick(id: &str) -> anyhow::Error {
+    use std::os::unix::process::CommandExt;
+    std::process::Command::new(asks::agent_ask_path())
+        .args(["pick", id])
+        .exec()
+        .into()
+}
+
+/// The agent whose ask to show a client that just arrived at `server/session:window`: the one in
+/// that window, else any in the same tmux session, and only one that holds a pending ask.
+pub fn ask_here<'a>(agents: &'a [Agent], server: &str, session: &str, window: &str) -> Option<&'a Agent> {
+    let here = tmux::qualify(server, session, window);
+    agents
+        .iter()
+        .filter(|a| a.ask.is_some() && a.server == server && a.tmux_session == session)
+        .min_by_key(|a| a.target != here)
+}
+
+/// `ask-here`: show the question card of the session a client is on, in a popup on that client.
+/// The tmux arrival hooks run it in the background with `key` false, so a session with no ask
+/// shows nothing; Prefix y runs it with `key` true, and then no ask here opens the list of every
+/// pending ask (orphans included) instead.
+pub fn run_ask_here(socket: &str, client: &str, session: &str, window: &str, key: bool) -> Result<()> {
+    let server = Path::new(socket)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let agents = collect();
+    let id = ask_here(&agents, &server, session, window).and_then(|a| a.ask.clone());
+    let ask_bin = asks::agent_ask_path();
+    let mut cmd = vec![ask_bin.to_string_lossy().into_owned(), "pick".to_string()];
+    match id {
+        Some(id) => cmd.push(id),
+        None if key => {}
+        None => return Ok(()),
+    }
+    tmux::popup(socket, client, " question ", &cmd);
     Ok(())
 }
 
@@ -422,13 +473,14 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(());
     }
 
-    let (jsonl_path, project, summary, repo_full) = lookup(map_file, &target);
+    let (jsonl_path, project, summary, repo_full, ask) = lookup(map_file, &target);
     render::preview(
         &target,
         jsonl_path.as_deref(),
         &project,
         &summary,
         &repo_full,
+        &ask,
     );
     Ok(())
 }
@@ -450,10 +502,11 @@ fn extract_target(row: &str) -> Option<String> {
 }
 
 /// Read the preview map file for a target row:
-/// `target \t jsonl \t project \t summary \t repo_full`.
-fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, String) {
+/// `target \t jsonl \t project \t summary \t repo_full \t ask`.
+type MapRow = (Option<PathBuf>, String, String, String, String);
+fn lookup(map_file: &Path, target: &str) -> MapRow {
     let Ok(text) = fs::read_to_string(map_file) else {
-        return (None, String::new(), String::new(), String::new());
+        return MapRow::default();
     };
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
@@ -464,10 +517,11 @@ fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, St
                 f.get(2).unwrap_or(&"").to_string(),
                 f.get(3).unwrap_or(&"").to_string(),
                 f.get(4).unwrap_or(&"").to_string(),
+                f.get(5).unwrap_or(&"").to_string(),
             );
         }
     }
-    (None, String::new(), String::new(), String::new())
+    MapRow::default()
 }
 
 #[cfg(test)]
@@ -503,6 +557,52 @@ mod tests {
             attached,
             ..Agent::default()
         }
+    }
+
+    fn asking(server: &str, sess: &str, window: &str, ask: Option<&str>) -> Agent {
+        Agent {
+            target: tmux::qualify(server, sess, window),
+            server: server.into(),
+            tmux_session: sess.into(),
+            ask: ask.map(String::from),
+            ..Agent::default()
+        }
+    }
+
+    #[test]
+    fn ask_here_prefers_the_window_the_client_is_on() {
+        let agents = vec![
+            asking("hub", "dotfiles", "2", Some("other")),
+            asking("hub", "dotfiles", "5", Some("this")),
+            asking("lab", "dotfiles", "5", Some("other-server")),
+        ];
+        let got = ask_here(&agents, "hub", "dotfiles", "5").and_then(|a| a.ask.as_deref());
+        assert_eq!(got, Some("this"));
+        // Another window of the same session that asks: still shown.
+        let got = ask_here(&agents, "hub", "dotfiles", "9").and_then(|a| a.ask.as_deref());
+        assert_eq!(got, Some("other"));
+    }
+
+    #[test]
+    fn ask_here_is_nothing_for_a_session_that_asks_nothing() {
+        let agents = vec![
+            asking("hub", "dotfiles", "1", None),
+            asking("hub", "notes", "1", Some("elsewhere")),
+            asking("lab", "dotfiles", "1", Some("other-server")),
+        ];
+        assert!(ask_here(&agents, "hub", "dotfiles", "1").is_none());
+    }
+
+    #[test]
+    fn the_preview_map_carries_the_ask_id() {
+        let dir = std::env::temp_dir().join(format!("agent-panel-map-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("map");
+        fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
+        assert_eq!(lookup(&map, "hub/a:1").4, "JSVBgC");
+        assert_eq!(lookup(&map, "hub/b:1").4, "");
+        assert_eq!(lookup(&map, "hub/none:1").4, "");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

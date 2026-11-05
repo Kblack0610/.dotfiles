@@ -9,12 +9,38 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// `$AGENT_ASK_DIR`, else `~/.agent/asks`, as fleet-sessions resolves it.
 pub fn root() -> PathBuf {
     std::env::var_os("AGENT_ASK_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::session::home().join(".agent").join("asks"))
+}
+
+/// `agent-ask` from PATH, else the dotfiles install location: a tmux hook's `run-shell` and
+/// Hyprland's `exec` do not always carry ~/.local/bin.
+pub fn agent_ask_path() -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("agent-ask"))
+                .find(|c| c.is_file())
+        })
+        .unwrap_or_else(|| crate::session::home().join(".local/bin/agent-ask"))
+}
+
+/// The ask's card as `agent-ask card` renders it, in colour, at the fzf preview's width.
+/// Empty when agent-ask is missing or the id is unknown.
+pub fn card(id: &str) -> String {
+    let mut cmd = Command::new(agent_ask_path());
+    cmd.args(["card", id]).env("AGENT_ASK_COLOR", "1");
+    if let Some(cols) = std::env::var_os("FZF_PREVIEW_COLUMNS") {
+        cmd.env("COLUMNS", cols);
+    }
+    cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 /// Claude session id -> the id of a pending ask it owns under `root` (its `id:` line, else

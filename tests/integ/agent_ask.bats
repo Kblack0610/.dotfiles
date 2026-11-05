@@ -73,7 +73,9 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   [ -f "$HOME/.agent/asks/demo/$id.md" ]
   [[ "$stderr" == *"ASK $id (question) - waiting on you"* ]]
   [[ "$stderr" == *"merge it?"* ]]
-  [[ "$stderr" == *"options: [now] [later] (recommended)"* ]]
+  [[ "$stderr" == *"  1  now"* ]]
+  [[ "$stderr" == *"  2  later  (recommended)"* ]]
+  [[ "$stderr" == *"never on 'filed as ask $id'"* ]]
   ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
@@ -139,16 +141,98 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 }
 
 @test "a multi-line question is collapsed to one physical line" {
-  local id; id="$("$AGENT_ASK" post --project demo "$(printf 'line one\nline two')")"
+  local id; id="$("$AGENT_ASK" post --project demo "$(printf 'line one\nline two?')")"
   run bash -c '"$AGENT_ASK" show "$1" | grep -c "^question: "' _ "$id"
   assert_output '1'
   run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^question: //p"' _ "$id"
-  assert_output --partial 'line one line two'
+  assert_output --partial 'line one line two?'
+}
+
+@test "post refuses a question that is not one line ending in ?, and says where the detail goes" {
+  run --separate-stderr "$AGENT_ASK" post --project demo 'merge it, or wait'
+  assert_failure 2
+  [[ "$stderr" == *"--context"* ]]
+  run --separate-stderr "$AGENT_ASK" post --project demo "$(printf 'x%.0s' $(seq 1 160))?"
+  assert_failure 2
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  # Negative control: the same post as a short question is filed.
+  run "$AGENT_ASK" post --project demo 'merge it?'
+  assert_success
+}
+
+@test "slug=meaning options keep the slugs alone in options: and the meanings in option_notes:" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=after the release' \
+    --recommend go --context 'the sweep is ready' 'run the sweep?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'options: go|later'
+  assert_line 'option_notes: run it now|after the release'
+  assert_line 'context: the sweep is ready'
+  # Plain options carry no notes.
+  id="$("$AGENT_ASK" post --project demo --options 'a|b' 'which?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'options: a|b'
+  assert_line 'option_notes: '
+}
+
+@test "card shows the question, numbered options with meanings, the recommendation, context and judge" {
+  local id; id="$("$AGENT_ASK" post --project demo --session agent-1 --options 'go=run it now|later=after the release' \
+    --recommend later --context 'the sweep is ready' 'run the sweep?')"
+  printf 'judge: take-recommend\njudge_reason: the policy says wait\n' >> "$HOME/.agent/asks/demo/$id.md"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line --partial "ASK $id (question) - waiting on you  demo . agent-1"
+  assert_line 'run the sweep?'
+  assert_line '  1  go     run it now'
+  assert_line '  2  later  after the release  (recommended)'
+  assert_line 'why: the sweep is ready'
+  assert_line 'judge: would take the recommendation - the policy says wait'
+  # No colour off a terminal: the card lands in a session's tool output as plain text.
+  ! grep -q $'\e' <<< "$output"
+}
+
+@test "card of an old ask with bare options and no notes still lists the options" {
+  mkdir -p "$HOME/.agent/asks/demo"
+  printf 'id: old1\nproject: demo\nkind: question\nstatus: pending\nquestion: a long old paragraph\noptions: x|y\nrecommend: y\n' \
+    > "$HOME/.agent/asks/demo/old1.md"
+  run "$AGENT_ASK" card old1
+  assert_line 'a long old paragraph'
+  assert_line '  1  x'
+  assert_line '  2  y  (recommended)'
+}
+
+@test "pick answers the chosen option only after Enter, and q leaves the ask pending" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'go|later' 'run the sweep?')"
+  # Negative control: a digit then a non-Enter key sends nothing; q closes.
+  run bash -c 'printf "2xq" | "$AGENT_ASK" pick "$1"' _ "$id"
+  assert_success
+  assert_output --partial 'not sent'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # A digit out of range is ignored.
+  run bash -c 'printf "9q" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  run bash -c 'printf "2\n" | "$AGENT_ASK" pick "$1"' _ "$id"
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answer: later'
+}
+
+@test "pick drops a question only after Enter" {
+  local id; id="$("$AGENT_ASK" post --project demo 'run the sweep?')"
+  run bash -c 'printf "dxq" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  run bash -c 'printf "d\n" | "$AGENT_ASK" pick "$1"' _ "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: cancelled'
+  assert_line 'closed_reason: dropped by the human'
 }
 
 @test "ids are unique across rapid successive posts" {
   local a b c
-  a="$(post demo one)"; b="$(post demo two)"; c="$(post demo three)"
+  a="$(post demo one?)"; b="$(post demo two?)"; c="$(post demo three?)"
   local n; n="$(printf '%s\n%s\n%s\n' "$a" "$b" "$c" | sort -u | wc -l)"
   assert_equal "$n" '3'
 }
