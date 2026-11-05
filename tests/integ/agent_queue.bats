@@ -436,7 +436,7 @@ EOF
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" | grep my-plan)" ]
 }
 
-@test "cancel moves a queued item to done, and kills a running item's session" {
+@test "cancel moves a queued item to done, and kills the session dispatch made for a running item" {
   "$AQ" add --project game --slug q "q"
   run "$AQ" cancel q
   assert_success
@@ -444,6 +444,7 @@ EOF
   run grep -c kill-session "$NOTES_FIXTURE/calls.log"
   assert_output 0
   "$AQ" add --project game --running --session game-agent-2 --slug r "r"
+  "$AQ" set r origin=run
   run "$AQ" cancel r
   assert_success
   run grep -- "-L lab kill-session -t =game-agent-2" "$NOTES_FIXTURE/calls.log"
@@ -452,10 +453,49 @@ EOF
   assert_failure; assert_output --partial "nothing active"
   # fleet-dispatch writes <server>:<tmux session>: the kill goes to that server.
   "$AQ" add --project game --running --session default:game-agent-3 --slug s "s"
+  "$AQ" set s origin=hand
   run "$AQ" cancel s
   assert_success
   run grep -- "-L default kill-session -t =game-agent-3" "$NOTES_FIXTURE/calls.log"
   assert_success
+}
+
+# 2026-11-04: cancelling an item hand-started in a hub:dotfiles window killed hub:dotfiles and
+# every window in it. A hand start records its window, and cancel closes only that.
+@test "cancel of an item hand-started in a hub:dotfiles window closes its window, never the session" {
+  echo dotfiles > "$NOTES_FIXTURE/tmux.session"
+  TMUX="/tmp/tmux-1000/hub,1,0" TMUX_PANE=%31 STUB_WINDOW_ID=@9 \
+    "$AQ" add --project game --running --slug by-hand "by hand"
+  f="$(item running by-hand)"
+  [ "$(field "$f" session)" = hub:dotfiles ]
+  [ "$(field "$f" window)" = @9 ]
+  run "$AQ" cancel by-hand
+  assert_success
+  assert_output --partial "closed window @9 of dotfiles"
+  run grep -- "tmux -L hub kill-window -t @9" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "cancel of a hand-started item that recorded no window kills nothing" {
+  "$AQ" add --project game --running --session hub:dotfiles --slug old "recorded before windows were"
+  run "$AQ" cancel old
+  assert_success
+  assert_output --partial "left hub:dotfiles open"
+  run grep -cE "kill-(session|window)" "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "cancel never kills a world session, even one an item says dispatch made" {
+  export TMUX_SERVERS_DIR="$REPO_ROOT/.config/tmux-servers"
+  "$AQ" add --project game --running --session hub:dotfiles --slug wrong "a bad record"
+  "$AQ" set wrong origin=run
+  run "$AQ" cancel wrong
+  assert_success
+  assert_output --partial "dotfiles is a world session"
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "the same slug finished twice in a day keeps both records" {
