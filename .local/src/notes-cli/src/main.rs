@@ -24,16 +24,17 @@ mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
+mod migrate_rows;
 mod playtest;
 mod project_sweep;
 mod project_tasks;
 mod projects;
 mod registry;
+mod sheet;
 mod status;
 mod summarize;
 mod sweep;
 mod tags;
-mod waves;
 mod zettel;
 
 use agent_sheet::Lane;
@@ -121,7 +122,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<FocusCmd>,
     },
-    /// Per-project task list — the `## Wave` on a project's sheet (the project analog of
+    /// Per-project task list — the `## Tasks` on a project's sheet (the project analog of
     /// `focus`, which is the daily note's `## Focus`). Project tasks live in the project .md.
     Ptask {
         /// Project name (case-insensitive)
@@ -143,13 +144,13 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<PtaskCmd>,
     },
-    /// Regenerate the project/agent board — every project's current `## Wave`, agent lane
+    /// Regenerate the project/agent board — every project's `## Tasks`, agent lane
     /// first, across every profile — and print its path. Also refreshed by `notes today`.
     /// The daily note LINKS this rather than rendering it: the note is the human's focus,
     /// the board is one click away.
     Board {
         /// Print every open row of every project as JSON instead of writing the board:
-        /// the human and agent sheets' current waves and the playtest checks, across all
+        /// the human and agent sheets' open-version rows and the playtest checks, across all
         /// profiles. READ-ONLY. The feed the board UIs read; the row shape is in the README
         #[arg(long, conflicts_with = "agent")]
         json: bool,
@@ -218,10 +219,10 @@ enum Cmd {
         /// List archived projects instead of the current ones
         #[arg(long)]
         archived: bool,
-        /// Roll a project's working sheet to the next version: freeze it into versions/
-        /// and reset to a fresh `## Wave: new` (the sheet-model rollover)
+        /// Close a project's open version: its closed rows freeze into versions/ and
+        /// `Version:` moves to the next one. Refused for a draft or alpha project
         #[arg(long, value_name = "NAME")]
-        roll: Option<String>,
+        release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
         /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
         /// Works on archived projects too. Never overwrites; idempotent.
@@ -240,48 +241,52 @@ enum Cmd {
         /// Frozen versions/ notes keep their tags as history. Idempotent.
         #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
         retire_ai_tag: Option<String>,
-        /// With --retire-ai-tag: report what would change and write nothing
+        /// Migrate every project sheet and agent board, in every profile, onto `## Tasks`
+        /// and the row grammar: ids, `#c` tags, no retired tags, done rows under `### Done`.
+        /// Exact duplicates are reported, never removed. Idempotent
+        #[arg(long)]
+        migrate_rows: bool,
+        /// With --retire-ai-tag or --migrate-rows: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
-        /// With --roll: step the minor (v0.1.2 -> v0.2.0)
+        /// With --release: step the minor (v0.1.2 -> v0.2.0)
         #[arg(long)]
         minor: bool,
-        /// With --roll: step the major (v0.1.2 -> v1.0.0)
+        /// With --release: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
         major: bool,
-        /// With --roll: close the version even though its wave still has open tasks
+        /// With --release: close the version even though it still has open rows; they stay open
         #[arg(long)]
         force: bool,
-        /// With --roll: move every open task into the next wave (retagged, `carried:N`
+        /// With --release: aim every open row at the next version (retagged, `carried:N`
         /// counted) before closing, and append to an existing versions/ note rather than
         /// refusing. What a release tag does to its sheet (`agentctl-wave-roll`)
         #[arg(long)]
         carry: bool,
-        /// With --roll: open exactly this version next (vX.Y.Z, above the current one)
+        /// With --release: open exactly this version next (vX.Y.Z, above the current one)
         /// instead of stepping. For a sheet a release tag has already passed, so it lands
-        /// after the tag in one roll rather than creeping up a patch per roll
+        /// after the tag in one release rather than creeping up a patch at a time
         #[arg(long, value_name = "VERSION")]
         next: Option<String>,
-        /// With --roll --next: allow a version BELOW the open one, to realign a sheet whose
+        /// With --release --next: allow a version BELOW the open one, to realign a sheet whose
         /// number ran ahead of the app's release tags (it could never be tagged, so tags
-        /// would never roll it). `notes-roll` checks the target is above the newest tag
+        /// would never close it). `notes-roll` checks the target is above the newest tag
         #[arg(long)]
         renumber: bool,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
-        /// Print a project's roadmap - current wave then planned ones
-        /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>heading`)
+        /// Print a project's roadmap: the open version, then the releases rows are aimed at
+        /// (TSV: `version<TAB>state<TAB>open<TAB>done`)
         #[arg(long, value_name = "NAME")]
-        waves: Option<String>,
+        roadmap: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
         /// (TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>
-        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the current wave's, planned
-        /// is the later waves', agent is the agent board's)
+        /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the open version's, planned
+        /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats: one JSON array instead, adding each project's dir, current wave,
-        /// done count, STATUS line and date, and summary path
+        /// With --stats: one JSON array instead, adding each project's dir, done count, STATUS line and date, and summary path
         #[arg(long, requires = "stats")]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it.
@@ -403,22 +408,22 @@ enum FocusCmd {
     Sweep,
 }
 
-/// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Wave`.
+/// `notes ptask <name> …` verbs — the project analog of `FocusCmd`, on the sheet's `## Tasks`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
-    /// List the project's open wave tasks (TSV: `path<TAB>line<TAB>key<TAB>text`;
-    /// with --wave/--all a fifth `wave` column is appended)
+    /// List the open version's rows (TSV: `path<TAB>line<TAB>key<TAB>text`;
+    /// with --version/--all a fifth `version` column is appended)
     List {
-        /// Only this wave (`vX.Y.Z`), current or planned
+        /// Only the rows of this release (`vX.Y.Z`), open or later
         #[arg(long, value_name = "VERSION")]
-        wave: Option<String>,
-        /// Every wave on the sheet: the current one and the whole roadmap
+        version: Option<String>,
+        /// Every open row on the sheet, whichever release it is aimed at
         #[arg(long)]
         all: bool,
     },
-    /// Add a task to the project's current wave, or to a planned one with --to
+    /// Add a task to the open version, or aim it at a later release with --to
     Add {
-        /// Plan it into this version instead (`vX.Y.Z`); opens the wave if it is new
+        /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
         /// With --playtest: the `## <game>` heading the check goes under (default General)
@@ -433,21 +438,20 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Move the first matching open task into another wave, or with --project onto
-    /// another project's sheet (its current wave, or the existing wave --to names)
+    /// Aim the first matching open task at another release, or with --project move it onto
+    /// another project's sheet (its open version, or the release --to names)
     Move {
-        /// The version to move it to (`vX.Y.Z`); opens the wave if it is new. With
-        /// --project: optional, and the wave must already exist on the dest sheet
+        /// The release to aim it at (`vX.Y.Z`). Optional with --project
         #[arg(long, value_name = "VERSION", required_unless_present = "project")]
         to: Option<String>,
         /// Move the row to this project instead (any profile; with --agent, agent sheet to
-        /// agent sheet). Retagged for the wave it lands in
+        /// agent sheet). Its old release tag goes unless --to names one
         #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Check off the first open wave task whose text matches. Needs evidence: pass
+    /// Check off the first open task whose text matches. Needs evidence: pass
     /// --proof for something checkable, or --unverified to say out loud that there is none
     Done {
         /// Something checkable later: `pr:1142`, `run:<id>`, a URL
@@ -459,12 +463,12 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Toggle the first matching wave task between todo and in-progress (`[ ]` <-> `[/]`)
+    /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
     Start {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Close the first matching open wave task undelivered: the row stays, ticked, with the
+    /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
         /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
@@ -476,7 +480,7 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Change the first matching open wave task's text in place: its place on the sheet,
+    /// Change the first matching open task's text in place: its place on the sheet,
     /// its checkbox state and its tags stay as they were
     Edit {
         /// The task's new text
@@ -495,20 +499,20 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Step the first matching task one wave SOONER (toward the current wave).
-    /// Clamps there: nothing may sit before the wave that is in flight
+    /// Step the first matching task one release SOONER (toward the open version).
+    /// Clamps there: nothing may sit before the version in flight
     Promote {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Step the first matching task one wave LATER, opening the next patch version
-    /// when it is already in the last wave on the sheet
+    /// Step the first matching task one release LATER, onto the next patch version
+    /// when no later release is on the sheet
     Demote {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Re-lane the sheet: group tasks into waves by their `#vX.Y.Z` tag (current wave
-    /// first, roadmap ascending), then by priority inside each wave, done at the foot
+    /// Sort the section by priority, done at the foot, and drop release tags the sheet
+    /// has passed
     Sweep {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]
@@ -604,13 +608,13 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// The four verbs `ptask --playtest` takes. Everything else acts on waves, which playtest.md
+/// The four verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     Ok(match sub {
         None
         | Some(PtaskCmd::List {
-            wave: None,
+            version: None,
             all: false,
         }) => playtest::Op::List,
         Some(PtaskCmd::Add {
@@ -638,7 +642,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pick: Pick::new(&query.join(" "), exact)?,
         },
         _ => bail!(
-            "--playtest takes list, add, done and drop only (no waves or details: no --to, --wave, --all or --detail)"
+            "--playtest takes list, add, done and drop only (no releases or details: no --to, --version, --all or --detail)"
         ),
     })
 }
@@ -774,8 +778,8 @@ fn main() -> Result<()> {
             };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
-                Some(PtaskCmd::List { wave, all }) => {
-                    project_tasks::list(&prof, &name, wave.as_deref(), all, lane)?
+                Some(PtaskCmd::List { version, all }) => {
+                    project_tasks::list(&prof, &name, version.as_deref(), all, lane)?
                 }
                 Some(PtaskCmd::Add {
                     to,
@@ -947,11 +951,12 @@ fn main() -> Result<()> {
             archive,
             restore,
             archived,
-            roll,
+            release,
             migrate,
             move_project,
             to_profile,
             retire_ai_tag,
+            migrate_rows,
             dry_run,
             minor,
             major,
@@ -960,7 +965,7 @@ fn main() -> Result<()> {
             next,
             renumber,
             version_of,
-            waves,
+            roadmap,
             stats,
             json,
             agent_note,
@@ -981,6 +986,13 @@ fn main() -> Result<()> {
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            if migrate_rows {
+                migrate_rows::run(&log, dry_run)?;
+                if !dry_run {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
@@ -1011,7 +1023,8 @@ fn main() -> Result<()> {
             }
             // lifecycle/version flags take precedence over the read paths
             match (
-                new, archive, restore, roll, migrate, version_of, waves, agent_note, archived, name,
+                new, archive, restore, release, migrate, version_of, roadmap, agent_note, archived,
+                name,
             ) {
                 (Some(n), ..) => {
                     projects::new_project(&prof, &log, &n, &projects::Overlays::load()?)?;
@@ -1026,7 +1039,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
-                    projects::roll(
+                    projects::release(
                         &prof,
                         &log,
                         &n,
@@ -1043,7 +1056,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, Some(n), ..) => projects::show_waves(&prof, &n)?,
+                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
                     projects::show_agent_note(&prof, &n, version.as_deref())?
                 }

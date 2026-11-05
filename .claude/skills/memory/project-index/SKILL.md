@@ -56,7 +56,7 @@ The AUTO block it writes:
   tracker (from `project-map.json` `trackers.{project}`).
 - **Lab** - one line per lab project the key owns (itself, plus each project whose `repo` is
   this key), from `notes projects --stats --json`: profile, stage, version, open and done in
-  the current wave, agent-board rows, STATUS date, dir. A beta or prod project whose STATUS
+  the open version, agent-board rows, STATUS date, dir. A beta or prod project whose STATUS
   is missing or over 14 days old is flagged STALE. A key with exactly one lab project also
   gets its STATUS text.
 - **Active plans** - newest 5 in `~/.agent/plans/{project}/` (excludes `active/archive/_archive/tasks`).

@@ -1,45 +1,25 @@
-//! Sweep a project sheet's `## Wave` roadmap: group tasks into waves by their `#vX.Y.Z` tag,
-//! current wave first and the rest ascending, then apply the priority lanes inside each.
+//! Sweep a project sheet's `## Tasks` section: one list, most urgent first, then `---` and
+//! `### Done`.
 //!
-//! The wave tag is the source of truth and the heading is swept output, exactly as the
-//! priority tag relates to `### Urgent`. An untagged task inherits the wave it sits under.
-//!
-//! Two rules the lane sweep has no equivalent for. A task can never sit in a wave EARLIER
-//! than the current one, so a tag naming a rolled version is pulled forward rather than
-//! opening a section above the current wave that every reader would mistake for it. And
-//! `#urgent` is legal only in the current wave, so a task moved out is rewritten to `#high`.
+//! The release tag is the source of truth, exactly as the priority tag is, and no heading
+//! repeats it. Two rules the lane sweep has no equivalent for. A row can never be aimed at a
+//! release already closed, so a tag below the sheet's `Version:` goes and the row follows the
+//! open version. And `#urgent` is legal only in the open version, so a row aimed later is
+//! rewritten to `#high`.
 
 use crate::md;
 use crate::projects;
+use crate::sheet::{self, V};
 use crate::sweep;
-use crate::waves;
 
-type V = (u32, u32, u32);
-
-/// The priority levels legal in a wave. The current wave allows all three; a planned wave
-/// allows everything below Urgent, because only the wave in flight can hold urgent work.
-///
-/// This used to also decide which headings rendered. With waves sorted rather than bucketed
-/// there is nothing to render, so it is purely a legality rule now - and the rule is enforced
-/// at tag level anyway by `retag_wave`, which rewrites `#urgent` to `#high` on the way out of
-/// the current wave. This keeps a hand-typed `#urgent` on a planned wave from sorting to the
-/// top of it.
-fn lanes_for(is_current: bool) -> &'static [sweep::Lane] {
-    if is_current {
-        &md::PRIORITIES
-    } else {
-        &md::PRIORITIES[1..]
-    }
-}
-
-/// One rung of the wave ladder from `at`, in `dir` (`-1` sooner, `+1` later).
+/// One rung of the release ladder from `at`, in `dir` (`-1` sooner, `+1` later). `ladder` is
+/// the releases open rows are aimed at.
 ///
 /// A ladder, not a ring. `PRIORITY_RING` wraps through the no-tag slot because every priority
-/// is legal; wave steps are bounded on one side and open on the other. Going sooner CLAMPS at
-/// `cur`, because a wave before the current one is the thing every reader would mistake for
-/// the current one. Going later MINTS the next patch past the end, because the roadmap is
-/// supposed to grow: that is how a pile becomes small waves.
-pub(crate) fn step_wave(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, StepEnd> {
+/// is legal; release steps are bounded on one side and open on the other. Going sooner CLAMPS
+/// at `cur`, because a closed release cannot take work. Going later MINTS the next patch past
+/// the end, because the roadmap is supposed to grow: that is how a pile becomes small releases.
+pub(crate) fn step_version(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, StepEnd> {
     if dir < 0 {
         if at <= cur {
             return Err(StepEnd::AtCurrent);
@@ -53,7 +33,7 @@ pub(crate) fn step_wave(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, Step
     } else {
         match ladder.iter().copied().filter(|v| *v > at).min() {
             Some(v) => Ok(v),
-            // Past the last planned wave: open the next patch above the highest wave on the
+            // Past the last planned release: open the next patch above the highest on the
             // sheet, so `demote` on the last one still has somewhere to put the task.
             None => {
                 let top = ladder.iter().copied().max().unwrap_or(cur).max(at);
@@ -63,149 +43,107 @@ pub(crate) fn step_wave(cur: V, ladder: &[V], at: V, dir: i32) -> Result<V, Step
     }
 }
 
-/// Why a wave step could not happen. Only one direction can fail.
+/// Why a release step could not happen. Only one direction can fail.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StepEnd {
-    /// Already in the current wave; there is nothing sooner.
+    /// Already in the open version; there is nothing sooner.
     AtCurrent,
 }
 
-/// Retag `line` for wave `to`, returning the new line and a report when something was
+/// `line` with its priority legal for a row aimed later than the open version, and the report
+/// when that rewrote it.
+fn cap_priority(line: String) -> (String, Option<String>) {
+    if md::task_priority(&line) != Some("#urgent") {
+        return (line, None);
+    }
+    let note = format!(
+        "{}: #urgent -> #high (urgent is only legal in the open version)",
+        md::task_text(&line)
+    );
+    // Strip the priority by re-adding the one we want: `add_tag` no-ops on a duplicate, so
+    // drop `#urgent` first and let the lane tag land in the same place.
+    (
+        md::add_tag(&md::strip_priority_tag(&line), "#high"),
+        Some(note),
+    )
+}
+
+/// Retag `line` for release `to`, returning the new line and a report when something was
 /// rewritten beyond the tag itself.
-pub(crate) fn retag_wave(line: &str, to: V, to_is_current: bool) -> (String, Option<String>) {
-    let (stripped, _) = md::split_wave(line);
-    let mut note = None;
-    let stripped = if !to_is_current && md::task_priority(&stripped) == Some("#urgent") {
-        note = Some(format!(
-            "{}: #urgent -> #high (urgent is only legal in the current wave)",
-            md::task_text(line)
-        ));
-        // Strip the priority by re-adding the one we want: `add_tag` no-ops on a duplicate,
-        // so drop `#urgent` first and let the lane tag land in the same place.
-        let cleared = md::strip_priority_tag(&stripped);
-        md::add_tag(&cleared, "#high")
+pub(crate) fn retag(line: &str, to: V, to_is_current: bool) -> (String, Option<String>) {
+    let (stripped, _) = md::split_version(line);
+    let (stripped, note) = if to_is_current {
+        (stripped, None)
     } else {
-        stripped
+        cap_priority(stripped)
     };
     (
-        md::add_tag(&stripped, &format!("#{}", waves::fmt(to))),
+        md::add_tag(&stripped, &format!("#{}", projects::fmt_version(to))),
         note,
     )
 }
 
-/// Pure core: reorganize a project sheet's wave roadmap. Returns the new content and a
-/// report of everything it moved, or `None` when the sheet is already in this shape.
+/// Pure core: reorganize a sheet's `## Tasks` section. Returns the new content and a report of
+/// everything it rewrote, or `None` when the sheet is already in this shape or has no section.
 ///
-/// Refuses (returns `None`) rather than guessing when it has no open version (no `Version:`
-/// line and no versioned first wave; an agent board has only the latter), or when any wave heading names no parseable version - a legacy `## Wave 1 - verify` must not
-/// be renumbered into the roadmap.
+/// The open version is the sheet's own `Version:` line. An agent board has none, so its rows
+/// keep their tags as they are and only the priority sort applies.
 pub(crate) fn sweep_sheet(content: &str) -> Option<(String, Vec<String>)> {
-    let declared = projects::open_version_of(content)?;
-    let secs = waves::sections(content);
-    if secs.is_empty() || secs.iter().any(|s| s.version.is_none()) {
-        return None;
-    }
-    let cur = waves::current_of(content, Some(declared))?.version?;
-
     let lines: Vec<&str> = content.lines().collect();
-    let start = secs[0].start;
-    let end = secs.last().map(|s| s.end).unwrap_or(lines.len());
+    let span = md::section_span(&lines, sheet::TASKS)?;
+    let cur = projects::sheet_version(content);
 
-    // Bucket every task by the wave it belongs to: its tag, else the section it sits in.
-    let mut waves_seen: Vec<V> = secs.iter().filter_map(|s| s.version).collect();
-    let mut buckets: Vec<(V, Vec<String>)> = Vec::new();
     let mut report: Vec<String> = Vec::new();
-
-    let mut push = |buckets: &mut Vec<(V, Vec<String>)>, v: V, line: String| match buckets
-        .iter_mut()
-        .find(|(bv, _)| *bv == v)
-    {
-        Some((_, b)) => b.push(line),
-        None => buckets.push((v, vec![line])),
-    };
-
-    for s in &secs {
-        let sec_v = s.version.expect("checked above");
-        for l in lines.iter().take(s.end).skip(s.start + 1) {
-            // Blank lines and the generated `- [ ] ` placeholder are scaffold, not content:
-            // the lane rebuild re-emits the placeholder itself, and tagging the one it
-            // emitted last time would make every sweep differ from the one before it.
-            if l.trim().is_empty() || md::is_empty_unchecked(l) {
-                continue;
-            }
-            // Scaffold and prose inside a section stay with that section; the lane sweep
-            // below decides what to do with them.
-            let tagged = md::wave_tag(l).and_then(|t| waves::parse(t.trim_start_matches('#')));
-            let mut want = tagged.unwrap_or(sec_v);
-            if want < cur {
-                report.push(format!(
-                    "{}: pulled forward to {} (was {})",
-                    md::task_text(l),
-                    waves::fmt(cur),
-                    waves::fmt(want)
-                ));
-                want = cur;
-            }
-            if !waves_seen.contains(&want) {
-                waves_seen.push(want);
-            }
-            let (line, note) = if md::is_task(l) {
-                retag_wave(l, want, want == cur)
-            } else {
-                ((*l).to_string(), None)
-            };
-            if let Some(n) = note {
-                report.push(n);
-            }
-            push(&mut buckets, want, line);
+    let mut body: Vec<String> = Vec::new();
+    for l in &lines[span.clone()] {
+        // Blank lines and the generated `- [ ] ` placeholder are scaffold, not content: the
+        // lane rebuild re-emits the placeholder itself.
+        if l.trim().is_empty() || md::is_empty_unchecked(l) {
+            continue;
         }
-    }
-
-    // Current wave first, then the roadmap ascending. Sorting plainly by version would put a
-    // wave numbered BELOW the current one above it, and every reader takes the first section
-    // as the current wave.
-    waves_seen.sort_unstable();
-    waves_seen.dedup();
-    let ordered: Vec<V> = std::iter::once(cur)
-        .chain(waves_seen.into_iter().filter(|v| *v != cur))
-        .collect();
-
-    let mut out: Vec<String> = lines[..start].iter().map(|l| (*l).to_string()).collect();
-    for (i, v) in ordered.iter().enumerate() {
-        if i > 0 {
-            out.push(String::new());
+        if !md::is_open_task(l) {
+            body.push((*l).to_string());
+            continue;
         }
-        let is_current = *v == cur;
-        let heading = if is_current {
-            waves::heading_current(&waves::fmt(*v))
+        let stale = matches!((sheet::target(l), cur), (Some(t), Some(c)) if t < c);
+        if stale {
+            report.push(format!(
+                "{}: tag dropped, {} closed",
+                md::task_text(l),
+                md::version_tag(l).unwrap_or_default()
+            ));
+            body.push(md::split_version(l).0);
+        } else if sheet::is_later(l, cur) {
+            let (line, note) = cap_priority((*l).to_string());
+            report.extend(note);
+            body.push(line);
         } else {
-            waves::heading_planned(&waves::fmt(*v))
-        };
-        out.push(format!("## {heading}"));
-        let body: Vec<String> = buckets
-            .iter()
-            .find(|(bv, _)| bv == v)
-            .map(|(_, b)| b.clone())
-            .unwrap_or_default();
-        let refs: Vec<&str> = body.iter().map(String::as_str).collect();
-        // Canonical tag order, applied once at the end: the wave retag above and the lane
-        // inherit inside `rebuild` add tags at different points, so this is what stops the
-        // same task being spelled two ways depending on how it got here.
-        out.extend(
-            sweep::rebuild_sorted(&refs, lanes_for(is_current))
-                .iter()
-                .map(|l| md::normalize_tags(l)),
-        );
+            body.push((*l).to_string());
+        }
     }
+
+    let refs: Vec<&str> = body.iter().map(String::as_str).collect();
+    let mut out: Vec<String> = lines[..span.start]
+        .iter()
+        .map(|l| (*l).to_string())
+        .collect();
+    // Canonical tag order, applied once at the end: the retag above and the lane inherit
+    // inside `rebuild` add tags at different points, so this is what stops the same task
+    // being spelled two ways depending on how it got here.
+    out.extend(
+        sweep::rebuild_sorted(&refs, &md::PRIORITIES)
+            .iter()
+            .map(|l| md::normalize_tags(l)),
+    );
     out.push(String::new());
-    out.extend(lines[end..].iter().map(|l| (*l).to_string()));
+    out.extend(lines[span.end..].iter().map(|l| (*l).to_string()));
 
     let mut joined = out.join("\n");
     if content.ends_with('\n') && !joined.ends_with('\n') {
         joined.push('\n');
     }
-    // Trailing blank lines accumulate otherwise: the roadmap's own blank separator plus
-    // whatever followed the last section.
+    // Trailing blank lines accumulate otherwise: the section's own blank separator plus
+    // whatever followed it.
     while joined.contains("\n\n\n") {
         joined = joined.replace("\n\n\n", "\n\n");
     }
@@ -220,12 +158,10 @@ mod tests {
 # demo
 Version: v0.12.1
 
-## Wave: v0.12.1 (current)
+## Tasks
 - [ ] live one #high
+- [ ] next one #v0.12.2
 - [x] done one <!-- pr:307 -->
-
-## Wave: v0.12.2 (planned)
-- [ ] next one
 ";
 
     fn sweep(c: &str) -> String {
@@ -238,64 +174,53 @@ Version: v0.12.1
     #[test]
     fn stepping_later_walks_the_ladder_it_finds_not_the_next_number() {
         // v0.12.3 does not exist on the sheet, so v0.12.2 steps to v0.12.4.
-        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 2), 1), Ok((0, 12, 4)));
-        assert_eq!(step_wave(CUR, &LADDER, CUR, 1), Ok((0, 12, 2)));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), 1), Ok((0, 12, 4)));
+        assert_eq!(step_version(CUR, &LADDER, CUR, 1), Ok((0, 12, 2)));
     }
 
     #[test]
-    fn stepping_later_past_the_last_wave_opens_the_next_patch() {
-        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 4), 1), Ok((0, 12, 5)));
-        // and from a lone current wave, so a sheet with no roadmap can still grow one
-        assert_eq!(step_wave(CUR, &[CUR], CUR, 1), Ok((0, 12, 2)));
+    fn stepping_later_past_the_last_release_opens_the_next_patch() {
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), 1), Ok((0, 12, 5)));
+        // and from the open version alone, so a sheet with no roadmap can still grow one
+        assert_eq!(step_version(CUR, &[CUR], CUR, 1), Ok((0, 12, 2)));
     }
 
     #[test]
     fn stepping_sooner_walks_back_down_the_ladder() {
-        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 4), -1), Ok((0, 12, 2)));
-        assert_eq!(step_wave(CUR, &LADDER, (0, 12, 2), -1), Ok(CUR));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 4), -1), Ok((0, 12, 2)));
+        assert_eq!(step_version(CUR, &LADDER, (0, 12, 2), -1), Ok(CUR));
     }
 
-    // The clamp. A wave before the current one is exactly what every reader would mistake
-    // for the current one, so the ladder is bounded on this side and says so.
+    // The clamp: a closed release cannot take work, so the ladder is bounded on this side.
     #[test]
-    fn stepping_sooner_clamps_at_the_current_wave() {
-        assert_eq!(step_wave(CUR, &LADDER, CUR, -1), Err(StepEnd::AtCurrent));
+    fn stepping_sooner_clamps_at_the_open_version() {
+        assert_eq!(step_version(CUR, &LADDER, CUR, -1), Err(StepEnd::AtCurrent));
         // and a task somehow BELOW current cannot be walked further down either
         assert_eq!(
-            step_wave(CUR, &LADDER, (0, 11, 0), -1),
+            step_version(CUR, &LADDER, (0, 11, 0), -1),
             Err(StepEnd::AtCurrent)
         );
     }
 
-    // A step never lands on a rolled version even if one is somehow still on the ladder.
+    // A step never lands on a closed version even if one is somehow still on the ladder.
     #[test]
-    fn a_step_never_lands_before_the_current_wave() {
+    fn a_step_never_lands_before_the_open_version() {
         let stale = [(0, 11, 0), (0, 12, 1), (0, 12, 2)];
-        assert_eq!(step_wave(CUR, &stale, (0, 12, 2), -1), Ok(CUR));
+        assert_eq!(step_version(CUR, &stale, (0, 12, 2), -1), Ok(CUR));
     }
 
     #[test]
-    fn tasks_get_their_section_version_as_a_tag() {
+    fn untagged_rows_stay_untagged_and_a_later_tag_stays_put() {
         let out = sweep(SHEET);
-        assert!(out.contains("- [ ] live one #high #v0.12.1"), "{out}");
-        // and an untagged one picks up the default on its way into a wave
-        assert!(out.contains("- [ ] next one #high #v0.12.2"), "{out}");
-    }
-
-    // The tag must land before the marker or it leaks onto every board row.
-    #[test]
-    fn the_wave_tag_lands_before_a_trailing_marker() {
-        let out = sweep(SHEET);
-        assert!(
-            out.contains("- [x] done one #v0.12.1 <!-- pr:307 -->"),
-            "{out}"
-        );
+        assert!(out.contains("- [ ] live one #high\n"), "{out}");
+        assert!(out.contains("- [ ] next one #high #v0.12.2\n"), "{out}");
+        assert!(out.contains("- [x] done one <!-- pr:307 -->"), "{out}");
     }
 
     // Sorted, not bucketed: no urgency headings, most urgent first, done at the foot.
     #[test]
-    fn a_wave_sorts_by_priority_and_keeps_its_own_done_list() {
-        let s = "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+    fn the_section_sorts_by_priority_and_keeps_its_done_list() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
 - [ ] middle #high\n- [ ] last #low\n- [ ] first #urgent\n- [x] shipped <!-- pr:1 -->\n";
         let out = sweep(s);
         assert!(!out.contains("### Urgent"), "no lane headings:\n{out}");
@@ -320,7 +245,7 @@ Version: v0.12.1
     // Equal priority keeps the order the human wrote, so a sweep never reshuffles a list.
     #[test]
     fn tasks_of_equal_priority_keep_their_file_order() {
-        let s = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n\
+        let s = "# d\nVersion: v0.1.0\n\n## Tasks\n\
 - [ ] alpha #high\n- [ ] beta #high\n- [ ] gamma #high\n";
         let out = sweep(s);
         let (a, b, g) = (
@@ -331,64 +256,21 @@ Version: v0.12.1
         assert!(a < b && b < g, "stable:\n{out}");
     }
 
-    // Only the wave in flight may hold urgent work. With no headings to withhold, the rule
-    // lives entirely at tag level: a hand-typed `#urgent` on a planned wave is rewritten so
-    // it cannot sort to the top of work that has not started.
+    // A tag on a closed release goes: the row follows the open version.
     #[test]
-    fn a_planned_wave_cannot_hold_urgent_work() {
-        let s = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] now #high\n\n\
-## Wave: v0.2.0 (planned)\n- [ ] later #urgent\n";
-        let out = sweep(s);
-        let planned = out.split("## Wave: v0.2.0").nth(1).unwrap();
-        assert!(planned.contains("- [ ] later #high"), "demoted:\n{out}");
-        assert!(!planned.contains("#urgent"), "{out}");
-    }
-
-    // THE catastrophic one: if the sweep leaves a section above the current wave, every
-    // reader (board, ptask list) silently switches to work that has not started.
-    #[test]
-    fn the_declared_version_heads_the_roadmap_from_a_shuffled_sheet() {
-        let shuffled = "\
-# demo
-Version: v0.12.1
-
-## Wave: v0.12.2 (planned)
-- [ ] later
-
-## Wave: v0.12.1 (current)
-- [ ] now
-";
-        let out = sweep(shuffled);
-        let secs = waves::sections(&out);
-        assert_eq!(
-            secs[0].version,
-            Some((0, 12, 1)),
-            "current heads it:\n{out}"
-        );
-        assert_eq!(secs[1].version, Some((0, 12, 2)));
-        assert!(secs[0].heading.contains("(current)"), "{out}");
-    }
-
-    #[test]
-    fn a_tag_naming_a_rolled_version_is_pulled_forward_not_opened_above() {
-        let stale = "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] stale #v0.11.0\n";
+    fn a_tag_naming_a_closed_version_is_dropped() {
+        let stale = "# d\nVersion: v0.12.1\n\n## Tasks\n- [ ] stale #v0.11.0\n";
         let (out, report) = sweep_sheet(stale).unwrap();
-        assert!(out.contains("- [ ] stale #high #v0.12.1"), "{out}");
-        assert_eq!(
-            waves::sections(&out).len(),
-            1,
-            "no section above current:\n{out}"
-        );
+        assert!(out.contains("- [ ] stale #high\n"), "{out}");
         assert!(
-            report.iter().any(|r| r.contains("pulled forward")),
+            report.iter().any(|r| r.contains("#v0.11.0 closed")),
             "{report:?}"
         );
     }
 
     #[test]
-    fn urgent_is_demoted_when_a_task_sits_in_a_planned_wave() {
-        let s =
-            "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] fire #urgent #v0.12.2\n";
+    fn urgent_is_demoted_on_a_row_aimed_later() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n- [ ] fire #urgent #v0.12.2\n";
         let (out, report) = sweep_sheet(s).unwrap();
         assert!(out.contains("#high"), "demoted:\n{out}");
         assert!(!out.contains("#urgent"), "and not left urgent:\n{out}");
@@ -399,50 +281,43 @@ Version: v0.12.1
     }
 
     #[test]
-    fn urgent_survives_in_the_current_wave() {
-        let s = "# d\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n- [ ] fire #urgent\n";
+    fn urgent_survives_in_the_open_version() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n- [ ] fire #urgent\n";
         let out = sweep(s);
-        assert!(out.contains("- [ ] fire #urgent #v0.12.1"), "{out}");
+        assert!(out.contains("- [ ] fire #urgent\n"), "{out}");
     }
 
-    // A sheet whose wave heading names no version cannot be renumbered safely.
+    // No section, nothing to sweep: a sheet the migration has not reached is left as it is.
     #[test]
-    fn a_legacy_unversioned_wave_heading_is_refused() {
+    fn a_sheet_with_no_section_is_refused() {
         let legacy = "# d\nVersion: v0.0.1\n\n## Wave 1 - verify\n- [ ] check it\n";
         assert!(sweep_sheet(legacy).is_none());
     }
 
     #[test]
-    fn a_board_with_no_version_line_sweeps_by_its_first_wave() {
-        // An agent board carries no `Version:` line; its first wave is its open version.
-        let board = "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a #v0.0.9\n";
+    fn a_board_with_no_version_line_keeps_its_tags() {
+        let board = "# d\n\n## Tasks\n- [ ] a #v0.0.9\n";
         let (out, _) = sweep_sheet(board).expect("a board sweeps");
-        // Byte-for-byte what markdown.lua sweep_waves produces for the same buffer (captured
-        // 2026-11-04 with the headless differential), so the save sweep and this agree.
         assert_eq!(
             out,
-            "# d\n\n## Wave: v0.1.0 (current)\n- [ ] a #high #v0.1.0\n- [ ] \n\n---\n### Done\n"
+            "# d\n\n## Tasks\n- [ ] a #high #v0.0.9\n- [ ] \n\n---\n### Done\n"
         );
-        // With no versioned wave at all there is nothing to sweep against.
-        assert!(sweep_sheet("# d\n\n## Wave: misc\n- [ ] a\n").is_none());
     }
 
     // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
-    // (markdown.lua sweep_waves), captured from a real headless run. The wave sweep exists
-    // twice - once here, once in the editor - and this is the only thing that can catch them
+    // (markdown.lua sweep_tasks), captured from a real headless run. The sweep exists twice,
+    // once here and once in the editor, and this is the only thing that can catch them
     // drifting apart. Its sibling in `sweep` pins the `## Focus` half.
     #[test]
-    fn golden_matches_the_nvim_wave_sweep() {
-        let note = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
+    fn golden_matches_the_nvim_task_sweep() {
+        let note = "# demo\nVersion: v0.12.1\n\n## Inbox\n\n## Tasks\n\
 - [ ] live one #high\n- [x] done one <!-- pr:307 -->\n- [ ] fire #urgent\n\
-- [ ] wrapped task here\n      a continuation line\n- [ ] pushed out #v0.12.2\n\n\
-## Wave: v0.12.2 (planned)\n- [ ] next one\n";
-        let expected = "# demo\nVersion: v0.12.1\n\n## Wave: v0.12.1 (current)\n\
-- [ ] fire #urgent #v0.12.1\n- [ ] live one #high #v0.12.1\n\
-- [ ] wrapped task here #high #v0.12.1\n      a continuation line\n- [ ] \n\n\
----\n### Done\n- [x] done one #v0.12.1 <!-- pr:307 -->\n\n\
-## Wave: v0.12.2 (planned)\n- [ ] pushed out #high #v0.12.2\n- [ ] next one #high #v0.12.2\n- [ ] \n\n\
----\n### Done\n";
+- [ ] wrapped task here\n      a continuation line\n- [ ] pushed out #v0.12.2\n\
+- [ ] burning #urgent #v0.12.3\n- [ ] stale #v0.11.0\n\n## Notes\nprose\n";
+        let expected = "# demo\nVersion: v0.12.1\n\n## Inbox\n\n## Tasks\n\
+- [ ] fire #urgent\n- [ ] live one #high\n- [ ] wrapped task here #high\n      a continuation line\n\
+- [ ] pushed out #high #v0.12.2\n- [ ] burning #high #v0.12.3\n- [ ] stale #high\n- [ ] \n\n\
+---\n### Done\n- [x] done one <!-- pr:307 -->\n\n## Notes\nprose\n";
         assert_eq!(sweep(note), expected);
     }
 
@@ -451,9 +326,9 @@ Version: v0.12.1
     // has its leftover headings reclassified as stray prose and shoved into the task list.
     #[test]
     fn leftover_lane_headings_from_the_old_layout_are_removed_not_read_as_prose() {
-        let old_layout = "# d\nVersion: v0.1.0\n\n## Wave: v0.1.0 (current)\n- [ ] \n\n\
-### Urgent\n- [ ] fire #urgent #v0.1.0\n\n### High\n- [ ] steady #high #v0.1.0\n\n\
-### Low\n\n---\n### Done\n- [x] shipped #v0.1.0 <!-- pr:1 -->\n";
+        let old_layout = "# d\nVersion: v0.1.0\n\n## Tasks\n- [ ] \n\n\
+### Urgent\n- [ ] fire #urgent\n\n### High\n- [ ] steady #high\n\n\
+### Low\n\n---\n### Done\n- [x] shipped <!-- pr:1 -->\n";
         let out = sweep(old_layout);
         assert!(!out.contains("### Urgent"), "removed:\n{out}");
         assert!(
@@ -462,9 +337,9 @@ Version: v0.12.1
         );
         // and not turned into tasks or prose
         assert!(!out.contains("- [ ] ### "), "{out}");
-        assert!(out.contains("- [ ] fire #urgent #v0.1.0"), "{out}");
-        assert!(out.contains("- [ ] steady #high #v0.1.0"), "{out}");
-        assert!(out.contains("- [x] shipped #v0.1.0 <!-- pr:1 -->"), "{out}");
+        assert!(out.contains("- [ ] fire #urgent\n"), "{out}");
+        assert!(out.contains("- [ ] steady #high\n"), "{out}");
+        assert!(out.contains("- [x] shipped <!-- pr:1 -->"), "{out}");
         assert!(
             out.find("fire").unwrap() < out.find("steady").unwrap(),
             "still sorted:\n{out}"
@@ -479,19 +354,19 @@ Version: v0.12.1
         assert!(sweep_sheet(&once).is_none(), "settles:\n{once}");
     }
 
-    // Everything outside the roadmap is passed through untouched.
+    // Everything outside the section is passed through untouched.
     #[test]
-    fn content_around_the_roadmap_survives() {
-        let s = format!("{SHEET}\n## Backlog\n- [ ] not a wave\n");
+    fn content_around_the_section_survives() {
+        let s = format!("{SHEET}\n## Backlog\n- [ ] not a task\n");
         let out = sweep(&s);
-        assert!(out.contains("## Backlog\n- [ ] not a wave"), "{out}");
+        assert!(out.contains("## Backlog\n- [ ] not a task"), "{out}");
         assert!(out.starts_with("# demo\nVersion: v0.12.1\n"), "{out}");
     }
 
     // A proof marker is the evidence a task shipped; losing one loses the audit trail.
     #[test]
     fn every_proof_marker_survives_the_sweep() {
-        let s = "# d\nVersion: v0.0.2\n\n## Wave: v0.0.2 (current)\n\
+        let s = "# d\nVersion: v0.0.2\n\n## Tasks\n\
 - [x] a <!-- pr:307 -->\n- [x] b <!-- pr:274,pr:156 -->\n- [ ] c <!-- ask:0ACTm8 -->\n";
         let out = sweep(s);
         for m in [

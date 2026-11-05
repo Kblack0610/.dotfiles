@@ -294,7 +294,7 @@ pub fn drop_tag(line: &str, tag: &str) -> String {
         return line.to_string();
     }
     // The leading `- [ ]` is whitespace-split like everything else, so rejoining is safe:
-    // the indent is not meaningful on a wave row and every writer here emits none.
+    // the indent is not meaningful on a task row and every writer here emits none.
     let rebuilt = kept.join(" ");
     if marker.is_empty() {
         rebuilt
@@ -434,9 +434,9 @@ pub fn find_due(line: &str, today: NaiveDate) -> Option<NaiveDate> {
 /// `split_priority`. Widening it in one and not the other would make `notes tags` and the
 /// priority lanes disagree about where a tag ends, silently.
 ///
-/// `.` is in the body set so a wave tag can name a version verbatim (`#v0.12.1`): one
-/// spelling of one id, the same string that runs from `Version:` through the `## Wave:`
-/// heading to `versions/v0.12.1.md` and the git tag. It is in the trailing-trim set too,
+/// `.` is in the body set so a release tag can name a version verbatim (`#v0.12.1`): one
+/// spelling of one id, the same string that runs from `Version:` to
+/// `versions/v0.12.1.md` and the git tag. It is in the trailing-trim set too,
 /// so a sentence-final `#urgent.` still names `urgent`.
 fn tag_span(bytes: &[u8], tag_start: usize) -> (usize, usize) {
     let mut k = tag_start;
@@ -471,7 +471,7 @@ fn scan_start(line: &str) -> usize {
 /// Walk every inline hashtag on `line`, calling `f(hash_at, tag_start, scan_end, text_end)`.
 ///
 /// THE one tag walker, so the glue rule and the code-span rule have a single definition. Three
-/// readers need it (`find_hashtags`, `split_priority`, `split_wave`) and a rule applied to two
+/// readers need it (`find_hashtags`, `split_priority`, `split_version`) and a rule applied to two
 /// of them would put the third quietly out of step.
 fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
     let bytes = line.as_bytes();
@@ -505,8 +505,8 @@ fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
 }
 
 /// True when `tag` (bare, no `#`) names a version: `v` then three dot-separated numbers.
-/// This is what makes a hashtag a WAVE tag rather than an ordinary one.
-pub fn is_wave_tag(tag: &str) -> bool {
+/// This is what makes a hashtag a RELEASE tag rather than an ordinary one.
+pub fn is_version_tag(tag: &str) -> bool {
     let Some(rest) = tag.strip_prefix('v') else {
         return false;
     };
@@ -520,13 +520,14 @@ pub fn is_wave_tag(tag: &str) -> bool {
     parts == 3
 }
 
-/// Strip every wave tag from `line`, collapsing the space each leaves behind, and return the
+/// Strip every release tag from `line`, collapsing the space each leaves behind, and return the
 /// cleaned line plus the FIRST one found (as `#v0.12.1`), or `None`.
 ///
 /// Mirrors [`split_priority`], and for the same reason: a task's identity must not depend on
-/// which wave it sits in, or `ptask done "<query>"` stops matching a task the moment it moves.
-pub fn split_wave(line: &str) -> (String, Option<String>) {
-    let (cleaned, found) = cut_tags(line, is_wave_tag);
+/// which release it is aimed at, or `ptask done "<query>"` stops matching a task the moment it
+/// is retargeted.
+pub fn split_version(line: &str) -> (String, Option<String>) {
+    let (cleaned, found) = cut_tags(line, is_version_tag);
     (cleaned, found.map(|t| format!("#{t}")))
 }
 
@@ -634,7 +635,7 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
 
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
-/// The shared half of [`split_wave`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
+/// The shared half of [`split_version`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
 /// tags instead of taking the first, so it keeps its own loop.
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
@@ -676,10 +677,10 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     (cleaned.trim_end().to_string(), found)
 }
 
-/// Put a task line's tags in canonical order: text, priority, wave, then the marker.
+/// Put a task line's tags in canonical order: text, priority, release, then the marker.
 ///
 /// Both tags are found anywhere on the line, so order is not needed for correctness - it is
-/// needed for STABILITY. Two paths add tags (a wave retag, and a lane inheriting its tag) and
+/// needed for STABILITY. Two paths add tags (a release retag, and a lane inheriting its tag) and
 /// they run at different points, so without one canonical order the same task ends up spelled
 /// `#high #v0.0.2` or `#v0.0.2 #high` depending on how it got there. That is enough to make
 /// the editor and the CLI produce different bytes for the same sheet.
@@ -687,21 +688,21 @@ pub fn normalize_tags(line: &str) -> String {
     if !is_task(line) {
         return line.to_string();
     }
-    let (no_wave, wave) = split_wave(line);
-    let (no_prio, prio) = split_priority(&no_wave);
+    let (no_version, version) = split_version(line);
+    let (no_prio, prio) = split_priority(&no_version);
     let mut out = no_prio;
     if let Some(p) = prio {
         out = add_tag(&out, p);
     }
-    if let Some(w) = wave {
+    if let Some(w) = version {
         out = add_tag(&out, &w);
     }
     out
 }
 
-/// The wave tag on a line (`"#v0.12.1"`), or `None`.
-pub fn wave_tag(line: &str) -> Option<String> {
-    split_wave(line).1
+/// The release tag on a line (`"#v0.12.1"`), or `None`.
+pub fn version_tag(line: &str) -> Option<String> {
+    split_version(line).1
 }
 
 /// The tier a `#tier/N` hashtag (without its `#`) names, 1 to 3 as `fleet-dispatch` reads it
@@ -722,7 +723,7 @@ pub fn looks_like_tier(tag: &str) -> bool {
 
 /// Extract inline `#hashtag` tokens from a line. A tag is `#` followed by a letter,
 /// then `[A-Za-z0-9_/.-]*`, so `#wedding`, nested `#wedding/venue` and the dotted
-/// `#v0.12.1` wave tag all parse. Deliberately skips (mirroring the care
+/// `#v0.12.1` release tag all parse. Deliberately skips (mirroring the care
 /// `find_due_span` takes with brackets):
 ///
 /// - the leading `##`-style markdown **heading marker** (its text is still scanned);
@@ -1047,7 +1048,7 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
 
 /// [`split_priority`] for callers outside this module: the cleaned line plus its most-urgent
 /// tag. Exposed because an end-anchored re-implementation elsewhere silently dropped a tag
-/// once a wave tag started following it.
+/// once a release tag started following it.
 pub fn split_priority_pub(line: &str) -> (String, Option<&'static str>) {
     split_priority(line)
 }
@@ -1150,7 +1151,7 @@ pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> Str
 }
 
 /// Core text of a task line AS THE HUMAN TYPED IT: checkbox, HTML markers, created, due,
-/// priority and wave tags and a legacy trailing day-count stripped, case preserved.
+/// priority and release tags and a legacy trailing day-count stripped, case preserved.
 ///
 /// Split out of [`task_key`] because the two jobs had been sharing one function and the
 /// de-duplication job won: `task_key` lower-cases, which is right for matching and wrong for
@@ -1162,16 +1163,16 @@ pub fn task_text(line: &str) -> String {
         t = t[..i].trim_end();
     }
     // A task's identity is independent of its priority tag (and where it sits), so
-    // carried/promoted copies dedupe even if the tag was added or moved. The wave tag goes
+    // carried/promoted copies dedupe even if the tag was added or moved. The release tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
-    // matching a task the moment it is pushed to another wave, and the cockpit's
+    // matching a task the moment it is pushed to another release, and the cockpit's
     // done/start/rm silently no-op on it. The created and due tags are stamps, not text,
     // so they go too - FIRST, because a legacy day count is only trailing once the tags
     // behind it (`(3d) #c260531`) are gone.
     let (stripped, _) = split_created(t);
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = split_priority(&stripped);
-    let (stripped, _) = split_wave(&stripped);
+    let (stripped, _) = split_version(&stripped);
     let stripped = strip_trailing_day(&stripped);
     let t = stripped.trim();
     // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
@@ -1186,7 +1187,7 @@ pub fn task_text(line: &str) -> String {
 }
 
 /// Replace a task line's text with `text`, keeping everything that is not the text:
-/// indentation, the checkbox state (`[/]` included), created, due, priority and wave tags,
+/// indentation, the checkbox state (`[/]` included), created, due, priority and release tags,
 /// a legacy trailing day count and the marker comment. Non-task lines pass through unchanged.
 ///
 /// The text [`task_text`] reads is almost always a prefix of the line after the checkbox,
@@ -1195,7 +1196,7 @@ pub fn task_text(line: &str) -> String {
 /// and stamps are then rebuilt behind the new text in canonical order.
 ///
 /// This is what `ptask edit` is for: before it, changing a row meant `rm` + `add`, which
-/// moved the row to the top of its wave, dropped an in-progress mark, and lost any tag the
+/// moved the row to the top of its list, dropped an in-progress mark, and lost any tag the
 /// caller forgot to retype.
 pub fn retext_task(line: &str, text: &str) -> String {
     let text = text.trim();
@@ -1221,7 +1222,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     let (bare, created) = split_created(before_marker);
     let (bare, due) = split_due(&bare);
     let (bare, _) = split_priority(&bare);
-    let (bare, _) = split_wave(&bare);
+    let (bare, _) = split_version(&bare);
     let no_day = strip_trailing_day(&bare);
     let day = bare[no_day.len()..].trim();
     let mut out = format!("{indent}{checkbox} {text}");
@@ -1237,7 +1238,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     if let Some(p) = task_priority(before_marker) {
         out = add_tag(&out, p);
     }
-    if let Some(w) = wave_tag(before_marker) {
+    if let Some(w) = version_tag(before_marker) {
         out = add_tag(&out, &w);
     }
     out
@@ -1386,7 +1387,10 @@ mod tests {
 
     #[test]
     fn drop_tag_removes_only_the_whole_token() {
-        assert_eq!(drop_tag("- [ ] a thing #ai #high", "#ai"), "- [ ] a thing #high");
+        assert_eq!(
+            drop_tag("- [ ] a thing #ai #high", "#ai"),
+            "- [ ] a thing #high"
+        );
         assert_eq!(drop_tag("- [ ] #ai leading", "#ai"), "- [ ] leading");
         // NEGATIVE CONTROL: `#aid` is a different tag and must survive untouched.
         assert_eq!(
@@ -1402,7 +1406,10 @@ mod tests {
         // The marker is the evidence trail. A `#ai` inside it is something someone wrote
         // down, not routing, so the sweep must leave it exactly where it is.
         assert_eq!(
-            drop_tag("- [x] a thing #ai <!-- pr:1218 fixed the #ai path -->", "#ai"),
+            drop_tag(
+                "- [x] a thing #ai <!-- pr:1218 fixed the #ai path -->",
+                "#ai"
+            ),
             "- [x] a thing <!-- pr:1218 fixed the #ai path -->"
         );
     }
@@ -1726,7 +1733,7 @@ after
 
     #[test]
     fn retext_leaves_non_tasks_and_empty_text_alone() {
-        assert_eq!(retext_task("## Wave: v0.1.0", "x"), "## Wave: v0.1.0");
+        assert_eq!(retext_task("## Tasks", "x"), "## Tasks");
         assert_eq!(
             retext_task("- [ ] keep me #low", "  "),
             "- [ ] keep me #low"
@@ -1809,13 +1816,13 @@ after
         assert_eq!(prio, None);
     }
 
-    // A wave tag is content as far as priority is concerned: it must survive the split
+    // A release tag is content as far as priority is concerned: it must survive the split
     // intact, or the sweep would strip the very tag it buckets by.
-    // A task's identity must not depend on which wave it is in: `ptask done "<query>"`
-    // matches on the key, so a task that moved wave would stop matching and the cockpit's
+    // A task's identity must not depend on which release it is in: `ptask done "<query>"`
+    // matches on the key, so a task that moved release would stop matching and the cockpit's
     // done/start/rm would silently no-op on it.
     #[test]
-    fn task_key_is_invariant_under_wave_and_priority_tags() {
+    fn task_key_is_invariant_under_release_and_priority_tags() {
         assert_eq!(
             task_key("- [ ] a thing #v0.12.1 #high"),
             task_key("- [ ] a thing")
@@ -1828,29 +1835,29 @@ after
     }
 
     #[test]
-    fn a_wave_tag_is_a_version_and_nothing_else_is() {
-        assert!(is_wave_tag("v0.12.1"));
-        assert!(is_wave_tag("v10.0.99"));
+    fn a_release_tag_is_a_version_and_nothing_else_is() {
+        assert!(is_version_tag("v0.12.1"));
+        assert!(is_version_tag("v10.0.99"));
         // the shapes that must NOT be mistaken for one
-        assert!(!is_wave_tag("v0.12"), "two parts is not a version");
-        assert!(!is_wave_tag("v0.12.1.2"), "four parts is not a version");
-        assert!(!is_wave_tag("0.12.1"), "no leading v");
-        assert!(!is_wave_tag("v0.12.x"), "not all digits");
-        assert!(!is_wave_tag("venue"), "an ordinary tag starting with v");
-        assert!(!is_wave_tag("v"), "bare v");
+        assert!(!is_version_tag("v0.12"), "two parts is not a version");
+        assert!(!is_version_tag("v0.12.1.2"), "four parts is not a version");
+        assert!(!is_version_tag("0.12.1"), "no leading v");
+        assert!(!is_version_tag("v0.12.x"), "not all digits");
+        assert!(!is_version_tag("venue"), "an ordinary tag starting with v");
+        assert!(!is_version_tag("v"), "bare v");
     }
 
     #[test]
-    fn split_wave_takes_the_tag_and_leaves_the_rest() {
-        let (core, w) = split_wave("- [ ] a thing #v0.12.1 #high");
+    fn split_version_takes_the_tag_and_leaves_the_rest() {
+        let (core, w) = split_version("- [ ] a thing #v0.12.1 #high");
         assert_eq!(core, "- [ ] a thing #high");
         assert_eq!(w.as_deref(), Some("#v0.12.1"));
         // an ordinary tag that merely starts with `v` is untouched
-        let (core, w) = split_wave("- [ ] book the #venue");
+        let (core, w) = split_version("- [ ] book the #venue");
         assert_eq!(core, "- [ ] book the #venue");
         assert_eq!(w, None);
         // and it survives a trailing marker
-        let (core, w) = split_wave("- [x] done #v0.0.2 <!-- pr:307 -->");
+        let (core, w) = split_version("- [x] done #v0.0.2 <!-- pr:307 -->");
         assert_eq!(core, "- [x] done <!-- pr:307 -->");
         assert_eq!(w.as_deref(), Some("#v0.0.2"));
     }
@@ -1877,10 +1884,10 @@ after
         assert_eq!(with_default_priority("    - [ ] "), "    - [ ] ");
         // prose is not a task and cannot carry a priority
         assert_eq!(with_default_priority("just a line"), "just a line");
-        assert_eq!(with_default_priority("## Wave: v1.0.0"), "## Wave: v1.0.0");
+        assert_eq!(with_default_priority("## Tasks"), "## Tasks");
     }
 
-    // The tag lands in canonical position, before the marker and before the wave tag, so a
+    // The tag lands in canonical position, before the marker and before the release tag, so a
     // defaulted line is spelled exactly like a hand-tagged one.
     #[test]
     fn a_defaulted_tag_lands_where_a_typed_one_would() {
@@ -1895,7 +1902,7 @@ after
     }
 
     #[test]
-    fn split_priority_leaves_a_wave_tag_alone() {
+    fn split_priority_leaves_a_release_tag_alone() {
         let (core, prio) = split_priority("- [ ] a thing #v0.12.1 #high");
         assert_eq!(core, "- [ ] a thing #v0.12.1");
         assert_eq!(prio, Some("#high"));
@@ -2064,7 +2071,7 @@ after
         );
     }
 
-    // A wave tag names its version verbatim, so the dot has to survive mid-tag.
+    // A release tag names its version verbatim, so the dot has to survive mid-tag.
     #[test]
     fn a_dotted_tag_names_the_whole_version() {
         assert_eq!(find_hashtags("- [ ] a thing #v0.12.1"), vec!["v0.12.1"]);
@@ -2304,18 +2311,18 @@ after
 
     #[test]
     fn details_land_after_the_rows_existing_block() {
-        let c = "## Wave\n- [ ] a #high\n  old detail\n  - [ ] child\n- [ ] b #high\n";
-        let out = append_details(c, "Wave", |l| l.contains(" a "), &["new one".into()]).unwrap();
+        let c = "## Tasks\n- [ ] a #high\n  old detail\n  - [ ] child\n- [ ] b #high\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a "), &["new one".into()]).unwrap();
         assert_eq!(
             out,
-            "## Wave\n- [ ] a #high\n  old detail\n  - [ ] child\n  new one\n- [ ] b #high\n"
+            "## Tasks\n- [ ] a #high\n  old detail\n  - [ ] child\n  new one\n- [ ] b #high\n"
         );
         // a blank line ends a block; a multi-line detail splits
-        let c = "## Wave\n- [ ] a\n\n  not a's\n";
-        let out = append_details(c, "Wave", |l| l.contains(" a"), &["x\ny".into()]).unwrap();
-        assert_eq!(out, "## Wave\n- [ ] a\n  x\n  y\n\n  not a's\n");
+        let c = "## Tasks\n- [ ] a\n\n  not a's\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a"), &["x\ny".into()]).unwrap();
+        assert_eq!(out, "## Tasks\n- [ ] a\n  x\n  y\n\n  not a's\n");
         assert_eq!(
-            append_details(c, "Wave", |l| l.contains("zz"), &["x".into()]),
+            append_details(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
             None
         );
     }

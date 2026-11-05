@@ -385,7 +385,7 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   jq --arg r "$repo" '.paths = {($r): "mono-canon"}' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   r="$(lab_root personal)/alpha"
   mkdir -p "$r"
-  { printf '# alpha\n'; [ -z "$1" ] || printf 'Version: %s #prod\n' "$1"; printf '\n## Wave: v9.9.9 (current)\n'; } > "$r/README.md"
+  { printf '# alpha\n'; [ -z "$1" ] || printf 'Version: %s #prod\n' "$1"; printf '\n## Inbox\n\n## Tasks\n'; } > "$r/README.md"
   export GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 }
 

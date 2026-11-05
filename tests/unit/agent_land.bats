@@ -295,7 +295,7 @@ EOF
   mkdir -p "${sheet%/*}" "$HOME/.config/notes"
   : >"${sheet%/*}/summary.md"
   printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
-  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Wave' '' '- [ ] fix the crash on load #low' '- [ ] fix the crash on save' >"$sheet"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' '- [ ] fix the crash on load #low' '- [ ] fix the crash on save' >"$sheet"
   export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
   unset NOTES_PROFILE
   echo '{"trackers": {"game": {"code": "gm"}}}' >"$PROJECT_MAP_FILE"

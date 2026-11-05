@@ -5,8 +5,8 @@
 
 use crate::config::Profile;
 use crate::index;
-use crate::projects;
 use crate::logging::Logger;
+use crate::projects;
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDate};
 use std::fs;
@@ -142,7 +142,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // 7. Version pairing: an agent note belongs to a version that was frozen or is open
     let pairing = projects::pairing_findings(p);
     if pairing.is_empty() {
-        r.add(Status::Pass, "version pairing", "every agent note has its version");
+        r.add(
+            Status::Pass,
+            "version pairing",
+            "every agent note has its version",
+        );
     } else {
         r.add(
             Status::Warn,
@@ -151,21 +155,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         );
     }
 
-    // 8. Wave order: the first `## Wave` names the sheet's declared `Version:`. Every reader
-    // takes the first section as the current wave, so a roadmap that opens with a planned one
-    // silently redirects the board and `ptask list` onto unstarted work.
-    let order = projects::wave_order_findings(p);
-    if order.is_empty() {
-        r.add(Status::Pass, "wave order", "every sheet opens with its declared version");
-    } else {
-        r.add(
-            Status::Warn,
-            "wave order",
-            &format!("{} out of order ({})", order.len(), order.join("; ")),
-        );
-    }
-
-    // 9. Project layout: version notes belong in `versions/`, every project dir in a lane of
+    // 8. Project layout: version notes belong in `versions/`, every project dir in a lane of
     // its own org's index. Warn only - each finding is a hand fix or a `--migrate` away.
     let layout = projects::layout_findings(p);
     if layout.is_empty() {
@@ -188,7 +178,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         );
     }
 
-    // 10. A binary older than its own source silently writes the previous note format, and
+    // 9. A binary older than its own source silently writes the previous note format, and
     // nothing else here would catch it: every path resolves, every heading parses, the notes
     // are simply the wrong shape. That is exactly how one machine's dailies drifted a month
     // behind another's while both looked healthy.
@@ -218,7 +208,11 @@ fn check_build(r: &mut Report) {
         return;
     };
     if !src.is_dir() {
-        r.add(Status::Pass, "build", "source tree not present, cannot compare");
+        r.add(
+            Status::Pass,
+            "build",
+            "source tree not present, cannot compare",
+        );
         return;
     }
     let newest = fs::read_dir(&src)
@@ -362,11 +356,7 @@ fn check_headings(r: &mut Report, p: &Profile) {
         r.add(
             Status::Warn,
             "daily headings",
-            &format!(
-                "{} note(s) missing Focus: {}",
-                bad.len(),
-                bad.join(", ")
-            ),
+            &format!("{} note(s) missing Focus: {}", bad.len(), bad.join(", ")),
         );
     }
 }

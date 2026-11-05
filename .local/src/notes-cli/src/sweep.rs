@@ -5,10 +5,8 @@
 //! task that has none.
 //!
 //! Apart from `focus_sweep` because the daily note's `## Focus` is not the only list with
-//! urgency in it: a project sheet's `## Wave` sections sweep the same way, and a second copy
-//! would be a second answer to "which lane is this task in". `lanes` is a parameter so a
-//! caller can offer fewer than three - a planned wave has no legal Urgent lane, so it must
-//! not render one as a drop target.
+//! urgency in it: a project sheet's `## Tasks` section sorts the same way, and a second copy
+//! would be a second answer to "which lane is this task in".
 
 use crate::md;
 
@@ -28,8 +26,7 @@ fn lane_of(line: &str, lanes: &[Lane]) -> usize {
         Some(tag) => lanes
             .iter()
             .position(|(_, hash, _)| *hash == tag)
-            // A tag naming a lane this list does not offer (an `#urgent` line on a planned
-            // wave) sorts into the most urgent lane that IS offered, rather than falling to
+            // A tag naming a lane this list does not offer sorts into the most urgent lane that IS offered, rather than falling to
             // the untagged bucket where it would read as unprioritized.
             .unwrap_or(0),
         None => lanes.len(),
@@ -38,8 +35,7 @@ fn lane_of(line: &str, lanes: &[Lane]) -> usize {
 
 /// Index of the default lane within `lanes`, falling back to the most urgent one offered.
 ///
-/// `lanes` can be a sub-slice - a planned wave offers no Urgent lane - so the default has to
-/// be located by name rather than by the index it holds in `md::PRIORITIES`.
+/// `lanes` can be a sub-slice, so the default has to be located by name rather than by the index it holds in `md::PRIORITIES`.
 fn default_lane(lanes: &[Lane]) -> usize {
     lanes
         .iter()
@@ -126,7 +122,7 @@ pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
 }
 
 /// Rebuild one list body as a single list SORTED by priority, with a trailing `### Done`.
-/// This is the `## Wave` layout.
+/// This is the `## Tasks` layout.
 ///
 /// A project sheet does not earn the headings. Measured on the live vault before this
 /// landed: 84 open tasks across 15 sheets, 16 of them tagged - so three headings and a rule
@@ -134,12 +130,12 @@ pub(crate) fn rebuild(body: &[&str], lanes: &[Lane]) -> Option<Vec<String>> {
 /// `### Urgent`. The daily note is the opposite shape (16 of 17 tagged, every lane full),
 /// which is why it keeps them.
 ///
-/// Always emits: a wave's `### Done` is part of the wave, not something that appears once
+/// Always emits: the section's `### Done` is part of it, not something that appears once
 /// there is enough to organize.
 pub(crate) fn rebuild_sorted(body: &[&str], lanes: &[Lane]) -> Vec<String> {
     let mut b = bucket(body, lanes);
     let mut out: Vec<String> = Vec::new();
-    // Prose first, above the task list, where it reads as a note about the wave.
+    // Prose first, above the task list, where it reads as a note about the list.
     out.extend(b.open[lanes.len()].drain(..));
     // Then every open task, most urgent first. `drain` in lane order preserves file order
     // within a lane, so a sort never reshuffles two tasks of equal priority.
@@ -342,7 +338,6 @@ mod tests {
         assert_eq!(focus(note), expected);
     }
 
-    // A planned wave offers no Urgent lane, so it must not render one as a drop target.
     #[test]
     fn a_shorter_lane_set_renders_only_those_lanes() {
         let out = sweep_section(

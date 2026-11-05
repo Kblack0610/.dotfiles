@@ -63,7 +63,9 @@ S
 # alpha
 Version: v1.11.0
 
-## Wave: v1.11.0 (current)
+## Inbox
+
+## Tasks
 - [ ] Implement Done group visibility #ai
 - [ ] a second thing
 S
@@ -253,7 +255,9 @@ S
 S
   mk_sheet kappa <<'S'
 # kappa
-## Wave: v0.2.0 (current)
+## Inbox
+
+## Tasks
 - [ ] the real next task
 S
   assert_equal "$(f kappa 5)" 'the real next task'
@@ -269,7 +273,9 @@ S
 # iota
 Version: v1.1.0
 
-## Wave: v1.1.0 (current)
+## Inbox
+
+## Tasks
 - [ ] wire the thing to the other thing #high
 - [ ] a later thing
 S

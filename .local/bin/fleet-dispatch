@@ -64,7 +64,7 @@ unset _k _v
 : "${DISPATCH_NIGHT_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
 # Rows fill never promotes for the night, whatever the judge says: asks, decisions, anything needing a
 # device or the human's own machine, secrets, prod, wishes. Case-insensitive ERE.
-: "${DISPATCH_NIGHT_SKIP:=#ask\b|^decide:|\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
+: "${DISPATCH_NIGHT_SKIP:=#ask\b|^decide[:(]|\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Ranking, first match wins: rows that delete or fix a broken mechanism, then observer findings.
 : "${DISPATCH_NIGHT_FIRST:=\b(delete|remove|drop|retire|prune|strip|broken|never|fails|failing|failed|dead|wrong|stale|leaks?|orphans?|races?)\b}"
 : "${DISPATCH_NIGHT_OBSERVER:=^(kpi|retro|dream)\b}"
@@ -111,12 +111,12 @@ tag_value() {
   grep -oE "(^|[[:space:]])#$2/[A-Za-z0-9_.-]+" <<<"$body" | head -1 | sed "s|.*#$2/||"
 }
 
-# row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A `ci:` or `infra:`
-# row is tier 3 however it is tagged.
+# row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A row typed or scoped ci
+# or infra (`ci:`, `ci(area):`, `fix(ci):`) is tier 3 however it is tagged.
 row_tier() {
   local body
   body=$(sed 's/^- \[.\] //' <<<"$1" | tr '[:upper:]' '[:lower:]')
-  case "$body" in ci:* | infra:*) echo 3; return ;; esac
+  case "$body" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) echo 3; return ;; esac
   tag_value "$1" tier | grep -xE '[123]'
 }
 
@@ -235,7 +235,7 @@ queue_areas() {
   return 0
 }
 
-# rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the current wave. The
+# rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the open version. The
 # key is the row's id, which outlives an edit to its text; a row with no id yet goes by its text
 # until promote starts it, which stamps one.
 rows() {

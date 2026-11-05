@@ -1044,7 +1044,7 @@ impl App {
             ),
             Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
             Tab::Board => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  +/- wave  o open  Esc clear  r refresh  {tabs} tabs  q quit"
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  +/- release  o open  Esc clear  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
