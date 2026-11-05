@@ -1053,6 +1053,16 @@ pub fn retext(
             return Ok(1);
         };
         let old = md::task_text(&line);
+        let words = |s: &str| -> Vec<String> {
+            s.split_whitespace()
+                .filter(|w| !w.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        };
+        if words(&old) == words(t) {
+            eprintln!("unchanged: '{t}' has the row's own words, so nothing was edited");
+            return Ok(0);
+        }
         rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
         with_was.extend(details.iter().cloned());
@@ -2181,7 +2191,8 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_or_long_text() {
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_long_or_unchanged_text(
+    ) {
         let v = vault(
             "was",
             "",
@@ -2227,6 +2238,17 @@ mod inbox_tests {
         assert!(
             s.contains("  - seen on the deck\n  was: the menu flickers on resize #1469 #ask #tier/3 #size/m\n"),
             "{s}"
+        );
+
+        // the same words again are no rewrite: no second was line
+        assert_eq!(
+            edit("fix(ui): the menu flickers on resize #size/m").unwrap(),
+            0
+        );
+        assert_eq!(
+            v.read(),
+            s,
+            "a rewrite to the row's own words wrote nothing"
         );
     }
 }
