@@ -518,6 +518,38 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
+    Inbox {
+        /// One JSON array of `{line, raw, text, details}` instead
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take the first inbox line matching the query off `## Inbox` and onto the board as
+    /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
+    /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
+    File {
+        /// A typed row to file it as: `type(area): title`, with its priority and size tags.
+        /// None files a line that is typed already as written
+        #[arg(long = "as", value_name = "ROW")]
+        rows: Vec<String>,
+        /// It duplicates this open row (its id): its words join that row as a detail line
+        #[arg(long, value_name = "ID", conflicts_with_all = ["rows", "to", "detail"])]
+        dup: Option<String>,
+        /// File it on this project's board instead (any profile)
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+        /// The board lane it goes to: `human` (default) or `agent`
+        #[arg(long, value_name = "LANE", default_value = "human")]
+        lane: String,
+        /// Aim the rows at this release (`vX.Y.Z`)
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+        /// Another detail line under each row, after the `was:` line. Repeatable
+        #[arg(long, value_name = "LINE")]
+        detail: Vec<String>,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// With --agent: move the agent board's done rows into `agent/versions/<vX.Y.Z>.md`
     /// (the note their proof is in), under `## Done rows`
     Archive {
@@ -838,6 +870,41 @@ fn main() -> Result<()> {
                 )?,
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
+                }
+                Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::File {
+                    rows,
+                    dup,
+                    project,
+                    lane: to_lane,
+                    to,
+                    detail,
+                    query,
+                }) => {
+                    let to_lane = match to_lane.as_str() {
+                        "human" => Lane::Human,
+                        "agent" => Lane::Agent,
+                        other => bail!("--lane is human or agent, not '{other}'"),
+                    };
+                    let how = project_tasks::Filing {
+                        project,
+                        lane: to_lane,
+                        how: match dup {
+                            Some(id) => project_tasks::How::Dup(id),
+                            None => project_tasks::How::Rows {
+                                texts: rows,
+                                to,
+                                details: detail,
+                            },
+                        },
+                    };
+                    let q = query.join(" ");
+                    let pick = if exact {
+                        Pick::Exact(q.trim_end().to_string())
+                    } else {
+                        Pick::new(&q, false)?
+                    };
+                    project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,

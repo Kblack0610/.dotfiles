@@ -146,7 +146,10 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | fix an old layout | `projects --migrate <name>`; also moves a playtest row's inline `(pr:N)` into its `<!-- pr:N -->` comment, and aligns a stale agent board to the sheet's version |
 | see the roadmap | `projects --roadmap <name>`, `projects --version-of <name>` |
 | every project's counts at once | `projects --stats` (TSV, what the projects popup reads); `--stats --json` adds each project's dir, open version, done count and dated STATUS line, which `regen-anchor.sh` renders as an anchor's `## Lab` section |
-| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` to aim it at a later release; `--detail "<line>"` (repeatable) adds an indented detail line under it |
+| add a task | `notes ptask <name> add "<text> #low"`, or `--to vX.Y.Z` to aim it at a later release; `--detail "<line>"` (repeatable) adds an indented detail line under it. On the human sheet, text that is not yet `type(area): title` goes to `## Inbox` for the triager (Intake, below) |
+| send a Focus row to a project | put `#p:<name>` on it; `notes focus sweep` moves it, with its indented lines and without the tag, to that sheet's `## Inbox`. A name that is no project leaves the row in Focus |
+| see what waits in an inbox | `ptask <name> inbox` (TSV `path, line, text`), `--json` for `{line, raw, text, details, typed}` |
+| file an inbox line | `ptask <name> [--exact] file "<query>" --as "<type(area): title #tags>"` (repeat `--as` to split one line into several rows; no `--as` files a line that is typed already as written), with `--project <other>`, `--lane agent`, `--to vX.Y.Z` or `--detail "<line>"`; or `--dup <id>` to add it to the open row it repeats |
 | work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`) |
 | aim a task at another release | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>` |
@@ -189,7 +192,7 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 
 No assignee field: the lane is the assignee. No comment thread: detail lines plus the PR. No per-project custom fields.
 
-Intake: the human lane takes free text. Triage (`process-requests organize`, or an agent on intake) rewrites a raw row into this form and keeps the original words as a detail line. Agent-lane rows are written in this form from the start.
+Intake: the human lane takes free text, and it waits in the sheet's `## Inbox` (from `ptask add`, a `#p:<name>` Focus row, agent-web's Add, or typed there by hand). `ptask file` is the one way out: it takes the line off the inbox and writes the typed rows in one write per sheet, stamped like an add plus `filed:<date>` in the marker, with the human's words as a `was: <words>` detail line (none when the line is filed as written) and the line's own indented lines after it. It refuses an untyped row, a row `notes doctor` would flag (a retired priority such as `#medium`, two priorities, a retired tag) and a `--dup` id with no open row, before writing anything. The triager, `agentctl-inbox-triage`, runs it: every CLI writer touches `<state_dir>/inbox.changed` (`~/.local/state/notes/inbox.changed`), which wakes it, and a line typed into the sheet by hand waits for the next wake or the runner's daily pass; a line already typed is filed as written with no model, and the rest of a project's lines go to one cheap-model call that proposes rows, a duplicate or a skip. A skipped or refused line stays in the inbox; nothing drops one. `process-requests organize` still reshapes a sheet by hand. Agent-lane rows are written in this form from the start.
 
 Closing: every close says how. `ptask done --proof <ref>` for something checkable, `ptask done --unverified "<why>"` when there is nothing to check, `ptask drop --why "<why>"` or `--dup <id>` for one that will not be delivered. Nothing deletes a row: a dropped row stays as `[x]` with its reason, keeps its detail lines and child rows, and leaves with the done rows on the next archive or release. A board row that runs as a session goes row -> `fleet-dispatch promote` -> queue item (its slug and `from` are the row's id, its priority the row's, high on a bare row) -> session -> PR carrying `Task: <id>` -> `agent-land` closes the queue item and, by id, the row with `pr:N` -> `ptask sweep` moves it to `### Done` -> `ptask --agent archive` or `projects --release` into `versions/`. The proof lives on the row and travels with it.
 
@@ -197,10 +200,10 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 
 ### The task feed
 
-`notes board --json` prints one object, `{"projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
+`notes board --json` prints one object, `{"today": "YYYY-MM-DD", "projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
-- A project is `{profile, project, dir, version, open, agent_open, playtest_open}`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, ask, target, id, type, area, size, text, tags, marker, since, sheet, line, raw}`.
+- A project is `{profile, project, dir, version, open, agent_open, playtest_open, inbox}`, `inbox` the lines waiting in the sheet's `## Inbox`. A project with no rows is still listed, so a UI can offer `add` on it.
+- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, ask, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
@@ -208,6 +211,7 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 - `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
 - `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, version or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
+- `filed` is the `YYYY-MM-DD` of the row's `filed:` marker token, the day `ptask file` took it off an inbox (agent-web's Filed today section compares it to the feed's `today`, so the CLI's clock decides).
 - `version` is null for a playtest row, and `game` is null for a sheet row.
 
 To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only on the open row whose line is exactly that, byte for byte. If someone else has edited, ticked or dropped the row since the UI read it, nothing matches, nothing is written, and the exit code is 1, so the UI refreshes. That is the concurrency control, which is why a UI writes by `raw` and not by `id`: the id names the row, not the version of it the UI showed. Two identical open lines on one sheet are refused too: the text cannot say which one the UI meant.

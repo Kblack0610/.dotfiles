@@ -120,24 +120,37 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
+// The matching rows, split: what the triager filed today (by the feed's own clock) and,
+// once each, the rest by group.
 function bGroups() {
-  const rows = bst.feed.rows;
-  const groups = new Map();
-  rows.forEach((r, i) => {
+  const groups = new Map(), filed = [];
+  bst.feed.rows.forEach((r, i) => {
     if (!bMatch(r)) return;
+    if (r.filed && r.filed === bst.feed.today) return filed.push([r, i]);
     const g = r.project ? r.profile + "/" + r.project : r.profile + " Focus";
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push([r, i]);
   });
-  return groups;
+  return { groups, filed };
 }
 
 function drawBoardList() {
   const el = $("b-list");
   if (!el) return;
-  const groups = bGroups();
+  const { groups, filed } = bGroups();
   const narrowed = bst.filter.project || bst.filter.q.trim();
   let n = 0, html = bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "";
+  // What the triager filed from the inboxes today, to check: Edit... rewrites a row, Drop...
+  // rejects it with a why. A reworded row keeps the human's words as its `was:` line.
+  const waiting = bst.feed.projects.reduce((s, p) => s + (p.inbox || 0), 0);
+  if (filed.length || waiting) {
+    n += filed.length;
+    const open = bst.open["filed-today"] != null ? bst.open["filed-today"] : true;
+    html += `<details data-k="filed-today"${open ? " open" : ""}><summary><h2 class="sec">Filed today ` +
+      `<span class="muted">${filed.length} from the inboxes${waiting ? `, ${waiting} still waiting` : ""}</span></h2></summary>` +
+      (filed.length ? filed.map(([r, i]) => bRow(r, i)).join("") : `<div class="card muted">Nothing filed yet today.</div>`) +
+      `</details>`;
+  }
   for (const [g, list] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
     n += list.length;
     const urgent = list.filter(([r]) => r.priority === "urgent").length;
@@ -146,7 +159,7 @@ function drawBoardList() {
       `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
       list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
   }
-  html = `<div class="muted qstats">${n} open rows in ${groups.size} groups</div>` +
+  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
   const y = $("board").scrollTop;
   el.innerHTML = html;

@@ -253,6 +253,14 @@ pub fn add_marker(line: &str, token: &str) -> String {
     }
 }
 
+/// The inner text of a line's trailing `<!-- ... -->` comment, where `pr:`, `ask:`, `vk:` and
+/// a `done` proof all live. `None` when it has none or it is empty.
+pub fn marker_of(line: &str) -> Option<String> {
+    let t = line.trim_end().strip_suffix("-->")?;
+    let inner = t[t.rfind("<!--")? + 4..].trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
 /// Append `tag` (a bare `#hashtag`) to a task line, BEFORE any trailing marker comment.
 ///
 /// Position is not cosmetic. [`task_text`] truncates at the first `<!--` and only then
@@ -768,6 +776,30 @@ pub fn idea_tag(line: &str) -> Option<Option<String>> {
     found
 }
 
+/// The project a `#p:<project>` tag sends a Focus row to, lower-cased. A bare `#p` or an
+/// empty name is no tag. Only the text before the marker comment counts.
+pub fn project_tag(line: &str) -> Option<String> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().find_map(project_tag_word)
+}
+
+/// The project a single `#p:<name>` word names, trailing punctuation off.
+fn project_tag_word(w: &str) -> Option<String> {
+    let rest = w.get(..3).filter(|p| p.eq_ignore_ascii_case("#p:"))?;
+    let name = w[rest.len()..].trim_end_matches(['.', ',', ';', ':', '-']);
+    (!name.is_empty()).then(|| name.to_lowercase())
+}
+
+/// `line` without its `#p:<project>` tag, the rest as it was.
+pub fn without_project_tag(line: &str) -> String {
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let kept: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| project_tag_word(w).is_none())
+        .collect();
+    format!("{indent}{}", kept.join(" "))
+}
+
 /// Remove the first inline legacy `[YYYY-MM-DD]` due token, collapsing the surrounding
 /// whitespace so no double space is left behind. No-op when the line has no token.
 fn strip_due(line: &str) -> String {
@@ -1276,13 +1308,17 @@ pub fn insert_under_heading(content: &str, heading: &str, new_lines: &[String]) 
 /// A row's id, the `id:<code>-<n>` token in its marker comment (README "The task row"), e.g.
 /// `ar-142`. None when the row has no id yet.
 pub fn row_id(line: &str) -> Option<String> {
-    let t = line.trim_end().strip_suffix("-->")?;
-    let inner = &t[t.rfind("<!--")? + 4..];
-    inner
-        .split_whitespace()
-        .find_map(|tok| tok.strip_prefix("id:"))
+    marker_token(line, "id:")
         .filter(|id| is_row_id(id))
         .map(str::to_string)
+}
+
+/// The value of the first `<key>value` token in a row's trailing marker (`key` ends in `:`).
+pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let t = line.trim_end().strip_suffix("-->")?;
+    t[t.rfind("<!--")? + 4..]
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(key))
 }
 
 /// True when `s` is shaped like a row id: 2-4 lowercase letters, a hyphen, a number.
@@ -1351,6 +1387,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_tag_names_its_project_and_leaves_the_rest_of_the_line() {
+        assert_eq!(
+            project_tag("- [ ] fix the chest #p:Apociseum #high"),
+            Some("apociseum".into())
+        );
+        assert_eq!(
+            project_tag("- [ ] ends a sentence #p:trader."),
+            Some("trader".into())
+        );
+        assert_eq!(project_tag("- [ ] bare #p and #p: empty"), None);
+        assert_eq!(project_tag("- [ ] x <!-- #p:hidden -->"), None);
+        assert_eq!(
+            without_project_tag("  - [ ] fix the chest #p:apociseum #high"),
+            "  - [ ] fix the chest #high"
+        );
+    }
 
     #[test]
     fn idea_tag_reads_the_bare_and_the_project_form() {

@@ -511,6 +511,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         Feed {
+            today: "2026-11-04".into(),
             projects: vec![
                 tasks::Project {
                     profile: "bnb".into(),

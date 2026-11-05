@@ -462,6 +462,8 @@ struct FeedRow {
     tags: Vec<String>,
     marker: Option<String>,
     since: Option<String>,
+    /// `filed:YYYY-MM-DD` in the marker: the day the triager filed it from an inbox.
+    filed: Option<String>,
     sheet: String,
     line: usize,
     raw: String,
@@ -477,20 +479,15 @@ struct FeedProject {
     open: usize,
     agent_open: usize,
     playtest_open: usize,
+    /// Lines waiting in the sheet's `## Inbox` for the triager.
+    inbox: usize,
 }
 
 #[derive(serde::Serialize)]
 struct Feed {
+    today: String,
     projects: Vec<FeedProject>,
     rows: Vec<FeedRow>,
-}
-
-/// The inner text of a line's trailing `<!-- ... -->` comment, where `pr:`, `ask:`, `vk:` and
-/// a `done` proof all live.
-fn marker_of(line: &str) -> Option<String> {
-    let t = line.trim_end().strip_suffix("-->")?;
-    let inner = t[t.rfind("<!--")? + 4..].trim();
-    (!inner.is_empty()).then(|| inner.to_string())
 }
 
 /// Where a feed row was read: everything about it that is not on the line.
@@ -558,8 +555,9 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         size,
         text: md::task_text(line),
         tags,
-        marker: marker_of(line),
+        marker: md::marker_of(line),
         since: md::find_since(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
+        filed: project_tasks::filed_on(line),
         sheet: o.sheet.display().to_string(),
         line: line_no,
         raw: line.trim_end().to_string(),
@@ -577,6 +575,7 @@ fn feed_for_dir(
     let mut rows = Vec::new();
     let mut version = None;
     let mut counts = [0usize; 3];
+    let mut inbox = 0;
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -586,6 +585,7 @@ fn feed_for_dir(
         };
         if lane == Lane::Human {
             version = Some(w.version.clone());
+            inbox = w.inbox;
         }
         counts[i] = w.rows.len();
         let o = Origin {
@@ -623,6 +623,7 @@ fn feed_for_dir(
         open: counts[0],
         agent_open: counts[1],
         playtest_open: counts[2],
+        inbox,
     };
     (proj, rows)
 }
@@ -648,13 +649,14 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
 }
 
 /// `notes board --json` - every project of every profile and every open row, as one JSON
-/// object `{projects: [...], rows: [...]}`.
+/// object `{today, projects: [...], rows: [...]}`.
 ///
 /// READ-ONLY and exit 0 like `--agent`: the web and hub boards poll it. Every profile is
 /// listed in full whatever the board layout folds, because a UI filters for itself.
 pub fn print_json() -> Result<i32> {
     let today = Local::now().date_naive();
     let mut feed = Feed {
+        today: today.format("%Y-%m-%d").to_string(),
         projects: Vec::new(),
         rows: Vec::new(),
     };
@@ -958,8 +960,8 @@ mod tests {
         let v = serde_json::to_value(&rows[0]).unwrap();
         for k in [
             "profile", "project", "lane", "version", "game", "state", "priority", "tier", "worker",
-            "ask", "id", "type", "area", "size", "text", "tags", "marker", "since", "sheet",
-            "line", "raw",
+            "ask", "id", "type", "area", "size", "text", "tags", "marker", "since", "filed",
+            "sheet", "line", "raw",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
