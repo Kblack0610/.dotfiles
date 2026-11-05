@@ -1,6 +1,6 @@
 # agent-web
 
-A web view of the Claude agents running in tmux on this machine. From a phone or another computer you can read any session's transcript or live screen, type into it, press the keys a permission prompt needs, and answer the headless `agent-ask` queue. The board tabs show the tabs of the tmux hub board (`hub:board`) with charts: Watch is the sessions part of its Fleet tab, Log its Today and History tabs (`Prefix+O`), Infra its Overview (`Prefix+i`), Jobs lists every job that runs on its own, with its log, and Fleet its Fleet tab: accounts, runners and the two judges.
+A web view of the Claude agents running in tmux on this machine. From a phone or another computer you can read any session's transcript or live screen, type into it, press the keys a permission prompt needs, and answer the headless `agent-ask` queue. The board tabs show the tabs of the tmux hub board (`hub:board`) with charts: Watch is the sessions part of its Fleet tab, Log its Today and History tabs, Infra its Overview (the hub is `Prefix+i`), Jobs lists every job that runs on its own, with its log, and Fleet its Fleet tab: accounts, runners and the two judges.
 
 It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux wrappers), so the web list and the `Prefix+g` chooser always agree on what an agent is.
 

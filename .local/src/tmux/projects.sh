@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# projects.sh - Prefix+P, the projects switcher. Every profile's projects in one small list,
+# projects.sh - Prefix+p, the projects finder. Every profile's projects in one small list,
 # main ones first, with a count of their open work; Enter opens the hub's Board tab on that
-# project's rows, where tasks are added, moved, edited, rewaved and closed.
+# project's rows, where tasks are added, moved, edited, rewaved and closed; e opens the
+# project's sheet in the hub notes editor.
 #
 # Usage: projects.sh [verb]
 #
@@ -17,8 +18,8 @@
 #   --help, -h             this text
 #
 # Keys, project list (it opens in hotkey mode, no input line):
-#   1-9 / Enter  hub Board  j k  move      /  search (Esc: leave the box, clear, quit)
-#   o  open the sheet       n  new project d  show/hide drafts
+#   1-9 / Enter / o  hub Board   j k  move   /  search (Esc: leave the box, clear, quit)
+#   e  the sheet in the hub notes editor   n  new project   d  show/hide drafts
 #   s  set stage            x  archive     q / Esc  quit
 #
 # A project's tasks live on the hub Board tab (`hub tab board <profile>/<name>`, then the hub
@@ -26,14 +27,12 @@
 # sooner or later, open the sheet at the row.
 #
 # Every write here is a `notes` CLI call, so the CLI stays the only writer of a sheet or an index.
-# The counts come from one `notes projects --stats` call. `o` opens in the nvim that opened
-# the popup when PROJECTS_NVIM names its server socket (`<leader>np` passes it), else in this
-# session's editor window (editor.sh open).
+# The counts come from one `notes projects --stats` call. `e` is `tmx open hub <sheet>`: the
+# hub world's landing nvim (~/.notes), wherever the popup was opened from.
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 
-PROJECTS_NVIM="${PROJECTS_NVIM:-}"
 PROJECTS_STAGES="${PROJECTS_STAGES:-draft alpha beta prod}"
 
 Q="$(printf '%q' "$SELF")"
@@ -75,7 +74,7 @@ cmd_list() {
 # hotkey. Placeholders ({1}, {2}, {3}) are left for fzf to fill and quote, so a project's own
 # name never has to survive being spliced into an action string.
 #
-# The accept actions print a word (`enter` or `open`) above the row, which is what cmd_pick
+# The accept actions print a word (`enter` or `edit`) above the row, which is what cmd_pick
 # reads back to know what to do.
 cmd_key() {
   local view="$1" key="$2" typing=0 drafts='' state=main
@@ -116,7 +115,8 @@ cmd_key() {
   *:k) echo up ;;
   *:/) echo show-input ;;
   list:[1-9]) echo "pos($key)+print(enter)+accept" ;;
-  list:o) echo 'print(open)+accept' ;;
+  list:o) echo 'print(enter)+accept' ;;
+  list:e) echo 'print(edit)+accept' ;;
   list:q) echo abort ;;
   list:n) echo "execute($Q --new)+$relist" ;;
   list:s) echo "execute($Q --stage {1} {2})+$relist" ;;
@@ -204,16 +204,6 @@ cmd_board() {
   hub tab board "$1/$2" && tmx goto hub hub:board
 }
 
-# --- Open ---
-_open() {
-  local file="$1" line="${2:-1}"
-  if [ -n "$PROJECTS_NVIM" ] && [ -S "$PROJECTS_NVIM" ]; then
-    nvim --server "$PROJECTS_NVIM" --remote-send "<C-\\><C-N>:e +$line ${file// /\\ }<CR>"
-  else
-    "$PANEL_DIR/editor.sh" open "$file" "$line"
-  fi
-}
-
 # --- Picker ---
 # The table flags minus --no-sort. An empty query shows the rows in their own order either
 # way; a search ranks by match, which is what makes "time" land on time-tangle rather than
@@ -230,14 +220,14 @@ cmd_pick() {
 
   local out profile name sheet
   local -a BINDS
-  _binds list j k / 1 2 3 4 5 6 7 8 9 o q n s x d esc enter
+  _binds list j k / 1 2 3 4 5 6 7 8 9 o e q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header='1-9 board  o open  n new  s stage  x archive  d drafts  / search  q quit' \
+    --header='1-9/o board  e notes  n new  s stage  x archive  d drafts  / search  q quit' \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"
   case "${out%%$'\n'*}" in
-  open) _open "$sheet" 1 ;;
+  edit) panel_need tmx && tmx open hub "$sheet" 1 ;;
   enter) cmd_board "$profile" "$name" ;;
   esac
 }

@@ -16,7 +16,7 @@
 --   Root
 --    ├─ <profile>  (N open)   →  that profile's open Focus tasks
 --    │                            x = toggle done   a = add   <CR> = jump to the line
---    └─ Projects  ▸           ->  the tmux projects popup (Prefix+P), see projects.sh
+--    └─ Projects  ▸           ->  the tmux projects popup (Prefix+p), see projects.sh
 --
 -- Every WRITE routes back through the `notes` CLI (`notes --profile <p> focus …`), so the vault rule
 -- holds: journal markdown is never hand-edited, the `<!-- since -->`
@@ -429,17 +429,15 @@ function M.open()
   show(stack[1], true)
 end
 
--- The projects switcher is the tmux popup (`.local/src/tmux/projects.sh`, Prefix+P), not a
+-- The projects finder is the tmux popup (`.local/src/tmux/projects.sh`, Prefix+p), not a
 -- picker level here, so there is one projects UI whether you start from nvim or a shell.
--- PROJECTS_NVIM hands it this nvim's server, so the popup's `o` opens files right here.
 function M.open_projects()
   if not vim.env.TMUX then
-    vim.notify("the projects switcher is a tmux popup (Prefix+P); outside tmux use `notes projects --stats`", vim.log.levels.WARN)
+    vim.notify("the projects finder is a tmux popup (Prefix+p); outside tmux use `notes projects --stats`", vim.log.levels.WARN)
     return
   end
   vim.fn.jobstart({
     "tmux", "display-popup", "-E", "-B", "-w", "80%", "-h", "60%",
-    "-e", "PROJECTS_NVIM=" .. vim.v.servername,
     vim.fn.expand("$HOME/.local/src/tmux/projects.sh"),
   }, { detach = true })
 end

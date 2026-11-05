@@ -1,5 +1,5 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
-//! TUI (Prefix i) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
+//! TUI (its Overview tab) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
 //! Grafana's kb-command-center does, so none of them judges anything itself.
 

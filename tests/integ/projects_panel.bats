@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# projects.sh -- Prefix+P, the projects switcher.
+# projects.sh -- Prefix+p, the projects finder.
 #
 # integ tier: the script runs as a subprocess against the recording `notes` stub, so no test
 # here reads or writes a vault. The picker itself is not driven (the fzf stub aborts); what
@@ -103,6 +103,16 @@ setup() {
   assert_output 'print(enter)+accept'
 }
 
+@test "o opens the project on the hub Board like Enter, e opens its sheet in the hub editor" {
+  run "$PROJECTS_SH" --key list o
+  assert_output 'print(enter)+accept'
+  run "$PROJECTS_SH" --key list e
+  assert_output 'print(edit)+accept'
+  # Searching, both letters type themselves.
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list e
+  refute_output --partial 'accept'
+}
+
 @test "d toggles the drafts both ways" {
   run "$PROJECTS_SH" --key list d
   assert_output --partial 'change-prompt(all projects> )'
@@ -155,6 +165,7 @@ setup() {
   assert_success
   assert_output --partial 'Verbs:'
   assert_output --partial 'hub Board'
+  assert_output --partial 'hub notes editor'
   refute_output --partial '#!'
 }
 

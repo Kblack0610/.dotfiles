@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # day-log - what a day shipped: every PR you merged in any repo, what is still open, what
 # waits on you, and the fleet's telemetry, kept as one record per day. The hub Today and
-# History tabs (`hub`, Prefix O) render the records; day-log.timer snapshots today every 5 min.
+# History tabs (`hub`, Prefix i) render the records; day-log.timer snapshots today every 5 min.
 #
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
 #                                 today is also published as day_log.prom

@@ -37,7 +37,8 @@
 # choose-tree is server-scoped by construction.
 #
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · pick-all · rows · hop <name>
-#        · root <name> · goto <name> <session> · land <name> <last|root|session[:window]>
+#        · root <name> · goto <name> <session> · open <name> <file> [line]
+#        · land <name> <last|root|session[:window]>
 #        · pick-session · back · reload
 
 set -uo pipefail
@@ -243,7 +244,7 @@ _landing() {
 
 # The landing session's OWN window: the first one that is not a declared board. The board
 # (hub:board) is a window of the landing session too, and a session remembers its
-# last-selected window, so after Prefix+O a bare attach to hub opened the board, not the
+# last-selected window, so after Prefix+i a bare attach to hub opened the board, not the
 # daily. Identity is the one ensure finds declared windows by: @tmx_window,
 # else the name. One list-windows rather than _is_board per window.
 _landing_window() {
@@ -318,11 +319,39 @@ _refresh_landing() {
   page="$(_startup_page "$srv" "$sess")"
   [ -n "$page" ] && [ -e "$page" ] || return 0
 
-  tmux -L "$srv" send-keys -t "$sess:" Escape
-  # Backslash-escaped, not quoted: this is typed at vim's command line, where a bare
-  # space splits one path into two filenames and `:e "a b"` opens a file literally named
-  # with the quotes. A vault path with a space in it is ordinary.
-  tmux -L "$srv" send-keys -t "$sess:" ":e ${page// /\\ }" Enter
+  _vim_edit "$srv" "$sess:" "$page"
+}
+
+# _vim_edit <server> <target> <file> [line] -- `:e` a file in the nvim at <target>.
+# Backslash-escaped, not quoted: this is typed at vim's command line, where a bare space
+# splits one path into two filenames and `:e "a b"` opens a file literally named with the
+# quotes. A vault path with a space in it is ordinary.
+_vim_edit() {
+  local srv="$1" t="$2" file="$3" line="${4:-}"
+  tmux -L "$srv" send-keys -t "$t" Escape
+  tmux -L "$srv" send-keys -t "$t" ":e ${line:++$line }${file// /\\ }" Enter
+}
+
+# open <server> <file> [line] -- show a file in the world's landing editor and go there.
+# The projects popup's `e`: a project's sheet in the hub notes nvim. The landing window is
+# named explicitly, never "$sess:", which is the session's CURRENT window and so is the
+# board whenever the board was the last thing looked at.
+cmd_open() {
+  local srv="${1:?open needs a server name}" file="${2:?open needs a file}" line="${3:-1}"
+  local landing lwin t cmd
+  [ -e "$file" ] || die "no such file: $file"
+  cmd_ensure "$srv" >/dev/null
+  landing="$(_landing "$srv")"
+  lwin="$(_landing_window "$srv" "$landing")"
+  [ -n "$landing" ] && [ -n "$lwin" ] || die "$srv has no landing window"
+  t="$landing:$lwin"
+  cmd="$(tmux -L "$srv" display-message -p -t "$t" '#{pane_current_command}' 2>/dev/null)"
+  case "$cmd" in
+    nvim) _vim_edit "$srv" "$t" "$file" "$line" ;;
+    sh|bash|zsh|fish) tmux -L "$srv" send-keys -t "$t" "nvim +$line $(printf '%q' "$file")" Enter ;;
+    *) die "$t is running ${cmd:-nothing}, not nvim or a shell" ;;
+  esac
+  _enter "$srv" "$t"
 }
 
 # ── The back-stack ───────────────────────────────────────────────────────────
@@ -570,7 +599,7 @@ cmd_goto() {
 # answer whenever it has one; it only has none on a fresh attach, which is exactly the state
 # a cross-server hop leaves you in - and that is the one case the crumb exists for.
 #
-# A board is never a place to go BACK to. The board (Prefix i, o and O -> hub:board) is
+# A board is never a place to go BACK to. The board (Prefix i -> hub:board) is
 # a declared window of the landing session, and tmux keeps one last-session
 # slot, so a glance at one took it: A, o, L, L landed on the board instead of the session
 # before A. When tmux's answer (or the crumb) is a board, L goes to the session you were
@@ -874,6 +903,7 @@ main() {
     hop)          shift; cmd_hop "${1:-}" ;;
     root)         shift; cmd_root "${1:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
+    open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     back)         cmd_back ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;

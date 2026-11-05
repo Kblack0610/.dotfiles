@@ -1,6 +1,6 @@
 # hub-tui
 
-`hub`, every hub board as one terminal app (ratatui) with a tab per board. It runs in the `hub:board` window (declared in `.config/tmux-servers/hub.conf`); tmux Prefix i and O land on its Home and Today tabs, and the waybar load, CI and day chips open it on click. It reads through `hub-core`, the same crate agent-web's tabs use, so the terminal and the browser cannot disagree. It reads only, except the Fleet tab's session controls, which act on a session through `hub_core::session_actions` (the same actions as agent-web's session buttons), the Queue tab's cancel and priority keys, which run `agent-queue` through `hub_core::queue` (the same calls as agent-web's queue buttons), and the Board tab's add, start, done, drop, move, edit, release and open-sheet keys, which run `notes ptask --exact` through `hub_core::tasks` (the same calls as agent-web's Board tab). Trends live in Grafana; `o` opens the dashboard for the tab you are on.
+`hub`, every hub board as one terminal app (ratatui) with a tab per board. It runs in the `hub:board` window (declared in `.config/tmux-servers/hub.conf`); tmux Prefix i lands on its Home tab, and the waybar load, CI and day chips open it on click. It reads through `hub-core`, the same crate agent-web's tabs use, so the terminal and the browser cannot disagree. It reads only, except the Fleet tab's session controls, which act on a session through `hub_core::session_actions` (the same actions as agent-web's session buttons), the Queue tab's cancel and priority keys, which run `agent-queue` through `hub_core::queue` (the same calls as agent-web's queue buttons), and the Board tab's add, start, done, drop, move, edit, release and open-sheet keys, which run `notes ptask --exact` through `hub_core::tasks` (the same calls as agent-web's Board tab). Trends live in Grafana; `o` opens the dashboard for the tab you are on.
 
 Install: the installer's `build_local_rust_tools` builds it and links `~/.local/bin/hub`. By hand: `cargo build --release` here, then `ln -sf "$PWD/target/release/hub" ~/.local/bin/hub`.
 
@@ -10,7 +10,7 @@ Install: the installer's `build_local_rust_tools` builds it and links `~/.local/
 hub                              the board, on the Home tab
 hub --tab fleet                  start on another tab (home, queue, jobs, ci, machines, forecast, today, history, fleet, board; a retired name such as overview lands on its new tab)
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
-hub tab board bnb/demo           the same, with a Board search: one project's rows (what Prefix+P Enter sends)
+hub tab board bnb/demo           the same, with a Board search: one project's rows (what Prefix+p Enter sends)
 hub --once                       print Home, Machines and CI as plain text at $COLUMNS, then exit
 hub --once --tab jobs            print one tab; exit 1 when Prometheus did not answer
 ```
@@ -97,7 +97,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | Forecast says "no baseline yet" | `fleet-bench vs` found no frozen forecast: `fleet-bench forecast --baseline <label>` freezes one |
 | Fleet says no fleet state, or its changes stop moving | `fleet-state.timer` is not running: `systemctl --user enable --now fleet-state.timer`. The timer builds the log whether or not the tab is open |
 | Today is a day behind or empty | `day-log.timer` is not running: `systemctl --user enable --now day-log.timer`; `day-log snapshot` writes one record by hand |
-| Prefix o or O lands on the wrong tab | A hub older than the tab socket ignores the request. Rebuild, then `tmux kill-window -t hub:board` and press the key again |
+| Prefix i lands on the wrong tab | A hub older than the tab socket ignores the request. Rebuild, then `tmux kill-window -t hub:board` and press the key again |
 | "hub tab cannot reach this hub (...)" in the tab bar | `tab.sock` would not bind; the reason is in the brackets. A socket path is limited to 108 bytes, so a long `XDG_STATE_HOME` cannot hold one |
 | "no file watch (inotify full)" in the tab bar | Every inotify watch is taken. `grep -c '^inotify' /proc/[0-9]*/fdinfo/* 2>/dev/null \| awk -F'[/:]' '{n[$3]+=$NF} END{for(p in n) if(n[p]) print n[p], p}' \| sort -rn \| head -3` prints watches and pid, biggest first; an open Unity Editor's `Unity.ILPP.Runner` can hold nearly all of `fs.inotify.max_user_watches`. Closing it or raising the limit is the human's call. Until then the board re-reads its files every 60s, and agent-web will not start, so do not restart it |
 | hub holds 100%+ CPU and a `journalctl --user ... MESSAGE_ID=...` child respawns non-stop | notify asks inotify for opens too, and each jobs read opens the files it watches, so every read woke the next. `is_write` in `app.rs` drops everything but create, modify and remove (fixed 2026-11-03). Rebuild and restart the hub |
