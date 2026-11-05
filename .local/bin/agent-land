@@ -95,6 +95,18 @@ catch_up() {
   fi
   out=$(git push -q 2>&1) || fail push "$(lastline "$out")"
   echo "fetch: merged origin/$base ($behind behind) into the green head and pushed it"
+  # GitHub works out whether a pushed head merges after the push and refuses the merge until then
+  # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
+  # reads this head with a known answer; the merge step reports what it ends up refusing.
+  local head try
+  head=$(git rev-parse HEAD)
+  for ((try = 1; try <= CHECKS_TRIES; try++)); do
+    case "$(gh pr view "$pr" --json headRefOid,mergeable -q '.headRefOid + " " + .mergeable' 2>/dev/null)" in
+    "$head UNKNOWN" | "") ;;
+    "$head "*) return 0 ;;
+    esac
+    sleep "$CHECKS_POLL"
+  done
 }
 
 pr='' project='' title='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0

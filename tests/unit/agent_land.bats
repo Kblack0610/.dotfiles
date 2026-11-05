@@ -23,6 +23,10 @@ case "$1 $2" in
 'pr view')
   case "$*" in
   *baseRefName*) printf '%s main\n' "$(cat "$NOTES_FIXTURE/state")" ;;
+  *mergeable*)
+    # mergeable.seq: one answer per call, popped as read; then this head, mergeable
+    q="$NOTES_FIXTURE/mergeable.seq"
+    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
@@ -92,10 +96,22 @@ item() {
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
   assert_output 1
-  run grep -A3 '^git merge -q --no-edit origin/main$' "$LOG"
+  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
   assert_line --index 1 'git push -q'
   assert_line --index 2 'git rev-parse HEAD'
-  assert_line --index 3 'gh pr merge 42 --squash --match-head-commit 0123456789abcdef'
+  run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+}
+
+@test "a pushed catch-up head is merged only once GitHub reads that head with a known mergeable" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' 'fedcba9876543210 MERGEABLE' '0123456789abcdef UNKNOWN' >"$NOTES_FIXTURE/mergeable.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_success
+  run grep -c 'pr view 42 --json headRefOid,mergeable' "$LOG"
+  assert_output 3
+  # the merge comes after the last poll
+  [ "$(grep -n 'headRefOid,mergeable' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
 @test "behind after a green gate with a conflicting merge: aborted, exit 3, nothing pushed or merged" {
