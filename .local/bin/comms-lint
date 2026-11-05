@@ -12,7 +12,7 @@ Channels and their numbers: ~/.config/comms-lint/channels.toml. The rules behind
 the comms-standard skill. Exit: 0 clean, 1 findings, 2 usage error.
 
 snapshot writes the 7d and 28d reports to COMMS_SNAPSHOT_DIR/<date>.json (nightly, from the
-comms-report job); line and kpi read the newest one, so the fleet-bench scorecard never waits on a
+briefing's evening run); line and kpi read the newest one, so the fleet-bench scorecard never waits on a
 report run. kpi exits 1 when the newest snapshot is older than COMMS_SNAPSHOT_MAX_AGE_H.
 """
 import argparse
