@@ -102,7 +102,14 @@ heads() {
     | [.name, ((.stage // "") | if . == "" then "-" else . end), ((.prio // "") | if . == "" then "-" else . end)] | @tsv'
 }
 
-stage_rank() { case "$1" in prod) echo 0 ;; beta) echo 1 ;; *) echo 2 ;; esac; }
+# The one ladder (`notes projects --stages`), read once for lab_stage_at_least.
+# shellcheck source=../lib/lab-feed.sh
+. "${LAB_FEED_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/lab-feed.sh}"
+LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
+
+# dispatchable <stage>: agents build from dev on; a draft is still a concept, and no stage is
+# a question for the human, so neither gets a session.
+dispatchable() { lab_stage_at_least "$1" dev; }
 
 prio_rank() {
   case "$1" in
@@ -325,7 +332,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name stage pprio; do
       [ -n "$name" ] || continue
-      case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+      dispatchable "$stage" || continue
       [ "$pprio" != - ] || pprio=''
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -1540,7 +1547,7 @@ night_rows() {
   local judged="$1" name stage repo key text body t line n
   for name in $DISPATCH_NIGHT_PROJECTS; do
     stage=$(heads "$DISPATCH_NIGHT_PROFILE" | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
-    case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+    dispatchable "$stage" || continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     n=0

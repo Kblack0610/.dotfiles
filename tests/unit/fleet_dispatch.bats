@@ -33,6 +33,8 @@ setup() {
   stub judge-stub 'echo "judge called" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
   # The real agent-queue, copied (never linked: a test that restubs it must not write through).
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  # The ladder `notes projects --stages` prints; the stub answers projects lists only.
+  export LAB_STAGES="draft dev alpha beta prod"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$DISPATCH_PROJECT_MAP" AGENT_QUEUE_START=0
   # shellcheck source=/dev/null
@@ -73,8 +75,8 @@ case "${args[0]}" in
     if [ "${args[1]}" = --stats ]; then
       while IFS=$'\t' read -r n summary _; do
         v=$(grep -m1 '^Version:' "${summary%.summary.md}.md")
-        jq -cn --arg n "$n" --arg p "$prof" --arg v "$v" '{name: $n, profile: $p,
-          stage: ($v | capture("#(?<s>draft|alpha|beta|prod)\\b").s // ""),
+        jq -cn --arg n "$n" --arg p "$prof" --arg v "$v" --arg l "$LAB_STAGES" '{name: $n, profile: $p,
+          stage: ($v | capture("#(?<s>\($l | split(" ") | join("|")))\\b").s // ""),
           prio: ($v | capture("#prio/(?<s>focus|high|low)\\b").s // "")}'
       done < "$F/projects" | jq -s .
     else cat "$F/projects" 2>/dev/null; fi ;;
@@ -156,6 +158,17 @@ verdict() {
   assert_success
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
   assert_equal "$(jq -r '"\(.stage) \(.lane) \(.prio) \(.tier) \(.repo)"' <<<"$output")" "beta human 1 1 $SANDBOX/repos/game"
+}
+
+@test "candidates: a dev project is built by agents; a project with no stage is not" {
+  project build dev "$SANDBOX/repos/game"
+  project unset '' "$SANDBOX/repos/app"
+  row build human 'dev row' "- [ ] dev row #high $T"
+  row unset human 'unset row' "- [ ] unset row #high $T"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r '"\(.project) \(.stage)"' <<<"$output")" 'build dev'
 }
 
 @test "candidates: only rows assigned to this worker, at a tier it may take" {
