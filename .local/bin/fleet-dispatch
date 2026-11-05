@@ -47,6 +47,7 @@ unset _k _v
 
 : "${DISPATCH_PROFILES:=bnb}"
 : "${DISPATCH_PER_PASS:=1}"   # new sessions a pass; each start after the first reads the gate again
+: "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
@@ -739,6 +740,45 @@ settle_row() {
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
 }
 
+# unstart_orphans -- an agent-lane row started with no active queue item naming it (`from: board:`)
+# is an orphan: its session never filed an item, or died before reap could see one. A row seen
+# orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
+# settle_row does, so dispatch does not promote it again until its text changes; the grace keeps a
+# session that started a row a minute ago from losing it. First sightings live in $DIR/orphans.tsv;
+# a row that stops being one drops out. Human-lane rows are the human's own and never touched. A
+# queue it cannot read changes nothing. 2026-11-05: 40 started rows, 33 of them with no item.
+unstart_orphans() {
+  local items linked prof name _rest key text first now seen=''
+  items=$(agent-queue list --json 2>/dev/null) || return 0
+  mkdir -p "$DIR"
+  linked=$(jq -r 'select(.state != "done" and (.from // "" | startswith("board:")) and (.lane // "agent") == "agent")
+    | .from | ltrimstr("board:") | sub(":"; "\t")' <<<"$items")
+  now=$(date +%s)
+  for prof in $(printf '%s\n' "${DISPATCH_NIGHT_PROFILE:--}" $DISPATCH_PROFILES | awk '!x[$0]++'); do
+    [ "$prof" = - ] && prof=''
+    while IFS=$'\t' read -r name _rest; do
+      [ -n "$name" ] || continue
+      while IFS=$'\t' read -r key text; do
+        [[ "$text" == '- [/]'* ]] || continue
+        grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
+        first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
+        first=${first:-$now}
+        if [ $(( now - first )) -lt $(( DISPATCH_ORPHAN_HOURS * 3600 )) ]; then
+          seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first"$'\n'
+          continue
+        fi
+        np "$prof" ptask "$name" --agent start "$key" >/dev/null 2>&1 ||
+          { logline "orphan $name agent row $key: un-start failed"; continue; }
+        jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
+          '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
+        logline "un-started orphan $name agent row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
+        echo "un-started $name: $key (started with no queue item)"
+      done < <(rows "$prof" "$name" agent)
+    done < <(np "$prof" projects 2>/dev/null)
+  done
+  printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
+}
+
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state, read from gh for an <owner>/<repo>#<N> pr: MERGED is done
 # ok (and a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for
@@ -1134,6 +1174,7 @@ cmd_reap() {
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
+  unstart_orphans
   return 0
 }
 
