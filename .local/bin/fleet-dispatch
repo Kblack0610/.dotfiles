@@ -5,6 +5,7 @@
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
+#   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
@@ -22,7 +23,7 @@
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and added
-# to agent-queue (low, `from: board:`); its item gets a detached `wt new` session on the agent world
+# to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
 # running /one-shot, tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # Tier 3 runs unattended only as a `night` item: fill promotes the dotfiles boards' tier-3 rows
@@ -233,20 +234,29 @@ queue_areas() {
   return 0
 }
 
-# rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the current wave
+# rows <profile> <project> <lane> -> "<key>\t<raw line>" for each OPEN row on the current wave. The
+# key is the row's id, which outlives an edit to its text; a row with no id yet goes by its text
+# until promote starts it, which stamps one.
 rows() {
   local flag=()
   [ "$3" = agent ] && flag=(--agent)
-  np "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3-
+  np "$1" ptask "$2" "${flag[@]}" list 2>/dev/null | cut -f3- |
+    sed -E 's/^[^\t]*\t(.*<!--([^>]* )?id:([a-z]{2,4}-[0-9]+)( [^>]*)?-->[[:space:]]*)$/\3\t\1/'
 }
 
-# row_is <profile> <project> <lane> <key> <mark> -- is that row on the board as `- [<mark>]`?
-# The board is read whole first: piped into `grep -q`, a large board dies of SIGPIPE and
-# pipefail reads the 141 as "not there".
-row_is() {
+# row_line <profile> <project> <lane> <key> -> that row's raw line, nothing when it is not on the
+# board. The board is read whole first: piped into something that stops early, a large board dies
+# of SIGPIPE and pipefail reads the 141 as "not there".
+row_line() {
   local board
   board=$(rows "$1" "$2" "$3")
-  grep -qF "$4"$'\t'"- [$5]" <<<"$board"
+  K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
+}
+
+# row_priority <raw line> -> the queue priority the row asks for: a bare row is high, the
+# default of the row grammar and of agent-queue alike.
+row_priority() {
+  case "$(prio_rank "$1")" in 0) echo urgent ;; 3) echo low ;; *) echo high ;; esac
 }
 
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>" for each verdict that still holds: one
@@ -282,10 +292,10 @@ cmd_candidates() {
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t*' <<<"$judged" && continue
           jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
-            --arg line "$line" --argjson prio "$(prio_rank "$text")" --argjson tier "$tier" \
+            --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" \
             '{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
-              text: $text, repo: $repo, prio: $prio, tier: $tier, line: $line,
+              text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank}'
         done < <(rows "$prof" "$name" "$lane")
       done
@@ -506,13 +516,14 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # item_brief <item json> -> the prompt a queue item's session starts on: plan mode gets the
 # task as typed, oneshot runs it through /one-shot (--pr-only for a `night` item).
 item_brief() {
-  local it="$1" slug mode tags pr_only='' row
+  local it="$1" slug mode tags pr_only='' row key
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   [ "$mode" = plan ] || printf '/one-shot%s ' "$pr_only"
   jq -r .task <<<"$it"
   echo
   row=$(item_row "$it")
+  key=$(cut -d$'\x1f' -f4 <<<"$row")
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
@@ -520,11 +531,10 @@ item_brief() {
     echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
     echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
   else
-    local key
-    key=$(cut -d$'\x1f' -f4 <<<"$row")
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
     echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
+  [ -z "$key" ] || echo "The PR body carries the line \"Task: $key\"."
   echo "If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open."
 }
 
@@ -547,7 +557,7 @@ settle_row() {
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
-  row_is "$prof" "$project" "$lane" "$key" / || return 0
+  [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
   np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
   jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
     '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
@@ -630,16 +640,9 @@ start_items() {
 # held dispatch on purpose (agent-hold), else BLOCKED.
 held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
-# next_items -> the queued items a pass may try, queue order, one JSON object a line: a board item
-# waits for the human to be away (run_queue's gate), so while they are not, it is left out.
+# next_items -> the queued items a pass may try, queue order, one JSON object a line.
 next_items() {
-  local q
-  q=$(agent-queue list --json --state queued 2>/dev/null | jq -sc '[.[] | select(.hold == null)]' 2>/dev/null)
-  case "$(fleet-presence 2>/dev/null)" in
-    away*) ;;
-    *) q=$(jq -c '[.[] | select(.from | startswith("board:") | not)]' <<<"$q" 2>/dev/null) ;;
-  esac
-  jq -c '.[]' <<<"${q:-[]}" 2>/dev/null
+  runnable 2>/dev/null | jq -c 'select(.waits | not)' 2>/dev/null
   return 0
 }
 
@@ -742,7 +745,8 @@ start_item() {
 # DISPATCH_STARVED_MIN minutes and no run pass has started a queue item in that time: it names them
 # and the last pass's outcome. A deep queue the passes are moving is not starved, and neither is one
 # held on purpose (agent-hold) or by the load gates, whose alarm is fleet-thermal: a busy machine is
-# not a broken queue, and any other gate still trips. Only a run start counts: a hand start or a redispatch proves nothing
+# not a broken queue, and any other gate still trips. A board item is not starved while it waits for
+# the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
 # the Sentinel watch queue-starved runs it.
@@ -753,7 +757,7 @@ cmd_starved() {
   started=$(last_run_start)
   if [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then return 0; fi
   items=$(runnable | jq -rs --argjson cut "$cut" '
-    [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)]
+    [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   [ -n "$items" ] || return 0
   why=$(gate any)
@@ -811,10 +815,20 @@ cmd_headroom() {
 }
 
 # runnable -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
-# after:), one JSON object a line with t, the queued epoch. Fails when the queue is unreadable.
+# after:), one JSON object a line. A board item waits for the human to be away (run_queue's gate):
+# `waits` is true while they are not, and its t, the epoch it became runnable, is when they left if
+# it was queued before that; any other item's t is its queued epoch. Away with no minutes (`away -
+# none`: nobody attached or logged in) has no leaving time, so t stays the queued epoch. Presence is
+# read only when an item could wait on it. Fails when the queue is unreadable.
 runnable() {
-  local q; q=$(agent-queue list --json --state queued 2>/dev/null) || return 1
-  jq -c 'select(.hold == null) | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
+  local q state='' mins=- _s here=true left=0
+  q=$(agent-queue list --json --state queued 2>/dev/null) || return 1
+  [[ "$q" != *board:* ]] || read -r state mins _s < <(fleet-presence 2>/dev/null)
+  [ "$state" != away ] || { here=false; [ "$mins" = - ] || left=$(( $(date +%s) - mins * 60 )); }
+  jq -c --argjson here "$here" --argjson left "$left" '
+    select(.hold == null) | (.from // "" | startswith("board:")) as $board
+    | (.queued | try fromdateiso8601 catch null) as $t
+    | . + {waits: ($board and $here), t: (if $board and $t != null and $t < $left then $left else $t end)}' <<<"$q"
 }
 
 # last_run_start -> "YYYY-MM-DD HH:MM" of the last queue item a run pass started, from the log.
@@ -846,7 +860,7 @@ cmd_stats() {
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
-      | ($q | map(select(.priority == "urgent" or .priority == "high"))) as $u
+      | ($q | map(select((.priority == "urgent" or .priority == "high") and (.waits | not)))) as $u
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
         ($ev | map(select(.[0] == "move") | .[1]) | group_by(.) | map(select(length >= $flap) | .[0])) as $flapping
       | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length),
@@ -1013,8 +1027,8 @@ cmd_run() {
   start_items "$items" "$room" away
 }
 
-# fill_now <room> -- judge the new rows, then promote the picks into the queue as low, `from:
-# board:`: up to <room> rows a merging session may take, and tier-3 rows (night_picks) tagged
+# fill_now <room> -- judge the new rows, then promote the picks into the queue, `from: board:`:
+# up to <room> rows a merging session may take, and tier-3 rows (night_picks) tagged
 # `night`, which run to an open PR only, up to DISPATCH_NIGHT_MAX active at once.
 fill_now() {
   local room="$1" picked night active c
@@ -1029,7 +1043,7 @@ fill_now() {
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
-    if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$c")"
+    if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key)"' <<<"$c")"
     else promote "$c" "" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')"; fi
   done <<<"$picked"
   while IFS= read -r c; do
@@ -1041,26 +1055,58 @@ fill_now() {
   return 0
 }
 
-# promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue; a row
-# that cannot be added is un-started again. The new item's slug is left in PROMOTED.
+# promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue under its
+# id, at the row's priority; a row that cannot be added is un-started again. The start stamps an id
+# on a row with none; a row still without one (its project has no code) is refused, since nothing
+# could join an item to it. The new item's slug is left in PROMOTED.
 promote() {
-  local c="$1" tags="$2" task="$3" prof project lane key area out slug flag=()
+  local c="$1" tags="$2" task="$3" prof project lane key area line out id slug flag=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
-  row_is "$prof" "$project" "$lane" "$key" ' ' || { say "skip $project: row no longer open: $key"; return 1; }
-  np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-  row_is "$prof" "$project" "$lane" "$key" / || { say "skip $project: could not start row: $key"; return 1; }
-  if ! out=$(agent-queue add --project "$project" --priority low --from "board:$project:$key" --slug "$key" \
+  line=$(row_line "$prof" "$project" "$lane" "$key")
+  [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
+  out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
+    { say "skip $project: could not start row: $key ($out)"; return 1; }
+  id=$(sed -n 's/^  id://p' <<<"$out")
+  [ -n "$id" ] || [[ "$line" != *"id:$key "* ]] || id=$key
+  if [ -z "$id" ]; then
+    np "$prof" ptask "$project" "${flag[@]}" --exact start -- "- [/]${line#- \[ \]}" >/dev/null 2>&1
+    say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
+    return 1
+  fi
+  if ! out=$(agent-queue add --project "$project" --priority "$(row_priority "$line")" --from "board:$project:$id" --slug "$id" \
       ${tags:+--tags "$tags"} -- "$task" 2>&1); then
-    np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
-    say "could not queue $project row, un-started: $key ($out)"
+    np "$prof" ptask "$project" "${flag[@]}" start "$id" >/dev/null 2>&1
+    say "could not queue $project row, un-started: $id ($out)"
     return 1
   fi
   slug=$(awk '{ print $2; exit }' <<<"$out"); PROMOTED=$slug
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
-  logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $key"
-  echo "queued $project: $key"
+  logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
+  echo "queued $project: $id"
+}
+
+# cmd_promote --project P [--profile X] [--agent] --raw LINE -- queue one row as the human saw it: the
+# Board tab's Start. A row that changed since, or is already started, is refused. No gate: the item
+# waits for the human to be away like any board item.
+cmd_promote() {
+  local project='' prof='' lane=human raw='' board key
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent) lane=agent; shift; continue ;;
+      --project | --profile | --raw) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
+      *) say "promote: unknown argument: $1"; return 2 ;;
+    esac
+    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; esac
+    shift 2
+  done
+  [ -n "$project" ] && [ -n "$raw" ] || { say "promote: --project and --raw are required"; return 2; }
+  board=$(rows "$prof" "$project" "$lane")
+  key=$(R="$raw" awk -F'\t' 'substr($0, length($1) + 2) == ENVIRON["R"] { print $1; exit }' <<<"$board")
+  [ -n "$key" ] || { say "promote: not on the $project $lane board as given, so it changed: $raw"; return 1; }
+  promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" \
+    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "" "$(sed 's/^- \[.\] //' <<<"$raw")"
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
@@ -1093,8 +1139,8 @@ cmd_fill() {
     return 0
   fi
   [ -n "$ready$night$unj" ] || { echo "fill: no open row to promote"; return 0; }
-  [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area): \(.key)"' <<<"$ready"
-  [ -z "$night" ] || jq -r '"night     \(.project) (\(.stage)) \(.lane), \(.area): \(.key)"' <<<"$night"
+  [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key)"' <<<"$ready"
+  [ -z "$night" ] || jq -r '"night     \(.project) (\(.stage)) \(.lane), \(.area), \(.priority): \(.key)"' <<<"$night"
   [ -z "$unj" ] || jq -r '"unjudged  \(.project) (\(.stage)) \(.lane): \(.key)"' <<<"$unj"
 }
 
@@ -1125,10 +1171,10 @@ night_rows() {
       grep -qxF "$name"$'\t'agent$'\t'"$key"$'\t*' <<<"$judged" && continue
       jq -cn --arg project "$name" --arg stage "$stage" --arg key "$key" --arg text "$text" \
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
-        --argjson order "$n" --arg first "$DISPATCH_NIGHT_FIRST" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
+        --arg priority "$(row_priority "$text")" --argjson order "$n" --arg first "$DISPATCH_NIGHT_FIRST" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
         --arg profile "$DISPATCH_NIGHT_PROFILE" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
-          text: $text, repo: $repo, prio: $prio, tier: 3, line: $line, order: $order, wrank: 0,
+          text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0,
           rank: (if ($body | test($first; "i")) then 0 elif ($body | test($obs; "i")) then 1 else 2 end)}'
     done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
   done
@@ -1166,7 +1212,7 @@ Promoted by fleet-dispatch fill from the $project agent board, row "$key". It is
 - Where: ${where:-the row names no file:line. Find the code it means first; if you cannot name one, stop blocked.}
 - Merge gate: $DISPATCH_NIGHT_GATE.
 - Open the PR, do not merge. The human merges in the morning.
-- Done means: the change the row describes is in an open PR with its gate green, and the PR body names the row ($project agent board: "$key"). The row is already started on the board: add no new row and do not mark it done; the human's merge closes it.
+- Done means: the change the row describes is in an open PR with its gate green. The row is already started on the board: add no new row and do not mark it done; the human's merge closes it.
 - If the row turns out to need a decision, the human, or a repo other than these two, stop blocked with agent-ask post.
 EOF
 }
@@ -1186,14 +1232,15 @@ main() {
       return "$rc" ;;
     candidates) cmd_candidates ;;
     fill) shift; cmd_fill "$@" ;;
+    promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     stats) cmd_stats ;;
     start) shift; cmd_start "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
-    -h | --help) sed -n '2,30p' "$0" ;;
-    *) sed -n '2,14p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,31p' "$0" ;;
+    *) sed -n '2,15p' "$0" >&2; return 2 ;;
   esac
 }
 

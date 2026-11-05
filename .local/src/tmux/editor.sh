@@ -93,7 +93,7 @@ _editor_window() {
 
 _window_exists() {
   [ -n "${1:-}" ] || return 1
-  tmux list-windows -F '#{window_id}' 2>/dev/null | grep -qxF "$1"
+  grep -qxF "$1" <<<"$(tmux list-windows -F '#{window_id}' 2>/dev/null)"
 }
 
 # _fallback_shell - the shell the editor window falls back to when the editor exits.

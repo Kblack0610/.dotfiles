@@ -159,6 +159,14 @@ setup() {
   [ -x "$s" ] || fail "last-resort shell is not executable: $s"
 }
 
+@test "a listed id survives a list longer than the pipe" {
+  # panel-lib.sh turns pipefail on, so `tmux ... | grep -q` reads a match as false when grep
+  # exits first and the writer dies of SIGPIPE. More than 64 KiB makes that certain rather
+  # than a race: it failed CI on a three-id list (run 41943651073).
+  STUB_WINDOW_LIST="$(seq -f '@%.0f' 1 20000)"
+  _window_exists '@1' || fail "@1 is the first row of the list but was rejected"
+}
+
 @test "the id match is exact, so @1 never matches @11" {
   # grep without -x would make a killed @1 resolve to the live @11 and silently send you to
   # a window you have never seen. This is the whole reason the check is anchored.
