@@ -19,7 +19,7 @@ An ask file is the only record that something waits on the human, for attended s
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone" and where the answer will go.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
-- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) opens its card in a tmux popup, and `Prefix y` reopens it, or lists every pending ask when the session you are on asks nothing. The `Prefix g` preview shows the card above the pane.
+- On the terminal: arriving at a session that asks (switching to it, `Prefix g`, `Prefix G`, a hop from another server) shows a status-line notice with the question and "Prefix y to answer", never a popup. `Prefix y` opens every pending ask, one card after another. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
 - A human-only action the session will not wait on is a human-sheet row, not an ask, so it does not hold the session open.
 
@@ -38,7 +38,7 @@ SECONDARY convenience for an attended agent only; producers never use it.
 - `--context "<why, what it blocks>"` is the `why:` line under the question.
 - `--options 'now=ship it today|later=wait for review'` gives each option a meaning. The slugs alone stay in `options:`, which agent-web, settle matching and the judge read; the meanings go to `option_notes:`, pipe-aligned with them.
 
-`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. `agent-ask pick [<id>]` is the card with keys: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `q` or Esc closes. Answering or dropping needs Enter because the popup can open under a key meant for the pane. With no id, `pick` lists every pending ask in fzf first.
+`agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. `agent-ask pick [<id>]` is the card with keys: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `q` or Esc closes. Answering or dropping needs Enter, so a stray key sends nothing. With no id, `pick` lists every pending ask in fzf and comes back to the list after each card; Esc on the list closes it.
 
 ## Verbs
 
