@@ -104,3 +104,55 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'would file [scratch]'
   assert_equal "$(cat "$SHEET")" "$before"
 }
+
+@test "--backlog: open rows are rewritten, moved, dropped or joined as the model says, each through ptask" {
+  sheet '' '- [ ] the menu flickers on resize #ask #high <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] other needs a logo <!-- id:sc-6 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [/] the save is slow <!-- id:sc-8 -->\n'
+  # rows reach the model sorted by text: sc-5, sc-6, sc-7, sc-4, sc-8; a row in progress is never dropped
+  answer '{"n": 1, "action": "dup", "id": "sc-4"}' '{"n": 2, "action": "rewrite", "row": "feat(brand): a logo #size/s", "project": "other"}' \
+    '{"n": 3, "action": "drop", "why": "a header, not a task"}' \
+    '{"n": 4, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}' \
+    '{"n": 5, "action": "drop", "why": "in progress anyway"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 2, moved 1, dropped 2, kept 1, refused 0'
+  grep -qx '2. \[sc-6\] other needs a logo' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run tasks
+  assert_output --regexp '- \[ \] fix\(ui\): the menu flickers on resize #size/s #ask .*#high.*id:sc-4'
+  assert_output --partial '  was: the menu flickers on resize #ask'
+  assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
+  assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+  assert_output --partial '- [/] the save is slow <!-- id:sc-8 -->'
+  refute_output --partial 'logo'
+  # rewritten, then moved by its id, its old words with it
+  grep -q 'feat(brand): a logo #size/s.*id:sc-6' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  grep -qx '  was: other needs a logo' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+}
+
+@test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
+  sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
+  # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)
+  answer '{"n": 1, "action": "rewrite", "row": "make the jump less floaty"}' '{"n": 2, "action": "dup", "id": "sc-4"}' \
+    '{"n": 3, "action": "dup", "id": "sc-99"}' '{"n": 4, "action": "drop", "why": "just the project name"}'
+  printf '%s\n' '- [ ] world <!-- id:sc-7 -->' '    - [ ] dust in the air' >>"$SHEET"
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'rewrote 0, moved 0, dropped 0, kept 4, refused 1'
+  assert_equal "$(cat "$SHEET")" "$before"
+  grep -qx '   - dust in the air' "$NOTES_FIXTURE/prompt.txt" || fail "the child row never reached the model"
+}
+
+@test "--backlog --dry-run on the agent board: one line per command, the homes named, nothing written" {
+  echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
+  sheet '' ''
+  mkdir -p "$PROJ/scratch/agent"
+  printf '%s\n' '# scratch agent board' '' '## Inbox' '' '## Tasks' '- [ ] other needs a logo <!-- id:sc-6 -->' >"$PROJ/scratch/agent/README.md"
+  answer '{"n": 1, "action": "rewrite", "row": "feat(brand): a logo #size/s", "project": "other"}'
+  before="$(cat "$PROJ/scratch/agent/README.md")"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_line --regexp '^would run: notes ptask scratch --agent --exact edit --was --text .*id:sc-6'
+  assert_line 'would run: notes ptask scratch --agent move --project other sc-6'
+  grep -q 'other (in scratch)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
+}
