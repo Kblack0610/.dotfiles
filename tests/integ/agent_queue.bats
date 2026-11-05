@@ -153,6 +153,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
+  "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
+  "$AQ" add --project game --slug clock --tags "at:09:00" "b"
+  # 16:00 the day before: the time-of-day tag has passed, the dated one holds.
+  AGENT_QUEUE_NOW=2026-11-04T16:00 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = clock ]
+  "$AQ" move clock done --status cancelled
+  AGENT_QUEUE_NOW=2026-11-04T16:00 run "$AQ" next --json
+  assert_failure
+  AGENT_QUEUE_NOW=2026-11-05T08:59 run "$AQ" next --json
+  assert_failure
+  AGENT_QUEUE_NOW=2026-11-05T09:00 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = tomorrow ]
+  run "$AQ" add --project game --tags "at:2026-13-01T09:00" "x"
+  assert_failure; assert_output --partial "at:YYYY-MM-DDTHH:MM"
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
