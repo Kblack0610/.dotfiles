@@ -33,6 +33,8 @@ pub struct Note {
     pub date: Option<String>,
     pub prev: Option<String>,
     pub next: Option<String>,
+    /// The base `notes put --base` takes to save over this read.
+    pub hash: String,
     pub markdown: String,
     pub links: Vec<Link>,
 }
@@ -84,8 +86,12 @@ pub struct View {
 /// Read the note `target` names (`daily`, `daily:YYYY-MM-DD`, or a wikilink target).
 pub fn read(runner: &dyn Runner, target: &str) -> Result<View, String> {
     let argv = ["notes", "show", "--json", "--", target].map(String::from);
-    let out = runner.run(&argv)?;
-    let note: Note = serde_json::from_str(&out).map_err(|e| format!("notes show --json: {e}"))?;
+    parse(&runner.run(&argv)?)
+}
+
+/// The view of one `notes show --json` object, the shape `notes put` prints too.
+pub fn parse(json: &str) -> Result<View, String> {
+    let note: Note = serde_json::from_str(json).map_err(|e| format!("notes show --json: {e}"))?;
     Ok(build(note))
 }
 
