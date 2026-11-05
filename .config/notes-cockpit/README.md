@@ -126,8 +126,7 @@ v1.14.0 while v1.13.0 runs -> finish v1.13.0 -> roll -> work the promoted v1.14.
 
 ### Agent notes and the proof gate (`agent/versions/<vX.Y.Z>.md`)
 
-Each version gets an agent note. The agents' half of a project lives under `agent/`, the same
-shape as the human's half one level down:
+A version's agent note is made the first time something goes into it: archived board rows, or what agents noted. The agents' half of a project lives under `agent/`, the same shape as the human's half one level down:
 
 ```
 myapp/
@@ -135,12 +134,12 @@ myapp/
   summary.md                     STATUS + AUTO feed (generated)
   versions/v1.12.0.md            the human's frozen waves
   agent/
-    versions/v1.13.0.md          what the agents did this version, and the evidence
+    versions/v1.13.0.md          what the agents noted this version
 ```
 
 `ai/<vX.Y.Z>.md` was the old location. `notes projects --migrate <project>` relocates it.
 
-`notes ptask <project> done` requires evidence and appends a row to it:
+`notes ptask <project> done` requires evidence, and the row itself carries it:
 
 - `--proof <ref>` - something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped into the
   line's marker comment beside any existing `vk:`/`ask:` id.

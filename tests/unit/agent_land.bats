@@ -284,3 +284,38 @@ EOF
   assert_failure 2
   assert_output --partial 'unknown flag: --sheet'
 }
+
+# The real notes against a sandbox vault, because the stubs on both sides of the join would agree
+# on a text key too. The CI rust job builds it and sets NOTES_BIN; a stale binary left in target/
+# must not fail the Stop tier, so nothing here looks for one.
+@test "end to end: a promoted row closes by id after its text was edited" {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  sheet="$HOME/.notes/lab/projects/current/game/README.md"
+  mkdir -p "${sheet%/*}" "$HOME/.config/notes"
+  : >"${sheet%/*}/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Wave' '' '- [ ] fix the crash on load #low' '- [ ] fix the crash on save' >"$sheet"
+  export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  unset NOTES_PROFILE
+  echo '{"trackers": {"game": {"code": "gm"}}}' >"$PROJECT_MAP_FILE"
+
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --raw '- [ ] fix the crash on load #low'
+  assert_success
+  assert_output --partial 'queued game: gm-1'
+  run agent-queue show gm-1 --json
+  assert_equal "$(jq -r '"\(.state) \(.priority) \(.from)"' <<<"$output")" 'queued low board:game:gm-1'
+  grep -qF -- '- [/] fix the crash on load #low' "$sheet" || fail "row not started"
+
+  agent-queue move gm-1 running
+  sed -i 's/fix the crash on load/stop the load crash/' "$sheet"
+  run "$LAND" 42 --item gm-1
+  assert_success
+  assert_output --partial 'board: closed "gm-1" with pr:42'
+  run agent-queue show gm-1 --json
+  assert_equal "$(jq -r .state <<<"$output")" done
+  run notes ptask game list
+  assert_output --partial 'fix the crash on save'
+  refute_output --partial 'stop the load crash'
+  grep -qE -- '- \[x\] stop the load crash .*id:gm-1' "$sheet" || fail "the edited row did not close: $(cat "$sheet")"
+}
