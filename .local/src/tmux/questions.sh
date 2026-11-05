@@ -8,7 +8,8 @@
 # Usage: questions.sh [verb]
 #
 # Verbs:
-#   rows              pending questions as TSV (id, row): this tmux session's first, then oldest
+#   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
+#                     then oldest
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
 #   --help, -h        this text
 #   (no verb)         open the panel
@@ -21,16 +22,20 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # The armed choice between a key and its enter: "<mode> <option> <id>". The picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
-QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-/ layout . esc close'
+QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "<slug>:<agent number>  <age>  <question>": short enough for the list column
-# beside the card (a third of the panel). The agent number is the tmux session's -agent-N.
+# A row is "<slug>:<agent number>  <age>  <question>" and, under the question, what the
+# session is (its registry title) and "ended" once it has: short enough for the list column
+# beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
+# item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
+# selected row still reads on fzf's selection bar.
 cmd_rows() {
-  local list here live epochs names name slugs=""
+  local list here live epochs names name slugs="" titles
   list="$("$QUESTIONS_ASK" list --all --pending)"
   [ -n "$list" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
   live="$("$QUESTIONS_ASK" live-sessions 2>/dev/null | tr '\n' ' ')"
+  titles="$(cut -f16 <<<"$list" | sort -u | "$QUESTIONS_ASK" titles 2>/dev/null)"
   # Every created stamp to epoch seconds in one date call; on a line date cannot read, the
   # ages go blank rather than shift onto the wrong rows.
   epochs="$(cut -f12 <<<"$list" | date -f - +%s 2>/dev/null)" || epochs=""
@@ -40,7 +45,7 @@ cmd_rows() {
   while IFS= read -r name; do slugs+="$name=$(project_slug "$name");"; done <<<"$names"
   paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
-      -v proj="$C_PROJ" -v dim="$C_DIM" -v off="$C_OFF" '
+      -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
       function age(e,   d) {
         if (e == "") return ""
         d = now - e; if (d < 0) d = 0
@@ -52,19 +57,32 @@ cmd_rows() {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
       }
+      # The first file is the registry titles, "<claude session>\t<title>".
+      FNR == NR { T[$1] = $2; next }
       {
         n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) }
         who = slug(n)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
         L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $19, $1)
-        R[NR] = sprintf(" %s%3s%s  %s%s", dim, age($19), off, $6,
-          ($16 != "" && index(live, " " $16 " ") == 0) ? "  " dim "gone" off : "")
+        A[NR] = age($19); Q[NR] = $6
+        S[NR] = ($16 != "" && index(live, " " $16 " ") == 0) ? "ended" : ""
+        if (T[$16] != "") S[NR] = S[NR] (S[NR] != "" ? " . " : "") faint T[$16] off
       }
-      # The name column is as wide as its longest name, up to 12.
-      END { if (w > 12) w = 12; for (i = 1; i <= NR; i++) printf "%s%s%-*.*s%s%s\n", L[i], proj, w, w, W[i], off, R[i] }' |
-    sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3-
+      # The name column is as wide as its longest name, up to 12. The second line starts under
+      # the question; \037 stands for its newline until the rows are sorted.
+      END {
+        if (w > 12) w = 12
+        for (i in W) {
+          printf "%s%s%-*.*s%s %s%3s%s  %s", L[i], bold, w, w, W[i], off, faint, A[i], off, Q[i]
+          if (S[i] != "") printf "\037%*s%s", w + 6, "", S[i]
+          print ""
+        }
+      }' <(printf '%s\n' "$titles") - |
+    sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
+# rows_count: how many questions cmd_rows printed (one NUL per row).
+rows_count() { tr -cd '\000' | wc -c | tr -d ' '; }
 
 # One handler for every answer key. It prints fzf actions; the state file carries an armed
 # choice to the enter that sends it, so a stray key never sends anything. Texts go inside
@@ -120,13 +138,13 @@ ask_load() {
 # after <message>: reload the rows and say what happened, with the count in the header.
 after() {
   local n
-  n="$(cmd_rows | grep -c . || true)"
+  n="$(cmd_rows | rows_count)"
   st_write ""
   printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting "$n")"
   if [ "$n" = 0 ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
-header_count() { printf 'change-header~%s~+' "$(waiting "$(cmd_rows | grep -c . || true)")"; }
+header_count() { printf 'change-header~%s~+' "$(waiting "$(cmd_rows | rows_count)")"; }
 waiting() { if [ "$1" = 0 ]; then echo "no questions waiting"; else echo "$1 waiting"; fi; }
 
 cmd_key() {
@@ -226,24 +244,27 @@ cmd_pick() {
   local me rows k binds=()
   me="$(printf '%q' "$SELF")"
   QUESTIONS_STATE="$(mktemp)"
+  rows="$(mktemp)"
   export QUESTIONS_STATE
-  trap 'rm -f "$QUESTIONS_STATE"' EXIT
-  rows="$(cmd_rows)"
+  trap 'rm -f "$QUESTIONS_STATE" "$rows"' EXIT
+  cmd_rows >"$rows"
   for k in 1 2 3 4 5 6 7 8 9 d t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
 
   # --no-input --disabled: no search box (a handful of rows), which frees the digit keys;
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row
-  # and reads in full in the card.
-  printf '%s' "$rows" | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" \
-    --no-wrap --no-input --disabled --with-nth=2.. \
+  # and reads in full in the card. --read0: a row is two lines (question, then session).
+  # pgup/pgdn scroll the card, a page at a time; the list is a handful of rows.
+  fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" <"$rows" \
+    --read0 --no-wrap --no-input --disabled --with-nth=2.. \
     --border-label=' questions ' --border-label-pos=3 \
-    --header="$(waiting "$(grep -c . <<<"$rows")")" \
+    --header="$(waiting "$(rows_count <"$rows")")" \
     --footer="$QUESTIONS_KEYS" \
     --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $(printf '%q' "$QUESTIONS_ASK") card {1}" \
     "${binds[@]}" \
     --bind="enter:transform($me key enter {1} {q})" \
     --bind="esc:transform($me key esc {1})" \
     --bind="focus:transform($me key focus {1})" \
+    --bind="page-up:preview-page-up,page-down:preview-page-down" \
     --bind="start,resize:transform($me key fit)" >/dev/null
   return 0
 }
