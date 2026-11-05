@@ -49,6 +49,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called 'finish stale'
 }
 
+@test "a row refused as an open twin (exit 3) counts as filed; any other refusal does not" {
+  plan twin '1 day ago 1 hour ago' "$OPEN"
+  plan broken '1 day ago 1 hour ago' "$OPEN"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = add ] || exit 0; case "$*" in *twin*) exit 3;; *) exit 1;; esac'
+  run "$SWEEP" run --date 2026-10-30
+  assert_success
+  run grep -qxF twin "$ASK_SWEEP_DIR/plans-filed"
+  assert_success
+  run grep -qxF broken "$ASK_SWEEP_DIR/plans-filed"
+  assert_failure
+}
+
 @test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
   plan recent '1 hour ago' "$OPEN"
