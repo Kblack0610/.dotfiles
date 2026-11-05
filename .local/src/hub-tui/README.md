@@ -19,6 +19,8 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 
 ## Tabs
 
+A new tab or section follows `../docs/dashboards.md` (the dashboard standards, and the layout both hub surfaces are moving to).
+
 | Tab | What it shows | Grafana (`o`) |
 |---|---|---|
 | 1 Overview | The agent queue's counts (waiting for you, running, up next with how many are held, done today), then the header (overall status, CI busy/slots, waiting), POOLS, RUNNING (longest first, amber past an hour), the queue grouped by pool, repo, PR and branch (8 groups, then a "+N more" hint), DOWN (offline or missing runners, stuck runs, GitHub API failing), the finished headline and what is red now | `kb-command-center` |
