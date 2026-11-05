@@ -28,6 +28,12 @@
 # the coordinator exit 2 as well, and Claude Code would then read the coordinator's stderr
 # as the reason, which by that point is full of unrelated check chatter.
 #
+# A session that opened or merged a PR is held to more: the PR is a unit of work, so only a
+# queue item satisfies it (`agent-queue add|claim`, `agent-land`, or $AGENT_QUEUE_ITEM); a
+# Focus item in progress or a board write does not, and it has its own once-per-session nudge.
+# Why: 2026-11-05 only 26% of merged PRs since 11-04 had an item, so the work ledger could not
+# answer what was done.
+#
 # Escape hatch: CLAUDE_SKIP_FOCUS_GATE=1.
 
 set -uo pipefail
@@ -154,6 +160,11 @@ else
   fi
 fi
 [ "$DID_WORK" -eq 1 ] || { save_state; exit 0; }
+# Did this session open or merge a PR? Then only a queue item tracks it (header).
+PR_WORK=0
+if [ "$SESSION_MODE" -eq 1 ] && printf '%s\n' "$CALLS" | grep -qE '^BASH .*\bgh +pr +(create|merge)\b'; then
+  PR_WORK=1 MARKER="$MARKER.pr"
+fi
 
 # --- 2. is the work an agent-queue item? ---
 # The global rule tracks an agent's own task on its agent-queue item, and fleet-dispatch
@@ -166,7 +177,7 @@ fi
 DAILY_NOTE=$(focus_daily_note)
 FOCUS_BODY=$(focus_body "$DAILY_NOTE")
 WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
-[ -n "$WIP" ] && { save_state; exit 0; }
+[ -n "$WIP" ] && [ "$PR_WORK" -eq 0 ] && { save_state; exit 0; }
 
 # --- 3. was the work tracked since the last run? ---
 # `notes` logs every command as `[<iso8601>] [INFO] <cmd>: <msg>` (logging.rs). The most
@@ -188,7 +199,11 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # In session mode the question is asked of this session's own commands instead, so neither
 # a concurrent session's Stop nor its writes can change the answer. Read-only verbs
 # (`notes ptask x list`, `notes today`) do not count.
-if [ "$SESSION_MODE" -eq 1 ]; then
+if [ "$PR_WORK" -eq 1 ]; then
+  if printf '%s\n' "$CALLS" | grep -qE '^BASH .*(\bagent-queue +(add|claim)\b|\bagent-land\b)'; then
+    save_state; exit 0
+  fi
+elif [ "$SESSION_MODE" -eq 1 ]; then
   if printf '%s\n' "$CALLS" \
      | grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|move|set)\b|\bagent-land\b)'; then
     save_state; exit 0
@@ -215,6 +230,19 @@ fi
 # --- block ---
 OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
+
+if [ "$PR_WORK" -eq 1 ]; then
+  REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
+  agent-queue add --running --project <project> \"<type(area): title>\"   the work this PR is part of
+  agent-queue claim <slug>                                                   when an item for it already exists
+  agent-land <N> --item <slug>                                               merges and closes it
+
+A board row or a Focus item in progress does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
+  mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
+  save_state
+  jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
+  exit 0
+fi
 
 REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
 
