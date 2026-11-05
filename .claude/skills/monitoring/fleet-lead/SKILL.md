@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, coordination, shepherd, binks]
-  reviewed: 2026-11-04
+  reviewed: 2026-11-05
 ---
 
 # fleet-lead
@@ -42,7 +42,7 @@ One pass. It runs two ways, and neither waits for the other:
    | `finding`, `infra:`, other `watch:` | this skill, step 2 and Reporting |
 
    On HOLD, or idle under 5% or over 60% in that sample, run `fleet-pace`'s pace check.
-2. **Findings**, from `fleet-bench findings --json` or a `finding` due line, once each, skipping report class and any seen on one sample (`epoch` equal to `episode`). Quote a finding's evidence when naming a limit, or say there is none; a finding never authorizes messaging a WORKING session. Class `human`: add it to this pass's page with its conclusion and cost. Class `shepherd`: act if a standing order covers it (slots and runner counts today, with a before and after from `fleet-bench throughput`), otherwise log it. Then run the ledger call the due line prints, `fleet-sessions escalate finding-<rule>-<scope> "<fact> <class>"` with `/` in the id written `-`, so a promotion to human is news.
+2. **Findings**, from `fleet-bench findings --json` or a `finding` due line, once each, skipping report class and any seen on one sample (`epoch` equal to `episode`). Quote a finding's evidence when naming a limit, or say there is none; a finding never authorizes messaging a WORKING session. Class `human`: add it to this pass's page with its conclusion and cost. Class `shepherd`: act if a standing order covers it (slots and runner counts today, with a before and after from `fleet-bench throughput`), otherwise log it. A starved pool held by one sweep is yours to clear: when a `workflow_dispatch` run on a `sweep/*` branch holds most of the pool's busy slots and most of its finished jobs failed, `gh run cancel <id> -R <repo>`, log it, and tell the session that started it; a sweep reruns, a held pool costs hours (2026-11-05: 7 of 8 frame-sweep shards failed over 7h on the razer slots while every pass paged instead). Read the run's jobs from `gh api repos/<repo>/actions/runs/<id>/jobs`, since a run GitHub reports as `queued` can hold running jobs. Then run the ledger call the due line prints, `fleet-sessions escalate finding-<rule>-<scope> "<fact> <class>"` with `/` in the id written `-`, so a promotion to human is news.
 3. **Every due line gets an answer:** moved (a message plus its `mark`, or an `escalate`), or `fleet-shepherd skip "<line>" "<why>"` when you leave it on purpose (a hold you keep, a session the human is already on). `fleet-shepherd check` leads with `unhandled: <line>` for each line the last pass was given and did neither for. The skips and their reasons are the record of what Binks chose not to do.
 4. Report, then page (Reporting). Lead with the NIGHTLY rows, then findings, then the pace line: load, idle, and what you did about it.
 
