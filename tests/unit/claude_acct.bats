@@ -13,7 +13,9 @@ setup() {
   sandbox_init basic
   ACCT="$REPO_ROOT/.local/bin/claude-acct"
   ALT="$HOME/.claude-alt"
-  mkdir -p "$HOME/.claude" "$ALT" "$XDG_CACHE_HOME/claude-acct"
+  mkdir -p "$HOME/.claude" "$ALT" "$XDG_CACHE_HOME/claude-acct" "$SANDBOX/proc"
+  # The host's own claude processes count as live sessions, which now move the rank.
+  export CLAUDE_ACCT_PROC="$SANDBOX/proc"
   export CLAUDE_ACCT_CONFIG="$SANDBOX/accounts"
   printf 'main -\nalt %s\n' "$ALT" > "$CLAUDE_ACCT_CONFIG"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
@@ -428,14 +430,15 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   week main 30 84
   week alt 30 84
   local p
-  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT"; do
+  # main last too: its line once came out empty and $(...) dropped it
+  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT" 5:claude:""; do
     IFS=: read -r pid comm dir <<<"$p"
     mkdir -p "$SANDBOX/proc/$pid"
     echo "$comm" > "$SANDBOX/proc/$pid/comm"
     [ -z "$dir" ] && : > "$SANDBOX/proc/$pid/environ" || printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$SANDBOX/proc/$pid/environ"
   done
   run --separate-stderr "$ACCT" status --json
-  [ "$(field main .live <<<"$output")" = 2 ]
+  [ "$(field main .live <<<"$output")" = 3 ]
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
@@ -492,6 +495,110 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output "$ALT"
+}
+
+# live <dir> <n> -- n claude processes running on that account (empty dir = main)
+live() {
+  local i pid
+  for ((i = 0; i < $2; i++)); do
+    pid=$((40000 + $(ls "$CLAUDE_ACCT_PROC" | wc -l)))
+    mkdir -p "$CLAUDE_ACCT_PROC/$pid"
+    echo claude > "$CLAUDE_ACCT_PROC/$pid/comm"
+    if [ -n "$1" ]; then printf 'CLAUDE_CONFIG_DIR=%s\0' "$1"; else : ; fi > "$CLAUDE_ACCT_PROC/$pid/environ"
+  done
+}
+
+@test "the live sessions an account already carries count against what it has left" {
+  # 2026-11-04: alt at 95% resetting in 5h carried 12 live and still won on its reset alone,
+  # while main sat idle at 89% with 27h to go and was on course to lose its 11% at the reset.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.07
+  week main 89 27   # carries 0.41 an hour
+  week alt 95 5     # carries 1 an hour
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  live "$ALT" 12    # burns 0.84 of it: 0.16 spare against main's 0.41
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt '.burn * 100 | round' <<<"$output")" = 84 ]
+  [ "$(field main .burn <<<"$output")" = 0 ]
+}
+
+@test "every account overcommitted: the one with less burn per point left takes the next start" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50   # carries 1 an hour
+  week alt 50 50
+  live "" 20        # twice what it carries
+  live "$ALT" 15    # 1.5 times
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  live "$ALT" 10
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+}
+
+@test "every account overcommitted: the next start goes where it keeps running longest" {
+  # 2026-11-05: alt fresh at 19% with 26 live caps in 27h, bnb at 89% with 9 live caps in 10h.
+  # Burn per spare point an hour sent cl to bnb, which its own sessions empty first.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.118
+  week main 89 30
+  week alt 19 150
+  live "" 9
+  live "$ALT" 26
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: under pace, the account with spare room after its live sessions wins" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 10 150  # sooner reset elsewhere would win with nothing live
+  week alt 20 30
+  live "$ALT" 30    # 3 an hour against 2.7 it can carry
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: an account under pace that its live sessions already overcommit has none" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # both under pace, 1 point an hour to spare
+  live "$ALT" 15
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+  live "" 12
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'after its live sessions'* ]]
+  # a hand start is told, never refused
+  run --separate-stderr "$ACCT" pick
+  assert_success
+}
+
+@test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in *live_sessions*) echo '{"data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+STUB
+  export CC_PROM_URL=http://prom.test
+  # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
+  run bash -c "source '$ACCT'; session_rate nospend"
+  assert_output 0.07
+  [ ! -e "$XDG_CACHE_HOME/claude-acct/session_rate" ]
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.25
+  touch -d '-1 day' "$XDG_CACHE_HOME/claude-acct/session_rate"
+  run bash -c "source '$ACCT'; session_rate nospend"
+  assert_output 0.25
+  touch "$XDG_CACHE_HOME/claude-acct/session_rate"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.25
+  rm "$XDG_CACHE_HOME/claude-acct/session_rate"
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.07
 }
 
 @test "room: today's numbers refuse main and take alt" {
