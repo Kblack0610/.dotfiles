@@ -218,3 +218,63 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
   run "$AU" wakes --since soon
   assert_failure 2
 }
+
+# -- burn: where a window's tokens went (usage-cleanup) --
+#
+# The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
+# two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
+# m4 follows a compaction), one subagent call, one headless call, a registry with a superseded
+# row, outcomes naming PR o/r#1 twice, and a dream log with one real and one dry run.
+
+burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
+
+burn() {
+  burn_home
+  TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c "$1"
+}
+
+@test "burn: a streamed message is one call, and its wait is counted with its context once" {
+  assert_equal "$(burn '.by_kind.worktree | [.turns, .output, .cache_write]')" '[4,130,122000]'
+  assert_equal "$(burn '.waits | [.calls, .context]')" '[1,50010]'
+}
+
+@test "burn: summing records instead of messages would give 230 output - assert it does not" {
+  refute [ "$(burn '.by_kind.worktree.output')" = '230' ]
+}
+
+@test "burn: kinds split worktree, subagent and headless threads" {
+  assert_equal "$(burn '.by_kind | keys')" '["headless","subagent","worktree"]'
+}
+
+@test "burn: cache writes are attributed to first turn, idle gap, compaction or flow" {
+  assert_equal "$(burn '.cache_write_by_cause | map_values(.cache_write)')" \
+    '{"first-turn":54000,"idle-over-1h":51000,"after-compaction":20000,"in-flow":4000}'
+  assert_equal "$(burn '.idle_wakes_by_trigger')" '{"peer-message":{"wakes":1,"cache_write":51000}}'
+  assert_equal "$(burn '.compactions')" '1'
+}
+
+@test "burn: the registry keeps a session's last row and splits by account" {
+  assert_equal "$(burn '[.registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [5, 4, 1]')" 'true'
+}
+
+@test "burn: a PR merged in the window counts once however many sessions name it" {
+  assert_equal "$(burn '[.merged_prs, .per_merged_pr.cost_usd]')" '[2,2.5]'
+}
+
+@test "burn: dream runs count real runs only, by night" {
+  assert_equal "$(burn '.dream_runs_by_night')" '{"2026-01-01":1}'
+}
+
+@test "burn: the table form prints every section" {
+  burn_home
+  run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00
+  assert_success
+  assert_output --partial 'by account (registry)'
+  assert_output --partial 'wakes after an idle gap over 1h, by trigger'
+  assert_output --partial 'dream runs by night: 2026-01-01 1'
+}
+
+@test "burn: a bad --before is refused" {
+  run "$AU" burn --before soon
+  assert_failure 2
+}

@@ -289,26 +289,6 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
 }
 
-@test "a pass with only its own prompt is not talking at any hour: no second entry is not midnight" {
-  # A lease over a day always holds today's midnight, so this fails at every hour without the guard;
-  # the 30-minute default failed only for runs just after 00:00, on 2026-11-05 at 00:04Z.
-  export FLEET_SHEPHERD_LEASE_MIN=2000
-  doc "[$(row a DONE false false)]"
-  "$SH" run
-  local id; id="$(pass_id)"
-  live "$id" idle
-  said "$id" human "$(date +%s)"
-  run "$SH" run
-  refute_output --partial 'is talking'
-  # Negative control: a second human entry inside the lease still stands it down.
-  id="$(pass_id)"
-  live "$id" idle
-  said "$id" human "$(date +%s)"
-  said "$id" human "$(date +%s)"
-  run "$SH" run
-  assert_output --partial 'is talking'
-}
-
 @test "the human typing to a pass stands the runner down; the pass's own first prompt does not" {
   doc "[$(row a DONE false false)]"
   "$SH" run
@@ -330,6 +310,24 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_output --partial "the human is talking to pass ${id:0:8}"
   assert_equal "$(starts)" 2
   assert_equal "$(outcome)" NOOP
+}
+
+@test "a pass whose only human turn is its own prompt is not the human, even just after midnight" {
+  # `date -d ""` is midnight today, so an empty last-human timestamp once read as the human
+  # talking for the first lease window after local midnight. Pin local time to 00:01.
+  local s=$(( $(date -u +%s) % 86400 - 60 ))
+  (( s >= 0 )) || s=$(( s + 86400 ))
+  export TZ="TST+$(( s / 3600 )):$(( s % 3600 / 60 )):$(( s % 60 ))"
+  [ "$(date +%H:%M)" = 00:01 ] || fail "TZ pin missed: $(date)"
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  aged 5
+  live "$id" idle
+  said "$id" assistant ExitPlanMode
+  run "$SH" run
+  refute_output --partial 'the human is talking'
+  assert_equal "$(starts)" 2
 }
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind" {
