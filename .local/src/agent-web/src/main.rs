@@ -927,11 +927,14 @@ async fn log_day(Query(q): Query<LogQuery>) -> ApiResult<Json<serde_json::Value>
     if q.date.as_deref().is_some_and(|d| !boards::is_day(d)) {
         return Err(bad(StatusCode::BAD_REQUEST, "date is YYYY-MM-DD"));
     }
-    tokio::task::spawn_blocking(move || boards::record(&boards::daylog_dir(), q.date.as_deref()))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
+    tokio::task::spawn_blocking(move || {
+        boards::record(&boards::daylog_dir(), q.date.as_deref())
+            .map(|r| boards::log_view(r, &chrono::Local))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
 }
 
 #[derive(Deserialize)]

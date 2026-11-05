@@ -6,7 +6,12 @@
 const LOG_CHART_DAYS = 30;
 const LOG_HISTORY_DAYS = 120;
 const LOG_OPEN_MERGED = 25;
-const lst = { day: null, rec: null, hist: [], err: null };
+// A project group shows this many rows and folds the rest (hub_core::home::SHOWN, as Home does).
+const LOG_GROUP_SHOWN = 8;
+// The legend key that stands for every project past the colour slots.
+const LOG_OTHER = "\u0000other";
+// proj: the project the legend filters the lists to (LOG_OTHER for the Other group), or null.
+const lst = { day: null, rec: null, hist: [], err: null, proj: null, open: {} };
 
 const refreshLog = coalesce(async () => {
   try {
@@ -21,7 +26,8 @@ const refreshLog = coalesce(async () => {
 
 const shownDay = () => (lst.rec && lst.rec.date) || lst.day;
 // The shown day stays up until the next one arrives, so stepping never flashes or jumps.
-function goDay(d) { lst.day = d; refreshLog(); }
+// A new day drops the legend pick: its projects are not the last day's.
+function goDay(d) { lst.day = d; lst.proj = null; refreshLog(); }
 function stepDay(n) {
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(shownDay());
   const j = i + n;
@@ -63,10 +69,34 @@ function historyCharts(sel) {
   </div>`;
 }
 
+// Projects keep their colour for the day: the top slots go to the busiest (rec.projects is
+// hub_core::boards::project_order, merges first), the rest share Other.
+function projColors(rec) {
+  const top = (rec.projects || []).slice(0, SLOTS.length);
+  return { top, of: (p) => (top.includes(p) ? SLOTS[top.indexOf(p)] : OTHER), key: (p) => (top.includes(p) ? p : LOG_OTHER) };
+}
+const projLabel = (k) => (k === LOG_OTHER ? "Other" : k);
+
+// Merges per local hour, one stacked column per hour coloured by project, from the grid
+// hub_core::boards::merges_by_hour serves as rec.hours. The legend filters the lists below.
 function byHour(rec) {
-  const n = Array(24).fill(0);
-  for (const m of rec.merged || []) n[new Date(m.merged_at).getHours()]++;
-  return columns(n.map((v, h) => ({ key: "h" + h, label: h % 3 === 0 ? String(h).padStart(2, "0") : "", tip: `${String(h).padStart(2, "0")}:00 ${v} merged`, segs: [{ v, color: "var(--c1)" }] })), { height: 110 });
+  const g = rec.hours || { hours: [], rows: [] }, pc = projColors(rec);
+  const hh = (h) => String(h).padStart(2, "0");
+  const cols = Array.from({ length: 24 }, (_, h) => {
+    const i = g.hours.indexOf(h);
+    const at = g.rows.map((r) => [r.project, i < 0 ? 0 : r.counts[i]]).filter(([, n]) => n);
+    const total = at.reduce((a, [, n]) => a + n, 0);
+    const other = at.filter(([p]) => !pc.top.includes(p)).reduce((a, [, n]) => a + n, 0);
+    return {
+      key: "h" + h, label: h % 3 === 0 ? hh(h) : "",
+      tip: `${hh(h)}:00 ${total} merged` + at.map(([p, n]) => `\n${p} ${n}`).join(""),
+      segs: [...pc.top.map((p) => ({ v: at.find(([q]) => q === p)?.[1] || 0, color: pc.of(p) })), { v: other, color: OTHER }],
+    };
+  });
+  const merged = new Set(g.rows.map((r) => r.project));
+  const keys = [...pc.top.filter((p) => merged.has(p)), ...(g.rows.some((r) => !pc.top.includes(r.project)) ? [LOG_OTHER] : [])];
+  const leg = keys.map((k) => `<button class="lg${lst.proj === k ? " on" : ""}" data-proj="${esc(k)}" title="show only ${esc(projLabel(k))}"><i style="background:${k === LOG_OTHER ? OTHER : pc.of(k)}"></i>${esc(projLabel(k))}</button>`).join("");
+  return { chart: columns(cols, { height: 110 }), legend: leg ? `<span class="legend">${leg}</span>` : "" };
 }
 
 function usageTable(rec) {
@@ -87,27 +117,40 @@ function bySession(repo, by) {
   return a ? `<a class="by" href="#" data-target="${esc(a.target)}">${esc(by)}</a>` : `<span class="by">${esc(by)}</span>`;
 }
 
+// PRs by project, in rec.projects order, cut to the legend's pick: [[project, prs]].
+function projGroups(rec, prs) {
+  const pc = projColors(rec), by = new Map((rec.projects || []).map((p) => [p, []]));
+  for (const m of prs) { if (!by.has(m.project)) by.set(m.project, []); by.get(m.project).push(m); }
+  return [...by].filter(([p, l]) => l.length && (!lst.proj || pc.key(p) === lst.proj));
+}
+// A PR names its number alone when its repo is the project ("#722"), else "repo#722".
+const prRef = (proj, m) => ((m.repo || "").replace(/^\./, "") === proj ? "" : esc(m.repo)) + "#" + m.number;
+// One project group: its first LOG_GROUP_SHOWN rows, the rest under a "+N more" fold. A legend
+// pick keys its groups apart, so the picked group opens even on a day that starts them folded.
+function projPanel(rec, kind, proj, rows, open) {
+  const k = `${kind}:${proj}${lst.proj ? ":only" : ""}`, isOpen = k in lst.open ? lst.open[k] : open || !!lst.proj;
+  const more = rows.length > LOG_GROUP_SHOWN ? cfold(k + "+", `+${rows.length - LOG_GROUP_SHOWN} more`, rows.slice(LOG_GROUP_SHOWN).join(""), lst.open) : "";
+  return `<details class="panel area" data-k="${esc(k)}"${isOpen ? " open" : ""}><summary><i class="sw" style="background:${projColors(rec).of(proj)}"></i>${esc(proj)} <span class="muted">${rows.length}</span></summary>${rows.slice(0, LOG_GROUP_SHOWN).join("")}${more}</details>`;
+}
+const prLink = (proj, m) => `<a href="${esc(m.url)}" target="_blank" rel="noopener">${prRef(proj, m)}</a>`;
+// The area and group day-log filed the PR under, kept as a short label on its row.
+const areaLabel = (m) => { const a = [m.area, m.group || m.scope].filter(Boolean).join(" / "); return a ? `<span class="lbl" title="${esc(a)}">${esc(a)}</span>` : ""; };
+
 function mergedList(rec) {
-  const areas = {};
-  for (const m of rec.merged || []) ((areas[m.area || "other"] ||= {})[m.group || m.scope || "other"] ||= []).push(m);
-  const ac = areaColors(lst.hist.slice(-LOG_CHART_DAYS));
-  // A busy day is a few hundred rows; then each area starts folded to its count.
-  const open = (rec.merged || []).length <= LOG_OPEN_MERGED ? " open" : "";
-  return Object.entries(areas).sort((a, b) => Object.values(b[1]).flat().length - Object.values(a[1]).flat().length).map(([area, groups]) => {
-    const n = Object.values(groups).flat().length;
-    return `<details class="panel area"${open}><summary><i class="sw" style="background:${ac.of(area)}"></i>${esc(area)} <span class="muted">${n}</span></summary>${
-      Object.entries(groups).map(([g, prs]) => `<div class="grp">${esc(g)}</div>${prs.slice().reverse().map((m) =>
-        `<div class="pr"><span class="ft">${hm(m.merged_at)}</span><a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.repo)}#${m.number}</a><span class="pt">${esc(m.title)}</span>${bySession(m.repo, m.by)}</div>`).join("")}`).join("")}</details>`;
-  }).join("");
+  // A busy day is a few hundred rows; then each project starts folded to its count.
+  const open = (rec.merged || []).length <= LOG_OPEN_MERGED;
+  const newest = (rec.merged || []).slice().sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)));
+  return projGroups(rec, newest).map(([proj, prs]) => projPanel(rec, "m", proj, prs.map((m) =>
+    `<div class="pr"><span class="ft">${hm(m.merged_at)}</span>${prLink(proj, m)}${areaLabel(m)}<span class="pt">${esc(m.title)}</span>${bySession(m.repo, m.by)}</div>`), open)).join("");
 }
 
 function openList(rec) {
   const now = Date.now();
-  return (rec.open || []).map((p) => {
+  return projGroups(rec, rec.open || []).map(([proj, prs]) => projPanel(rec, "o", proj, prs.map((p) => {
     const h = Math.round((now - new Date(p.created_at).getTime()) / 3600e3);
     const ci = p.draft ? '<b class="ci">draft</b>' : p.ci ? `<b class="ci ${esc(String(p.ci).toLowerCase())}">${esc(p.ci)}</b>` : "";
-    return `<div class="pr"><span class="ft">${h >= 48 ? Math.floor(h / 24) + "d" : h + "h"}</span><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a><span class="pt">${esc(p.title)}</span>${ci}${bySession(p.repo, p.by)}</div>`;
-  }).join("") || '<div class="empty">Nothing open.</div>';
+    return `<div class="pr"><span class="ft">${h >= 48 ? Math.floor(h / 24) + "d" : h + "h"}</span>${prLink(proj, p)}<span class="pt">${esc(p.title)}</span>${ci}${bySession(p.repo, p.by)}</div>`;
+  }), true)).join("");
 }
 
 function waiting(rec) {
@@ -148,14 +191,17 @@ function renderLog() {
     tile("SPEND", usd(total.cost_usd), "var(--c2)", `${kfmt(total.tokens)} tokens`)}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
   html += historyCharts(day);
-  html += `<div class="g2"><div class="panel"><h3>Merged by hour</h3>${byHour(rec)}</div><div class="panel"><h3>Spend by project</h3>${usageTable(rec)}</div></div>`;
+  const hours = byHour(rec);
+  html += `<div class="g2"><div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div><div class="panel"><h3>Spend by project</h3>${usageTable(rec)}</div></div>`;
   html += waiting(rec);
-  html += `<h2 class="sec">Merged <span class="muted">${(rec.merged || []).length}</span></h2>${mergedList(rec) || '<div class="empty">Nothing merged.</div>'}`;
-  html += `<h2 class="sec">Open PRs <span class="muted">${(rec.open || []).length}</span></h2><div class="panel">${openList(rec)}</div>`;
+  // The legend's pick narrows both lists to one project's group; the head says so.
+  const only = lst.proj ? ` <span class="muted only">${esc(projLabel(lst.proj))} only, <a href="#" data-proj="${esc(lst.proj)}">show all</a></span>` : "";
+  html += `<h2 class="sec">Merged <span class="muted">${(rec.merged || []).length}</span>${only}</h2>${mergedList(rec) || '<div class="empty">Nothing merged.</div>'}`;
+  html += `<h2 class="sec">Open PRs <span class="muted">${(rec.open || []).length}</span>${only}</h2>${openList(rec) || '<div class="panel"><div class="empty">Nothing open.</div></div>'}`;
   html += benchTable(rec);
   const tl = rec.timeline || [];
   if (tl.length) html += `<details class="sec-d"><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
-  paint(el, html);
+  paint(el, html, lst.open);
 }
 
 $("log").addEventListener("click", (e) => {
@@ -163,6 +209,8 @@ $("log").addEventListener("click", (e) => {
   const step = t.closest("[data-step]");
   if (step) { stepDay(Number(step.dataset.step)); return; }
   if (t.closest("[data-today]")) { goDay(null); return; }
+  const proj = t.closest("[data-proj]");
+  if (proj) { e.preventDefault(); lst.proj = lst.proj === proj.dataset.proj ? null : proj.dataset.proj; renderLog(); return; }
   const col = t.closest(".cc[data-key]");
   if (col && /^\d{4}-/.test(col.dataset.key)) { const ds = lst.hist.map((r) => r.date); goDay(col.dataset.key === ds[ds.length - 1] ? null : col.dataset.key); return; }
   const by = t.closest("[data-target]");

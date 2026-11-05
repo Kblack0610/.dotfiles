@@ -66,3 +66,9 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 |---|---|---|
 | `overview` (TUI, `hub --tab overview`) | Home | #929 |
 | `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |
+
+### Log
+
+- Merges by hour are per project, on both surfaces: one row (TUI) or one stacked colour (web) per project, the busiest first, with the hourly total last. Both draw `hub_core::boards::merges_by_hour` over the server's local hours; the web gets it in `/api/log` (`hours`, `projects`).
+- Merged and Open PRs are grouped by project in the same order, each group with its count, its first 8 rows and the rest under "+N more". A PR's area and group stay as a short label on its row. Clicking a project in the web legend narrows both lists to that group.
+- A PR's project is its repo's name in `project-map.json` (`project_of_repos_json` in `project-name.sh`, the same registry the Spend by project names come from); a record written before day-log stamped `project` falls back to the repo name without its leading dot.

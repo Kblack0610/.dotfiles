@@ -131,6 +131,18 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
     '3	hovercraft	hovercraft	Games' '2	story	Raiders	Games' '1	raiders	Raiders	Games')"
 }
 
+@test "a PR carries the project its repo is registered as, an alias, or its name without the dot" {
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  echo '{"paths":{"/x/dev/game":"raiders-game"},"aliases":{"tool_attempt":"tools"}}' > "$PROJECT_MAP_FILE"
+  { pr game 1 'feat: a' 2026-10-28T20:00:00Z; pr tool_attempt 2 'feat: b' 2026-10-28T19:00:00Z
+    pr .cfg 3 'feat: c' 2026-10-28T18:00:00Z; } | merged
+  pr .cfg 4 'feat: d' 2026-10-28T18:00:00Z | jq -s 'map(. + {createdAt: .closedAt, updatedAt: .closedAt, isDraft: false})' > "$GHD/open"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -r '(.merged[] | [.number, .project] | @tsv), (.open[] | [.number, .project] | @tsv)' 2026-10-28
+  assert_output "$(printf '%s\n' '3	cfg' '2	tools' '1	raiders-game' '4	cfg')"
+}
+
 @test "a PR is credited to the live session whose worktree is that repo, not a same-number PR elsewhere" {
   { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'feat: y' 2026-10-28T20:00:00Z; } | merged
   echo '{"sessions":[{"target":"lab/game-agent-3:1","pr":"7","cwd":"/w/game-agent-3"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"

@@ -69,7 +69,7 @@ systemctl --user enable --now agent-web   # unit lives in the private overlay
 ```sh
 cargo test && cargo clippy --all-targets -- -D warnings
 node --test ../../../tests/agent-web/md.test.mjs   # the markdown renderer; bats tests/unit/agent_web_md.bats runs the same
-node --test ../../../tests/agent-web/{queue,waiting,home}.test.mjs   # the cards and Home; bats tests/unit/agent_web_queue.bats runs them
+node --test ../../../tests/agent-web/{queue,waiting,home,log}.test.mjs   # the cards, Home and the Log; bats tests/unit/agent_web_queue.bats runs them
 ```
 
 To look at a change without touching the live service, run a second instance against a throwaway config dir with a hand-made session, then open `http://127.0.0.1:8799/#watch` with the cookie `agent_web=dev`:
