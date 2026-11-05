@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Transitions sent to the Watch tab: about a day of a busy fleet, sync lines included.
+/// Transitions sent to the Sessions tab: about a day of a busy fleet, sync lines included.
 pub const WATCH_LOG_LINES: usize = 1500;
 
 fn home() -> PathBuf {

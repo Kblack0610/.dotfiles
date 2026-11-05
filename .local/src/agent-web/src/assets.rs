@@ -198,8 +198,8 @@ mod tests {
             );
         }
         for (old, new) in hub_core::layout::RETIRED {
-            // overview was only ever a TUI tab; the web never had it.
-            if *old != "overview" {
+            // overview and forecast were only ever TUI tabs; the web never had them.
+            if !["overview", "forecast"].contains(old) {
                 assert!(
                     retired.chunks(2).any(|p| p[0] == *old && p[1] == *new),
                     "{old} missing"

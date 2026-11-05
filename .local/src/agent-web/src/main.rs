@@ -304,7 +304,7 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines, the pass running now and the last
+    // fleet-shepherd's ledger: the Sessions tab's shepherd due lines, the pass running now and the last
     // one scored. Dotfiles have no extension, so this comes before the `ext` match.
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());

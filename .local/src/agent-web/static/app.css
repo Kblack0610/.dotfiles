@@ -152,16 +152,24 @@ h3.qday { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercas
 .qadd select, .qitem select, .bfilter select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
 .board { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
-/* Shepherd tab: kept rundowns beside the chat; stacked on a phone */
-.shep { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.shep-chat { position: sticky; top: 0; }
-#sh-chat { max-height: 60vh; overflow-y: auto; }
-#sh-text { width: 100%; box-sizing: border-box; min-height: 70px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+/* Sessions (static/watch.js, shepherd.js): the overview row, fleet-state rows with no session here
+   (they fold open to their card), the open session's folded facts, the overview's folded sections. */
+.row.ov .s { font-size: 12px; font-family: var(--mono); }
+.ghost > summary { list-style: none; opacity: .75; }
+.ghost > summary::-webkit-details-marker { display: none; }
+.ghost[open] > summary { opacity: 1; }
+.ghost > .wcard { margin: 0 12px 8px; }
+#facts { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
+#facts summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+#facts .wcard { margin-top: 6px; }
+.ovsec > summary { cursor: pointer; list-style-position: inside; }
+.ovsec > summary h2.sec { display: inline-flex; gap: 10px; align-items: baseline; margin: 14px 0 6px; }
+.ovbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; }
+h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .row-end { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 6px; }
 .row-end .err { flex: 1; }
 .rd summary { cursor: pointer; }
 .rd-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
-@media (max-width: 900px) { .shep { grid-template-columns: 1fr; } .shep-chat { position: static; } }
 .board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
 /* The Actions tab (static/actions.js): filter chips, then one line per action. */
@@ -212,7 +220,6 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .wcard { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .wh { display: flex; gap: 8px; align-items: center; }
 .wt { font: 600 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.wcard .open { color: var(--accent); cursor: pointer; font-size: 12px; }
 .wm { font: 12px var(--mono); color: var(--muted); margin: 4px 0; overflow-wrap: anywhere; }
 .wf { margin-bottom: 6px; }
 .wk { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); }
