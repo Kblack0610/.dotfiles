@@ -497,3 +497,43 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   assert_success
   assert_output --partial 'langfuse: nothing new'
 }
+
+# ── the work ledger: cost and time onto queue items ──────────────────────────
+# queue_stub -- a queue that serves $SANDBOX/items.jsonl to `list` and logs every `set`.
+queue_stub() {
+  export SO_QUEUE=queue-stub
+  printf '#!/usr/bin/env bash\ncase "$1" in list) cat "%s/items.jsonl" ;; set) echo "set ${*:2}" >> "%s/sets.log" ;; *) exit 9 ;; esac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/queue-stub"
+  chmod +x "$SANDBOX/bin/queue-stub"
+}
+
+@test "ledger: an item gets the summed cost and work time of the sessions it lists, and only a change is written" {
+  queue_stub
+  mkdir -p "$SO_OUT/proj"
+  # A session observed before, with agent-panel time: not due, still counted.
+  jq -cn '{session_id: "sess-old", project: "proj", observed: "2026-10-18T00:00:00Z", updated: 1, cost_usd: 2, time_use: {work_min: 30}}' > "$SO_OUT/proj/2026-10.jsonl"
+  {
+    jq -cn '{slug: "it-ab", sessions: "sess-a sess-b"}'
+    jq -cn '{slug: "it-old", sessions: "sess-old sess-a"}'
+    jq -cn '{slug: "it-unseen", sessions: "sess-nobody"}'
+    jq -cn '{slug: "it-hand"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(sort "$SANDBOX/sets.log")" "$(printf 'set it-ab cost_usd=4\nset it-old cost_usd=3 work_min=30')"
+  assert_equal "$(outcome)" WORKED
+  # Already carrying those values, nothing is written again.
+  { jq -cn '{slug: "it-ab", sessions: "sess-a sess-b", cost_usd: "4"}'; jq -cn '{slug: "it-old", sessions: "sess-old sess-a", cost_usd: "3", work_min: "30"}'; } > "$SANDBOX/items.jsonl"
+  rm "$SANDBOX/sets.log"
+  run "$SUBJECT" run --all
+  assert_success
+  [ ! -f "$SANDBOX/sets.log" ] || fail "wrote again: $(cat "$SANDBOX/sets.log")"
+}
+
+@test "ledger: a queue it cannot read changes nothing and the run still works" {
+  export SO_QUEUE=false
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(lines | wc -l)" 3
+}
