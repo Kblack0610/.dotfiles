@@ -312,6 +312,22 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_equal "$(outcome)" NOOP
 }
 
+@test "a pass with only its own prompt is not talked-to, even just after local midnight" {
+  # GNU `date -d ""` is today's local midnight; an empty last-human timestamp once read as that,
+  # so for a lease after midnight every pass looked talked-to and the runner stood down.
+  local s; s=$(( $(date -u +%s) % 86400 - 60 )); [ "$s" -ge 0 ] || s=$(( s + 86400 ))
+  export TZ="ZZZ+$(( s / 3600 )):$(( s % 3600 / 60 )):$(( s % 60 ))" # local time is 00:01
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  aged 5
+  live "$id" idle
+  said "$id" human "$(( $(date +%s) - 4 * 60 ))"
+  run "$SH" run
+  refute_output --partial "the human is talking"
+  assert_equal "$(starts)" 2
+}
+
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind" {
   doc "[$(row a DONE false false)]"
   STUB_TMUX_FAIL='respawn-pane|new-window' run "$SH" run
