@@ -741,13 +741,14 @@ start_item() {
 # starved -- rc 1 when urgent or high queue items have been runnable (no hold) for over
 # DISPATCH_STARVED_MIN minutes and no run pass has started a queue item in that time: it names them
 # and the last pass's outcome. A deep queue the passes are moving is not starved, and neither is one
-# held on purpose (agent-hold), and a board item is not starved while it waits for the human to
-# leave. Only a run start counts: a hand start or a redispatch proves nothing
+# held on purpose (agent-hold) or by the load gates, whose alarm is fleet-thermal: a busy machine is
+# not a broken queue, and any other gate still trips. A board item is not starved while it waits for
+# the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
 # the Sentinel watch queue-starved runs it.
 cmd_starved() {
-  local items last cut started
+  local items last cut started why
   agent-hold check dispatch >/dev/null 2>&1 || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   started=$(last_run_start)
@@ -756,6 +757,10 @@ cmd_starved() {
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   [ -n "$items" ] || return 0
+  why=$(gate any)
+  case "$why" in
+    'fleet-assess says HOLD' | 'load '* | 'real idle '*) echo "held by load ($why), so nothing is starved"; return 0 ;;
+  esac
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
     last=$(tail -n 1 "$(proof_state_dir)/fleet-dispatch/activity.log" 2>/dev/null)
@@ -906,13 +911,18 @@ cmd_reap() {
 
 # waiting_sessions -> "<server>/<tmux session>" for each Claude waiting on its human (agent-panel),
 # and the bare tmux session of each pending ask; fails when either cannot be read, so a pass that
-# cannot see never moves an item.
+# cannot see never moves an item. An item names a session, not a window, so a session several
+# Claudes share (a world session) says nothing about any one item and is left out: one window
+# waiting would otherwise flip every item on it.
 waiting_sessions() {
-  local panel asks
+  local panel asks shared
   panel=$(agent-panel list --json 2>/dev/null) || return 1
   asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
-  jq -r 'select(.status == "waiting") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null
-  cut -f13 <<<"$asks" | grep .
+  shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)
+  {
+    jq -r 'select(.status == "waiting") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null
+    cut -f13 <<<"$asks" | grep .
+  } | grep -vxF -f <(printf '%s\n' "$shared"; sed 's,.*/,,' <<<"$shared")
   return 0
 }
 
