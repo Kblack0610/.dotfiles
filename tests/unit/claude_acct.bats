@@ -524,7 +524,7 @@ live() {
   [ "$(field main .burn <<<"$output")" = 0 ]
 }
 
-@test "every account overcommitted: the least overcommitted takes the next start" {
+@test "every account overcommitted: the one with less burn per point left takes the next start" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 50 50   # carries 1 an hour
   week alt 50 50
@@ -535,6 +535,19 @@ live() {
   live "$ALT" 10
   run --separate-stderr "$ACCT" pick
   assert_output ''
+}
+
+@test "every account overcommitted: the next start goes where it keeps running longest" {
+  # 2026-11-05: alt fresh at 19% with 26 live caps in 27h, bnb at 89% with 9 live caps in 10h.
+  # Burn per spare point an hour sent cl to bnb, which its own sessions empty first.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.118
+  week main 89 30
+  week alt 19 150
+  live "" 9
+  live "$ALT" 26
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output "$ALT"
 }
 
 @test "room: under pace, the account with spare room after its live sessions wins" {

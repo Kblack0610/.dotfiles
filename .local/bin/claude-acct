@@ -275,15 +275,15 @@ usage_json() {
             # What is left of the week, as points an hour to the reset, less what the live sessions
             # there already burn: lower is better. One hour per spare point, so the account whose
             # remainder would otherwise be lost at its reset gets the work. An account its sessions
-            # already empty before the reset ranks behind every one with room, the least
-            # overcommitted first. A 5h window near full goes last.
+            # already empty before the reset ranks behind every one with room, and among those the
+            # one its sessions empty last goes first. A 5h window near full goes last.
             def rank:
                 (.week_used // 0) as $u
                 | ((100 - $u) / (if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end)) as $carry
                 | (if .state == "expired" then 0
                    elif $u >= 100 then 1e9
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
-                   else 1e3 + .burn / $carry end)
+                   else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
             {name: $name, dir: $dir, email: $email, state: $state,
              five_hour: ($usage.five_hour.utilization // null),
