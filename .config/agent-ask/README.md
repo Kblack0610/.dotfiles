@@ -40,6 +40,10 @@ SECONDARY convenience for an attended agent only; producers never use it.
 
 `agent-ask card <id>` prints the card: who asks, project, age, the question, numbered options with their meaning and `(recommended)`, the why, and what the judge would answer. The questions panel shows that card for the selected ask: `1`-`9` then Enter answers, `t` types an answer, `d` then Enter drops it, `ctrl-/` moves the card beside the list or hides it, Esc closes. Answering or dropping needs Enter, so a stray key sends nothing.
 
+## One open question per session
+
+`post` refuses a second pending ask from the same Claude session (`claude_session`), names the one already open, and exits 2. Several decisions become one question: options such as `take-all=<each recommendation>|one-by-one=go through them here`, with the per-decision detail in `--context`. To replace the open one, `agent-ask cancel <id> superseded` first. So every board reads one row per asking session. A post with no session id (a bare shell) is not checked. Why: by 2026-11-05, 22 sessions had posted bursts of 2 to 6 asks minutes apart, 54 extra rows, one trader session 6 in the same second. Test: `tests/integ/agent_ask.bats`.
+
 ## Verbs
 
 ```
