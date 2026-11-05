@@ -28,6 +28,8 @@ import tomllib
 JOBS = os.path.expanduser(os.environ.get("WORK_UPDATE_JOBS", "~/.config/comms-lint/jobs"))
 DAYLOG = os.path.expanduser(os.environ.get("DAYLOG_DIR", "~/.agent/daylog"))
 KINDS = ("eod", "weekly")
+# The comms-lint beside this script: the repo copy in a checkout, ~/.local/bin once stowed.
+COMMS_LINT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comms-lint")
 
 
 def die(msg, code=2):
@@ -193,7 +195,7 @@ def main(argv):
     text = body(pos[2])
     if verb == "save":
         _, path = save(cfg, kind, day, text)
-        lint = subprocess.run(["comms-lint", "--channel", cfg[kind + "_channel"], path], capture_output=True, text=True)
+        lint = subprocess.run([COMMS_LINT, "--channel", cfg[kind + "_channel"], path], capture_output=True, text=True)
         print(f"draft: {path}")
         if lint.returncode not in (0, 1):
             die(f"comms-lint: {(lint.stderr or lint.stdout).strip()}")
