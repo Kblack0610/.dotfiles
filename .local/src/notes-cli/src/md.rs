@@ -1332,6 +1332,36 @@ pub fn is_row_id(s: &str) -> bool {
         && n.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Cut the first row in `heading`'s section that `pred` matches, with its block (the detail
+/// lines and child rows under it, [`row_block_end`]). Returns the content without it, the row
+/// line, and the block's other lines with the row's own indent taken off, so they can land
+/// under the row at any depth.
+pub fn cut_first_block_in_section<P>(
+    content: &str,
+    heading: &str,
+    pred: P,
+) -> Option<(String, String, Vec<String>)>
+where
+    P: Fn(&str) -> bool,
+{
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
+    let end = row_block_end(&lines, idx);
+    let row = lines[idx];
+    let indent = row.len() - row.trim_start().len();
+    let block = lines[idx + 1..end]
+        .iter()
+        .map(|l| l.get(indent..).unwrap_or(l.trim_start()).to_string())
+        .collect();
+    let mut out: Vec<&str> = lines[..idx].to_vec();
+    out.extend_from_slice(&lines[end..]);
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some((joined, row.to_string(), block))
+}
+
 /// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
 /// every non-blank line after it indented deeper than it is.
 pub fn row_block_end(lines: &[&str], i: usize) -> usize {

@@ -815,7 +815,7 @@ pub(crate) const ROW_TYPES: &[&str] = &[
 ];
 
 /// A title longer than this belongs on a detail line under the row.
-const TITLE_MAX: usize = 80;
+pub(crate) const TITLE_MAX: usize = 80;
 
 /// The `type(area): ` prefix of a row's text, when it has a well-formed one: a known type,
 /// then one lowercase kebab word in parentheses, a colon and a space. Returns the title
@@ -849,7 +849,7 @@ fn row_prefix(text: &str) -> Option<(&str, &str, &str)> {
 
 /// A row's title as the grammar counts it: its text with the stamps, the hashtags and the
 /// `type(area): ` prefix taken off.
-fn row_title(line: &str) -> String {
+pub(crate) fn row_title(line: &str) -> String {
     let text = md::task_text(line);
     let bare: Vec<&str> = text
         .split_whitespace()
