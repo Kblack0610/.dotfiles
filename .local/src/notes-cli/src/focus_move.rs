@@ -195,6 +195,10 @@ pub fn mv(
             fs::write(&dnote, dnew)?;
             fs::write(&src_note, src_without)?;
             log.info("focus", &format!("moved to {d}: {}", new_line.trim()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("rehomed", "focus", d, "", &new_line),
+            );
             println!("moved to {d} {}", new_line.trim());
         }
         // same profile: a re-tag in place
@@ -202,6 +206,10 @@ pub fn mv(
             let updated = md::insert_under_heading(&src_without, "Focus", &[new_line.clone()]);
             fs::write(&src_note, updated)?;
             log.info("focus", &format!("retagged in {}", src_note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("tagged", "focus", "", "", &new_line),
+            );
             println!("{}", new_line.trim());
         }
     }

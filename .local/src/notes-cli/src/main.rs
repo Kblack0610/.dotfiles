@@ -347,6 +347,30 @@ enum Cmd {
         #[arg(long)]
         projects: bool,
     },
+    /// What was written to which row, and by whom: today, or `--day` / `--days`
+    Log {
+        /// One day, `YYYY-MM-DD`
+        #[arg(long, conflicts_with = "days")]
+        day: Option<String>,
+        /// The last N days, today included
+        #[arg(long)]
+        days: Option<i64>,
+        /// Only events from or to this project, or `focus` or `outbox`
+        #[arg(long)]
+        project: Option<String>,
+        /// Only this row, like ucp-79
+        #[arg(long)]
+        id: Option<String>,
+        /// Only this action, like `dropped`
+        #[arg(long)]
+        action: Option<String>,
+        /// Only this writer: `human`, a queue item or a session's first 8 characters
+        #[arg(long)]
+        by: Option<String>,
+        /// One JSON event per line
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the resolved profile + paths
     Config {
         /// List every configured profile name instead
@@ -1054,6 +1078,23 @@ fn main() -> Result<()> {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
             }
         },
+        Cmd::Log {
+            day,
+            days,
+            project,
+            id,
+            action,
+            by,
+            json,
+        } => {
+            let filter = ingest::Filter {
+                project: project.map(|n| registry::canonical(&n)),
+                id,
+                action,
+                by,
+            };
+            ingest::log(&prof, day.as_deref(), days, &filter, json)?
+        }
         Cmd::Ingest { sub } => match sub {
             IngestCmd::Record {
                 action,

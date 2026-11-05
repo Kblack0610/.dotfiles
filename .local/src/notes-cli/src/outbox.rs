@@ -69,6 +69,7 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
         )?;
         project_tasks::inbox_changed(p);
         log.info("outbox", &format!("added to {}", p.outbox.display()));
+        ingest::record(p, &Event::row("added", "outbox", "", "", &line));
     }
     println!("outbox: {line}");
     Ok(0)

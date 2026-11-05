@@ -1017,7 +1017,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                     format!("{at} planned{id} in {}: {}", name(&ev.from, ""), ev.text),
                 )
             }
-            action => {
+            action @ ("left" | "refused") => {
                 if action == "refused" {
                     refused += 1;
                 } else {
@@ -1030,6 +1030,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                     format!("{at} {action} ({}): {}", name(&ev.from, ""), ev.text),
                 )
             }
+            _ => continue,
         };
         rows.push(row(attention, i, head, detail));
     }
@@ -2461,6 +2462,8 @@ mod tests {
         plan.id = Some("dm-5".into());
         plan.why = Some("3 plan lines, split into 2 rows".into());
         record(&p, &plan);
+        // A verb's own write is not intake, so it adds no row and above all no red one.
+        record(&p, &Event::new("edited", "demo", "", "feat(ui): a row"));
         record(
             &p,
             &Event::new("moved", "focus", "demo", "still in the inbox"),

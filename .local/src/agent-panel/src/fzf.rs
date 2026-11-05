@@ -5,9 +5,30 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-/ toggle preview  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+
+/// The preview layout every panel shares: `panel_fzf_layout` in `.local/src/tmux/panel-lib.sh`
+/// is the one source, and `tests/shared_layout.rs` holds these strings equal to it. stacked = the
+/// list on top at full width, the preview below; side = list left, preview right.
+const STACKED: &str = "down,60%,border-top,wrap";
+const SIDE: &str = "right,55%,border-left,wrap";
+
+/// The `--preview-window` to open with and the ctrl-/ bind that cycles to the other layout, then
+/// hidden, then back, for a `PANEL_LAYOUT` setting (unset or empty = stacked), as
+/// `panel_fzf_layout` prints them.
+pub fn layout(setting: Option<&str>) -> Result<[String; 2]> {
+    let (a, b) = match setting.unwrap_or("") {
+        "" | "stacked" => (STACKED, SIDE),
+        "side" => (SIDE, STACKED),
+        other => bail!("unknown PANEL_LAYOUT: {other} (stacked or side)"),
+    };
+    Ok([
+        format!("--preview-window={a}"),
+        format!("--bind=ctrl-/:change-preview-window({b}|hidden|{a})"),
+    ])
+}
 
 /// Run fzf over `rows` (newline-joined). `map_file` backs the preview callback;
 /// `restore_line`, when set, positions the cursor on the active agent.
@@ -18,9 +39,10 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>) -> Result<O
         .to_string_lossy()
         .into_owned();
     let map = map_file.to_string_lossy().into_owned();
+    let layout = layout(std::env::var("PANEL_LAYOUT").ok().as_deref())?;
 
     let mut child = Command::new("fzf")
-        .args(args(&exe, &map, restore_line))
+        .args(args(&exe, &map, restore_line, &layout))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -38,7 +60,7 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>) -> Result<O
 }
 
 /// fzf's arguments: layout, the preview and reload callbacks into `exe`, and the key binds.
-fn args(exe: &str, map: &str, restore_line: Option<usize>) -> Vec<String> {
+fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String; 2]) -> Vec<String> {
     let preview_cmd = format!("{exe} preview --map-file '{map}' {{}}");
     let next_bind = format!("n:execute-silent({exe} next)+abort");
     // `fleet-shepherd open` is the one way to the running pass (Prefix o too): it hops worlds.
@@ -64,10 +86,8 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>) -> Vec<String> {
         "--with-nth=2..".into(),
         "--preview".into(),
         preview_cmd,
-        "--preview-window".into(),
-        "right:75%:wrap".into(),
-        "--bind".into(),
-        "ctrl-/:change-preview-window(hidden|right:75%:wrap)".into(),
+        layout[0].clone(),
+        layout[1].clone(),
         "--bind".into(),
         "ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up".into(),
         "--bind".into(),
@@ -98,7 +118,8 @@ mod tests {
 
     #[test]
     fn label_keys_write_through_fleet_sessions_and_reload_in_place() {
-        let a = args("/bin/ap", "/tmp/m.map", Some(3));
+        let stacked = layout(None).unwrap();
+        let a = args("/bin/ap", "/tmp/m.map", Some(3), &stacked);
         let reload = "reload(/bin/ap rows --map-file '/tmp/m.map')";
         let manual = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
         assert!(a.contains(&manual), "{a:?}");
@@ -112,8 +133,21 @@ mod tests {
         assert!(a.contains(&"ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string()), "{a:?}");
         assert!(HEADER.contains("C-s shepherd"));
         // Negative control: no active agent, no load bind.
-        assert!(!args("/bin/ap", "/tmp/m.map", None)
+        assert!(!args("/bin/ap", "/tmp/m.map", None, &stacked)
             .iter()
             .any(|x| x.starts_with("load:")));
+    }
+
+    #[test]
+    fn layout_opens_stacked_unless_set_to_side_and_refuses_anything_else() {
+        assert_eq!(layout(None).unwrap(), layout(Some("")).unwrap());
+        assert_eq!(layout(None).unwrap(), layout(Some("stacked")).unwrap());
+        assert!(layout(None).unwrap()[0].contains("=down,"));
+        assert!(layout(Some("side")).unwrap()[0].contains("=right,"));
+        // Negative control: an unknown setting fails, as panel_fzf_layout does.
+        assert!(layout(Some("bogus")).is_err());
+        // The legacy colon form is gone from what fzf gets.
+        let a = args("/bin/ap", "/tmp/m.map", None, &layout(None).unwrap());
+        assert!(!a.iter().any(|x| x.contains("right:75%")), "{a:?}");
     }
 }
