@@ -116,22 +116,29 @@ fn list_server_panes(server: &str) -> Vec<Pane> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let fmt = pane_format(now);
+    let env = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string());
+    // fleet-shepherd's own names and defaults for where its passes run.
+    let home = (env("FLEET_SHEPHERD_SESSION", "hub"), env("FLEET_SHEPHERD_WINDOW", "shepherd"));
+    let fmt = pane_format(now, (&home.0, &home.1));
     let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", &fmt]).output() else {
         return Vec::new();
     };
     parse_panes(server, &String::from_utf8_lossy(&out.stdout))
 }
 
-/// The `list-panes -F` row. `@shepherd` holds the epoch its lease goes stale
-/// (fleet-shepherd lease), so the tag needs the clock, which a list-panes format has
-/// no variable for: `now` is spliced in, the same test as .tmux.conf `@shepherd_live`.
-fn pane_format(now: u64) -> String {
+/// The `list-panes -F` row. A pane is tagged `shepherd` when it holds the live shepherd lease or
+/// sits in the shepherd's home window (`shepherd_home` = session, window), where every pass runs:
+/// a pass idle past its lease is still the shepherd. `@shepherd` holds the epoch its lease goes
+/// stale (fleet-shepherd lease), so that half needs the clock, which a list-panes format has no
+/// variable for: `now` is spliced in, the same test as .tmux.conf `@shepherd_live`.
+fn pane_format(now: u64, shepherd_home: (&str, &str)) -> String {
     "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
      #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
      #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
-     #{?#{e|<:NOW,#{@shepherd}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}"
+     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}"
         .replace("NOW", &now.to_string())
+        .replace("HOME_SESSION", shepherd_home.0)
+        .replace("HOME_WINDOW", shepherd_home.1)
 }
 
 fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
@@ -272,9 +279,12 @@ mod tests {
     }
 
     #[test]
-    fn shepherd_tag_compares_the_lease_expiry_to_now() {
-        let fmt = pane_format(1_700_000_000);
-        assert!(fmt.contains("#{?#{e|<:1700000000,#{@shepherd}},shepherd ,}\t"), "{fmt}");
+    fn shepherd_tag_is_the_live_lease_or_the_shepherd_window() {
+        let fmt = pane_format(1_700_000_000, ("hub", "shepherd"));
+        let tag = "#{?#{||:#{e|<:1700000000,#{@shepherd}},\
+                   #{&&:#{==:#{session_name},hub},#{==:#{window_name},shepherd}}},shepherd ,}\t";
+        assert!(fmt.contains(tag), "{fmt}");
+        assert!(!fmt.contains("HOME_"));
         assert!(fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}"), "{fmt}");
         assert!(!fmt.contains("NOW"));
     }
