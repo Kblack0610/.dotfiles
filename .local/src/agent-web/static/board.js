@@ -1,7 +1,7 @@
 "use strict";
 // The rows under the Projects tab (projects.js opens them for one project or for all): every
 // project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
-// playtest, and each profile's Focus (read-only here). Add, start, done, drop, move (to a
+// playtest; each profile's Focus is a count linking to the Focus tab. Add, start, done, drop, move (to a
 // project or a version), a release sooner or later, edit and tags go through
 // `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
@@ -51,7 +51,7 @@ function bControls() {
     `<input id="bf-q" placeholder="filter text, #tag" value="${esc(f.q)}">` +
     `<select id="bf-profile"><option value="">every profile</option>${bOpt(profiles, f.profile)}</select>` +
     `<select id="bf-project"><option value="">every project</option>${bOpt(keys, f.project)}</select>` +
-    `<select id="bf-lane"><option value="">every lane</option>${bOpt([...B_LANES, "focus"], f.lane)}</select>` +
+    `<select id="bf-lane"><option value="">every lane</option>${bOpt(B_LANES, f.lane)}</select>` +
     `<select id="bf-priority"><option value="">any priority</option>${bOpt(B_PRIORITIES, f.priority)}</select>` +
     `<button class="btn sm" id="b-refresh">Refresh</button>` +
     `</div></div>`;
@@ -70,7 +70,6 @@ function bMatch(r) {
 
 function bRow(r, i) {
   const k = bKey(r);
-  const focus = r.lane === "focus";
   const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
     r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
@@ -80,9 +79,7 @@ function bRow(r, i) {
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
-  if (focus) {
-    acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.form && bst.form.k === k) {
+  if (bst.form && bst.form.k === k) {
     const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
     const kind = bst.form.kind;
     if (kind === "done" || kind === "drop") {
@@ -135,7 +132,7 @@ function bGroups() {
   bst.feed.rows.forEach((r, i) => {
     if (!bMatch(r)) return;
     if (r.filed && r.filed === bst.feed.today) return filed.push([r, i]);
-    const g = r.project ? r.profile + "/" + r.project : r.profile + " Focus";
+    const g = r.profile + "/" + r.project;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push([r, i]);
   });
@@ -167,7 +164,10 @@ function drawBoardList() {
       `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
       list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
   }
-  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups</div>` +
+  // Focus rows are the Focus tab's (hub_core::tasks counts them): All says how many and links there.
+  const focus = bst.filter.project ? [] : bst.feed.focus || [];
+  const fbadge = focus.length ? `<a class="btn sm" href="#focus">Focus: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
+  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups ${fbadge}</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
   const y = $("projects").scrollTop;
   el.innerHTML = html;

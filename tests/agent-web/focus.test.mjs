@@ -102,3 +102,20 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
   assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "" });
   assert.deepEqual(r(""), { name: "", tab: "home", arg: "" });
 });
+
+test("Add to outbox sends the typed line as one POST, says where it went, and an error stays", async () => {
+  const sent = [];
+  ctx.fetch = async (path, opts) => { sent.push([path, opts && opts.body]); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ said: "outbox: - [ ] x" }) }; };
+  assert.match(draw(day), /<h2 class="sec">Add to outbox<\/h2>.*id="f-out".*data-f="send">Send</s);
+  vm.runInContext(`fcs.draft = "  ask about <b>it</b>  "; fcs.said = null;`, ctx);
+  await vm.runInContext(`sendOutbox()`, ctx);
+  assert.deepEqual(sent.find(([p]) => p === "/api/outbox"), ["/api/outbox", JSON.stringify({ text: "ask about <b>it</b>" })]);
+  const h = box("focus").innerHTML;
+  assert.match(h, /Sent "ask about &lt;b&gt;it&lt;\/b&gt;"\. The triager files it from the <a class="wl" href="#focus\/outbox">outbox<\/a>/);
+  assert.match(h, /id="f-out" placeholder="[^"]*" value=""/, "the box is cleared after a send");
+  ctx.fetch = async () => ({ ok: false, status: 502, statusText: "", text: async () => "notes: no outbox" });
+  vm.runInContext(`fcs.draft = "again";`, ctx);
+  await vm.runInContext(`sendOutbox()`, ctx);
+  assert.match(box("focus").innerHTML, /<div class="err">Could not send to outbox \(HTTP 502\): notes: no outbox/);
+  assert.match(box("focus").innerHTML, /value="again"/, "a failed send keeps the line");
+});
