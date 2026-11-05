@@ -45,6 +45,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
+   - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`, and tick the plan phase by hand.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.

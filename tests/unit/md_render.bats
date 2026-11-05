@@ -170,6 +170,34 @@ text'
   assert_line --index 1 --regexp '^    [a-z]'
 }
 
+@test "each bullet depth gets its own glyph and colour" {
+  run mdr_raw "$(printf '%s\n' '- one' '  - two' '    - three')"
+  assert_success
+  assert_line --index 0 $'\033[34m  -\033[0m one'
+  assert_line --index 1 $'\033[35m    *\033[0m two'
+  assert_line --index 2 $'\033[36m      +\033[0m three'
+}
+
+@test "an ordered item keeps its number, bold in the depth colour" {
+  run mdr_raw "$(printf '%s\n' '3. third' '   1. nested')"
+  assert_success
+  assert_line --index 0 $'\033[1;34m  3.\033[0m third'
+  assert_line --index 1 $'\033[1;35m    1.\033[0m nested'
+}
+
+@test "a wrapped ordered item hangs under its own text, past a wide number" {
+  run mdr '10. reconcile the facility placeholder that was racing a real 404 against its own assertion'
+  assert_success
+  assert_line --index 0 --regexp '^  10\. reconcile'
+  assert_line --index 1 --regexp '^      [a-z]'
+}
+
+@test "a task line stays a checkbox, not a bullet" {
+  run mdr_raw '- [ ] still a task #high'
+  assert_success
+  assert_output $'\033[36m  [ ]\033[0m still a task #high'
+}
+
 @test "a done item is still legible as done" {
   run mdr '- [x] shipped already'
   assert_success

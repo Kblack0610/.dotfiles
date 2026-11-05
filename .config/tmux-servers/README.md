@@ -44,7 +44,7 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 | `fleet-shepherd` | the world that declares its session |
 | Prefix+R, `sessions resume --window` | `tmux-world route` on the session's directory |
 
-An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and the dispatch reap kill what it names, so a hand start from a hub window records nothing. Such an item closes with `agent-land <N> --item <slug>`.
+An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and the dispatch reap act on what it names, so a hand start from a hub window records nothing. Such an item closes with `agent-land <N> --item <slug>`. Automation closes through `tmux-close`, which never kills a session a manifest declares.
 
 ## Troubleshooting
 

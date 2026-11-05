@@ -13,7 +13,7 @@
 #                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
-#                                     minute and on each ask change); the hub Sessions tab
+#                                     minute and on each ask change); the hub Fleet tab
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #
@@ -809,7 +809,7 @@ transitions() {
     END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
 }
 
-# tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Sessions tab. git, gh and the
+# tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Fleet tab. git, gh and the
 # transcripts have no change event to await, so fleet-state.timer runs it every minute; a pass
 # costs ~12s of gh and git. It logs what moved since the last tick to watch.log (the state file
 # is shared and locked, so two ticks log each change once), keeps watch.state for the next

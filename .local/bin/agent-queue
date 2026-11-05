@@ -59,6 +59,14 @@ qualified() {
   [ -n "$world" ] || die "no world declares @agents: give the session as <server>:$1"
   printf '%s:%s\n' "$world" "$1"
 }
+# The caller's own window id (@N), which cancel closes: a hand-started item runs in a window of
+# a session it did not make, so the session is never its to close.
+own_window() {
+  [ -n "${TMUX:-}" ] || return 1
+  tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{window_id}' 2>/dev/null
+}
+# The one closer, beside this script (TMUX_CLOSE when the script runs from a copy, as in tests).
+TMUX_CLOSE="${TMUX_CLOSE:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tmux-close}"
 
 # --- the file format ---
 # `key: value` lines, a `---` line, then the task as typed.
@@ -352,8 +360,12 @@ cmd_add() {
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
     esac
   done
-  # A hand-started session records itself, on the agent world only.
-  if [ -n "$running" ] && [ -z "$session" ]; then session="$(agent_session)" || session=""; fi
+  # A hand-started session records itself and its window, on the agent world only.
+  local window=''
+  if [ -n "$running" ] && [ -z "$session" ]; then
+    session="$(agent_session)" || session=""
+    [ -z "$session" ] || window="$(own_window)" || window=""
+  fi
   session="$(qualified "$session")" || exit 1
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
@@ -382,6 +394,7 @@ cmd_add() {
     printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
     [ -n "$running" ] && printf 'started: %s\n' "$now"
     [ -n "$session" ] && printf 'session: %s\n' "$session"
+    [ -n "$window" ] && printf 'window: %s\n' "$window"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   echo "$state $slug -> $f"
@@ -539,17 +552,23 @@ cmd_mine() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug>}" f session server dest
+  local slug="${1:?usage: agent-queue cancel <slug>}" f session server window dest
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
-  session="$(fm_get "$f" session)"; server="${session%%:*}"
+  session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
+  # Close what the item owns: its window when it recorded one (a hand start), its session only
+  # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
-    if tmux -L "$server" kill-session -t "=$session" 2>/dev/null; then
-      echo "killed session $session"
+    if [ -n "$window" ]; then
+      "$TMUX_CLOSE" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
+        echo "agent-queue: window $window was not open on $server" >&2
+    elif [ -n "$(fm_get "$f" origin)" ]; then
+      "$TMUX_CLOSE" -L "$server" session "$session" && echo "killed session $session" ||
+        echo "agent-queue: session $session was not closed on $server" >&2
     else
-      echo "agent-queue: session $session was not running on $server" >&2
+      echo "agent-queue: left $server:$session open: a hand-started item that recorded no window owns no session" >&2
     fi
   fi
   header_set "$f" status cancelled
@@ -569,7 +588,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags after agent started waiting finished session account model plan pr note status area origin lane profile from "
+SETTABLE=" project mode priority tags after agent started waiting finished session window account model plan pr note status area origin lane profile from "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k

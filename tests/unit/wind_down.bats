@@ -157,7 +157,7 @@ EOF
 
 # ── fire: the kill it does schedule ──────────────────────────────────────────
 
-@test "fire schedules kill-window against the stable window id" {
+@test "fire schedules the window close against the stable window id" {
   mk_sentinel <<'EOF'
 scope=window
 target=@7
@@ -170,11 +170,11 @@ EOF
   assert_success
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_success
-  assert_output --partial "kill-window -t '@7'"
-  refute_output --partial 'kill-session'
+  assert_output --partial "close.sh window '@7'"
+  refute_output --partial 'session'
 }
 
-@test "session scope schedules kill-session, and only then" {
+@test "session scope schedules the session close through tmux-close, and only then" {
   mk_sentinel <<'EOF'
 scope=session
 target=@7
@@ -183,8 +183,9 @@ EOF
   run bash "$WIND_DOWN" fire "$SENTINEL"
   assert_success
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "kill-session -t 'cockpit'"
-  refute_output --partial 'kill-window'
+  # tmux-close gets the window too: it closes only that when cockpit is a world session.
+  assert_output --partial "close.sh session 'cockpit' --window '@7'"
+  refute_output --partial 'close.sh window'
 }
 
 @test "the scheduled kill is backgrounded on the tmux server, not a child of the hook" {
@@ -235,7 +236,7 @@ EOF
   chmod +x "$HOME/.local/bin/tmux-tags"
   run bash "$WIND_DOWN" fire "$SENTINEL"
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "kill-session -t 'cockpit'"
+  assert_output --partial "close.sh session 'cockpit'"
 }
 
 # ── note-path ────────────────────────────────────────────────────────────────
@@ -319,10 +320,10 @@ EOF
   assert_success
   assert_output --partial 'run-shell -b'
   assert_output --partial "wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"
-  # kill-session must appear BEFORE the reap in the chain, not after it.
+  # The close must appear BEFORE the reap in the chain, not after it.
   local chain="$output"
-  [ "${chain%%kill-session*}" != "$chain" ] || fail "no kill in the chain at all"
-  local before_kill="${chain%%kill-session*}"
+  [ "${chain%%close.sh session*}" != "$chain" ] || fail "no kill in the chain at all"
+  local before_kill="${chain%%close.sh session*}"
   case "$before_kill" in
     *"wt reap"*) fail "the reap is scheduled BEFORE the kill -- it would always refuse" ;;
   esac
@@ -388,7 +389,7 @@ EOF
   assert_success
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "rm -rf -- '$HOME/scratch'/*/'$SID_A'"
-  local before_kill="${output%%kill-session*}"
+  local before_kill="${output%%close.sh session*}"
   case "$before_kill" in
     *"rm -rf"*) fail "the scratchpad goes BEFORE the kill -- Claude would lose it mid-turn" ;;
   esac

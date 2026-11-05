@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # worlds.sh - which tmux world a directory, a session or an agent belongs to. On PATH as
-# `tmux-world`; sourced by servers.sh, sessionizer.sh and worktree.sh.
+# `tmux-world`; sourced by servers.sh, sessionizer.sh, worktree.sh and close.sh.
 #
 #   tmux-world route <dir>     "<world> <session>" for that directory; world `here` when no
 #                              manifest claims it
