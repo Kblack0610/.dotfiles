@@ -3,8 +3,8 @@
 #
 # integ tier: the script runs as a subprocess against the recording `notes` stub, so no test
 # here reads or writes a vault. The picker itself is not driven (the fzf stub aborts); what
-# is asserted is the data behind it (--list, --tasks, --header), the action each key maps to
-# (--key), and the exact `notes` write each write verb issues.
+# is asserted is the data behind it (--list), the action each key maps to (--key), the exact
+# `notes` write each write verb issues, and the hub request Enter makes (--board).
 
 bats_require_minimum_version 1.5.0
 
@@ -27,14 +27,6 @@ setup() {
     $'longprofilename\twork\t\tv0.0.1\t3\t0\t3\t0\t0\t0\t/v/work/README.md' \
     $'personal\tsite\tprod\tv2.0.0\t0\t0\t0\t0\t0\t0\t/v/site/README.md' \
     >"$NOTES_FIXTURE/stats"
-
-  # Task rows out of priority order, one in progress, one carrying a comment and a wave tag.
-  printf '%s\n' \
-    $'/v/big/README.md\t7\tlow one\t- [ ] low one #low #v1.0.0' \
-    $'/v/big/README.md\t8\tplain\t- [ ] plain' \
-    $'/v/big/README.md\t9\tfix (boss) [x]\t- [/] fix (boss) [x] #urgent <!-- since 2026-10-01 -->' \
-    $'/v/big/README.md\t10\thigh one\t- [ ] high one #high' \
-    >"$NOTES_FIXTURE/ptask.bnb.big-alpha"
 }
 
 # --- the row source -----------------------------------------------------------
@@ -78,25 +70,6 @@ setup() {
   assert_output 'longprofilename'
 }
 
-@test "--tasks puts urgent first and strips the checkbox, tags and comment" {
-  run bash -c "'$PROJECTS_SH' --tasks bnb big-alpha | cut -f4"
-  assert_success
-  assert_line --index 0 'urgent ~ fix (boss) [x]'
-  assert_line --index 1 'high   high one'
-  assert_line --index 2 'low    low one'
-  assert_line --index 3 '       plain'
-}
-
-@test "--tasks keeps path, line and the CLI's key, which the write verbs match on" {
-  run bash -c "'$PROJECTS_SH' --tasks bnb big-alpha | sed -n 1p | cut -f1-3"
-  assert_output $'/v/big/README.md\t9\tfix (boss) [x]'
-}
-
-@test "--header counts the one project asked for" {
-  run "$PROJECTS_SH" --header bnb big-alpha
-  assert_output 'big-alpha v1.0.0  9 open  1 urgent  5 high  3 low  +4 planned  agent 7'
-}
-
 # --- keys -----------------------------------------------------------------------
 
 @test "a letter is a hotkey while browsing and types itself while searching" {
@@ -104,30 +77,30 @@ setup() {
   assert_output 'down'
   FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list j
   assert_output 'put(j)'
-  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key tasks x
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list x
   assert_output 'put(x)'
 }
 
 @test "Esc steps out one layer: the search box, then the filter, then the view" {
-  FZF_INPUT_STATE=enabled FZF_QUERY=manor run "$PROJECTS_SH" --key tasks esc
+  FZF_INPUT_STATE=enabled FZF_QUERY=manor run "$PROJECTS_SH" --key list esc
   assert_output 'hide-input'
   # A filter to clear: show the input so the bind's bare clear-query can land...
-  FZF_INPUT_STATE=hidden FZF_QUERY=manor run "$PROJECTS_SH" --key tasks esc
+  FZF_INPUT_STATE=hidden FZF_QUERY=manor run "$PROJECTS_SH" --key list esc
   assert_output 'show-input'
   # ...and esc-after hides it again; after a plain hide it leaves things alone.
-  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key tasks esc-after
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list esc-after
   assert_output 'hide-input'
-  FZF_INPUT_STATE=hidden run "$PROJECTS_SH" --key tasks esc-after
+  FZF_INPUT_STATE=hidden run "$PROJECTS_SH" --key list esc-after
   assert_output 'ignore'
   FZF_INPUT_STATE=hidden run "$PROJECTS_SH" --key list esc
   assert_output 'abort'
 }
 
-@test "a digit jumps to that row and opens it, carrying the drafts state" {
+@test "a digit jumps to that row and opens it" {
   run "$PROJECTS_SH" --key list 3
-  assert_output 'pos(3)+print(enter)+print(main)+accept'
-  FZF_PROMPT='all projects> ' run "$PROJECTS_SH" --key list 3
-  assert_output 'pos(3)+print(enter)+print(drafts)+accept'
+  assert_output 'pos(3)+print(enter)+accept'
+  run "$PROJECTS_SH" --key list enter
+  assert_output 'print(enter)+accept'
 }
 
 @test "d toggles the drafts both ways" {
@@ -139,31 +112,12 @@ setup() {
   refute_output --partial '--drafts'
 }
 
-@test "a task write passes the row as a placeholder, never as spliced text" {
-  run "$PROJECTS_SH" --key tasks x
-  assert_output --partial '--task-done "$PROJECTS_P" "$PROJECTS_N" {3})'
-  assert_output --partial 'transform-header('
-}
-
 @test "an unbound key does nothing" {
   run "$PROJECTS_SH" --key list z
   assert_output 'ignore'
 }
 
 # --- writes -------------------------------------------------------------------
-
-@test "done with a proof passes it through" {
-  run bash -c "printf 'pr:12\n' | '$PROJECTS_SH' --task-done bnb big-alpha 'fix (boss) [x]'"
-  assert_success
-  run grep -F 'ptask big-alpha done' "$NOTES_FIXTURE/calls.log"
-  assert_output 'notes --profile bnb ptask big-alpha done --proof pr:12 fix (boss) [x]'
-}
-
-@test "done with no proof says so with --unverified rather than a bare done" {
-  run bash -c "printf '\n' | '$PROJECTS_SH' --task-done bnb big-alpha 'plain'"
-  run grep -F 'ptask big-alpha done' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial 'done --unverified checked off by hand in the projects popup plain'
-}
 
 @test "archive needs a y, and anything else writes nothing" {
   run bash -c "printf 'n\n' | '$PROJECTS_SH' --archive bnb big-alpha"
@@ -174,28 +128,24 @@ setup() {
   assert_output 'notes --profile bnb projects --archive big-alpha'
 }
 
-@test "add takes the text then a priority, and tags it" {
-  # A picker that answers instead of aborting, ahead of the sandbox's stub on PATH.
+@test "--board asks the hub for its Board searched to the project, then goes to its window" {
   mkdir -p "$BATS_TEST_TMPDIR/bin"
-  printf '#!/bin/sh\ncat >/dev/null\necho urgent\n' >"$BATS_TEST_TMPDIR/bin/fzf"
-  chmod +x "$BATS_TEST_TMPDIR/bin/fzf"
-  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run bash -c "printf 'new thing\n' | '$PROJECTS_SH' --task-add bnb big-alpha"
-  run grep -F 'ptask big-alpha add' "$NOTES_FIXTURE/calls.log"
-  assert_output 'notes --profile bnb ptask big-alpha add new thing #urgent'
+  for c in hub tmx; do
+    printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/$c"
+    chmod +x "$BATS_TEST_TMPDIR/bin/$c"
+  done
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --board bnb big-alpha
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output $'hub tab board bnb/big-alpha\ntmx goto hub hub:board'
 }
 
-@test "move offers the profile's other projects and moves by --project" {
-  printf '%s\n' $'big-alpha\t/s\t\tv1' $'small-alpha\t/s\t\tv1' >"$NOTES_FIXTURE/projects.bnb"
-  mkdir -p "$BATS_TEST_TMPDIR/bin"
-  # Records what it was offered, then picks the first offer.
-  printf '#!/bin/sh\ntee "%s/offered" | head -1\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/fzf"
-  chmod +x "$BATS_TEST_TMPDIR/bin/fzf"
-  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --task-move bnb big-alpha 'plain'
-  assert_success
-  run cat "$BATS_TEST_TMPDIR/offered"
-  assert_output 'small-alpha'
-  run grep -F 'ptask big-alpha move' "$NOTES_FIXTURE/calls.log"
-  assert_output 'notes --profile bnb ptask big-alpha move --project small-alpha plain'
+@test "the task verbs are gone: the hub Board is the one task view" {
+  for v in --tasks --header --task-add --task-move --task-done; do
+    run "$PROJECTS_SH" "$v" bnb big-alpha
+    assert_failure
+    assert_output --partial 'unknown verb'
+  done
 }
 
 # --- the panel contract ---------------------------------------------------------
@@ -204,7 +154,7 @@ setup() {
   run "$PROJECTS_SH" --help
   assert_success
   assert_output --partial 'Verbs:'
-  assert_output --partial 'Keys, task view:'
+  assert_output --partial 'hub Board'
   refute_output --partial '#!'
 }
 
