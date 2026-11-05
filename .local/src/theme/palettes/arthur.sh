@@ -2,7 +2,8 @@
 # Arthur Theme Palette (upstream: kitty-themes/Arthur.conf)
 # Sourced by theme-switch to apply colors across all tools.
 #
-# ANSI values are upstream Arthur verbatim. Deviations, both UI-role only:
+# ANSI values are upstream Arthur, lifted to 4.5:1 on BG by lightness only
+# (tests/unit/theme_contrast.bats). Deviations, both UI-role only:
 #   - inactive tab fg uses FG_DIM; upstream repeats the full FG, which
 #     leaves active and inactive tabs the same text color.
 #   - BG_LIGHT / FG_DIM have no upstream equivalent; picked from the
@@ -26,7 +27,7 @@ THEME_SELECTION_FG="#1c1c1c"
 
 # -- ANSI 0-7 (normal) -------------------------------------------------
 THEME_BLACK="#3d352a"
-THEME_RED="#cd5c5c"
+THEME_RED="#cf6262"
 THEME_GREEN="#86af80"
 THEME_YELLOW="#e8ae5b"
 THEME_BLUE="#6495ed"
@@ -35,12 +36,12 @@ THEME_CYAN="#b0c4de"
 THEME_WHITE="#bbaa99"
 
 # -- ANSI 8-15 (bright) ------------------------------------------------
-THEME_BRIGHT_BLACK="#554444"
-THEME_BRIGHT_RED="#cc5533"
+THEME_BRIGHT_BLACK="#987e7e"
+THEME_BRIGHT_RED="#d16445"
 THEME_BRIGHT_GREEN="#88aa22"
 THEME_BRIGHT_YELLOW="#ffa75d"
 THEME_BRIGHT_BLUE="#87ceeb"
-THEME_BRIGHT_MAGENTA="#996600"
+THEME_BRIGHT_MAGENTA="#b57900"
 THEME_BRIGHT_CYAN="#b0c4de"
 THEME_BRIGHT_WHITE="#ddccbb"
 

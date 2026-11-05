@@ -2,7 +2,8 @@
 # Batman Theme Palette (upstream: kitty-themes/Batman.conf)
 # Sourced by theme-switch to apply colors across all tools.
 #
-# ANSI values are upstream Batman verbatim - including the fact that this
+# ANSI values are upstream Batman, lifted to 4.5:1 on BG by lightness
+# only (tests/unit/theme_contrast.bats) - including the fact that this
 # palette has no red: its color1 is gold. Two deviations, both because a
 # role has to stay readable:
 #   - FG is #c5c5be (upstream color7), not upstream's #6e6e6e foreground,
@@ -34,13 +35,13 @@ THEME_BLACK="#1b1d1e"
 THEME_RED="#e6db43"
 THEME_GREEN="#c8be46"
 THEME_YELLOW="#f3fd21"
-THEME_BLUE="#737074"
-THEME_MAGENTA="#737271"
-THEME_CYAN="#615f5e"
+THEME_BLUE="#868387"
+THEME_MAGENTA="#858483"
+THEME_CYAN="#868483"
 THEME_WHITE="#c5c5be"
 
 # -- ANSI 8-15 (bright) ------------------------------------------------
-THEME_BRIGHT_BLACK="#505354"
+THEME_BRIGHT_BLACK="#818587"
 THEME_BRIGHT_RED="#fff68d"
 THEME_BRIGHT_GREEN="#fff27c"
 THEME_BRIGHT_YELLOW="#feed6c"
