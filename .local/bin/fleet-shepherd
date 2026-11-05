@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# fleet-shepherd - the shepherd as a scheduled runner, gated on the fleet state document.
+# fleet-shepherd - the shepherd as a scheduled runner, over the fleet state document.
 #
-#   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): defer to a live
-#                          interactive shepherd, score the last pass, refresh the state
-#                          document, and when it holds something to move start a fresh
-#                          `/fleet-lead pass` in window shepherd of hub session dotfiles (Prefix o)
+#   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): set the last pass
+#                          aside, refresh the state document, start a fresh `/fleet-lead pass`
+#                          in hub session shepherd (Prefix o), then close what has finished.
+#                          Every run starts a pass, whatever the last one is doing
 #   fleet-shepherd open [id]
-#                          attach to the pass window, or resume an earlier pass in a
-#                          window of its own, to watch it or talk to it
+#                          go to a pass's pane wherever it is, or resume an earlier pass in a
+#                          session of its own, to watch it or talk to it
 #   fleet-shepherd passes [n]
-#                          the pass running now and the last n scored, newest first
+#                          the pass running now, those set aside and the last n scored, newest first
 #   fleet-shepherd stats   one JSON object of shepherd numbers for the feed (agent-mqtt-publish
 #                          `summary shepherd`, agent-web's Shepherd tab): open, unhandled,
 #                          skipped and paged due lines, 24h nudges, escalations and skips from
@@ -47,16 +47,16 @@
 #                          and agent-web's Shepherd tab lists these records. Each one leads with
 #                          `fleet-bench requests`, written here so no answer can leave it out
 #
-# Most runs find nothing to move, and deciding that is a jq query, not a model run. A pass that
-# is due starts with a fresh context (about 60k), where one long /loop chat re-read 100k+ on every
-# tick and compacted 12 times on 2026-11-03. An interactive pass the human types holds their
-# latest word in context, so its lease wins.
+# A pass starts with a fresh context (about 60k), where one long /loop chat re-read 100k+ on every
+# tick and compacted 12 times on 2026-11-03. Nothing stands a run down: on 2026-11-04 the human
+# talked to a pass for 70 minutes and no sweep ran. A pass the human is talking to is left open,
+# and their conversation goes to the next pass as a handover, so they continue there.
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
 
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
-: "${FLEET_SHEPHERD_LEASE_MIN:=30}" # two loop intervals: one missed pass does not hand over
+: "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
 NAME="${AGENTCTL_NAME:-shepherd}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
@@ -67,57 +67,57 @@ DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what t
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
 UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
-PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<session:window>: the pass running now
+PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
+ASIDE="$LEDGER/.aside"        # <id>\t<start epoch>\t<due count>\t<handed epoch>\t<pane>: passes replaced and not yet closed
+NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
-# The pass is a window of hub's dotfiles session (.config/tmux-servers/hub.conf), not a session
-# of its own, so the session lists hold agent sessions only. `=` on both parts: an exact match,
-# never a prefix match onto a session or window whose name only starts the same.
-SESSION="${FLEET_SHEPHERD_SESSION:-dotfiles}"
+# The pass has a hub session of its own, declared in .config/tmux-servers/hub.conf beside the
+# other worlds: killing session dotfiles took the pass with it on 2026-11-04, when it was a window
+# there. Each run's pass is a window of this session.
+SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
 SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # hub, beside the human's chats; Prefix o jumps to it
 WINDOW="${FLEET_SHEPHERD_WINDOW:-shepherd}"
 PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
-WIN="=$SESSION:=$WINDOW"
 ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
-LEGACY=shepherd   # the session passes ran in until 2026-11-04; legacy_sweep retires it
-: "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long is STALLED and replaced
+: "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
-# A pass may run PASS_MAX_MIN before the next 15-minute run replaces it, so a busy shepherd starts
-# one at least every 45m; 60 leaves room for a late timer.
+# Every 15-minute run starts a pass, so 60 is three runs missed and room for a late timer.
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
 
-# publish <verdict> <detail>: the run's outcome, and the pass on record as the runner's item, so
-# `agentctl status shepherd` names it after a run that started none (each run clears the item).
+# publish <verdict> <detail>: the run's outcome, and the pass it started as the runner's item, so
+# `agentctl status shepherd` names it (each run clears the item).
 publish() {
-  local id where
-  { read -r id _ _ where; } 2>/dev/null < "$PASS" || true
-  [ -z "${id:-}" ] || agentctl report --name "$NAME" "item=pass ${id:0:8}: tmux -L $SERVER attach -t ${where:-$LEGACY}" >/dev/null 2>&1 || true
+  local id
+  { read -r id _; } 2>/dev/null < "$PASS" || true
+  [ -z "${id:-}" ] || agentctl report --name "$NAME" "item=pass ${id:0:8}: $ATTACH" >/dev/null 2>&1 || true
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   proof_report "$NAME" "$1" "$2" 2>/dev/null || true
 }
 
 # lease: "<holder> <epoch>". The runner exports FLEET_SHEPHERD_HOLDER=runner to its pass, so
-# the step-0 call inside a headless pass never reads as a human's loop.
+# the Shepherd tab tells a pass from a human's loop. Nothing waits on it.
 cmd_lease() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local holder="${FLEET_SHEPHERD_HOLDER:-interactive}" now
   now="$(date +%s)"
   printf '%s %s\n' "$holder" "$now" > "$LEASE"
-  tag_pane "$holder" $(( now + FLEET_SHEPHERD_LEASE_MIN * 60 ))
+  tag_pane $(( now + FLEET_SHEPHERD_LEASE_MIN * 60 ))
 }
 
-# tag_pane <holder> <expires>: exactly one tmux pane carries @shepherd, the one an interactive
+# tag_pane <expires> [pane]: exactly one tmux pane carries @shepherd, the one an interactive
 # lease was taken from, and its value is the epoch the lease goes stale. A pane option, because
 # one tmux session holds many agents, and a session option reads as set on every pane in it.
 # Readers show the tag only while that is in the future (.tmux.conf @shepherd_live, agent-panel),
 # so a shepherd that stopped renewing drops its tag with no cleanup. Every server in the socket
-# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). A runner's pass in its
-# tmux window is tagged like a human's; a run outside tmux has no pane, so it only clears.
+# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). The pane argument is a
+# pane on $SERVER: the runner tags the pass it starts, so the tag is there before the pass's own
+# lease call. A lease taken outside tmux has no pane, so it only clears.
 tag_pane() {
   local dir sock pid val
   dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
@@ -129,17 +129,13 @@ tag_pane() {
         [ -z "$val" ] || tmux -S "$sock" set-option -p -t "$pid" -u @shepherd 2>/dev/null
       done
   done
+  if [ -n "${2:-}" ]; then
+    tmux -L "$SERVER" set-option -p -t "$2" @shepherd "$1" 2>/dev/null || true
+    return 0
+  fi
   [ -n "${TMUX:-}" ] || return 0
   # Bare tmux under $TMUX is the server this pass runs in; $TMUX_PANE names its pane.
-  tmux set-option -p ${TMUX_PANE:+-t "$TMUX_PANE"} @shepherd "$2" 2>/dev/null || true
-}
-
-# interactive_age -> minutes since a live interactive pass, or nothing when there is none.
-interactive_age() {
-  local holder at
-  { read -r holder at; } 2>/dev/null < "$LEASE" || return 0
-  [ "$holder" = interactive ] && [[ "$at" =~ ^[0-9]+$ ]] || return 0
-  echo $(( ($(date +%s) - at) / 60 ))
+  tmux set-option -p ${TMUX_PANE:+-t "$TMUX_PANE"} @shepherd "$1" 2>/dev/null || true
 }
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document: a manual row is never
@@ -310,7 +306,7 @@ infra_sample() {
 }
 
 # infra_due -> the sampled lines. Like every due line, one stays due until a pass answers it (a
-# fix, or `skip` with the why), so a standing red costs one pass, not one every 15 minutes.
+# fix, or `skip` with the why), so a standing red is answered once, not by every pass.
 infra_due() {
   [ ! -s "$INFRA" ] || cat "$INFRA"
 }
@@ -396,20 +392,22 @@ due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; 
 # receipts: due lines in, out the ones a pass still owes. Every line a pass is given is answered
 # by moving it (a mark or escalate, so it is no longer due) or by `fleet-shepherd skip`: a skipped
 # line stays out while it is still due, and a line the last pass was given and left as it was
-# comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw. A line
-# owed for FLEET_SHEPHERD_UNHANDLED_MIN pages the human high, once: on 2026-11-04 the passes
+# comes back first, as `unhandled:`. That is the proof the shepherd handled what it saw. While the
+# last pass is still working it may yet reach a line, so its lines come back plain and nothing is
+# counted against it. A line owed for FLEET_SHEPHERD_UNHANDLED_MIN pages the human high, once: on 2026-11-04 the passes
 # reported "dispatch NOOP" for 6.5h and nobody was told.
 receipts() {
-  local line key out="" owed="" keys="" rows="" now seen
+  local line key out="" owed="" keys="" rows="" now seen early=""
   touch "$DUE_LAST" "$SKIPPED" "$PAGED"
   now="$(date +%s)"
+  ! last_working || early=1
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="$(due_key "$line")"
     keys+="$key"$'\n'
     cut -f1 "$SKIPPED" | grep -qxF -- "$key" && continue
     seen="$(awk -F'\t' -v k="$key" '$1 == k { print $3; exit }' "$DUE_LAST")"
-    if [ -n "$seen" ]; then
+    if [ -n "$seen" ] && [ -z "$early" ]; then
       owed+="unhandled: $line"$'\n'
       if [ $(( (now - seen) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
         agent-notify -p high -t shepherd "unhandled $(( (now - seen) / 60 ))m: $key" >/dev/null 2>&1 || true
@@ -418,7 +416,7 @@ receipts() {
     else
       out+="$line"$'\n'
     fi
-    rows+="$key"$'\t'"$(line_role "$line")"$'\t'"${seen:-$now}"$'\t'"$([ -n "$seen" ] && printf 'unhandled: ')$line"$'\n'
+    rows+="$key"$'\t'"$(line_role "$line")"$'\t'"${seen:-$now}"$'\t'"$([ -n "$seen" ] && [ -z "$early" ] && printf 'unhandled: ')$line"$'\n'
   done
   # a skip lasts while its line is due; once it is not, the next time it is due is a new one
   awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$SKIPPED" > "$SKIPPED.tmp" \
@@ -429,10 +427,19 @@ receipts() {
   if [ -n "$owed" ]; then
     seen="$(cat "$UNHANDLED" 2>/dev/null)"
     echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
-  else
+  elif [ -z "$early" ]; then
     rm -f "$UNHANDLED"
   fi
   printf '%s%s' "$owed" "$out" | sed '/^$/d'
+}
+
+# last_working -> 0 when the pass set aside last is still at it.
+last_working() {
+  local id st
+  id="$(tail -n 1 "$ASIDE" 2>/dev/null | cut -f1)"
+  [ -n "$id" ] || return 1
+  st="$(pass_status "$id")"
+  [ "$st" != idle ] && [ "$st" != gone ]
 }
 
 # skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
@@ -463,22 +470,47 @@ roles_for() {
   printf '%s\n' "${r:-none}"
 }
 
-# --- the pass: an interactive claude in a tmux window, one per due run ---------------------
+# --- the pass: an interactive claude in a tmux window, one per run --------------------------
 # A pass is a fresh `/fleet-lead pass` session in window $WINDOW of session $SESSION on server
 # $SERVER, so the human can attach, watch it work and type to it (`fleet-shepherd open`). The runner
-# does not wait for it: the next run reads how it went and scores it, and only then starts the next.
+# does not wait for it: the next run sets it aside, starts the next, and scores it once it closes.
 
-# pass_status <id> -> the session's claude status (idle, busy, shell, waiting), or gone.
-pass_status() {
+# pass_entry <id> -> the registry file of the live claude holding session <id>; exit 1 when none.
+pass_entry() {
   local f pid
   for f in "$HOME/.claude/sessions"/*.json; do
     grep -qF "\"$1\"" "$f" 2>/dev/null && [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$1" ] || continue
     pid="$(jq -r '.pid // empty' "$f")"
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
-    jq -r '.status // "idle"' "$f"
+    echo "$f"
     return 0
   done
-  echo gone
+  return 1
+}
+
+# pass_status <id> -> the session's claude status (idle, busy, shell, waiting), or gone.
+pass_status() {
+  local f
+  if f="$(pass_entry "$1")"; then jq -r '.status // "idle"' "$f"; else echo gone; fi
+}
+
+# pass_place <id> [recorded pane] -> "<pane>\t<session>\t<window index>\t<window name>\t<dead 0|1>"
+# on $SERVER; exit 1 when the pass has no pane there. Identity is the pane, never the window name:
+# hub resumed a pass on 2026-11-04 in a window named by its session id, and every surface read
+# "no pass running". The registry's `tmux` field (<session>:@<window>.%<pane>) follows a resume.
+# Its session has to match, because pane ids are per server and it does not name one.
+# list-panes, because display-message falls back to another pane when its target is gone.
+pass_place() {
+  local f at="" panes row
+  panes="$(tmux -L "$SERVER" list-panes -a -F "#{pane_id}"$'\t'"#{session_name}"$'\t'"#{window_index}"$'\t'"#{window_name}"$'\t'"#{pane_dead}" 2>/dev/null)"
+  f="$(pass_entry "$1")" && at="$(jq -r '.tmux // empty' "$f")"
+  if [ -n "$at" ]; then
+    row="$(awk -F'\t' -v p="%${at##*%}" -v s="${at%%:*}" '$1 == p && $2 == s' <<<"$panes")"
+    [ -z "$row" ] || { echo "$row"; return 0; }
+  fi
+  [ -n "${2:-}" ] || return 1
+  row="$(awk -F'\t' -v p="$2" '$1 == p' <<<"$panes")"
+  [ -n "$row" ] && echo "$row"
 }
 
 pass_transcript() {
@@ -494,47 +526,87 @@ talking() {
   tp="$(pass_transcript "$1")"
   [ -n "$tp" ] || return 1
   at="$(jq -r 'select(.type == "user" and .turnOrigin == "human") | .timestamp' "$tp" 2>/dev/null | tail -n +2 | tail -n 1)"
-  # No second human turn: `date -d ""` is midnight today, which reads as talking just after it.
+  # Checked first: `date -d ""` is midnight today, which read as talking for a lease after it.
   [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" || return 1
   [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
 }
 
+# conversation <id> <since epoch> -> what the human said to the pass after <since> and what it
+# answered, oldest first, the answer being the last thing it wrote before their next turn. It
+# starts at the human's first turn: the pass's own prompt, the first human-origin entry, and the
+# sweep it runs from it are left out, so a pass nobody talked to has no conversation.
+conversation() {
+  local tp
+  tp="$(pass_transcript "$1")"
+  [ -n "$tp" ] || return 0
+  jq -rs --argjson since "$2" '
+    def said: (.message.content? // "") | if type == "string" then . else (map(select(.type == "text") | .text) | join("\n")) end;
+    def at: (.timestamp? // "") | sub("\\.[0-9]+Z$"; "Z") | (try fromdate catch 0);
+    map(select((.type == "user" and .turnOrigin == "human") or (.type == "assistant" and (said != "")))) as $all
+    | ($all | map(.type) | indices("user")) as $turns
+    | if ($turns | length) < 2 then empty else $all[$turns[1]:] end
+    | map(select(at > $since) | {type, text: said})
+    | reduce .[] as $e ([];
+        if $e.type == "user" then . + [{human: $e.text, answer: ""}]
+        elif length == 0 then [{human: "", answer: $e.text}]
+        else .[-1].answer = $e.text end)
+    | .[-40:][]
+    | (if .human != "" then "## The human\n\n\(.human)\n" else empty end),
+      (if .answer != "" then "## The pass answered\n\n\(.answer)\n" else empty end)' "$tp" 2>/dev/null
+}
+
 # score_pass <id> <start> <due count> [why] -> "<verdict>\t<detail>" for the finished pass, by the
 # shared verdict over log.md (every move is logged) and its assistant turns (a plan is STALLED).
-# A why is a pass that never finished. It is recorded in passes.tsv and the pass file goes.
+# A pass given nothing has no move to log: NOOP. A why is a pass that never finished. It is
+# recorded in passes.tsv and the pass's files go.
 score_pass() {
   local id="$1" start="$2" n="$3" why="${4:-}" verdict detail log tp
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
-  proof_restore "$PASS.proof" || proof_watch "$LEDGER/log.md"
+  proof_restore "$LEDGER/.proof-$id" || proof_watch "$LEDGER/log.md"
   log="$(mktemp)"
   tp="$(pass_transcript "$id")"
   [ -z "$tp" ] || jq -r 'select(.type == "assistant") | .message.content[]? | (.text // .name // empty)' "$tp" > "$log" 2>/dev/null
-  if [ -n "$why" ]; then verdict=STALLED; else verdict="$(proof_verdict "$log" 0)"; fi
+  if [ -n "$why" ]; then verdict=STALLED
+  elif [ "$n" = 0 ]; then verdict=NOOP
+  else verdict="$(proof_verdict "$log" 0)"
+  fi
   rm -f "$log"
   detail="pass ${id:0:8}: $n due, $(( ($(date +%s) - start) / 60 ))m${why:+, $why}"
   printf '%s\t%s\t%s\t%s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$verdict" "$detail" >> "$PASSES"
-  rm -f "$PASS" "$PASS.proof" "$LEDGER/labels/$id"
+  rm -f "$LEDGER/.proof-$id" "$LEDGER/.handover-$id" "$LEDGER/labels/$id"
   printf '%s\t%s\n' "$verdict" "$detail"
 }
 
+# pass_prompt <due> [handover file]
 pass_prompt() {
-  printf '/fleet-lead pass\n\nRoles due: %s\n\nDue this pass (from fleet-shepherd due):\n%s\n' "$(roles_for "$1")" "$1"
+  printf '/fleet-lead pass\n\nRoles due: %s\n\nDue this pass (from fleet-shepherd due):\n%s\n' "$(roles_for "$1")" "${1:-nothing}"
+  [ -z "${2:-}" ] || printf '\nHandover: %s\n' "$2"
 }
 
-# has_window <session>:<window> -> 0 when it is on $SERVER; an empty window is any window.
-has_window() {
-  tmux -L "$SERVER" list-windows -t "=${1%%:*}" -F '#{window_name}' 2>/dev/null |
-    if [ -z "${1#*:}" ]; then grep -q .; else grep -qxF -- "${1#*:}"; fi
+# pass_account -> the config dir a pass starts on, empty for the main account: the one claude-acct
+# room names. With none it is the best there is, so the pass still runs, and the human hears once.
+pass_account() {
+  local acct
+  if acct="$(claude-acct room 2>/dev/null)"; then
+    rm -f "$NOROOM"
+    printf '%s' "$acct"
+    return 0
+  fi
+  if [ ! -e "$NOROOM" ]; then
+    : > "$NOROOM"
+    agent-notify -p high -t shepherd "no account has room: passes keep running on the best one (claude-acct status)" >/dev/null 2>&1 || true
+  fi
+  claude-acct pick 2>/dev/null || true
 }
 
-# launch_pass <due>: write the pane's launcher and start it in the pass window. The launcher
-# carries the runner's environment, since a tmux pane gets the server's, not the caller's.
+# launch_pass <id> <due> [handover file]: write the pane's launcher and start it in a new window of
+# the pass session. Always a new window: the last pass's pane may hold the human's conversation.
+# The launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 launch_pass() {
-  local id n acct v cmd
-  id="$(cat /proc/sys/kernel/random/uuid)" || return 1
-  n="$(printf '%s\n' "$1" | grep -c .)"
-  acct="$(claude-acct pick 2>/dev/null)" || acct=""
+  local id="$1" n acct v cmd pane
+  n="$(printf '%s\n' "$2" | grep -c .)"
+  acct="$(pass_account)"
   {
     echo '#!/usr/bin/env bash'
     echo "# fleet-shepherd pass $id, $(date -u '+%F %H:%M UTC'). The tmux pane runs this."
@@ -543,13 +615,13 @@ launch_pass() {
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
     done
     echo 'export FLEET_SHEPHERD_HOLDER=runner'
-    [ -z "$acct" ] || printf 'export CLAUDE_CONFIG_DIR=%q\n' "$acct"
+    if [ -n "$acct" ]; then printf 'export CLAUDE_CONFIG_DIR=%q\n' "$acct"; else echo 'unset CLAUDE_CONFIG_DIR'; fi
     # shellcheck disable=SC2016
     echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
-    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$1")"
+    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$2" "${3:-}")"
   } > "$LEDGER/.pass.sh" || return 1
   # shellcheck source=/dev/null
-  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$PASS.proof"
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$LEDGER/.proof-$id"
   cmd="bash $(printf '%q' "$LEDGER/.pass.sh")"
   if ! tmux -L "$SERVER" has-session -t "=$SESSION" 2>/dev/null; then
     # The session is made as hub makes it, from its manifest. With no server, one started from
@@ -560,116 +632,137 @@ launch_pass() {
       systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     fi
   fi
-  if has_window "$SESSION:$WINDOW"; then
-    tmux -L "$SERVER" respawn-pane -k -t "$WIN" -c "$PASS_CWD" "$cmd"
-  else
-    tmux -L "$SERVER" new-window -d -t "=$SESSION:" -n "$WINDOW" -c "$PASS_CWD" "$cmd"
-  fi || { rm -f "$PASS.proof"; return 1; }
-  printf '%s\t%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" "$SESSION:$WINDOW" > "$PASS"
+  pane="$(tmux -L "$SERVER" new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$WINDOW" -c "$PASS_CWD" "$cmd")" ||
+    { rm -f "$LEDGER/.proof-$id"; return 1; }
+  printf '%s\t%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" "$pane" > "$PASS"
   # The pass is the shepherd: no pass moves it, and fleet-sessions counts it apart from the agent
   # sessions. fleet-sessions label needs a live session, and this one is still starting, so the
   # labels are written as fleet-sessions keeps them.
   mkdir -p "$LEDGER/labels" && printf 'manual\nshepherd\n' > "$LEDGER/labels/$id"
-  claude-acct trust "$SERVER" "$WIN" "bypass permissions on" >/dev/null 2>&1 ||
+  tag_pane $(( $(date +%s) + FLEET_SHEPHERD_LEASE_MIN * 60 )) "$pane"
+  claude-acct trust "$SERVER" "$pane" "bypass permissions on" >/dev/null 2>&1 ||
     echo "$NAME: claude did not show bypass mode; look at the pane: $ATTACH" >&2
-  echo "$id"
 }
 
-# legacy_sweep: close session $LEGACY, where passes ran until 2026-11-04, once the pass recorded in
-# it is idle or gone and the human is not talking to it. A pass replaced there while still busy is
-# left alone and closed by a later run; a session with no recorded pass is never touched.
-legacy_sweep() {
-  local id
-  id="$(cat "$LEDGER/.legacy" 2>/dev/null)" && [ -n "$id" ] || return 0
-  if tmux -L "$SERVER" has-session -t "=$LEGACY" 2>/dev/null; then
-    case "$(pass_status "$id")" in idle|gone) ;; *) return 0 ;; esac
-    ! talking "$id" || return 0
-    tmux -L "$SERVER" kill-session -t "=$LEGACY" 2>/dev/null || return 0
-    echo "$NAME: closed session $LEGACY on $SERVER, its pass ${id:0:8} done; passes run in $SESSION:$WINDOW"
-  fi
-  rm -f "$LEDGER/.legacy"
+# handover <file>: write what the human said to the passes set aside, and what those passes
+# answered, since each was last handed over; print the ids written. A pass nobody talked to has
+# nothing to hand over, however much it wrote.
+handover() {
+  local id start n handed pane turns
+  [ -r "$ASIDE" ] || return 0
+  while IFS=$'\t' read -r -u 3 id start n handed pane; do
+    turns="$(conversation "$id" "$handed")"
+    [ -n "$turns" ] || continue
+    printf '# Pass %s\n\n%s\n\n' "${id:0:8}" "$turns" >> "$1"
+    echo "$id"
+  done 3< "$ASIDE"
+}
+
+# told <session> <pass>: say on the human's status line that the conversation moved. Nothing is
+# typed into their pane.
+told() {
+  local c
+  tmux -L "$SERVER" list-clients -t "=$1" -F '#{client_name}' 2>/dev/null | while read -r c; do
+    tmux -L "$SERVER" display-message -c "$c" -d 15000 "pass ${2:0:8} handed this conversation on: Prefix o continues it" 2>/dev/null
+  done
+}
+
+# retire_asides <ids just handed over>: the new pass has started, so close what is finished. A pass
+# just handed over stays this run: the human may still be in it. After that one goes once it is
+# idle with nothing new, one that is gone is scored, and one still working past PASS_MAX_MIN with
+# no human on it is STALLED. Every pass kept has its window named for it, a resumed one too. The
+# pane is closed and never its window or session: a resumed pass may share either. Sets sd, and
+# sv to a verdict that fails the run.
+retire_asides() {
+  local id start n handed pane st place at name dead why scored keep="" now
+  [ -r "$ASIDE" ] || return 0
+  now="$(date +%s)"
+  while IFS=$'\t' read -r -u 3 id start n handed pane; do
+    st="$(pass_status "$id")" why=""
+    place="$(pass_place "$id" "$pane")" || place=""
+    [ -z "$place" ] || IFS=$'\t' read -r pane at _ name dead <<<"$place"
+    if grep -qxF -- "$id" <<<"$1"; then
+      handed="$now"
+      [ -z "$place" ] || told "$at" "$id"
+    elif [ "$st" = idle ] || [ "$st" = gone ]; then
+      handed=""
+    elif ! talking "$id" && [ $(( (now - start) / 60 )) -ge "$FLEET_SHEPHERD_PASS_MAX_MIN" ]; then
+      handed="" why="still $st, replaced"
+    fi
+    if [ -n "$handed" ]; then
+      keep+="$id"$'\t'"$start"$'\t'"$n"$'\t'"$handed"$'\t'"$pane"$'\n'
+      [ -z "$place" ] || [ "$name" = "$WINDOW-${id:0:8}" ] || tmux -L "$SERVER" rename-window -t "$pane" "$WINDOW-${id:0:8}" 2>/dev/null
+      continue
+    fi
+    # gone with a pane left: a dead pane closes, a live one is a shell that is not the pass's.
+    [ -z "$place" ] || { [ "$st" = gone ] && [ "$dead" != 1 ]; } || tmux -L "$SERVER" kill-pane -t "$pane" 2>/dev/null
+    scored="$(score_pass "$id" "$start" "$n" "$why")"
+    [ -n "$scored" ] || continue
+    echo "$NAME: ${scored%%$'\t'*} ${scored#*$'\t'}"
+    case "$scored" in FAILED*|STALLED*) sv="${scored%%$'\t'*}" ;; esac
+    sd+="${sd:+; }${scored#*$'\t'}"
+  done 3< "$ASIDE"
+  printf '%s' "$keep" > "$ASIDE.tmp" && mv -f "$ASIDE.tmp" "$ASIDE"
 }
 
 cmd_run() {
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
-  local age
-  age="$(interactive_age)"
-  if [ -n "$age" ] && [ "$age" -lt "$FLEET_SHEPHERD_LEASE_MIN" ]; then
-    echo "$NAME: an interactive shepherd passed ${age}m ago - standing down."
-    publish NOOP "interactive shepherd live (${age}m)"
-    return 0
+  # The last pass goes aside first, whatever it is doing, and a pass talking to the human hands
+  # over everything it was told.
+  local id start n pane handed sv="" sd=""
+  if { read -r id start n pane; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
+    handed="$(date +%s)"
+    ! talking "$id" || handed=0
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$start" "$n" "$handed" "$pane" >> "$ASIDE"
+    rm -f "$PASS"
   fi
-  # The last pass first, before check hands out its lines again: one still working or talking
-  # to the human keeps the window, and one that is done is scored.
-  local id start n where st mins att scored="" sv="" sd=""
-  if { read -r id start n where; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
-    st="$(pass_status "$id")"
-    mins=$(( ($(date +%s) - start) / 60 ))
-    att="tmux -L $SERVER attach -t ${where:-$LEGACY}"
-    if talking "$id"; then
-      echo "$NAME: the human is talking to pass ${id:0:8} - standing down."
-      publish NOOP "the human is talking to pass ${id:0:8}: $att"
-      return 0
-    fi
-    case "$st" in
-      idle|gone) scored="$(score_pass "$id" "$start" "$n")" ;;
-      *)
-        if [ "$mins" -lt "$FLEET_SHEPHERD_PASS_MAX_MIN" ]; then
-          echo "$NAME: pass ${id:0:8} is $st (${mins}m)."
-          publish "$([ "$st" = waiting ] && echo BLOCKED || echo NOOP)" "pass ${id:0:8} $st ${mins}m: $att"
-          return 0
-        fi
-        scored="$(score_pass "$id" "$start" "$n" "still $st, replaced")" ;;
-    esac
-    sv="${scored%%$'\t'*}" sd="${scored#*$'\t'}"
-    [ -z "$scored" ] || echo "$NAME: $sv $sd"
-    # A pass recorded with no window ran in the old session; it is retired once that pass is done.
-    [ -n "$where" ] || [ "$SESSION" = "$LEGACY" ] || printf '%s\n' "$id" > "$LEDGER/.legacy"
-  fi
-  legacy_sweep
-  local rc=0
-  case "$sv" in FAILED|STALLED) rc=1 ;; esac
-  local due due_rc=0
+  # A document it could not refresh is the pass's first problem, not a reason to have no pass.
+  local due due_rc=0 trouble=""
   due="$(cmd_check)" || due_rc=$?
-  if [ "$due_rc" = 1 ]; then
-    echo "$NAME: nothing to move."
-    publish "${sv:-NOOP}" "${sd:+$sd; }nothing to move"
-    return "$rc"
-  elif [ "$due_rc" != 0 ]; then
-    publish FAILED "${sd:+$sd; }could not refresh or read the state document"
-    return "$due_rc"
+  if [ "$due_rc" -gt 1 ]; then
+    trouble="could not refresh or read the state document"
+    due="$trouble: fleet-sessions --write, $STATE_FILE"
   fi
-  printf '%s: due\n%s\n' "$NAME" "$due"
-  local new
-  new="$(launch_pass "$due")" || {
-    publish FAILED "${sd:+$sd; }could not start a pass in tmux -L $SERVER session $SESSION"
+  [ -z "$due" ] || printf '%s: due\n%s\n' "$NAME" "$due"
+  local new hand carried
+  new="$(cat /proc/sys/kernel/random/uuid)" || return 1
+  hand="$LEDGER/.handover-$new"
+  carried="$(handover "$hand")"
+  if ! launch_pass "$new" "$due" "$([ ! -s "$hand" ] || echo "$hand")"; then
+    rm -f "$hand"
+    publish FAILED "could not start a pass in tmux -L $SERVER session $SESSION"
     return 1
-  }
+  fi
+  retire_asides "$carried"
   echo "$NAME: started pass ${new:0:8}: $ATTACH"
-  publish "${sv:-WORKED}" "${sd:+$sd; }started pass ${new:0:8}: $(printf '%s\n' "$due" | grep -c .) due, $ATTACH"
-  return "$rc"
+  local detail
+  detail="${sd:+$sd; }started pass ${new:0:8}: $(printf '%s\n' "$due" | grep -c .) due, $ATTACH"
+  if [ -n "$trouble" ]; then publish FAILED "$trouble; $detail"; return "$due_rc"; fi
+  publish "${sv:-WORKED}" "$detail"
+  [ -z "$sv" ]
 }
 
-# open [id]: the pass window, or an earlier pass resumed in a session of its own, to read or talk
-# to. A resumed pass is a session because fleet-dispatch start resumes into one; it is labelled
-# shepherd, so the session counts leave it out as they leave out the pass window.
+# open [id]: the pane of the pass running now, or of the one named, wherever it is; with no pane
+# left, the pass resumed in a session of its own, since fleet-dispatch start resumes into one. It
+# is labelled shepherd, so the session counts leave it out as they leave out a pass.
 cmd_open() {
-  local id="${1:-}" cur="" where="" t cwd
-  { read -r cur _ _ where; } 2>/dev/null < "$PASS" || true
+  local id="${1:-}" cur="" pane="" place s t cwd
+  { read -r cur _ _ pane; } 2>/dev/null < "$PASS" || true
   if [ -n "$id" ]; then
-    id="$( { printf '%s\n' "$cur"; cut -f2 "$PASSES" 2>/dev/null; } | grep -m1 "^$id")" || die "no pass $1 (fleet-shepherd passes)"
+    id="$( { printf '%s\n' "$cur"; cut -f1 "$ASIDE" 2>/dev/null; cut -f2 "$PASSES" 2>/dev/null; } | grep -m1 "^$id")" || die "no pass $1 (fleet-shepherd passes)"
+    [ "$id" = "$cur" ] || pane="$(awk -F'\t' -v i="$id" '$1 == i { print $5 }' "$ASIDE" 2>/dev/null)"
   fi
-  if [ -z "$id" ] || [ "$id" = "$cur" ]; then
-    # A pass recorded with no window was started in the old session, before the move.
-    if [ -n "$cur" ] && [ -z "$where" ]; then t="$LEGACY:"; else t="${where:-$SESSION:$WINDOW}"; fi
-    has_window "$t" || die "no pass window: no $t on $SERVER (fleet-shepherd passes)"
+  id="${id:-$cur}"
+  [ -n "$id" ] || die "no pass running (fleet-shepherd passes)"
+  if place="$(pass_place "$id" "$pane")"; then
+    t="$(cut -f2,3 --output-delimiter=: <<<"$place")"
   else
-    t="$WINDOW-${id:0:8}:"
-    if ! has_window "$t"; then
-      # claude resumes a session from the directory it ran in: before the move that was $HOME.
+    s="$WINDOW-${id:0:8}" t="$s:"
+    if ! tmux -L "$SERVER" has-session -t "=$s" 2>/dev/null; then
+      # claude resumes a session from the directory it ran in.
       cwd="$(jq -r 'select(.cwd) | .cwd' "$(pass_transcript "$id")" 2>/dev/null | head -n 1)"
       [ -d "$cwd" ] || cwd="$PASS_CWD"
-      fleet-dispatch start --resume "$id" --session "${t%:}" --cwd "$cwd" --project dotfiles --server "$SERVER" || die "could not resume pass $id"
+      fleet-dispatch start --resume "$id" --session "$s" --cwd "$cwd" --project dotfiles --server "$SERVER" || die "could not resume pass $id"
     fi
     mkdir -p "$LEDGER/labels" && printf 'manual\nshepherd\n' > "$LEDGER/labels/$id"
   fi
@@ -680,14 +773,19 @@ cmd_open() {
   fi
 }
 
-# passes [n]: the pass in the window now, then the last n scored, newest first.
+# passes [n]: the pass running now, those set aside, then the last n scored, newest first.
 cmd_passes() {
   local id start n
   if { read -r id start n _; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
     printf '%s\t%s\tnow\t%s due, %s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$n" "$(pass_status "$id")"
-  elif [ ! -s "$PASSES" ]; then
-    echo "no passes yet: the runner starts one when a line is due (agentctl status shepherd)"
+  elif [ ! -s "$PASSES" ] && [ ! -s "$ASIDE" ]; then
+    echo "no passes yet: the runner starts one every run (agentctl status shepherd)"
     return 0
+  fi
+  if [ -r "$ASIDE" ]; then
+    while IFS=$'\t' read -r -u 3 id start n _; do
+      printf '%s\t%s\taside\t%s due, %s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$n" "$(pass_status "$id")"
+    done 3< "$ASIDE"
   fi
   tail -n "${1:-20}" "$PASSES" 2>/dev/null | tac
   return 0
@@ -698,14 +796,16 @@ lines() { local c; c="$(grep -c . "$1" 2>/dev/null)"; echo "${c:-0}"; }
 # stats: the numbers, read from the ledgers as they are; writes nothing. A 24h count reads log.md's
 # `- HH:MM UTC MM-DD: <verb> ...` receipts, so a pass that moved a line without logging it is not counted.
 cmd_stats() {
-  local now id="" start="" where="" last="" lstart lid lverdict st="" iage
+  local now id="" start="" where="" pane="" place last="" lstart lid lverdict st=""
   now=$(date +%s)
-  { read -r id start _ where; } 2>/dev/null < "$PASS" || true
+  { read -r id start _ pane; } 2>/dev/null < "$PASS" || true
   last="$(tail -n 1 "$PASSES" 2>/dev/null)"
   IFS=$'\t' read -r lstart lid lverdict _ <<<"$last"
   [ -z "$lstart" ] || lstart="$(date -u -d "$lstart" +%s 2>/dev/null)" || lstart=""
-  [ -z "$id" ] || st="$(pass_status "$id")"
-  iage="$(interactive_age)"
+  if [ -n "$id" ]; then
+    st="$(pass_status "$id")"
+    place="$(pass_place "$id" "$pane")" && where="$(cut -f2,3 --output-delimiter=: <<<"$place")"
+  fi
   { [ ! -r "$LEDGER/log.md" ] || awk -v now="$(date -u '+%m-%d %H:%M')" -v cut="$(date -u -d '24 hours ago' '+%m-%d %H:%M')" '
     match($0, /^- [0-9][0-9]:[0-9][0-9] UTC [0-9][0-9]-[0-9][0-9]: /) {
       k = substr($0, 13, 5) " " substr($0, 3, 5)
@@ -714,21 +814,20 @@ cmd_stats() {
     }' "$LEDGER/log.md"; } |
     jq -Rsc --argjson now "$now" --argjson pstart "${start:-null}" --argjson lstart "${lstart:-null}" \
       --arg verdict "$lverdict" --arg lid "$lid" --arg id "$id" --arg st "$st" \
-      --arg attach "tmux -L $SERVER attach -t ${where:-$LEGACY}" \
+      --arg attach "tmux -L $SERVER attach -t ${where:-$SESSION:$WINDOW}" \
       --argjson due "$(lines "$DUE_LAST")" \
       --argjson unhandled "$(cut -f4 "$DUE_LAST" 2>/dev/null | grep -c '^unhandled: ')" \
       --argjson streak "$(c="$(cat "$UNHANDLED" 2>/dev/null)"; echo "${c//[!0-9]/}" | grep . || echo 0)" \
       --argjson skipped "$(lines "$SKIPPED")" \
       --argjson paged "$(lines "$PAGED")" \
       --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \
-      --argjson lease "$([ -n "$iage" ] && [ "$iage" -lt "$FLEET_SHEPHERD_LEASE_MIN" ] && echo true || echo false)" \
       --argjson stuckmin "$FLEET_SHEPHERD_STUCK_MIN" '
       (split("\n") | map(select(length > 0))) as $v
       | def n(w): $v | map(select(. == w)) | length;
       def nul: if . == "" then null else . end;
       ($pstart // $lstart) as $start
       | (if $start == null then null else $now - $start end) as $age
-      | (if $due > 0 and ($lease | not) and ($age == null or $age > $stuckmin * 60)
+      | (if $due > 0 and ($age == null or $age > $stuckmin * 60)
            then "\($due) due and no pass started in \(if $age == null then "the ledger" else "\($age / 60 | floor)m" end)"
          elif $streak >= 2 then "an unhandled due line at \($streak) checks in a row"
          else null end) as $stuck
