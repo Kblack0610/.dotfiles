@@ -57,6 +57,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `j`/`k`, Enter | History: pick a day, open it on Today |
 | `j`/`k`, Enter, Esc | Sessions: pick a session (PgUp/PgDn, space and `g`/`G` scroll the page), open or close its detail pane |
 | `f` | Sessions: unfold or fold the forecast band, burn-up and baseline at the bottom |
+| `w` | Sessions: unfold or fold the week's sessions ranked by friction (`hub_core::outcomes`, from `agentctl-session-outcomes worst`), under the forecast. Read on opening and on `r`; `agentctl-session-outcomes card <id>` prints one in full |
 | `i` `p` `u` `m` `x` `c` `a` | Sessions: interrupt, park, unpark, move, stop, cancel, approve the plan of the selected session; each asks first |
 | `y`/Enter, `n`/Esc, Left/Right | Sessions, confirm armed: run it, drop it, pick the account a move goes to |
 | `j`/`k`, `c`, `+`/`-` | Queue: pick an active item, cancel it (asks first), raise or lower its priority |
