@@ -7,7 +7,7 @@
 //! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
 //! by their tmux session name, the one name an ask, a queue item and a state row all carry.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -22,7 +22,7 @@ pub const DOMAINS: [&str; 11] = [
     "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
 ];
 /// The domains shown even when Prometheus has no status for them, so a missing one reads as no data.
-const ALWAYS: [&str; 2] = ["k3s", "ci"];
+pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
 /// How many rows of a list Home shows before the rest fold under "+N older" (dashboards rule: a
@@ -161,32 +161,6 @@ fn dir_name(cwd: &str) -> String {
         .unwrap_or("")
         .trim_start_matches('.')
         .to_string()
-}
-
-/// Infra's `cc` series keyed as the boards key them: `name` or `name/<domain|host|pool|site>`.
-pub fn cc_values(infra: &Infra) -> HashMap<String, f64> {
-    let mut v = HashMap::new();
-    for s in infra.get("cc") {
-        let name = s.label("__name__");
-        let sub = if name == "cc:domain_status" {
-            s.label("domain")
-        } else {
-            ["host", "pool", "site"]
-                .into_iter()
-                .map(|k| s.label(k))
-                .find(|x| !x.is_empty())
-                .unwrap_or("")
-        };
-        let key = if sub.is_empty() {
-            name.to_string()
-        } else {
-            format!("{name}/{sub}")
-        };
-        if let Some(x) = s.value {
-            v.insert(key, x);
-        }
-    }
-    v
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
@@ -382,22 +356,14 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
             i.error.as_deref().unwrap_or("did not answer")
         )),
         Some(i) => {
-            let v = cc_values(i);
+            let v = i.cc_values();
             if let Some(x) = v.get("cc:claude_code_cost_24h_usd") {
                 h.numbers.push(Number {
                     label: "claude 24h",
                     value: format!("${x:.0}"),
                 });
             }
-            for d in DOMAINS {
-                let s = v.get(&format!("cc:domain_status/{d}")).copied();
-                if s.is_some() || ALWAYS.contains(&d) {
-                    h.health.push(Chip {
-                        name: d.into(),
-                        level: Level::of(s),
-                    });
-                }
-            }
+            h.health = i.health();
         }
     }
     h

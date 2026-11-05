@@ -30,9 +30,9 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab projects [NAME]
        hub actions --since WHEN [--json]
        hub phone --json
-  TAB     home|queue|jobs|ci|machines|sessions|today|history|fleet|projects, or a retired
-          name (overview, waiting, asks, board, forecast, watch, shepherd) that lands on its
-          new tab
+  TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
+          (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
+          lands on its new tab; jobs, ci and machines open that section of Infra
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --tab   start on this page; with --once, print only it
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
@@ -50,15 +50,13 @@ fn main() {
     let mut it = args.iter().peekable();
     if it.peek().map(|a| a.as_str()) == Some("tab") {
         it.next();
-        let t = it
-            .next()
-            .and_then(|t| Tab::parse(t))
-            .unwrap_or_else(|| die(USAGE));
-        let query: Vec<&str> = it.map(String::as_str).collect();
-        if !query.is_empty() && t != Tab::Projects {
+        let words: Vec<&str> = it.map(String::as_str).collect();
+        let (t, q) = tabreq::parse(&words.join(" ")).unwrap_or_else(|| die(USAGE));
+        // A search is the Projects tab's; Infra's query is the section a retired name names.
+        if q.is_some() && t != Tab::Projects && words.len() > 1 {
             die(USAGE)
         }
-        if let Err(e) = tabreq::request(&tabreq::dir(), t, Some(&query.join(" "))) {
+        if let Err(e) = tabreq::request(&tabreq::dir(), t, q.as_deref()) {
             die(&format!("hub tab: {e}"));
         }
         return;
@@ -77,7 +75,7 @@ fn main() {
             "--tab" => {
                 tab = Some(
                     it.next()
-                        .and_then(|t| Tab::parse(t))
+                        .and_then(|t| tabreq::parse(t))
                         .unwrap_or_else(|| die(USAGE)),
                 )
             }
@@ -90,7 +88,7 @@ fn main() {
     }
     // A request left while no hub ran (the binding that started this window) wins over --tab.
     let start = tabreq::take(&tabreq::dir())
-        .or(tab.map(|t| (t, None)))
+        .or(tab)
         .unwrap_or((Tab::Home, None));
     if let Err(e) = run(start) {
         die(&format!("hub: {e}"));
@@ -167,7 +165,9 @@ fn die(msg: &str) -> ! {
 }
 
 /// The pages as plain text, for tests, capture-pane and a quick look over ssh.
-fn print_once(tab: Option<Tab>) -> i32 {
+fn print_once(req: Option<tabreq::Req>) -> i32 {
+    let section = req.as_ref().and_then(|r| r.1.clone());
+    let tab = req.map(|r| r.0);
     let w = std::env::var("COLUMNS")
         .ok()
         .and_then(|c| c.parse().ok())
@@ -226,7 +226,8 @@ fn print_once(tab: Option<Tab>) -> i32 {
         }
         return 0;
     }
-    if tab == Some(Tab::Jobs) {
+    // `--tab jobs` prints the whole jobs table, as the Jobs tab did.
+    if tab == Some(Tab::Infra) && section.as_deref() == Some("jobs") {
         let js = hub_core::jobs::collect(&a.paths, &Default::default());
         for l in
             a.jv.status(&js, a.p)
@@ -240,9 +241,10 @@ fn print_once(tab: Option<Tab>) -> i32 {
     let infra = hub_core::infra::gather();
     let failed = !infra.ok;
     a.infra = Some(infra);
+    a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
     let tabs = match tab {
         Some(t) => vec![t],
-        None => vec![Tab::Home, Tab::Machines, Tab::Ci],
+        None => vec![Tab::Home, Tab::Infra],
     };
     for (n, t) in tabs.into_iter().enumerate() {
         if n > 0 {

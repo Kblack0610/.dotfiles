@@ -37,9 +37,7 @@ const PREVIEW_MIN_HEIGHT: u16 = 18;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Home,
-    Jobs,
-    Ci,
-    Machines,
+    Infra,
     Sessions,
     Today,
     History,
@@ -49,12 +47,12 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Home,
         Tab::Queue,
-        Tab::Jobs,
-        Tab::Ci,
-        Tab::Machines,
+        // Jobs' slot and key 3; `jobs`, `ci` and `machines` resolve here and 4 and 5 open its CI
+        // and Machines sections, until the layout renumbers the digits once (dashboards.md).
+        Tab::Infra,
         // Forecast's slot and key 6; `forecast` resolves here (hub_core::layout::RETIRED).
         Tab::Sessions,
         Tab::Today,
@@ -66,9 +64,7 @@ impl Tab {
     pub fn title(self) -> &'static str {
         match self {
             Tab::Home => "Home",
-            Tab::Jobs => "Jobs",
-            Tab::Ci => "CI",
-            Tab::Machines => "Machines",
+            Tab::Infra => "Infra",
             Tab::Sessions => "Sessions",
             Tab::Today => "Today",
             Tab::History => "History",
@@ -90,18 +86,41 @@ impl Tab {
     fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
+    /// The digit that opens this tab, as the tab bar shows it.
+    fn digit(self) -> char {
+        DIGITS
+            .iter()
+            .find(|(_, t, s)| *t == self && s.is_none())
+            .map_or(' ', |(d, _, _)| *d)
+    }
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
         match self {
             Tab::Home => Some("kb-command-center"),
-            Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
-            Tab::Machines => Some("kb-fleet"),
+            Tab::Infra => Some("kb-ci-runners"),
             Tab::Sessions | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Projects => {
                 None
             }
         }
     }
 }
+
+/// What each digit opens: a tab, or one of its sections. The digits stay where they were
+/// until the layout renumbers once (dashboards.md): 4 and 5 were CI and Machines.
+const DIGITS: [(char, Tab, Option<&str>); 10] = [
+    ('1', Tab::Home, None),
+    ('2', Tab::Queue, None),
+    ('3', Tab::Infra, None),
+    ('4', Tab::Infra, Some("ci")),
+    ('5', Tab::Infra, Some("machines")),
+    ('6', Tab::Sessions, None),
+    ('7', Tab::Today, None),
+    ('8', Tab::History, None),
+    ('9', Tab::Fleet, None),
+    ('0', Tab::Projects, None),
+];
+/// How many job rows Infra's Jobs section shows; Enter opens the whole table.
+const JOBS_SHOWN: usize = 8;
 
 /// The files the Fleet, Today and History tabs are read from.
 #[derive(Clone)]
@@ -243,8 +262,13 @@ pub struct App {
     pub day: Option<String>,
     /// The History tab's selected row, newest first.
     pub hist_sel: usize,
-    /// Where the Today tab's sections start, from the last draw (n/N jump between them).
-    sections: Vec<usize>,
+    /// Where the page's sections start, from the last draw (n/N jump between them on Today and
+    /// Infra), with Infra's `hub_core::layout` section names.
+    sections: Vec<(&'static str, usize)>,
+    /// An Infra section to scroll to once the page draws (`hub --tab ci`, key 4).
+    seek: Option<&'static str>,
+    /// Infra's Jobs section opened as the whole jobs table.
+    pub infra_jobs: bool,
     /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
@@ -294,6 +318,8 @@ impl App {
             day: None,
             hist_sel: 0,
             sections: vec![],
+            seek: None,
+            infra_jobs: false,
             scroll: 0,
             quit: false,
             tx,
@@ -568,7 +594,7 @@ impl App {
             Msg::BoardFiles => self.read_boards(),
             Msg::Tab(t, q) => {
                 self.go(t);
-                self.open_project(q);
+                self.open_query(q);
             }
             Msg::Boards(b) => {
                 let state = b.watch.state["sessions"].as_array().cloned();
@@ -685,7 +711,7 @@ impl App {
             self.quit = true;
             return;
         }
-        if self.tab == Tab::Jobs && self.jobs_key(k) {
+        if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
         if self.tab == Tab::Today && self.today_key(k) {
@@ -707,11 +733,13 @@ impl App {
         let tabs = Tab::ALL.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
-            // 1-9 are the first nine pages and 0 the tenth, as on the tab bar.
+            // Each digit opens what DIGITS says, as on the tab bar.
             KeyCode::Char(c @ '0'..='9') => {
-                let i = (c as usize - '0' as usize + 9) % 10;
-                if let Some(t) = Tab::ALL.get(i) {
+                if let Some((_, t, sec)) = DIGITS.iter().find(|(d, _, _)| *d == c) {
                     self.go(*t);
+                    if let Some(sec) = sec {
+                        self.open_section(sec);
+                    }
                 }
             }
             KeyCode::Tab => self.go(Tab::ALL[(self.tab.index() + 1) % tabs]),
@@ -748,6 +776,30 @@ impl App {
         }
     }
 
+    /// A request's query: an Infra section on Infra, else a project name.
+    pub fn open_query(&mut self, q: Option<String>) {
+        match (self.tab, q) {
+            (Tab::Infra, Some(q)) => {
+                let secs = hub_core::layout::resolve("infra").map_or(&[][..], |t| t.sections);
+                if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
+                    self.open_section(sec);
+                }
+            }
+            (_, q) => self.open_project(q),
+        }
+    }
+
+    /// Show one Infra section: Jobs opens the jobs table, any other scrolls to its heading at
+    /// the next draw.
+    fn open_section(&mut self, sec: &'static str) {
+        if sec == "jobs" {
+            self.infra_jobs = true;
+        } else {
+            self.infra_jobs = false;
+            self.seek = Some(sec);
+        }
+    }
+
     /// `hub tab projects <name>`: open that project's rows (or All searched for the name)
     /// once the cards are read; None leaves the tab as it is.
     pub fn open_project(&mut self, q: Option<String>) {
@@ -760,6 +812,8 @@ impl App {
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
+        self.infra_jobs = false;
+        self.seek = None;
         if t == Tab::Sessions {
             self.read_forecast();
             self.read_sessions();
@@ -883,18 +937,7 @@ impl App {
                 _ => {}
             },
             KeyCode::Char('t') if self.day.is_some() => self.open_day(None),
-            KeyCode::Char('n') => {
-                if let Some(s) = self.sections.iter().find(|s| **s > self.scroll) {
-                    self.scroll = *s;
-                }
-            }
-            KeyCode::Char('N') => {
-                if let Some(s) = self.sections.iter().rev().find(|s| **s < self.scroll) {
-                    self.scroll = *s;
-                } else {
-                    self.scroll = 0;
-                }
-            }
+            KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
             _ => return false,
         }
         true
@@ -939,6 +982,48 @@ impl App {
     }
 
     /// The Jobs page's own keys; false hands the key to the global ones.
+    /// n and N jump to the next or the previous section heading (Today, Infra).
+    fn next_section(&mut self, forward: bool) {
+        let at = self.sections.iter().map(|s| s.1);
+        if forward {
+            if let Some(s) = at.clone().find(|s| *s > self.scroll) {
+                self.scroll = s;
+            }
+        } else {
+            self.scroll = at.rev().find(|s| *s < self.scroll).unwrap_or(0);
+        }
+    }
+
+    /// Infra's own keys. The summary: n/N jump between sections, Enter and the jobs keys
+    /// (/ s f h) open the jobs table. The table: the jobs keys, and Esc with nothing to clear
+    /// goes back to the summary.
+    fn infra_key(&mut self, k: KeyEvent) -> bool {
+        if !self.infra_jobs {
+            match k.code {
+                KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
+                KeyCode::Enter => self.infra_jobs = true,
+                KeyCode::Char('/' | 's' | 'f' | 'h') => {
+                    self.infra_jobs = true;
+                    return self.jobs_key(k);
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        let jv = &self.jv;
+        let root = jv.typing.is_none()
+            && jv.log.is_none()
+            && jv.history.is_none()
+            && jv.search.is_empty()
+            && jv.source.is_none()
+            && jv.state == Default::default();
+        if root && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+            self.infra_jobs = false;
+            return true;
+        }
+        self.jobs_key(k)
+    }
+
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
         if let Some(t) = self.jv.typing.as_mut() {
             match k.code {
@@ -1064,19 +1149,26 @@ impl App {
             _ => body,
         };
         self.page = body.height.saturating_sub(2) as usize;
-        if self.tab == Tab::Jobs {
+        if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
         } else if self.tab == Tab::History && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
             // The Projects tab's one section is its selected card or row, kept in view.
-            if let (Tab::Projects, Some(&at)) = (self.tab, sections.first()) {
+            if let (Tab::Projects, Some(&(_, at))) = (self.tab, sections.first()) {
                 let h = (body.height as usize).max(1);
                 if at < self.scroll {
                     self.scroll = at.saturating_sub(2);
                 } else if at >= self.scroll + h {
                     self.scroll = at + 1 - h;
+                }
+            }
+            // A section asked for (key 4, `hub --tab ci`) is scrolled to once the page has it.
+            if let Some(want) = self.seek {
+                if let Some((_, at)) = sections.iter().find(|s| s.0 == want) {
+                    self.scroll = *at;
+                    self.seek = None;
                 }
             }
             self.sections = sections;
@@ -1092,12 +1184,8 @@ impl App {
 
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
-        for (i, t) in Tab::ALL.iter().enumerate() {
-            // 1-9 and 0 reach the first ten; the rest are Tab, Shift-Tab and `hub --tab`.
-            let label = match i {
-                0..=9 => format!(" {} {} ", (i + 1) % 10, t.title()),
-                _ => format!(" {} ", t.title()),
-            };
+        for t in Tab::ALL.iter() {
+            let label = format!(" {} {} ", t.digit(), t.title());
             s.push(if *t == self.tab {
                 Span::styled(label, self.p.sel())
             } else {
@@ -1142,12 +1230,15 @@ impl App {
     fn hints(&self) -> String {
         let tabs = "0-9";
         match self.tab {
-            Tab::Jobs if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
-            Tab::Jobs if self.jv.log.is_some() => {
+            Tab::Infra if !self.infra_jobs => format!(
+                "n/N section  Enter jobs table  4 CI  5 Machines  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+            ),
+            Tab::Infra if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
+            Tab::Infra if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
-            Tab::Jobs => format!(
-                "Enter log  s source  f state  / search  h history  o open url  r refresh  {tabs} tabs  q quit"
+            Tab::Infra => format!(
+                "Enter log  s source  f state  / search  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Sessions if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
@@ -1191,8 +1282,29 @@ impl App {
         self.tv.selected(f).map(|r| tasktab::preview(r, self.p, w))
     }
 
+    /// Infra's Jobs section: the jobs line and the first rows; Enter opens the whole table.
+    fn jobs_section(&self, w: usize) -> Vec<Line<'static>> {
+        let mut out = vec![Line::styled("JOBS", self.p.head())];
+        let Some(js) = &self.jobs else {
+            out.push(Line::styled("Reading jobs...", self.p.dim()));
+            return out;
+        };
+        out.extend(self.jv.status(js, self.p));
+        let table = self.jv.table(js, self.p, w, false);
+        let rows = table.len().saturating_sub(1);
+        out.extend(table.into_iter().take(1 + JOBS_SHOWN));
+        out.push(Line::styled(
+            format!(
+                "  {} rows; Enter opens the table (/ search, s source, f state, h history, Enter log)",
+                rows
+            ),
+            self.p.dim(),
+        ));
+        out
+    }
+
     /// A page as lines (or what is being waited for), and where its sections start.
-    pub fn body(&self, w: usize) -> (Vec<Line<'static>>, Vec<usize>) {
+    pub fn body(&self, w: usize) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let now = jobs::now();
         let reading = |what: &str| {
             (
@@ -1201,17 +1313,12 @@ impl App {
             )
         };
         let (lines, sections) = match (self.tab, &self.boards, &self.infra) {
-            // What needs you first, then the machines and pools until the Infra tab takes them.
+            // What needs you; the machinery is Infra's.
             (Tab::Home, b, i) => {
                 let null = serde_json::Value::Null;
                 let state = b.as_ref().map_or(&null, |b| &b.watch.state);
                 let home = hub_core::home::build(state, self.queue.as_ref(), i.as_ref());
-                let mut l = hometab::page(&home, self.p, now, w);
-                if let Some(i) = i.as_ref().filter(|i| i.ok) {
-                    l.push(Line::raw(""));
-                    l.extend(board::page(self.tab, i, self.p, now, w, &self.hosts));
-                }
-                (l, vec![])
+                (hometab::page(&home, self.p, now, w), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
@@ -1221,7 +1328,7 @@ impl App {
                         _ => None,
                     };
                     let (l, at) = projtab::page(&self.cards(), feed, &self.pv, self.p, w);
-                    (l, at.into_iter().collect())
+                    (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
             // One project's card stays on top of its rows; All has none.
@@ -1243,7 +1350,7 @@ impl App {
                     let top = l.len();
                     let (rows, at) = tasktab::page(f, &self.tv, self.p, w);
                     l.extend(rows);
-                    (l, at.map(|a| a + top).into_iter().collect())
+                    (l, at.map(|a| ("", a + top)).into_iter().collect())
                 }
             },
             (Tab::Queue, ..) => match &self.queue {
@@ -1288,11 +1395,28 @@ impl App {
             (Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Today, Some(b), _) => {
                 let pg = day::today(b.rec.as_ref(), self.p, now, w);
-                (pg.lines, pg.sections)
+                (pg.lines, pg.sections.into_iter().map(|s| ("", s)).collect())
             }
             (Tab::History, Some(b), _) => (day::history(&b.hist, self.hist_sel, self.p, w), vec![]),
             (_, _, None) => reading("Prometheus"),
-            (t, _, Some(i)) => (board::page(t, i, self.p, now, w, &self.hosts), vec![]),
+            // Infra's sections in hub_core::layout order, a blank line between them.
+            (_, _, Some(i)) => {
+                let mut secs = board::infra(i, self.p, now, w, &self.hosts);
+                let at = secs
+                    .iter()
+                    .position(|s| s.0 == "cloud")
+                    .unwrap_or(secs.len());
+                secs.insert(at, ("jobs", self.jobs_section(w)));
+                let (mut l, mut at) = (vec![], vec![]);
+                for (n, (name, lines)) in secs.into_iter().enumerate() {
+                    if n > 0 {
+                        l.push(Line::raw(""));
+                    }
+                    at.push((name, l.len()));
+                    l.extend(lines);
+                }
+                (l, at)
+            }
         };
         (lines, sections)
     }
@@ -1678,7 +1802,10 @@ mod tests {
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("1 Home  2 Queue  3 Jobs"), "{s}");
+        assert!(
+            lines[0].contains("1 Home  2 Queue  3 Infra  6 Sessions"),
+            "{s}"
+        );
         assert!(
             s.contains("NUMBERS  queue 1 running, 2 up next (1 held) | done today 1"),
             "{s}"
@@ -1783,7 +1910,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Jobs") && bar.contains("9 Fleet  0 Projects"),
+            bar.contains("3 Infra") && bar.contains("9 Fleet  0 Projects"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -1918,13 +2045,13 @@ mod tests {
     }
 
     #[test]
-    fn home_draws_what_needs_you_then_the_machines_and_green_collapses() {
+    fn home_draws_what_needs_you_and_green_collapses() {
         let mut a = app(Tab::Home);
         a.infra = Some(board::tests::fixture());
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("5 Machines") && first.contains(" RED "),
+            first.contains("1 Home") && first.contains("3 Infra") && first.contains(" RED "),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -1932,7 +2059,7 @@ mod tests {
         assert!(at("NEEDS YOU (1)") < at("watch mac_studio_mlx"));
         assert!(s.contains("ci NODATA") && s.contains("llm RED") && s.contains("1 green"));
         assert!(!s.contains("k3s OK"), "{s}");
-        assert!(at("HEALTH") < at("POOL "), "the machines stay under Home");
+        assert!(!s.contains("MACHINES"), "the machinery is Infra's: {s}");
         assert!(s.lines().last().unwrap().contains("r refresh"));
     }
 
@@ -1940,7 +2067,9 @@ mod tests {
     fn a_retired_tab_name_opens_its_new_home() {
         assert_eq!(Tab::parse("overview"), Some(Tab::Home));
         assert_eq!(Tab::parse("waiting"), Some(Tab::Home));
-        assert_eq!(Tab::parse("ci"), Some(Tab::Ci));
+        assert_eq!(Tab::parse("ci"), Some(Tab::Infra));
+        assert_eq!(Tab::parse("machines"), Some(Tab::Infra));
+        assert_eq!(Tab::parse("jobs"), Some(Tab::Infra));
         assert_eq!(Tab::parse("forecast"), Some(Tab::Sessions));
         assert_eq!(Tab::parse("watch"), Some(Tab::Sessions));
         assert_eq!(Tab::parse("shepherd"), Some(Tab::Sessions));
@@ -1950,11 +2079,15 @@ mod tests {
     fn the_landed_layout_tabs_lead_in_hub_core_order() {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs in its order.
         // Rule 13's interim: until the layout renumbers the digits once, a landed tab that
-        // replaced one keeps that tab's slot and key, so it sits out the order check: Projects
-        // is Board's key 0 and Sessions Forecast's key 6.
-        let interim = [(Tab::Projects, 9), (Tab::Sessions, 5)];
-        for (t, slot) in interim {
-            assert_eq!(Tab::ALL[slot], t, "{} left its interim slot", t.title());
+        // replaced one keeps that tab's key, so it sits out the order check: Projects is
+        // Board's 0, Sessions Forecast's 6 and Infra Jobs' 3 (4 and 5 open its CI and Machines).
+        let interim = [
+            (Tab::Projects, '0'),
+            (Tab::Sessions, '6'),
+            (Tab::Infra, '3'),
+        ];
+        for (t, d) in interim {
+            assert_eq!(t.digit(), d, "{} left its interim key", t.title());
         }
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         let mut at = 0;
@@ -1990,9 +2123,9 @@ mod tests {
 
     #[test]
     fn before_the_first_answer_it_says_it_is_reading() {
-        let mut a = app(Tab::Machines);
+        let mut a = app(Tab::Infra);
         assert!(screen(&mut a, 80, 10).contains("Reading Prometheus..."));
-        a.tab = Tab::Jobs;
+        a.infra_jobs = true;
         assert!(screen(&mut a, 80, 10).contains("Reading jobs..."));
     }
 
@@ -2011,6 +2144,13 @@ mod tests {
             s.contains("no baseline yet: fleet-bench forecast --baseline <label>"),
             "{s}"
         );
+    }
+
+    /// Infra with its Jobs section open as the whole table.
+    fn jobs_app() -> App {
+        let mut a = app(Tab::Infra);
+        a.infra_jobs = true;
+        a
     }
 
     fn key(c: char) -> Msg {
@@ -2053,21 +2193,111 @@ mod tests {
         assert!(a.boards_read.busy, "the tick stands in for the watch");
     }
 
+    fn infra_app() -> App {
+        let mut a = app(Tab::Home);
+        a.infra = Some(board::tests::fixture());
+        a.jobs = Some(Jobs {
+            at: 0,
+            window_secs: 86400,
+            jobs: vec![hub_core::jobs::Job::new(
+                hub_core::jobs::Source::Ci,
+                "gate",
+                hub_core::jobs::State::Done,
+            )],
+            errors: vec![],
+        });
+        a
+    }
+
+    /// The first body line under the tab bar.
+    fn top(s: &str) -> &str {
+        s.lines().nth(1).unwrap_or("")
+    }
+
+    #[test]
+    fn hub_tab_ci_lands_on_infras_ci_section() {
+        let mut a = infra_app();
+        let (t, q) = crate::tabreq::parse("ci").unwrap();
+        a.handle(Msg::Tab(t, q));
+        let s = screen(&mut a, 160, 30);
+        assert_eq!(a.tab, Tab::Infra);
+        assert!(top(&s).starts_with("CI  running 3"), "{s}");
+        // Machines the same way, and n/N step between the section headings from there.
+        let (t, q) = crate::tabreq::parse("machines").unwrap();
+        a.handle(Msg::Tab(t, q));
+        let s = screen(&mut a, 160, 30);
+        assert!(top(&s).starts_with("MACHINE "), "{s}");
+        a.handle(key('n'));
+        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI  running"));
+        a.handle(key('N'));
+        assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
+    }
+
+    #[test]
+    fn infra_reads_health_red_machines_ci_jobs_cloud_governor_in_order() {
+        let mut a = infra_app();
+        a.handle(key('3'));
+        let s = screen(&mut a, 160, 200);
+        let bar = s.lines().next().unwrap();
+        assert!(
+            bar.contains("3 Infra  6 Sessions") && !bar.contains("Machines"),
+            "{s}"
+        );
+        assert!(top(&s).starts_with("HEALTH"), "{s}");
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
+        let order = [
+            "HEALTH",
+            "RED NOW",
+            "MACHINE ",
+            "CI  running",
+            "JOBS",
+            "CLOUD RUNNERS",
+            "GOVERNOR",
+        ];
+        for w in order.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "{} after {}: {s}", w[0], w[1]);
+        }
+        assert!(s.contains("Enter opens the table"), "{s}");
+    }
+
+    #[test]
+    fn enter_opens_the_jobs_table_and_esc_comes_back() {
+        let mut a = infra_app();
+        a.handle(key('3'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert!(a.infra_jobs);
+        let s = screen(&mut a, 120, 20);
+        assert!(top(&s).starts_with("all sources"), "{s}");
+        assert!(s.lines().last().unwrap().contains("Esc back"), "{s}");
+        // A filter clears first; the next Esc goes back to the summary.
+        a.handle(key('f'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.infra_jobs);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(!a.infra_jobs);
+        // `hub --tab jobs` opens the table straight away.
+        let (t, q) = crate::tabreq::parse("jobs").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert!(a.infra_jobs);
+    }
+
     #[test]
     fn number_keys_switch_pages_and_q_quits() {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
         a.handle(key('4'));
-        assert_eq!(a.tab, Tab::Ci);
+        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("ci")));
+        a.handle(key('5'));
+        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("machines")));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Machines);
+        assert_eq!(a.tab, Tab::Sessions);
         a.handle(key('q'));
         assert!(a.quit);
     }
 
     #[test]
     fn only_a_run_starting_or_ending_wakes_the_jobs_page() {
-        let a = app(Tab::Jobs);
+        let a = app(Tab::Infra);
         let st = &a.paths.agentctl;
         assert!(is_job_file(&a.paths, &st.join("runs.jsonl")));
         assert!(is_job_file(&a.paths, &st.join("dream/run")));
@@ -2108,7 +2338,7 @@ mod tests {
 
     #[test]
     fn a_log_with_no_reference_says_so_instead_of_reading() {
-        let mut a = app(Tab::Jobs);
+        let mut a = jobs_app();
         let mut j = hub_core::jobs::Job::new(
             hub_core::jobs::Source::Ci,
             "gate",
@@ -2131,7 +2361,7 @@ mod tests {
 
     #[test]
     fn an_open_log_shows_its_tail_and_scrolls_back() {
-        let mut a = app(Tab::Jobs);
+        let mut a = jobs_app();
         let mut j = hub_core::jobs::Job::new(
             hub_core::jobs::Source::Agentctl,
             "task",

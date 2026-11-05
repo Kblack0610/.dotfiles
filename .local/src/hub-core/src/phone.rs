@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::home::{cc_values, Home, Kind, Level, Need};
+use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
 use crate::queue::Queue;
 use crate::text::cap;
@@ -264,7 +264,7 @@ fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
 
 /// "CI 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
-    let v = cc_values(infra);
+    let v = infra.cc_values();
     let sum = |name: &str| -> f64 {
         v.iter()
             .filter(|(k, _)| k.strip_prefix(name).is_some_and(|r| r.starts_with('/')))
