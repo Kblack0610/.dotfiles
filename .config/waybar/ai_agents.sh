@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
 # The bar is the robot and three totals, "<robot> ~22 <check>1 !9": ~ working (WORKING, amber), the
-# check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red), each shown
-# at 0 so the bar keeps its shape. STALLED and UNCLEAR are in none of the three; the robot's colour
+# check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red above 0),
+# each shown at 0 so the bar keeps its shape. STALLED and UNCLEAR are in none of the three; the robot's colour
 # carries them. The robot is the fleet's health:
-#   red    a session is STALLED, or a host's fleet_sessions.prom is older than STATE_LATE_SECS
-#   amber  a session is UNCLEAR, or Prometheus has no session numbers
+#   red    a host's fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
+#   amber  a session is STALLED or UNCLEAR, or Prometheus has no session numbers: a session wants
+#          a look, which is not a broken fleet
 #   green  otherwise
 # The hover has the stage counts, then one section per tmux world (hub, lab: the part of the
 # target before the slash), each with its own counts and one line per session, worst first.
@@ -67,11 +68,10 @@ mapfile -t rows < <(jq -r '
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
   | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-"), .p] | map(tostring) | join("|")' <<< "$raw")
 
-# stage_paint <stage> <text>: red for stalled, amber for what wants a look, plain for the rest.
+# stage_paint <stage> <text>: amber for what wants a look, plain for the rest.
 stage_paint() {
   case "$1" in
-    STALLED) paint "$C_RED" "$2" ;;
-    UNCLEAR|NEEDS) paint "$C_YEL" "$2" ;;
+    STALLED|UNCLEAR|NEEDS) paint "$C_YEL" "$2" ;;
     *) printf '%s' "$2" ;;
   esac
 }
@@ -111,7 +111,7 @@ fi
 # The phone's project lines already show stalled and unclear sessions, so only feed faults go there.
 feed_why=("${why[@]}")
 
-((n_stalled > 0)) && flag 2 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
+((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
 ((n_unclear > 0)) && flag 1 "$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged"
 
 head="$title  $(counts "${rows[@]}")"
@@ -134,7 +134,7 @@ for r in "${rows[@]}"; do
   else printf -v line "%-8s %-${width}s up %-6s idle %s" "$b" "$t" "$up" "$(prom_dur $((idle * 60)))"; fi
   line="$(pango_esc "$line")"
   case "$b" in
-    STALLED) line="$(paint "$C_RED" "$line")" ;;
+    STALLED) line="$(paint "$C_YEL" "$line")" ;;
     UNCLEAR) line="$(paint "$C_YEL" "$line")" ;;
   esac
   body+=$'\n'"$line"
@@ -159,7 +159,9 @@ while read -r _ p; do
   phone+=$'\n'"$(pango_esc "$p") $(glyphs "$p")"
 done < <(for p in "${!per_project[@]}"; do printf '%s %s\n' "${per_project[$p]}" "$p"; done | sort -k1,1nr -k2,2)
 
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $(paint "$C_RED" "!$n_need")"
+need="!$n_need"
+((n_need == 0)) || need="$(paint "$C_RED" "$need")"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && total == 0)) && class=inactive
 emit "$text" "$tip" "$class" "$phone"

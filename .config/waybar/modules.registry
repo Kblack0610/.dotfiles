@@ -10,6 +10,7 @@
 # `modules.sh gate <id>` and given "signal": 10 in config.base / config.pin-full.
 
 agents|Agent sessions by world|custom/ai-agents
+health|System health|custom/health
 dispatch|Queue: queue, dispatch, shepherd|custom/dispatch
 fleet|Fleet health|custom/fleet
 load|CPU and load (fleet on hover)|custom/load
