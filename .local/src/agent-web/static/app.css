@@ -110,6 +110,15 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #board summary { cursor: pointer; }
 #board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+/* Focus (focus.js): one note read like a page, phone width first; a link into another note or a
+   project is in-app (#focus/..., #projects/...), so it is styled apart from an external one. */
+#focus > *, #focus h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
+#focus .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+#focus a.btn { text-decoration: none; display: inline-block; }
+a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
+#focus .opts a.wl { font: 12px var(--mono); }
+#focus pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 /* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and

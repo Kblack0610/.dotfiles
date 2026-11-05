@@ -10,6 +10,7 @@ mod fit;
 mod fleet;
 mod fleettab;
 mod fmt;
+mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
