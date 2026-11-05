@@ -90,10 +90,20 @@ logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "
 
 # --- facts ---------------------------------------------------------------------------
 
-# stage_of <sheet> -> draft|alpha|beta|prod, from the tag on its Version: line
-stage_of() { sed -n 's/^Version:.*#\(draft\|alpha\|beta\|prod\)\b.*/\1/p' "$1" 2>/dev/null | head -1; }
+# stage_of <sheet> -> the project's stage, read by the shared head-tag reader against the one
+# ladder (`notes projects --stages`), never a private copy of either.
+# shellcheck source=../lib/lab-feed.sh
+. "${LAB_FEED_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/lab-feed.sh}"
+LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
+stage_of() {
+  [ -n "$LAB_STAGES" ] || { say "notes projects --stages printed nothing: no project stage can be read"; return 1; }
+  # shellcheck disable=SC2086 # the ladder is a word list on purpose
+  lab_head_tag "$1" $LAB_STAGES
+}
 
-stage_rank() { case "$1" in prod) echo 0 ;; beta) echo 1 ;; *) echo 2 ;; esac; }
+# dispatchable <stage>: agents build from dev on; a draft is still a concept, and no stage is
+# a question for the human, so neither gets a session.
+dispatchable() { lab_stage_at_least "$1" dev; }
 
 prio_rank() {
   case "$1" in
@@ -323,7 +333,7 @@ cmd_candidates() {
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
       stage=$(stage_of "$sheet")
-      case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+      dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -1474,7 +1484,7 @@ night_rows() {
   for name in $DISPATCH_NIGHT_PROJECTS; do
     sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
-    case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+    dispatchable "$stage" || continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     n=0
