@@ -19,6 +19,10 @@ setup() {
   export SO_SESSIONS="$HOME/.agent/sessions"
   export SO_OUT="$HOME/.agent/outcomes"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
+  # fleet-bench stats, canned: serves $BENCH_FX when it exists, nothing otherwise
+  export SO_BENCH=bench-stub BENCH_FX="$SANDBOX/bench.jsonl"
+  printf '#!/usr/bin/env bash\n[ "$*" = "stats --json" ] || exit 9\ncat "%s" 2>/dev/null || true\n' "$BENCH_FX" > "$SANDBOX/bin/bench-stub"
+  chmod +x "$SANDBOX/bin/bench-stub"
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.
   export SO_NOW=1792454400
   STOP=1792368000
@@ -219,7 +223,7 @@ activity_of() {
 {"type":"assistant","message":{"id":"m3","usage":{"output_tokens":7},"content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"gh pr checks 5 --watch"}},{"type":"tool_use","id":"e","name":"Write","input":{"file_path":"/home/u/.agent/lessons/p.md"}}]}}
 EOF
   run activity_of "$TR/act.jsonl"
-  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7}'
+  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
 }
 
 @test "activity: a commit ends the edit count, for edits made through Bash" {
@@ -277,8 +281,96 @@ SH
   run "$SUBJECT" worst --project proj --days 7 -n 5
   assert_success
   assert_line --index 2 --partial '`sess-b`'
-  assert_line --index 2 --partial '1 reverted'
+  assert_line --index 2 --partial '5 x 1 reverted'
   refute_output --partial 'sess-a'
+}
+
+# bench_fx: fleet-bench stats rows for A (2 nudges, 1 CI red before merge, 30 lines) and for
+# a session the registry does not know, which must not become a row.
+bench_fx() {
+  printf '%s\n' \
+    '{"session_id":"sess-a","project":"proj","target":"lab/proj-agent-1:1","plan":"p","phase":"1/1","ticked":1,"minutes":{"WORKING":90,"NEEDS":20},"nudges":2,"escalations":1,"peak_context":150000,"first_epoch":1,"last_epoch":2,"merged":{"prs":1,"lines_added":25,"lines_deleted":5,"ci_runs":3,"ci_reds":1}}' \
+    '{"session_id":"sess-zz","project":"other","sampled":false,"merged":null}' > "$BENCH_FX"
+}
+
+@test "row: delivery is the bench's stats for the session, null when the bench never saw it" {
+  bench_fx
+  "$SUBJECT" run
+  assert_equal "$(field a '.delivery | [.nudges, .escalations, .minutes.WORKING, .merged.ci_reds, .merged.lines_added] | @tsv')" "$(printf '2\t1\t90\t1\t25')"
+  assert_equal "$(field a '.delivery | has("session_id") or has("project")')" false
+  assert_equal "$(field b .delivery)" null
+  assert_equal "$(lines | grep -c sess-zz)" 0
+}
+
+@test "row: a failing bench leaves delivery null, still writes, and says so in the report" {
+  printf '#!/usr/bin/env bash\necho boom >&2; exit 3\n' > "$SANDBOX/bin/bench-stub"
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial 'fleet-bench stats failed: boom'
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field a .delivery)" null
+}
+
+@test "row: models, cost by model and uses from the registry and transcript; account from the transcript's config dir" {
+  mkdir -p "$HOME/.claude-work/projects/-x"
+  cp "$TR/a.jsonl" "$HOME/.claude-work/projects/-x/a.jsonl"
+  jq -c --arg t "$HOME/.claude-work/projects/-x/a.jsonl" \
+    'if .session_id == "sess-a" then . + {transcript: $t, models: ["m1", "m2"], cost_by_model: {m1: 0.75, m2: 0.25}} else . end' \
+    "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
+  "$SUBJECT" run
+  assert_equal "$(field a '[.account, (.models | join(",")), .cost_by_model.m1] | @tsv')" "$(printf 'claude-work\tm1,m2\t0.75')"
+  assert_equal "$(field a '.uses | keys | join(",")')" 'skills,slash,subagents'
+  assert_equal "$(field b '[.account, .models, .cost_by_model] | tojson')" '[null,null,null]'
+}
+
+@test "activity: compactions count compact_boundary records by trigger" {
+  cat > "$TR/compact.jsonl" <<'EOF'
+{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":160000}}
+{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":150000}}
+{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":90000}}
+{"type":"system","subtype":"turn_duration"}
+{"type":"user","message":{"content":"compact_boundary is only a word here"}}
+EOF
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; so_transcript_metrics "$1" | jq -c .activity.compactions' _ "$TR/compact.jsonl"
+  assert_output '{"auto":2,"manual":1}'
+}
+
+@test "friction counts nudges and CI reds before merge; worst --json says why, weights included" {
+  bench_fx
+  "$SUBJECT" run
+  run "$SUBJECT" worst --project proj --days 7 -n 5 --json
+  assert_success
+  run jq -sc 'map({s: .session_id, friction, why})' <<<"$output"
+  assert_output --partial '{"s":"sess-a","friction":3,"why":"2 nudges + 1 CI reds before merge"}'
+  assert_output --partial '{"s":"sess-b","friction":5,"why":"5 x 1 reverted"}'
+}
+
+@test "card: one session's full card, every section, by an id prefix" {
+  bench_fx
+  "$SUBJECT" run
+  run "$SUBJECT" card sess-a
+  assert_success
+  assert_line --index 0 --partial 'title a (sess-a), proj, updated 2026-10-19 00:00:'
+  assert_line --index 0 --partial 'friction 3, $1, 1 of 1 PRs merged'
+  assert_line --index 2 '  Stages    WORKING 1h30, NEEDS 20m; phases ticked 1; nudges 2, escalations 1; peak context 150k'
+  assert_line --index 4 '  Delivery  1 merged, 0 open, 0 closed unmerged, 0 reverted (#10); +25 -5 landed; CI 3 runs, 1 red before merge'
+  assert_line --index 5 '  Friction  3 = 2 nudges + 1 CI reds before merge'
+  assert_line --index 6 --partial '0 compactions (0 auto)'
+  run "$SUBJECT" card sess-b
+  assert_line --index 2 '  Stages    never sampled by fleet-bench'
+  run "$SUBJECT" card sess-a --json
+  assert_equal "$(jq -r '[.friction, .why] | @tsv' <<<"$output")" "$(printf '3\t2 nudges + 1 CI reds before merge')"
+}
+
+@test "card: a prefix naming no session is 1, more than one is 2 and lists them" {
+  "$SUBJECT" run
+  run "$SUBJECT" card nope
+  assert_failure 1
+  run "$SUBJECT" card sess-
+  assert_failure 2
+  assert_output --partial 'names 4 sessions'
+  run "$SUBJECT" card
+  assert_failure 2
 }
 
 # Langfuse push. `curl-lf` stands in for curl: it records each request body and argv,
@@ -332,12 +424,13 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   lf_setup
   run "$SUBJECT" run
   assert_success
-  report | grep -q 'langfuse: 34 score(s) for 4 session(s)'
-  assert_equal "$(posted | jq -s 'length')" 34
+  report | grep -q 'langfuse: 38 score(s) for 4 session(s)'
+  assert_equal "$(posted | jq -s 'length')" 38
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-d") | .body.name' | grep -c -E 'interrupts|lessons_written')" 0
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-b" and .body.name == "reverted_7d") | .body.value')" 1
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-c" and .body.name == "friction") | .body.value')" 5
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-a" and .body.name == "prs_merged") | .body.id')" so:sess-a:prs_merged
+  assert_equal "$(posted | jq -r 'select(.body.name == "nudges")' | wc -l)" 0   # no bench row, no score
   assert_equal "$(mark)" 2026-10-20T00:00:00Z
 }
 
@@ -352,7 +445,7 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   lf_setup
   "$SUBJECT" run
   local first; first=$(posted | jq -r .body.id | sort)
-  assert_equal "$(wc -l <<<"$first")" 34
+  assert_equal "$(wc -l <<<"$first")" 38
   : > "$BATS_TEST_TMPDIR/lf.posted"
   "$SUBJECT" run
   report | grep -q 'langfuse: nothing new'
@@ -372,7 +465,7 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   : > "$BATS_TEST_TMPDIR/lf.posted"
   "$SUBJECT" run
   assert_equal "$(outcome)" NOOP
-  assert_equal "$(posted | jq -s 'length')" 34
+  assert_equal "$(posted | jq -s 'length')" 38
   assert_equal "$(mark)" 2026-10-20T00:00:00Z
 }
 
