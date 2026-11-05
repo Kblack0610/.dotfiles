@@ -289,6 +289,26 @@ aged() { awk -F'\t' -v t="$(( $(date +%s) - $1 * 60 ))" 'BEGIN { OFS = FS } { $2
   assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
 }
 
+@test "a pass with only its own prompt is not talking at any hour: no second entry is not midnight" {
+  # A lease over a day always holds today's midnight, so this fails at every hour without the guard;
+  # the 30-minute default failed only for runs just after 00:00, on 2026-11-05 at 00:04Z.
+  export FLEET_SHEPHERD_LEASE_MIN=2000
+  doc "[$(row a DONE false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  live "$id" idle
+  said "$id" human "$(date +%s)"
+  run "$SH" run
+  refute_output --partial 'is talking'
+  # Negative control: a second human entry inside the lease still stands it down.
+  id="$(pass_id)"
+  live "$id" idle
+  said "$id" human "$(date +%s)"
+  said "$id" human "$(date +%s)"
+  run "$SH" run
+  assert_output --partial 'is talking'
+}
+
 @test "the human typing to a pass stands the runner down; the pass's own first prompt does not" {
   doc "[$(row a DONE false false)]"
   "$SH" run

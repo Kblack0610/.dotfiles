@@ -494,7 +494,8 @@ talking() {
   tp="$(pass_transcript "$1")"
   [ -n "$tp" ] || return 1
   at="$(jq -r 'select(.type == "user" and .turnOrigin == "human") | .timestamp' "$tp" 2>/dev/null | tail -n +2 | tail -n 1)"
-  at="$(date -d "$at" +%s 2>/dev/null)" || return 1
+  # GNU date reads an empty string as today's midnight, with exit 0.
+  [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" || return 1
   [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
 }
 
