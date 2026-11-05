@@ -31,7 +31,7 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 }
 
 @test "a cancelled run is not red, and a run before the window is not read (107, 108)" {
-  assert_equal "$(field "d['runs'], d['red_runs'], d['cancelled']")" "7 5 1"
+  assert_equal "$(field "d['runs'], d['red_runs'], d['cancelled']")" "8 5 1"
 }
 
 @test "each red run lands in one bucket; the gate job that failed after the suite is derived (101)" {
@@ -79,4 +79,17 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 @test "negative control: without the green run, the docs red is no longer green@sha" {
   rm "$CACHE/run-105.json"
   assert_equal "$(sig 'words N > N' green_sha)" "False"
+}
+
+@test "a run red only on the gate line is pending, listed but not red (109)" {
+  assert_equal "$(field "d['red_runs'], d['pending_runs']")" "5 1"
+  assert_equal "$(sig 'Merge gate line' bucket)" "pending"
+  run count
+  assert_output --partial "1 pending"
+}
+
+@test "negative control: the same red on any other step is a check red (109)" {
+  sed -i 's/Merge gate line/Docs gate line/' "$CACHE/jobs-109-1.json"
+  assert_equal "$(field "d['red_runs'], d['pending_runs']")" "6 0"
+  assert_equal "$(sig 'Docs gate line' bucket)" "check"
 }

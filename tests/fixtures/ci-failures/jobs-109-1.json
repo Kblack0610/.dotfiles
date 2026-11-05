@@ -1,0 +1,1 @@
+{"jobs": [{"id": 1091, "name": "Checks", "conclusion": "failure", "started_at": "2026-11-03T14:01:00Z", "completed_at": "2026-11-03T14:02:00Z", "runner_name": "pool-1", "html_url": "https://example.invalid/job/1091", "steps": [{"name": "Set up job", "conclusion": "success"}, {"name": "Merge gate line", "conclusion": "failure"}]}]}
