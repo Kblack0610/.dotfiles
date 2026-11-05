@@ -219,6 +219,23 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'answer: later'
 }
 
+@test "pick with no id goes back to the list after each card, and says so when nothing waits" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  # fzf stub: chooses the first row it is offered, the way Enter on the list would.
+  printf '#!/bin/sh\nhead -1\n' > "$BATS_TEST_TMPDIR/bin/fzf"; chmod +x "$BATS_TEST_TMPDIR/bin/fzf"
+  local a b
+  a="$("$AGENT_ASK" post --project demo --options 'go|later' 'run the sweep?')"
+  b="$("$AGENT_ASK" post --project demo --options 'yes|no' 'ship it?')"
+  # Two answers on one keyboard: the second card came from the list after the first.
+  run bash -c 'PATH="$1:$PATH"; printf "1\n1\n" | "$AGENT_ASK" pick' _ "$BATS_TEST_TMPDIR/bin"
+  assert_success
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run "$AGENT_ASK" show "$b"; assert_line 'status: answered'
+  run bash -c 'printf "x" | "$AGENT_ASK" pick'
+  assert_success
+  assert_output 'no questions waiting; any key closes'
+}
+
 @test "pick drops a question only after Enter" {
   local id; id="$("$AGENT_ASK" post --project demo 'run the sweep?')"
   run bash -c 'printf "dxq" | "$AGENT_ASK" pick "$1"' _ "$id"

@@ -508,14 +508,24 @@ pick_pending() {
       --preview-window='down,60%,wrap' <<< "$rows" | cut -f1
 }
 
-# pick [<id>]: the card and a one-key answer, for the tmux popup (`agent-panel ask-here`, the
-# chooser, Prefix y). An option needs Enter to send, because the popup opens by itself when the
-# human switches to the session and their next keystroke may have been meant for the pane.
-# No id: choose among every pending ask first.
+# pick [<id>]: the card and a one-key answer. An option or a drop needs Enter, so a stray key
+# sends nothing. No id is Prefix y (`agent-panel ask-here --key`): the list of every pending ask,
+# back to the list after each card, until Esc on the list or no question is left.
 cmd_pick() {
-  local id="${1:-}" f k c n opts=()
-  [ -n "$id" ] || id="$(pick_pending)" || return 1
-  [ -n "$id" ] || return 0
+  [ -z "${1:-}" ] || { pick_one "$1"; return; }
+  local id
+  # Nothing asked: say so and wait for a key, or the popup would close before it is read.
+  [ -n "$(cmd_list --all --pending)" ] || { echo "no questions waiting; any key closes"; read -rsn1 _ || true; return 0; }
+  while id="$(pick_pending)" && [ -n "$id" ]; do
+    pick_one "$id" || return 0
+    echo
+  done
+  return 0
+}
+
+# pick_one <id>: one card and its keys. Non-zero only when the keyboard input ended.
+pick_one() {
+  local id="$1" f k c n opts=()
   f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
@@ -535,21 +545,21 @@ cmd_pick() {
       [1-9])
         [ "$k" -le "$n" ] || continue
         printf 'send "%s"? enter sends, any other key goes back\n' "${opts[k-1]}"
-        IFS= read -rsn1 c || return 0
+        IFS= read -rsn1 c || return 1
         [ -z "$c" ] && { cmd_answer "$id" "${opts[k-1]}"; return; }
         echo "not sent" ;;
       t)
-        local text; IFS= read -e -r -p 'answer: ' text || return 0
+        local text; IFS= read -e -r -p 'answer: ' text || return 1
         [ -n "$text" ] && { cmd_answer "$id" "$text"; return; } ;;
       d)
         printf 'drop this question unanswered? enter drops it, any other key goes back\n'
-        IFS= read -rsn1 c || return 0
+        IFS= read -rsn1 c || return 1
         [ -z "$c" ] && { close_ask cancelled "$id" "dropped by the human"; return; }
         echo "kept" ;;
       q|$'\e') return 0 ;;
     esac
   done
-  return 0
+  return 1
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
