@@ -41,9 +41,15 @@ fi
 
 # Read the hook payload's `source` from stdin (JSON) — only when piped, so manual
 # TTY runs of this script don't block on a read. Valid sources: startup|resume|compact.
-HOOK_SOURCE=""
+HOOK_SOURCE="" HOOK_SID=""
 if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
-  HOOK_SOURCE=$(cat 2>/dev/null | jq -r '.source // empty' 2>/dev/null || true)
+  read -r HOOK_SOURCE HOOK_SID < <(cat 2>/dev/null | jq -r '"\(.source // "-") \(.session_id // "")"' 2>/dev/null) || true
+  [ "$HOOK_SOURCE" != - ] || HOOK_SOURCE=""
+fi
+# A session the dispatcher started works one queue item: record this Claude session on it, so
+# every reader keyed on session_id joins to the item. Quiet: a claim never blocks the preflight.
+if [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -n "$HOOK_SID" ] && command -v agent-queue >/dev/null 2>&1; then
+  agent-queue claim "$AGENT_QUEUE_ITEM" --sid "$HOOK_SID" >/dev/null 2>&1 || true
 fi
 
 HEADER=$(

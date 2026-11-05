@@ -6,8 +6,8 @@
 #
 # Steps, stopping at the first failure: fetch (HEAD must contain origin/<base> before the
 # checks; after them, a base that moved on is merged in, pushed and landed on the same gate), checks (the PR's checks pass: CI, a required check), merge (--squash
-# --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets pr:<pr>
-# and moves to done, status ok), board (the item's row when it came from the board, done with
+# --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets
+# pr:<owner>/<repo>#<pr>, this Claude session in its sessions, and moves to done, status ok), board (the item's row when it came from the board, done with
 # pr:<pr>; with no item, the --project/--title agent row), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
@@ -136,7 +136,7 @@ if [ -n "$item" ]; then
   # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
   it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
   # A done item that already carries this PR is a re-run after a failed board step.
-  case "$(jq -r --arg pr "$pr" 'if .state == "done" and .pr == $pr then "rerun" else .state end' <<<"$it")" in
+  case "$(jq -r --arg pr "$pr" 'if .state == "done" and ((.pr // "") | sub(".*#"; "")) == $pr then "rerun" else .state end' <<<"$it")" in
   running | waiting | queued | rerun) ;;
   *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
   esac
@@ -191,9 +191,12 @@ if [ "$dry" -eq 1 ]; then
   exit 0
 fi
 
-info=$(gh pr view "$pr" --json state,baseRefName -q '.state + " " + .baseRefName' 2>&1) ||
+info=$(gh pr view "$pr" --json state,baseRefName,url -q '.state + " " + .baseRefName + " " + .url' 2>&1) ||
   fail fetch "gh pr view $pr: $(lastline "$info")"
-state="${info%% *}" base="${info#* }"
+read -r state base url <<<"$info"
+# The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
+pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"$url")
+[[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || pr_ref="$pr"
 
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
@@ -215,10 +218,11 @@ score_body
 
 if [ -n "$item" ]; then
   if [ "$(jq -r .state <<<"$it")" != "done" ]; then
-    out=$(agent-queue set "$item" "pr=$pr" 2>&1) || fail item "$(lastline "$out")"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+    out=$(agent-queue set "$item" "pr=$pr_ref" 2>&1) || fail item "$(lastline "$out")"
     out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
   fi
-  echo "item: $item done with pr:$pr"
+  echo "item: $item done with pr:$pr_ref"
 fi
 
 mapfile -t b < <(board_cmd)

@@ -8,6 +8,7 @@
 #       one oneshot item per unchecked `## Phases` line, each after the one before
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s]    the slug of the running or waiting item this tmux session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
@@ -44,6 +45,9 @@ own_session() {
   [ -n "$name" ] || return 1
   printf '%s:%s\n' "$(basename "${TMUX%%,*}")" "$name"
 }
+# The Claude session id of the caller, which every reader of a session (outcomes, fleet-bench,
+# day-log, Langfuse) keys on. Claude Code exports it to every command it runs.
+claude_sid() { [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && printf '%s\n' "$CLAUDE_CODE_SESSION_ID"; }
 # The caller's session when it is on the agent world, else nothing. An item's session is what
 # cancel and the reap kill, so a hub window never lends its session to one.
 agent_session() {
@@ -401,6 +405,12 @@ cmd_add() {
   fi
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
+  # `type(area): title`, the board's row grammar, on the task's first line or its --title.
+  local ctype='' carea='' sid
+  if [[ "$(head -1 <<<"${title:-$text}")" =~ ^([a-z]+)\(([A-Za-z0-9_./-]+)\)!?:\  ]]; then
+    ctype="${BASH_REMATCH[1]}" carea="${BASH_REMATCH[2]}"
+  fi
+  sid="$(claude_sid)" || sid=
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -408,6 +418,7 @@ cmd_add() {
   {
     printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
     [ -n "$title" ] && printf 'title: %s\n' "$title"
+    [ -n "$ctype" ] && printf 'type: %s\narea: %s\n' "$ctype" "$carea"
     [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
     [ -n "$after" ] && printf 'after: %s\n' "$after"
     [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
@@ -415,6 +426,7 @@ cmd_add() {
     [ -n "$running" ] && printf 'started: %s\n' "$now"
     [ -n "$session" ] && printf 'session: %s\n' "$session"
     [ -n "$window" ] && printf 'window: %s\n' "$window"
+    [ -n "$sid" ] && printf 'sessions: %s\n' "$sid"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   echo "$state $slug -> $f"
@@ -558,20 +570,44 @@ cmd_show() {
   cat -- "$f"
 }
 
-# A hand-started session's item, so agent-land can close it with no slug: exit 1 when
-# none records this session, 2 when more than one does (pass the slug).
+# The item this session is working, so agent-land can close it with no slug: exit 1 when none,
+# 2 when more than one (pass the slug). The Claude session id decides first: an item lists every
+# session that worked it (`sessions:`), whatever window it ran in. Without one, the tmux session,
+# and only a running item: a hub session hosts many conversations, and a waiting item of an
+# earlier one is not this one's (2026-11-05 a land closed c1103's waiting item that way).
 cmd_mine() {
-  local session='' slugs
+  local session='' sid slugs
   case "${1:-}" in --session) session="${2:?--session needs a value}" ;; '') ;; *) die "usage: agent-queue mine [--session s]" ;; esac
-  [ -n "$session" ] || session="$(own_session)" || die "not in tmux: pass --session <server>:<session>"
+  sid="$(claude_sid)" || sid=""
   lock_read
-  slugs="$(collect running waiting | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')"
+  if [ -z "$session" ] && [ -n "$sid" ]; then
+    slugs="$(collect running waiting | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')"
+  fi
+  if [ -z "${slugs:-}" ]; then
+    [ -n "$session" ] || session="$(own_session)" || { [ -n "$sid" ] && return 1; die "not in tmux: pass --session <server>:<session>"; }
+    slugs="$(collect running | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')"
+  fi
   [ -n "$slugs" ] || return 1
   if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
-    echo "agent-queue: more than one item records $session: $(tr '\n' ' ' <<<"$slugs")" >&2
+    echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
     return 2
   fi
   printf '%s\n' "$slugs"
+}
+
+# claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item. Run by
+# the SessionStart hook for $AGENT_QUEUE_ITEM, and by agent-land; adding one already there is a no-op.
+cmd_claim() {
+  local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur
+  shift
+  case "${1:-}" in --sid) sid="${2:?--sid needs a value}" ;; '') sid="$(claude_sid)" || die "no Claude session: pass --sid" ;; *) die "usage: agent-queue claim <slug> [--sid id]" ;; esac
+  case "$sid" in *[!A-Za-z0-9_-]*) die "not a session id: $sid" ;; esac
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  cur="$(fm_get "$f" sessions)"
+  case " $cur " in *" $sid "*) echo "$slug: $sid already claimed"; return 0 ;; esac
+  header_set "$f" sessions "${cur:+$cur }$sid"
+  echo "$slug: claimed by $sid"
 }
 
 cmd_cancel() {
@@ -611,7 +647,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags after agent started waiting finished session window account model plan pr report note status area origin lane profile from "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr report note status area origin lane profile from "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -787,7 +823,7 @@ cmd_stats() {
 
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac
