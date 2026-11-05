@@ -70,7 +70,7 @@ string rather than `claude` (observed on macOS).
 | Command | Purpose |
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
-| `agent-panel next` | Cycle to the next attention-needed agent, `!` or `A` (else next in list) |
+| `agent-panel next` | Jump to the next agent that needs you: `!`, `A`, or a plan awaiting approval. With none, says `no session needs you` and stays put |
 | `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
