@@ -60,7 +60,6 @@ EOF
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
-  unset AGENT_QUEUE_ITEM
 
   PLAN="$SANDBOX/plan.md"
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"

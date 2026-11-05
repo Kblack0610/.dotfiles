@@ -338,3 +338,38 @@ gate_t() {
   out=$(jq -cn --arg t "$SANDBOX/missing.jsonl" '{session_id:"s1", transcript_path:$t, stop_hook_active:false}' | bash "$GATE" 2>/dev/null)
   assert_blocks "$out"
 }
+
+# ── the agent-queue item is tracking ─────────────────────────────────────────
+# The global rule tracks an agent's task on its agent-queue item, and a dispatched brief
+# forbids other board rows. Before 2026-11-05 about half the gate's blocks hit such sessions.
+
+@test "session: a dispatched queue item (AGENT_QUEUE_ITEM) is tracking" {
+  tcall s1 Edit
+  local out
+  out=$(touch "$SANDBOX/s1.jsonl"; jq -cn --arg t "$SANDBOX/s1.jsonl" '{session_id:"s1", transcript_path:$t, stop_hook_active:false}' \
+    | AGENT_QUEUE_ITEM=fix-thing bash "$GATE" 2>/dev/null)
+  refute_blocks "$out"
+}
+
+@test "session: its own agent-queue add or agent-land is tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue add --running --project dotfiles --slug fix-thing "fix the thing"'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  tcall s2 Bash 'agent-land 42 --item fix-thing'
+  refute_blocks "$(gate_t s2)"
+}
+
+@test "session: a read-only agent-queue verb is not tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue list'
+  tcall s1 Bash 'agent-queue show fix-thing'
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "the block reason leads with the agent-queue item" {
+  dirty
+  local reason
+  reason="$(gate s1 | jq -r '.reason')"
+  [[ "$reason" == *'agent-queue add --running'* ]]
+}
