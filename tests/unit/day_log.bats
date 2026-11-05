@@ -592,3 +592,26 @@ EOF
   run "$SUBJECT" week --line
   assert_output --partial '14 merged (+7)'
 }
+
+@test "nightly under agentctl declares WORKED, so the runner is not promoted to STALLED" {
+  ci_clone
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" WORKED
+}
+
+@test "nightly under agentctl declares FAILED when a part fails" {
+  echo 1 > "$SANDBOX/cif-rc"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_failure 1
+  assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" FAILED
+}
+
+@test "nightly by hand writes no runner outcome" {
+  ci_clone
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  AGENTCTL_STATE_DIR="$SANDBOX/astate" run env -u AGENTCTL_NAME "$SUBJECT" nightly
+  assert_success
+  [ ! -e "$SANDBOX/astate" ]
+}
