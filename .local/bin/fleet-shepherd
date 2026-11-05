@@ -34,6 +34,12 @@
 #   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
+#   fleet-shepherd sweep-cancel '<starved pool:<p> @<episode>>'
+#                          clear a pool held by a failing sweep: when one workflow_dispatch run on a
+#                          sweep/* branch holds more than half the pool's busy runners and more than
+#                          half its finished jobs failed, cancel it, record it against the finding
+#                          (fleet-bench respond ... cancelled) and print who to tell; exit 0 when it
+#                          cancelled, 1 naming why it left the pool alone
 #   fleet-shepherd lease   record that this session is the shepherd pass running now and tag its
 #                          tmux pane @shepherd; every pass calls it first (fleet-lead, pass step 0)
 #   fleet-shepherd holds   exit 0 when this session may act for the shepherd, 3 naming the pass
@@ -314,6 +320,49 @@ infra_now() {
     2) echo "infra: k3s domain red" ;;
     none) echo "infra: no k3s status series" ;;
   esac
+}
+
+# sweep_holder <pool> -> "<owner/repo> <run id> <branch> <held> <busy>" for the workflow_dispatch run
+# on a sweep/* branch holding more than half the pool's busy runners, or nothing. Read from the
+# runner exporter (github_runner_state, one series per runner, the job's url carrying the run), so
+# the pool is the exporter's and no label mapping is copied here.
+sweep_holder() {
+  local json
+  # shellcheck source=/dev/null
+  . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || return 2
+  json="$(prom_q "github_runner_state{pool=\"$1\",state=\"running\"}")" || return 2
+  jq -r '.data.result | length as $busy
+    | map(.metric | select(.event == "workflow_dispatch" and ((.branch // "") | startswith("sweep/")))
+        | ((.url // "") | capture("github\\.com/(?<slug>[^/]+/[^/]+)/actions/runs/(?<id>[0-9]+)")?) + {branch})
+    | group_by(.id) | map({slug: .[0].slug, id: .[0].id, branch: .[0].branch, held: length})
+    | (max_by(.held) // empty) | select(.held * 2 > $busy)
+    | "\(.slug) \(.id) \(.branch) \(.held) \($busy)"' <<<"$json"
+}
+
+# A starved pool held by one failing sweep is the shepherd's to clear: a sweep reruns, a held pool
+# costs hours. On 2026-11-05 7 of 8 frame-sweep shards failed over 7h on the razer slots while
+# every pass paged instead. Failures come from the run's jobs, since a run GitHub reports as
+# queued can hold running ones.
+cmd_sweep_cancel() {
+  local fact="${1:-}" pool holder slug id branch held busy jobs finished failed url
+  [[ "$fact" =~ ^starved\ pool:([^\ ]+)\ @[0-9]+$ ]] || { echo "usage: fleet-shepherd sweep-cancel 'starved pool:<pool> @<episode>'" >&2; return 2; }
+  pool="${BASH_REMATCH[1]}"
+  holder="$(sweep_holder "$pool")" || { echo "sweep-cancel: the runner exporter is unreadable, so pool $pool stays"; return 1; }
+  read -r slug id branch held busy <<<"$holder"
+  [ -n "$id" ] || { echo "sweep-cancel: no sweep run holds most of pool $pool"; return 1; }
+  jobs="$(gh api "repos/$slug/actions/runs/$id/jobs" --paginate -q '.jobs[] | select(.status == "completed") | .conclusion' 2>/dev/null)" \
+    || { echo "sweep-cancel: run $id's jobs are unreadable, so it stays"; return 1; }
+  finished="$(grep -c . <<<"$jobs")"; failed="$(grep -cx failure <<<"$jobs")"
+  if ((failed * 2 <= finished)); then
+    echo "sweep-cancel: run $id ($branch) holds $held of $busy $pool runners, but $failed of $finished finished jobs failed: it stays"
+    return 1
+  fi
+  gh run cancel "$id" -R "$slug" >/dev/null 2>&1 || { echo "sweep-cancel: gh run cancel $id -R $slug failed"; return 1; }
+  url="https://github.com/$slug/actions/runs/$id"
+  fleet-bench respond "$fact" shepherd cancelled "$url" >/dev/null 2>&1 || true
+  cmd_log "cancelled sweep run $id ($branch): it held $held of $busy $pool runners and $failed of $finished finished jobs failed"
+  echo "cancelled $url: held $held of $busy $pool runners, $failed of $finished finished jobs failed"
+  echo "tell the session on $branch: its sweep run $id was cancelled because it held pool $pool with $failed of $finished jobs failed; fix the failure before rerunning it"
 }
 
 cmd_infra() {
@@ -905,6 +954,7 @@ case "${1:-}" in
   lease) cmd_holds || exit; cmd_lease ;;
   skip)  cmd_holds || exit; shift; cmd_skip "$@" ;;
   log)   cmd_holds || exit; shift; cmd_log "$@" ;;
+  sweep-cancel) cmd_holds || exit; shift; cmd_sweep_cancel "$@" ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|open|passes|stats|stuck|check|due|skip|infra|lease|holds|log)" ;;
+  *) die "unknown verb: $1 (run|open|passes|stats|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel)" ;;
 esac
