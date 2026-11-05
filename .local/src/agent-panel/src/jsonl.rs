@@ -1,5 +1,5 @@
 //! Tail a Claude transcript JSONL: a one-line summary for the chooser row and
-//! the last few events for the preview pane.
+//! the last message for the preview pane.
 
 use std::fs;
 use std::path::Path;
@@ -810,48 +810,35 @@ fn summarize(v: &Value) -> String {
     }
 }
 
-/// The last few turns formatted (most-recent first) for the preview pane.
-pub fn recent_events(path: &Path, count: usize) -> Vec<String> {
-    let all = turns(&read(path));
-    all.iter()
-        .rev()
-        .take(count)
-        .map(format_event)
-        .collect()
+/// What the preview shows of a session's transcript: its last message in full, line breaks kept,
+/// and its last tool call (`doing_said`'s `doing`). Both empty when the session wrote neither.
+pub fn preview_info(path: &Path) -> (String, String) {
+    let text = read(path);
+    (last_message(&text), doing_said(&text).0)
 }
 
-fn format_event(v: &Value) -> String {
-    if v.get("type").and_then(Value::as_str) == Some("assistant") {
-        match v.pointer("/message/content/0") {
-            Some(c) => match c.get("type").and_then(Value::as_str) {
-                Some("tool_use") => {
-                    let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
-                    let input = c
-                        .get("input")
-                        .map(|i| collapse(&i.to_string()))
-                        .unwrap_or_default();
-                    format!("  \x1b[33m⚙\x1b[0m {name} \x1b[2m{}\x1b[0m", truncate(&input, 160))
-                }
-                Some("text") => {
-                    let t = collapse(c.get("text").and_then(Value::as_str).unwrap_or(""));
-                    format!("  \x1b[32m▸\x1b[0m {}", truncate(&t, 500))
-                }
-                other => format!("  ? {}", other.unwrap_or("?")),
-            },
-            None => "  ? ".to_string(),
+/// The newest main-thread assistant text, whole: the session's last word to the human.
+fn last_message(text: &str) -> String {
+    for line in text.lines().rev() {
+        if !line.contains("\"type\":\"assistant\"") {
+            continue;
         }
-    } else {
-        let content = v.pointer("/message/content").map(value_text).unwrap_or_default();
-        format!("  \x1b[36m◂\x1b[0m {}", truncate(&collapse(&content), 500))
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if !own_turn(&v) {
+            continue;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        if let Some(t) = blocks
+            .iter()
+            .rev()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .find(|t| !t.trim().is_empty())
+        {
+            return t.trim().to_string();
+        }
     }
-}
-
-/// User message content is sometimes a string, sometimes an array of blocks.
-fn value_text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
+    String::new()
 }
 
 #[cfg(test)]
@@ -1176,6 +1163,24 @@ mod tests {
         ]);
         assert_eq!(last_event(&p), "tool: Bash");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn preview_shows_the_last_own_message_whole() {
+        let p = tmpfile("lastmsg", &[
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line one\n\nline two?"},{"type":"tool_use","name":"Bash","input":{"description":"run it"}}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"}]}}"#,
+            r#"{"type":"user","message":{"content":"ok"}}"#,
+        ]);
+        let (msg, tool) = preview_info(&p);
+        assert_eq!(msg, "line one\n\nline two?");
+        assert_eq!(tool, "Bash: run it");
+        fs::remove_file(&p).ok();
+        // Negative control: no assistant text at all -> nothing.
+        let q = tmpfile("nomsg", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
+        assert_eq!(preview_info(&q), (String::new(), String::new()));
+        fs::remove_file(&q).ok();
     }
 
     #[test]
