@@ -75,6 +75,10 @@ jobs:
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
+      # tests/ui/session_send.bats drives the real agent-panel binary; the image has no Rust,
+      # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
+      - name: Build agent-panel for the ui tier
+        run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}

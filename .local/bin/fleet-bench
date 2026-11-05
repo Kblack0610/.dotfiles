@@ -993,18 +993,24 @@ asks_md() {
     end)' <<<"$1"
 }
 
-# asks_line <rows> <top-n> -> one plain line (comms-standard): the count, the top few
-# questions with their age and recommendation, and where to see them all. Ids and session
-# targets stay in asks.md; the line is read on a lock screen and in the briefing.
+# asks_line <rows> <top-n> <max-chars> -> one plain line (comms-standard): the count, the top
+# few questions with their age and recommendation, as many as fit in max-chars (the first
+# always), and where to see them all. Ids and session targets stay in asks.md; the line is
+# read on a lock screen and in the briefing.
 asks_line() {
-  jq -r --argjson k "$2" '
+  jq -r --argjson k "$2" --argjson max "$3" '
     def age: if . < 48 then "\(floor)h" else "\(. / 24 | floor)d" end;
-    def q: .question | gsub("\\s+"; " ") | if length > 60 then .[0:57] + "..." else . end;
+    # The first sentence is the question; the rest is context. Cut at a word only past 80.
+    def q: .question | gsub("\\s+"; " ") | ((capture("^(?<s>.*?[?.!])( |$)") | .s) // .)
+      | if length > 80 then (.[0:77] | sub(" [^ ]*$"; "")) + "..." else . end;
     (map(select(.live)) | length) as $l
-    | (if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
+    | ((if length == 1 then "1 question waits on you" else "\(length) questions wait on you" end)
       + (if $l == 0 then ", none holding up a session" else ", \($l) holding up a session" end)
-      + ". Top: " + ([.[:$k][] | q + " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")"] | join("; "))
-      + ". List: fleet-bench asks."' <<<"$1"
+      + ". Top: ") as $head
+    | ". List: fleet-bench asks." as $tail
+    | [.[:$k][] | q + " (\(.age_h | age)" + (if .recommend != "" then ", recommend \(.recommend)" else "" end) + ")"]
+    | reduce .[] as $i ([]; if length == 0 or ($head + ((. + [$i]) | join("; ")) + $tail | length) <= $max then . + [$i] else . end)
+    | $head + join("; ") + $tail' <<<"$1"
 }
 
 cmd_asks() {
@@ -1029,8 +1035,9 @@ cmd_asks() {
   fi
   # --write is the morning briefing's step: one item of at most 160 chars, so the top one.
   # It puts the line in its own page, so the verdict and the page belong to the briefing run.
-  [ "$mode" = --write ] && { asks_line "$rows" 1; return 0; }
-  line=$(asks_line "$rows" 3)
+  # The budgets are channels.toml's: a briefing item (160) and a page (300).
+  [ "$mode" = --write ] && { asks_line "$rows" 1 160; return 0; }
+  line=$(asks_line "$rows" 3 300)
   command -v agent-notify >/dev/null 2>&1 && agent-notify -p normal -t asks "$line"
   say "$line"
   report_outcome WORKED "$out"
@@ -1153,7 +1160,8 @@ kpi_json() {
          revert_rate: ratio(($s | total(.reverted_7d)); $prs),
          interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
          cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
-         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length)};
+         ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
+         plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits))};
     # older lines have no runner field; _runner is where headless runs are filed
     ($o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.)) as $bot
     | ($o | map(select($bot[.session_id] | not))) as $human

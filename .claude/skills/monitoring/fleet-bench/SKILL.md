@@ -92,6 +92,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `prs_per_session` | sum `prs_merged` / sessions |
 | `revert_rate` | sum `reverted_7d` / sum `prs_merged` |
 | `interrupts_per_session` | sum `corrections.interrupts` / sessions |
+| `plan_gate_deny_rate` | sum `plan_gate.denied` / sum `plan_gate.exits`. No threshold: near 1 means the posture is not landing, near 0 with thin sections means the gate is too easy |
 | `cost_per_pr` | sum `cost_usd` / sum `prs_merged` |
 | `ci_red_per_pr` | sum `ci_red` / rows in `pr-ci.jsonl` by `merged_epoch`, headless sessions' PRs left out |
 | `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
