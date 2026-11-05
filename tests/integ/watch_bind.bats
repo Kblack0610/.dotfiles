@@ -25,7 +25,9 @@ setup() {
 @test "hub.conf declares one board window running hub, and none of the old board windows" {
   run awk '$1 == "hub:board" { $1 = ""; $2 = ""; sub(/^[[:space:]]+/, ""); print }' "$HUB_CONF"
   assert_success
-  assert_output '~/.local/bin/hub'
+  # exec: quitting the app closes the window, so tmux shows the window before it and the next
+  # Prefix key rebuilds the board. A shell left behind would be kept by ensure and shown instead.
+  assert_output 'exec ~/.local/bin/hub'
   # The bash boards these replaced must not come back beside it: two windows would be two
   # copies of the same board, and a tmux goto to one that is gone rebuilds it.
   run awk '$1 ~ /^\??(hub:)?(watch|log|infra)$/' "$HUB_CONF"

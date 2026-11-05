@@ -1,0 +1,32 @@
+# tmux 3.8 plus upstream 0985de0bc6, until a tagged release carries it. Why, and when to delete
+# this directory: README.md beside this file. Same version, same depends as the distro package;
+# pkgrel sits above CachyOS's 3.8-1.1, so pacman keeps this one and a real 3.8-2 or 3.9 replaces it.
+pkgname=tmux
+pkgver=3.8
+pkgrel=1.2
+pkgdesc='Terminal multiplexer, with the upstream tree-mode crash fix'
+arch=(x86_64)
+url='https://github.com/tmux/tmux/wiki'
+license=(BSD)
+depends=(libevent libutempter ncurses systemd-libs)
+source=("https://github.com/tmux/tmux/releases/download/$pkgver/tmux-$pkgver.tar.gz"
+        tree-mode-self-kill.patch)
+sha256sums=('e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e'
+            'd7bf6378c018fdc3a2d3b6d5a7e795f21b56d94147065d934d473f06013a94f3')
+
+prepare() {
+  cd "tmux-$pkgver"
+  patch -p1 < ../tree-mode-self-kill.patch
+}
+
+build() {
+  cd "tmux-$pkgver"
+  ./configure --prefix=/usr --enable-sixel --enable-systemd --enable-utempter
+  make
+}
+
+package() {
+  cd "tmux-$pkgver"
+  make DESTDIR="$pkgdir" install
+  install -Dm644 COPYING "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

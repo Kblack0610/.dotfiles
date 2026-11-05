@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, reboot, inventory]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-04"
 ---
 
 # session-snapshot
@@ -89,7 +89,7 @@ ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklis
 ```
 
 Read it, then **with confirmation** offer to:
-- bring back each Claude session with `fleet-dispatch start --project <project> --server <server> --session <name> --cwd <dir> --resume <session id> [--item <slug>]`. That is the one way an agent starts a session: it tags the session `@dispatch` (the human reads `[dispatch]` as "an agent started this") and, with `--item`, records the new `<server>:<session>` on the item, which `fleet-dispatch reap` and `fleet-sessions` read. Never `tmux new-session` + `claude --resume` by hand, and never tag a session with `set-option` afterwards. `start` refuses a session name that already exists on that server, so a Claude window that shared a human's session (the main checkout's `dotfiles`, say) gets its own `--session`, named for the window.
+- bring back the Claude sessions with `fleet-dispatch restore --dry-run`, then `fleet-dispatch restore`. It reads the pane record `fleet-state` keeps each minute, not this checklist, and reopens each conversation as a window of its old session (`fleet-dispatch` skill, "A world server died"). A conversation it could not reopen, or one the record never held, goes through `fleet-dispatch start --project <project> --server <server> --session <name> --window <name> --cwd <dir> --resume <session id> [--item <slug>]`, the one way an agent starts a session. Never `tmux new-session` + `claude --resume` by hand, and never tag a session with `set-option` afterwards.
 - recreate other tmux sessions (no Claude in them): `tmux new-session -d -s <name> -c <dir>`
 - start the manual services: `systemctl --user start <unit>`
 - relaunch dev servers with the captured command line
