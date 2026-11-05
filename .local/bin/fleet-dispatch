@@ -104,6 +104,40 @@ prio_rank() {
   esac
 }
 
+# prio_of <sheet> -> focus|high|low from the `#prio/<word>` the human set in the sheet's head
+# (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
+prio_of() {
+  sed -n '/^## /q; p' "$1" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
+}
+
+# The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,
+# then the row's due date (overdue, today, within 3 days, later or none), then worker order, then the
+# row's priority, then stage, then oldest first. rank_fields adds the counted inputs and a `why`
+# naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
+# a due date half a year back is next year's, a created date in the future is last year's.
+# shellcheck disable=SC2016
+RANK_JQ='
+def day0($s): "\($s)T00:00:00Z" | fromdateiso8601;
+def offset($x; $today): if $x == null then null
+  else (try (((day0("\($today[0:4])-\($x.m)-\($x.d)") - day0($today)) / 86400) | floor) catch null) end;
+def tagdate($b; $tag): [$b | capture("(^|\\s)#" + $tag + "(?<m>[01][0-9])(?<d>[0-3][0-9])(\\s|$)")] | first;
+def rank_fields($today; $pprio):
+  ((.text // "") | split("<!--")[0] // "") as $b
+  | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $dd
+  | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
+  | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
+         due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
+         due_in: $dd, age: (if $cd == null then 0 else -$cd end)}
+  | . + {why: ([(if $pprio != "" then "\($pprio) project" else empty end),
+                (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
+                 elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
+                (.worker // empty),
+                ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
+                .stage,
+                (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
+def rank: sort_by((.pprio // 2), (.due // 3), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+'
+
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
 # The registry's own resolver (project-name.sh), reading DISPATCH_PROJECT_MAP.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
@@ -280,7 +314,8 @@ judged_keys() {
 }
 
 cmd_candidates() {
-  local judged table prof name sheet _v stage repo lane key text rank worker tier line
+  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today
+  today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
@@ -289,6 +324,7 @@ cmd_candidates() {
       [ -n "$name" ] || continue
       stage=$(stage_of "$sheet")
       case "$stage" in alpha | beta | prod) ;; *) continue ;; esac
+      pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       for lane in human agent; do
@@ -302,10 +338,10 @@ cmd_candidates() {
           jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text")" --argjson tier "$tier" \
-            --arg worker "$worker" --argjson wrank "$rank" \
-            '{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
+            --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
+            "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank}'
+              worker: $worker, wrank: $wrank} | rank_fields($today; $pprio)'
         done < <(rows "$prof" "$name" "$lane")
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
@@ -318,8 +354,8 @@ cmd_candidates() {
 judge() {
   local cands="$1" prompt out verdicts wd rc
   [ -n "$cands" ] || return 0
-  # Over the cap, in worker order, then prod rows, then beta, then alpha, each by priority.
-  cands=$(jq -sc 'sort_by(.wrank, (.stage | {prod: 0, beta: 1}[.] // 2), .prio)[]' <<<"$cands" |
+  # Over the cap, the best-ranked rows first (RANK_JQ).
+  cands=$(jq -sc "$RANK_JQ"'rank[]' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
   prompt="## Rows to judge
@@ -364,23 +400,22 @@ latest_verdicts() {
 # picks <candidates> <room> -> the rows to launch: the row's latest verdict is a dispatch made
 # under the current policy for its current text, S or M, clear, agent-only, naming one area, and
 # judged no higher a tier than the row counts as (all checked here too, so a lax verdict cannot
-# launch anything); never two on an area, held by an active item or picked now; asks first, then most urgent, then
-# prod before beta before alpha.
+# launch anything); never two on an area, held by an active item or picked now; in RANK_JQ order.
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --arg sig "$(policy_sig)" --argjson max "$UNATTENDED_TIER_CEILING" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
-    --slurpfile v <(latest_verdicts) '
+    --slurpfile v <(latest_verdicts) "$RANK_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d != null and $d.verdict == "dispatch" and ($d.size == "S" or $d.size == "M")
           and $d.clear == true and $d.agent_only == true and $d.policy == $sig and $d.line == $c.line
           and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
           and ($d.area | type) == "string" and $d.area != "")
-      | . + {area: ($d.area | ascii_downcase), srank: ({"prod": 0, "beta": 1}[.stage] // 2)})
+      | . + {area: ($d.area | ascii_downcase)})
     | map(select("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
-    | sort_by(.wrank, .prio, .srank) | unique_by([.project, .area]) | sort_by(.wrank, .prio, .srank)
+    | rank | unique_by([.project, .area]) | rank
     | .[:$room] | .[]' <<<"$cands"
 }
 
@@ -1325,7 +1360,7 @@ fill_now() {
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
-    if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key)"' <<<"$c")"
+    if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$c")"
     else promote "$c" "" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')"; fi
   done <<<"$picked"
   while IFS= read -r c; do
@@ -1424,7 +1459,7 @@ cmd_fill() {
     return 0
   fi
   [ -n "$ready$night$unj" ] || { echo "fill: no open row to promote"; return 0; }
-  [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key)"' <<<"$ready"
+  [ -z "$ready" ] || jq -r '"ready     \(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$ready"
   [ -z "$night" ] || jq -r '"night     \(.project) (\(.stage)) \(.lane), \(.area), \(.priority): \(.key)"' <<<"$night"
   [ -z "$unj" ] || jq -r '"unjudged  \(.project) (\(.stage)) \(.lane): \(.key)"' <<<"$unj"
 }
