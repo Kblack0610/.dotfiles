@@ -66,6 +66,7 @@ source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "##
 [channel.rundown]
 prose = true
 max_item = 240
+require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section'], ['(?im)^#*\s*needs you\b', 'Needs you section']]
 source = { kind = "files", glob = "~/.agent/shepherd/rundowns/*.md" }
 
 # A status update in the one shape (Done, Doing, Next, Needs you).
