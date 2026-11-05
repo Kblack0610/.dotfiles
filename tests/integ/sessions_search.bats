@@ -1,0 +1,60 @@
+#!/usr/bin/env bats
+# `sessions search`, the table behind prefix R: a title prints whole, a project gets 20
+# columns, a row with no title falls back to its first prompt capped at one row's worth.
+# `claude-recall` is a stub reporting nothing new, so the fixture index is what is read.
+
+setup() {
+  load '../vendor/bats-support/load'
+  load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
+  sandbox_init basic
+
+  SUBJECT="$REPO_ROOT/.local/bin/sessions"
+  export CLAUDE_RECALL="$SANDBOX/bin/claude-recall"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$CLAUDE_RECALL"; chmod +x "$CLAUDE_RECALL"
+
+  TITLE='Waybar right-side overflow and agent chips across both monitors, wrapped'
+  PROMPT="$(printf 'prompt%.0s ' {1..30})"
+  mkdir -p "$HOME/.agent/sessions"
+  # id project updated mtime cwd branch title titles_all first last files prs
+  printf '%s\t' aaaaaaaa-1 dotfiles-agent-runtime-x - 200 /w main "$TITLE" "$TITLE" first last f.sh - \
+    | sed 's/\t$/\n/' > "$HOME/.agent/sessions/index.tsv"
+  printf '%s\t' bbbbbbbb-2 proj - 100 /w main - - "$PROMPT" last f.sh - \
+    | sed 's/\t$/\n/' >> "$HOME/.agent/sessions/index.tsv"
+}
+
+@test "a long title prints whole" {
+  run "$SUBJECT" search overflow
+  assert_success
+  assert_output --partial "$TITLE"
+}
+
+@test "the project column holds 20 characters and the header lines up with it" {
+  run "$SUBJECT" search overflow
+  assert_line --index 0 --regexp '^ID +AGE +LIVE +PROJECT {15}WHAT$'
+  assert_output --partial 'dotfiles-agent-runti  Waybar'
+}
+
+@test "a row with no title falls back to its first prompt, capped at 80 characters" {
+  run "$SUBJECT" search prompt
+  assert_success
+  assert_output --partial "${PROMPT:0:80}"
+  refute_output --partial "${PROMPT:0:81}"
+}
+
+@test "search matches words the row does not show" {
+  run "$SUBJECT" search f.sh
+  assert_output --partial "$TITLE"
+  assert_output --partial 'proj'
+}
+
+@test "--pick opens a picker with no preview pane" {
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/usr/bin/env bash\necho "$*" > "$HOME/fzf.args"\ncat >/dev/null\n' > "$SANDBOX/bin/fzf"
+  chmod +x "$SANDBOX/bin/fzf"
+  run "$SUBJECT" compact --pick
+  run cat "$HOME/fzf.args"
+  assert_success
+  refute_output --partial 'preview'
+  assert_output --partial '--wrap'
+}
