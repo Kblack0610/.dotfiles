@@ -648,6 +648,12 @@ pub(crate) fn file(
             .find_map(|l| md::marker_token(l, "id:"))
             .map(str::to_string),
     };
+    if matches!(how.how, How::Rows { .. }) {
+        ev.row = written
+            .iter()
+            .find(|l| md::row_id(l).is_some())
+            .map(|l| crate::ingest::row_words(l));
+    }
     crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
     for l in &written {

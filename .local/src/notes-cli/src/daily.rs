@@ -885,9 +885,36 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
 ///   planner planned, with what it added. A line moved out of the outbox or Focus and then
 ///   filed reads as one row, the filing, noting where it came from. An outbox line the sweep
 ///   left shows once, with its reason.
+/// Every profile's project dirs, by name: the ingest record is the machine's, so a filing can
+/// land in any profile's project.
+fn all_project_dirs() -> Vec<(String, PathBuf)> {
+    crate::config::all_profile_names()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|n| crate::config::resolve(Some(n)).ok())
+        .flat_map(|p| discover_project_dirs(&p))
+        .filter_map(|(name, summary)| Some((name, summary.parent()?.to_path_buf())))
+        .collect()
+}
+
+/// Days of filings the page's kept-as-filed count covers.
+const KEPT_DAYS: i64 = 7;
+
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
+    inbox_page_in(p, &all_project_dirs())
+}
+
+/// The inbox page, the kept count looked up in `dirs` (project name, dir).
+fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
     let events = crate::ingest::on_day(p, &today);
+    let week = crate::ingest::since(p, KEPT_DAYS);
+    let ids: std::collections::HashSet<&str> = week
+        .iter()
+        .filter(|e| e.action == "filed")
+        .filter_map(|e| e.id.as_deref())
+        .collect();
+    let (kept, filed) = crate::ingest::kept(&week, &crate::ingest::find_rows(dirs, &ids));
     let mut rows: Vec<status::Row> = Vec::new();
     let (mut routed, mut left, mut planned) = (0, 0, 0);
     for (i, ev) in events.iter().enumerate() {
@@ -993,8 +1020,13 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     status::Page {
         feed: status::Feed::Inbox,
         stat: Some(format!(
-            "{today}: {routed} routed, {planned} planned, {left} left, {} in the outbox, {captured} captured",
-            waiting.len()
+            "{today}: {routed} routed, {planned} planned, {left} left, {} in the outbox, {captured} captured{}",
+            waiting.len(),
+            if filed > 0 {
+                format!("; triage: {kept} of {filed} kept as filed ({KEPT_DAYS}d)")
+            } else {
+                String::new()
+            }
         )),
         rows,
     }
@@ -2329,7 +2361,15 @@ mod tests {
         let mut filed = Event::new("filed", "demo", "demo", "loading screens");
         filed.lane = "human".into();
         filed.id = Some("dm-4".into());
+        filed.row = Some("feat(ui): loading screens".into());
         record(&p, &filed);
+        let demo = root.join("demo");
+        std::fs::create_dir_all(&demo).unwrap();
+        std::fs::write(
+            demo.join("README.md"),
+            "## Tasks\n- [ ] feat(ui): loading screens #size/s <!-- id:dm-4 filed:2026-11-05 -->\n",
+        )
+        .unwrap();
         let mut dup = Event::new("dup", "nc", "nc", "focus and outbox");
         dup.id = Some("nc-9".into());
         record(&p, &dup);
@@ -2349,7 +2389,7 @@ mod tests {
             "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n",
         )
         .unwrap();
-        let page = inbox_page(&p);
+        let page = inbox_page_in(&p, &[("demo".into(), demo)]);
         let heads: Vec<(bool, &str)> = page
             .rows
             .iter()
@@ -2375,7 +2415,7 @@ mod tests {
         assert!(page
             .stat
             .unwrap()
-            .ends_with(": 2 routed, 1 planned, 1 left, 2 in the outbox, 0 captured"));
+            .ends_with(": 2 routed, 1 planned, 1 left, 2 in the outbox, 0 captured; triage: 1 of 1 kept as filed (7d)"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
