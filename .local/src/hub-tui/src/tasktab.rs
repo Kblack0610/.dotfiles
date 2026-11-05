@@ -628,14 +628,13 @@ pub(crate) mod tests {
         assert_eq!(
             tasks::argv(&w).unwrap(),
             [
-                "notes",
-                "ptask",
+                "fleet-dispatch",
+                "promote",
+                "--project",
                 "demo",
                 "--profile",
                 "bnb",
-                "--exact",
-                "start",
-                "--",
+                "--raw",
                 "- [ ] fix the menu"
             ]
         );
