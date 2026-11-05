@@ -55,6 +55,14 @@ impl Lane {
             Lane::Agent => projects::agent_dir(project),
         }
     }
+
+    /// `human` or `agent`, the word `--lane` takes and the ingest record writes.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Lane::Human => "human",
+            Lane::Agent => "agent",
+        }
+    }
 }
 
 /// The body a fresh agent sheet starts with: title, a link home, and the empty sections. No

@@ -251,6 +251,13 @@ fn move_to_inboxes(
             .unwrap_or_default();
         let lines: Vec<String> = rows.iter().map(|r| md::without_project_tag(r)).collect();
         let path = crate::project_tasks::inbox_put(p, dir, &name, &lines)?;
+        for r in lines.iter().filter(|r| !r.starts_with([' ', '\t'])) {
+            let text = crate::sheet::inbox_text(r);
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::new("moved", "focus", &name, &text),
+            );
+        }
         log.info(
             "focus",
             &format!(

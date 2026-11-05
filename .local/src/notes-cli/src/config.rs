@@ -41,6 +41,11 @@ struct RawConfig {
     /// Focus row tagged `#idea` with no project. Cross-org like `board`, for the same reason.
     #[serde(default = "default_ideas")]
     ideas: String,
+    /// The outbox, relative to `vault`: where the human and agents drop work for any project,
+    /// routed into each project's `## Inbox` by the inbox sweep (`notes outbox`). Cross-org
+    /// like `board`, so one file serves every org.
+    #[serde(default = "default_outbox")]
+    outbox: String,
     /// Multi-account email triage (`notes comms`). Global (spans profiles), so it lives at
     /// the top level rather than per-profile - each account names the profile whose daily
     /// note its critical items surface into. Optional: an empty `[comms]` means the feature
@@ -283,6 +288,10 @@ fn default_board() -> String {
     "lab/projects/board.md".to_string()
 }
 
+fn default_outbox() -> String {
+    "outbox.md".to_string()
+}
+
 fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
@@ -403,6 +412,8 @@ pub struct Profile {
     pub board: PathBuf,
     /// The cross-project ideas file (`#idea` rows with no project). Cross-org, like `board`.
     pub ideas: PathBuf,
+    /// The outbox (`notes outbox`). Cross-org, like `board`.
+    pub outbox: PathBuf,
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
@@ -513,6 +524,7 @@ fn builtin_default() -> RawConfig {
         vault: default_vault(),
         board: default_board(),
         ideas: default_ideas(),
+        outbox: default_outbox(),
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
         project_type: HashMap::new(),
@@ -706,6 +718,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         vault: vault.clone(),
         board: vault.join(&raw.board),
         ideas: vault.join(&raw.ideas),
+        outbox: vault.join(&raw.outbox),
         inbox: join(&rp.inbox),
         tag_scan,
         state_dir,
@@ -873,6 +886,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         vault: PathBuf::from(root),
         board: PathBuf::from(root).join("lab/projects/board.md"),
         ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
+        outbox: PathBuf::from(root).join("outbox.md"),
         inbox: r.join("inbox"),
         tag_scan: Vec::new(),
         state_dir: r.join(".state"),
