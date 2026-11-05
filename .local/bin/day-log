@@ -295,9 +295,19 @@ finalize() {
   jq -r '"\(.merged | length) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
 }
 
+# report_nightly <rc>: declare the runner's outcome, or agentctl calls a clean exit STALLED and
+# fleet-liveness pages. A nightly by hand has no runner to speak for.
+report_nightly() {
+  [ -n "${AGENTCTL_NAME:-}" ] || return 0
+  # shellcheck source=/dev/null
+  . "$HERE/../lib/agent-proof.sh" || return 0
+  if [ "$1" -eq 0 ]; then proof_report "$AGENTCTL_NAME" WORKED "closed $2"
+  else proof_report "$AGENTCTL_NAME" FAILED "closing $2: a step failed, see stderr"; fi
+}
+
 # nightly <day>: close a finished day. The CI read takes minutes, so it runs before finalize,
 # outside the record's lock, and its result goes in as DAYLOG_CI_FILE. Everything is attempted
-# and any failure is the exit code: the runner reports it, the briefing names it.
+# and any failure is the exit code and a FAILED outcome; the briefing names it.
 nightly() {
   local day="$1" rc=0 tmp
   [ "$day" = "$(today)" ] && { say "$day is not over yet"; return 2; }
@@ -310,6 +320,7 @@ nightly() {
   "$SNAPSHOTS" week --date "$day" --write || rc=1
   prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
     say "could not write day_log_rollup.prom"
+  report_nightly "$rc" "$day"
   return "$rc"
 }
 

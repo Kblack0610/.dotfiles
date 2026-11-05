@@ -398,6 +398,22 @@ PROM
   [ -s "$DAYLOG_DIR/weeks/2026-10-27.json" ]
 }
 
+@test "nightly: under a runner it declares WORKED, a failed step FAILED, and by hand nothing" {
+  ci_clone
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  outcome="$HOME/.local/state/agentctl/token-usage/last-outcome"
+  "$SUBJECT" nightly
+  [ ! -e "$outcome" ]
+  AGENTCTL_NAME=token-usage "$SUBJECT" nightly
+  run cat "$outcome"
+  assert_output WORKED
+  echo 1 > "$SANDBOX/cif-rc"
+  AGENTCTL_NAME=token-usage run "$SUBJECT" nightly
+  assert_failure 1
+  run cat "$outcome"
+  assert_output FAILED
+}
+
 @test "nightly: a partial ci-failures read is kept, named and fails the run" {
   echo 3 > "$SANDBOX/cif-rc"
   jq '.partial = true' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
