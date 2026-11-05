@@ -150,8 +150,8 @@ pub enum Msg {
     Files,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
-    /// `hub tab <name>` asked for a page (tabreq.rs).
-    Tab(Tab),
+    /// `hub tab <name> [search]` asked for a page (tabreq.rs); the search is the Board's.
+    Tab(Tab, Option<String>),
     Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
@@ -495,7 +495,10 @@ impl App {
                 }
             }
             Msg::BoardFiles => self.read_boards(),
-            Msg::Tab(t) => self.go(t),
+            Msg::Tab(t, q) => {
+                self.board_search(q);
+                self.go(t);
+            }
             Msg::Boards(b) => {
                 self.boards = Some(*b);
                 if self.boards_read.done() {
@@ -664,6 +667,14 @@ impl App {
         }
     }
 
+    /// Set the Board's search, as `/` would; None leaves it as it is.
+    pub fn board_search(&mut self, q: Option<String>) {
+        if let Some(q) = q {
+            self.tv.search = q;
+            self.tv.sel = 0;
+        }
+    }
+
     fn go(&mut self, t: Tab) {
         self.tab = t;
         self.scroll = 0;
@@ -693,6 +704,10 @@ impl App {
             tasktab::Ask::Done => true,
             tasktab::Ask::Write(label, w) => {
                 self.tasks_act(label, w);
+                true
+            }
+            tasktab::Ask::Open(sheet, line) => {
+                self.tv.said = Some(edit_in_tmux(&sheet, line));
                 true
             }
         }
@@ -1029,7 +1044,7 @@ impl App {
             ),
             Tab::Board if self.tv.prompt.is_some() => "type, Enter submits, Esc cancels".into(),
             Tab::Board => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  Esc clear  r refresh  {tabs} tabs  q quit"
+                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  +/- wave  o open  Esc clear  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
@@ -1215,6 +1230,34 @@ pub fn is_job_file(paths: &Paths, p: &std::path::Path) -> bool {
             p.file_name().and_then(|n| n.to_str()),
             Some("runs.jsonl" | "run")
         ) && p.starts_with(&paths.agentctl)
+}
+
+/// Open a sheet at a line in `$EDITOR` (nvim when unset), in a new window of the tmux session
+/// the hub runs in, so quitting the editor lands back here.
+fn edit_in_tmux(sheet: &str, line: usize) -> Result<String, String> {
+    if std::env::var_os("TMUX").is_none() {
+        return Err(format!("not in tmux: open {sheet}:{line} by hand"));
+    }
+    let editor = std::env::var("EDITOR")
+        .ok()
+        .filter(|e| !e.trim().is_empty() && !e.contains(char::is_whitespace))
+        .unwrap_or_else(|| "nvim".into());
+    let ok = std::process::Command::new("tmux")
+        .args(["new-window", "-n", "sheet", "--", &editor])
+        .arg(format!("+{}", line.max(1)))
+        .arg(sheet)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok {
+        Ok(format!("opened {sheet}:{line}"))
+    } else {
+        Err(format!(
+            "tmux new-window failed: open {sheet}:{line} by hand"
+        ))
+    }
 }
 
 /// Open a URL in the desktop's browser, detached: the board never waits on it.
@@ -1433,7 +1476,10 @@ mod tests {
             "Shift-Tab from the Overview is the last tab"
         );
         let s = screen(&mut a, 140, 12);
-        assert!(s.lines().next().unwrap().contains("9 Queue  0 Board"), "{s}");
+        assert!(
+            s.lines().next().unwrap().contains("9 Queue  0 Board"),
+            "{s}"
+        );
         assert!(s.contains("Reading notes board..."), "{s}");
 
         // The read Shift-Tab started meets the fake's empty answer: wait for it, not a timer.
@@ -1591,7 +1637,7 @@ mod tests {
         // so no test runs them.
         a.fleet_read.busy = true;
         a.forecast_read.busy = true;
-        a.handle(Msg::Tab(Tab::Fleet));
+        a.handle(Msg::Tab(Tab::Fleet, None));
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('5'));
         assert_eq!(a.tab, Tab::Forecast);
