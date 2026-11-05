@@ -28,7 +28,7 @@ const lane = (name, markdown, open, done) => ({ name, markdown, items: [], open,
 const day = {
   note: {
     target: "daily", profile: "personal", path: "/n/journal/daily/2026-11-05.md", rel: "journal/daily/2026-11-05",
-    title: "2026-11-05", exists: true, date: "2026-11-05", prev: "2026-11-04", next: null,
+    title: "2026-11-05", exists: true, date: "2026-11-05", prev: "2026-11-04", next: null, hash: "aa",
     markdown: "# 2026-11-05\n\n## Focus\n- [ ] fix the menu #p:demo\n",
     links: [{ target: "outbox", label: "outbox", exists: true }, { target: "gone", label: "gone", exists: false }],
   },
@@ -108,4 +108,87 @@ test("the Focus tab writes nothing to the outbox; its head links to the Outbox t
   const h = draw(day);
   assert.doesNotMatch(h, /Add to outbox|f-out/);
   assert.match(h, /<a class="btn sm" href="#outbox">Outbox<\/a>/);
+});
+
+// Edit and Save: the page's side of `notes put --base` (the CLI's compare-and-swap is tested in
+// notes-cli, the 200/409/502 mapping in agent-web's cli.rs).
+const store = new Map();
+ctx.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+ctx.confirm = () => true;
+const reply = (status, body) => async () => ({ ok: status < 300, status, statusText: "", headers: { get: () => "application/json" }, json: async () => body, text: async () => JSON.stringify(body) });
+const run = (code) => vm.runInContext(code, ctx);
+const KEY = "focus-draft:" + day.note.path;
+
+function editing(data = day) {
+  store.clear();
+  draw(data);
+  run("startEdit()");
+  return box("focus").innerHTML;
+}
+
+test("Edit opens the note's markdown in a textarea with Save; the reading view has none", () => {
+  assert.doesNotMatch(draw(day), /<textarea/, "no editor until Edit");
+  assert.match(draw(day), /data-f="edit">Edit<\/button>/);
+  const h = editing();
+  assert.match(h, /<textarea id="f-edit"[^>]*># 2026-11-05\n\n## Focus\n- \[ \] fix the menu #p:demo\n<\/textarea>/);
+  assert.match(h, /data-f="save">Save<\/button>/);
+  assert.match(h, /data-f="cancel">Cancel<\/button>/);
+  assert.doesNotMatch(h, /data-f="raw"/, "no Rendered/Raw while editing");
+  assert.doesNotMatch(h, /data-f="edit"/);
+});
+
+test("the outbox has no Edit: its editor is the Outbox tab", () => {
+  const h = draw({ note: { ...day.note, target: "outbox", rel: "outbox", date: null, links: [] }, focus: null, sections: [] }, { arg: "outbox" });
+  assert.doesNotMatch(h, /data-f="edit"/);
+});
+
+test("a re-read while editing leaves the textarea alone and warns that the note moved", async () => {
+  const before = editing();
+  run(`fcs.edit.text = "typed"`);
+  ctx.fetch = reply(200, { ...day, note: { ...day.note, hash: "bb" } });
+  await run("refreshFocus()");
+  assert.equal(box("focus").innerHTML, before, "the editor is not redrawn under the typing");
+  assert.match(box("f-edit-st").textContent, /changed elsewhere since you opened it; Save will show both/);
+});
+
+test("a 409 writes nothing, shows the note as it is now beside yours, and Save mine over it takes its hash", async () => {
+  editing();
+  run(`fcs.edit.text = "mine"`);
+  const now = { ...day, note: { ...day.note, hash: "cc", markdown: "from nvim <b>\n" } };
+  ctx.fetch = reply(409, now);
+  await run("saveEdit(fcs.edit.base)");
+  const h = box("focus").innerHTML;
+  assert.match(h, /This note changed after you opened it\. Nothing was written\./);
+  assert.match(h, /<pre class="raw">from nvim &lt;b&gt;\n<\/pre>/);
+  assert.match(h, /data-f="over"[^>]*>Save mine over it<\/button>/);
+  assert.match(h, /data-f="copymine">Copy mine<\/button><button class="btn sm" data-f="discard">Discard mine<\/button>/);
+  assert.doesNotMatch(h, /data-f="save"/, "a plain Save would go stale again");
+  assert.match(h, /<textarea id="f-edit"[^>]*>mine<\/textarea>/, "your text is still there");
+  let sent = null;
+  ctx.fetch = async (url, opts) => { sent = JSON.parse(opts.body); return reply(200, now)(); };
+  await run("saveEdit(fcs.edit.stale.hash)");
+  assert.deepEqual(sent, { t: "daily", base: "cc", text: "mine" });
+  assert.equal(run("fcs.edit"), null);
+  assert.equal(store.has(KEY), false, "a saved edit leaves no draft");
+  assert.match(box("focus").innerHTML, /<span class="muted">Saved [^<]+<\/span>/);
+});
+
+test("a draft kept on the device comes back; one made on an older read opens on the changed view", () => {
+  store.clear();
+  store.set(KEY, JSON.stringify({ base: "aa", text: "half typed", at: 1 }));
+  assert.match(draw(day), /data-f="edit">Edit \(draft\)<\/button>/);
+  run("startEdit()");
+  let h = box("focus").innerHTML;
+  assert.match(h, /<textarea id="f-edit"[^>]*>half typed<\/textarea>/);
+  assert.doesNotMatch(h, /changed after you opened it/);
+  run("fcs.edit = null");
+  store.set(KEY, JSON.stringify({ base: "00", text: "from last night", at: 1 }));
+  draw(day);
+  run("startEdit()");
+  h = box("focus").innerHTML;
+  assert.match(h, /This note changed after you opened it/);
+  assert.match(h, /<textarea id="f-edit"[^>]*>from last night<\/textarea>/);
+  run("discardEdit()");
+  assert.equal(store.has(KEY), false);
+  assert.equal(run("fcs.edit"), null);
 });
