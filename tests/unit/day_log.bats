@@ -223,6 +223,82 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output --partial '3 sessions spent $12.5.'
 }
 
+# status_day: a live day with one of each kind of line the status shape prints
+status_day() {
+  { pr game 1 'feat(raiders): bosses stay home' 2026-10-28T20:00:00Z
+    pr tools 2 'fix: the lockfile resolves' 2026-10-28T19:00:00Z; } | merged
+  jq -cn '[{number: 3, title: "feat(story): the intro plays once", url: "https://example.test/game/3",
+    repository: {name: "game"}, createdAt: "2026-10-28T10:00:00Z", updatedAt: "2026-10-28T22:00:00Z", isDraft: true}]' > "$GHD/open"
+  jq -cn '{main: [{repo: "game", reason: "game red: Tests (no green in window)"}],
+    sessions: [
+      {target: "lab/game-agent-3:1", cwd: "/w/game-agent-3", bucket: "NEEDS", reason: "1 pending ask(s)", idle_min: 2,
+       next_phase: "Phase 2 (#12): **Bosses** stay home. Then the rest.", phases_done: 1, phases_total: 3},
+      {target: "lab/game-agent-4:1", cwd: "/w/game-status-shape", bucket: "NEEDS", reason: "3 pending ask(s)", idle_min: 9,
+       next_phase: "2. Arena: rules 4.5:1, no doubles", phases_done: 1, phases_total: 2},
+      {target: "lab/game-agent-5:1", cwd: "/w/game-agent-5", bucket: "NEEDS", reason: "waiting on a prompt or permission", idle_min: 30,
+       next_phase: "-", finished: false},
+      {target: "lab/tools-agent-1:1", cwd: "/w/tools-agent-1", bucket: "WORKING", next_phase: "Done already", finished: true}],
+    asks: [range(4) as $i | {id: "a\($i)", project: "game", kind: "question",
+      question: "Question \($i)?", created: "2026-10-28T1\($i):00:00-0700"}]}' > "$DAYLOG_STATE"
+}
+
+@test "show is the status shape: Done, Doing, Next, then Needs you, before the details" {
+  status_day
+  run "$SUBJECT" show
+  assert_success
+  run bash -c "grep '^## ' <<<\"\$1\" | head -5 | paste -sd ' '" _ "$output"
+  assert_output '## Done ## Doing ## Next ## Needs you ## Sessions'
+}
+
+@test "show prints Done and Doing as one plain line each, subject first and the link last" {
+  status_day
+  run "$SUBJECT" show
+  assert_line '- Bosses stay home (13:00) [game#1](https://example.test/game/1)'
+  assert_line '- The intro plays once (draft) [game#3](https://example.test/game/3)'
+}
+
+@test "Next is each unfinished session's next phase under its repo's area, a worktree slug included" {
+  status_day
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Next/,/^## Needs you/p' <<<\"\$1\" | grep -v '^\$'" _ "$output"
+  assert_output "$(printf '%s\n' '## Next' '### Games' '- Bosses stay home. (game-agent-3, 1 of 3 done)' \
+    '- Arena: rules 4.5:1, no doubles (game-agent-4, 1 of 2 done)' '## Needs you')"
+}
+
+@test "Needs you groups sessions by why, and asks are a count, the newest three and where to see all" {
+  status_day
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Needs you/,/^## Sessions/p' <<<\"\$1\" | grep '^- '" _ "$output"
+  assert_output "$(printf '%s\n' '- Nightly red in game: Tests (no green in window)' \
+    '- Questions hold up 2 sessions: game-agent-3, game-agent-4.' \
+    '- 1 session is waiting on a prompt or permission: game-agent-5.' \
+    '- 4 questions wait on you. List: fleet-bench asks.' \
+    '- Question: Question 3? (game, 13:00)' '- Question: Question 2? (game, 12:00)' '- Question: Question 1? (game, 11:00)')"
+}
+
+@test "a quiet day says so in each section instead of leaving it empty" {
+  run "$SUBJECT" show
+  assert_line '- Nothing merged.'
+  assert_line '- No session has a phase left.'
+  assert_line '- Nothing.'
+}
+
+@test "a long subject is clipped so the line fits the status channel's item budget" {
+  pr game 1 "feat: $(printf 'word %.0s' {1..60})" 2026-10-28T20:00:00Z | merged
+  run "$SUBJECT" show
+  run bash -c "grep '^- Word' <<<\"\$1\" | awk '{ print length }'" _ "$output"
+  assert_output 200
+}
+
+@test "show passes comms-lint --channel status" {
+  status_day
+  export COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$SANDBOX/check.py"
+  printf 'import sys\nsys.stdin.read()\n' > "$COMMS_PROSE_CHECK"
+  "$SUBJECT" show > "$SANDBOX/show.md"
+  run "$REPO_ROOT/.local/bin/comms-lint" --channel status "$SANDBOX/show.md"
+  assert_success
+}
+
 @test "a snapshot of today publishes merged PRs per area and spend per project, TOTAL left out" {
   mkdir -p "$PROM_TEXTFILE_DIR"
   pr game 1 'feat(raiders): one' 2026-10-28T17:00:00Z > "$SANDBOX/p1"

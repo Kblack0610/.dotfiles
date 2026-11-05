@@ -1063,7 +1063,8 @@ READONLY_SUB = re.compile(r"^(git (status|log|show|diff|branch|rev-parse|rev-lis
                           r"|cat-file|merge-base|describe|shortlog)|gh (pr|run|issue|repo|api|release) ?(view|list|"
                           r"checks|diff|status)?$|agent-queue list|notes (list|show|board|ptask)|claude-recall .*)")
 TASK_DONE = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
-BG_OUTPUT = re.compile(r"/tasks/[\w.-]+\.output")
+TASK_ID = re.compile(r"<task-id>([\w.-]+)</task-id>")
+BG_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
 WORD = re.compile(r"[\w./~@:-]{5,}")
 RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 
@@ -1109,16 +1110,20 @@ def result_text(b):
 def tool_calls_file(path, since, until, seen_msgs, emit):
     """Stream one transcript into responses and results, then emit('stat', key, n) per measure."""
     resps, results, seg, entry, prompt, project = [], {}, 0, None, None, None
-    by_mid, notified = {}, {}
+    by_mid, notified, noticed = {}, {}, {}  # noticed: task id -> index of the first response after its notice
     for line in path.open(errors="replace"):
         if '"compact_boundary"' in line:
             seg += 1
             continue
         if "<task-notification>" in line and '"tool_result"' not in line:
             rec = parse_line(line)
-            m = rec and TASK_DONE.search(json.dumps(rec.get("message") or rec.get("content") or ""))
+            body = json.dumps(rec.get("message") or rec.get("content") or "") if rec else ""
+            m = TASK_DONE.search(body)
             if m and rec.get("timestamp"):
                 notified.setdefault(m.group(1), (str(rec.get("timestamp") or ""), len(resps)))
+            t = TASK_ID.search(body)
+            if t:
+                noticed.setdefault(t.group(1), len(resps))
             continue
         if '"type":"assistant"' not in line and '"type":"user"' not in line:
             continue
@@ -1227,8 +1232,13 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             elif name == "Bash" and "moved to the background" in text[:400]:
                 emit("group", "background", "timed out into background", 1, 0, nctx)
             cmd = str(inp.get("command") or inp.get("file_path") or "")
-            if BG_OUTPUT.search(cmd):
-                emit("group", "background", "read task output", 1, len(text) * later, nctx)
+            out = BG_OUTPUT.search(cmd)
+            if out:
+                # Before its notice a read is polling a run still going; after it, the read is how
+                # the session sees the output, which the notice does not carry.
+                n = noticed.get(out.group(1))
+                when = "after its notice" if n is not None and n <= i else "before its notice"
+                emit("group", "background", f"read task output {when}", 1, len(text) * later, nctx)
             elif name == "Bash" and re.search(r"\bsleep\b|\buntil\b", cmd):
                 emit("group", "background", "sleep or until loop", 1, len(text) * later, nctx)
             elif name in ("Monitor", "TaskOutput"):
