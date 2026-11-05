@@ -907,16 +907,11 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
         for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
             if not isinstance(b, dict) or b.get("type") != "tool_result":
                 continue
-            rc = b.get("content")
-            if isinstance(rc, list):
-                size = sum(len(x.get("text") or "") for x in rc if isinstance(x, dict))
-            else:
-                size = len(str(rc or ""))
             tid = b.get("tool_use_id")
             name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "filetype": ftype, "kind": kind,
-                            "chars": size, "at": turns, "method": method_at(windows, ts),
+                            "chars": len(result_text(b)), "at": turns, "method": method_at(windows, ts),
                             "rewritten": tid in rewritten})
     settle(False)
 
