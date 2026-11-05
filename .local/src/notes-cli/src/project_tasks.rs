@@ -330,6 +330,10 @@ pub fn add(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
+    if let Some(open) = open_twin(&content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+        return Ok(3);
+    }
     let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
@@ -342,6 +346,15 @@ pub fn add(
         println!("{l}");
     }
     Ok(0)
+}
+
+/// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
+/// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
+fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+    let key = md::task_key(&format!("- [ ] {text}"));
+    content
+        .lines()
+        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
 }
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
@@ -1761,6 +1774,14 @@ Version: v1.13.0
 
     // THE proof gate. A bare `done` must be refused - if this ever passes, "closed" and
     // "finished" have come apart again and the roll gate above is counting nothing.
+    #[test]
+    fn an_open_twin_is_found_whatever_its_stamps_and_a_done_one_is_not() {
+        let sheet = "## Tasks\n- [ ] fix(x): the thing #c1101 #high <!-- id:ar-1 -->\n- [x] feat(y): shipped #c1101\n";
+        assert!(open_twin(sheet, "fix(x): the thing").is_some());
+        assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
+        assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
     #[test]
     fn done_without_evidence_is_refused() {
         let e = proof_stamp(None, None).unwrap_err().to_string();
