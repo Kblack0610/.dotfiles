@@ -1,8 +1,9 @@
 #!/bin/bash
 # ask-settle.sh answered|stale - close the pending asks of the Claude session in the hook payload.
 #
-#   UserPromptSubmit -> answered: the human typed into the session, and that is the answer (an
-#                       answer given from a board is typed in too, by `agent-ask answer`).
+#   UserPromptSubmit -> answered: the human typed into the session. An ask with --options closes
+#                       only when the message names exactly one option; others take the message
+#                       as the answer (`agent-ask answer` from a board types its answer in too).
 #   SessionEnd       -> stale: nobody is left to act on it; still answerable, and the briefing
 #                       lists it once.
 #

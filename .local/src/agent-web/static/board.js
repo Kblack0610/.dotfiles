@@ -1,7 +1,8 @@
 "use strict";
 // The Board tab: every project's open rows from `notes board --json` (/api/board): the human
-// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done
-// and remove go through `notes ptask --exact` with the row's raw line (POST /api/board), so a
+// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done,
+// remove, move (to a project or a wave), a wave sooner or later, and edit go through
+// `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
 // resync, and on Refresh.
@@ -12,7 +13,8 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  open: {}, closeFor: null, controlsKey: "",
+  // `form` is the one row whose done, drop, move or edit form is open: { k, kind }.
+  open: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
@@ -79,20 +81,39 @@ function bRow(r, i) {
   let acts = "";
   if (focus) {
     acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.closeFor && bst.closeFor.k === k) {
-    // Every close says how: done with a proof or why it has none, or dropped with why or the
-    // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
-    const done = bst.closeFor.verb === "done";
-    const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
-    acts = `<div class="opts">` +
-      `<select data-closekind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
-      `<input data-closeval="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
-      `<button class="btn sm primary" data-closego="${i}">${done ? "Mark done" : "Drop"}</button>` +
-      `<button class="btn sm" data-closecancel="${i}">Cancel</button></div>`;
+  } else if (bst.form && bst.form.k === k) {
+    const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
+    const kind = bst.form.kind;
+    if (kind === "done" || kind === "drop") {
+      // Every close says how: done with a proof or why it has none, or dropped with why or the
+      // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
+      const done = kind === "done";
+      const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
+      acts = `<div class="opts">` +
+        `<select data-formkind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
+        `<input data-forminput="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
+        `<button class="btn sm primary" data-formgo="${i}">${done ? "Mark done" : "Drop"}</button>` + cancel;
+    } else if (kind === "move") {
+      const names = [...new Set(bst.feed.projects.map((p) => p.project))].filter((p) => p !== r.project).sort();
+      acts = `<div class="opts">` +
+        `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
+        `<input data-forminput="${i}" placeholder="wave vX.Y.Z (optional with a project)">` +
+        `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else {
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" value="${esc(r.text)}">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
+    }
   } else {
+    // A playtest check has no waves and no edit: notes takes add, done and drop there.
+    const waves = r.lane !== "playtest";
     acts = `<div class="opts">` +
-      (r.lane !== "playtest" && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
+      (waves && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
       `<button class="btn sm" data-done="${i}">Done...</button>` +
+      (waves ? `<button class="btn sm" data-promote="${i}" title="one wave sooner">Sooner</button>` +
+        `<button class="btn sm" data-demote="${i}" title="one wave later">Later</button>` +
+        `<button class="btn sm" data-move="${i}">Move...</button>` +
+        `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
@@ -204,26 +225,44 @@ $("board").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
-  const at = t.dataset.start || t.dataset.done || t.dataset.drop || t.dataset.closego || t.dataset.closecancel;
-  const r = rows[at];
+  const d = t.dataset;
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
-  if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
-  if (t.dataset.done || t.dataset.drop) {
-    bst.closeFor = { k, verb: t.dataset.done ? "done" : "drop" };
-    drawBoardList();
-    const i = $("board").querySelector(`[data-closeval="${at}"]`); if (i) i.focus();
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
+  if (d.promote || d.demote) {
+    const verb = d.promote ? "promote" : "demote";
+    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One wave sooner." : "One wave later.");
     return;
   }
-  if (t.dataset.closecancel) { bst.closeFor = null; drawBoardList(); return; }
-  if (t.dataset.closego) {
-    const v = $("board").querySelector(`[data-closeval="${at}"]`).value.trim();
-    const kind = $("board").querySelector(`[data-closekind="${at}"]`).value;
-    const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
-    if (!v) { bst.msg = need[kind]; renderBoard(); return; }
-    const verb = bst.closeFor.verb;
-    bst.closeFor = null;
-    bWrite(Object.assign({ verb, [kind]: v }, bTarget(r)), verb === "done" ? "Done." : "Dropped.");
+  const opened = d.done || d.drop || d.move || d.edit;
+  if (opened) {
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : "edit" };
+    drawBoardList();
+    const i = $("board").querySelector(`[data-forminput="${opened}"]`);
+    if (i) i.focus();
+    return;
+  }
+  if (d.formcancel) { bst.form = null; drawBoardList(); return; }
+  if (d.formgo && bst.form) {
+    const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
+    const v = q("forminput").value.trim(), kind = bst.form.kind;
+    let body, ok;
+    if (kind === "done" || kind === "drop") {
+      const how = q("formkind").value;
+      const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+      if (!v) { bst.msg = need[how]; renderBoard(); return; }
+      body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
+    } else if (kind === "move") {
+      const dest = q("movedest").value;
+      if (!dest && !v) { bst.msg = "Pick a project, a wave, or both."; renderBoard(); return; }
+      body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
+    } else {
+      if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }
+      body = { verb: "edit", text: v }; ok = "Edited.";
+    }
+    bst.form = null;
+    bWrite(Object.assign(body, bTarget(r)), ok);
   }
 });
 $("board").addEventListener("change", (e) => {
@@ -237,8 +276,8 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.closeval;
-  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-closego="${i}"]`); if (b) b.click(); }
+  const i = e.target.dataset.forminput;
+  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;

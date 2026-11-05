@@ -1,9 +1,11 @@
 //! The Board tab: every project's open rows as `notes board --json` prints them, read through
 //! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
 //! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
-//! row, `/` searches, `l` steps the lane filter, and a, s, d/D and x/X add, start, finish and
-//! drop (with why, or the id it duplicates) through `notes ptask --exact`. This file writes nothing: it hands the app a
-//! `tasks::Write`, and a row edited since the read fails in `notes` and the page re-reads.
+//! row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m, e, + and - add, start,
+//! finish, drop (with why, or the id it duplicates), move (to a project or a wave), edit, and
+//! step a row a wave sooner or later through `notes ptask --exact`; `o` opens the sheet at the
+//! row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
+//! the read fails in `notes` and the page re-reads.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +25,8 @@ pub enum Ask {
     Done,
     /// Run this write; it has passed `tasks::argv` already.
     Write(String, Write),
+    /// Open this sheet at this line in an editor.
+    Open(String, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,6 +37,8 @@ pub enum Kind {
     Unverified,
     Why,
     Dup,
+    Move,
+    Edit,
 }
 
 /// A line being typed at the status line, and the row it is about (none for a search).
@@ -131,7 +137,7 @@ impl TaskView {
                 "a Focus row is read-only here: notes focus owns the daily note"
             }
             Some(r) if r.lane == "playtest" && !playtest_ok => {
-                "a playtest check has no in-progress state"
+                "a playtest check has no state, waves or edit: d done, x drop"
             }
             Some(r) => {
                 self.said = None;
@@ -170,6 +176,35 @@ impl TaskView {
                     priority: "high".into(),
                     to: None,
                     game: r.game.clone().filter(|_| r.lane == "playtest"),
+                },
+            ),
+            Kind::Move => {
+                // Words: a vX.Y.Z is the wave, anything else the project; `notes` checks both.
+                let (mut project, mut to) = (None, None);
+                for word in p.text.split_whitespace() {
+                    let slot = if word.starts_with('v')
+                        && word[1..].starts_with(|c: char| c.is_ascii_digit())
+                    {
+                        &mut to
+                    } else {
+                        &mut project
+                    };
+                    *slot = Some(word.to_string());
+                }
+                (
+                    format!("move in {at}"),
+                    Verb::Move {
+                        raw: r.raw.clone(),
+                        project,
+                        to,
+                    },
+                )
+            }
+            Kind::Edit => (
+                format!("edit in {at}"),
+                Verb::Edit {
+                    raw: r.raw.clone(),
+                    text: p.text,
                 },
             ),
             Kind::Proof | Kind::Unverified => {
@@ -291,6 +326,36 @@ impl TaskView {
                     self.prompt = prompt(kind, Some(r));
                 }
             }
+            KeyCode::Char('m') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = prompt(Kind::Move, Some(r));
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = Some(Prompt {
+                        kind: Kind::Edit,
+                        text: r.text.clone(),
+                        row: Some(r),
+                    });
+                }
+            }
+            KeyCode::Char(c @ ('+' | '-')) => {
+                if let Some(r) = self.target(f, false) {
+                    let (word, verb) = if c == '+' {
+                        ("sooner", Verb::Promote { raw: r.raw.clone() })
+                    } else {
+                        ("later", Verb::Demote { raw: r.raw.clone() })
+                    };
+                    return self.ask(format!("a wave {word} in {}", group(&r)), on(&r, verb));
+                }
+            }
+            KeyCode::Char('o') => {
+                return match self.selected(f) {
+                    Some(r) => Ask::Open(r.sheet.clone(), r.line),
+                    None => Ask::Done,
+                };
+            }
             _ => return Ask::Pass,
         }
         Ask::Done
@@ -409,6 +474,8 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             (Kind::Unverified, _) => "Done unverified, because: ".into(),
             (Kind::Why, _) => "Drop it, because: ".into(),
             (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
+            (Kind::Move, _) => "Move to a project, a wave vX.Y.Z, or both: ".into(),
+            (Kind::Edit, _) => "New text (tags stay): ".into(),
             (_, None) => String::new(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
@@ -630,6 +697,91 @@ pub(crate) mod tests {
                 unverified: Some("checked by hand".into())
             }
         );
+    }
+
+    #[test]
+    fn move_edit_and_the_wave_keys_carry_the_rows_raw_line() {
+        let f = fixture();
+        let mut v = TaskView::default();
+        v.key(key('j'), Some(&f), 10);
+        assert_eq!(v.selected(&f).unwrap().text, "fix the menu");
+
+        v.key(key('m'), Some(&f), 10);
+        typed(&mut v, &f, "garden v0.2.0");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("move runs")
+        };
+        assert_eq!(label, "move in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "move",
+                "--project",
+                "garden",
+                "--to",
+                "v0.2.0",
+                "--",
+                "- [ ] fix the menu"
+            ]
+        );
+        v.key(key('m'), Some(&f), 10);
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a move to nowhere is refused");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("move to")));
+
+        v.key(key('e'), Some(&f), 10);
+        assert_eq!(
+            v.prompt.as_ref().unwrap().text,
+            "fix the menu",
+            "edit starts from the text"
+        );
+        typed(&mut v, &f, " bar");
+        let Ask::Write(_, w) = enter(&mut v, &f) else {
+            panic!("edit runs")
+        };
+        assert_eq!(
+            w.verb,
+            Verb::Edit {
+                raw: "- [ ] fix the menu".into(),
+                text: "fix the menu bar".into()
+            }
+        );
+
+        let Ask::Write(label, w) = v.key(key('+'), Some(&f), 10) else {
+            panic!("+ runs")
+        };
+        assert_eq!(label, "a wave sooner in bnb/demo");
+        assert_eq!(
+            w.verb,
+            Verb::Promote {
+                raw: "- [ ] fix the menu".into()
+            }
+        );
+        let Ask::Write(_, w) = v.key(key('-'), Some(&f), 10) else {
+            panic!("- runs")
+        };
+        assert_eq!(
+            w.verb,
+            Verb::Demote {
+                raw: "- [ ] fix the menu".into()
+            }
+        );
+
+        assert_eq!(
+            v.key(key('o'), Some(&f), 10),
+            Ask::Open("/v/bnb/demo/human.md".into(), 0)
+        );
+
+        // The playtest row and the focus row refuse the wave keys before anything runs.
+        for _ in 0..2 {
+            v.key(key('j'), Some(&f), 10);
+        }
+        assert_eq!(v.selected(&f).unwrap().lane, "playtest");
+        assert_eq!(v.key(key('+'), Some(&f), 10), Ask::Done);
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("playtest")));
+        v.key(key('g'), Some(&f), 10);
+        assert_eq!(v.key(key('m'), Some(&f), 10), Ask::Done);
+        assert!(v.prompt.is_none(), "no move on a focus row");
     }
 
     #[test]
