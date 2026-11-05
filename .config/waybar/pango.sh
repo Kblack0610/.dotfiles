@@ -27,9 +27,7 @@ pango_esc() {
 # paint <colour> <text>
 paint() { printf "<span color='%s'>%s</span>" "$1" "$2"; }
 
-# emit <text> <tooltip> <class> [phone]: waybar JSON, escaped by jq. phone is the chip's lines
-# for the phone widget (fleet-overview), in the same markup; waybar reads only its own keys.
+# emit <text> <tooltip> <class>: waybar JSON, escaped by jq.
 emit() {
-  jq -cn --arg t "$1" --arg tt "$2" --arg c "$3" --arg p "${4:-}" \
-    '{text: $t, tooltip: $tt, class: $c} + (if $p == "" then {} else {phone: $p} end)'
+  jq -cn --arg t "$1" --arg tt "$2" --arg c "$3" '{text: $t, tooltip: $tt, class: $c}'
 }

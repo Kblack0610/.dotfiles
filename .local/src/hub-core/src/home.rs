@@ -164,7 +164,7 @@ fn dir_name(cwd: &str) -> String {
 }
 
 /// Infra's `cc` series keyed as the boards key them: `name` or `name/<domain|host|pool|site>`.
-fn cc_values(infra: &Infra) -> HashMap<String, f64> {
+pub fn cc_values(infra: &Infra) -> HashMap<String, f64> {
     let mut v = HashMap::new();
     for s in infra.get("cc") {
         let name = s.label("__name__");

@@ -95,6 +95,8 @@ brow() {
     1 "$T0" 1.5 2 "$T0" 2.5 > "$FLEET_BENCH_DIR/scores.jsonl"
   printf '{"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
     > "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # one KPI past its limit and one inside it, so the phone can name what is over
+  printf '%s\n' ci_red_per_pr_max=1 runners_bad_max=2 > "$KPI_THRESHOLDS"
   run sample_at 1800
   assert_success
   run cat "$PROM_TEXTFILE_DIR/fleet_bench.prom"
@@ -118,6 +120,24 @@ agent_bench_ci_reds_before_merge{project="game"} 2
 agent_bench_loop_dark_episodes 0
 # HELP agent_bench_loop_first_response_minutes Median minutes from a finding episode to its first response that is not a page, last 7d.
 # TYPE agent_bench_loop_first_response_minutes gauge
+# HELP agent_bench_kpi The KPIs `fleet-bench kpi` prints, by window.
+# TYPE agent_bench_kpi gauge
+agent_bench_kpi{kpi="sessions",window="7d"} 0
+agent_bench_kpi{kpi="sessions",window="28d"} 0
+agent_bench_kpi{kpi="ci_red_per_pr",window="7d"} 4.5
+agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
+agent_bench_kpi{kpi="runners_bad",window="7d"} 0
+agent_bench_kpi{kpi="asks_stale",window="7d"} 0
+agent_bench_kpi{kpi="board_open",window="7d"} 0
+agent_bench_kpi{kpi="loop_dark",window="7d"} 0
+# HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
+# TYPE agent_bench_kpi_limit gauge
+agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
+agent_bench_kpi_limit{kpi="runners_bad"} 2
+# HELP agent_bench_kpi_past 1 when a KPI is past its threshold, as fleet-bench judged it.
+# TYPE agent_bench_kpi_past gauge
+agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
+agent_bench_kpi_past{kpi="runners_bad"} 0
 PROM
 )"
 }
