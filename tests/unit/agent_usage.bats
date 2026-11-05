@@ -278,3 +278,13 @@ burn() {
   run "$AU" burn --before soon
   assert_failure 2
 }
+
+@test "burn: start context is a session's real first response, not its first one inside the window" {
+  burn_home
+  # From 02:00 the worktree session's first response in the window is m3, 2h into it: only the
+  # headless call (03:00, its session's first) counts.
+  run bash -c "TZ=UTC '$AU' burn --days 0.9166667 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.first_turn_context.sessions, .cache_write_by_cause[\"first-turn\"].cache_write]'"
+  assert_output '[1,4000]'
+  # Negative control: the whole day sees the session start, so it counts.
+  assert_equal "$(burn '.first_turn_context.sessions')" '2'
+}

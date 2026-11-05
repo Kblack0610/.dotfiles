@@ -81,6 +81,7 @@ set -uo pipefail
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
+: "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
@@ -649,6 +650,7 @@ cmd_scorecard() {
     forecast_section "$t"
     echo
     wakes_lines
+    tokens_line
     echo
     bottleneck_section "$t"
     echo
@@ -1268,6 +1270,13 @@ wakes_lines() {
        else "- calls per passing wake (\($win)): median \($p.median) over \($p.wakes) wakes, target \($target) or fewer: \(if $p.median > $target then "past" else "ok" end)" end),
       "- calls per wake, all (\($win)): " + (if .all.wakes == 0 then "-"
         else "median \(.all.median), p90 \(.all.p90) over \(.all.wakes) wakes" end)' <<<"$w"
+}
+
+# tokens_line: the newest nightly token-usage row, as written by agent-usage tokens snapshot.
+tokens_line() {
+  local l
+  l=$($BENCH_TOKENS_CMD 2>/dev/null) && [ -n "$l" ] || l="tokens: ? (\`agent-usage tokens line\` unreadable)"
+  echo "- $l"
 }
 
 cmd_kpi() {
