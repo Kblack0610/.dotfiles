@@ -37,6 +37,10 @@ pub struct Action {
     /// The page's priority, for an agent-notify action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// Where an agent-notify page points (`tmux:`, `ask:`, `pr:`, `file:`, `url:`), as its
+    /// sender wrote it; `agent-notify open` is what resolves it.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
     /// Which ledger said so (the module table).
     pub source: String,
 }
@@ -49,6 +53,7 @@ impl Action {
             verb: verb.into(),
             text: text.into(),
             priority: None,
+            reference: None,
             source: source.into(),
         }
     }
@@ -368,7 +373,8 @@ fn sentinel_verb(msg: &str) -> &'static str {
     }
 }
 
-/// agent-notify's ledger: `<rfc3339>\t<priority>\t<title>\t<message>`. The title says who paged.
+/// agent-notify's ledger: `<rfc3339>\t<priority>\t<title>\t<message>[\t<ref>]`. The title says
+/// who paged; the ref, when there is one, says where the page points.
 /// Any other non-blank line (a message written with a raw newline) is a reject.
 pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
     read_lines(
@@ -376,8 +382,9 @@ pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
         "notify",
         "a line with no ledger fields (a message written with a raw newline)",
         |l| {
-            let mut f = l.splitn(4, '\t');
+            let mut f = l.splitn(5, '\t');
             let (ts, prio, title, msg) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            let reference = f.next().filter(|r| !r.is_empty()).map(str::to_string);
             let at = DateTime::parse_from_rfc3339(ts).ok()?.timestamp();
             let (head, target) = match title.split_once(": ") {
                 Some((h, t)) => (h, Some(t)),
@@ -400,6 +407,7 @@ pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
             };
             let mut a = Action::new(at, &actor, verb, &text, "notify");
             a.priority = Some(prio.to_string()).filter(|p| !p.is_empty());
+            a.reference = reference;
             Some(a)
         },
     )
@@ -624,6 +632,29 @@ not json
         assert!(a[0].text.starts_with("started bnb-agent-1"));
         let east = parse_dispatch(DISPATCH, &FixedOffset::east_opt(3600).unwrap()).0;
         assert_eq!(east[0].at, utc("2026-11-04T07:28:00Z"));
+    }
+
+    #[test]
+    fn a_notify_ref_is_the_fifth_field_and_a_four_field_row_has_none() {
+        let a = parse_notify(
+            "2026-11-05T10:00:00-08:00\tnormal\tgo: x\tSession is free.\ttmux:hub/x-agent-3:1
+2026-11-05T10:01:00-08:00\tnormal\tgo: y\tNo ref here.
+",
+        )
+        .0;
+        assert_eq!(a[0].reference.as_deref(), Some("tmux:hub/x-agent-3:1"));
+        assert_eq!(
+            a[0].text, "x: Session is free.",
+            "the ref stays out of the text"
+        );
+        assert_eq!(a[1].reference, None);
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""ref":"tmux:hub/x-agent-3:1""#), "{json}");
+        assert_eq!(
+            json.matches(r#""ref""#).count(),
+            1,
+            "absent, not null: {json}"
+        );
     }
 
     #[test]
