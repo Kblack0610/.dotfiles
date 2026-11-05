@@ -1,11 +1,11 @@
 ---
 name: claude-recall
 description: >-
-  Verbatim search and counts over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "what do I keep asking for", "which skills and agents get used". Curated recall is mem0-ops.
+  Verbatim search and counts over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "what do I keep asking for", "which skills and agents get used", "where do our tokens go". Curated recall is mem0-ops.
 metadata:
   category: memory
   tags: [memory, recall, session]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-04"
 ---
 
 # claude-recall
@@ -62,6 +62,10 @@ claude-recall stats --days 30                                  # every kind, top
 claude-recall stats --kind intent --origin interactive         # asks a skill should have caught
 claude-recall stats --kind prompt --origin interactive --min 3 # skill candidates (3+ sessions)
 claude-recall stats --kind agent --by week --json              # agent use per ISO week
+
+# Token use: API usage per response, and the tool output behind it
+claude-recall tool-output --by command --days 7                # which Bash commands fill the context
+claude-recall tool-output --by method --since 2026-11-05       # token-filter trial, per method window
 ```
 
 Search filters: `--project` (substring on cwd basename), `--branch` (exact
@@ -79,6 +83,14 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 - Prompts: only the first line, only when it opens with a letter or digit (pasted output does not), harness text skipped. Normalised (paths, URLs, SHAs, numbers masked, filler words dropped, first 8 words) and clustered with typo tolerance. Exact repeats are rare, which is why intents exist.
 - Intents: `~/.config/claude-recall/intents.tsv` (override with `CLAUDE_RECALL_INTENTS`) maps phrases to the skills that cover them. Each intent row says in how many of its sessions a covering skill actually ran; a low share means the task gets asked for in words and the skill never fires. Tune the phrases there; it is data, not code.
 - `CLAUDE_TRANSCRIPTS` (colon-separated) replaces the transcript roots; the bats suite uses it.
+
+## tool-output: where the tokens go
+
+`tool-output` is the one token counter: it sums `message.usage` per API response (deduplicated by message id) and every tool result's size, so do not write another transcript scanner for token questions.
+
+- Totals: input, cache write, cache read and output tokens; context per response; tool result chars (about 4 chars a token).
+- `carried` weights each tool result by how many later responses re-read it before a compaction drops it. It is the cost a big result really has, since the whole context is re-read on every turn.
+- `--by tool|command` ranks what produces output (`command` is the Bash command head, past env, `cd` and wrappers, with git/gh subcommands; an `rtk` rewrite counts under the tool it ran). `--by method|day|week|project` splits usage over time; `method` reads the `token-filter` switch log (`.claude/hooks/README.md` "Token filter"), and `filtered` counts rewritten calls.
 
 ## Notes
 
