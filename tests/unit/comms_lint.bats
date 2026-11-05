@@ -69,10 +69,15 @@ EOF
   assert_output --partial "too-long"
 }
 
-@test "a briefing lints only up to Details, and caps its items" {
-  printf -- '---\ngenerated: true\n---\n# Morning briefing\n\n3 things need you.\n\n## Needs you\n\n1. Answer 18 open asks.\n2. Merge the dispatch fix.\n3. Check the AWS alarm.\n\n## Details\n\n- [fleet-liveness] TRIPPED -> do: `agentctl list`, then a very long runbook hint\n' > "$SANDBOX/b.md"
+@test "a briefing is linted whole, and caps only its Needs you items" {
+  printf -- '---\ngenerated: true\n---\n# Morning briefing\n\n3 things need you.\n\n## Needs you\n\n1. Answer 18 open asks.\n2. Merge the dispatch fix.\n3. Check the AWS alarm.\n\n## Still open\n\n- One.\n- Two.\n- Three.\n- Four.\n- Five.\n- Six.\n' > "$SANDBOX/b.md"
   run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
   assert_success
+  # Negative control: a runbook hint below Needs you fails now that the whole page is read.
+  printf -- '\n## Fleet\n\n- [fleet-liveness] TRIPPED -> do: `agentctl list`, then a runbook hint\n' >> "$SANDBOX/b.md"
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
+  assert_failure 1
+  assert_output --partial "a runbook hint"
   for i in 4 5 6 7; do echo "$i. Another thing." >> "$SANDBOX/c.md"; done
   { printf '3 things need you.\n\n## Needs you\n\n1. One.\n2. Two.\n3. Three.\n'; cat "$SANDBOX/c.md"; } > "$SANDBOX/b2.md"
   run "$SUBJECT" --channel briefing "$SANDBOX/b2.md"

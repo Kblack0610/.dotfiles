@@ -12,7 +12,7 @@
 | `max_lead` | characters in the lead: the first line up to the end of its first sentence |
 | `lead_ids` | true: the lead, and each item, may not open with an id from `[ids]` |
 | `prose` | true: run de-ai-writing's `check.py`, whose hard rules fail the message (`COMMS_PROSE_CHECK` overrides the path) |
-| `stop_at` | regex: from the first line it matches, nothing more is linted (a Details section) |
+| `items_under` | regex for a heading: `max_items` counts only the items under it (the briefing's Needs you); every other check still reads the whole message |
 | `item`, `max_items`, `max_item` | regex for a list item line, how many items, how long each one |
 | `require` | `[[regex, name], ...]`: each regex must match somewhere |
 | `forbid` | `[[regex, why], ...]`: none may match, and the why is the finding |

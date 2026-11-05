@@ -134,22 +134,24 @@ attrs_in() {
   assert_line --index 1 "service.name=claude-code,host.name=$(hostname),project=my-app"
 }
 
-# The connectors default sits outside the LAN guard: every launch gets it, on or off the LAN.
+# The launch defaults sit outside the LAN guard: every launch gets them, on or off the LAN.
 connectors_env() {
   printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"
   chmod +x "$FAKEBIN/getent"
   env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" ${2:+"$2"} bash -c \
-    ". '$SNIP' >/dev/null 2>&1; echo \"connectors=\${ENABLE_CLAUDEAI_MCP_SERVERS-unset}\""
+    ". '$SNIP' >/dev/null 2>&1; echo \"connectors=\${ENABLE_CLAUDEAI_MCP_SERVERS-unset} artifact=\${CLAUDE_CODE_ARTIFACT-unset}\""
 }
 
-@test "claude.ai connectors default off, on and off the LAN" {
+@test "claude.ai connectors and the Artifact tool default off, on and off the LAN" {
   run connectors_env 0
-  assert_output 'connectors=false'
+  assert_output 'connectors=false artifact=0'
   run connectors_env 1
-  assert_output 'connectors=false'
+  assert_output 'connectors=false artifact=0'
 }
 
-@test "a launch-time ENABLE_CLAUDEAI_MCP_SERVERS wins over the default" {
+@test "a launch-time ENABLE_CLAUDEAI_MCP_SERVERS or CLAUDE_CODE_ARTIFACT wins over the default" {
   run connectors_env 1 ENABLE_CLAUDEAI_MCP_SERVERS=true
-  assert_output 'connectors=true'
+  assert_output 'connectors=true artifact=0'
+  run connectors_env 1 CLAUDE_CODE_ARTIFACT=1
+  assert_output 'connectors=false artifact=1'
 }

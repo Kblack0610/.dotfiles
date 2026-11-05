@@ -46,6 +46,12 @@
 # settings `env` cannot do this: it is read after the connectors load (checked 2026-11-02).
 : "${ENABLE_CLAUDEAI_MCP_SERVERS:=false}"
 export ENABLE_CLAUDEAI_MCP_SERVERS
+# The Artifact tool schema is about 13K tokens on every API call (the largest part of the
+# first request, `agent-usage burn` first_request_parts); over 7 days 13 sessions used it.
+# Off by default; `CLAUDE_CODE_ARTIFACT=1 claude` turns it on for a session that will
+# publish (claude 2.1.318 reads 0/false/no/off as "artifact_env_off", checked 2026-11-05).
+: "${CLAUDE_CODE_ARTIFACT:=0}"
+export CLAUDE_CODE_ARTIFACT
 
 if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # claude_otel_attr <key> [value] -> OTEL_RESOURCE_ATTRIBUTES with <key> set to <value>, or
