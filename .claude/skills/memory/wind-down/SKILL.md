@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-11-02"
+  reviewed: "2026-11-04"
 ---
 
 # wind-down
@@ -196,7 +196,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** If this session ran in a linked worktree, hand the slot back:
+6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there, because it closes this session a second later, before the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -209,7 +209,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    no `--force`, and branch deletion is git's safe `-d`. Otherwise it kills the session, removes
    the directory and frees the `agent-N` slot for reuse.
 
-   The slot is not free until this runs. `wt gc -n` lists what is still held across all repos.
+   The slot is not free until the reap runs. `wt gc -n` lists what is still held across all repos.
 
    When `wt done` keeps the tree, file one agent-board row for it, `worktree <name> held: <reason>` (check both lanes first), and name it in step 7. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it and marks it `stranded, nobody in it`, and that board row is what brings it back. Why: 2026-11-02, about 30 of 70 playground worktrees were held this way, some for weeks.
 
