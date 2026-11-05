@@ -224,10 +224,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" set s queued=now
   assert_failure
   "$AQ" move s done --status ok
-  run "$AQ" set s pr=https://example/pr/9 "note=a b c"
+  run "$AQ" set s pr=https://example/pr/9 "note=a b c" report=https://example/report
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-s.md)"
   [ "$(field "$f" pr)" = https://example/pr/9 ]
+  [ "$(field "$f" report)" = https://example/report ]
   [ "$(field "$f" note)" = "a b c" ]
 }
 
@@ -506,6 +507,17 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR"/done/*/ | grep -c twice)" -eq 2 ]
   run bash -c "'$AQ' show twice | tail -1"
   assert_output 2
+}
+
+@test "list --since reads done items from that day on, across days" {
+  local slug day
+  for slug in old edge new; do "$AQ" add --project game --slug "$slug" "t"; "$AQ" cancel "$slug"; done
+  for slug in old:2026-11-01 edge:2026-11-02 new:2026-11-03; do
+    day="$AGENT_QUEUE_DIR/done/${slug#*:}"; mkdir -p "$day"
+    mv "$AGENT_QUEUE_DIR"/done/"$(date +%F)"/*-"${slug%:*}".md "$day/"
+  done
+  run bash -c "'$AQ' list --state done --since 2026-11-02 --json | jq -r .slug | sort | tr '\n' ' '"
+  assert_output "edge new "
 }
 
 @test "list groups by state and says when nothing is there" {
