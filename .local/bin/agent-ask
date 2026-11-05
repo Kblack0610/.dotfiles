@@ -111,6 +111,20 @@ oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +
 # field <file> <key> -> first value (text after "key: ")
 field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
 
+# load_ask <file>: every `key: value` of one ask into the global ASK, read once with no fork
+# (a `field` call per key made a card take half a second). The first `key: ` line wins, as in
+# `field`.
+declare -gA ASK=()
+load_ask() {
+  ASK=()
+  local line k
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *': '*) ;; *) continue ;; esac
+    k="${line%%: *}"
+    [ -n "$k" ] && [ -z "${ASK[$k]+x}" ] && ASK[$k]="${line#*: }"
+  done < "$1"
+}
+
 # path of an ask id, searching every project dir; prints nothing if not found
 find_ask() {
   local id="$1" f
@@ -159,6 +173,7 @@ wrap() {
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""
+  load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
     b=$'\e[1m' d=$'\e[2m' c=$'\e[36m' g=$'\e[32m' r=$'\e[31m' x=$'\e[0m'
   fi
@@ -166,12 +181,12 @@ render_ask() {
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
   local CARD_WIDTH="$cols"
   local id kind st rec where age opts=() notes=() i n w=0 note judge reason ctx
-  id="$(field "$f" id)"; kind="$(field "$f" kind)"; st="$(field "$f" status)"
-  rec="$(field "$f" recommend)"; age="$(age_of "$(field "$f" created)")"
+  id="${ASK[id]:-}"; kind="${ASK[kind]:-}"; st="${ASK[status]:-}"
+  rec="${ASK[recommend]:-}"; age="$(age_of "${ASK[created]:-}")"
   # One quiet line of where it came from, then the question on its own. The session is left
   # out when it only repeats the project, and the kind only shows when it is not a question.
-  where="$(field "$f" project)"
-  local sess; sess="$(field "$f" session)"
+  where="${ASK[project]:-}"
+  local sess; sess="${ASK[session]:-}"
   [ -n "$sess" ] && [ "$sess" != "$where" ] && where+=" . $sess"
   [ -n "$age" ] && where+=" . $age ago"
   where+=" . $id"
@@ -179,9 +194,9 @@ render_ask() {
   [ "$kind" = question ] || { head="$kind - asking you"; hc="$r"; }
   [ "$st" = pending ] || { head="$st"; hc="$d"; }
   printf '%s%s%s  %s%s%s\n\n' "$b$hc" "$head" "$x" "$d" "$where" "$x"
-  printf '%s' "$b"; wrap "" "$(field "$f" question)"; printf '%s' "$x"
-  IFS='|' read -r -a opts <<< "$(field "$f" options)"
-  IFS='|' read -r -a notes <<< "$(field "$f" option_notes)"
+  printf '%s' "$b"; wrap "" "${ASK[question]:-}"; printf '%s' "$x"
+  IFS='|' read -r -a opts <<< "${ASK[options]:-}"
+  IFS='|' read -r -a notes <<< "${ASK[option_notes]:-}"
   if [ "${#opts[@]}" -gt 0 ]; then
     echo
     for i in "${!opts[@]}"; do [ "${#opts[i]}" -gt "$w" ] && w="${#opts[i]}"; done
@@ -191,9 +206,9 @@ render_ask() {
       printf '  %s%d%s  %-*s  %s\n' "$b" "$n" "$x" "$w" "${opts[i]}" "$note" | sed 's/ *$//'
     done
   fi
-  ctx="$(field "$f" context)"
+  ctx="${ASK[context]:-}"
   if [ -n "$ctx" ]; then echo; printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; fi
-  judge="$(field "$f" judge)"; reason="$(field "$f" judge_reason)"
+  judge="${ASK[judge]:-}"; reason="${ASK[judge_reason]:-}"
   # "needs you" is what the card already says, so only a judge that would answer is shown.
   case "$judge" in
     take-recommend) judge="the judge would take the recommendation" ;;
@@ -205,7 +220,7 @@ render_ask() {
     printf '%s' "$d"; wrap "" "$judge${reason:+ - $reason}"; printf '%s' "$x"
   fi
   if [ "$st" != pending ]; then
-    [ -n "$(field "$f" answer)" ] && printf '%sanswer: %s%s\n' "$b" "$(field "$f" answer)" "$x"
+    [ -n "${ASK[answer]:-}" ] && printf '%sanswer: %s%s\n' "$b" "${ASK[answer]:-}" "$x"
   fi
   return 0
 }
@@ -394,23 +409,33 @@ cmd_list() {
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by  (append new columns at the end only)
-  local f st at
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    st="$(field "$f" status)"
-    [ -n "$want" ] && [ "$st" != "$want" ] && continue
-    at="$(field "$f" answered_at)"
-    # only filter rows that HAVE a timestamp; a pending ask has none and is never stale
-    [ -n "$cutoff" ] && [ -n "$at" ] && [ "${at%%T*}" \< "$cutoff" ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(field "$f" id)" "$(field "$f" project)" "$(field "$f" profile)" \
-      "$st" "$(field "$f" kind)" "$(field "$f" question)" \
-      "$(field "$f" options)" "$(field "$f" task)" \
-      "$at" "$(field "$f" resumed_at)" "$(field "$f" recommend)" \
-      "$(field "$f" created)" "$(field "$f" session)" \
-      "$(field "$f" closed_at)" "$(field "$f" closed_reason)" "$(field "$f" claude_session)" \
-      "$(field "$f" judge)" "$(field "$f" answered_by)"
-  done < <(ask_files "$key")
+  # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
+  # 368 asks. A key's first `key: ` line wins, as in `field`.
+  local files=()
+  mapfile -t files < <(ask_files "$key")
+  [ "${#files[@]}" -gt 0 ] || return 0
+  awk -v want="$want" -v cutoff="$cutoff" '
+    BEGIN {
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by", K, " ")
+    }
+    function flush(   i, d, p, row) {
+      if (cur == "") return
+      if (want != "" && v["status"] != want) return
+      if (cutoff != "" && v["answered_at"] != "") {
+        p = index(v["answered_at"], "T"); d = p ? substr(v["answered_at"], 1, p - 1) : v["answered_at"]
+        if (d < cutoff) return
+      }
+      row = v[K[1]]
+      for (i = 2; i <= n; i++) row = row "\t" v[K[i]]
+      print row
+    }
+    FILENAME != cur { flush(); cur = FILENAME; split("", v) }
+    {
+      p = index($0, ": ")
+      if (p > 1) { k = substr($0, 1, p - 1); if (!(k in v)) v[k] = substr($0, p + 2) }
+    }
+    END { flush() }
+  ' "${files[@]}"
 }
 
 cmd_count() {
@@ -506,18 +531,31 @@ cmd_card() {
   session_gone_note "$f"
 }
 
+# session_alive <claude session id>: a Claude process holding that session is running. Reads
+# the per-process files Claude keeps in each account's sessions/ dir (one grep), so a card
+# does not wait half a second on `agent-panel list` just to say whether the session ended.
+session_alive() {
+  local f pid
+  while IFS= read -r f; do
+    pid="${f##*/}"; pid="${pid%.json}"
+    [ -d "/proc/$pid" ] && return 0
+  done < <(grep -lF "\"sessionId\":\"$1\"" "$HOME"/.claude*/sessions/*.json 2>/dev/null)
+  return 1
+}
+
 # session_gone_note <ask file>: a pending ask whose session has ended is still the question;
 # say where its answer will go, since nothing will type it into a session.
 session_gone_note() {
   local f="$1" sid
-  [ "$(field "$f" status)" = pending ] || return 0
-  sid="$(field "$f" claude_session)"
-  [ -n "$sid" ] && command -v agent-panel >/dev/null 2>&1 || return 0
-  [ -z "$(live_row "$sid")" ] || return 0
-  if [ -n "$(field "$f" resume)" ]; then
-    echo "  session gone: the answer starts \`$(field "$f" resume)\`"
+  load_ask "$f"
+  [ "${ASK[status]:-}" = pending ] || return 0
+  sid="${ASK[claude_session]:-}"
+  [ -n "$sid" ] || return 0
+  session_alive "$sid" && return 0
+  if [ -n "${ASK[resume]:-}" ]; then
+    echo "  session gone: the answer starts \`${ASK[resume]:-}\`"
   else
-    echo "  session gone: the answer becomes a row on the $(field "$f" project) board"
+    echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
   fi
 }
 

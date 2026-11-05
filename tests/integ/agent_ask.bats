@@ -498,7 +498,11 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
 
 @test "the card says where the answer goes once the session is gone" {
   local gone live loose resumed
-  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  # A live session is a Claude process file naming it whose pid runs (this test's own pid).
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  # sid-9's file names a pid that is not running, so it is gone all the same.
+  printf '{"pid":999999999,"sessionId":"sid-9"}\n' > "$HOME/.claude/sessions/999999999.json"
   live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
   gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
   resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
@@ -667,4 +671,31 @@ SH
   assert_line --regexp "^$session	unscored	"
   assert_line --regexp "^$deferred	asks-you	human	"
   assert_line 'judged 4 answered asks: the judge would have answered 3, scored 2, agreed 1'
+}
+
+# list and the card read each file once; this is what makes Prefix y open fast.
+@test "list reads 400 asks well inside a second and keeps each key's first value" {
+  local d="$HOME/.agent/asks/demo" i
+  mkdir -p "$d"
+  for i in $(seq 1 400); do
+    printf 'id: q%03d\nproject: demo\nstatus: %s\nkind: question\nquestion: a: b?\ncreated: 2026-11-05T09:00:00+0000\nstatus: answered\n' \
+      "$i" "$([ $((i % 4)) = 0 ] && echo pending || echo answered)" > "$d/q$(printf %03d "$i").md"
+  done
+  local t0 t1
+  t0="$(date +%s%N)"
+  run "$AGENT_ASK" list demo --pending
+  t1="$(date +%s%N)"
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | grep -c .)" 100
+  # The first `status:` line wins, and a value holding ": " survives whole.
+  assert_line --partial $'\tpending\tquestion\ta: b?\t'
+  # Budget: the per-field loop this replaced took about 2.5 s here.
+  [ $(( (t1 - t0) / 1000000 )) -lt 1000 ]
+}
+
+@test "an empty asks dir lists nothing and succeeds" {
+  mkdir -p "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" list demo
+  assert_success
+  assert_output ''
 }
