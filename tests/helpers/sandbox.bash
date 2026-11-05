@@ -113,9 +113,10 @@ sandbox_init() {
   # row, and the fleet view renders them as real.
   unset AGENTCTL_STATE AGENTCTL_NAME
 
-  # The suite runs from inside a Claude session, whose id and attended flag would otherwise
-  # be read as the test's own: an attended post renders into the pane.
-  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
+  # The suite runs from inside a Claude session, whose id, attended flag and dispatched queue
+  # item would otherwise be read as the test's own: an attended post renders into the pane,
+  # and an item satisfies the focus gate.
+  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,

@@ -7,7 +7,8 @@
 # Fires only when ALL of these hold:
 #   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
 #   2. nothing is in progress    — no `- [/]` item in today's Focus
-#   3. the work went untracked   — no `notes ptask|focus` write by this session
+#   3. the work went untracked   — no `notes ptask|focus` or `agent-queue` write by this
+#                                  session, and no `$AGENT_QUEUE_ITEM` from the dispatcher
 #   4. not already fired         — at most ONCE per session
 #
 # 1 and 3 are read from THIS session's transcript (`transcript_path` in the payload), so
@@ -154,7 +155,14 @@ else
 fi
 [ "$DID_WORK" -eq 1 ] || { save_state; exit 0; }
 
-# --- 2. is something already marked in progress? ---
+# --- 2. is the work an agent-queue item? ---
+# The global rule tracks an agent's own task on its agent-queue item, and fleet-dispatch
+# hands a session its item as $AGENT_QUEUE_ITEM with a brief that forbids other board rows.
+# Before this check the gate fired anyway and told those sessions to add a board row:
+# 2026-10-29..11-05, about half of its 223 blocks hit sessions already on a queue item.
+[ -n "${AGENT_QUEUE_ITEM:-}" ] && { save_state; exit 0; }
+
+# --- 2b. is something already marked in progress? ---
 DAILY_NOTE=$(focus_daily_note)
 FOCUS_BODY=$(focus_body "$DAILY_NOTE")
 WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
@@ -182,7 +190,7 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # (`notes ptask x list`, `notes today`) do not count.
 if [ "$SESSION_MODE" -eq 1 ]; then
   if printf '%s\n' "$CALLS" \
-     | grep -qE '^BASH .*\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b'; then
+     | grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|move|set)\b|\bagent-land\b)'; then
     save_state; exit 0
   fi
 elif [ -r "$NOTES_LOG" ]; then
@@ -210,15 +218,13 @@ OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- 
 
 REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
 
-PROJECT work belongs on the project's board, NOT the daily note - the note is the human's
-own list and an agent item added there crowds it out:
-  notes ptask <project> --agent add   \"<short title>\"   not tracked yet
-  notes ptask <project> --agent start \"<a word or two>\"  you are on it   -> [/]
-  notes ptask <project> --agent done  \"<a word or two>\"  it landed       -> [x]
-  notes board                                             regenerate the board, print its path
+The task you are on is an agent-queue item, NOT a board row and NOT the daily note:
+  agent-queue add --running --project <project> \"<task>\"   you are on it
+  agent-land <N>, or agent-queue move <slug> done            it landed
 
-Your own work goes on the AGENT board (--agent). The sheet without --agent is the human's
-queue: human asks, human-only actions, and prod/PHI/security/money findings only.
+A follow-up you will not do now goes on the AGENT board: notes ptask <project> --agent add \"<title>\".
+The sheet without --agent is the human's queue: human asks, human-only actions, and
+prod/PHI/security/money findings only.
 
 Use the daily ## Focus only for the HUMAN's own work on this machine:
   notes focus start \"<couple words>\"   |  notes focus add \"<couple words>\"  |  notes focus done \"<couple words>\"
