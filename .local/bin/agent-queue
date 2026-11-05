@@ -6,7 +6,7 @@
 #       [--running [--session s]] [task...]    the task from args, or stdin when there are none
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix]
 #       one oneshot item per unchecked `## Phases` line, each after the one before
-#   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD]
+#   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   mine [--session s]    the slug of the running or waiting item this tmux session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
@@ -245,15 +245,27 @@ item_json() { item_rec "$1" | jq -Rsc "$ITEM_JQ | .[]"; }
 # Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
 ORDER='sort_by((({"urgent":0,"high":1,"low":2}[.priority] // 1)), .queued)'
 
-# collect <states...> [--date D] -> a JSON array of items.
+# done_recs <day> -> item_rec for every done item from that day on.
+done_recs() {
+  local d f
+  for d in "$AQ_DIR"/done/*/; do
+    [ -d "$d" ] || continue
+    [[ "$(basename "$d")" < "$1" ]] && continue
+    for f in "$d"*.md; do [ -e "$f" ] && item_rec "$f"; done
+  done
+}
+
+# collect <states...> [--date D] [--since D] -> a JSON array of items. --since wins for done items.
 collect() {
-  local states=() date="" s f
+  local states=() date="" since="" s f
   local -A LIST_MEMO=(); local LIST_MEMO_ON=1
   while [ $# -gt 0 ]; do
-    case "$1" in --date) date="$2"; shift 2 ;; *) states+=("$1"); shift ;; esac
+    case "$1" in --date) date="$2"; shift 2 ;; --since) since="$2"; shift 2 ;; *) states+=("$1"); shift ;; esac
   done
   for s in "${states[@]}"; do
-    if [ "$s" = "done" ]; then
+    if [ "$s" = "done" ] && [ -n "$since" ]; then
+      done_recs "$since"
+    elif [ "$s" = "done" ]; then
       for f in "$AQ_DIR/done/${date:-$(date +%F)}"/*.md; do [ -e "$f" ] && item_rec "$f"; done
     else
       while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s")
@@ -471,12 +483,13 @@ add_plan() {
 cmd_add_one() { (cmd_add "$@"); }
 
 cmd_list() {
-  local json="" state=active date=""
+  local json="" state=active date="" since=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
       --state) state="${2:?}"; shift 2 ;;
       --date) date="${2:?}"; shift 2 ;;
+      --since) since="${2:?}"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
@@ -489,7 +502,7 @@ cmd_list() {
   esac
   lock_read
   # shellcheck disable=SC2086
-  local items; items="$(collect $states ${date:+--date "$date"})"
+  local items; items="$(collect $states ${date:+--date "$date"} ${since:+--since "$since"})"
   if [ -n "$json" ]; then
     jq -c '.[]' <<<"$items"
     return 0
@@ -572,7 +585,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags after agent started waiting finished session window account model plan pr note status area origin lane profile from "
+SETTABLE=" project mode priority tags after agent started waiting finished session window account model plan pr report note status area origin lane profile from "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -652,11 +665,7 @@ cmd_stats() {
   lock_read
   stats="$({
     for s in $ACTIVE; do while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s"); done
-    for d in "$AQ_DIR"/done/*/; do
-      [ -d "$d" ] || continue
-      [[ "$(basename "$d")" < "$since" ]] && continue
-      for f in "$d"*.md; do [ -e "$f" ] && item_rec "$f"; done
-    done
+    done_recs "$since"
   } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" '
     def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
