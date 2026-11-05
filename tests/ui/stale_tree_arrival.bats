@@ -48,7 +48,7 @@ leave_tree_on_one() {
 @test "the config holds the drop-tree hooks, the session one beside the ask hook at index 0" {
   t source-file "$HOME/tree.conf"
   run t show-hooks -g
-  assert_output --partial 'client-session-changed[1] if-shell -F'
+  assert_output --partial 'client-session-changed[0] if-shell -F'
   assert_output --partial 'session-window-changed[0] if-shell -F'
   assert_output --partial 'copy-mode -q'
 }
