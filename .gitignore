@@ -255,7 +255,6 @@ test_notifications.sh
 .config/firefox/simpletabgroups/
 .config/firefox/policies.vdi.json
 .local/src/ticket
-.local/src/notes-vikunja
 .local/src/meeting-notes
 # personal MCP config + agent/notes tooling kept in place but private-overlaid
 .claude/.mcp.json
@@ -269,7 +268,6 @@ test_notifications.sh
 .local/bin/binks
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
-.local/bin/notes-to-vikunja
 .local/bin/notes-sync
 .local/bin/notes-watch
 .local/bin/opencode-binks

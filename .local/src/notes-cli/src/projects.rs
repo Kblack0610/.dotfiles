@@ -1536,7 +1536,7 @@ const STALE_CARRIES: u32 = 3;
 
 /// Bump the `carried:N` counter in a task line's marker comment, opening it at 1 when the line
 /// has none. Returns the new line and N. Lives in the one marker comment the line already
-/// carries (`vk:`, `ask:`, `pr:`), so readers of those keys keep working.
+/// carries (`id:`, `ask:`, `pr:`), so readers of those keys keep working.
 fn bump_carried(line: &str) -> (String, u32) {
     let t = line.trim_end();
     if let (Some(i), true) = (t.rfind("<!--"), t.ends_with("-->")) {
@@ -2773,13 +2773,13 @@ Version: v1.13.0
 
     #[test]
     fn carry_counts_up_inside_the_existing_marker() {
-        let (l, n) = bump_carried("- [ ] x #v1.2.0 <!-- vk:9 carried:2 -->");
+        let (l, n) = bump_carried("- [ ] x #v1.2.0 <!-- id:ar-9 carried:2 -->");
         assert_eq!(
             (l.as_str(), n),
-            ("- [ ] x #v1.2.0 <!-- vk:9 carried:3 -->", 3)
+            ("- [ ] x #v1.2.0 <!-- id:ar-9 carried:3 -->", 3)
         );
-        let (l, n) = bump_carried("- [ ] x <!-- vk:9 -->");
-        assert_eq!((l.as_str(), n), ("- [ ] x <!-- vk:9 carried:1 -->", 1));
+        let (l, n) = bump_carried("- [ ] x <!-- id:ar-9 -->");
+        assert_eq!((l.as_str(), n), ("- [ ] x <!-- id:ar-9 carried:1 -->", 1));
     }
 
     #[test]

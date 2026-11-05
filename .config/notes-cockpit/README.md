@@ -131,7 +131,7 @@ myapp/
 `notes ptask <project> done` requires evidence, and the row itself carries it:
 
 - `--proof <ref>` - something checkable later: `pr:1142`, `run:<id>`, a URL. Stamped into the
-  line's marker comment beside any existing `vk:`/`ask:` id.
+  line's marker comment beside any existing `id:`/`ask:` key.
 - `--unverified "<why>"` - no checkable artifact, said out loud rather than left blank.
 
 Both doors exist on purpose. The failure mode of a proof field is not people lying in it, it is

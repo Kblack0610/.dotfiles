@@ -1,6 +1,5 @@
 //! `notes clickup sync` — mirror in-progress ClickUp tickets assigned to me into today's
-//! `## Focus`, so "what I'm doing for the day" reflects the tracker. This is the ClickUp
-//! analogue of the Vikunja `in_progress()` mirror lab-sync does, but it lands the tickets as
+//! `## Focus`, so "what I'm doing for the day" reflects the tracker. It lands the tickets as
 //! real, actionable Focus items rather than a read-only feed.
 //!
 //! Two decoupled halves, mirroring the Sentinel/`## Watches` split (HTTP out of the note
