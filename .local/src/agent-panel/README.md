@@ -45,7 +45,7 @@ chooser preview prints the card above the pane tail.
 
 In the chooser:
 
-- The agent holding the live shepherd lease (its window's `shepherd` tag) sits in its own `shepherd` group above every project. A stopped pass loses the tag and drops back into its project.
+- The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
 - The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
 
