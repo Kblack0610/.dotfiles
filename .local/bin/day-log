@@ -23,6 +23,8 @@ set -uo pipefail
 # shellcheck source=/dev/null
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$HERE/../lib/agent-proof.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
@@ -345,6 +347,12 @@ nightly() {
   "$SNAPSHOTS" week --date "$day" --write || rc=1
   prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
     say "could not write day_log_rollup.prom"
+  # Under agentctl (the token-usage runner) a run that declares no outcome is promoted to
+  # STALLED, which trips fleet-liveness every night.
+  if [ -n "${AGENTCTL_NAME:-}" ]; then
+    local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
+    proof_report "$AGENTCTL_NAME" "$verdict" "day-log nightly $day rc=$rc"
+  fi
   return "$rc"
 }
 
