@@ -261,6 +261,31 @@ pub fn marker_of(line: &str) -> Option<String> {
     (!inner.is_empty()).then(|| inner.to_string())
 }
 
+/// The PRs a row's marker names, in order and without repeats: each `pr:<ref>` token with the
+/// punctuation a prose proof puts after it taken off (`pr:1226;` -> `1226`,
+/// `pr:unity-core#12),` -> `unity-core#12`).
+pub fn pr_refs(line: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in marker_of(line).unwrap_or_default().split_whitespace() {
+        let Some(r) = tok.strip_prefix("pr:") else {
+            continue;
+        };
+        let r = r.trim_end_matches([')', ',', ';', ':', '.']);
+        if !r.is_empty() && !out.iter().any(|o| o == r) {
+            out.push(r.to_string());
+        }
+    }
+    out
+}
+
+/// Was this row closed undelivered (`drop --why` or `--dup`)? Its stamp is in the marker.
+pub fn is_dropped(line: &str) -> bool {
+    marker_of(line).is_some_and(|m| {
+        m.split_whitespace()
+            .any(|t| t == "dropped:" || t.starts_with("dup:"))
+    })
+}
+
 /// Append `tag` (a bare `#hashtag`) to a task line, BEFORE any trailing marker comment.
 ///
 /// Position is not cosmetic. [`task_text`] truncates at the first `<!--` and only then
@@ -1905,6 +1930,25 @@ after
     // A task's identity must not depend on which release it is in: `ptask done "<query>"`
     // matches on the key, so a task that moved release would stop matching and the cockpit's
     // done/start/rm would silently no-op on it.
+    #[test]
+    fn pr_refs_reads_every_pr_token_in_the_marker_and_only_there() {
+        assert_eq!(
+            pr_refs("- [x] a #high <!-- pr:1226 merged; pr:unity-core#12), pr:1226 -->"),
+            vec!["1226".to_string(), "unity-core#12".to_string()]
+        );
+        // NEGATIVE CONTROL: a `pr:` in the row's words is not a proof, and no marker is no PRs.
+        assert!(pr_refs("- [x] read pr:12 notes").is_empty());
+        assert!(pr_refs("- [x] plain <!-- id:ar-1 -->").is_empty());
+    }
+
+    #[test]
+    fn a_dropped_or_dup_row_is_dropped_and_a_done_one_is_not() {
+        assert!(is_dropped("- [x] a <!-- id:ar-9 dropped: stale -->"));
+        assert!(is_dropped("- [x] a <!-- dup:ar-3 -->"));
+        assert!(!is_dropped("- [x] a <!-- id:ar-9 pr:12 -->"));
+        assert!(!is_dropped("- [x] dropped: in the words, not the marker"));
+    }
+
     #[test]
     fn task_key_is_invariant_under_release_and_priority_tags() {
         assert_eq!(

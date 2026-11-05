@@ -1652,6 +1652,38 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
+/// The `## PRs` section a frozen note ends in: every PR named on the version's closed rows of
+/// both lanes, in row order and without repeats. A dropped row shipped nothing, so its PRs are
+/// left out. Empty when no row names one.
+fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
+    let mut prs: Vec<String> = Vec::new();
+    for r in rows.into_iter().filter(|r| !md::is_dropped(r)) {
+        for pr in md::pr_refs(r) {
+            if !prs.contains(&pr) {
+                prs.push(pr);
+            }
+        }
+    }
+    if prs.is_empty() {
+        return String::new();
+    }
+    let list: String = prs.iter().map(|p| format!("- pr:{p}\n")).collect();
+    format!("\n## PRs\n{list}")
+}
+
+/// The closed rows of the version `cur` on a project's agent board: what
+/// [`release_agent_board`] moves, read before it moves them so the frozen note can list their PRs.
+fn agent_closed_rows(dir: &Path, cur: V) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(crate::agent_sheet::sheet_path(dir)) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    project_tasks::done_rows_of(&content, Some(cur))
+        .into_iter()
+        .map(|r| lines[r.start].to_string())
+        .collect()
+}
+
 /// Close a version on a project's agent board: done rows go to `agent/versions/<cur>.md`.
 /// Returns how many, or `None` when there is no board.
 ///
@@ -1667,8 +1699,7 @@ fn release_agent_board(dir: &Path, name: &str, cur: V) -> Result<Option<usize>> 
         return Ok(None);
     }
     // Notes first, board last: a failure in between leaves rows in both, never neither.
-    let (rest, archived) =
-        project_tasks::archive_done_rows(dir, name, &fmt_version(cur), &content)?;
+    let (rest, archived) = project_tasks::archive_done_rows(dir, name, Some(cur), &content)?;
     md::write_atomic(&board, &drop_head_version(&rest))?;
     Ok(Some(archived))
 }
@@ -1735,7 +1766,8 @@ releases. Declare it beta first: notes projects --stage {name} --set beta"
 ///    finished, or a human aimed it elsewhere with `notes ptask <name> move "<q>" --to <ver>`.
 ///    `--force` is the deliberate override; the rows stay open on the sheet.
 /// 2. **Freeze.** The version's closed rows go into `versions/<vX.Y.Z>.md` (never
-///    overwriting a frozen one), stamped with the epoch that bounds this version's work.
+///    overwriting a frozen one), with a `## PRs` list of every PR named on the closed rows of
+///    both lanes, stamped with the epoch that bounds this version's work.
 /// 3. **Open.** `Version:` moves to the next version. Rows aimed at it are now current,
 ///    with nothing to move, because a release is a filter over the one list.
 ///
@@ -1803,6 +1835,13 @@ pub fn release(
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    let agent_rows = agent_closed_rows(&dir, cur);
+    let prs = prs_section(
+        frozen_body
+            .lines()
+            .filter(|l| l.starts_with("- [") && md::is_checked(l))
+            .chain(agent_rows.iter().map(String::as_str)),
+    );
     let frozen_body = if carried.is_empty() {
         frozen_body
     } else {
@@ -1817,6 +1856,7 @@ pub fn release(
             fmt_version(next)
         )
     };
+    let frozen_body = format!("{}\n{prs}", frozen_body.trim_end());
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -3361,6 +3401,64 @@ Some prose left on the board.
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_release_note_lists_the_prs_of_both_lanes_closed_rows() {
+        let root = board_scratch("release-prs");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.13.0 #beta\n\n## Tasks\n\
+             - [x] feat(a): shipped <!-- pr:11 -->\n\
+             - [x] chore(b): stale <!-- dropped: superseded pr:99 -->\n\
+             - [x] feat(c): early #v1.14.0 <!-- pr:12 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n\
+             - [x] fix(d): agent shipped <!-- pr:home-config#5 pr:11 -->\n\
+             - [x] fix(e): agent early #v1.14.0 <!-- pr:13 -->\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        release(&p, &log, "demo", Bump::Patch, false, false, None, false).unwrap();
+
+        let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
+        assert!(
+            note.contains("\n## PRs\n- pr:11\n- pr:home-config#5\n\n<!-- rolled: "),
+            "both lanes' PRs, once each, before the stamp:\n{note}"
+        );
+        // NEGATIVE CONTROLS: a dropped row shipped nothing, and a row aimed at a later release
+        // is in that release's note, not this one, on either lane.
+        let prs = &note[note.find("## PRs").unwrap()..];
+        assert!(!prs.contains("pr:99"), "{note}");
+        assert!(!note.contains("pr:12") && !note.contains("pr:13"), "{note}");
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(board.contains("fix(e): agent early"), "{board}");
+        assert!(!board.contains("fix(d)"), "{board}");
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(sheet.contains("feat(c): early"), "{sheet}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_release_with_no_prs_writes_no_prs_section() {
+        assert_eq!(prs_section(["- [x] a <!-- id:ar-1 -->", "- [x] b"]), "");
     }
 
     #[test]

@@ -1192,6 +1192,16 @@ pub(crate) fn done_rows(content: &str) -> Vec<std::ops::Range<usize>> {
     out
 }
 
+/// The done rows that belong to the open version `cur`: a closed row aimed at a later release
+/// waits for that release, as it does on the human sheet.
+pub(crate) fn done_rows_of(content: &str, cur: Option<V>) -> Vec<std::ops::Range<usize>> {
+    let lines: Vec<&str> = content.lines().collect();
+    done_rows(content)
+        .into_iter()
+        .filter(|r| !sheet::is_later(lines[r.start], cur))
+        .collect()
+}
+
 /// Put `rows` at the end of the agent note's `## Done rows` section, adding the section
 /// at the foot of the note when it has none.
 fn append_done_rows(content: &str, rows: &[String]) -> String {
@@ -1237,12 +1247,13 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     let Ok(content) = fs::read_to_string(&board) else {
         bail!("{name} has no agent board ({})", board.display());
     };
-    let ranges = done_rows(&content);
+    let cur = open_version_for(&dir);
+    let ranges = done_rows_of(&content, cur);
     if ranges.is_empty() {
         println!("{name}: no done rows on the agent board");
         return Ok(0);
     }
-    let ver = projects::version_or_default(open_version_for(&dir));
+    let ver = projects::version_or_default(cur);
     let note = projects::agent_note_path(&dir, &ver);
     if dry_run {
         println!(
@@ -1255,7 +1266,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     }
 
     // The note first: a failure between the two writes leaves rows in both, never neither.
-    let (kept, n) = archive_done_rows(&dir, name, &ver, &content)?;
+    let (kept, n) = archive_done_rows(&dir, name, cur, &content)?;
     md::write_atomic(&board, &kept)?;
     log.info(
         "ptask",
@@ -1274,13 +1285,15 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
 pub(crate) fn archive_done_rows(
     dir: &Path,
     name: &str,
-    ver: &str,
+    cur: Option<V>,
     content: &str,
 ) -> Result<(String, usize)> {
-    let ranges = done_rows(content);
+    let ranges = done_rows_of(content, cur);
     if ranges.is_empty() {
         return Ok((content.to_string(), 0));
     }
+    let ver = projects::version_or_default(cur);
+    let ver = ver.as_str();
     let lines: Vec<&str> = content.lines().collect();
     let rows: Vec<String> = ranges
         .iter()
