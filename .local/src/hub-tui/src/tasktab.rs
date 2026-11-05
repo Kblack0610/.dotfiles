@@ -386,8 +386,8 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         cell(r.state.clone(), Default::default())
     };
     let mut text = r.text.clone();
-    if r.ask {
-        text += "  #ask";
+    if r.requested {
+        text += "  #requested";
     }
     vec![
         cell(r.priority.clone(), prio),
