@@ -33,6 +33,9 @@ setup() {
   git -C "$REPO" commit -qam two         # one commit the remote does not have
 
   TASKS="$SANDBOX/claude-1000/-repo"
+  # The check scans every process, and bats runs these tests in parallel, so each test's
+  # session ids are its own: a run held by a sibling test must not match.
+  S1="s1-$BATS_TEST_NUMBER-$$" S2="s2-$BATS_TEST_NUMBER-$$"
 }
 
 # hold <session> -- this test process holds a background run's output file open.
@@ -46,40 +49,40 @@ teardown() { exec 9>&- 2>/dev/null || true; }
 check() { cd "$REPO" && STOP_SESSION_ID="${1:-}" run --separate-stderr bash "$CHECK"; }
 
 @test "unpushed commits block with no background run" {
-  check s1
+  check "$S1"
   assert_failure 2
   [[ "$stderr" == *"FAILED: Branch 'feat/x' has 1 unpushed commit(s)"* ]]
 }
 
 @test "unpushed commits only warn while this session's background run is live" {
-  hold s1
-  check s1
+  hold "$S1"
+  check "$S1"
   assert_failure 1
   [[ "$stderr" == *"a background run of this session is still going"* ]]
   [[ "$stderr" != *FAILED* ]]
 }
 
 @test "another session's live run does not excuse this one" {
-  hold s2
-  check s1
+  hold "$S2"
+  check "$S1"
   assert_failure 2
 }
 
 @test "a closed output file is a finished run" {
-  hold s1
+  hold "$S1"
   exec 9>&-
-  check s1
+  check "$S1"
   assert_failure 2
 }
 
 @test "with no session id it blocks as before" {
-  hold s1
+  hold "$S1"
   check ''
   assert_failure 2
 }
 
 @test "a pushed branch passes" {
   git -C "$REPO" push -q 2>/dev/null
-  check s1
+  check "$S1"
   assert_success
 }
