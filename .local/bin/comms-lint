@@ -132,6 +132,10 @@ def prose_findings(text):
     return out
 
 
+# A markdown heading; "#1585 merged" is a row that opens with a PR, not a heading.
+HEADING = re.compile(r"\s*#+(\s|$)")
+
+
 def lint(text, ch, ids, priority=None, title=None):
     """Findings for one message, as (code, detail) pairs."""
     ids, refs = ids
@@ -139,7 +143,7 @@ def lint(text, ch, ids, priority=None, title=None):
     item_re = re.compile(ch["item"])
     lines = body_lines(text)
     scoped = "\n".join(lines)
-    content = [l for l in lines if l.strip() and not l.lstrip().startswith("#")]
+    content = [l for l in lines if l.strip() and not HEADING.match(l)]
 
     bad = [c for c in scoped if ord(c) > 127]
     emoji = [c for c in bad if is_emoji(c)]
@@ -303,19 +307,26 @@ def read_command(src, since):
         return
     k_ts, k_text, k_path = src.get("ts", "ts"), src.get("text", "text"), src.get("path", "path")
     want, skip = src.get("select", {}), src.get("skip", {})
+
+    def match(rec, k, v):
+        return rec.get(k) in (v if isinstance(v, list) else [v])
+
+    bad = 0
     for line in res.stdout.splitlines():
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
+            bad += 1
             continue
-        if (not isinstance(rec, dict) or any(rec.get(k) != v for k, v in want.items())
-                or any(rec.get(k) == v for k, v in skip.items())):
+        if (not isinstance(rec, dict) or not all(match(rec, k, v) for k, v in want.items())
+                or any(match(rec, k, v) for k, v in skip.items())):
             continue
         ts = rec.get(k_ts)
         try:
             when = (dt.datetime.fromtimestamp(ts).astimezone() if isinstance(ts, (int, float))
                     else dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")))
         except (ValueError, OSError, OverflowError):
+            bad += 1
             continue
         if when.tzinfo is None:
             when = when.astimezone()
@@ -325,6 +336,8 @@ def read_command(src, since):
         if rec.get("reject"):
             meta["reject"] = str(rec["reject"])
         yield when, str(rec.get(k_text) or ""), meta
+    if bad:
+        print(f"comms-lint: {bad} unreadable record(s) (not JSON, or no time) from {' '.join(cmd)}", file=sys.stderr)
 
 
 def section(text, heading):

@@ -54,6 +54,31 @@ impl Action {
     }
 }
 
+/// A ledger line its parser could not read. It is kept so a lint can count it
+/// (comms-lint's `fleet-log` channel) instead of the line vanishing.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Reject {
+    /// Epoch seconds of the last line read before it: the line has no readable time of its own.
+    pub at: i64,
+    /// Which ledger it is in (the module table).
+    pub source: String,
+    /// The line as written.
+    pub text: String,
+    /// Why it was not read.
+    pub reject: String,
+}
+
+impl Reject {
+    fn new(at: i64, source: &str, line: &str, why: &str) -> Reject {
+        Reject {
+            at,
+            source: source.into(),
+            text: line.into(),
+            reject: why.into(),
+        }
+    }
+}
+
 /// actor -> verb -> how many.
 pub type Counts = BTreeMap<String, BTreeMap<String, u64>>;
 
@@ -90,6 +115,9 @@ pub struct Gathered {
     pub counts: Counts,
     /// A ledger that could not be read. A missing one is just empty.
     pub errors: Vec<String>,
+    /// Lines in a readable ledger that its parser could not read, newest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejects: Vec<Reject>,
 }
 
 /// Every action at or after `since` (epoch seconds), with the dispatch log's times read as this
@@ -100,6 +128,19 @@ pub fn gather(paths: &Paths, since: i64, items: &[Item]) -> Gathered {
 
 /// `gather`, with the dispatch log's local times read in `tz`.
 pub fn gather_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &Tz) -> Gathered {
+    let mut g = window_in(paths, since, items, tz);
+    g.actions.truncate(MAX_ACTIONS);
+    g.rejects.truncate(MAX_ACTIONS);
+    g
+}
+
+/// Every action and reject at or after `since`, none dropped: what `hub actions --records` streams.
+pub fn window(paths: &Paths, since: i64, items: &[Item]) -> Gathered {
+    window_in(paths, since, items, &chrono::Local)
+}
+
+/// `window`, with the dispatch log's local times read in `tz`.
+pub fn window_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &Tz) -> Gathered {
     let mut errors = vec![];
     let mut read = |p: &PathBuf| {
         read_or_empty(p).unwrap_or_else(|e| {
@@ -120,26 +161,32 @@ pub fn gather_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &T
             paths.runs.display()
         ));
     }
-    let mut all: Vec<Action> = [
+    let ((sa, sr), (da, dr), (na, nr)) = (
         parse_shepherd(&shepherd),
         parse_dispatch(&dispatch, tz),
         parse_notify(&notify),
-        failed,
-        from_queue(items),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|a| a.at >= since)
-    .collect();
+    );
+    let mut all: Vec<Action> = [sa, da, na, failed, from_queue(items)]
+        .into_iter()
+        .flatten()
+        .filter(|a| a.at >= since)
+        .collect();
+    let mut rejects: Vec<Reject> = [sr, dr, nr]
+        .into_iter()
+        .flatten()
+        .filter(|r| r.at >= since)
+        .collect();
     // Within a ledger a later line is the newer one, so reverse first and sort stably.
     all.reverse();
     all.sort_by_key(|a| std::cmp::Reverse(a.at));
+    rejects.reverse();
+    rejects.sort_by_key(|r| std::cmp::Reverse(r.at));
     let counts = counts(&all);
-    all.truncate(MAX_ACTIONS);
     Gathered {
         actions: all,
         counts,
         errors,
+        rejects,
     }
 }
 
@@ -194,19 +241,29 @@ fn shepherd_verb(s: &str) -> &'static str {
 }
 
 /// `fleet-shepherd`'s `log.md`: `## YYYY-MM-DD HH:MM UTC <what>` headings give the year, and each
-/// entry is `- HH:MM UTC MM-DD: <text>`. Older entries in other shapes are skipped.
-pub fn parse_shepherd(text: &str) -> Vec<Action> {
+/// entry is `- HH:MM UTC MM-DD: <text>`. An entry in another shape under a dated heading is a
+/// reject; prose and indented lines between entries belong to the entry above.
+pub fn parse_shepherd(text: &str) -> (Vec<Action>, Vec<Reject>) {
+    const SHAPE: &str = "a log entry not in the shape - HH:MM UTC MM-DD: <text>";
     let mut head: Option<NaiveDate> = None;
-    let mut out = vec![];
+    let (mut out, mut rejects, mut last) = (vec![], vec![], 0);
     for line in text.lines() {
         if let Some(h) = line.strip_prefix("## ") {
             if let Some(d) = h.get(..10).and_then(|d| d.parse::<NaiveDate>().ok()) {
                 head = Some(d);
+                last = d
+                    .and_hms_opt(0, 0, 0)
+                    .map_or(last, |t| t.and_utc().timestamp());
             }
             continue;
         }
         let Some(e) = line.strip_prefix("- ") else {
             continue;
+        };
+        let reject = |rejects: &mut Vec<Reject>| {
+            if head.is_some() {
+                rejects.push(Reject::new(last, "shepherd-log", line, SHAPE));
+            }
         };
         let (Some(hm), Some(" UTC "), Some(md), Some(": "), Some(body), Some(head)) = (
             e.get(..5),
@@ -216,6 +273,7 @@ pub fn parse_shepherd(text: &str) -> Vec<Action> {
             e.get(17..),
             head,
         ) else {
+            reject(&mut rejects);
             continue;
         };
         // An entry after New Year under a heading from December.
@@ -223,8 +281,10 @@ pub fn parse_shepherd(text: &str) -> Vec<Action> {
         let year = head.year() + i32::from(month < head.month());
         let Ok(t) = NaiveDateTime::parse_from_str(&format!("{year}-{md} {hm}"), "%Y-%m-%d %H:%M")
         else {
+            reject(&mut rejects);
             continue;
         };
+        last = t.and_utc().timestamp();
         if is_counts(body) {
             continue;
         }
@@ -234,32 +294,58 @@ pub fn parse_shepherd(text: &str) -> Vec<Action> {
             None => (body, body),
         };
         out.push(Action::new(
-            t.and_utc().timestamp(),
+            last,
             "shepherd",
             shepherd_verb(lead),
             body,
             "shepherd-log",
         ));
     }
-    out
+    (out, rejects)
 }
 
 /// `fleet-dispatch`'s `log.md`: `- YYYY-MM-DD HH:MM <verb> <rest>`, in the host's local time.
-pub fn parse_dispatch<Tz: TimeZone>(text: &str, tz: &Tz) -> Vec<Action> {
-    text.lines()
-        .filter_map(|l| {
-            let e = l.strip_prefix("- ")?;
-            let t = NaiveDateTime::parse_from_str(e.get(..16)?, "%Y-%m-%d %H:%M").ok()?;
-            let body = e.get(16..)?.trim();
-            let verb = match body.split_whitespace().next()? {
-                "started" => "start",
-                "reaped" => "reap",
-                w => w,
-            };
-            let at = tz.from_local_datetime(&t).earliest()?.timestamp();
-            Some(Action::new(at, "dispatch", verb, body, "dispatch-log"))
-        })
-        .collect()
+/// Any other non-blank line is a reject.
+pub fn parse_dispatch<Tz: TimeZone>(text: &str, tz: &Tz) -> (Vec<Action>, Vec<Reject>) {
+    let entry = |l: &str| {
+        let e = l.strip_prefix("- ")?;
+        let t = NaiveDateTime::parse_from_str(e.get(..16)?, "%Y-%m-%d %H:%M").ok()?;
+        let body = e.get(16..)?.trim();
+        let verb = match body.split_whitespace().next()? {
+            "started" => "start",
+            "reaped" => "reap",
+            w => w,
+        };
+        let at = tz.from_local_datetime(&t).earliest()?.timestamp();
+        Some(Action::new(at, "dispatch", verb, body, "dispatch-log"))
+    };
+    read_lines(
+        text,
+        "dispatch-log",
+        "a line not in the shape - YYYY-MM-DD HH:MM <verb> <rest>",
+        entry,
+    )
+}
+
+/// Each non-blank line through `entry`; a line it cannot read is a reject, dated by the line
+/// read before it.
+fn read_lines(
+    text: &str,
+    source: &str,
+    why: &str,
+    entry: impl Fn(&str) -> Option<Action>,
+) -> (Vec<Action>, Vec<Reject>) {
+    let (mut out, mut rejects, mut last) = (vec![], vec![], 0);
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        match entry(l) {
+            Some(a) => {
+                last = a.at;
+                out.push(a);
+            }
+            None => rejects.push(Reject::new(last, source, l, why)),
+        }
+    }
+    (out, rejects)
 }
 
 /// What a Sentinel page reports, from the shapes watch-companion-loop writes: "<subject> back
@@ -283,9 +369,13 @@ fn sentinel_verb(msg: &str) -> &'static str {
 }
 
 /// agent-notify's ledger: `<rfc3339>\t<priority>\t<title>\t<message>`. The title says who paged.
-pub fn parse_notify(text: &str) -> Vec<Action> {
-    text.lines()
-        .filter_map(|l| {
+/// Any other non-blank line (a message written with a raw newline) is a reject.
+pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
+    read_lines(
+        text,
+        "notify",
+        "a line with no ledger fields (a message written with a raw newline)",
+        |l| {
             let mut f = l.splitn(4, '\t');
             let (ts, prio, title, msg) = (f.next()?, f.next()?, f.next()?, f.next()?);
             let at = DateTime::parse_from_rfc3339(ts).ok()?.timestamp();
@@ -311,8 +401,8 @@ pub fn parse_notify(text: &str) -> Vec<Action> {
             let mut a = Action::new(at, &actor, verb, &text, "notify");
             a.priority = Some(prio.to_string()).filter(|p| !p.is_empty());
             Some(a)
-        })
-        .collect()
+        },
+    )
 }
 
 /// agentctl's runs that FAILED or STALLED, and how many ledger lines could not be read.
@@ -482,7 +572,7 @@ not json
 
     #[test]
     fn shepherd_lines_get_a_verb_each_and_the_counts_line_is_dropped() {
-        let a = parse_shepherd(SHEPHERD);
+        let a = parse_shepherd(SHEPHERD).0;
         assert_eq!(
             verbs(&a),
             [
@@ -507,7 +597,7 @@ not json
 
     #[test]
     fn a_skip_logged_as_a_raw_ledger_row_keeps_its_last_field() {
-        let a = parse_shepherd(SHEPHERD);
+        let a = parse_shepherd(SHEPHERD).0;
         let last = a.last().unwrap();
         assert_eq!(last.verb, "skip");
         assert_eq!(
@@ -518,27 +608,27 @@ not json
 
     #[test]
     fn a_shepherd_entry_after_new_year_takes_the_next_year() {
-        let a = parse_shepherd("## 2026-12-31 23:58 UTC pass\n- 00:01 UTC 01-01: nudged a\n");
+        let a = parse_shepherd("## 2026-12-31 23:58 UTC pass\n- 00:01 UTC 01-01: nudged a\n").0;
         assert_eq!(a[0].at, utc("2027-01-01T00:01:00Z"));
         assert!(
-            parse_shepherd("- 00:01 UTC 01-01: nudged a\n").is_empty(),
+            parse_shepherd("- 00:01 UTC 01-01: nudged a\n").0.is_empty(),
             "no year yet"
         );
     }
 
     #[test]
     fn dispatch_times_are_local_and_the_verb_is_the_first_word() {
-        let a = parse_dispatch(DISPATCH, &pst());
+        let a = parse_dispatch(DISPATCH, &pst()).0;
         assert_eq!(verbs(&a), ["start", "reap", "refused"]);
         assert_eq!(a[0].at, utc("2026-11-04T16:28:00Z"), "08:28 at UTC-8");
         assert!(a[0].text.starts_with("started bnb-agent-1"));
-        let east = parse_dispatch(DISPATCH, &FixedOffset::east_opt(3600).unwrap());
+        let east = parse_dispatch(DISPATCH, &FixedOffset::east_opt(3600).unwrap()).0;
         assert_eq!(east[0].at, utc("2026-11-04T07:28:00Z"));
     }
 
     #[test]
     fn notify_titles_name_the_actor_and_keep_the_priority() {
-        let a = parse_notify(NOTIFY);
+        let a = parse_notify(NOTIFY).0;
         let got: Vec<(&str, &str, &str)> = a
             .iter()
             .map(|a| {
@@ -582,7 +672,7 @@ not json
         .map(page)
         .concat();
         assert_eq!(
-            verbs(&parse_notify(&text)),
+            verbs(&parse_notify(&text).0),
             [
                 "tripped",
                 "tripped",
@@ -715,6 +805,7 @@ not json
             counts: counts(&actions),
             actions,
             errors: vec!["runs.jsonl: denied".into()],
+            ..Gathered::default()
         };
         let text = digest_in(&g, &pst());
         let lines: Vec<&str> = text.lines().collect();
@@ -790,6 +881,70 @@ not json
             ],
             "the FAILED run at 16:16 and the trip at 16:18 are before the cutoff"
         );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn each_parser_keeps_the_lines_it_cannot_read_as_rejects() {
+        let (_, r) = parse_shepherd(SHEPHERD);
+        let got: Vec<(&str, &str)> = r
+            .iter()
+            .map(|r| (r.source.as_str(), r.text.as_str()))
+            .collect();
+        assert_eq!(got, [("shepherd-log", "- buckets: STALLED 1, WORKING 11")]);
+        assert_eq!(r[0].at, utc("2026-10-24T00:00:00Z"), "dated by its heading");
+        assert!(
+            parse_shepherd("- 00:01 UTC 01-01: nudged a\n").1.is_empty(),
+            "no heading, no date"
+        );
+
+        let (_, r) = parse_dispatch(DISPATCH, &pst());
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].text.as_str(), r[0].at),
+            ("not a line", utc("2026-11-04T16:32:00Z"))
+        );
+
+        let (_, r) = parse_notify(NOTIFY);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].text, "a continuation line of the message above");
+        assert_eq!(
+            r[0].at,
+            utc("2026-11-04T08:37:00-08:00"),
+            "dated by the page above it"
+        );
+        assert!(r[0].reject.contains("raw newline"));
+    }
+
+    #[test]
+    fn clean_ledgers_give_no_rejects() {
+        let clean = |t: &str| {
+            t.lines()
+                .filter(|l| {
+                    !l.contains("buckets: STALLED 1")
+                        && *l != "not a line"
+                        && !l.starts_with("a continuation")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(parse_shepherd(&clean(SHEPHERD)).1.is_empty());
+        assert!(parse_dispatch(&clean(DISPATCH), &pst()).1.is_empty());
+        assert!(parse_notify(&clean(NOTIFY)).1.is_empty());
+    }
+
+    #[test]
+    fn the_window_keeps_every_action_and_gather_caps_them() {
+        let d = dir("window");
+        let p = paths(&d);
+        let lines: String = (0..MAX_ACTIONS + 5)
+            .map(|i| format!("- 2026-11-04 08:{:02} started s{i}\n", i % 60))
+            .collect();
+        std::fs::write(&p.dispatch_log, format!("{lines}junk\n")).unwrap();
+        let w = window_in(&p, 0, &[], &pst());
+        assert_eq!(w.actions.len(), MAX_ACTIONS + 5);
+        assert_eq!(w.rejects.len(), 1);
+        assert_eq!(gather_in(&p, 0, &[], &pst()).actions.len(), MAX_ACTIONS);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

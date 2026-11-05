@@ -142,3 +142,11 @@ group = "rows"
 lead_ids = false
 max_lead = 0
 source = { kind = "command", cmd = ["agent-queue", "list", "--json", "--state", "all", "--since", "{since_date}"], ts = "queued", text = "task", path = "slug", skip = { from = "human" } }
+
+# The fleet's own log rows: the shepherd's and dispatch's entries, and the lines their reader
+# (hub-core actions) could not parse. Pages and queue items have channels of their own.
+[channel.fleet-log]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["hub", "actions", "--since", "{since}", "--records"], ts = "at", text = "text", path = "source", select = { source = ["shepherd-log", "dispatch-log"] } }

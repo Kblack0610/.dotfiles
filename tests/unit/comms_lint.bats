@@ -261,7 +261,7 @@ EOF
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
-  for c in page briefing morning rundown status pr-body client-eod client-weekly board proof ask queue; do
+  for c in page briefing morning rundown status pr-body client-eod client-weekly board proof ask queue fleet-log; do
     assert_output --partial "$c"
   done
 }
@@ -286,14 +286,16 @@ printf '{"ts":"%s","text":"fix(x): a clean row","path":"ar-1"}\n' "$now"
 printf '{"ts":"%s","text":"fix(x): an \\u2014 dash","path":"ar-2"}\n' "$now"
 printf '{"ts":"%s","text":"- 09:00 nudge","reject":"no UTC stamp"}\n' "$now"
 printf '{"ts":"%s","text":"a human row \\u2014","by":"human"}\n' "$now"
+printf '{"ts":"%s","text":"a bot row \\u2014","by":"bot"}\n' "$now"
 printf '{"ts":1,"text":"too old"}\n'
 printf 'not json\n'
+printf '{"text":"no time"}\n'
 EOF
   chmod +x "$SANDBOX/bin/reader"
   export SANDBOX
   { sed -n '/^\[defaults\]/,/^$/p' "$COMMS_CHANNELS"
     printf '[ids]\npatterns = []\n\n[channel.rows]\ngroup = "rows"\nlead_ids = false\n'
-    printf 'source = { kind = "command", cmd = ["reader", "--days", "{days}"], skip = { by = "human" } }\n'
+    printf 'source = { kind = "command", cmd = ["reader", "--days", "{days}"], skip = { by = ["human", "bot"] } }\n'
     printf '\n[channel.page]\nsource = { kind = "ledger", path = "~/.local/state/agent-notify/log" }\n'
   } > "$SANDBOX/rows.toml"
   mkdir -p "$HOME/.local/state/agent-notify"
@@ -308,6 +310,8 @@ EOF
   assert_line --index 1 "1 100 3 33"
   run "$SUBJECT" report --since 1d
   assert_line --partial "1 messages, 100% meet the standard. 3 rows, 33% meet their notation."
+  # A reader line that is not JSON, or has no time, is counted on stderr, never dropped in silence.
+  assert_line --partial "2 unreadable record(s) (not JSON, or no time) from reader --days 2"
   # A reader that cannot run says so on stderr, never a silent pass.
   rm "$SANDBOX/bin/reader"
   run "$SUBJECT" report --since 1d --channel rows
