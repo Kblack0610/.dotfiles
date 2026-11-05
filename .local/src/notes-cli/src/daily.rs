@@ -565,6 +565,8 @@ fn ensure_footer(p: &Profile, note: &Path) -> Result<()> {
     if let Some(b) = crate::board::board_path(p) {
         links.push(("Board".into(), config::wikilink(&p.vault, &b)));
     }
+    // The outbox: cross-org like the board, so linked against the vault the same way.
+    links.push(("Outbox".into(), config::wikilink(&p.vault, &p.outbox)));
     // The index, by contrast, IS this org's own -- so it stays org-relative, and gets a label
     // that says whose it is. Sitting unqualified beside the cross-org board, "Projects:" read
     // as the complete list while showing only one org's, which is how projects in another org
@@ -869,12 +871,84 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     }
 }
 
-/// Today's quick-captures (the bullet lines in `inbox/<today>.md`) as the inbox status page,
-/// in capture order. Each keeps a short `(sess <id>)` suffix when the capture carried a
-/// session marker, so it links back to its conversation via `claude -r <id>`.
+/// The inbox status page: what the intake sweep did today and what still waits on the human.
+///
+/// - Needs attention: each line the sweep left or a write refused (with why), each line still
+///   in the outbox, and today's quick-captures (the bullet lines in `inbox/<today>.md`, each
+///   with a short `(sess <id>)` suffix when it carried a session marker, so it links back to
+///   its conversation via `claude -r <id>`).
+/// - Quiet: each line routed today, as `<words> -> <project> (<lane>) <id>`. A line moved out
+///   of the outbox or Focus and then filed reads as one row, the filing, noting where it came
+///   from.
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let rows: Vec<status::Row> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
+    let events = crate::ingest::on_day(p, &today);
+    let mut rows: Vec<status::Row> = Vec::new();
+    let (mut routed, mut left) = (0, 0);
+    for (i, ev) in events.iter().enumerate() {
+        let filed_later = |e: &crate::ingest::Event| {
+            matches!(e.action.as_str(), "filed" | "dup") && e.from == ev.to && e.text == ev.text
+        };
+        let (attention, head) = match ev.action.as_str() {
+            "moved" if events[i + 1..].iter().any(filed_later) => continue,
+            "moved" => (
+                false,
+                format!(
+                    "{} -> {} inbox, waiting to be filed (from {})",
+                    ev.text, ev.to, ev.from
+                ),
+            ),
+            "filed" | "dup" => {
+                routed += 1;
+                let from = events[..i]
+                    .iter()
+                    .rev()
+                    .find(|m| m.action == "moved" && m.to == ev.from && m.text == ev.text)
+                    .map(|m| m.from.as_str())
+                    .unwrap_or(ev.from.as_str());
+                let joined = if ev.action == "dup" { "joined " } else { "" };
+                let id = ev.id.as_deref().unwrap_or("no id");
+                let lane = if ev.lane.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", ev.lane)
+                };
+                let via = if from == ev.to {
+                    String::new()
+                } else {
+                    format!(" (from {from})")
+                };
+                (
+                    false,
+                    format!("{} -> {}{lane} {joined}{id}{via}", ev.text, ev.to),
+                )
+            }
+            _ => {
+                left += 1;
+                let why = ev.why.as_deref().unwrap_or("no reason given");
+                (
+                    true,
+                    format!("{} - {} in {}: {why}", ev.text, ev.action, ev.from),
+                )
+            }
+        };
+        rows.push(status::Row {
+            attention,
+            sort: (if attention { 0 } else { 2 }, format!("{i:04}")),
+            head,
+            detail: vec![],
+        });
+    }
+    let waiting = crate::outbox::lines(p).unwrap_or_default();
+    for (i, l) in waiting.iter().enumerate() {
+        rows.push(status::Row {
+            attention: true,
+            sort: (0, format!("o{i:04}")),
+            head: format!("{} - waiting in the outbox", l.text),
+            detail: vec![],
+        });
+    }
+    let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
@@ -885,25 +959,43 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
                 .unwrap_or_default();
             Some(format!("{core}{suffix}"))
         })
-        .enumerate()
-        .map(|(i, head)| status::Row {
+        .collect();
+    let captured = captures.len();
+    for (i, head) in captures.into_iter().enumerate() {
+        rows.push(status::Row {
             attention: true,
-            sort: (0, format!("{i:04}")),
+            sort: (1, format!("{i:04}")),
             head,
             detail: vec![],
-        })
-        .collect();
+        });
+    }
     status::Page {
         feed: status::Feed::Inbox,
-        stat: Some(format!("{} captured {today}", rows.len())),
+        stat: Some(format!(
+            "{today}: {routed} routed, {left} left, {} in the outbox, {captured} captured",
+            waiting.len()
+        )),
         rows,
     }
 }
 
-/// Publish today's captures to the inbox page and take any `## Inbox` section out of the note.
-/// Captures land all day, so they live on the page: the note itself is not rewritten for them.
+/// Publish the inbox page and take any `## Inbox` section out of the note. The page is owned
+/// by the machine that runs the intake sweep, the one holding the ingest record: that record
+/// is per-machine state, so a second machine rendering the page from its own (empty) record
+/// would fight the first through the vault's git sync.
 fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
-    publish_and_strip(p, log, note, &inbox_page(p), p.inbox.is_dir(), "Inbox")
+    publish_and_strip(p, log, note, &inbox_page(p), inbox_present(p), "Inbox")
+}
+
+fn inbox_present(p: &Profile) -> bool {
+    p.inbox.is_dir() && crate::ingest::path(p).exists()
+}
+
+/// `notes ingest page`: publish the inbox page alone, which the sweep runs after each pass so
+/// the summary is current without a full `notes today`.
+pub fn publish_inbox_page(p: &Profile, log: &Logger) -> Result<i32> {
+    status::publish(&p.root, &p.daily, log, &inbox_page(p), inbox_present(p))?;
+    Ok(0)
 }
 
 /// Core text of an inbox capture line, for display + dedup: strip a leading bullet or
@@ -2063,6 +2155,7 @@ mod tests {
             "- Watches: [[status/watches]]",
             "- Comms: [[status/comms]]",
             "- Inbox: [[status/inbox]]",
+            "- Outbox: [[outbox]]",
         ] {
             assert!(
                 footer.contains(feed),
@@ -2200,5 +2293,56 @@ mod tests {
         let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
         assert!(promoted.is_empty());
         assert_eq!(remaining, content);
+    }
+
+    #[test]
+    fn the_inbox_page_shows_where_each_line_went_and_what_waits() {
+        use crate::ingest::{record, Event};
+        let root = std::env::temp_dir().join(format!("inbox-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        record(
+            &p,
+            &Event::new("moved", "outbox", "demo", "loading screens"),
+        );
+        let mut filed = Event::new("filed", "demo", "demo", "loading screens");
+        filed.lane = "human".into();
+        filed.id = Some("dm-4".into());
+        record(&p, &filed);
+        let mut dup = Event::new("dup", "nc", "nc", "focus and outbox");
+        dup.id = Some("nc-9".into());
+        record(&p, &dup);
+        let mut left = Event::new("left", "outbox", "", "a thought");
+        left.why = Some("not a task".into());
+        record(&p, &left);
+        record(
+            &p,
+            &Event::new("moved", "focus", "demo", "still in the inbox"),
+        );
+        std::fs::write(&p.outbox, "# Outbox\n\n## Outbox\n- [ ] new one\n").unwrap();
+        let page = inbox_page(&p);
+        let heads: Vec<(bool, &str)> = page
+            .rows
+            .iter()
+            .map(|r| (r.attention, r.head.as_str()))
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                (false, "loading screens -> demo (human) dm-4 (from outbox)"),
+                (false, "focus and outbox -> nc joined nc-9"),
+                (true, "a thought - left in outbox: not a task"),
+                (
+                    false,
+                    "still in the inbox -> demo inbox, waiting to be filed (from focus)"
+                ),
+                (true, "new one - waiting in the outbox"),
+            ]
+        );
+        assert!(page
+            .stat
+            .unwrap()
+            .ends_with(": 2 routed, 1 left, 1 in the outbox, 0 captured"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -19,12 +19,14 @@ mod focus_move;
 mod focus_sweep;
 mod inbox;
 mod index;
+mod ingest;
 mod knowledge;
 mod lab_refresh;
 mod logging;
 mod md;
 mod meeting;
 mod migrate_rows;
+mod outbox;
 mod playtest;
 mod project_sweep;
 mod project_tasks;
@@ -179,6 +181,17 @@ enum Cmd {
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
+    },
+    /// The outbox (`<vault>/outbox.md`): drop work for any project; the inbox sweep routes
+    /// each line to its project's inbox. No subcommand = list.
+    Outbox {
+        #[command(subcommand)]
+        sub: Option<OutboxCmd>,
+    },
+    /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
+    Ingest {
+        #[command(subcommand)]
+        sub: IngestCmd,
     },
     /// Compiled knowledge base under knowledge/ (written by the nightly engine)
     Knowledge {
@@ -567,6 +580,47 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum OutboxCmd {
+    /// The lines waiting, oldest first (TSV `line<TAB>text`)
+    List {
+        /// One JSON array of `{line, raw, text, details, project}` instead
+        #[arg(long)]
+        json: bool,
+    },
+    /// Append a line and wake the inbox sweep
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Move the line that is RAW byte for byte into PROJECT's `## Inbox` (the sweep's write path)
+    Move {
+        #[arg(long, value_name = "PROJECT")]
+        project: String,
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
+    /// human, or one whose write was `refused`
+    Record {
+        #[arg(long, value_parser = ["left", "refused"])]
+        action: String,
+        /// `outbox`, or the project whose inbox holds the line
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        why: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Publish the inbox status page from the record and the outbox (the sweep runs it)
+    Page,
 }
 
 #[derive(Subcommand)]
@@ -972,6 +1026,28 @@ fn main() -> Result<()> {
                 board::run(&log)?
             }
         }
+        Cmd::Outbox { sub } => match sub {
+            None => outbox::list(&prof, false)?,
+            Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
+            Some(OutboxCmd::Move { project, raw }) => {
+                outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            }
+        },
+        Cmd::Ingest { sub } => match sub {
+            IngestCmd::Record {
+                action,
+                from,
+                why,
+                text,
+            } => {
+                let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
+                ev.why = why;
+                ingest::record(&prof, &ev);
+                0
+            }
+            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
+        },
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,

@@ -370,7 +370,7 @@ pub(crate) fn inbox_flag(p: &Profile) -> PathBuf {
 }
 
 /// Touch [`inbox_flag`]. Best effort: a missing state dir must not fail the write it follows.
-fn inbox_changed(p: &Profile) {
+pub(crate) fn inbox_changed(p: &Profile) {
     let flag = inbox_flag(p);
     if let Some(dir) = flag.parent() {
         let _ = fs::create_dir_all(dir);
@@ -625,6 +625,25 @@ pub(crate) fn file(
             dest.display()
         ),
     );
+    let mut ev = crate::ingest::Event::new(
+        if matches!(how.how, How::Dup(_)) {
+            "dup"
+        } else {
+            "filed"
+        },
+        name,
+        dest_name,
+        &line.text,
+    );
+    ev.lane = how.lane.name().into();
+    ev.id = match &how.how {
+        How::Dup(id) => Some(id.clone()),
+        How::Rows { .. } => written
+            .iter()
+            .find_map(|l| md::marker_token(l, "id:"))
+            .map(str::to_string),
+    };
+    crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
     for l in &written {
         println!("  {l}");
@@ -1632,7 +1651,10 @@ Version: v1.13.0
     fn the_stamp_merges_into_an_existing_marker() {
         let line = "- [ ] facility save 400 #ai <!-- id:pmp-602 -->";
         let out = md::add_marker(&md::set_checkbox(line, 'x'), "pr:1142");
-        assert_eq!(out, "- [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->");
+        assert_eq!(
+            out,
+            "- [x] facility save 400 #ai <!-- id:pmp-602 pr:1142 -->"
+        );
         assert_eq!(out.matches("<!--").count(), 1);
     }
 
@@ -2126,6 +2148,17 @@ mod inbox_tests {
         assert!(
             tasks.contains("  was: the gun sound is off\n  - since the top-down patch\n"),
             "{s}"
+        );
+        let ev = crate::ingest::on_day(&v.p, &today.format("%Y-%m-%d").to_string());
+        assert_eq!(ev.len(), 1, "one filing, one record");
+        assert_eq!(
+            (
+                ev[0].action.as_str(),
+                ev[0].to.as_str(),
+                ev[0].lane.as_str(),
+                ev[0].text.as_str()
+            ),
+            ("filed", "scratch", "human", "the gun sound is off")
         );
         // the line is gone, so a second run finds nothing to file
         assert_eq!(
