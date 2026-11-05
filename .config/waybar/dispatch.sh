@@ -115,8 +115,12 @@ else
   [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
   qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
   ready_line="$ready ready ($(d runnable_urgent) urgent or high)"
+  low="$(get dispatch.low_water)"
+  [ -z "$low" ] || ready_line+=" of low water $low"
   queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
+  [ -z "$(get dispatch.present_per_hour)" ] ||
+    queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
@@ -171,11 +175,12 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: ready, the oldest wait, the units against the cap; the chip's level colours the first two.
+# The bar: ready (over the low water, when the feed has it), the oldest wait, the units against the
+# cap; the chip's level colours the first two.
 if [ -z "$ready" ]; then
   text="$ICON $(paint "${LEVEL_COLOUR[$level]}" -)"
 else
-  text="$ICON $ready $(short "$oldest")"
+  text="$ICON $ready${low:+/$low} $(short "$oldest")"
   ((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
   [ -n "$bar_units" ] && text+=" $bar_units"
 fi

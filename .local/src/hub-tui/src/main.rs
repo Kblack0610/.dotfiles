@@ -361,6 +361,9 @@ fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     app.read_jobs();
     app.read_boards();
     app.read_queue();
+    if app.tab == Tab::Queue {
+        app.read_candidates();
+    }
     if app.tab == Tab::Sessions {
         app.read_forecast();
         app.read_sessions();

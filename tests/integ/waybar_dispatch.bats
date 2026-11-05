@@ -275,3 +275,17 @@ tip() { jq -r .tooltip <<< "$output"; }
   run tip
   assert_output --partial "cannot read http://prom.test"
 }
+
+@test "the low water reads beside ready on the bar, and the present trickle's starts in the hover; an old feed without them reads as before" {
+  feed summary_dispatch.low_water=3 summary_dispatch.present_per_hour=1 summary_dispatch.present_starts_1h=1
+  run "$MODULE"
+  assert_success
+  assert_equal "$(text)" "$ICON 39/3 12h <span color='$G'>16/24</span>"
+  assert_output --partial "39 ready (32 urgent or high) of low water 3"
+  assert_output --partial "present trickle: 1 of 1 board starts this hour"
+  feed
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 39 12h <span color='$G'>16/24</span>"
+  refute_output --partial "low water"
+  refute_output --partial "present trickle"
+}

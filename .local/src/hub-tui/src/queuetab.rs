@@ -1,9 +1,12 @@
 //! The Queue tab: agent-queue's items in agent-web's sections (Waiting for you, Running, Up next,
 //! Done today), read through `hub_core::queue`, the same reader as agent-web's Queue tab. j/k
 //! pick an active item, `c` arms a cancel that waits on y, and `+`/`-` move its priority one
-//! step. Both run agent-queue through hub-core; this file writes nothing.
+//! step. Below them the Candidates fold (`hub_core::queue::candidates`, `fleet-dispatch
+//! suggest`): `f` opens it, j/k carry on into its rows, and `p` starts the selected one through
+//! the Projects tab's Start (`fleet-dispatch promote`). Every write goes through hub-core.
 
-use hub_core::queue::{Item, Queue, State, SECTIONS};
+use hub_core::queue::{Candidate, Candidates, Item, Queue, State, SECTIONS};
+use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
@@ -19,12 +22,15 @@ pub enum Ask {
     Done,
     Cancel(String),
     Bump(String, &'static str),
+    /// Start a candidate: its label and the board write.
+    Promote(String, Write),
 }
 
 #[derive(Default)]
 pub struct QueueView {
-    /// Index into `active`.
+    /// Index into `active`, then into the candidates the open fold shows.
     pub sel: usize,
+    pub cands_open: bool,
     /// The slug a cancel waits on y for.
     pub confirm: Option<String>,
     /// The action now running, as "cancel <slug>".
@@ -47,16 +53,32 @@ impl QueueView {
         active(q).get(self.sel).copied()
     }
 
-    /// A new read keeps the selection on the same slug when it is still active.
-    pub fn reselect(&mut self, was: Option<String>, q: &Queue) {
+    /// The candidates the fold lists: none while it is shut.
+    pub fn shown<'a>(&self, c: &'a [Candidate]) -> &'a [Candidate] {
+        if self.cands_open {
+            c
+        } else {
+            &[]
+        }
+    }
+
+    pub fn selected_cand<'a>(&self, q: &Queue, c: &'a [Candidate]) -> Option<&'a Candidate> {
+        let i = self.sel.checked_sub(active(q).len())?;
+        self.shown(c).get(i)
+    }
+
+    /// A new read keeps the selection on the same slug when it is still active, and otherwise
+    /// in range of the items and shown candidates.
+    pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate]) {
         let rows = active(q);
+        let n = rows.len() + self.shown(c).len();
         self.sel = was
             .and_then(|s| rows.iter().position(|i| i.slug == s))
             .unwrap_or(self.sel)
-            .min(rows.len().saturating_sub(1));
+            .min(n.saturating_sub(1));
     }
 
-    pub fn key(&mut self, k: KeyEvent, q: Option<&Queue>) -> Ask {
+    pub fn key(&mut self, k: KeyEvent, q: Option<&Queue>, c: &[Candidate]) -> Ask {
         if let Some(slug) = &self.confirm {
             return match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -72,13 +94,31 @@ impl QueueView {
             };
         }
         let Some(q) = q else { return Ask::Pass };
-        let n = active(q).len();
+        let n = active(q).len() + self.shown(c).len();
         let busy = || Some(Err("an action is still running".to_string()));
         match k.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.sel = (self.sel + 1).min(n.saturating_sub(1))
             }
             KeyCode::Char('k') | KeyCode::Up => self.sel = self.sel.saturating_sub(1),
+            KeyCode::Char('f') => {
+                self.cands_open = !self.cands_open;
+                self.reselect(None, q, c);
+            }
+            KeyCode::Char('p') => match self.selected_cand(q, c) {
+                _ if self.running.is_some() => self.said = busy(),
+                Some(cand) => {
+                    self.said = None;
+                    return Ask::Promote(
+                        format!("promote {} {}", cand.project, cand.key),
+                        cand.start(),
+                    );
+                }
+                None if !self.cands_open => {
+                    self.said = Some(Err("f opens the candidates, then j/k onto one".into()))
+                }
+                None => self.said = Some(Err("j/k onto a candidate to promote it".into())),
+            },
             KeyCode::Char('c') => match self.selected(q) {
                 _ if self.running.is_some() => self.said = busy(),
                 Some(i) => {
@@ -169,7 +209,14 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
     ]
 }
 
-pub fn page(q: &Queue, v: &QueueView, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+pub fn page(
+    q: &Queue,
+    v: &QueueView,
+    cands: Option<&Result<Candidates, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -222,6 +269,99 @@ pub fn page(q: &Queue, v: &QueueView, p: Palette, now: i64, w: usize) -> Vec<Lin
             }
         }
         out.append(&mut t);
+    }
+    out.push(Line::raw(""));
+    out.extend(candidates(q, v, cands, p, w));
+    out
+}
+
+/// The Candidates fold: its heading counts every ranked row and how many a worker takes; open,
+/// it lists the first `CANDIDATES_SHOWN` in rank order and says how many more there are.
+fn candidates(
+    q: &Queue,
+    v: &QueueView,
+    cands: Option<&Result<Candidates, String>>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mark = if v.cands_open { "-" } else { "+" };
+    let hint = if v.cands_open {
+        "f folds, p promotes"
+    } else {
+        "f opens"
+    };
+    let (count, hint) = match cands {
+        None => (String::new(), "reading fleet-dispatch suggest"),
+        Some(Err(_)) => (String::new(), ""),
+        Some(Ok(c)) => (format!(" ({}, {} auto)", c.total, c.auto), hint),
+    };
+    let mut out = vec![clip_line(
+        heading(
+            &format!("{mark} CANDIDATES{count}"),
+            format!("  {hint}").trim_end().into(),
+            p,
+        ),
+        w,
+    )];
+    let c = match cands {
+        Some(Err(e)) => {
+            out.push(clip_line(
+                Line::styled(format!("No candidates: {e}"), p.warn()),
+                w,
+            ));
+            return out;
+        }
+        Some(Ok(c)) if v.cands_open => c,
+        _ => return out,
+    };
+    let shown = v.shown(&c.rows);
+    if shown.is_empty() {
+        out.push(Line::styled("No open board row to start.", p.dim()));
+        return out;
+    }
+    let rows = shown
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let style = if c.held {
+                p.warn()
+            } else if c.auto {
+                p.good()
+            } else {
+                Default::default()
+            };
+            vec![
+                cell(format!("{}", i + 1), Default::default()),
+                c.project.clone().into(),
+                c.key.clone().into(),
+                c.title().into(),
+                cell(c.start_label(), style),
+                c.why.clone().into(),
+            ]
+        })
+        .collect();
+    let mut t = Table {
+        header: vec!["#", "PROJECT", "KEY", "TASK", "START", "WHY"],
+        rows,
+        // The why never hides: project, then key, give way first.
+        keep: vec![0, 4, 3, 2, 1],
+        flex: Some(5),
+        flexmin: 24,
+        flexkeep: true,
+        right: vec![0],
+        cap: vec![(1, 22), (2, 16), (3, 40)],
+    }
+    .fit(w, p.head());
+    if let Some(at) = v
+        .sel
+        .checked_sub(active(q).len())
+        .filter(|i| *i < shown.len())
+    {
+        t[at + 1].style = p.sel();
+    }
+    out.append(&mut t);
+    if c.more() > 0 {
+        out.push(Line::styled(format!("+{} more", c.more()), p.dim()));
     }
     out
 }
@@ -278,11 +418,32 @@ pub(crate) mod tests {
     }
 
     fn text(q: &Queue, v: &QueueView, w: usize) -> String {
-        page(q, v, Palette { no_color: true }, 0, w)
+        text_with(q, v, None, w)
+    }
+
+    fn text_with(
+        q: &Queue,
+        v: &QueueView,
+        c: Option<&Result<Candidates, String>>,
+        w: usize,
+    ) -> String {
+        page(q, v, c, Palette { no_color: true }, 0, w)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Three ranked rows: an auto one with a verdict, a held auto one, a human-lane manual one.
+    pub fn cands() -> Candidates {
+        hub_core::queue::parse_candidates(concat!(
+            r##"{"profile":"bnb","project":"shape-city","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high <!-- id:bar-17 -->","why":"focus project, due today, #high, beta","auto":true,"verdict":"dispatch","held":false}"##,
+            "\n",
+            r##"{"profile":"bnb","project":"unity-core-playground","lane":"agent","key":"ucp-408","text":"- [ ] fix(cutscene): smooth the blend #requested <!-- id:ucp-408 -->","why":"requested, #high, beta, 5d old","auto":true,"verdict":"unjudged","held":true,"area":"unity"}"##,
+            "\n",
+            r##"{"profile":"personal","project":"trader","lane":"human","key":"tr-41","text":"- [ ] backtest report <!-- id:tr-41 -->","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":false}"##,
+            "\n",
+        ))
     }
 
     fn key(c: char) -> KeyEvent {
@@ -327,50 +488,53 @@ pub(crate) mod tests {
         let q = fixture();
         let mut v = QueueView::default();
         assert_eq!(v.selected(&q).unwrap().slug, "pick-sides");
-        assert_eq!(v.key(key('c'), Some(&q)), Ask::Done);
+        assert_eq!(v.key(key('c'), Some(&q), &[]), Ask::Done);
         assert_eq!(v.confirm.as_deref(), Some("pick-sides"));
         assert!(text(&q, &v, 200).contains("Cancel pick-sides?"));
-        assert_eq!(v.key(key('n'), Some(&q)), Ask::Done, "n drops it");
+        assert_eq!(v.key(key('n'), Some(&q), &[]), Ask::Done, "n drops it");
         assert!(v.confirm.is_none());
-        v.key(key('c'), Some(&q));
-        assert_eq!(v.key(key('y'), Some(&q)), Ask::Cancel("pick-sides".into()));
+        v.key(key('c'), Some(&q), &[]);
+        assert_eq!(
+            v.key(key('y'), Some(&q), &[]),
+            Ask::Cancel("pick-sides".into())
+        );
 
         assert_eq!(
-            v.key(key('+'), Some(&q)),
+            v.key(key('+'), Some(&q), &[]),
             Ask::Bump("pick-sides".into(), "urgent")
         );
         for _ in 0..9 {
-            v.key(key('j'), Some(&q));
+            v.key(key('j'), Some(&q), &[]);
         }
         let at = |v: &QueueView| v.selected(&q).unwrap().slug.clone();
         assert_eq!(at(&v), "night-sweep", "j stops at the last active item");
-        assert_eq!(v.key(key('-'), Some(&q)), Ask::Done);
+        assert_eq!(v.key(key('-'), Some(&q), &[]), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already low")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('+'), Some(&q)),
+            v.key(key('+'), Some(&q), &[]),
             Ask::Bump("night-sweep".into(), "high")
         );
-        v.key(key('k'), Some(&q));
+        v.key(key('k'), Some(&q), &[]);
         assert_eq!(at(&v), "next-up");
-        assert_eq!(v.key(key('+'), Some(&q)), Ask::Done);
+        assert_eq!(v.key(key('+'), Some(&q), &[]), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already urgent")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('-'), Some(&q)),
+            v.key(key('-'), Some(&q), &[]),
             Ask::Bump("next-up".into(), "high")
         );
 
         v.running = Some("cancel x".into());
-        v.key(key('c'), Some(&q));
+        v.key(key('c'), Some(&q), &[]);
         assert!(v.confirm.is_none(), "no second action while one runs");
-        assert_eq!(v.key(key('x'), Some(&q)), Ask::Pass);
+        assert_eq!(v.key(key('x'), Some(&q), &[]), Ask::Pass);
     }
 
     #[test]
@@ -383,9 +547,135 @@ pub(crate) mod tests {
         assert_eq!(v.selected(&q).unwrap().slug, "next-up");
         let mut fewer = fixture();
         fewer.items.retain(|i| i.slug != "pick-sides");
-        v.reselect(Some("next-up".into()), &fewer);
+        v.reselect(Some("next-up".into()), &fewer, &[]);
         assert_eq!(v.selected(&fewer).unwrap().slug, "next-up");
-        v.reselect(Some("gone".into()), &Queue::default());
+        v.reselect(Some("gone".into()), &Queue::default(), &[]);
         assert_eq!(v.sel, 0);
+    }
+    #[test]
+    fn candidates_fold_shut_with_their_counts_below_the_queue() {
+        let q = fixture();
+        let c = Ok(cands());
+        let s = text_with(&q, &QueueView::default(), Some(&c), 200);
+        assert!(s.contains("+ CANDIDATES (3, 2 auto)  f opens"), "{s}");
+        assert!(
+            s.find("DONE TODAY").unwrap() < s.find("CANDIDATES").unwrap(),
+            "below the queue\n{s}"
+        );
+        assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
+        assert!(text(&q, &QueueView::default(), 200).contains("+ CANDIDATES  reading"));
+        let err = Err("fleet-dispatch: unknown command suggest".to_string());
+        assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
+            .contains("No candidates: fleet-dispatch: unknown command suggest"));
+    }
+
+    #[test]
+    fn open_candidates_list_ranked_rows_with_auto_or_man_and_held() {
+        let q = fixture();
+        let c = Ok(cands());
+        let mut v = QueueView::default();
+        assert_eq!(v.key(key('f'), Some(&q), &cands().rows), Ask::Done);
+        let s = text_with(&q, &v, Some(&c), 200);
+        assert!(
+            s.contains("- CANDIDATES (3, 2 auto)  f folds, p promotes"),
+            "{s}"
+        );
+        let line = |k: &str| {
+            s.lines()
+                .find(|l| l.contains(k))
+                .unwrap_or_else(|| panic!("{k}\n{s}"))
+        };
+        let (a, b, m) = (line("bar-17"), line("ucp-408"), line("tr-41"));
+        assert!(
+            a.trim_start().starts_with("1 ") && b.trim_start().starts_with("2 "),
+            "{s}"
+        );
+        assert!(
+            a.contains("fix the jump arc") && !a.contains("<!--") && !a.contains("#high  "),
+            "{a}"
+        );
+        assert!(
+            a.contains("auto dispatch") && a.contains("focus project, due today"),
+            "{a}"
+        );
+        assert!(b.contains("auto held") && !b.contains("unjudged"), "{b}");
+        assert!(m.contains("man ") && !m.contains("held"), "{m}");
+
+        let many: Vec<String> = (0..hub_core::queue::CANDIDATES_SHOWN + 5)
+            .map(|i| format!(r#"{{"key":"k-{i}"}}"#))
+            .collect();
+        let many = hub_core::queue::parse_candidates(&many.join("\n"));
+        let s = text_with(&q, &v, Some(&Ok(many)), 200);
+        assert!(
+            s.contains("CANDIDATES (35, 0 auto)") && s.contains("+5 more"),
+            "{s}"
+        );
+        assert!(s.contains("k-29") && !s.contains("k-30"), "{s}");
+    }
+
+    #[test]
+    fn p_promotes_the_selected_candidate_through_the_boards_start() {
+        let q = fixture();
+        let c = cands().rows;
+        let mut v = QueueView::default();
+        assert_eq!(
+            v.key(key('p'), Some(&q), &c),
+            Ask::Done,
+            "shut: nothing to promote"
+        );
+        assert!(
+            matches!(&v.said, Some(Err(e)) if e.contains("f opens")),
+            "{:?}",
+            v.said
+        );
+        v.key(key('f'), Some(&q), &c);
+        for _ in 0..4 {
+            v.key(key('j'), Some(&q), &c);
+        }
+        assert_eq!(
+            v.selected_cand(&q, &c).unwrap().key,
+            "bar-17",
+            "j runs on past the items"
+        );
+        assert!(text_with(&q, &v, Some(&Ok(cands())), 200).contains("fix the jump arc"));
+        let Ask::Promote(label, w) = v.key(key('p'), Some(&q), &c) else {
+            panic!("p promotes")
+        };
+        assert_eq!(label, "promote shape-city bar-17");
+        assert_eq!(
+            hub_core::tasks::argv(&w).unwrap(),
+            [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                "shape-city",
+                "--profile",
+                "bnb",
+                "--agent",
+                "--raw",
+                "- [ ] fix the jump arc #high <!-- id:bar-17 -->"
+            ]
+        );
+        // NEGATIVE CONTROL: the human-lane row is promoted with no --agent.
+        v.key(key('j'), Some(&q), &c);
+        v.key(key('j'), Some(&q), &c);
+        let Ask::Promote(_, w) = v.key(key('p'), Some(&q), &c) else {
+            panic!("p promotes")
+        };
+        let argv = hub_core::tasks::argv(&w).unwrap();
+        assert!(argv.contains(&"trader".to_string()), "{argv:?}");
+        assert!(!argv.contains(&"--agent".to_string()), "{argv:?}");
+        assert_eq!(v.key(key('c'), Some(&q), &c), Ask::Done);
+        assert!(v.confirm.is_none(), "c does not cancel a candidate");
+
+        v.key(key('f'), Some(&q), &c);
+        assert_eq!(v.sel, 3, "folding brings the selection back to the items");
+        v.running = Some("promote x".into());
+        v.key(key('f'), Some(&q), &c);
+        assert_eq!(
+            v.key(key('p'), Some(&q), &c),
+            Ask::Done,
+            "no second action while one runs"
+        );
     }
 }
