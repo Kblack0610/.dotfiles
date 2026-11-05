@@ -20,6 +20,9 @@ ask() { "$AGENT_ASK" post --project "$1" --session "$2" --options "$3" "$4"; }
 ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
 created() { sed -i "s/^created: .*/created: $2/" "$(ask_file "$1")"; }
 status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
+# rows [VAR=value...]: the panel's rows, one per line with ~ for the break between a row's two
+# lines and the bold and faint stripped.
+rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 
 @test "rows: this tmux session's asks first, then oldest, each row keyed by its id" {
   local old new mine
@@ -30,12 +33,12 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   created "$new" 2026-11-04T10:00:00-0800
   created "$mine" 2026-11-05T10:00:00-0800
   echo agent-3 >"$NOTES_FIXTURE/tmux.session"
-  run env TMUX=/tmp/sock,1,0 "$Q" rows
+  run rows TMUX=/tmp/sock,1,0
   assert_success
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$mine $old $new "
   assert_line --index 1 --partial 'old question?'
   # Outside tmux there is no session to lift: oldest first.
-  run "$Q" rows
+  run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$old $new $mine "
 }
 
@@ -43,28 +46,46 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   ask unity-core-playground unity-core-playground-agent-60 'a|b' 'long project?' >/dev/null
   ask demo agent-1 'a|b' 'short project?' >/dev/null
   ask demo hub 'a|b' 'no agent number?' >/dev/null
-  run bash -c '"$1" rows | sed "s/\x1b\[[0-9;]*m//g"' _ "$Q"
+  run rows
   assert_success
   assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]$'
   assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]$'
   assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]$'
 }
 
-@test "rows mark an ask whose Claude session has ended gone, and only that one" {
-  mkdir -p "$HOME/.claude/sessions"
+@test "a row's second line says what the session is, and ended once it has, under the question" {
+  mkdir -p "$HOME/.claude/sessions" "$HOME/.agent/sessions/demo"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
-  local live gone loose
+  printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
+    '{"session_id":"sid-9","title":"tidy-the-board"}' >"$HOME/.agent/sessions/demo/sessions.jsonl"
+  local live ended untitled loose
   live="$(CLAUDE_CODE_SESSION_ID=sid-1 ask demo s 'a|b' 'live?')"
-  gone="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo s 'a|b' 'gone?')"
+  ended="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo s 'a|b' 'ended?')"
+  untitled="$(CLAUDE_CODE_SESSION_ID=sid-8 ask demo s 'a|b' 'untitled?')"
   loose="$(ask demo s 'a|b' 'headless?')"
-  run "$Q" rows
-  assert_line --regexp "^$gone	.*gone"
-  refute_line --regexp "^$live	.*gone"
-  refute_line --regexp "^$loose	.*gone"
+  run rows
+  assert_success
+  # The second line starts under the question: name column (4) + age (3) + three spaces.
+  assert_line --regexp "^$live	demo +[0-9]+m  live[?]~ {10}live-work\$"
+  assert_line --regexp "^$ended	demo +[0-9]+m  ended[?]~ {10}ended [.] tidy-the-board\$"
+  assert_line --regexp "^$untitled	demo +[0-9]+m  untitled[?]~ {10}ended\$"
+  assert_line --regexp "^$loose	demo +[0-9]+m  headless[?]\$"
+}
+
+# The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'
+# magenta): a coloured name or age vanished there (human, 2026-11-05). Bold and faint take fzf's
+# own selected-row white.
+@test "rows carry bold and faint but no colour, so the selected row still reads" {
+  ask demo agent-1 'a|b' 'colour?' >/dev/null
+  run bash -c '"$1" rows | tr "\0" "\n"' _ "$Q"
+  assert_success
+  assert_output --partial $'\033[1mdemo:1'
+  assert_output --partial $'\033[2m'
+  refute_output --regexp $'\033\\[[0-9;]*(3[0-7]|9[0-7])m'
 }
 
 @test "rows list nothing, successfully, when no question waits" {
-  run "$Q" rows
+  run rows
   assert_success
   assert_output ''
 }
@@ -223,7 +244,7 @@ status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
   done
   local t0 t1
   t0="$(date +%s%N)"
-  run "$Q" rows
+  run rows
   t1="$(date +%s%N)"
   assert_success
   assert_equal "$(wc -l <<<"$output")" 200

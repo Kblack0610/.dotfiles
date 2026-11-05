@@ -13,6 +13,8 @@
 #   agent-ask target <id>               where the asking session runs now, as an agent-panel
 #                                       jump target; fails saying why (ended, or no session)
 #   agent-ask live-sessions             the Claude session ids running now, one per line
+#   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
+#                                       each one the session registry has a title for
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
@@ -608,6 +610,17 @@ session_alive() {
 
 # live_sessions: every Claude session id with a running process, one per line; the questions
 # panel marks the rest gone. Same source as session_alive.
+# session_titles: Claude session ids on stdin -> "<id><TAB><title>", the newest titled registry
+# row per id. The card's request line and the questions panel's rows both read it here.
+session_titles() {
+  local ids
+  ids="$(grep . | sed 's/.*/"session_id":"&"/')"
+  [ -n "$ids" ] || return 0
+  grep -hF -f <(printf '%s\n' "$ids") "$HOME"/.agent/sessions/*/sessions.jsonl 2>/dev/null |
+    jq -r 'select((.title // "") != "") | [.session_id, .title] | @tsv' 2>/dev/null |
+    awk -F'\t' '{ t[$1] = $2 } END { for (s in t) print s "\t" t[s] }'
+}
+
 live_sessions() {
   local f pid live=()
   for f in "$HOME"/.claude*/sessions/*.json; do
@@ -664,8 +677,7 @@ render_story() {
   # The registry's title names the session. The transcript gives the request (its first typed
   # prompt), the prompt the asking turn answered, and that turn's own words.
   local title="" first="" prompt="" words="" t said
-  title="$(grep -hF "\"session_id\":\"$sid\"" "$HOME"/.agent/sessions/*/sessions.jsonl 2>/dev/null |
-    tail -1 | jq -r '.title // ""' 2>/dev/null)"
+  title="$(session_titles <<<"$sid" | cut -f2)"
   t="$(ls "$HOME"/.claude*/projects/*/"$sid".jsonl 2>/dev/null | head -1)"
   if [ -n "$t" ] && command -v agent-panel >/dev/null 2>&1 &&
      said="$(agent-panel said "$t" --around "${ASK[id]:-}" 2>/dev/null)"; then
@@ -973,6 +985,7 @@ case "$sub" in
   card)   cmd_card "$@" ;;
   target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
+  titles) session_titles ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   recommend)    cmd_recommend "$@" ;;
