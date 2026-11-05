@@ -34,6 +34,10 @@ setup() {
   export BENCH_TOKENS_CMD=tokens-stub TOKLINE="$SANDBOX/tokline"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$TOKLINE" > "$SANDBOX/bin/tokens-stub"
   chmod +x "$SANDBOX/bin/tokens-stub"
+  # day-log week --line, canned the same way
+  export BENCH_WEEK_CMD=week-stub WEEKLINE="$SANDBOX/weekline"
+  printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$WEEKLINE" > "$SANDBOX/bin/week-stub"
+  chmod +x "$SANDBOX/bin/week-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -1627,9 +1631,22 @@ requests_setup() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- tokens: ? (`agent-usage tokens line` unreadable)'
+  assert_output --partial '- tokens: ? (`tokens-stub` unreadable)'
   echo 'tokens 2026-10-28: 3.3B context over 28,337 responses' > "$TOKLINE"
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- tokens 2026-10-28: 3.3B context over 28,337 responses'
+}
+
+@test "scorecard KPIs carry what moved this week, and say so when day-log has none" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- week: ? (`week-stub` unreadable)'
+  echo 'week to 2026-10-27 (7 of 7 days): 14 merged (+7)' > "$WEEKLINE"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- week to 2026-10-27 (7 of 7 days): 14 merged (+7)'
 }

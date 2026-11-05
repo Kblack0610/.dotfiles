@@ -82,6 +82,7 @@ set -uo pipefail
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
+: "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
@@ -650,7 +651,8 @@ cmd_scorecard() {
     forecast_section "$t"
     echo
     wakes_lines
-    tokens_line
+    report_line "$BENCH_TOKENS_CMD" tokens
+    report_line "$BENCH_WEEK_CMD" week
     echo
     bottleneck_section "$t"
     echo
@@ -1272,10 +1274,11 @@ wakes_lines() {
         else "median \(.all.median), p90 \(.all.p90) over \(.all.wakes) wakes" end)' <<<"$w"
 }
 
-# tokens_line: the newest nightly token-usage row, as written by agent-usage tokens snapshot.
-tokens_line() {
+# report_line <command> <label>: one scorecard row another tool writes (the nightly token-usage
+# row, the newest stored week from day-log).
+report_line() {
   local l
-  l=$($BENCH_TOKENS_CMD 2>/dev/null) && [ -n "$l" ] || l="tokens: ? (\`agent-usage tokens line\` unreadable)"
+  l=$($1 2>/dev/null) && [ -n "$l" ] || l="$2: ? (\`$1\` unreadable)"
   echo "- $l"
 }
 
