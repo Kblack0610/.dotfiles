@@ -78,6 +78,7 @@ require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next se
 [channel.pr-body]
 prose = true
 lead_ids = false
+source = { kind = "gh", query = "--author=@me" }
 
 # A client end-of-day update, drafted for the human to post. A job config may override.
 [channel.client-eod]

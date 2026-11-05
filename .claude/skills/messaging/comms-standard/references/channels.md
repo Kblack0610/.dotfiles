@@ -24,5 +24,6 @@ Source kinds:
 - `{kind = "ledger", path = ...}`: agent-notify's TSV ledger (time, priority, title, message). The report counts buzzes per day by sender from the title.
 - `{kind = "files", glob = ...}`: one message per file, dated by its mtime.
 - `{kind = "section", glob = ..., heading = ...}`: the named section of each file, such as the `## Morning` block of each daily note.
+- `{kind = "gh", query = ...}`: bodies of PRs merged in the window, from `gh search prs <query> --merged-at >=<day>`. A gh failure is one stderr line and an empty source, never a crash.
 
 `[ids] patterns` lists regexes for names meant for machines (watch tags, ask ids, `hub/<repo>:<n>`, `agent-<n>`, `<repo>#<n>`, paths, queue slugs). `[report]` sets which priorities buzz and the buzzes-per-day target.

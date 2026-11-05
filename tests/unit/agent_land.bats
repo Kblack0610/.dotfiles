@@ -27,6 +27,7 @@ case "$1 $2" in
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
+  *body*) cat "$NOTES_FIXTURE/body" ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
@@ -54,7 +55,16 @@ rev-parse) echo 0123456789abcdef ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 esac
 EOF
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
+  # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
+  printf 'The change and why.\n' >"$NOTES_FIXTURE/body"
+  cat >"$SANDBOX/bin/comms-lint" <<'EOF'
+#!/usr/bin/env bash
+printf 'comms-lint %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat >"$NOTES_FIXTURE/linted.txt"
+[ ! -f "$NOTES_FIXTURE/lint.out" ] || cat "$NOTES_FIXTURE/lint.out"
+exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
@@ -141,6 +151,7 @@ item() {
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
+body: passes comms-lint --channel pr-body
 board: closed "ship it" with pr:42
 plan: ticked "6. agent-land"
 landed #42
@@ -156,8 +167,39 @@ git rev-list --count HEAD..origin/main
 git rev-parse HEAD
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
+gh pr view 42 --json body -q .body
+comms-lint --channel pr-body -
 notes ptask dotfiles --agent done ship it --proof pr:42
 EOF
+}
+
+@test "a body with findings is scored after the merge and the landing still finishes" {
+  printf '  lead-too-long: 170 chars before the first sentence ends, budget 140\n\n1 finding(s) for channel pr-body.\n' >"$NOTES_FIXTURE/lint.out"
+  echo 1 >"$NOTES_FIXTURE/lint.rc"
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_success
+  assert_line 'body: 1 finding(s) for channel pr-body. First: lead-too-long: 170 chars before the first sentence ends, budget 140'
+  assert_line 'landed #42'
+  run cat "$NOTES_FIXTURE/linted.txt"
+  assert_output 'The change and why.'
+}
+
+@test "a body that cannot be scored says why and does not fail the landing" {
+  printf 'comms-lint: prose checker not found: nope.py (set COMMS_PROSE_CHECK)\n' >"$NOTES_FIXTURE/lint.out"
+  echo 2 >"$NOTES_FIXTURE/lint.rc"
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_success
+  assert_line 'body: not scored (comms-lint: prose checker not found: nope.py (set COMMS_PROSE_CHECK))'
+  assert_line 'landed #42'
+}
+
+@test "a failing check never reaches the body score (negative control)" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --project dotfiles --title "ship it"
+  assert_failure 1
+  run grep -c 'comms-lint' "$LOG"
+  assert_output 0
 }
 
 @test "a failing PR check stops before the second fetch and the merge, naming the check" {
@@ -219,8 +261,9 @@ EOF
   assert_line --index 0 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 1 --partial 'fetch: git fetch origin'
   assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 3 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 4 --partial 'plan: tick'
+  assert_line --index 3 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 4 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 5 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -240,8 +283,8 @@ EOF
   item tidy-loader
   run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 3 'item: tidy-loader done with pr:42'
-  assert_line --index 4 'landed #42'
+  assert_line --index 4 'item: tidy-loader done with pr:42'
+  assert_line --index 5 'landed #42'
   run grep -c '^notes' "$LOG"
   assert_output 0
   run agent-queue show tidy-loader --json
@@ -255,7 +298,7 @@ EOF
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 3 'item: by-hand done with pr:42'
+  assert_line --index 4 'item: by-hand done with pr:42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done 42'
 }
@@ -278,7 +321,7 @@ EOF
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42 --project ignored --title ignored
   assert_success
-  assert_line --index 4 'board: closed "fix crash: on load" with pr:42'
+  assert_line --index 5 'board: closed "fix crash: on load" with pr:42'
   run grep '^notes' "$LOG"
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42'
 }
@@ -287,8 +330,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 3 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
-  assert_line --index 4 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 4 'item: agent-queue set tidy pr=42 && agent-queue move tidy done --status ok'
+  assert_line --index 5 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -318,7 +361,7 @@ EOF
   run "$LAND" 42 --item fix
   assert_success
   assert_line --index 0 'merge: #42 already MERGED, recording it'
-  assert_line --index 2 'board: closed "fix it" with pr:42'
+  assert_line --index 3 'board: closed "fix it" with pr:42'
   run "$LAND" 43 --item fix
   assert_failure 2
   assert_output --partial 'queue item fix is done ok, not open'
