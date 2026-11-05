@@ -31,6 +31,8 @@ use crate::{board, day, fleet, fleettab, hometab};
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
 /// evaluate every 30-60s anyway.
 pub const PROM_REFRESH: Duration = Duration::from_secs(60);
+/// Under this many body lines the Projects rows keep the whole window and get no preview pane.
+const PREVIEW_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -1041,6 +1043,21 @@ impl App {
         ])
         .areas(f.area());
         f.render_widget(Paragraph::new(self.tab_bar()), bar);
+        // One project's rows get the selected row in full underneath, under a rule, in at
+        // most a third of the window; a short window keeps every line for the rows.
+        let preview = self.preview(body.width as usize);
+        let body = match preview {
+            Some(lines) if body.height >= PREVIEW_MIN_HEIGHT => {
+                let h = (lines.len() as u16 + 1).min(body.height / 3);
+                let [list, pane] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(h)]).areas(body);
+                let mut l = vec![Line::styled("-".repeat(pane.width as usize), self.p.dim())];
+                l.extend(lines);
+                f.render_widget(Paragraph::new(l), pane);
+                list
+            }
+            _ => body,
+        };
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Jobs {
             self.draw_jobs(f, body);
@@ -1156,6 +1173,17 @@ impl App {
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
+    }
+
+    /// The selected row in full, when one project's rows (or All) are open on Projects.
+    fn preview(&self, w: usize) -> Option<Vec<Line<'static>>> {
+        if self.tab != Tab::Projects || !self.pv.open {
+            return None;
+        }
+        let Some(Ok(f)) = &self.tasks else {
+            return None;
+        };
+        self.tv.selected(f).map(|r| tasktab::preview(r, self.p, w))
     }
 
     /// A page as lines (or what is being waited for), and where its sections start.
@@ -1682,6 +1710,15 @@ mod tests {
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
         assert!(s.lines().last().unwrap().contains("t/T tag"), "{s}");
+        // The selected row in full sits under the rows, above the keys.
+        assert!(
+            at_line(&s, "OPEN ROWS") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
+            "{s}"
+        );
+        assert!(
+            at_line(&s, "sheet  /v/bnb/demo/human.md:0") < s.lines().count() - 1,
+            "{s}"
+        );
 
         a.handle(key('q'));
         assert!(a.quit, "q quits with no prompt open");
@@ -1732,6 +1769,10 @@ mod tests {
             "the last row scrolled into view:\n{s}"
         );
         assert!(!s.contains("PROJECTS  2 projects"), "{s}");
+        assert!(
+            !s.contains("sheet  /v/"),
+            "a short window has no preview:\n{s}"
+        );
 
         // `hub tab projects garden` opens garden's rows.
         a.handle(Msg::Tab(Tab::Projects, Some("garden".into())));

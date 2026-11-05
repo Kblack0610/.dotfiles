@@ -14,7 +14,7 @@ use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
 /// What a key on the rows asks the app to do.
@@ -500,6 +500,79 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
     (out, at)
 }
 
+/// The selected row in full, for the pane under the rows: what the table clips or leaves out
+/// (its id, tags, worker, dates, marker and the sheet line a write lands on).
+pub fn preview(r: &Row, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut head = vec![
+        r.id.clone().unwrap_or_else(|| "no id".into()),
+        group(r),
+        r.lane.clone(),
+    ];
+    let version = if r.lane == "playtest" {
+        &r.game
+    } else {
+        &r.version
+    };
+    head.extend(version.iter().cloned());
+    head.push(r.state.clone());
+    head.push(r.priority.clone());
+    head.extend(r.size.iter().map(|s| format!("size/{s}")));
+    let mut out: Vec<Line<'static>> = wrap(&head, "  ", w)
+        .into_iter()
+        .map(|l| clip_line(Line::styled(l, p.head()), w))
+        .collect();
+    let words: Vec<&str> = r.text.split_whitespace().collect();
+    out.extend(
+        wrap(&words, " ", w)
+            .into_iter()
+            .map(|l| clip_line(Line::raw(l), w)),
+    );
+    // A label, then its items wrapped under one another.
+    let field = |k: &str, items: &[String], sep: &str| -> Vec<Line<'static>> {
+        wrap(items, sep, w.saturating_sub(7).max(1))
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let k = if i == 0 { k } else { "" };
+                clip_line(
+                    Line::from(vec![Span::styled(format!("{k:<7}"), p.dim()), Span::raw(v)]),
+                    w,
+                )
+            })
+            .collect()
+    };
+    if !r.tags.is_empty() || r.requested {
+        let mut t: Vec<String> = r.tags.iter().map(|t| format!("#{t}")).collect();
+        if r.requested && !r.tags.iter().any(|t| t == "requested") {
+            t.push("#requested".into());
+        }
+        out.extend(field("tags", &t, " "));
+    }
+    let mut when = vec![];
+    if let Some(wk) = &r.worker {
+        when.push(format!("worker {wk}"));
+    }
+    if let Some(d) = &r.since {
+        when.push(format!("since {d}"));
+    }
+    if let Some(d) = &r.filed {
+        when.push(format!("filed {d}"));
+    }
+    if let Some(m) = &r.marker {
+        when.push(m.clone());
+    }
+    if !when.is_empty() {
+        out.extend(field("about", &when, "  "));
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let sheet = match r.sheet.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => r.sheet.clone(),
+    };
+    out.extend(field("sheet", &[format!("{sheet}:{}", r.line)], ""));
+    out
+}
+
 fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
         let what = match (pr.kind, &pr.row) {
@@ -927,5 +1000,50 @@ pub(crate) mod tests {
         typed(&mut v, &f, "v0.2.0");
         assert_eq!(enter(&mut v, &f), Ask::Done, "a release is move's");
         assert!(matches!(&v.said, Some(Err(e)) if e.contains("release")));
+    }
+
+    #[test]
+    fn the_preview_shows_the_selected_row_whole_with_what_the_table_leaves_out() {
+        let mut f = fixture();
+        let r = &mut f.rows[1];
+        r.id = Some("bnb-7".into());
+        r.size = Some("m".into());
+        r.tags = vec!["p1".into(), "size/m".into()];
+        r.since = Some("2026-10-27".into());
+        r.marker = Some("carried:3 id:bnb-7".into());
+        r.line = 36;
+        r.text = "fix the menu so the back button returns to the map".into();
+        let l: Vec<String> = preview(&f.rows[1], Palette { no_color: true }, 30)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "bnb-7  bnb/demo  human  v0.1.0",
+                "open  urgent  size/m",
+                "fix the menu so the back",
+                "button returns to the map",
+                "tags   #p1 #size/m",
+                "about  since 2026-10-27",
+                "       carried:3 id:bnb-7",
+                "sheet  /v/bnb/demo/human.md:36",
+            ],
+            "nothing is clipped: every part wraps between words"
+        );
+
+        // A row with nothing extra: no tags or about line, and it says it has no id.
+        let l: Vec<String> = preview(&f.rows[0], Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "no id  personal/garden  human  v0.1.0  open  low",
+                "water the beds",
+                "sheet  /v/personal/garden/human.md:0"
+            ]
+        );
     }
 }
