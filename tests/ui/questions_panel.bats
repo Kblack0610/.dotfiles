@@ -57,6 +57,32 @@ keep_screen() { mkdir -p "$REPO_ROOT/tests/artifacts"; screen >"$REPO_ROOT/tests
   screen_has 'Make stacked the default?'
 }
 
+# close_panel: esc, and wait for the panel (the server's only pane) to exit.
+close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tmux_stop; }
+
+@test "the panel reopens in the layout ctrl-/ left it in, and hidden is never kept" {
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'screen_has "list on top, card below"'
+  tmux_keys C-/
+  wait_until 'screen_matches "Keep the merge queue\?.*│ Make stacked the default\?"'
+  close_panel
+  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = side ]
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'screen_matches "Keep the merge queue\?.*│ Make stacked the default\?"'
+  keep_screen reopened_side_200x50
+  # side -> stacked -> hidden: closed while hidden, it reopens stacked, the last one shown.
+  tmux_keys C-/
+  wait_until 'screen_has "list on top, card below" && ! screen_matches "Keep the merge queue\?.*│ Make stacked"'
+  tmux_keys C-/
+  wait_until 'screen_lacks "list on top, card below"'
+  close_panel
+  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = stacked ]
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'screen_has "list on top, card below"'
+  run screen_matches 'Keep the merge queue\?.*│ Make stacked the default\?'
+  assert_failure
+}
+
 @test "a number then enter answers in place: the row leaves and the count drops" {
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
