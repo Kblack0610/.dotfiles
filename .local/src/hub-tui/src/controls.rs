@@ -199,7 +199,7 @@ impl Controls {
                         dash(&s.account),
                         dash(&a.plan_slug),
                         cell(a.ask.clone().unwrap_or_default(), p.warn()),
-                        dash(s.item.as_deref().unwrap_or("")),
+                        dash(s.items.last().map_or("", String::as_str)),
                         a.summary.clone().into(),
                     ]
                 })
@@ -302,7 +302,7 @@ pub mod tests {
             ..Default::default()
         };
         let mut s = Session::from(&a);
-        s.item = Some("fix-the-thing".into());
+        s.items = vec!["fix-the-thing".into()];
         (a, s)
     }
 
