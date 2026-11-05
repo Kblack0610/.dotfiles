@@ -15,7 +15,15 @@ pub struct Tab {
     pub landed: bool,
 }
 
-pub const TABS: [Tab; 8] = [
+pub const TABS: [Tab; 9] = [
+    // The landing page: the outbox as a doc to write into, and what the sweep did with it.
+    Tab {
+        id: "outbox",
+        title: "Outbox",
+        question: "What am I handing off, and what happened to it?",
+        sections: &["doc", "handled"],
+        landed: true,
+    },
     Tab {
         id: "home",
         title: "Home",
@@ -57,7 +65,7 @@ pub const TABS: [Tab; 8] = [
         id: "focus",
         title: "Focus",
         question: "What is my day?",
-        sections: &["lanes", "rollup", "sections", "outbox"],
+        sections: &["lanes", "rollup", "sections"],
         landed: true,
     },
     Tab {
@@ -148,6 +156,8 @@ mod tests {
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
         assert_eq!(resolve("focus").map(|t| t.id), Some("focus"));
+        assert_eq!(resolve("Outbox").map(|t| t.id), Some("outbox"));
+        assert_eq!(TABS[0].id, "outbox", "the landing page leads");
         assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));

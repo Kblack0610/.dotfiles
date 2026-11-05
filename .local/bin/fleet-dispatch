@@ -94,18 +94,18 @@ logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "
 
 # --- facts ---------------------------------------------------------------------------
 
-# heads <profile> -> "<name>\t<stage>\t<prio>" per project, "-" for none: the stage and the
-# `#prio/` the human set (`notes projects --prio`), as notes reads them off the sheet. Read from the
-# CLI, never from the listing's path: for a bnb project that path is summary.md, not the sheet.
-heads() {
-  np "$1" projects --stats --json 2>/dev/null | jq -r --arg p "$1" '.[] | select($p == "" or .profile == $p)
-    | [.name, ((.stage // "") | if . == "" then "-" else . end), ((.prio // "") | if . == "" then "-" else . end)] | @tsv'
-}
-
-# The one ladder (`notes projects --stages`), read once for lab_stage_at_least.
+# stage_of <listed path> -> the project's stage, read by the shared head-tag reader against the one
+# ladder (`notes projects --stages`), never a private copy of either. The path is the one
+# `notes projects` lists, which is summary.md where the profile's index links the summary (bnb);
+# the tags live on the front page (`lab_front_page`, notes' `front_page`), so read that.
 # shellcheck source=../lib/lab-feed.sh
 . "${LAB_FEED_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/lab-feed.sh}"
 LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
+stage_of() {
+  [ -n "$LAB_STAGES" ] || { say "notes projects --stages printed nothing: no project stage can be read"; return 1; }
+  # shellcheck disable=SC2086 # the ladder is a word list on purpose
+  lab_head_tag "$(lab_front_page "$(dirname "$1")")" $LAB_STAGES
+}
 
 # dispatchable <stage>: agents build from dev on; a draft is still a concept, and no stage is
 # a question for the human, so neither gets a session.
@@ -118,6 +118,12 @@ prio_rank() {
     *'#low'*) echo 3 ;;
     *) echo 2 ;;
   esac
+}
+
+# prio_of <listed path> -> focus|high|low from the `#prio/<word>` the human set in the front page's
+# head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
+prio_of() {
+  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,

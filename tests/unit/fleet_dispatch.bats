@@ -105,12 +105,14 @@ EOF
   chmod +x "$SANDBOX/bin/notes"
 }
 
-# project <name> <stage> <repo-dir|-> : a sheet, a registry entry, and a projects line. The line
-# names a summary with no Version: line, as bnb's do, so nothing may read the tags off that path.
+# project <name> <stage> <repo-dir|-> : a project dir, a registry entry, and a projects line. The
+# stage sits on README.md while the listing names summary.md, the shape `notes projects` prints for
+# a profile whose index links the summary (bnb): the reader must find the front page itself.
 project() {
-  printf 'Version: v1.0.0 #%s\n' "$2" > "$SANDBOX/sheets/$1.md"
-  printf '# %s\n' "$1" > "$SANDBOX/sheets/$1.summary.md"
-  printf '%s\t%s\t\tv1.0.0\n' "$1" "$SANDBOX/sheets/$1.summary.md" >> "$NOTES_FIXTURE/projects"
+  mkdir -p "$SANDBOX/sheets/$1"
+  printf 'Version: v1.0.0 #%s\n' "$2" > "$SANDBOX/sheets/$1/README.md"
+  printf '# %s\n' "$1" > "$SANDBOX/sheets/$1/summary.md"
+  printf '%s\t%s\t\tv1.0.0\n' "$1" "$SANDBOX/sheets/$1/summary.md" >> "$NOTES_FIXTURE/projects"
   local m='{"trackers":{},"paths":{}}'; [ -f "$DISPATCH_PROJECT_MAP" ] && m=$(cat "$DISPATCH_PROJECT_MAP")
   if [ "$3" = - ]; then
     jq --arg p "$1" '.trackers[$p] = {repo: null}' <<<"$m" > "$DISPATCH_PROJECT_MAP"
@@ -434,8 +436,9 @@ man   unjudged  app app row  [#high, alpha]"
 @test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
-  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game.md"
+  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game/README.md"
   project app alpha "$SANDBOX/repos/app"
+  printf '## Inbox\n- [ ] a row that says #prio/high is not the head\n' >> "$SANDBOX/sheets/app/README.md"
   row app agent 'app urgent' "- [ ] app urgent #urgent $T"
   row app agent 'app due' "- [ ] app due #due1105 $T"
   row game agent 'game low' "- [ ] game low #low $T #c1101"

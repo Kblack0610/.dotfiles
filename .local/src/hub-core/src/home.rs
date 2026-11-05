@@ -227,6 +227,11 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         h.errors
             .push("no fleet state yet (fleet-state.timer writes it every minute)".into());
     }
+    let unread = state["unreadable"].as_array().into_iter().flatten();
+    if unread.filter_map(Value::as_str).any(|u| u == "agent-ask") {
+        h.errors
+            .push("agent-ask could not be read, so no asks are shown".into());
+    }
     for a in state["asks"].as_array().into_iter().flatten() {
         let session = str_of(a, "session");
         if !session.is_empty() {
@@ -460,6 +465,17 @@ mod tests {
         assert_eq!((p.done, p.total), (2, 4));
         assert_eq!(h.numbers[0].value, "1 running, 0 up next");
         assert_eq!(h.errors, ["Prometheus: reading"]);
+    }
+
+    #[test]
+    fn an_unreadable_agent_ask_is_said_not_shown_as_no_asks() {
+        let mut st = state();
+        st["asks"] = json!([]);
+        st["unreadable"] = json!(["agent-ask"]);
+        let h = build(&st, None, None);
+        assert!(h.errors.iter().any(|e| e.contains("agent-ask")));
+        let ok = build(&state(), None, None);
+        assert!(!ok.errors.iter().any(|e| e.contains("agent-ask")));
     }
 
     #[test]
