@@ -6,8 +6,10 @@
 pub mod actions;
 pub mod boards;
 pub mod fleet;
+pub mod home;
 pub mod infra;
 pub mod jobs;
+pub mod layout;
 pub mod prom;
 pub mod queue;
 pub mod session_actions;

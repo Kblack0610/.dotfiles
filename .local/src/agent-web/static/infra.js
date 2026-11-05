@@ -1,5 +1,5 @@
 "use strict";
-// The Infra tab: the hub board's Overview (`hub`, Prefix i) for the browser. /api/infra
+// The Infra tab: the hub board's infra pages (`hub` Home's lower half, CI, Machines) for the browser. /api/infra
 // asks Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
@@ -146,7 +146,7 @@ const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
 const whereCell = (m) => (m.cloud ? "cloud" : "local");
 const cpuTitle = (m) => m.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
 
-// The Overview's rollup, shaped like the Pools table: one row per machine that carries CI,
+// The hub Home's machine rollup, shaped like the Pools table: one row per machine that carries CI,
 // the busiest first.
 function machineSlotsTable(cc, inst) {
   const rows = machineSlots(cc, inst).filter((m) => m.slots || m.busy || m.pools.length).sort((a, b) => b.busy - a.busy || a.host.localeCompare(b.host));

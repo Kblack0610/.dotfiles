@@ -194,7 +194,7 @@
         "tooltip": true
     },
     // System health: a pulse and one dot per system, worst first; the hover says what is down
-    // and what is up (health.sh). Click opens the hub board on Overview.
+    // and what is up (health.sh). Click opens the hub board on Home.
     "custom/health": {
         "format": "{}",
         "return-type": "json",
@@ -202,7 +202,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/health $HOME/.config/waybar/health.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab overview",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab home",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
@@ -219,7 +219,7 @@
         "tooltip": true
     },
     // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
-    // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
+    // what is red now (day.sh). Click opens the hub board on Today, right-click on Home.
     "custom/day": {
         "format": "{}",
         "return-type": "json",
