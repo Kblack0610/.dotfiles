@@ -139,7 +139,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         Err(e) => r.add(Status::Warn, "zettel scan", &e.to_string()),
     }
 
-    // 7. Version pairing: a frozen version and its ai/ evidence note travel together
+    // 7. Version pairing: an agent note belongs to a version that was frozen or is open
     let pairing = projects::pairing_findings(p);
     if pairing.is_empty() {
         r.add(Status::Pass, "version pairing", "every frozen version matches its agent note");

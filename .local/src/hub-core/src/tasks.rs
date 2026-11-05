@@ -79,7 +79,8 @@ pub enum Verb {
         proof: Option<String>,
         unverified: Option<String>,
     },
-    /// Toggles `[ ]` and `[/]`. Not on the playtest lane.
+    /// Queues the row: `fleet-dispatch promote` starts it and adds its queue item, the same
+    /// path a fill takes. An open row only, and not on the playtest lane.
     Start { raw: String },
     /// Closes the row undelivered and keeps it: exactly one of `why` and `dup` (the id of the
     /// row it duplicates); `notes` refuses a drop with no reason.
@@ -133,8 +134,12 @@ fn with_priority(text: &str, priority: &str) -> String {
     }
 }
 
+fn is_row(s: &str) -> bool {
+    one_line(s) && s.starts_with("- [")
+}
+
 /// The argv for one write, or why it is refused. Every free-text value goes after `--`, so a
-/// row's `- [ ]` and a text starting with `-` stay values.
+/// row's `- [ ]` and a text starting with `-` stay values; Start's is the value of `--raw`.
 pub fn argv(w: &Write) -> Result<Vec<String>, String> {
     if !is_name(&w.profile) || !is_name(&w.project) {
         return Err("pick a project".into());
@@ -202,8 +207,25 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             if playtest {
                 return Err("a playtest check has no in-progress state".into());
             }
-            a.extend(["--exact".into(), "start".into()]);
-            raw.clone()
+            if !is_row(raw) {
+                return Err("that is not a row's line".into());
+            }
+            let mut a: Vec<String> = [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                &w.project,
+                "--profile",
+                &w.profile,
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+            if w.lane == "agent" {
+                a.push("--agent".into());
+            }
+            a.extend(["--raw".into(), raw.clone()]);
+            return Ok(a);
         }
         Verb::Drop { raw, why, dup } => {
             let why = why.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -217,15 +239,14 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             raw.clone()
         }
     };
-    let is_row = one_line(&tail) && tail.starts_with("- [");
-    if !matches!(w.verb, Verb::Add { .. }) && !is_row {
+    if !matches!(w.verb, Verb::Add { .. }) && !is_row(&tail) {
         return Err("that is not a row's line".into());
     }
     a.extend(["--".into(), tail]);
     Ok(a)
 }
 
-/// Run one write: `notes`' output, or its stderr (a stale row says nothing matched).
+/// Run one write: its output, or its stderr (a stale row says nothing matched).
 pub fn apply(runner: &dyn Runner, w: &Write) -> Result<String, String> {
     runner.run(&argv(w)?)
 }
@@ -368,6 +389,28 @@ mod tests {
         );
     }
 
+    // Start is the queue's door, not a checkbox: a row started here gets an item, as a fill's does.
+    #[test]
+    fn start_goes_through_fleet_dispatch_promote() {
+        assert_eq!(
+            argv(&w("agent", Verb::Start { raw: RAW.into() })).unwrap(),
+            [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                "demo",
+                "--profile",
+                "bnb",
+                "--agent",
+                "--raw",
+                RAW
+            ]
+        );
+        assert!(!argv(&w("human", Verb::Start { raw: RAW.into() }))
+            .unwrap()
+            .contains(&"--agent".to_string()));
+    }
+
     #[test]
     fn writes_refuse_what_notes_would_misread() {
         let gone = |raw: &str| Verb::Drop {
@@ -383,6 +426,12 @@ mod tests {
             w("human", gone("not a row")),
             w("human", gone("- [ ] two\n- [ ] lines")),
             w("playtest", Verb::Start { raw: RAW.into() }),
+            w(
+                "human",
+                Verb::Start {
+                    raw: "not a row".into(),
+                },
+            ),
             w("human", add("x", "normal", None, None)),
             w("human", add("  ", "high", None, None)),
             w("human", add("x", "high", Some("next"), None)),

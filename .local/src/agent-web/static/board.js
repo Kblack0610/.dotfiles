@@ -208,7 +208,7 @@ $("board").addEventListener("click", (e) => {
   const r = rows[at];
   if (!r) return;
   const k = bKey(r);
-  if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Started."); return; }
+  if (t.dataset.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
   if (t.dataset.done || t.dataset.drop) {
     bst.closeFor = { k, verb: t.dataset.done ? "done" : "drop" };
     drawBoardList();

@@ -737,17 +737,10 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
-    let marker = stamp.clone();
-    let (code, matched) = edit(p, log, name, pick, "done", lane, move |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &marker))
-    })?;
-    let Some(matched) = matched.filter(|_| code == 0) else {
-        return Ok(code);
-    };
-    // The task as the SHEET has it, not as the query spelled it — the row has to be
-    // recognisable next to the checkbox it vouches for.
-    record_proof(p, name, &md::task_key(&matched), &stamp)?;
-    Ok(0)
+    Ok(edit(p, log, name, pick, "done", lane, |l| {
+        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+    })?
+    .0)
 }
 
 /// The marker text a `done` will stamp, or the error explaining that it needs one.
@@ -765,30 +758,6 @@ pub(crate) fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Resu
              --unverified \"<why>\"     no checkable artifact, and this says so out loud"
         ),
     }
-}
-
-/// Append the proof row for the task just closed to the current version's agent note.
-///
-/// Best-effort by design: the checkbox is already written by the time this runs, and a
-/// vault that cannot take the note must not make `done` look like it failed. It says so
-/// on stderr instead.
-fn record_proof(p: &Profile, name: &str, query: &str, stamp: &str) -> Result<()> {
-    let Ok(dir) = projects::project_dir(p, name) else {
-        return Ok(());
-    };
-    let Some(sheet) = task_sheet(&dir) else {
-        return Ok(());
-    };
-    let Ok(content) = fs::read_to_string(&sheet) else {
-        return Ok(());
-    };
-    let ver = projects::wave_version_of(&content);
-    let when = chrono::Local::now().format("%Y-%m-%d").to_string();
-    match projects::append_proof(&dir, name, &ver, query.trim(), stamp, &when) {
-        Ok(path) => println!("  proof -> {}", path.display()),
-        Err(e) => eprintln!("(proof row not written: {e})"),
-    }
-    Ok(())
 }
 
 /// `notes ptask <name> drop --why "<why>" | --dup <id> <query>` - close the first matching open
@@ -879,18 +848,39 @@ pub fn retext(
     .0)
 }
 
-/// `notes ptask <name> start <query>` — toggle the first matching wave task between todo
+/// `notes ptask <name> start <query>` - toggle the first matching wave task between todo
 /// (`[ ]`) and in-progress (`[/]`).
+///
+/// A row going to `[/]` with no id gets one, as [`add`] would have given it: a started row has
+/// a queue item, and the item joins its row by that id, which survives a retext. The new id
+/// goes on its own `  id:<id>` line after the usual output, so `fleet-dispatch` can read it.
 pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
-    Ok(edit(p, log, name, pick, "toggled", lane, |l| {
-        let mark = if l.trim_start().starts_with("- [/]") {
-            ' '
-        } else {
-            '/'
-        };
-        Some(md::set_checkbox(l, mark))
-    })?
-    .0)
+    let dir = projects::project_dir(p, name)?;
+    let id = crate::registry::Registry::load()
+        .and_then(|r| r.code(name))
+        .map(|code| next_id(&dir, &code));
+    let (code, matched) = edit(p, log, name, pick, "toggled", lane, |l| {
+        Some(toggle_started(l, id.as_deref()))
+    })?;
+    if let (Some(line), Some(id)) = (matched, id) {
+        if toggle_started(&line, Some(&id)).contains(&format!("id:{id}")) {
+            println!("  id:{id}");
+        }
+    }
+    Ok(code)
+}
+
+/// One row through `start`: `[/]` goes back to `[ ]` as it is; anything else goes to `[/]`,
+/// stamped with `id` when it carries none.
+fn toggle_started(line: &str, id: Option<&str>) -> String {
+    if line.trim_start().starts_with("- [/]") {
+        return md::set_checkbox(line, ' ');
+    }
+    let started = md::set_checkbox(line, '/');
+    match id.filter(|_| md::row_id(line).is_none()) {
+        Some(id) => md::add_marker(&started, &format!("id:{id}")),
+        None => started,
+    }
 }
 
 /// `notes ptask <name> sweep [--dry-run]` - reorganize the sheet's wave roadmap.
@@ -1593,17 +1583,34 @@ Version: v1.2.0
     #[test]
     fn start_toggles_todo_and_in_progress() {
         let h = current_wave(SHEET).unwrap();
-        let toggle = |l: &str| -> Option<String> {
-            let mark = if l.trim_start().starts_with("- [/]") {
-                ' '
-            } else {
-                '/'
-            };
-            Some(md::set_checkbox(l, mark))
-        };
-        let (out, _) =
-            md::edit_first_in_section(SHEET, &h, |l| is_match(l, "first"), toggle).unwrap();
+        let (out, _) = md::edit_first_in_section(
+            SHEET,
+            &h,
+            |l| is_match(l, "first"),
+            |l| Some(toggle_started(l, None)),
+        )
+        .unwrap();
         assert!(out.contains("- [/] first task"));
+    }
+
+    // The join between a queue item and its row: the first start gives the row its id, and
+    // neither a second start nor a row that already has one mints another.
+    #[test]
+    fn a_row_going_to_started_gets_its_id_once() {
+        let line = toggle_started("- [ ] fix(a): thing #high", Some("ar-7"));
+        assert_eq!(line, "- [/] fix(a): thing #high <!-- id:ar-7 -->");
+        let back = toggle_started(&line, Some("ar-8"));
+        assert_eq!(back, "- [ ] fix(a): thing #high <!-- id:ar-7 -->");
+        assert_eq!(
+            toggle_started(&back, Some("ar-8")),
+            "- [/] fix(a): thing #high <!-- id:ar-7 -->"
+        );
+        assert_eq!(
+            toggle_started("- [ ] a <!-- carried:1 -->", Some("ar-9")),
+            "- [/] a <!-- carried:1 id:ar-9 -->"
+        );
+        // No code, no id: the row still starts, and the caller decides what that means.
+        assert_eq!(toggle_started("- [ ] a", None), "- [/] a");
     }
 
     const BOARD: &str = "\
@@ -1640,7 +1647,7 @@ Version: v0.0.1
 
     #[test]
     fn done_rows_join_the_end_of_their_section() {
-        let note = "# n\n\n## Proof\n| a | b | c |\n\n## Notes\n";
+        let note = "# n\n\n## Notes\n";
         let once = append_done_rows(note, &["- [x] one".to_string()]);
         assert!(
             once.ends_with("## Notes\n\n## Done rows\n- [x] one\n"),
@@ -1692,7 +1699,6 @@ Version: v0.0.1
             "# demo - agent board\nVersion: v0.0.1\n\n## Wave: v0.0.1 (current)\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
-        assert!(note.contains("## Proof"), "{note}");
         assert!(
             note.ends_with("## Done rows\n- [x] shipped row #high <!-- pr:12 -->\n  - with a note under it\n- [x] second shipped row\n"),
             "{note}"

@@ -2092,44 +2092,6 @@ pub fn roll(
     Ok(())
 }
 
-/// The proof text for a backfilled row: whatever the task's own marker comment recorded.
-///
-/// A task with no marker gets an explicit `unverified:` string rather than an empty cell,
-/// so a backfilled row can never be mistaken for evidence that was actually captured.
-fn backfilled_proof(line: &str) -> String {
-    let trimmed = line.trim_end();
-    match (trimmed.rfind("<!--"), trimmed.ends_with("-->")) {
-        (Some(i), true) => {
-            let inner = trimmed[i + 4..trimmed.len() - 3].trim();
-            if inner.is_empty() {
-                "unverified: pre-dates the proof gate".to_string()
-            } else {
-                inner.to_string()
-            }
-        }
-        _ => "unverified: pre-dates the proof gate".to_string(),
-    }
-}
-
-/// The date a frozen version was rolled (`<!-- rolled: EPOCH -->`), as `YYYY-MM-DD`.
-/// `"-"` when the note carries no stamp, which every pre-consolidation note predates.
-fn rolled_on(content: &str) -> String {
-    content
-        .lines()
-        .rev()
-        .find_map(|l| {
-            let t = l.trim();
-            let inner = t.strip_prefix("<!--")?.strip_suffix("-->")?.trim();
-            let secs: i64 = inner.strip_prefix("rolled:")?.trim().parse().ok()?;
-            chrono::DateTime::from_timestamp(secs, 0).map(|d| {
-                d.with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d")
-                    .to_string()
-            })
-        })
-        .unwrap_or_else(|| "-".to_string())
-}
-
 /// `notes projects --migrate <name>` - consolidate a project onto the one version layout.
 ///
 /// Idempotent, so it is safe to re-run and safe on a project already consolidated:
@@ -2140,13 +2102,8 @@ fn rolled_on(content: &str) -> String {
 /// 2. `changelog/<ver>.md` moves to `versions/<ver>.md`, never overwriting one that
 ///    already exists - two records of the same version is the ambiguity being removed,
 ///    so a collision is an error rather than a silent pick.
-/// 3. Every `versions/<ver>.md` holding completed `#ai` tasks gains its
-///    `agent/versions/<ver>.md`, backfilled from each task's own marker comment.
-/// 4. An emptied `changelog/` or `ai/` is removed.
+/// 3. An emptied `changelog/` or `ai/` is removed.
 ///
-/// Step 1 runs BEFORE step 3 on purpose: the backfill skips a version whose agent note
-/// already exists, so relocating second would write a second copy of every note it had
-/// just orphaned.
 /// Strip the retired `#ai` tag from one sheet. Returns `(new_content, rows_touched)`.
 ///
 /// Rows do NOT move. The tag stopped routing when the lane became a file, so every row is
@@ -2361,47 +2318,8 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
             fs::remove_dir(&changelog)?;
         }
     }
-    // Before the backfill below, so a folded note gets its agent note too.
     let (folded, left) = fold_loose_versions(&dir)?;
     moved += folded;
-
-    let mut backfilled = 0usize;
-    let mut notes: Vec<PathBuf> = fs::read_dir(&versions)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
-        .collect();
-    notes.sort();
-    for note in notes {
-        let Some(ver) = note.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if parse_version(ver).is_none() || agent_note_path(&dir, ver).exists() {
-            continue;
-        }
-        let content = fs::read_to_string(&note)?;
-        let when = rolled_on(&content);
-        let done: Vec<&str> = content
-            .lines()
-            .filter(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
-            .collect();
-        if done.is_empty() {
-            continue;
-        }
-        for line in done {
-            append_proof(
-                &dir,
-                name,
-                ver,
-                &md::task_key(line),
-                &backfilled_proof(line),
-                &when,
-            )?;
-        }
-        backfilled += 1;
-    }
 
     let prs = crate::playtest::fold_inline_prs(&dir)?;
     let board = align_agent_board(&dir, name)?;
@@ -2409,7 +2327,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     log.info(
         "projects",
         &format!(
-            "migrated {name}: relocated {relocated}, moved {moved}, backfilled {backfilled}, \
+            "migrated {name}: relocated {relocated}, moved {moved}, \
              playtest prs {prs}"
         ),
     );
@@ -2417,7 +2335,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         log.info("projects", &format!("migrated {name}: {b}"));
         println!("{name}: {b}");
     }
-    if relocated == 0 && moved == 0 && backfilled == 0 && prs == 0 && board.is_none() {
+    if relocated == 0 && moved == 0 && prs == 0 && board.is_none() {
         if left.is_empty() {
             println!("{name}: already consolidated - nothing to do");
         } else {
@@ -2426,7 +2344,7 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     } else {
         println!(
             "migrated {name}: {relocated} ai/ note(s) -> agent/versions/, \
-             {moved} note(s) -> versions/, {backfilled} agent note(s) backfilled, \
+             {moved} note(s) -> versions/, \
              {prs} playtest row(s) -> <!-- pr:N -->"
         );
     }
@@ -2658,17 +2576,6 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                     continue;
                 }
                 frozen.push(ver.to_string());
-                let has_agent_work = fs::read_to_string(&path)
-                    .map(|c| {
-                        c.lines()
-                            .any(|l| md::is_checked(l) && md::has_legacy_ai_tag(l))
-                    })
-                    .unwrap_or(false);
-                if has_agent_work && !agent_note_path(dir, ver).exists() {
-                    out.push(format!(
-                        "{name} {ver}: agent work frozen with no agent/ note"
-                    ));
-                }
             }
         }
 
@@ -2926,7 +2833,7 @@ pub(crate) fn agent_note_path(dir: &Path, ver: &str) -> PathBuf {
     agent_dir(dir).join("versions").join(format!("{ver}.md"))
 }
 
-/// The agent note for `ver`, created (with its `## Proof` table and `## Notes` log) if absent.
+/// The agent note for `ver`, created (with its `## Notes` log) if absent.
 pub(crate) fn ensure_agent_note(dir: &Path, project: &str, ver: &str) -> Result<PathBuf> {
     let path = agent_note_path(dir, ver);
     if path.exists() {
@@ -2939,58 +2846,13 @@ pub(crate) fn ensure_agent_note(dir: &Path, project: &str, ver: &str) -> Result<
         &path,
         format!(
             "# {project} {ver} - agent notes\n\n\
-             What the agents did for this version and the evidence behind it. The human's \
-             task list is the sheet (`README.md`); this is the proof and the working log \
-             underneath it. Rows are appended by `notes ptask <project> done`.\n\n\
-             ## Proof\n\
-             | task | proof | when |\n\
-             |---|---|---|\n\n\
+             What the agents did for this version. The human's task list is the sheet \
+             (`README.md`), and each closed row carries its own proof; this is the working \
+             log underneath it.\n\n\
              ## Notes\n"
         ),
     )?;
     Ok(path)
-}
-
-/// Append a row to an agent note's `## Proof` table.
-///
-/// Inserted after the LAST existing row rather than under the heading, so the table reads
-/// oldest-first and a new row can never land between the header and its `|---|` separator
-/// (which is what `md::insert_under_heading` would do — it inserts at the top of a section).
-pub(crate) fn append_proof(
-    dir: &Path,
-    project: &str,
-    ver: &str,
-    task: &str,
-    proof: &str,
-    when: &str,
-) -> Result<PathBuf> {
-    let path = ensure_agent_note(dir, project, ver)?;
-    let content = fs::read_to_string(&path)?;
-    let lines: Vec<&str> = content.lines().collect();
-    let row = format!("| {} | {} | {when} |", cell(task), cell(proof));
-
-    let Some(span) = md::section_span(&lines, "Proof") else {
-        // No `## Proof` section (a hand-edited note): append one rather than lose the row.
-        let mut out = content.trim_end().to_string();
-        out.push_str(&format!(
-            "\n\n## Proof\n| task | proof | when |\n|---|---|---|\n{row}\n"
-        ));
-        md::write_atomic(&path, &out)?;
-        return Ok(path);
-    };
-    let at = lines[span.clone()]
-        .iter()
-        .rposition(|l| l.trim_start().starts_with('|'))
-        .map_or(span.end, |i| span.start + i + 1);
-    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
-    out.insert(at, row);
-    md::write_atomic(&path, &format!("{}\n", out.join("\n")))?;
-    Ok(path)
-}
-
-/// Make a string safe inside a markdown table cell.
-fn cell(s: &str) -> String {
-    s.replace('|', "\\|").trim().to_string()
 }
 
 /// `notes projects --agent-note <name> [--version vX.Y.Z]` - print the path to a version's
@@ -3470,61 +3332,6 @@ Version: v1.13.0
         .unwrap();
         assert!(version_had_agent_work("- [x] a human row\n", &d));
         let _ = fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn backfilled_proof_never_passes_itself_off_as_evidence() {
-        assert_eq!(backfilled_proof("- [x] a #ai <!-- pr:1149 -->"), "pr:1149");
-        assert_eq!(
-            backfilled_proof("- [x] a #ai <!-- vk:634 pr:1159 -->"),
-            "vk:634 pr:1159"
-        );
-        // No marker, and an empty one, are both stated as unverified rather than blank.
-        assert!(backfilled_proof("- [x] a #ai").starts_with("unverified:"));
-        assert!(backfilled_proof("- [x] a #ai <!--  -->").starts_with("unverified:"));
-    }
-
-    #[test]
-    fn a_frozen_notes_date_comes_from_its_roll_stamp() {
-        // 2026-08-11T00:00:00Z. Asserted on the year alone: the stamp is rendered in local
-        // time, so the day can legitimately differ by one from the UTC date.
-        assert!(rolled_on("body\n<!-- rolled: 1786492800 -->\n").starts_with("2026-"));
-        // A note frozen before the stamp existed has no date to claim.
-        assert_eq!(rolled_on("body with no stamp\n"), "-");
-    }
-
-    #[test]
-    fn proof_rows_append_in_order_under_the_table_header() {
-        let dir = std::env::temp_dir().join(format!("proj-proof-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-
-        append_proof(&dir, "demo", "v1.13.0", "first task", "pr:1", "2026-08-11").unwrap();
-        let path = append_proof(
-            &dir,
-            "demo",
-            "v1.13.0",
-            "second | task",
-            "pr:2",
-            "2026-08-11",
-        )
-        .unwrap();
-        let body = fs::read_to_string(&path).unwrap();
-
-        // `|---|` is the separator and does not match `"| "`, so: header + two rows.
-        let rows: Vec<&str> = body.lines().filter(|l| l.starts_with("| ")).collect();
-        assert_eq!(rows.len(), 3, "header + two rows:\n{body}");
-        assert!(rows[1].contains("first task"), "oldest first:\n{body}");
-        assert!(
-            rows[2].contains("second \\| task"),
-            "pipes escaped:\n{body}"
-        );
-        assert!(
-            body.contains("## Notes"),
-            "the log section survives:\n{body}"
-        );
-        assert_eq!(path, agent_note_path(&dir, "v1.13.0"));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A scratch project dir, unique per test and per thread.
