@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # Tier 3: a world server dies and one verb brings its conversations back, against a real server.
 #
-# The stub tier pins the decisions; this pins what only tmux and real processes can answer: the
-# pane to conversation map through a real process tree, a server killed by a signal leaving a stale
+# The stub tier pins the decisions; this pins what only tmux and real processes can answer: real
+# pane ids joined to their conversations, a server killed by a signal leaving a stale
 # socket, and windows reopened under the same session and name by the real tmx ensure. `claude` is
-# a fake that registers itself in the shared registry the way Claude does.
+# a fake that registers itself in the shared registry the way Claude does. agent-panel is Rust, not
+# in this image: its stub answers from what each fake claude wrote about its own pane.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -28,19 +29,21 @@ setup() {
   ln -sf "$REPO_ROOT/.local/src/tmux/servers.sh" "$SANDBOX/bin/tmx"
   printf '#!/usr/bin/env bash\necho "agent-notify $*" >> "$HOME/pages"\n' > "$SANDBOX/bin/agent-notify"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/claude-acct"
+  printf '#!/usr/bin/env bash\ncat "$HOME"/panel.* 2>/dev/null\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   cat > "$SANDBOX/bin/claude" <<'FAKE'
 #!/usr/bin/env bash
 sid=fresh args="$*"
 while [ $# -gt 0 ]; do [ "$1" = --resume ] && sid="$2"; shift; done
 reg="$HOME/.claude/sessions/$$.json"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","kind":"interactive"}\n' "$$" "$sid" "$PWD" > "$reg"
+srv=${TMUX##*/}
+printf '{"pane":"%s/%s","session_id":"%s","cwd":"%s"}\n' "${srv%%,*}" "$TMUX_PANE" "$sid" "$PWD" > "$HOME/panel.$sid"
 echo "$args" > "$HOME/argv.$sid"
 read -r _
 FAKE
-  chmod +x "$SANDBOX/bin/agent-notify" "$SANDBOX/bin/claude-acct" "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/agent-notify" "$SANDBOX/bin/claude-acct" "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/claude"
 
   "$SANDBOX/bin/tmx" ensure "$SRV" >/dev/null
-  # Under a shell, as a pane started by hand is: the id is found by walking up to the pane.
   conversation plan "$MDIR/plan" conv-plan
   conversation work "$MDIR/work" conv-work
   conversation closed "$MDIR/work" conv-closed

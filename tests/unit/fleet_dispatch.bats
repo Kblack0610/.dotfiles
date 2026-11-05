@@ -1661,9 +1661,10 @@ queued_item() {
 
 @test "start --resume --window opens a window of a live session, keeps a plan mode, and leaves its label alone" {
   project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
-    --window crash --permission-mode plan --cwd "$SANDBOX/repos/game" --resume abc-123
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
   assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
   assert_not_called 'new-session'
@@ -1694,24 +1695,37 @@ record_setup() {
     *list-panes*) cat "$NOTES_FIXTURE/world.panes" ;;
   esac'
   stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
-  stub ps 'printf "500 400\n400 300\n300 1\n"'   # claude 500, under a shell 400, in pane 300
-  printf '{"pid":500,"sessionId":"conv-1","cwd":"/work/tree","kind":"interactive"}' > "$HOME/.claude/sessions/500.json"
-  PANE1=$'300\037dotfiles\037crash\037/shell/dir' PANE2=$'301\037dotfiles\037zsh\037/plain/dir'
+  stub agent-panel 'cat "$NOTES_FIXTURE/panel.json"'
+  echo '{"pane":"hub/%1","session_id":"conv-1","cwd":"/work/tree"}' > "$NOTES_FIXTURE/panel.json"
+  PANE1=$'%1\037dotfiles\037crash\037/shell/dir' PANE2=$'%2\037dotfiles\037zsh\037/plain/dir'
   RECORD="$FLEET_DISPATCH_DIR/panes/hub.json" LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
 }
 
 @test "record keeps each pane's session, window and cwd, with the conversation found under the pane" {
   record_setup
   world '10 1000' "$PANE1" "$PANE2"
-  printf '{"pid":' > "$HOME/.claude/sessions/half-written.json"
-  printf '{"pid":999,"sessionId":"dead","cwd":"/gone"}' > "$HOME/.claude/sessions/999.json"
-  printf '{"pid":400,"sessionId":"bg","cwd":"/x","kind":"background"}' > "$HOME/.claude/sessions/400.json"
+  echo '{"pane":"lab/%2","session_id":"another-world","cwd":"/x"}' >> "$NOTES_FIXTURE/panel.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_equal "$(jq -c '[.server, .instance]' "$RECORD")" '["hub","10 1000"]'
   assert_equal "$(jq -c '.panes[0]' "$RECORD")" '{"session":"dotfiles","window":"crash","cwd":"/work/tree","claude":"conv-1"}'
   assert_equal "$(jq -c '.panes[1]' "$RECORD")" '{"session":"dotfiles","window":"zsh","cwd":"/plain/dir","claude":""}'
   assert_not_called 'agent-notify'
+}
+
+@test "record keeps the last record when agent-panel fails, and still sees a server die" {
+  record_setup
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  stub agent-panel 'exit 1'
+  world '10 1000' "$PANE2"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_output --partial 'agent-panel failed'
+  assert_equal "$(jq -r '.panes[0].claude' "$RECORD")" conv-1
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
+  assert_called 'tmux hub server died 1 conversation(s)'
+  [ -f "$LOST" ] || fail "record not kept as lost"
 }
 
 @test "record pages once when a server dies and keeps its last record for restore" {
@@ -1762,6 +1776,7 @@ restore_setup() {
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions" "$HOME/.agent/spin-down"
   stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub agent-panel 'exit 0'
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
 }
 
