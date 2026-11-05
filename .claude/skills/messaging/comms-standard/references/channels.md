@@ -26,4 +26,4 @@ Source kinds:
 - `{kind = "section", glob = ..., heading = ...}`: the named section of each file, such as the `## Morning` block of each daily note.
 - `{kind = "gh", query = ...}`: bodies of PRs merged in the window, from `gh search prs <query> --merged-at >=<day>`. A gh failure is one stderr line and an empty source, never a crash.
 
-`[ids] patterns` lists regexes for names meant for machines (watch tags, ask ids, `hub/<repo>:<n>`, `agent-<n>`, `<repo>#<n>`, paths, queue slugs). `[report]` sets which priorities buzz and the buzzes-per-day target.
+`[ids] patterns` lists regexes for names meant for machines (watch tags, ask ids, `hub/<repo>:<n>`, `agent-<n>`, `<repo>#<n>`, paths, queue slugs). `[report]` sets which priorities buzz. The buzzes-per-day target is `buzzes_per_day_max` in `~/.config/agentctl/kpi-thresholds`, beside `comms_pass_pct_min`.

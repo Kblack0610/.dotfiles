@@ -70,7 +70,8 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 
 1. Writing or changing a generator: find its channel in `channels.toml`, or add one along with a `source` that the report can read. Shape the output to the channel, then add a test that runs `comms-lint --channel <c>` on the generated output.
 2. Writing a message by hand or as a model: write it, then `comms-lint --channel <c> -`. Fix every finding, or say why it stands.
-3. Grading: `comms-lint report --since 7d` shows each channel's pass rate, its top findings, its worst messages, and the buzzes per day by sender. A recurring finding gets fixed in its generator. When a rule turns out wrong, change it here or in `channels.toml`, never in the generator.
+3. Grading: `comms-lint report --since 7d` shows each channel's pass rate, its top findings, its worst messages, and the buzzes per day by sender. The briefing's evening run stores it nightly as `comms-lint snapshot`; the fleet-bench scorecard carries its `comms-lint line`, and `fleet-bench retro` files a board row when `buzzes_per_day` or `comms_pass_pct` is past its threshold. A recurring finding gets fixed in its generator. When a rule turns out wrong, change it here or in `channels.toml`, never in the generator.
+4. Each week, read the snapshot's worst messages. One that broke a rule the lint missed becomes a failing case in `tests/unit/comms_lint.bats`, with its ids and hosts replaced, and the rule is tightened in `channels.toml` in the same PR.
 
 ## Do NOT
 
