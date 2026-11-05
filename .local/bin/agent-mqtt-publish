@@ -292,9 +292,11 @@ main() {
     mkdir -p "$CACHE/sent"
 
     # One run at a time, so two hooks firing together cannot interleave cache writes. Each
-    # waiter re-reads the state after it gets the lock, so the last writer always wins.
+    # waiter re-reads the state after it gets the lock, so the last writer always wins. The
+    # wait stays under agent-mqtt-sessions.service's 30s TimeoutStartSec: a waiter behind a slow
+    # --full run exits 0 here instead of being killed, which failed the unit (2026-11-05).
     exec 9>"$CACHE/lock"
-    flock -w 30 9 || { say "lock busy"; return 0; }
+    flock -w 20 9 || { say "lock busy"; return 0; }
     snap="$(snapshot)"
 
     local -A want=()
