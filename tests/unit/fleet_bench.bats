@@ -30,6 +30,10 @@ setup() {
   export BENCH_QUEUE_STATS_CMD=qstats-stub QSTATS="$SANDBOX/qstats.json"
   printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$QSTATS" "$QSTATS" > "$SANDBOX/bin/qstats-stub"
   chmod +x "$SANDBOX/bin/qstats-stub"
+  # agent-usage tokens line, canned: serves $TOKLINE when it exists, else fails like no snapshot
+  export BENCH_TOKENS_CMD=tokens-stub TOKLINE="$SANDBOX/tokline"
+  printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null\n' "$TOKLINE" > "$SANDBOX/bin/tokens-stub"
+  chmod +x "$SANDBOX/bin/tokens-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -1615,4 +1619,17 @@ requests_setup() {
   assert_failure
   assert_output --partial "the agent queue is unreadable"
   refute_output --partial "No urgent request"
+}
+
+@test "scorecard KPIs carry the nightly token-usage row, and say so when there is none" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- tokens: ? (`agent-usage tokens line` unreadable)'
+  echo 'tokens 2026-10-28: 3.3B context over 28,337 responses' > "$TOKLINE"
+  "$SUBJECT" scorecard
+  run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- tokens 2026-10-28: 3.3B context over 28,337 responses'
 }

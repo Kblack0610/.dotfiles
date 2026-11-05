@@ -108,6 +108,28 @@ Checks: `token-filter doctor` (pinned rtk, jq, hook registered, a live rewrite, 
 | A one-off command needs exact output | rtk truncates long lines and caps grep results | Prefix the command with `RTK_DISABLED=1` |
 | The hook was edited but behaves the old way | Stow points at the main checkout; a worktree edit is not live | Run the worktree copy by path, or land it |
 
+## Token usage tracking
+
+`agent-usage tokens snapshot` runs nightly (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the two counted tools and the token-filter replay:
+
+| Number | Owner |
+|--------|-------|
+| Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, command head and method; `long_runs` | `claude-recall tool-output` |
+| Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model | `agent-usage burn` |
+| The rtk replay, with a local skip added per failing shape (`--apply`) | `token-filter verify` |
+
+- `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
+- `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
+- `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show.
+- `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 past 25% either way, and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| The watch says the nightly run stopped | No snapshot in 2 days | `agentctl status token-usage`; run `agent-usage tokens snapshot` by hand for each missing day (`--date D`) |
+| A row ends in "N source errors" | burn or token-filter failed; the rest of the day is still written | `jq .errors ~/.agent/token-usage/<date>.json` names the source |
+| The row reads "unreadable" | `claude-recall tool-output` gave no totals, so the day has no numbers | Run the recall command from `.errors` by hand; re-run the snapshot for that day |
+| The check says "baseline N days" | Fewer than 3 earlier snapshots | Wait, or backfill with `--date` |
+
 ## File layout
 
 - `~/.claude/hooks/` is hard-linked to `~/.dotfiles/.claude/hooks/` (same inodes via stow).

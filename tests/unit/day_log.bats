@@ -29,7 +29,12 @@ case "$1" in
   sessions) echo '{"session_id":"a","target":"lab/game-agent-3:1","plan":"glad-otter","phase":"2/4","working_h":1.5,"waiting_h":0.2,"prs_merged":2,"ci_reds":0,"cost_usd":4.5}' ;;
 esac
 EOF
-  printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
+  # usage-stub: rollup rows; `tokens line --date D` serves $SANDBOX/tokens-D, failing like no snapshot without it
+  cat > "$SANDBOX/bin/usage-stub" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = tokens ] && exec cat "$SANDBOX/tokens-\$4" 2>/dev/null
+printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
+EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
   chmod +x "$SANDBOX/bin/"*-stub
   cat > "$DAYLOG_GROUPS" <<'EOF'
@@ -191,4 +196,21 @@ PROM
   run "$SUBJECT" snapshot --date 2026-10-27
   assert_success
   [ ! -e "$PROM_TEXTFILE_DIR/day_log.prom" ]
+}
+
+@test "the day carries the token-usage snapshot's row, and show prints it under the header" {
+  echo 'tokens 2026-10-28: 3.3B context over 28,337 responses' > "$SANDBOX/tokens-2026-10-28"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -r .tokens 2026-10-28
+  assert_output 'tokens 2026-10-28: 3.3B context over 28,337 responses'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line --index 2 'tokens 2026-10-28: 3.3B context over 28,337 responses'
+}
+
+@test "no token-usage snapshot for the day: no tokens field and no row (negative control)" {
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c .tokens 2026-10-28
+  assert_output 'null'
+  run "$SUBJECT" show --date 2026-10-28
+  refute_output --partial 'tokens 2026-10-28'
 }
