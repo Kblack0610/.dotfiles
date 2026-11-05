@@ -355,3 +355,12 @@ ci_result() { cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%
   run_hook
   assert_equal "$(runs green)" 2
 }
+
+@test "a check gets the payload's session id as STOP_SESSION_ID (checks run with no stdin)" {
+  dirty
+  printf '#!/bin/bash\necho "sid=${STOP_SESSION_ID:-none}" >&2\nexit 2\n' > "$HOOK_DIR/stop-checks.d/sid.sh"
+  chmod +x "$HOOK_DIR/stop-checks.d/sid.sh"
+  bash "$HOOK" <<< '{"session_id":"abc-123","stop_hook_active":false}' >"$OUTF" 2>"$ERRF" || true
+  run stderr
+  assert_output --partial "sid=abc-123"
+}
