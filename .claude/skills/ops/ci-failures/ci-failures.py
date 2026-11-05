@@ -13,7 +13,9 @@ failed job gets:
   SHAs and workspace paths normalized so the same failure on two branches groups as one;
 - a bucket: infra (runner lost or killed, disk, network, rate limit, host key), timeout,
   test (a test step or a FAIL/Failed line), check (any other step: lint, docs, build), or
-  derived (failed only because an earlier job in the run did; listed, never counted);
+  derived (failed only because an earlier job in the run did; listed, never counted), or
+  pending (a check that waits for another run, such as the gate line on a PR pushed before its
+  gate; listed, and a run red only on those is pending, not red);
 - main: the same signature is red on the base branch in the window, so every branch inherits it;
 - green@sha: the same job (exact name) went green on the same commit in the same workflow
   (another run or attempt). A lead, not a verdict: the PR body, a variable, the tests a dispatch
@@ -47,6 +49,12 @@ INFRA = [
     (r"\b50[234]\b.{0,20}(Bad Gateway|Service Unavailable|Gateway Time)|HTTP.{0,12}\b50[234]\b|Internal Server Error", "server 5xx"),
     (r"Could not resolve host|Temporary failure in name resolution", "dns"),
     (r"early EOF|RPC failed|unexpected disconnect|Connection reset by peer", "network dropped mid-transfer"),
+]
+# Steps that are red until something else finishes, by design: unity-core-playground's Checks
+# fails "Merge gate line" until the PR body names a green gate for its tree. Matched against the
+# signature. Counted as red, they buried the real Checks reds (pass 1: 73 of 112).
+PENDING = [
+    (r" / Merge gate line :: ", "waits for the PR's gate (pushed before it)"),
 ]
 TIMEOUT = r"exceeded the maximum execution time|timed out after|Timeout of \d+"
 # Case matters: "traceback" inside a Python ResourceWarning is noise, "Traceback (most recent" is not.
@@ -231,7 +239,10 @@ def finish_buckets(records):
             if earlier:
                 r["bucket"], r["why"] = "derived", "failed after " + ", ".join(sorted({o["job"] for o in earlier}))
     for r in records:
-        if not r["bucket"]:
+        hit = None if r["bucket"] else next((w for p, w in PENDING if re.search(p, r["signature"])), None)
+        if hit:
+            r["bucket"], r["why"] = "pending", hit
+        elif not r["bucket"]:
             test = TEST_STEP.search(r["step"]) or any(re.search(r"\bFAIL\b|\bFailed\b", e) for e in r["errors"])
             r["bucket"] = "test" if test else "check"
 
@@ -280,7 +291,9 @@ def analyse(runs, records, base, branches):
     roots = [r for r in shown if r["bucket"] != "derived"]
     first = {}
     for r in sorted(roots, key=lambda r: (r["completed"] or r["created"])):
-        first.setdefault(r["run"], r)
+        if r["bucket"] != "pending":
+            first.setdefault(r["run"], r)
+    pending = {r["run"] for r in roots if r["bucket"] == "pending"} - set(first)
     sigs = {}
     for r in roots:
         s = sigs.setdefault(r["signature"], {"signature": r["signature"], "bucket": r["bucket"], "why": r["why"],
@@ -300,7 +313,7 @@ def analyse(runs, records, base, branches):
     for r in first.values():
         buckets[r["bucket"]] = buckets.get(r["bucket"], 0) + 1
     return {
-        "runs": len(scope), "red_runs": len(first), "cancelled": sum(r["conclusion"] == "cancelled" for r in scope),
+        "runs": len(scope), "red_runs": len(first), "pending_runs": len(pending), "cancelled": sum(r["conclusion"] == "cancelled" for r in scope),
         "derived_jobs": sum(r["bucket"] == "derived" for r in shown), "buckets": buckets, "signatures": table,
         "where": sorted(where.items(), key=lambda kv: (-kv[1], kv[0])),
         "by_workflow": {wf: [sum(r["workflowName"] == wf for r in scope),
@@ -314,7 +327,8 @@ def analyse(runs, records, base, branches):
 def report(a, args, since, until, partial):
     print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh failed, counts are low" if partial else ""))
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"
-    print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), {a['cancelled']} cancelled (not red)")
+    print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), "
+          f"{a['pending_runs']} pending (red only on a check that waits for another run, not red), {a['cancelled']} cancelled (not red)")
     print("red by workflow: " + ", ".join(f"{wf} {red}/{n}" for wf, (n, red) in a["by_workflow"].items()))
     print(f"{args.base}: {a['base'][1]} red of {a['base'][0]}")
     print("\nbucket    runs  share   (each red run counted once, by its first failed job)")
