@@ -48,7 +48,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`, and tick the plan phase by hand.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
-   - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.
+   - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.

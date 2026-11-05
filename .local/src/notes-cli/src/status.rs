@@ -42,6 +42,32 @@ impl Feed {
         }
     }
 
+    /// The two headings: what needs the human, then the rest.
+    pub fn sections(&self) -> (&'static str, &'static str) {
+        match self {
+            Feed::Inbox => ("Needs you", "Handled today"),
+            _ => ("Needs attention", "Quiet"),
+        }
+    }
+
+    /// A line under the stat saying what the rows' words mean, for a feed whose rows lead with
+    /// a verb.
+    pub fn guide(&self) -> Option<&'static str> {
+        match self {
+            Feed::Inbox => Some(
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why",
+            ),
+            _ => None,
+        }
+    }
+
+    /// Whether rows in the second bucket show their sub-lines. A healthy watch's `at:` and
+    /// `do:` are noise; a handled inbox line's `from:` and `was:` are the record of what
+    /// changed.
+    pub fn quiet_detail(&self) -> bool {
+        matches!(self, Feed::Inbox)
+    }
+
     pub fn slug(&self) -> &'static str {
         match self {
             Feed::Watches => "watches",
@@ -83,6 +109,9 @@ pub struct Page {
     /// Italic lead line, already carrying its own freshness stamp when the source has one.
     pub stat: Option<String>,
     pub rows: Vec<Row>,
+    /// Sections after the two buckets, each a heading and its bullet lines (without `- `);
+    /// one with no lines is left out.
+    pub more: Vec<(String, Vec<String>)>,
 }
 
 /// Where a feed's page lives: `<root>/status/<slug>.md`.
@@ -122,35 +151,44 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     if let Some(stat) = &page.stat {
         s.push_str(&format!("_{stat}_\n\n"));
     }
+    if let Some(guide) = feed.guide() {
+        s.push_str(&format!("{guide}\n\n"));
+    }
 
     let mut rows: Vec<&Row> = page.rows.iter().collect();
     rows.sort_by(|a, b| a.sort.cmp(&b.sort));
     let (attention, quiet): (Vec<&Row>, Vec<&Row>) = rows.into_iter().partition(|r| r.attention);
 
     let cap = feed.attention_cap();
-    s.push_str("## Needs attention\n");
+    let (needs, rest) = feed.sections();
+    s.push_str(&format!("## {needs}\n"));
     if attention.is_empty() {
         s.push_str("_Nothing needs you._\n");
     } else {
         for r in attention.iter().take(cap) {
-            s.push_str(&format!("- {}\n", r.head));
-            for (label, value) in &r.detail {
-                if !value.is_empty() {
-                    s.push_str(&format!("  - {label}: {value}\n"));
-                }
-            }
+            push_row(&mut s, r);
         }
         if attention.len() > cap {
             s.push_str(&format!("- ... and {} more\n", attention.len() - cap));
         }
     }
 
-    s.push_str("\n## Quiet\n");
+    s.push_str(&format!("\n## {rest}\n"));
     if quiet.is_empty() {
         s.push_str("_Nothing._\n");
     } else {
         for r in &quiet {
-            s.push_str(&format!("- {}\n", r.head));
+            if feed.quiet_detail() {
+                push_row(&mut s, r);
+            } else {
+                s.push_str(&format!("- {}\n", r.head));
+            }
+        }
+    }
+    for (heading, lines) in page.more.iter().filter(|(_, l)| !l.is_empty()) {
+        s.push_str(&format!("\n## {heading}\n"));
+        for l in lines {
+            s.push_str(&format!("- {l}\n"));
         }
     }
 
@@ -169,6 +207,16 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     }
     s.push_str(&format!("\n---\n{}\n", links.join(" - ")));
     s
+}
+
+/// A row's bullet and its non-empty `- label: value` sub-bullets.
+fn push_row(s: &mut String, r: &Row) {
+    s.push_str(&format!("- {}\n", r.head));
+    for (label, value) in &r.detail {
+        if !value.is_empty() {
+            s.push_str(&format!("  - {label}: {value}\n"));
+        }
+    }
 }
 
 /// What [`publish`] did, so a caller can tell whether it is safe to strip the old section.
@@ -254,6 +302,7 @@ mod tests {
     fn render_is_byte_stable_across_runs() {
         let page = Page {
             feed: Feed::Watches,
+            more: Vec::new(),
             stat: Some("10 watches - 8 OK, 2 tripped".into()),
             rows: vec![
                 row(true, 0, "deploy-drift", "TRIP deploy-drift"),
@@ -269,6 +318,7 @@ mod tests {
     fn tripped_rows_sort_above_quiet_ones() {
         let page = Page {
             feed: Feed::Watches,
+            more: Vec::new(),
             stat: None,
             rows: vec![
                 row(false, 1, "pmp-api-health", "OK pmp-api-health"),
@@ -297,6 +347,7 @@ mod tests {
     fn page_has_frontmatter_and_a_footer_rule() {
         let page = Page {
             feed: Feed::Comms,
+            more: Vec::new(),
             stat: Some("57 unread".into()),
             rows: vec![],
         };
@@ -324,6 +375,7 @@ mod tests {
             .collect();
         let page = Page {
             feed: Feed::Comms,
+            more: Vec::new(),
             stat: None,
             rows,
         };
@@ -358,6 +410,7 @@ mod tests {
     fn watches(stat: Option<&str>, rows: Vec<Row>) -> Page {
         Page {
             feed: Feed::Watches,
+            more: Vec::new(),
             stat: stat.map(str::to_string),
             rows,
         }
