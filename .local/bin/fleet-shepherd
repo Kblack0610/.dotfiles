@@ -487,7 +487,8 @@ talking() {
   tp="$(pass_transcript "$1")"
   [ -n "$tp" ] || return 1
   at="$(jq -r 'select(.type == "user" and .turnOrigin == "human") | .timestamp' "$tp" 2>/dev/null | tail -n +2 | tail -n 1)"
-  at="$(date -d "$at" +%s 2>/dev/null)" || return 1
+  # No second human turn: `date -d ""` is midnight today, which reads as talking just after it.
+  [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" || return 1
   [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
 }
 
