@@ -160,12 +160,18 @@ enum Cmd {
         /// session preflight that calls this must never be able to lose a turn over it.
         #[arg(long)]
         agent: bool,
+        /// Print the release view instead of writing the board: every row aimed at
+        /// vX.Y.Z, open and closed, both lanes, with the closed rows' PRs. A row's release
+        /// is its `#vX.Y.Z` tag, or its sheet's `Version:` when untagged; rows already frozen
+        /// into `versions/vX.Y.Z.md` are included. READ-ONLY
+        #[arg(long, value_name = "vX.Y.Z", conflicts_with_all = ["json", "agent"])]
+        version: Option<String>,
         /// Limit to these projects (repeatable). Names are the LAB project names, which
         /// are not the same namespace as the agent-side project name: a session in
         /// ~/.dotfiles resolves to `dotfiles`, whose lab projects are `notes-cockpit` and
         /// `agent-runtime`. Callers join the two through project-map.json
         /// `trackers.<n>.repo` (see `project_lab_names` in project-name.sh) and pass the
-        /// results here. Ignored without --agent.
+        /// results here. Ignored without --agent or --version.
         #[arg(long = "project")]
         projects: Vec<String>,
     },
@@ -953,9 +959,12 @@ fn main() -> Result<()> {
         Cmd::Board {
             json,
             agent,
+            version,
             projects,
         } => {
-            if json {
+            if let Some(v) = version {
+                board::print_version(&v, &projects)?
+            } else if json {
                 board::print_json()?
             } else if agent {
                 board::print_agent(&projects)?
