@@ -7,7 +7,7 @@
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
-#   agent-usage burn [--days 7] [--before DATE] [--json]     where the window's tokens went (usage-cleanup)
+#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
 #   agent-usage tokens snapshot|line|check [--date D]        the nightly token-usage record per day
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.

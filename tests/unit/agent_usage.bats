@@ -288,3 +288,42 @@ burn() {
   # Negative control: the whole day sees the session start, so it counts.
   assert_equal "$(burn '.first_turn_context.sessions')" '2'
 }
+
+@test "burn: turn mix classes each response once: write over wait over investigate, no tool is a reply" {
+  # m1 sleeps (wait), m2 commits (write), m3 edits (write), m4 runs git status (investigate),
+  # sa1 and h1 call no tool (reply).
+  assert_equal "$(burn '.turn_mix | map_values(.turns)')" '{"investigate":1,"wait":1,"write":2,"reply":2}'
+  # Negative control: a read-only git command is not a write.
+  refute [ "$(burn '.turn_mix.write.turns')" = '3' ]
+}
+
+@test "burn: by session joins subagent turns, registry cost and merged PRs to their session" {
+  assert_equal "$(burn '.by_session.s1 | [.turns, .mix, .compactions, .first_turn_context, .cost_usd, .merged_prs, .cost_per_merged_pr]
+    == [5, {"investigate":1,"wait":1,"write":2,"reply":1}, 1, 50010, 4, ["o/r#1","o/r#2"], 2]')" 'true'
+  assert_equal "$(burn '.by_session.s1.wait_share')" '0.286'
+  assert_equal "$(burn '.by_session | keys')" '["h1","s1"]'
+  # Ranked by cost: the $4 session comes first.
+  assert_equal "$(burn '.by_session | keys_unsorted[0]')" '"s1"'
+}
+
+@test "burn: --since sets the window start and wins over --days" {
+  burn_home
+  run bash -c "TZ=UTC '$AU' burn --days 30 --since 2026-01-01T02:00:00+00:00 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.window.start, .by_session.s1.turns, .by_session.s1.first_turn_context]'"
+  assert_output '["2026-01-01T02:00",2,null]'
+}
+
+@test "burn: a bad or inverted --since is refused" {
+  run "$AU" burn --since soon
+  assert_failure 2
+  run "$AU" burn --since 2026-01-03 --before 2026-01-02
+  assert_failure 2
+}
+
+@test "burn: the table form prints the turn mix and the by-session table" {
+  burn_home
+  run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --top 1
+  assert_success
+  assert_output --partial 'turn mix: investigate 1'
+  assert_output --partial 'by session (top 1 of 2'
+  refute_output --partial $'\n  h1\t'
+}
