@@ -226,6 +226,19 @@ EOF
   assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
 }
 
+@test "plan_gate: counts every ExitPlanMode and only the gate's own denials" {
+  cat > "$TR/gate.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"a","name":"ExitPlanMode","input":{"plan":"x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","is_error":true,"content":"PreToolUse:ExitPlanMode hook error: plan-standard: 2 gap(s) for p (infra). Fix the plan file and call ExitPlanMode again."}]}}
+{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"b","name":"ExitPlanMode","input":{"plan":"x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"The user doesn't want to proceed with this tool use."}]}}
+{"type":"assistant","message":{"id":"m3","content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c","is_error":true,"content":"PreToolUse:Bash hook error: plan-standard: not this tool"}]}}
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/gate.jsonl' | jq -c .plan_gate"
+  assert_output '{"exits":2,"denied":1}'
+}
+
 @test "activity: a commit ends the edit count, for edits made through Bash" {
   cat > "$TR/act.jsonl" <<'EOF'
 {"type":"assistant","message":{"id":"m1","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"git add -A && git commit -m x"}}]}}
