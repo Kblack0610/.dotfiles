@@ -624,9 +624,25 @@ EOF
   assert_success
   assert_output --partial "done:"
   assert_output --partial "to PR:   median 90 min"
-  assert_output --partial "wait:    median 30 min, p90 30 min from queued to started, 1 started at once and not counted"
+  assert_output --partial "wait:    median 30 min, p90 30 min from ready to started, 1 started at once and not counted"
   assert_output --partial "sitting: 1 can start, oldest 2h (c), median 2h; 1 held (after 1)"
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
+}
+
+@test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
+  "$AQ" add --project game --slug p "p"
+  "$AQ" add --project game --slug f --after p "f"
+  "$AQ" move p running; "$AQ" move p done --status ok
+  "$AQ" set p finished=2026-11-03T12:00:00Z
+  f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  "$AQ" move f running; "$AQ" set f started=2026-11-03T12:10:00Z
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c '[.wait_minutes_median, .wait_minutes_p90]' <<<"$output")" '[10,10]'
+  # negative control: with its predecessor gone from the store, the wait runs from queued
+  rm "$AGENT_QUEUE_DIR"/done/*/*-p.md
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '250'
 }
 
 @test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
