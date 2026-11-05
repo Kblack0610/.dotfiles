@@ -5,9 +5,10 @@
 #
 # Steps, stopping at the first failure: fetch (HEAD must contain origin/<base> before the
 # checks; after them, a base that moved on is merged in, pushed and landed on the same gate), checks (the PR's checks pass: CI, a required check), merge (--squash
-# --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets
-# pr:<owner>/<repo>#<pr>, this Claude session in its sessions, and moves to done, status ok), board (the item's row when it came from the board, done with
-# pr:<pr>), plan (--plan: the one "- [ ] <phase>"
+# --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# on origin/<base>, by agent-merge-proof.sh), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# merged:<sha>, this Claude session in its sessions, and moves to done, status ok), board (the
+# item's row when it came from the board, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
@@ -109,7 +110,7 @@ catch_up() {
   done
 }
 
-pr='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
+pr='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --project | --title) die "$1 is gone: the queue item is the record; agent-queue add --running --project <p> \"<task>\", then --item <slug>" ;;
@@ -140,10 +141,10 @@ running | waiting | queued | rerun) ;;
 esac
 # The notes argv that closes a `from: board:<project>:<key>` item's row, one word a line,
 # as fleet-dispatch reads it; empty for any other item.
-row=$(jq -r --arg pr "$pr" 'select(.from | startswith("board:")) | (.from | ltrimstr("board:") | split(":")) as $r
+row=$(jq -r 'select(.from | startswith("board:")) | (.from | ltrimstr("board:") | split(":")) as $r
   | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
     + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
-    + ["done", ($r[1:] | join(":")), "--proof", "pr:\($pr)"] | .[]' <<<"$it")
+    + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
 # score_body: the merged body's score against comms-standard (channel pr-body). A score, never a
 # gate: the PR is already merged, and the line tells its author what to fix in the next one.
 score_body() {
@@ -159,7 +160,8 @@ score_body() {
 }
 
 # board_cmd -> the notes argv that closes the item's row, one word a line; none for an item not from the board.
-board_cmd() { [ -z "$row" ] || printf '%s\n' "$row"; }
+# Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
+board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
   [ -f "$plan" ] || die "no plan file: $plan"
@@ -173,7 +175,8 @@ if [ "$dry" -eq 1 ]; then
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
   echo "body: gh pr view $pr --json body | comms-lint --channel pr-body -  (a score, never a gate)"
-  echo "item: agent-queue set $item pr=$pr && agent-queue move $item done --status ok"
+  echo "proof: gh pr view $pr --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
+  echo "item: agent-queue set $item pr=$pr merged=<sha> && agent-queue move $item done --status ok"
   mapfile -t b < <(board_cmd)
   [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
@@ -205,9 +208,17 @@ fi
 
 score_body
 
+# The record steps carry the merge commit, proven on origin/<base> from the git graph: a PR object
+# reading MERGED is not proof its content is on the branch (ticket contract, "done is a gate").
+merged=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid 2>&1) || fail proof "gh pr view: $(lastline "$merged")"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/agent-merge-proof.sh"
+out=$(merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
+echo "proof: $out"
+
 if [ "$(jq -r .state <<<"$it")" != "done" ]; then
   [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
-  out=$(agent-queue set "$item" "pr=$pr_ref" 2>&1) || fail item "$(lastline "$out")"
+  out=$(agent-queue set "$item" "pr=$pr_ref" "merged=$merged" 2>&1) || fail item "$(lastline "$out")"
   out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
 fi
 echo "item: $item done with pr:$pr_ref"
@@ -215,7 +226,7 @@ echo "item: $item done with pr:$pr_ref"
 mapfile -t b < <(board_cmd)
 if [ "${#b[@]}" -gt 0 ]; then
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with pr:$pr"
+  echo "board: closed \"${b[-3]}\" with ${b[-1]}"
 fi
 
 if [ -n "$plan" ]; then
