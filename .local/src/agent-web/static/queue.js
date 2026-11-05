@@ -2,6 +2,8 @@
 // The Queue tab: agent-queue's items (/api/queue), a box to queue a task, and cancel and
 // re-rank on each active row. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
+// Below the queue, the Candidates fold: the ranked board rows (/api/queue/candidates, hub-core
+// over `fleet-dispatch suggest`), each with a Promote that is the board's Start.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
@@ -15,8 +17,20 @@ const Q_SECTIONS = [
 // Each state's chip on a card, with how long it has been in it.
 const Q_STATE = { waiting: "Waiting on you", running: "Running", queued: "Queued" };
 // Which folds are open, by data-k: a section (`sec:<state>`) or a card's task (`task:<slug>`).
-// Re-renders come with every event, so the page keeps what the human opened. Done starts shut.
-const qst = { items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null, open: { "sec:done": false } };
+// Re-renders come with every event, so the page keeps what the human opened. Done and
+// Candidates start shut.
+const qst = {
+  items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null,
+  cands: null, candErr: null, candMsg: "", promoting: null,
+  open: { "sec:done": false, "sec:candidates": false },
+};
+
+// The candidates read every board, so they are read on showing the tab and after a promote,
+// never on a queue event.
+const refreshCands = coalesce(async () => {
+  try { qst.cands = await api("/api/queue/candidates"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
+  if (st.tab === "queue") renderQueueList();
+});
 
 const refreshQueue = coalesce(async () => {
   try { qst.items = await api("/api/queue"); qst.err = null; } catch (e) { qst.err = e.message; }
@@ -203,9 +217,56 @@ function drawQueueList(el) {
     html += `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">${title} ` +
       `<span class="muted">${rows.length}${failed ? `, <span class="qbad">${failed} failed</span>` : ""}</span></h2></summary>${body}</details>`;
   }
+  html += qCandidates();
   const y = $("queue").scrollTop;
   el.innerHTML = html;
   $("queue").scrollTop = y;
+}
+
+// One ranked row: rank, project, key, title, how it would start (hub-core's label), and why.
+function qCandRow(c, i) {
+  const cls = c.held ? "warn" : "";
+  const busy = qst.promoting === c.key;
+  return `<tr><td class="n">${i + 1}</td><td>${esc(c.project)}</td><td>${esc(c.key)}</td>` +
+    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted">${esc(c.why)}</td>` +
+    `<td><button class="btn sm" data-promote="${i}"${qst.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td></tr>`;
+}
+
+// The Candidates fold: counts in the heading, the first rows in rank order, "+N more" after.
+function qCandidates() {
+  const k = "sec:candidates", open = !!qst.open[k];
+  const c = qst.cands;
+  const count = c ? `${c.total}, ${c.auto} auto` : qst.candErr ? "unread" : "reading";
+  let body;
+  if (qst.candErr) body = `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
+  else if (!c) body = `<div class="card muted">Reading fleet-dispatch suggest...</div>`;
+  else if (!c.rows.length) body = `<div class="card muted">No open board row to start.</div>`;
+  else {
+    body = `<div class="panel scroll"><table class="tbl"><tr><th class="n">#</th><th>project</th><th>key</th><th>task</th><th>start</th><th>why</th><th></th></tr>` +
+      `${c.rows.map(qCandRow).join("")}</table></div>` +
+      (c.total > c.rows.length ? `<div class="muted">+${c.total - c.rows.length} more</div>` : "");
+  }
+  const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
+  return `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
+    `<span class="muted">(${count})</span></h2></summary>${msg}${body}</details>`;
+}
+
+async function qPromote(i) {
+  const c = qst.cands && qst.cands.rows[i];
+  if (!c || qst.promoting) return;
+  qst.promoting = c.key; qst.candMsg = "";
+  renderQueueList();
+  try {
+    // The board's Start: fleet-dispatch promote, as board.js and the hub TUI's p run it.
+    const r = await post("/api/board", { verb: "start", profile: c.profile, project: c.project, lane: c.lane, raw: c.text });
+    qst.candMsg = (r && r.out) || `Promoted ${c.key}.`;
+  } catch (e) {
+    qst.candMsg = e.message;
+  }
+  qst.promoting = null;
+  renderQueueList();
+  refreshQueue();
+  refreshCands();
 }
 
 function qSaveDraft() {
@@ -248,6 +309,7 @@ $("queue").addEventListener("click", (e) => {
   if (t.id === "q-add") { qAdd(); return; }
   const need = t.closest(".qneed .card");
   if (need) { answerCard(need, e); return; }
+  if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) { setTab("sessions"); select(a); }
@@ -281,6 +343,7 @@ TABS.queue = {
   async show() {
     renderQueue();
     refreshQueue();
+    refreshCands();
     if (!qst.projects.length) {
       try { qst.projects = await api("/api/queue/projects"); } catch (e) { /* the select stays empty; add says why */ }
       if (st.tab === "queue") { qSaveDraft(); renderQueue(); }
