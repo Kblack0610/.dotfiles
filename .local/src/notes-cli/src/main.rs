@@ -83,9 +83,16 @@ enum Cmd {
     Show {
         #[arg(default_value = "daily")]
         target: String,
-        /// One JSON object: path, rel, title, exists, date, prev, next, markdown, links
+        /// One JSON object: path, rel, title, exists, date, prev, next, hash, markdown, links
         #[arg(long)]
         json: bool,
+    },
+    /// Replace a note with stdin when its hash (`show --json`'s `hash`) is still BASE; exit 3
+    /// and write nothing when it changed since
+    Put {
+        target: String,
+        #[arg(long, value_name = "BASE")]
+        base: String,
     },
     /// Link today's ref files into today's note's `## Refs` section
     LinkRefs,
@@ -840,6 +847,11 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Show { target, json } => show::run(&prof, &target, json)?,
+        Cmd::Put { target, base } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            show::put(&prof, &log, &target, &base, &text)?
+        }
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
             Some(path) => {
                 println!("{}", path.display());
