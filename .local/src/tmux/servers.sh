@@ -368,7 +368,7 @@ _dest_session() {
 # either. tmx_back.bats now runs whatever .tmux.conf actually binds, so this cannot recur
 # silently.
 _record_back() {
-  local dest_srv="${1:-}" dest_sess="${2:-}" loc srv sess win
+  local dest_srv="${1:-}" dest_sess="${2:-}" dest_win="${3:-}" loc srv sess win
   loc="$(_current_loc)" || return 0
   IFS=$'\t' read -r srv sess win <<<"$loc"
   [ -n "$srv" ] && [ -n "$sess" ] || return 0
@@ -376,7 +376,12 @@ _record_back() {
   # A hop that does not leave the session is not somewhere to come back FROM. Without
   # this, hitting N twice out of habit overwrites the real back-target with the page you
   # are already looking at, and L goes dead - the exact complaint this feature exists for.
-  [ "$srv" = "$dest_srv" ] && [ "$sess" = "$dest_sess" ] && return 0
+  # A hop to ANOTHER window of the session does leave: the note and hub:board share a
+  # session, and every hop is a fresh attach, so this crumb is the only way back to the note.
+  if [ "$srv" = "$dest_srv" ] && [ "$sess" = "$dest_sess" ]; then
+    [ -n "$dest_win" ] || return 0
+    [ "$(tmux display-message -p -t "=$sess:$dest_win" '#{window_index}' 2>/dev/null)" != "$win" ] || return 0
+  fi
 
   mkdir -p "${BACK_FILE%/*}" 2>/dev/null || return 0
   printf '%s\t%s\t%s\n' "$srv" "$sess" "$win" > "$BACK_FILE" 2>/dev/null || return 0
@@ -403,7 +408,9 @@ _enter() {
   if [ -n "${TMUX:-}" ]; then
     # Before the detach, because this is the last moment the place we are leaving is
     # still readable. Every hop passes through here, so every hop is reversible.
-    _record_back "$target" "$(_dest_session "$target" "$mode")"
+    local dest_win=""
+    case "$mode" in *:*) dest_win="${mode#*:}" ;; esac
+    _record_back "$target" "$(_dest_session "$target" "$mode")" "$dest_win"
 
     # -E runs after this client detaches, so the two halves read as one motion.
     #
@@ -567,10 +574,10 @@ cmd_goto() {
 # before A. When tmux's answer (or the crumb) is a board, L goes to the session you were
 # last working on instead, and to the board only when there is nowhere else.
 cmd_back() {
-  local rec srv sess win cur cur_srv cur_sess last pick
+  local rec srv sess win cur cur_srv cur_sess cur_win last pick
 
   cur="$(_current_loc)" || cur=""
-  IFS=$'\t' read -r cur_srv cur_sess _ <<<"${cur:-}"
+  IFS=$'\t' read -r cur_srv cur_sess cur_win <<<"${cur:-}"
 
   if [ -n "${TMUX:-}" ]; then
     last="$(tmux display-message -p '#{client_last_session}' 2>/dev/null)"
@@ -594,7 +601,8 @@ cmd_back() {
   # Nothing recorded, the world it named is gone, or it names where we already are.
   if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] ||
      ! tmux -L "$srv" has-session 2>/dev/null ||
-     { [ "$srv" = "${cur_srv:-}" ] && [ "$sess" = "${cur_sess:-}" ]; }; then
+     { [ "$srv" = "${cur_srv:-}" ] && [ "$sess" = "${cur_sess:-}" ] &&
+       { [ -z "${win:-}" ] || [ "$win" = "${cur_win:-}" ]; }; }; then
     # Nowhere to go. Exit 0 anyway: run-shell surfaces a non-zero child as the popup
     # `'tmx back' returned 1`, which reads as a broken key rather than "nowhere to go".
     return 0

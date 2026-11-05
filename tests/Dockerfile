@@ -29,7 +29,9 @@ FROM debian:trixie-slim
 # Pinned so a CI run and a laptop run agree, and so a distro bump cannot silently change
 # what is under test. Override to sweep versions:
 #   docker build --build-arg TMUX_REF=3.4 ...
-ARG TMUX_REF=3.7b
+# TMUX_STOCK=1 leaves 3.8 unpatched, for a regression test's negative control.
+ARG TMUX_REF=3.8
+ARG TMUX_STOCK=
 ARG FZF_REF=0.74.1
 # The linters are pinned too, and that is not fussiness: a new shellcheck release finds new
 # things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
@@ -61,12 +63,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # job nobody was watching, and both PR-gating tiers stayed green. A gate that runs weekly
 # and is never read is the same as no gate.
 
-# tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.7b, and floating
-# panes only exist from 3.7. Release tarballs ship a generated ./configure, so no autogen.
+# tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.8 with the patch in
+# .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
+# Floating panes only exist from 3.7. Release tarballs ship a generated ./configure, so no
+# autogen; `git apply` keeps the source's timestamps from asking for one.
+COPY tree-mode-self-kill.patch /tmp/tree-mode-self-kill.patch
 RUN curl -fsSL -o /tmp/tmux.tar.gz \
       "https://github.com/tmux/tmux/releases/download/${TMUX_REF}/tmux-${TMUX_REF}.tar.gz" \
     && tar xf /tmp/tmux.tar.gz -C /tmp \
     && cd "/tmp/tmux-${TMUX_REF}" \
+    && if [ "$TMUX_REF" = 3.8 ] && [ -z "$TMUX_STOCK" ]; then git apply --whitespace=nowarn /tmp/tree-mode-self-kill.patch; fi \
     && ./configure --prefix=/usr/local \
     && make -j"$(nproc)" && make install \
     && rm -rf /tmp/tmux* \

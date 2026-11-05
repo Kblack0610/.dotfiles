@@ -34,7 +34,7 @@ fi
 # A request is consumed by its own session's next Stop. One whose session ended first
 # (window closed by hand, process killed) is never consumed; 54 of 65 had piled up by
 # 2026-10-28, back to July. A day is long past any real deferral, so reap those here.
-find "$HOME/.agent/spin-down" -maxdepth 1 -name '*.request' -mmin +1440 -delete 2>/dev/null || true
+find "$HOME/.agent/spin-down" -maxdepth 1 \( -name '*.request' -o -name '*.fired' \) -mmin +1440 -delete 2>/dev/null || true
 if [ -n "$SID" ]; then
   SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}__${SID}.request"
 else
@@ -61,7 +61,9 @@ fi
 WIND_DOWN="$HOME/.dotfiles/.local/src/tmux/wind-down.sh"
 TMP_SENT=$(mktemp 2>/dev/null) || exit 0
 cp "$SENTINEL" "$TMP_SENT" 2>/dev/null || { rm -f "$TMP_SENT"; exit 0; }
-rm -f "$SENTINEL"
+# Kept as .fired: fleet-dispatch restore skips a conversation that closed on purpose even when
+# the server died before the pane record lost its window.
+mv -f "$SENTINEL" "${SENTINEL%.request}.fired"
 
 if [ -x "$WIND_DOWN" ]; then
   bash "$WIND_DOWN" fire "$TMP_SENT" || true

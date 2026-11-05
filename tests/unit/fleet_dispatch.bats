@@ -1780,3 +1780,180 @@ board_item() {
   assert_failure
   assert_output '{"error":"agent-queue unreadable"}'
 }
+
+@test "start --resume --window opens a window of a live session, keeps a plan mode, and leaves its label alone" {
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
+  assert_not_called 'new-session'
+  assert_not_called 'set-option'
+}
+
+@test "start --resume --window makes the session when it is not there yet, named as asked" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game claude --permission-mode bypassPermissions --resume abc-123"
+}
+
+# world <instance> <pane lines...> -- what a stub server answers; no instance is a server that is down.
+world() {
+  printf '%s' "$1" > "$NOTES_FIXTURE/world.instance"; shift
+  printf '%s\n' "$@" > "$NOTES_FIXTURE/world.panes"
+}
+
+record_setup() {
+  export TMUX_SERVERS_DIR="$SANDBOX/manifests"
+  mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions"
+  : > "$TMUX_SERVERS_DIR/hub.conf"
+  stub tmux 'case "$*" in
+    *display-message*) [ -s "$NOTES_FIXTURE/world.instance" ] || exit 1; cat "$NOTES_FIXTURE/world.instance"; echo ;;
+    *list-panes*) cat "$NOTES_FIXTURE/world.panes" ;;
+  esac'
+  stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub agent-panel 'cat "$NOTES_FIXTURE/panel.json"'
+  echo '{"pane":"hub/%1","session_id":"conv-1","cwd":"/work/tree"}' > "$NOTES_FIXTURE/panel.json"
+  PANE1=$'%1\037dotfiles\037crash\037/shell/dir' PANE2=$'%2\037dotfiles\037zsh\037/plain/dir'
+  RECORD="$FLEET_DISPATCH_DIR/panes/hub.json" LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+}
+
+@test "record keeps each pane's session, window and cwd, with the conversation found under the pane" {
+  record_setup
+  world '10 1000' "$PANE1" "$PANE2"
+  echo '{"pane":"lab/%2","session_id":"another-world","cwd":"/x"}' >> "$NOTES_FIXTURE/panel.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -c '[.server, .instance]' "$RECORD")" '["hub","10 1000"]'
+  assert_equal "$(jq -c '.panes[0]' "$RECORD")" '{"session":"dotfiles","window":"crash","cwd":"/work/tree","claude":"conv-1"}'
+  assert_equal "$(jq -c '.panes[1]' "$RECORD")" '{"session":"dotfiles","window":"zsh","cwd":"/plain/dir","claude":""}'
+  assert_not_called 'agent-notify'
+}
+
+@test "record keeps the last record when agent-panel fails, and still sees a server die" {
+  record_setup
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  stub agent-panel 'exit 1'
+  world '10 1000' "$PANE2"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_output --partial 'agent-panel failed'
+  assert_equal "$(jq -r '.panes[0].claude' "$RECORD")" conv-1
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
+  assert_called 'tmux hub server died 1 conversation(s)'
+  [ -f "$LOST" ] || fail "record not kept as lost"
+}
+
+@test "record pages once when a server dies and keeps its last record for restore" {
+  record_setup
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_called 'agent-notify -p high -t tmux hub server died 1 conversation(s) were on it'
+  [ -f "$LOST" ] && [ ! -f "$RECORD" ] || fail "record not kept as lost"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "record sees a server restarted between two records, and a later empty death keeps the lost record" {
+  record_setup
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world '11 2000' "$PANE2"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_called 'tmux hub server died 1 conversation(s)'
+  assert_equal "$(jq -r '.panes[0].claude' "$LOST")" conv-1
+  assert_equal "$(jq -r .instance "$RECORD")" '11 2000'
+  world ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_called 'tmux hub server died 0 conversation(s)'
+  assert_equal "$(jq -r '.panes[0].claude' "$LOST")" conv-1
+  [ ! -f "$RECORD" ] || fail "an empty record stayed"
+}
+
+# lost_pane <window> <cwd> <id> -- one more pane on the lost hub record.
+lost_pane() {
+  local f="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  mkdir -p "${f%/*}"
+  [ -f "$f" ] || echo '{"server":"hub","instance":"1 1","panes":[]}' > "$f"
+  jq --arg w "$1" --arg c "$2" --arg i "$3" '.panes += [{session: "dotfiles", window: $w, cwd: $c, claude: $i}]' "$f" > "$f.new"
+  mv "$f.new" "$f"
+}
+
+transcript() {
+  mkdir -p "$HOME/.claude/projects/some-project"
+  printf '%s\n' "$2" > "$HOME/.claude/projects/some-project/$1.jsonl"
+}
+
+restore_setup() {
+  project game beta "$SANDBOX/repos/game"
+  export TMUX_SERVERS_DIR="$SANDBOX/manifests"
+  mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions" "$HOME/.agent/spin-down"
+  stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub agent-panel 'exit 0'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
+}
+
+@test "restore reopens each conversation in its last mode and skips what must not come back" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane planned "$G" conv-plan
+  lost_pane working "$G" conv-work
+  lost_pane armed "$G" conv-armed
+  lost_pane closed "$G" conv-closed
+  lost_pane alive "$G" conv-alive
+  lost_pane moved "$SANDBOX/no-such-dir" conv-moved
+  lost_pane shell "$G" ''
+  transcript conv-plan '{"permissionMode":"bypassPermissions"}
+{"type":"permission-mode","permissionMode":"plan"}'
+  transcript conv-work '{"permissionMode":"bypassPermissions"}'
+  : > "$HOME/.agent/spin-down/game__conv-armed.request"
+  : > "$HOME/.agent/spin-down/game__conv-closed.fired"
+  printf '{"pid":%s,"sessionId":"conv-alive"}' "$$" > "$HOME/.claude/sessions/$$.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called 'tmx ensure hub'
+  assert_called "-n planned -c $G claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-n working -c $G claude --permission-mode bypassPermissions --resume conv-work"
+  for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
+  assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
+  assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
+  assert_output --partial 'hub:dotfiles:alive: already running, skipped'
+  assert_output --partial 'claude --resume conv-moved'
+  assert_output --partial 'hub:dotfiles:shell: no conversation, not reopened'
+  assert_output --partial 'hub: reopened 2, failed 0'
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.restored.json" ] && [ ! -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] ||
+    fail "a finished restore left its record"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'no lost server on record'
+}
+
+@test "restore keeps the record when a reopen fails, so a rerun finishes it" {
+  restore_setup
+  lost_pane one "$SANDBOX/repos/game" conv-1
+  stub tmux 'case "$*" in *new-window*) exit 1 ;; *has-session*) exit 0 ;; esac'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_output --partial 'hub: reopened 0, failed 1'
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "lost the record"
+}
+
+@test "restore --dry-run says what it would do and touches nothing" {
+  restore_setup
+  lost_pane one "$SANDBOX/repos/game" conv-1
+  transcript conv-1 '{"permissionMode":"plan"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "would reopen conv-1 in $SANDBOX/repos/game (plan)"
+  assert_not_called 'tmx ensure'
+  assert_not_called '--resume'
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}

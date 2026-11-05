@@ -75,6 +75,27 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
 }
 
+@test "a hop to another window of this session is recorded, so L leaves the board" {
+  # note -> Prefix+i: the board is a window of the session the note is in. Every hop is a
+  # fresh attach, so tmux has no last session and the crumb is the only way back.
+  recorded lab work 4
+  at hub hub 1
+  export STUB_DEST_WINDOW_INDEX=2
+  run "$TMX" goto hub hub:board
+  assert_success
+  assert_equal "$(back_slot)" "$(printf 'hub\thub\t1')"
+}
+
+@test "a hop to the window you are already on leaves the back-slot alone" {
+  # Prefix+i twice: recording the board would lose the note and hand L a board to skip.
+  recorded hub hub 1
+  at hub hub 2
+  export STUB_DEST_WINDOW_INDEX=2
+  run "$TMX" goto hub hub:board
+  assert_success
+  assert_equal "$(back_slot)" "$(printf 'hub\thub\t1')"
+}
+
 @test "outside tmux nothing is recorded, because there is no client to have left" {
   recorded lab work 4
   at hub daily 0
@@ -148,6 +169,15 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_called "switch-client -t =notes"
   assert_called "select-window -t notes:2"
   refute_output --partial 'detach'
+  assert_not_called "detach-client"
+}
+
+@test "back to another window of this session selects it, with no detach" {
+  recorded hub hub 1
+  at hub hub 2
+  run "$TMX" back
+  assert_success
+  assert_called "select-window -t hub:1"
   assert_not_called "detach-client"
 }
 
