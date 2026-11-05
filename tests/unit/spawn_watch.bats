@@ -40,6 +40,17 @@ pings() { [ -f "$NOTIFY_LOG" ] && grep -c . "$NOTIFY_LOG" || echo 0; }
   grep -q 'made 12 Agent calls' "$NOTIFY_LOG"
 }
 
+@test "in tmux the ping points at the session's pane; outside it points nowhere" {
+  printf '#!/usr/bin/env bash\n[ "$*" = "display-message -p -t %%7 #{b:socket_path}/#S:#I" ] && echo lab/demo-agent-2:1\n' > "$SANDBOX/bin/tmux"
+  chmod +x "$SANDBOX/bin/tmux"
+  for i in 1 2 3; do TMUX_PANE=%7 call s1 >/dev/null; done
+  for i in 1 2 3; do TMUX_PANE= call s2 >/dev/null; done
+  run grep 'Session s1' "$NOTIFY_LOG"
+  assert_output --partial '-r tmux:lab/demo-agent-2:1'
+  run grep 'Session s2' "$NOTIFY_LOG"
+  refute_output --partial '-r '
+}
+
 @test "sessions are counted separately" {
   for i in 1 2; do call s1; call s2; done
   assert_equal "$(pings)" 0
