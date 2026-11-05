@@ -710,6 +710,9 @@ cmd_stats() {
       prs: map(select(has_pr)) | length, wait_minutes_median: (waited | median),
       to_pr_minutes_median: to_pr};
     def group(f): group_by(f) | map({key: (.[0] | f), value: outcomes}) | from_entries;
+    def spread: {n: length, p50: median, p90: p90};
+    def stage($name; f): [.[] | select((f // "") != "") | {day: (f | fromdateiso8601 | strflocaltime("%F")), stage: $name, item: .}];
+    def at($name): map(select(.stage == $name) | .item);
     (map(select(.state == "done"))) as $done
     | (map(select(.state == "queued"))) as $queued
     | ($queued | map(select(.hold == null) | {slug, project, minutes: (.queued | age)}) | sort_by(-.minutes)) as $runnable
@@ -736,6 +739,20 @@ cmd_stats() {
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),
+       # Per local day, the day day-log keeps: each item counts on the day it reached that stage.
+       # .waiting is the last move to waiting, so an item that waited twice counts on the later day.
+       flow: ((stage("queued"; .queued) + stage("started"; .started) + stage("waiting"; .waiting)
+           + ($done | stage("done"; .finished)))
+         | map(select(.day >= $since)) | group_by(.day)
+         | map(at("done") as $fin | at("started") as $went | {key: .[0].day, value: {
+             queued: (at("queued") | length), started: ($went | length), waiting: (at("waiting") | length),
+             done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
+             failed: ($fin | map(select(.status == "failed")) | length),
+             cancelled: ($fin | map(select(.status == "cancelled")) | length),
+             lead_minutes: ([$fin[] | mins(.queued; .finished)] | spread),
+             wait_minutes: ($went | waited | spread),
+             run_minutes: ([$fin[] | mins(.started; .finished)] | spread)}})
+         | from_entries),
        by_project: ($done | group(.project)),
        by_source: ($done | group(source)),
        done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"

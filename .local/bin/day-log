@@ -9,15 +9,21 @@
 #   day-log show [--date D]       the day as markdown, every PR listed
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
 #                                 refs/<D>/shipped.md, print one summary line
+#   day-log nightly [--date D]    close a finished day (the token-usage runner, 03:40): token
+#                                 snapshot, CI, finalize, the week and day_log_rollup.prom
+#   day-log week [--date D] [--json | --line]   "what moved": 7 finished days against the 7 before
 # Deterministic, no model: gh search, the fleet state document, fleet-bench, agent-usage,
 # agent-hold, the shepherd's watch log and the nightly token-usage snapshot. The live sections (waiting on you, fleet,
-# scorecard) are read while the day is today and kept as last seen once it is past.
+# scorecard) are read while the day is today and kept as last seen once it is past. The work,
+# agents and ci sections and the week are lib/day-log-snapshots.py.
 
 set -uo pipefail
 
 # A snapshot of today also publishes it to Prometheus (day_log.prom).
 # shellcheck source=/dev/null
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+. "$HERE/../lib/prom-textfile.sh"
+SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 
 : "${DAYLOG_DIR:=$HOME/.agent/daylog}"
 : "${DAYLOG_GH:=gh}"
@@ -32,6 +38,10 @@ set -uo pipefail
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
                               # (the hub Today tab keeps its own OPEN_DAYS = 7)
+: "${DAYLOG_QUEUE_CMD:=agent-queue}"
+: "${DAYLOG_NOTES_DIR:=$HOME/.notes}"
+: "${DAYLOG_CI:=$HOME/.config/agentctl/day-log-ci}"   # private overlay: it names private repos
+export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -119,7 +129,7 @@ gather() {
          | {key: "\($r)#\(.number)", value: ($x | who($r))} ] | from_entries end) as $now_by
     | ($outcomes[0] + ($p.landed_by // {}) + $now_by) as $by
     | ($merged[0] // null) as $m
-    | {schema: 1, date: $day, live: $live, gathered_at: $at,
+    | {schema: 2, date: $day, live: $live, gathered_at: $at,
        unreadable: ([if $m == null then "gh merged" else empty end,
                      if $live and $open[0] == null then "gh open" else empty end,
                      if $live and $st == null then "fleet state" else empty end]),
@@ -148,7 +158,8 @@ gather() {
          else ($p.bench // null) end),
        usage: $usage[0],
        tokens: ($tokens[0] // $p.tokens // null),
-       timeline: (if ($timeline[0] | length) > 0 then $timeline[0] else ($p.timeline // []) end)}'
+       timeline: (if ($timeline[0] | length) > 0 then $timeline[0] else ($p.timeline // []) end)}' |
+    "$SNAPSHOTS" enrich --start "$s" --end "$e" --prev "$prev" ${DAYLOG_CI_FILE:+--ci-file "$DAYLOG_CI_FILE"}
 }
 
 # snapshot <day>: gather and write the record atomically, under a lock (the board and the
@@ -176,6 +187,47 @@ day_prom() {
       (.merged // []) | group_by(.area)[] | [{area: .[0].area}, length]),
     gauge("agent_day_cost_usd"; "Spend today in USD, by project (agent-usage).";
       (.usage // [])[] | select(.project != "TOTAL") | [{project}, .cost_usd])' "$1"
+}
+
+# rollup_prom <record> <week> -> the day_log_rollup.prom lines: the last finished day's CI, usage
+# and flow, and the week's value and delta per metric. A number the day has not got is left out.
+rollup_prom() {
+  jq -r --slurpfile week "$2" "$PROM_JQ"'
+    (.ci.repos // {} | to_entries) as $ci | .agents as $a | .work as $w
+    | gauge("agent_ci_pass_rate"; "Share of runs not red on the last finished day, by repo and workflow (ci-failures).";
+        $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | [{repo: $r, workflow: .key}, .value.pass_rate]),
+      gauge("agent_ci_main_red"; "Red runs on main on the last finished day, by repo (ci-failures).";
+        $ci[] | [{repo: .key}, .value.main.red]),
+      gauge("agent_ci_gate_wall_minutes"; "Gate wall time on the last finished day, by repo (ci-cost).";
+        $ci[] | .key as $r | .value.cost.gate.wall // {} | [{repo: $r, quantile: "0.5"}, .p50], [{repo: $r, quantile: "0.9"}, .p90]),
+      gauge("agent_ci_gate_wait_minutes"; "Wait for a runner on the last finished day, by repo (ci-cost).";
+        $ci[] | .key as $r | .value.cost.queue.Tests // {} | [{repo: $r, quantile: "0.5"}, .p50], [{repo: $r, quantile: "0.9"}, .p90]),
+      gauge("agent_ci_runner_hours"; "Pool runner-hours on the last finished day, by repo (ci-cost).";
+        $ci[] | [{repo: .key}, .value.cost.hours.pool]),
+      gauge("agent_ci_regated_branches"; "Branches gated more than once on the last finished day, by repo (ci-cost).";
+        $ci[] | [{repo: .key}, .value.cost.regates.branches_regated]),
+      gauge("agent_ci_quarantine_open"; "Tests in quarantine at the end of the last finished day, by repo (ci-cost).";
+        $ci[] | [{repo: .key}, .value.cost.quarantine.open]),
+      gauge("agent_usage_sessions"; "Sessions on the last finished day, by kind (agent-usage).";
+        ($a.by_kind // {} | to_entries[]) | [{kind: .key}, .value.sessions]),
+      gauge("agent_usage_account_sessions"; "Sessions on the last finished day, by account (agent-usage).";
+        ($a.by_account // {} | to_entries[]) | [{account: .key}, .value.sessions]),
+      gauge("agent_usage_context_tokens"; "Context tokens on the last finished day (token-usage snapshot)."; [{}, $a.tokens.context]),
+      gauge("agent_usage_cost_per_merged_pr_usd"; "Cost per merged PR on the last finished day (token-usage snapshot)."; [{}, $a.cost_per_merged_pr]),
+      gauge("agent_usage_sessions_no_pr"; "Sessions with no PR on the last finished day (session-outcomes)."; [{}, $a.outcomes.no_pr]),
+      gauge("agent_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
+      gauge("agent_queue_flow"; "Queue items reaching each stage on the last finished day.";
+        ($w.queue // {}) as $q | ("queued", "started", "waiting", "done", "failed") | [{stage: .}, $q[.]]),
+      gauge("agent_queue_minutes"; "Queue lead, wait and run time on the last finished day, minutes.";
+        ($w.queue // {}) as $q | ("lead", "wait", "run") | . as $s | $q["\(.)_minutes"] // {}
+          | [{stage: $s, quantile: "0.5"}, .p50], [{stage: $s, quantile: "0.9"}, .p90]),
+      gauge("agent_board_rows"; "Agent board rows opened and closed on the last finished day, and open at its end.";
+        ($w.board // {}) | [{event: "opened"}, .opened], [{event: "closed"}, .closed], [{event: "open"}, .open_end]),
+      gauge("agent_phases_ticked"; "Plan phases ticked on the last finished day (fleet-bench flow)."; [{}, $w.phases.ticked]),
+      gauge("agent_week_value"; "A week metric over the last 7 finished days (day-log week).";
+        ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.value]),
+      gauge("agent_week_delta"; "A week metric against the 7 days before, when both read as many days.";
+        ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.delta])' "$1"
 }
 
 # record <day> -> path of the day's record: today is gathered fresh, a past day is read.
@@ -221,6 +273,15 @@ markdown() {
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
       "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
       (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"), "",
+      (if .work then "## Flow", "",
+        (.work.queue | if . then "- Queue: \(.queued // 0) queued, \(.started // 0) started, \(.waiting // 0) moved to waiting, \(.done // 0) done (\(.failed // 0) failed); lead p50 \(.lead_minutes.p50 // "-") min, wait p50 \(.wait_minutes.p50 // "-") min" else empty end),
+        (.work.board | if . then "- Board: \(.opened // "-") rows opened, \(.closed // "-") closed, \(.open_end // "-") open" else empty end),
+        (.work.phases | if . then "- Plan phases: \(.ticked) ticked, \(.added) added" else empty end),
+        (.agents.outcomes | if . then "- Sessions: \(.sessions), \(.no_pr) with no PR (\(.no_pr_with_edits) of them edited files)" else empty end),
+        (.agents.asks | if . then "- Asks: \(.open) open, oldest \(.age_h_max // "-") h" else empty end),
+        (.ci.repos // {} | to_entries[] | select(.value.runs) | "- CI \(.key | sub(".*/"; "")): \(.value.red) red of \(.value.runs) runs, \(.value.main.red // 0) on main"
+          + (.value.cost | if . then ", gate wall p50 \(.gate.wall.p50 // "-") min, \(.hours.pool) runner-hours, \(.regates.branches_regated) branches re-gated" else "" end)),
+        "" else empty end),
       (if (.timeline | length) > 0 then "## Timeline", "", (.timeline[] | "- " + .[11:]) else empty end)
   ' "$1"
 }
@@ -232,6 +293,25 @@ finalize() {
   out="$DAYLOG_REFS_DIR/$day/shipped.md"
   mkdir -p "${out%/*}" && markdown "$f" > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
   jq -r '"\(.merged | length) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
+}
+
+# nightly <day>: close a finished day. The CI read takes minutes, so it runs before finalize,
+# outside the record's lock, and its result goes in as DAYLOG_CI_FILE. Everything is attempted
+# and any failure is the exit code: the runner reports it, the briefing names it.
+nightly() {
+  local day="$1" rc=0 s e tmp
+  [ "$day" = "$(today)" ] && { say "$day is not over yet"; return 2; }
+  s=$(date -d "$day 00:00" +%s); e=$(date -d "$day +1 day 00:00" +%s)
+  $DAYLOG_USAGE_CMD tokens snapshot --date "$day" || rc=1
+  tmp="$(mktemp)"
+  "$SNAPSHOTS" ci --day "$day" --start "$s" --end "$e" > "$tmp" || rc=1
+  [ -s "$tmp" ] || { rm -f "$tmp"; tmp=""; }
+  DAYLOG_CI_FILE="$tmp" finalize "$day" || rc=1
+  [ -z "$tmp" ] || rm -f "$tmp"
+  "$SNAPSHOTS" week --date "$day" --write || rc=1
+  prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
+    say "could not write day_log_rollup.prom"
+  return "$rc"
 }
 
 # day_arg [--date D] [default] -> the day, validated.
@@ -257,8 +337,10 @@ main() {
     json) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && cat "$f" ;;
     show) day="$(day_arg "$(today)" "$@")" || return 2; f="$(record "$day")" && markdown "$f" ;;
     finalize) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; finalize "$day" ;;
-    -h | --help) sed -n '2,14p' "$0" ;;
-    *) sed -n '2,11p' "$0" >&2; return 2 ;;
+    nightly) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; nightly "$day" ;;
+    week) "$SNAPSHOTS" week "$@" ;;
+    -h | --help) sed -n '2,18p' "$0" ;;
+    *) sed -n '2,14p' "$0" >&2; return 2 ;;
   esac
 }
 

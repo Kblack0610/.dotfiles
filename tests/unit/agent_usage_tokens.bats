@@ -42,6 +42,16 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_equal "$(snap '.long_runs | [.turns_over, .stretches, .long]')" '[150,4,0]'
 }
 
+@test "snapshot: sessions by kind and by account, and json serves the day for day-log" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.by_kind | to_entries | map(.value.sessions) | add > 0), (.by_account | length > 0)]')" '[true,true]'
+  run "$AU" tokens json --date 2026-01-01
+  assert_success
+  assert_equal "$(jq -r .date <<<"$output")" 2026-01-01
+  run "$AU" tokens json --date 2026-01-02
+  assert_failure 1
+}
+
 @test "snapshot: token-filter verify --apply is run and its summary kept" {
   "$AU" tokens snapshot >/dev/null
   assert_equal "$(snap '.token_filter | [.ok, .rewritten, .skips_added, .bad_cmds]')" \
