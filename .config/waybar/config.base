@@ -120,6 +120,7 @@
             "custom/dispatch",
             "custom/fleet",
             "custom/ci",
+            "custom/machine-mode",
             "custom/day"
         ]
     },
@@ -207,6 +208,16 @@
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
     // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
+    "custom/machine-mode": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/machine-mode $HOME/.config/waybar/machine_mode.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "$HOME/.local/bin/machine-mode next",
+        "tooltip": true
+    },
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",
