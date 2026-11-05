@@ -190,6 +190,24 @@ pub fn current_target() -> Option<String> {
     (!s.is_empty()).then(|| format!("{server}/{s}"))
 }
 
+/// The target is on the server this process runs inside (or names none): a jump to it is a
+/// `switch-client`, which keeps this client and any popup it has open.
+pub fn is_local(target: &str) -> bool {
+    match split(target).0 {
+        Some(srv) => current_server().as_deref() == Some(srv),
+        None => true,
+    }
+}
+
+/// Open a popup running `cmd` on `client` of the server at `socket`. `-EE` closes it when the
+/// command exits 0 and keeps it open on a failure, so an error is read rather than flashed.
+pub fn popup(socket: &str, client: &str, title: &str, cmd: &[String]) {
+    let _ = Command::new("tmux")
+        .args(["-S", socket, "display-popup", "-EE", "-c", client, "-w", "90%", "-h", "70%", "-T", title])
+        .args(cmd)
+        .status();
+}
+
 /// Jump to a target. Within the server we are already in, that is `switch-client`.
 /// Anything else is a cross-server hop, which tmux has no command for; `tmx goto`
 /// owns it (detach-client -E + attach, and it records the Prefix+L way back), so

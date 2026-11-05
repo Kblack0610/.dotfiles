@@ -242,7 +242,7 @@ Which backlogs the footer links is config-driven via `footer_links` (names: `bac
 `schedule`, or a vault-relative path; default `["backlog", "schedule"]`) - edit that list in
 `config.toml`, no recompile. `footer_backlogs` is the old key name, still read as an alias.
 
-**The note is written once a day.** `notes today` builds the note when it creates it, and after that only you write to it. Everything that changes during the day lives on a status page beside the note under `<root>/status/`, reached from the footer:
+**The note is written once a day.** `notes today` builds the note when it creates it, and after that only you write to it. Everything that changes during the day lives on a status page beside the note under `<root>/status/`, reached from the footer (the inbox page from Morning):
 
 - `status/watches.md` - Sentinel watches (set `watches = "~/.agent/watches"`; state read from `~/.local/state/watch-companion/<name>.state`). Read-only against the Sentinel runtime.
 - `status/comms.md` - the mail triage poller's surface file plus its stats line. Skipped on a machine without comms config, so it never overwrites the page another machine publishes.
@@ -252,16 +252,31 @@ A note written by an older build has its `## Watches`, `## Comms`, `## Inbox` an
 
 **Projects** - the note's one generated section, rendered at creation: quick links to every project tagged `#beta` or `#alpha` (see `notes projects --stage`) in this org and in each org listed in `rollup`, one small `### <org>` block per org that has any. Prod and draft projects are left out. Links are vault-relative, so they resolve from any org.
 
-**Morning** - below Notes and Focus (above Projects and Refs), re-rendered only when it changes: the morning briefing (`journal/refs/<date>/briefing.md`: its headline, which carries Lazer month-to-date spend, and its "Needs you" items; it is not repeated under Refs) and every knowledge-engine log from the last week that the previous note did not already list, with the articles it created or updated. With nothing new it names the last compile date, so a stalled engine shows.
+**Morning** - below Notes and Focus (above Projects and Refs), re-rendered only when it changes: first the Outbox and Inbox links (no counts, for the footer's reason), then the morning briefing (`journal/refs/<date>/briefing.md`: its headline, which carries Lazer month-to-date spend, and its "Needs you" items; it is not repeated under Refs) and every knowledge-engine log from the last week that the previous note did not already list, with the articles it created or updated. With nothing new it names the last compile date, so a stalled engine shows.
 
-**Footer** - one `- Label: [[target]]` per line below a `---`: the `footer_links` files, the project board and agent board, this org's project index, the knowledge MOC, and the three status pages. It carries no counts, so it only changes when the set of links does.
+**Footer** - one `- Label: [[target]]` per line below a `---`: the `footer_links` files, the project board and agent board, this org's project index, the knowledge MOC, and the Watches and Comms pages. It carries no counts, so it only changes when the set of links does.
 
-## Wiring
+## What runs, and when
 
-- Aliases (`.commonrc`): `today`, `fun`, `co`, `zk`, `ndoctor` → the binary.
-- Timers: `journal-daily-summarize.service` → `notes summarize`,
-  `journal-monthly-archive.service` → `notes archive`.
-- Legacy `journal-create` + the two Python scripts are deprecated fallbacks.
+Everything that reads or writes the vault on its own, and what sets it off. Change a trigger and this table in the same PR.
+
+| When | What runs | What it changes |
+|---|---|---|
+| You open today's note from notes.nvim, or run `today` / `notes today` | `notes today` | Creates the note if it is missing, refreshes Morning and the footer, writes `status/watches.md`, `status/comms.md`, `status/inbox.md` and the board file, then runs the Focus sweep (next row) |
+| `notes today`, `notes focus sweep`, `notes clickup sync` | the Focus sweep | Regroups `## Focus` into its lanes, moves `#idea` rows to their ideas file and each `#p:<name>` row to that project's `## Inbox` (recorded as `moved`, `from: focus`) |
+| You save a note in nvim | `markdown.lua` save hooks | Stamps new tasks with a date and regroups the Focus lanes, with no moves; on a daily note, `notes clickup push` sends the status of ClickUp-linked rows |
+| You save `outbox.md`, a project `README.md` or its `agent/README.md` | `agentctl@inbox-triage` (`--watch`, always on), once 30s pass with no other save | Moves outbox lines to their project, files inbox lines as rows (one Opus call for the untyped ones), republishes `status/inbox.md`, and starts the planner when a `#plan` row waits |
+| The triage sweep, when a `#plan` row waits | `agentctl@inbox-plan` | Adds `goal:`, `approach:` and `check:` lines to the row, sets its size, splits it when it is more than one PR |
+| Any file under `~/.notes` changes | `notes-watch`, 3s after the last change, then `notes-sync`; `git-sync-notes.timer` runs the same sync every 30s | Commits, pulls and pushes the vault. `notes-mqtt` and `notes-ntfy` start a pull when another machine pushes |
+| :00 and :30 every hour | `agentctl@comms` | Mail triage; its surface file feeds `status/comms.md` |
+| 06:45 and 18:45 | `agentctl@briefing` | `journal/refs/<date>/briefing.md`, which Morning shows; the evening asks page |
+| 23:00 | `agentctl@nightly-sync` | Reads recent notes into mem0; writes nothing in the vault |
+| 00:30 | `agentctl@knowledge-engine` | Compiles the daily notes into `~/.notes/knowledge/` |
+| 01:00 | `journal-daily-summarize` | `notes summarize`: yesterday's note gets its summary |
+| 01:15 | `journal-index-rebuild` | `notes index --rebuild`: backlinks and the Map of Content |
+| The 2nd of the month, 01:30 and 01:45 | `journal-monthly-archive`, `journal-refs-archive` | `notes archive` moves old daily notes to `daily_archive/`; `archive-refs` moves old ref folders |
+
+To see them live: `agentctl list` for the agentctl runners, `systemctl --user list-timers` for the clock rows, and `status/inbox.md` for what the Focus sweep and the triager did with each line today. The shell aliases (`.commonrc`) `today`, `fun`, `co`, `zk` and `ndoctor` call the binary; the legacy `journal-create` and its two Python scripts are deprecated fallbacks.
 
 ## Tests
 

@@ -35,6 +35,6 @@ while IFS= read -r f; do
   grep -qx 'status: pending' "$f" && exit 0
 done < <(grep -lx "claude_session: $SID" "$ASKS_ROOT"/*/*.md 2>/dev/null)
 
-jq -n --arg r "Your turn ended waiting on the human, and no ask is filed, so no board shows it and nothing pages them. If you need their answer or their action before you continue, file it now: agent-ask post --options 'a|b' --recommend a \"<the question or step, self-contained>\" (it prints the ask here and pages them), then end the turn on the same question. If it is a human-only action you will not wait on, add a human-sheet row (notes ptask <project> add \"...\") instead. If nothing is actually waiting on them, say so in one line and stop." \
+jq -n --arg r "Your turn ended waiting on the human, and no ask is filed, so no board shows it and nothing pages them. If you need their answer or their action before you continue, file it now: agent-ask post --options 'a=what a means|b=what b means' --recommend a --context \"<why, what it blocks>\" \"<one question, ending in ?>\" (it prints the question card and pages them), then end the turn on that card's question and numbered options as written, never on 'filed as ask X'. If it is a human-only action you will not wait on, add a human-sheet row (notes ptask <project> add \"...\") instead. If nothing is actually waiting on them, say so in one line and stop." \
   '{decision: "block", reason: $r}'
 exit 0

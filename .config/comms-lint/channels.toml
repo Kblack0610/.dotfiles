@@ -1,0 +1,95 @@
+# Every surface the fleet writes for a human, and the numbers its text must fit.
+# Rules and their reasons: ~/.claude/skills/comms-standard/SKILL.md. What each key
+# means: that skill's references/channels.md. Read by comms-lint.
+
+[defaults]
+ascii = true
+emoji = false
+max_emoji = 0
+max_chars = 0
+max_lines = 0
+max_line = 0
+max_lead = 140
+lead_ids = true
+prose = false
+item = '^\s*(?:[-*]|\d+\.)\s+'
+max_items = 0
+max_item = 0
+
+[ids]
+# Names for machines, not people. A message may carry them, after the point.
+patterns = [
+  '^\[[\w.:-]+\]',                                  # [watch-name]
+  '^(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*\d)?[A-Za-z0-9]{6}\b(?=\s*[(:])',  # ask id: lusBbd (
+  '^[\w.-]+/[\w.-]+:\d+\b',                         # hub/dotfiles:3
+  '^[\w.-]*agent-\d+\b',                            # agent-60, unity-core-playground-agent-6
+  '^[\w.-]+#\d+\b',                                 # dotfiles#910
+  '^~?/[\w.~/-]+',                                  # a path
+  '^\d{8}-\d{6}-',                                  # a queue slug
+]
+
+[report]
+buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
+buzz_per_day_target = 15
+
+# A push to the phone. The lock screen shows the title and about two lines.
+[channel.page]
+max_chars = 300
+max_lead = 110
+forbid = [
+  ['\| at: ', 'probe plumbing: say where in plain words, or leave it to the briefing'],
+  ['\(want \d+\)', 'probe internals: say what broke'],
+  ['\b[A-Z]{5,}\b', 'an all-caps status word: say the state in plain words'],
+  ['-> do: ', 'a runbook hint: give one action'],
+]
+quiet = ['\bRECOVERED\b', '\brecovered\b', 'all clear']
+source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
+
+# The morning briefing page (refs/<date>/briefing.md): headline plus what needs you.
+[channel.briefing]
+stop_at = '^## (?!Needs you)'
+max_items = 5
+max_item = 160
+max_line = 200
+forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
+source = { kind = "files", glob = "~/.notes/journal/refs/*/briefing.md" }
+
+# The Morning block the briefing copies into the daily note.
+[channel.morning]
+max_lines = 8
+max_line = 200
+max_item = 200
+max_lead = 200
+source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "## Morning" }
+
+# A fleet rundown: the answer to "where are we".
+[channel.rundown]
+prose = true
+max_item = 240
+source = { kind = "files", glob = "~/.agent/shepherd/rundowns/*.md" }
+
+# A status update in the one shape (Done, Doing, Next, Needs you).
+[channel.status]
+prose = true
+max_item = 200
+require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section']]
+
+# A pull request body.
+[channel.pr-body]
+prose = true
+lead_ids = false
+
+# A client end-of-day update, drafted for the human to post. A job config may override.
+[channel.client-eod]
+prose = true
+emoji = true
+max_emoji = 8
+max_item = 400
+source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-eod.md" }
+
+# A client weekly recap.
+[channel.client-weekly]
+prose = true
+emoji = true
+max_emoji = 5
+source = { kind = "files", glob = "~/.notes/employment/jobs/*/updates/*-weekly.md" }
