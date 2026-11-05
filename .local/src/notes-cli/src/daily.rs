@@ -2021,7 +2021,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/shipped.md"),
-            "# Day log, 2026-09-30\n\n3 merged in 2 repos, whose spend is $4.5. Gathered by `day-log`.\n",
+            "# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
         for (d, line) in [
@@ -2046,7 +2046,7 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Runner wave-roll stalled. Run agentctl status wave-roll.\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 merged in 2 repos, whose spend is $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
+        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Runner wave-roll stalled. Run agentctl status wave-roll.\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
         assert!(

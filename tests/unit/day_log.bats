@@ -201,14 +201,14 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\ntools\\t1\\t2\\t1000000\\t2.5\\t0\\nTOTAL\\t4\\t12\\t3000000\\t15\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '4 sessions active, whose whole-session spend is $15.'
+  assert_output --partial '4 sessions spent $15.'
   assert_output --partial '| TOTAL | 4 | 3M | $15 |'
 }
 
 @test "negative control: a rollup with no TOTAL row is summed" {
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '3 sessions active, whose whole-session spend is $12.5.'
+  assert_output --partial '3 sessions spent $12.5.'
 }
 
 @test "a snapshot of today publishes merged PRs per area and spend per project, TOTAL left out" {
