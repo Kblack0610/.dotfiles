@@ -3,6 +3,15 @@ name: hz-immersive-designer
 license: Apache-2.0
 description: >-
   Design comfortable VR/MR for Meta Quest and Horizon OS: comfort, interaction, spatial layout, accessibility. Use in UX design review. Unclear build path: hz-quest-verify-first.
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, design]
