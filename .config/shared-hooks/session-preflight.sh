@@ -8,16 +8,10 @@ set -euo pipefail
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 . "$(dirname "$0")/project-name.sh"
 # Guarded on purpose. These hooks are deployed by `stow --no-folding .`, one symlink per
-# file, so a checkout can reach a commit that adds focus-lib.sh before stow has linked it.
-# Under `set -e` an unguarded source of a missing file kills the whole preflight — you lose
-# the anchor, plans, lessons and git context at turn 1, and the only symptom is silence.
-# Losing the Focus block alone is a far smaller failure, so degrade to that instead.
-FOCUS_LIB="$(dirname "$0")/focus-lib.sh"
-if [ -r "$FOCUS_LIB" ]; then
-  # shellcheck source=/dev/null
-  . "$FOCUS_LIB"
-fi
-# The anchor renderer, guarded for the same stow reason. Losing it degrades the anchor to
+# file, so a checkout can reach a commit that adds a lib before stow has linked it. Under
+# `set -e` an unguarded source of a missing file kills the whole preflight: you lose the
+# anchor, plans, lessons and git context at turn 1, and the only symptom is silence.
+# The anchor renderer. Losing it degrades the anchor to
 # its full untrimmed self (bigger, still correct); an unguarded source would lose the turn.
 ANCHOR_LIB="$(dirname "$0")/anchor-lib.sh"
 if [ -r "$ANCHOR_LIB" ]; then
@@ -186,11 +180,11 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
           }' | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
-        [ "${agent_total:-0}" -gt "$BOARD_MAX" ] && echo "  +$((agent_total - BOARD_MAX)) more - \`notes board\` for the rest"
-        echo "  (your task: \`agent-queue add --running --project <p> \"<task>\"\`; follow-ups: \`notes ptask <project> --agent add\`)"
+        if [ "${agent_total:-0}" -gt "$BOARD_MAX" ]; then
+          echo "  +$((agent_total - BOARD_MAX)) more - \`notes board\` for the rest"
+        fi
       elif [ "$AGENT_RC" -eq 0 ]; then
         echo "📥 Agent board clear for this repo — nothing left in flight."
-        echo "  (the human's lane is the project sheet: \`notes ptask <project> list\`; work set up to run: \`agent-queue list\`)"
       else
         echo "📥 Agent board unavailable (\`notes board --agent\` exited $AGENT_RC)."
         echo "  Nothing is known about what is in flight — this is not \"nothing to do\"."
@@ -199,51 +193,9 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
   fi
 fi
 
-# Focus cockpit: surface today's open `## Focus` tasks (your daily-note task list, the
-# thing you actually work from) at turn 1, so every session opens knowing what's actively
-# in progress. Read-only + best-effort here; task WRITES stay in the `notes` CLI (never
-# hand-edit ~/.notes markdown). Keep items terse.
-#
-# The nudge points PROJECT work at `notes ptask`, not at Focus, and an empty Focus is
-# reported as fine rather than as something to fill. This is the turn-1 half of the same
-# rule the Stop gate enforces at turn N (86-focus-reconcile.sh:124); the two must agree.
-# They did not: the gate learned `ptask:` in #204 while this still said "notes focus add",
-# so an agent was TOLD to use the human's list and then blocked for having used it. That
-# is how 2026-08-05 opened with five of six Focus items belonging to agent sessions.
-SEC_FOCUS=""
-if command -v notes >/dev/null 2>&1 && declare -F focus_daily_note >/dev/null 2>&1; then
-  SEC_FOCUS=$(
-    DAILY_NOTE=$(focus_daily_note)
-    # `[/]` (in progress) and `[ ]` (open) are BOTH unfinished — split them so the thing
-    # actively being worked is surfaced first and never lost to the open-list truncation.
-    FOCUS_BODY=$(focus_body "$DAILY_NOTE")
-    FOCUS_WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
-    FOCUS_OPEN=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ')
-    if [ -n "$FOCUS_WIP" ] || [ -n "$FOCUS_OPEN" ]; then
-      n=$(printf '%s\n' "$FOCUS_OPEN" | focus_count)
-      w=$(printf '%s\n' "$FOCUS_WIP" | focus_count)
-      echo "🎯 Focus (today — $(basename "$DAILY_NOTE"), ${w:-0} in progress, ${n:-0} open):"
-      if [ -n "$FOCUS_WIP" ]; then
-        echo "  in progress:"
-        printf '%s\n' "$FOCUS_WIP" | head -4 | sed 's/^/    /'
-        [ "${w:-0}" -gt 4 ] && echo "    … +$((w-4)) more in progress"
-      fi
-      if [ -n "$FOCUS_OPEN" ]; then
-        FOCUS_INDENT="  "
-        if [ -n "$FOCUS_WIP" ]; then echo "  open:"; FOCUS_INDENT="    "; fi
-        printf '%s\n' "$FOCUS_OPEN" | head -8 | sed "s/^/$FOCUS_INDENT/"
-        [ "${n:-0}" -gt 8 ] && echo "  … +$((n-8)) more"
-      fi
-      # Two lines, not ten. Turn 1 needs the POINTER; the argument for why the two lanes
-      # are separate lives in CLAUDE.md, which is already loaded, and repeating it here
-      # cost ~10 lines of every session to re-litigate a settled rule.
-      echo "  → the HUMAN's list, not your queue. Your task: \`agent-queue add --running --project <p> \"<task>\"\` (\`agent-queue list\`)"
-    else
-      echo "🎯 Focus: none set today — that is the human's list, not yours."
-      echo "  → your task: \`agent-queue add --running --project <p> \"<task>\"\`"
-    fi
-  )
-fi
+# No Focus block: today's `## Focus` is the human's list, and every session paid about
+# 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
+# Where an agent's own task goes is CLAUDE.md's rule ("Track your work in the queue").
 
 # Lessons digest and plans come from the anchor's generated AUTO block, which
 # stop-post.d/87-regen-anchor.sh rewrites on every Stop: the last 5 bullet lessons, each
@@ -267,23 +219,21 @@ SEC_LESSONS=$(
 )
 SEC_PLANS=$(declare -F anchor_section >/dev/null 2>&1 && anchor_section "$ANCHOR_FILE" '^Active plans' || true)
 
-# Scoped to the app's subtree when this project is one app of a monorepo; otherwise the
-# rows show whatever landed last across every app in the repo.
+# Commits only for one app of a monorepo, scoped to its subtree. Claude Code's own
+# gitStatus already lists the repo's last 5 commits in every session that ran this
+# preflight (330 of 330, 2026-11-05), so an unscoped copy is the same text twice.
 SEC_COMMITS=""
 SEC_PRS=""
 if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  SEC_COMMITS=$(
-    cd "$PROJECT_DIR"
-    if [ -n "$PROJECT_PATHFILTER" ]; then
+  if [ -n "$PROJECT_PATHFILTER" ]; then
+    SEC_COMMITS=$(
+      cd "$PROJECT_DIR"
       echo "Recent commits (last 5, $PROJECT_PATHFILTER):"
       # `:(top)` anchors the pathspec at the repo root. A bare path is resolved relative
       # to the CWD, so running from inside the app dir matched nothing at all.
       git log --oneline -5 -- ":(top)$PROJECT_PATHFILTER" 2>/dev/null | sed 's/^/  /' || true
-    else
-      echo "Recent commits (last 5):"
-      git log --oneline -5 2>/dev/null | sed 's/^/  /' || true
-    fi
-  )
+    )
+  fi
   if command -v gh >/dev/null 2>&1; then
     SEC_PRS=$(
       cd "$PROJECT_DIR"
@@ -326,7 +276,6 @@ add_section() { # <name> <where to read it> <body>
 }
 add_section "key facts" "$ANCHOR_FILE" "$SEC_FACTS"
 add_section "agent board" "notes board --agent" "$SEC_BOARD"
-add_section "focus" "notes focus" "$SEC_FOCUS"
 add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
 add_section "commits" "git log" "$SEC_COMMITS"
