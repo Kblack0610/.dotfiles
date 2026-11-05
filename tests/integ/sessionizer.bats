@@ -19,6 +19,7 @@ setup() {
   sandbox_init basic
 
   SESSIONIZER="$REPO_ROOT/.local/src/tmux/sessionizer.sh"
+  WORLD="$REPO_ROOT/.local/src/tmux/worlds.sh"
   export SESSIONIZER
 
   # A fixture tree with THREE candidate roots, so a test can tell "found the right one" from
@@ -76,7 +77,7 @@ setup() {
     "$HOME/declared-hub/inside" "$HOME/host-repo/.git" "$HOME/host-repo/declared-sub"
   printf 'ownname ~/declared-hub\nhub ~/declared-notes  nvim\nsub ~/host-repo/declared-sub\n' \
     > "$TMUX_SERVERS_DIR/hub.conf"
-  printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"
+  printf 'platform ~/dev/declared-lab\n@agents\n' > "$TMUX_SERVERS_DIR/lab.conf"
 }
 
 # in_world <server> -- what the tmux stub reports for #{socket_path}. $TMUX has to be set
@@ -340,40 +341,40 @@ in_world() {
 # to enclose it -- so Prefix+f on ~/dev/bnb/platform from hub built a SECOND `platform`
 # beside lab's. Same disease as the leading-dot fold above, one layer up.
 
-@test "--route reports the world that declares a directory" {
-  run "$SESSIONIZER" --route "$HOME/dev/declared-lab"
+@test "route reports the world that declares a directory" {
+  run "$WORLD" route "$HOME/dev/declared-lab"
   assert_success
   assert_output 'lab platform'
 }
 
-@test "--route uses the MANIFEST's session name, not the basename" {
+@test "route uses the MANIFEST's session name, not the basename" {
   # hub.conf calls ~/declared-notes `hub`. Landing it as `declared-notes` would be a second
   # session on a directory that already has one -- which is the real ~/.notes case.
-  run "$SESSIONIZER" --route "$HOME/declared-notes"
+  run "$WORLD" route "$HOME/declared-notes"
   assert_success
   assert_output 'hub hub'
 }
 
-@test "--route still routes an on-demand ?name entry to its world, under the bare name" {
+@test "route still routes an on-demand ?name entry to its world, under the bare name" {
   # hub.conf's `?home-config`: not booted, but Prefix+f on it must still hop to hub
   # rather than build a second session in whatever world you are in.
   mkdir -p "$HOME/declared-lazy"
   printf '?lazy ~/declared-lazy\n' >> "$TMUX_SERVERS_DIR/hub.conf"
-  run "$SESSIONIZER" --route "$HOME/declared-lazy"
+  run "$WORLD" route "$HOME/declared-lazy"
   assert_success
   assert_output 'hub lazy'
 }
 
-@test "--route says here for a directory no manifest declares" {
-  run "$SESSIONIZER" --route "$SANDBOX/roots/alpha/proj-one"
+@test "route says here for a directory no manifest declares" {
+  run "$WORLD" route "$SANDBOX/roots/alpha/proj-one"
   assert_success
   assert_output 'here proj-one'
 }
 
-@test "--route matches the declared directory EXACTLY, not its subdirectories" {
+@test "route matches the declared directory EXACTLY, not its subdirectories" {
   # A subdir of a declared repo is its own piece of work, and it is not what the manifest
   # named. Routing it would drag you across worlds for a directory nobody registered.
-  run "$SESSIONIZER" --route "$HOME/declared-hub/inside"
+  run "$WORLD" route "$HOME/declared-hub/inside"
   assert_success
   assert_output 'here inside'
 }
@@ -413,7 +414,7 @@ in_world() {
   # control is the test above it: the same directory hops when lab is not hidden.
   printf '# not on this machine\nlab\n' > "$TMUX_SERVERS_DIR/hidden"
   in_world hub
-  run "$SESSIONIZER" --route "$HOME/dev/declared-lab"
+  run "$WORLD" route "$HOME/dev/declared-lab"
   assert_success
   assert_output 'here declared-lab'
   run "$SESSIONIZER" "$HOME/declared-hub"
@@ -442,7 +443,7 @@ in_world() {
 
 @test "a commented-out manifest line does not declare anything" {
   printf '# ownname ~/declared-hub\n' > "$TMUX_SERVERS_DIR/hub.conf"
-  run "$SESSIONIZER" --route "$HOME/declared-hub"
+  run "$WORLD" route "$HOME/declared-hub"
   assert_success
   assert_output 'here declared-hub'
 }
@@ -485,22 +486,21 @@ in_world() {
   assert_called 'switch-client -t has space here'
 }
 
-@test "--route ignores a session:window line, which declares a window and not a session" {
+@test "route ignores a session:window line, which declares a window and not a session" {
   # hub.conf's `hub:board ~/dev/home/home-config` must not make that directory route to a
   # session named "hub:board" that tmx never creates.
   mkdir -p "$HOME/declared-win"
   printf 'hub:board ~/declared-win  some-board\n' >> "$TMUX_SERVERS_DIR/hub.conf"
-  run "$SESSIONIZER" --route "$HOME/declared-win"
+  run "$WORLD" route "$HOME/declared-win"
   assert_success
   refute_output --partial 'hub:board'
   assert_output 'here declared-win'
 }
 
-# ── A worktree takes its repo's world ────────────────────────────────────────
+# ── A worktree lands on the agent world ──────────────────────────────────────
 #
-# wt cuts and recycles agent worktrees all day, so no manifest can name them. Before this they
-# routed `here`: picking ~/.worktrees/unity-core-playground-agent-23 from hub built a second
-# session for it on hub while the real one sat on lab.
+# wt cuts and recycles agent worktrees all day, so no manifest can name them. `@agents` says where
+# they all go. Taking the repo's world put dotfiles-agent-N on hub beside the human's own chats.
 
 # real_repo_with_worktree <repo-dir> <worktree-dir> -- a repo with one commit and a linked
 # worktree, because the route asks git which checkout a worktree belongs to.
@@ -512,19 +512,82 @@ real_repo_with_worktree() {
   git -C "$1" worktree add --quiet "$2" -b "${2##*/}"
 }
 
-@test "--route sends a worktree of a declared repo to that repo's world, under its own name" {
-  real_repo_with_worktree "$HOME/dev/declared-lab" "$HOME/.worktrees/declared-lab-agent-1"
-  run "$SESSIONIZER" --route "$HOME/.worktrees/declared-lab-agent-1"
+@test "route sends a worktree of a repo hub declares to the agent world, under its own name" {
+  real_repo_with_worktree "$HOME/declared-hub" "$HOME/.worktrees/declared-hub-agent-1"
+  run "$WORLD" route "$HOME/.worktrees/declared-hub-agent-1"
   assert_success
-  assert_output 'lab declared-lab-agent-1'
+  assert_output 'lab declared-hub-agent-1'
 }
 
-@test "--route leaves a worktree of an UNdeclared repo here" {
-  # The negative control: the inheritance comes from the manifest, not from being a worktree.
+@test "route sends a worktree of an undeclared repo to the agent world too" {
   real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
-  run "$SESSIONIZER" --route "$HOME/.worktrees/undeclared-agent-1"
+  run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1"
+  assert_success
+  assert_output 'lab undeclared-agent-1'
+}
+
+@test "route sends a directory inside a worktree to the agent world, and one inside a base checkout does not" {
+  # A session resumed from a subdirectory is still an agent session.
+  real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
+  mkdir -p "$HOME/.worktrees/undeclared-agent-1/docs" "$HOME/undeclared/docs"
+  run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1/docs"
+  assert_success
+  assert_output 'lab docs'
+  run "$WORLD" route "$HOME/undeclared/docs"
+  assert_success
+  assert_output 'here docs'
+}
+
+@test "route leaves a worktree here when no world declares @agents" {
+  # The negative control: the rule comes from the manifest, not from being a worktree.
+  printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"
+  real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
+  run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1"
   assert_success
   assert_output 'here undeclared-agent-1'
+}
+
+@test "agents reads the world that declares @agents; a hidden world declares nothing" {
+  run "$WORLD" agents
+  assert_output lab
+  echo lab > "$TMUX_SERVERS_DIR/hidden"
+  run "$WORLD" agents
+  assert_success
+  assert_output ''
+}
+
+@test "session names the world that declares a session, and fails on one no world declares" {
+  run "$WORLD" session platform
+  assert_success
+  assert_output lab
+  run "$WORLD" session nobody
+  assert_failure 1
+  assert_output ''
+}
+
+@test "@repos catches a checkout no entry names; a scoped line wins inside its directory, deepest first" {
+  mkdir -p "$HOME/dev/games/deep/one/.git" "$HOME/dev/games/two/.git" "$HOME/dev/tool/.git"
+  printf '@repos\n' >> "$TMUX_SERVERS_DIR/hub.conf"
+  printf '@repos ~/dev/games\n' >> "$TMUX_SERVERS_DIR/lab.conf"
+  printf '@repos ~/dev/games/deep\n' > "$TMUX_SERVERS_DIR/play.conf"
+  run "$WORLD" route "$HOME/dev/tool"
+  assert_output 'hub tool'
+  run "$WORLD" route "$HOME/dev/games/two"
+  assert_output 'lab two'
+  run "$WORLD" route "$HOME/dev/games/deep/one"
+  assert_output 'play one'
+}
+
+@test "a scoped @repos does not claim a sibling that only starts the same" {
+  mkdir -p "$HOME/dev/games-notes/.git"
+  printf '@repos ~/dev/games\n' >> "$TMUX_SERVERS_DIR/lab.conf"
+  run "$WORLD" route "$HOME/dev/games-notes"
+  assert_output 'here games-notes'
+}
+
+@test "a directive line declares no session" {
+  run "$REPO_ROOT/.local/src/tmux/worlds.sh" session @agents
+  assert_failure 1
 }
 
 @test "picking a lab repo's worktree from hub makes its session on lab, then hops there" {

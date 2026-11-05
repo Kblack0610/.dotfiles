@@ -9,6 +9,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
+  sandbox_worlds
   SH="$REPO_ROOT/.local/bin/fleet-shepherd"
   export AGENTCTL_NAME=shepherd-test AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   export FLEET_STATE_FILE="$HOME/state.json" FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
@@ -28,6 +29,7 @@ case "$*" in
 esac'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
+  stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session shepherd" ] && echo hub'
   stub claude-acct 'case "$1" in
   room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
   pick) echo "$HOME/.claude-best" ;;
@@ -184,6 +186,13 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line --index 3 "$id"
   refute_output --partial --max-turns
   assert_equal "$(cat "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct2"
+}
+
+@test "no world declares the session: run stops and says so, and touches no tmux" {
+  STUB_NO_WORLD=1 run "$REPO_ROOT/.local/bin/fleet-shepherd" run
+  assert_failure
+  assert_output --partial 'no world declares session shepherd'
+  [ ! -e "$HOME/tmux.calls" ] || fail "called tmux with no server: $(cat "$HOME/tmux.calls")"
 }
 
 @test "with no shepherd session hub's own tmx ensure makes it, and with no tmux server it gets a scope of its own" {

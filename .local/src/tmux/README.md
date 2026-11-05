@@ -15,7 +15,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+C-s` / `A` / `C-h` / `C-n` | Server layer: pick a world (compact) or every session everywhere (full); hop to lab / hub |
-| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Config: `../../.config/sesh/` |
+| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Its list is the world's manifest rows plus live sessions |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `harpoon.sh` | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Harpoon for windows: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. The list lives in `~/.local/state/tmx/harpoon` and survives a kill-server. Also on PATH as `tmux-harpoon`. |
@@ -165,7 +165,7 @@ containing a space cannot be expressed there (such a line is skipped).
 | Server | Sessions | Lands on |
 |---|---|---|
 | `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -176,7 +176,7 @@ rather than a bare shell.
 A name written `?name` is **on demand**: `ensure` does not boot it, so closing it sticks
 instead of coming back on the next hop in. It is still declared, so `Prefix+f` on its
 directory still routes to this world, and `Prefix+f`, `tmx goto <world> <name>` or the
-world's `Prefix+S` list (`sesh/<world>.toml`) start it. `ensure` reports it as
+world's `Prefix+S` list start it. `ensure` reports it as
 `N on demand`. Never mark the landing entry.
 
 Worlds are **discovered** from that directory rather than hardcoded, so dropping in a
@@ -199,32 +199,31 @@ path from vanishing silently.
 
 #### Which world a directory belongs to
 
-The manifests are also the **routing table**, and `Prefix+f` reads them. Pick a
-directory some `*.conf` declares and you land in the world that declares it, under
-the name that manifest gives it - hopping servers if that is where it lives:
+The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-world`) is the one reader every opener calls. Which world gets what, how to add a repo, and the list of openers: [`.config/tmux-servers/README.md`](../../.config/tmux-servers/README.md). Pick a directory and you land in its world, hopping servers if that is where it lives:
 
 | Picked | Goes to | Because |
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
 | `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
-| `~/.worktrees/unity-core-playground-agent-3` | `lab`, session `unity-core-playground-agent-3` | a linked worktree takes its main repo's world, under its own name |
+| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/dev/bnb/games/engine/unity-core-playground/Assets` | wherever you are, session `Assets` | undeclared: **exact match only** |
+| `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
+| `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
 Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
 session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
 
-`wt new` (`Prefix+F`) asks the same route (`sessionizer.sh --route <main repo>`), so a declared repo's new agent session is created on its world and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
+`wt new` (`Prefix+F`) creates its session on the `@agents` world, inside tmux or out, and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
 other hop, so it records the back-crumb and `Prefix+L` returns from it. Crossing
 worlds from inside a popup is not new - `Prefix+A` has always done it.
 
-`sessionizer.sh --route <dir>` prints the decision (`hub dotfiles`, or `here <name>`
-for anything undeclared) without touching a server, which is how it is tested.
+`tmux-world route <dir>` prints the decision (`hub dotfiles`, or `here <name>` when nothing
+claims it) without touching a server, which is how it is tested.
 
 The startup command is delivered with `send-keys` rather than as a
 `new-session <cmd>` argument, so quitting the editor drops you into a normal shell
@@ -239,27 +238,25 @@ renames, moves or kills - so it is both the boot path and the repair path.
 by construction and can only ever list the sessions of the server its client is
 attached to. That is the entire mechanism behind "completely different lists".
 
-`Prefix+S` needs help, though, because two of sesh's three sources are global: the
-`[[session]]` entries come from one config and **zoxide is one shared database**.
-So `tmx pick-session` derives the server from `#{socket_path}` and runs
-`sesh -C .config/sesh/<server>.toml picker -i -d -c -t` - that world's own config,
-plus its live sessions, and **no `-z`**. Dropping zoxide is what stops every
-server's list looking identical; `-d` collapses the config/live duplicate of the
-same name. Note `-C` must precede the subcommand (`sesh -C f list` works,
-`sesh list -C f` errors).
+`Prefix+S` needs help, though, because sesh's zoxide source is **one shared database**.
+So `tmx pick-session` derives the server from `#{socket_path}`, writes that world's manifest
+rows into a generated sesh config, and runs `sesh -C <generated> picker -i -d -c -t`: the
+world's own entries plus its live sessions, and **no `-z`**. Dropping zoxide is what stops
+every server's list looking identical; `-d` collapses the config/live duplicate of the same
+name. No sesh config is committed, so the list cannot disagree with the manifest. Note `-C`
+must precede the subcommand (`sesh -C f list` works, `sesh list -C f` errors). On the default
+socket there is no world to list, so `Prefix+S` opens `sessionizer.sh`, which routes.
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
 (`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
-they belong to - and it **routes by manifest**: a directory some `*.conf` declares
-lands in that world, under that manifest's name, hopping servers if that is where
-it lives. Everything undeclared opens right where you are. See "Which world a
-directory belongs to" below.
+they belong to - and it **routes by manifest**, hopping servers if that is where the
+directory lives. See "Which world a directory belongs to".
 
 Two things verified, both load-bearing:
 
 - Inside a `-L foo` session `$TMUX` is set, so a bare `tmux ls` reports **foo's**
   sessions. `sesh` shells out to plain `tmux`, so it follows the enclosing server
-  automatically - one `sesh.toml` is correct inside every server, no
+  automatically - one sesh is correct inside every server, no
   `tmux_command` needed.
 - tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
   `detach-client -E`, which runs a command after the client detaches so the
@@ -305,9 +302,8 @@ session name is the **basename** (`panel_session_name`), so 20+ names repeated -
 `~/.agent` is not a root at all: it is the agent runtime axis, one directory per project per
 axis, so it contributed several colliding rows for every project it had ever seen.
 
-An **arbitrary** directory belongs to `Prefix+S`, whose sesh sources are zoxide frecency and
-the `[[session]]` entries in `../../.config/sesh/sesh.toml`. Passing one to `sessionizer.sh`
-as an argument still works; it is only the *list* that is opinionated.
+An **arbitrary** directory can be passed to `sessionizer.sh` as an argument; it is only the
+*list* that is opinionated.
 
 `SESSIONIZER_DEPTH` bounds how far below a root a repo may sit. The walk looks for `.git` one
 level deeper than that, and the `.git` clause comes first in the `find` expression so that
@@ -465,14 +461,12 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 
 ## Sessions (`Prefix+S`)
 
-`sesh` merges three sources into one picker: **live tmux sessions**, **zoxide**
-frecency, and the named `[[session]]` entries in `../../.config/sesh/sesh.toml`.
-Picking a live session switches to it; picking a directory creates a session
-there. This is what `Prefix+w`/`Prefix+C-w` are for windows.
+`sesh` merges two sources into one picker: **live tmux sessions** and the current world's
+manifest rows, generated at pick time. Picking a live session switches to it; picking a row
+starts it. This is what `Prefix+w`/`Prefix+C-w` are for windows.
 
 Additive to `Prefix+f` (`sessionizer.sh`), which only ever saw *directories* and
-had no preview. Keep that list short - zoxide already covers every project repo,
-so a `[[session]]` entry for one just prints a duplicate row.
+had no preview.
 
 **Do not** try to drive a layout tool from `startup_command`: sesh creates the
 session first, so a tool that skips an existing session exits 0 and builds
@@ -500,7 +494,7 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 | Server | Sessions | Lands on |
 |---|---|---|
 | `hub` - personal | **hub** (+ window `board`: hub), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, platform | `~/.notes/lab/projects/index.md` |
+| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the
@@ -519,14 +513,7 @@ Three things that are easy to get wrong, all found by testing:
 - **`Prefix+w` needs no configuration.** `choose-tree` is server-scoped by
   construction and can only list the sessions of the server its client is attached
   to. That is the entire mechanism behind "each world has its own list".
-- **`Prefix+S` does need help**, because two of sesh's three sources are global:
-  the `[[session]]` entries come from one config and **zoxide is one shared
-  database**. `tmx pick-session` derives the server from `#{socket_path}` and runs
-  `sesh -C .config/sesh/<server>.toml picker -i -d -c -t` - that world's config
-  plus its live sessions, and **no `-z`**. Dropping zoxide is what stops every
-  list looking identical; `-d` collapses the config/live duplicate of one name.
-  Note `-C` must precede the subcommand (`sesh -C f list` works, `sesh list -C f`
-  errors).
+- **`Prefix+S` does need help**: see [Worlds](#worlds) above.
 - **A startup command is sent with `send-keys` targeting `"$name:"`.** Not as a
   `new-session <cmd>` argument, or quitting the editor would kill the session; and
   not `-t "=$name"`, because the `=` exact-match prefix is valid only for SESSION
@@ -535,10 +522,8 @@ Three things that are easy to get wrong, all found by testing:
 
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
 (`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
-they belong to - and it **routes by manifest**: a directory some `*.conf` declares
-lands in that world, under that manifest's name, hopping servers if that is where
-it lives. Everything undeclared opens right where you are. See "Which world a
-directory belongs to" below.
+they belong to - and it **routes by manifest**, hopping servers if that is where the
+directory lives. See "Which world a directory belongs to".
 
 ## Status Line Integration
 

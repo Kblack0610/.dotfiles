@@ -71,11 +71,11 @@ PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pa
 ASIDE="$LEDGER/.aside"        # <id>\t<start epoch>\t<due count>\t<handed epoch>\t<pane>: passes replaced and not yet closed
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>: every pass, once scored
-SERVER="${FLEET_SHEPHERD_SERVER:-hub}"  # hub, beside the human's chats; Prefix o jumps to it
 # The pass has a hub session of its own, declared in .config/tmux-servers/hub.conf beside the
 # other worlds: killing session dotfiles took the pass with it on 2026-11-04, when it was a window
 # there. Each run's pass is a window of this session.
 SESSION="${FLEET_SHEPHERD_SESSION:-shepherd}"
+SERVER="${FLEET_SHEPHERD_SERVER:-$(tmux-world session "$SESSION")}"  # hub, beside the human's chats; Prefix o jumps to it
 WINDOW="${FLEET_SHEPHERD_WINDOW:-shepherd}"
 PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
 ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
@@ -706,6 +706,7 @@ retire_asides() {
 }
 
 cmd_run() {
+  [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   # The last pass goes aside first, whatever it is doing, and a pass talking to the human hands
   # over everything it was told.
