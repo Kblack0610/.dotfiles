@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop-post: close the Focus loop. The preflight surfaces today's `## Focus` at turn 1;
+# Stop-post: close the Focus loop. Today's `## Focus` is the human's list (turn 1 does not carry it);
 # this checks, at the end of a turn that actually changed something, that the work got
 # tracked. Without it the turn-1 nudge is advisory and silently rots — you finish a
 # session having shipped three things the cockpit never heard about.

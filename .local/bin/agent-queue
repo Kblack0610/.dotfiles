@@ -697,12 +697,16 @@ cmd_stats() {
     for s in $ACTIVE; do while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s"); done
     done_recs "$since"
   } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" --argjson flow "$flow" '
-    def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
+    (map(select(.finished)) | map({key: .slug, value: .finished}) | from_entries) as $closed
+    | def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;
     def age: ((now - (. | fromdateiso8601)) / 60 | floor);
-    # A `--running` or plan item starts the minute it is added; counting its 0 hid every real wait.
-    def waits: [.[] | mins(.queued; .started)];
+    # Wait runs from ready: queued, or the finish of its `after:` item when that came later, so a
+    # deliberate hold is not read as dispatch latency. A `--running` or plan item starts the minute
+    # it is added; counting its 0 hid every real wait.
+    def ready: [.queued, ($closed[.after // ""] // empty)] | max;
+    def waits: [.[] | mins(ready; .started)];
     def waited: waits | map(select(. > 0));
     # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged".
     def hold_kind: split(" ")[0] | split(":")[0];
@@ -767,7 +771,7 @@ cmd_stats() {
     "since \(.since)",
     "active:  \(.active | pairs | if . == "" then "none" else . end)",
     "done:    \(.done | pairs | if . == "" then "none" else . end)",
-    "wait:    median \(.wait_minutes_median // "-") min, p90 \(.wait_minutes_p90 // "-") min from queued to started, \(.started_at_once) started at once and not counted",
+    "wait:    median \(.wait_minutes_median // "-") min, p90 \(.wait_minutes_p90 // "-") min from ready to started, \(.started_at_once) started at once and not counted",
     (.sitting | "sitting: \(.runnable) can start, oldest \(.oldest_runnable[0].minutes | dur)"
       + (if .runnable > 0 then " (\(.oldest_runnable[0].slug)), median \(.runnable_age_minutes_median | dur)" else "" end)
       + "; \(.held) held" + (if .held > 0 then " (\(.held_by | pairs))" else "" end)),
