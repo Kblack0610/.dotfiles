@@ -4,6 +4,15 @@ license: Apache-2.0
 description: >-
   Profile Meta Quest app CPU with simpleperf: workload class, hotspots, kernel overhead. Use to tell CPU-, memory- or I/O-bound. Unclear build path: hz-quest-verify-first.
 allowed-tools: Bash(metavr:*), Bash(hzdb:*)
+paths:
+  - "**/*OVR*"
+  - "**/*Oculus*"
+  - "**/*oculus*"
+  - "**/*MetaXR*"
+  - "**/*metavr*"
+  - "**/*.perfetto-trace"
+  - "**/*.pftrace"
+  - "**/*simpleperf*"
 metadata:
   category: reference
   tags: [vr, quest, meta, performance]
