@@ -271,6 +271,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$f" note)" ]
 }
 
+@test "add --title writes one title line; an item without one has no title key" {
+  "$AQ" add --project game --slug t --title $'Fix the  thing\nnow' "the long task text"
+  [ "$(field "$(item queued t)" title)" = "Fix the thing now" ]
+  "$AQ" add --project game --slug u "no title given"
+  ! grep -q '^title:' "$(item queued u)"
+}
+
 @test "plan mode and --running are recorded; --running starts in running/" {
   "$AQ" add --project game --mode plan --slug p "plan this"
   [ "$(field "$(item queued p)" mode)" = plan ]
@@ -423,10 +430,12 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = night ]
+  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   f="$(item queued my-plan-p4)"
   [ "$(field "$f" after)" = my-plan-p2 ]
   [ "$(field "$f" phases)" = "4 5" ]
+  [ "$(field "$f" title)" = "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4" ]
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
   [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"

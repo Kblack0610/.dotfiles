@@ -276,7 +276,7 @@ function renderBadge() {
   $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
-function sessionCard(a) {
+function sessionCard(a, inQueue) {
   const q = a.question;
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
@@ -285,8 +285,9 @@ function sessionCard(a) {
   const what = { choice: "asking", tool: "permission", plan: "plan to approve" }[q.kind] || "your turn";
   return `
     <div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">
-      <span class="open" data-open>open</span>
-      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${what}${a.phases ? ` &middot; ${esc(phasesText(a))}` : ""}</div>
+      ${inQueue === true ? `<div class="qask-h" title="${esc(a.target)}">${{ choice: "The session is asking", tool: "The session needs permission", plan: "A plan to approve" }[q.kind] || "Your turn in the session"}</div>`
+        : `<span class="open" data-open>open</span>
+      <div class="meta">${esc(a.project)} &middot; ${esc(a.target)} &middot; ${what}${a.phases ? ` &middot; ${esc(phasesText(a))}` : ""}</div>`}
       <div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>
       <div class="opts">
         ${opts}
@@ -308,20 +309,22 @@ function renderAsks() {
 }
 
 // The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
+// A judge that would leave it to the human says nothing the buttons do not.
 function judgeLine(a) {
-  if (!a.judge) return "";
-  const call = a.judge === "human" ? "leave it to you"
-    : a.judge === "take-recommend" ? `take the recommendation (${a.recommend})`
+  if (!a.judge || a.judge === "human") return "";
+  const call = a.judge === "take-recommend" ? `take the recommendation (${a.recommend})`
     : `answer "${a.judge.replace(/^answer:/, "")}"`;
   return `<div class="meta">judge would ${esc(call)}</div>`;
 }
 
-// One pending ask, answered through agent-ask (the Queue tab shows a session's own asks too).
-function askCard(a) {
+// One pending ask, answered through agent-ask. On a Queue card (inQueue) the card around it
+// already names the project and session, so its routing line becomes a tooltip.
+function askCard(a, inQueue) {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
+  const route = `${esc(a.project)} &middot; ${owner ? esc(owner.target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}`;
   return `
     <div class="card" data-id="${esc(a.id)}">
-      <div class="meta">${esc(a.project)} &middot; ${owner ? esc(owner.target) : "headless"} &middot; ${esc(a.kind)} &middot; ${esc(a.id)}</div>
+      ${inQueue === true ? `<div class="qask-h" title="${route}">Question for you</div>` : `<div class="meta">${route}</div>`}
       <div class="q md">${md(a.question)}</div>
       ${judgeLine(a)}
       <div class="opts">
