@@ -1,4 +1,4 @@
-//! The Sessions tab's controls: every live and parked agent session (`hub_core::session_actions`,
+//! The Fleet tab's session controls: every live and parked agent session (`hub_core::session_actions`,
 //! the same reader and the same actions as agent-web's session buttons), one selected, and a key
 //! per action that arms a confirm line before anything runs.
 
@@ -36,7 +36,7 @@ impl Confirm {
     }
 }
 
-/// What a key on the Sessions tab asks the app to do.
+/// What a session key on the Fleet tab asks the app to do.
 #[derive(Debug, PartialEq)]
 pub enum Ask {
     /// Nothing: the key was not one of the controls' own.

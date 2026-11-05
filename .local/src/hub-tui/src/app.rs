@@ -37,7 +37,6 @@ pub enum Tab {
     Jobs,
     Ci,
     Machines,
-    Sessions,
     Forecast,
     Today,
     History,
@@ -47,12 +46,11 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Overview,
         Tab::Jobs,
         Tab::Ci,
         Tab::Machines,
-        Tab::Sessions,
         Tab::Forecast,
         Tab::Today,
         Tab::History,
@@ -66,7 +64,6 @@ impl Tab {
             Tab::Jobs => "Jobs",
             Tab::Ci => "CI",
             Tab::Machines => "Machines",
-            Tab::Sessions => "Sessions",
             Tab::Forecast => "Forecast",
             Tab::Today => "Today",
             Tab::History => "History",
@@ -89,18 +86,14 @@ impl Tab {
             Tab::Overview => Some("kb-command-center"),
             Tab::Jobs | Tab::Ci => Some("kb-ci-runners"),
             Tab::Machines => Some("kb-fleet"),
-            Tab::Sessions
-            | Tab::Forecast
-            | Tab::Today
-            | Tab::History
-            | Tab::Fleet
-            | Tab::Queue
-            | Tab::Board => None,
+            Tab::Forecast | Tab::Today | Tab::History | Tab::Fleet | Tab::Queue | Tab::Board => {
+                None
+            }
         }
     }
 }
 
-/// The files the Sessions, Today and History tabs are read from.
+/// The files the Fleet, Today and History tabs are read from.
 #[derive(Clone)]
 pub struct BoardFiles {
     pub state: PathBuf,
@@ -165,7 +158,7 @@ pub enum Msg {
     Forecast(Box<Forecast>),
     Fleet(Box<hub_core::fleet::Fleet>),
     Log(u64, Result<String, String>),
-    /// The live and parked agent sessions, for the Sessions tab's controls.
+    /// The live and parked agent sessions, for the Fleet tab's controls.
     Sessions(Box<Snapshot>),
     /// A session action ended: its output, or why it failed.
     Acted(Result<String, String>),
@@ -225,7 +218,7 @@ pub struct App {
     /// Every project's open rows, for the Board tab; None until the first read.
     pub tasks: Option<Result<Feed, String>>,
     pub tv: TaskView,
-    /// The Sessions tab's session list, selection and confirm.
+    /// The Fleet tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
     pub runner: Arc<dyn Runner + Send + Sync>,
@@ -353,7 +346,7 @@ impl App {
     }
 
     /// The session list has no one file to watch (tmux, `~/.claude/sessions`, the park
-    /// ledger, agent-queue), so the Sessions tab reads it on entering, on `r`, after an action
+    /// ledger, agent-queue), so the Fleet tab reads it on entering, on `r`, after an action
     /// and on the 60s tick while it is shown.
     pub fn read_sessions(&mut self) {
         if self.sessions_read.want() {
@@ -489,8 +482,6 @@ impl App {
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
-                }
-                if self.tab == Tab::Sessions {
                     self.read_sessions();
                 }
                 if self.tab == Tab::Board {
@@ -622,7 +613,7 @@ impl App {
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
-        if self.tab == Tab::Sessions && self.sessions_key(k) {
+        if self.tab == Tab::Fleet && self.sessions_key(k) {
             return;
         }
         if self.tab == Tab::Queue && self.queue_key(k) {
@@ -654,8 +645,6 @@ impl App {
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
-                }
-                if self.tab == Tab::Sessions {
                     self.read_sessions();
                 }
                 if self.tab == Tab::Board {
@@ -694,8 +683,6 @@ impl App {
         }
         if t == Tab::Fleet {
             self.read_fleet();
-        }
-        if t == Tab::Sessions {
             self.read_sessions();
         }
         if t == Tab::Queue {
@@ -747,7 +734,7 @@ impl App {
         }
     }
 
-    /// Sessions' own keys (controls.rs): j/k pick a session, a letter arms an action's
+    /// The Fleet tab's session keys (controls.rs): j/k pick a session, a letter arms an action's
     /// confirm, and with one armed every key is the confirm's. The page scrolls with
     /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
@@ -1037,13 +1024,13 @@ impl App {
             Tab::Jobs => format!(
                 "Enter log  s source  f state  / search  h history  o open url  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Sessions if self.controls.confirm.is_some() => {
+            Tab::Fleet if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
-            Tab::Sessions => format!(
+            Tab::Fleet => format!(
                 "j/k pick  i p u m x c act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Forecast | Tab::Fleet => {
+            Tab::Forecast => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Today if self.day.is_some() => {
@@ -1089,16 +1076,19 @@ impl App {
                 None => reading("fleet-bench forecast"),
                 Some(f) => (forecast::page(f, self.p, now, w), vec![]),
             },
-            (Tab::Fleet, ..) => match &self.fleet {
-                None => reading("the fleet"),
-                Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
-            },
-            (Tab::Sessions, b, _) => {
+            // The agent sessions first (their controls, then every session's stages), then the
+            // machinery that runs them: accounts, runners and the judges.
+            (Tab::Fleet, b, _) => {
                 let mut l = self.controls.lines(self.p, w);
                 l.push(Line::raw(""));
                 match b {
                     None => l.extend(reading("the board files").0),
                     Some(b) => l.extend(fleet::page(&b.watch, self.p, now, w)),
+                }
+                l.push(Line::raw(""));
+                match &self.fleet {
+                    None => l.extend(reading("the fleet").0),
+                    Some(f) => l.extend(fleettab::page(f, self.p, now, w)),
                 }
                 (l, vec![])
             }
@@ -1324,8 +1314,8 @@ mod tests {
     }
 
     #[test]
-    fn the_sessions_tab_lists_the_sessions_above_the_board_with_a_confirm() {
-        let mut a = app(Tab::Sessions);
+    fn the_fleet_tab_lists_the_sessions_above_the_board_with_a_confirm() {
+        let mut a = app(Tab::Fleet);
         a.controls.set(crate::controls::tests::fixture());
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
@@ -1367,7 +1357,7 @@ mod tests {
         );
         // Tab is the confirm's while one is armed, not the next page.
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Sessions);
+        assert_eq!(a.tab, Tab::Fleet);
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(a.controls.confirm.is_none());
         assert!(!screen(&mut a, 140, 30).contains("Stop lab/"));
@@ -1376,7 +1366,7 @@ mod tests {
     #[test]
     fn a_confirmed_move_runs_claude_acct_through_hub_core() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut a = with_tx(Tab::Sessions, tx);
+        let mut a = with_tx(Tab::Fleet, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         a.gather = fixture_sessions;
@@ -1412,20 +1402,20 @@ mod tests {
     }
 
     #[test]
-    fn zero_opens_the_queue_tab_and_the_overview_counts_the_queue() {
+    fn nine_opens_the_queue_tab_and_the_overview_counts_the_queue() {
         let mut a = app(Tab::Overview);
         assert!(screen(&mut a, 140, 30).contains("AGENT QUEUE  reading..."));
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("9 Fleet  0 Queue"), "{s}");
+        assert!(lines[0].contains("8 Fleet  9 Queue  0 Board"), "{s}");
         assert_eq!(
             lines[1].trim_end(),
             "AGENT QUEUE  1 waiting for you, 1 running, 2 up next (1 held), 1 done today"
         );
         assert!(lines[3].contains("Reading Prometheus..."), "{s}");
 
-        a.handle(key('0'));
+        a.handle(key('9'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
@@ -1486,7 +1476,10 @@ mod tests {
             "Shift-Tab from the Overview is the last tab"
         );
         let s = screen(&mut a, 140, 12);
-        assert!(s.lines().next().unwrap().contains("0 Queue  Board"), "{s}");
+        assert!(
+            s.lines().next().unwrap().contains("9 Queue  0 Board"),
+            "{s}"
+        );
         assert!(s.contains("Reading notes board..."), "{s}");
 
         // The read Shift-Tab started meets the fake's empty answer: wait for it, not a timer.
@@ -1583,7 +1576,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("9 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
         for want in [
             "CLAUDE ACCOUNTS",
             "WORKERS",
@@ -1608,7 +1601,7 @@ mod tests {
         assert!(screen(&mut a, 100, 10).contains("Reading fleet-bench forecast..."));
         a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
         let s = screen(&mut a, 200, 60);
-        assert!(s.lines().next().unwrap().contains("6 Forecast"), "{s}");
+        assert!(s.lines().next().unwrap().contains("5 Forecast"), "{s}");
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(
             s.contains("dotfiles:4") && s.contains("Step 0 board row"),
@@ -1640,19 +1633,21 @@ mod tests {
     #[test]
     fn a_tab_request_switches_the_running_board() {
         let mut a = app(Tab::Overview);
-        a.handle(Msg::Tab(Tab::Sessions, None));
-        assert_eq!(a.tab, Tab::Sessions);
-        // Entering Forecast reads fleet-bench; mark it already reading so no test runs it.
+        // Entering Fleet and Forecast read the fleet and fleet-bench; mark them already reading
+        // so no test runs them.
+        a.fleet_read.busy = true;
         a.forecast_read.busy = true;
-        a.handle(key('6'));
+        a.handle(Msg::Tab(Tab::Fleet, None));
+        assert_eq!(a.tab, Tab::Fleet);
+        a.handle(key('5'));
         assert_eq!(a.tab, Tab::Forecast);
-        a.handle(key('7'));
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Today);
     }
 
     #[test]
     fn a_failed_watch_or_socket_is_on_screen_and_the_tick_reads_the_boards() {
-        let mut a = app(Tab::Sessions);
+        let mut a = app(Tab::Fleet);
         assert!(!screen(&mut a, 160, 6).contains("no file watch"));
         a.watch_failed = Some("inotify full".into());
         a.tab_failed = Some("path must be shorter than SUN_LEN".into());
@@ -1666,6 +1661,7 @@ mod tests {
         // Prometheus and the job sources are not what this checks: mark them already reading.
         a.infra_read.busy = true;
         a.jobs_read.busy = true;
+        a.fleet_read.busy = true;
         a.handle(Msg::Tick);
         assert!(a.boards_read.busy, "the tick stands in for the watch");
     }
