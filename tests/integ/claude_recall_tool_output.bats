@@ -82,3 +82,25 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_output --partial "carried"
   assert_output --partial "stretches ran 150+ responses"
 }
+
+@test "by filetype: a Read and a sed/cat/head/tail file arg bucket by class and extension" {
+  local cwd='"cwd":"/home/u/proj"'
+  mk() { echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"id\":\"f$1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t$1\",\"name\":\"$2\",\"input\":$3}]}}"
+       echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t$1\",\"content\":\"$(printf "%0$4d" 0)\"}]}}"; }
+  {
+    mk 1 Bash '{"command":"cd /r && sed -n '"'"'10,40p'"'"' Assets/Game.cs"}' 30
+    mk 2 Read '{"file_path":"/r/README.md"}' 20
+    mk 3 Bash '{"command":"tail -n 40 /tmp/x/b1.output"}' 5
+    mk 4 Bash '{"command":"cat > /r/new.cs <<EOF"}' 7
+    mk 5 Bash '{"command":"cat .local/bin/tool"}' 3
+  } > "$D/projects/p/s2.jsonl"
+  run jq -c '[.rows[] | [.key,.calls,.chars]]' <<<"$(out --by filetype --since 2026-10-21)"
+  assert_output '[["code .cs",1,30],["prose .md",1,20],["output .output",1,5],["other (none)",1,3]]'
+}
+
+@test "by kind: a transcript under subagents/ counts as subagent" {
+  mkdir -p "$D/projects/p/s1/subagents"
+  mv "$D/projects/p/s1.jsonl" "$D/projects/p/s1/subagents/agent-a1.jsonl"
+  run jq -c '[.rows[] | [.key,.calls,.chars]]' <<<"$(out --by kind)"
+  assert_output '[["subagent",3,150]]'
+}

@@ -20,7 +20,8 @@ Usage:
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
   claude-recall tool-output [--days N | --since YYYY-MM-DD]
-                            [--by tool|command|method|day|week|project] [--top K] [--json]
+                            [--by tool|command|filetype|kind|method|day|week|project]
+                            [--top K] [--json]
 
 Examples:
   claude-recall search "privacy overlay" --project dotfiles --since 2026-07-01
@@ -30,11 +31,13 @@ Examples:
   claude-recall stats --kind prompt --origin interactive --min 3   # skill candidates
   claude-recall stats --kind agent --by week
   claude-recall tool-output --by command          # which Bash commands fill the context
+  claude-recall tool-output --by filetype         # which kinds of file reads fill it
 """
 import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -743,9 +746,12 @@ TF_CACHE = Path(os.environ.get("TOKEN_FILTER_CACHE",
                                Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "token-filter"))
 
 
+SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its commands
+
+
 def bash_head(cmd):
     """grep, sed, git show: the first real command of a Bash call, past env, cd and wrappers."""
-    for seg in re.split(r"\s*(?:&&|;|\|\||\|)\s*", cmd.strip()):
+    for seg in SEGMENTS.split(cmd.strip()):
         w = seg.split()
         while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
             w = w[1:]
@@ -764,6 +770,43 @@ def bash_head(cmd):
                 head += " " + rest[0]
         return head
     return "?"
+
+
+READ_HEADS = {"sed", "cat", "head", "tail", "less", "nl", "bat"}
+FILE_CLASS = {
+    "code": "cs py rs go ts tsx js jsx mjs cjs lua sh bash zsh bats swift kt java c h cc cpp hpp "
+            "rb php sql shader hlsl cginc compute gd vue svelte css scss",
+    "prose": "md txt rst org adoc",
+    "config": "json yaml yml toml ini conf cfg xml uxml uss csproj asmdef plist env service timer lock",
+    "output": "output log out",
+    "data": "jsonl csv tsv",
+}
+EXT_CLASS = {e: k for k, v in FILE_CLASS.items() for e in v.split()}
+
+
+def read_target(name, inp):
+    """'code .cs': the class and extension of the file a Read, or a sed/cat/head/tail call, read."""
+    if name == "Read":
+        path = inp.get("file_path") or ""
+    elif name == "Bash":
+        path = ""
+        for seg in SEGMENTS.split((inp.get("command") or "").strip()):
+            try:
+                w = shlex.split(seg)
+            except ValueError:
+                w = seg.split()
+            if not w or os.path.basename(w[0]) not in READ_HEADS or any(x.startswith((">", "<<")) for x in w):
+                continue
+            args = [x for x in w[1:] if not x.startswith("-") and ("." in x or "/" in x)]
+            if args:
+                path = args[-1]
+                break
+    else:
+        return None
+    if not path:
+        return None
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    return f"{EXT_CLASS.get(ext, 'other')} .{ext}" if ext else "other (none)"
 
 
 def method_windows():
@@ -813,6 +856,7 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
     emit('segment', ...) per stretch between compactions that had a response in the window."""
     uses, pending, seen_msgs, turns = {}, [], set(), 0
     project, seg = None, {"start": 0, "in_win": 0, "carried": 0, "chars": 0, "last": ""}
+    kind = "subagent" if "subagents" in path.parts else "main"
 
     def settle(compacted):
         for r in pending:
@@ -854,9 +898,9 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
                                   **{f: int(u.get(f) or 0) for f in USAGE_FIELDS}})
             for b in msg.get("content") or []:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
-                    name = b.get("name") or "?"
-                    cmd = bash_head((b.get("input") or {}).get("command") or "") if name == "Bash" else None
-                    uses[b.get("id")] = (name, cmd)
+                    name, inp = b.get("name") or "?", b.get("input") or {}
+                    cmd = bash_head(inp.get("command") or "") if name == "Bash" else None
+                    uses[b.get("id")] = (name, cmd, read_target(name, inp))
             continue
         if not since <= ts < until:
             continue
@@ -869,8 +913,9 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
             else:
                 size = len(str(rc or ""))
             tid = b.get("tool_use_id")
-            name, cmd = uses.get(tid, ("?", None))
+            name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
+                            "filetype": ftype, "kind": kind,
                             "chars": size, "at": turns, "method": method_at(windows, ts),
                             "rewritten": tid in rewritten})
     settle(False)
@@ -895,7 +940,8 @@ def cmd_tool_output(a):
     bucket_of = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
                  "method": lambda r: r["method"], "day": lambda r: r["ts"][:10],
                  "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
-                 "project": lambda r: r["project"]}[a.by]
+                 "project": lambda r: r["project"], "filetype": lambda r: r.get("filetype"),
+                 "kind": lambda r: r["kind"]}[a.by]
     totals = {f: 0 for f in USAGE_FIELDS}
     totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0)
     rows, segments = {}, []
@@ -957,7 +1003,7 @@ def cmd_tool_output(a):
 
     order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week", "method") \
         else sorted(rows.values(), key=lambda r: -r["chars"])
-    if a.top and a.by not in ("day", "week", "method"):
+    if a.top and a.by not in ("day", "week", "method", "kind"):
         order = order[:a.top]
     # Compaction cadence: the stretches that ran longest without one, by what they re-read.
     long = sorted((x for x in segments if x["turns"] >= a.long_turns), key=lambda x: -x["carried"])
@@ -984,7 +1030,7 @@ def cmd_tool_output(a):
           + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
                     f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
                     for x in long[:3]) + "\n")
-    if a.by in ("tool", "command"):
+    if a.by in ("tool", "command", "filetype", "kind"):
         print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13} {'filtered':>8}  {a.by}"))
         for r in order:
             print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
@@ -1058,9 +1104,11 @@ def main():
     to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
     to.add_argument("--long-turns", type=int, default=LONG_TURNS,
                     help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
-    to.add_argument("--by", choices=["tool", "command", "method", "day", "week", "project"],
-                    default="tool", help="command = Bash calls by command head; "
-                                         "method = token-filter method windows")
+    to.add_argument("--by", choices=["tool", "command", "filetype", "kind", "method", "day", "week",
+                                     "project"],
+                    default="tool", help="command = Bash calls by command head; filetype = Read and "
+                                         "sed/cat/head/tail by the file's class and extension; kind = "
+                                         "main session or subagent; method = token-filter method windows")
     to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
     to.add_argument("--project", "-p", help="substring match on repo")
     to.add_argument("--json", action="store_true")
