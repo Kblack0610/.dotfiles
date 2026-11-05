@@ -55,7 +55,7 @@ The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no de
    - a table for every step-2 metric with one column per measured point (the baseline, then after each pass), so a later pass adds a column instead of a new table;
    - what is left for the next pass.
 
-   Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t usage-cleanup '<link>'`.
+   Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t usage-cleanup '<link>'`. With no Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it), page the report's path instead.
 
 ## Do NOT
 
