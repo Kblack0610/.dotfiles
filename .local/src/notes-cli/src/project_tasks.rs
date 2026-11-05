@@ -312,7 +312,7 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
-    if lane == Lane::Agent && crate::epics::is_epic(&format!("- [ ] {text}")) {
+    if lane == Lane::Agent && crate::epics::is_epic(text) {
         bail!("an epic belongs on the human sheet: add it without --agent");
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
@@ -441,11 +441,7 @@ fn new_rows(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
         );
     }
-    if code.is_none()
-        && texts
-            .iter()
-            .any(|t| crate::epics::is_epic(&format!("- [ ] {}", t.trim())))
-    {
+    if code.is_none() && texts.iter().any(|t| crate::epics::is_epic(t)) {
         bail!(
             "'{name}' has no `code` in project-map.json trackers, so an epic would get no id \
              for its stories' #of/<id> to name"
@@ -1152,11 +1148,7 @@ fn refuse_open_children(
     let Some((_, content)) = sheet_and_content(p, name, lane)? else {
         return Ok(());
     };
-    let lines: Vec<&str> = content.lines().collect();
-    let Some(id) = md::section_span(&lines, sheet::TASKS)
-        .and_then(|mut span| span.find(|&i| pick.hits(lines[i])))
-        .and_then(|i| md::row_id(lines[i]))
-    else {
+    let Some(id) = find_open(&content, pick).and_then(|l| md::row_id(&l)) else {
         return Ok(());
     };
     let dir = projects::project_dir(p, name)?;

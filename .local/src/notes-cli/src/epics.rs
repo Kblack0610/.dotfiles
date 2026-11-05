@@ -14,7 +14,7 @@ use std::path::Path;
 
 use crate::md;
 use crate::project_tasks;
-use crate::projects::{self, fmt_version, parse_version, size_weight};
+use crate::projects::{self, fmt_version};
 use crate::sheet::{self, V};
 
 /// The deepest a row may sit: epic, story, subtask.
@@ -49,21 +49,27 @@ pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
 }
 
+/// Does a row belong to any release: every row does but an untagged epic, which is scope not
+/// yet aimed at one. The one rule release gating and every version total read.
+pub(crate) fn in_some_version(line: &str) -> bool {
+    !is_epic(line) || sheet::target(line).is_some()
+}
+
 #[derive(Debug)]
 struct Node {
     id: Option<String>,
     parent: Option<String>,
     open: bool,
     dropped: bool,
-    epic: bool,
     weight: u32,
     sized: bool,
     /// The release the row's tag names, if it carries one.
     target: Option<V>,
-    /// The release the row belongs to: its note's, or the sheet's reading of its tag.
+    /// The release the row belongs to: its note's, or the sheet's reading of its tag; none
+    /// for an untagged epic ([`in_some_version`]).
     version: Option<V>,
-    /// An epic's title; empty on other rows, which nothing here shows.
-    title: String,
+    /// An epic's title; `None` marks a row that is not an epic.
+    title: Option<String>,
     /// Where the row is, for a doctor line: `sheet line 12`.
     at: String,
 }
@@ -103,47 +109,32 @@ impl Index {
     /// `#of/` names. A project with neither costs one substring scan per note.
     pub(crate) fn of(dir: &Path, cur: Option<V>) -> Index {
         let agent = projects::agent_dir(dir);
-        let lanes = [(dir, false), (agent.as_path(), true)];
+        let lanes = [
+            (dir, "sheet", "versions"),
+            (agent.as_path(), "agent board", "agent/versions"),
+        ];
         // (text, the note's version or None for a live sheet, label)
         let mut texts: Vec<(String, Option<V>, String)> = Vec::new();
-        for (lane, is_agent) in lanes {
+        for (lane, label, _) in lanes {
             if let Some(t) =
                 project_tasks::task_sheet(lane).and_then(|p| fs::read_to_string(p).ok())
             {
-                let label = if is_agent { "agent board" } else { "sheet" };
                 texts.push((t, None, label.to_string()));
             }
         }
-        for (lane, is_agent) in lanes {
-            let mut notes: Vec<(String, Option<V>, String)> = fs::read_dir(lane.join("versions"))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    let v = parse_version(name.strip_suffix(".md")?)?;
-                    let prefix = if is_agent {
-                        "agent/versions/"
-                    } else {
-                        "versions/"
-                    };
-                    let t = fs::read_to_string(e.path()).ok()?;
-                    Some((t, Some(v), format!("{prefix}{name}")))
-                })
-                .collect();
-            notes.sort_by(|a, b| b.1.cmp(&a.1));
-            texts.extend(notes);
+        for (lane, _, notes) in lanes {
+            let mut found = projects::version_notes(&lane.join("versions"));
+            found.sort_by(|a, b| b.0.cmp(&a.0));
+            texts.extend(found.into_iter().filter_map(|(v, path)| {
+                let t = fs::read_to_string(&path).ok()?;
+                Some((t, Some(v), format!("{notes}/{}.md", fmt_version(v))))
+            }));
         }
         let mut ix = Index::default();
-        let named: HashSet<&str> = texts
+        let named: HashSet<String> = texts
             .iter()
-            .flat_map(|(t, ..)| t.match_indices("#of/").map(move |(i, _)| &t[i + 4..]))
-            .map(|rest| {
-                rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                    .next()
-                    .unwrap_or("")
-            })
-            .filter(|id| md::is_row_id(id))
+            .flat_map(|(t, ..)| t.lines().filter(|l| l.contains("#of/")))
+            .filter_map(parent_of)
             .collect();
         if named.is_empty() && !texts.iter().any(|(t, ..)| t.contains("epic(")) {
             return ix;
@@ -151,7 +142,7 @@ impl Index {
         let wanted = |l: &str| {
             l.contains("#of/")
                 || l.contains("epic(")
-                || md::row_id(l).is_some_and(|id| named.contains(id.as_str()))
+                || md::row_id(l).is_some_and(|id| named.contains(&id))
         };
         for (t, note, label) in &texts {
             let rows: Vec<(usize, &str)> = match note {
@@ -160,7 +151,11 @@ impl Index {
             };
             for (n, l) in rows {
                 if l.starts_with("- [") && wanted(l) {
-                    let v = note.or_else(|| sheet::version_of(l, cur));
+                    let v = note.or_else(|| {
+                        in_some_version(l)
+                            .then(|| sheet::version_of(l, cur))
+                            .flatten()
+                    });
                     ix.add(l, v, note.is_none(), format!("{label} line {n}"));
                 }
             }
@@ -184,25 +179,20 @@ impl Index {
             None if parent.is_none() || !live => return,
             _ => {}
         }
-        let epic = is_epic(line);
         if let Some(id) = &id {
             self.by_id.insert(id.clone(), self.nodes.len());
         }
+        let size = projects::size_of(line);
         self.nodes.push(Node {
             id,
             parent,
             open: md::is_open_task(line),
             dropped: md::is_dropped(line),
-            epic,
-            weight: size_weight(line),
-            sized: project_tasks::size_tag(line).is_some(),
+            weight: size.unwrap_or(1),
+            sized: size.is_some(),
             target: sheet::target(line),
             version,
-            title: if epic {
-                projects::row_title(line)
-            } else {
-                String::new()
-            },
+            title: is_epic(line).then(|| projects::row_title(line)),
             at,
         });
     }
@@ -223,10 +213,10 @@ impl Index {
     /// Whether a row counts toward its version's totals: only a leaf does. A parent weighs
     /// what its children weigh, and an untagged epic is scope not yet aimed at any release.
     pub(crate) fn counts(&self, line: &str) -> bool {
-        if md::row_id(line).is_some_and(|id| self.is_parent(&id)) {
+        if !self.kids.is_empty() && md::row_id(line).is_some_and(|id| self.is_parent(&id)) {
             return false;
         }
-        !is_epic(line) || sheet::target(line).is_some()
+        in_some_version(line)
     }
 
     /// Where each open child of `id` is, for a refusal to close it.
@@ -266,28 +256,11 @@ impl Index {
         out
     }
 
-    /// Does following `#of/` up from node `i` come back to a row already passed.
-    fn loops(&self, i: usize) -> bool {
-        let mut j = i;
-        let mut seen = HashSet::from([i]);
-        while let Some(&k) = self.nodes[j]
-            .parent
-            .as_deref()
-            .and_then(|p| self.by_id.get(p))
-        {
-            if !seen.insert(k) {
-                return true;
-            }
-            j = k;
-        }
-        false
-    }
-
     fn rollup(&self, i: usize) -> EpicProgress {
         let e = &self.nodes[i];
         let mut p = EpicProgress {
             id: e.id.clone().unwrap_or_default(),
-            title: e.title.clone(),
+            title: e.title.clone().unwrap_or_default(),
             version: e.target.map(fmt_version).unwrap_or_default(),
             childless: !e.id.as_deref().is_some_and(|id| self.is_parent(id)),
             ..EpicProgress::default()
@@ -309,7 +282,7 @@ impl Index {
     }
 
     fn open_epics(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.nodes.len()).filter(|&i| self.nodes[i].epic && self.nodes[i].open)
+        (0..self.nodes.len()).filter(|&i| self.nodes[i].title.is_some() && self.nodes[i].open)
     }
 
     /// Every open epic with its rollup, in sheet order.
@@ -322,15 +295,9 @@ impl Index {
     pub(crate) fn epics_in(&self, v: Option<V>) -> Vec<EpicProgress> {
         self.open_epics()
             .filter(|&i| {
-                self.leaves(i).into_iter().any(|j| {
-                    let n = &self.nodes[j];
-                    !n.dropped
-                        && if j == i {
-                            n.target == v
-                        } else {
-                            n.version == v
-                        }
-                })
+                self.leaves(i)
+                    .into_iter()
+                    .any(|j| self.nodes[j].version.is_some() && self.nodes[j].version == v)
             })
             .map(|i| self.rollup(i))
             .collect()
@@ -349,7 +316,7 @@ impl Index {
             let Some(p) = n.parent.as_deref() else {
                 continue;
             };
-            if n.epic {
+            if n.title.is_some() {
                 out.push(format!(
                     "{at}: an epic takes no #of/ (it is the top of its tree)"
                 ));
@@ -362,32 +329,33 @@ impl Index {
                 )),
                 Some(_) => {}
             }
-            if self.loops(i) {
-                out.push(format!("{at}: #of/ loops back to this row"));
-            } else if self.depth(i) > MAX_DEPTH {
-                out.push(format!(
-                    "{at}: {} levels deep (epic, story, subtask is the most)",
-                    self.depth(i)
-                ));
+            match self.depth(i) {
+                None => out.push(format!("{at}: #of/ loops back to this row")),
+                Some(d) if d > MAX_DEPTH => out.push(format!(
+                    "{at}: {d} levels deep (epic, story, subtask is the most)"
+                )),
+                Some(_) => {}
             }
         }
         out
     }
 
-    /// How many levels node `i` sits at: 1 for a row with no parent here. Only called once
-    /// [`Index::loops`] has ruled out a cycle.
-    fn depth(&self, i: usize) -> usize {
-        let mut d = 1;
+    /// How many levels node `i` sits at, 1 for a row with no parent here; `None` when
+    /// following `#of/` up comes back to a row already passed.
+    fn depth(&self, i: usize) -> Option<usize> {
+        let mut seen = HashSet::from([i]);
         let mut j = i;
         while let Some(&k) = self.nodes[j]
             .parent
             .as_deref()
             .and_then(|p| self.by_id.get(p))
         {
-            d += 1;
+            if !seen.insert(k) {
+                return None;
+            }
             j = k;
         }
-        d
+        Some(seen.len())
     }
 }
 
@@ -487,7 +455,11 @@ Version: v1.4.0 #alpha
         let ix = Index::of(&dir, V14);
         let p = projects::progress_of(&dir, V14, V14, &ix, today());
         assert_eq!((p.done, p.done_weight), (2, 4));
-        assert_eq!((p.closed_28d, p.closed_weight_28d), (2, 4), "the story's l is not a close");
+        assert_eq!(
+            (p.closed_28d, p.closed_weight_28d),
+            (2, 4),
+            "the story's l is not a close"
+        );
     }
 
     #[test]
@@ -512,7 +484,11 @@ Version: v1.4.0 #alpha
         assert_eq!((later.open, later.open_weight), (1, 3));
         let ids = |v| ix.epics_in(v).into_iter().map(|e| e.id).collect::<Vec<_>>();
         assert_eq!(ids(V14), vec!["dm-1"]);
-        assert_eq!(ids(V15), vec!["dm-1"], "the epic is listed in every release it has work in");
+        assert_eq!(
+            ids(V15),
+            vec!["dm-1"],
+            "the epic is listed in every release it has work in"
+        );
         assert_eq!(ids(Some((1, 6, 0))), Vec::<String>::new());
     }
 
@@ -530,8 +506,16 @@ Version: v1.4.0 #alpha
         let ix = Index::of(&dir, V14);
         let now = projects::progress_of(&dir, V14, V14, &ix, today());
         let next = projects::progress_of(&dir, V14, V15, &ix, today());
-        assert_eq!((now.open, now.open_weight), (0, 0), "an untagged epic is in no version");
-        assert_eq!((next.open, next.open_weight), (1, 21), "a tagged one is its own leaf");
+        assert_eq!(
+            (now.open, now.open_weight),
+            (0, 0),
+            "an untagged epic is in no version"
+        );
+        assert_eq!(
+            (next.open, next.open_weight),
+            (1, 21),
+            "a tagged one is its own leaf"
+        );
         let e = ix.epics();
         assert!(e.iter().all(|e| e.childless && e.open_weight == 21));
         assert_eq!(e[1].version, "v1.5.0");
@@ -578,8 +562,12 @@ Version: v1.4.0 #alpha
                      - [ ] feat(a): huge #size/xl <!-- id:dm-2 -->\n\
                      - [ ] epic(a): sized right #size/xl <!-- id:dm-3 -->\n";
         let f = projects::row_findings(board, true);
-        assert!(f.contains(&"line 2: an epic belongs on the human sheet, not the agent board".into()));
-        assert!(f.contains(&"line 3: #size/xl is an epic's size; split the row or size it l".into()));
+        assert!(
+            f.contains(&"line 2: an epic belongs on the human sheet, not the agent board".into())
+        );
+        assert!(
+            f.contains(&"line 3: #size/xl is an epic's size; split the row or size it l".into())
+        );
         assert!(!f.iter().any(|l| l.starts_with("line 4: #size/xl")));
         assert!(!projects::row_findings(board, false)
             .iter()
@@ -590,11 +578,14 @@ Version: v1.4.0 #alpha
     fn the_parent_tag_is_a_link_not_text() {
         let l = "- [ ] feat(a): do it #of/ar-12 #size/m <!-- id:ar-13 -->";
         assert_eq!(parent_of(l).as_deref(), Some("ar-12"));
-        assert_eq!(md::task_text(l), md::task_text("- [ ] feat(a): do it #size/m"));
+        assert_eq!(
+            md::task_text(l),
+            md::task_text("- [ ] feat(a): do it #size/m")
+        );
         assert_eq!(parent_of("- [ ] feat(a): #of/not-an-id"), None);
-        assert_eq!(size_weight("- [ ] epic(a): big #size/xl"), 21);
-        assert_eq!(size_weight("- [ ] feat(a): tiny #size/xs"), 1);
-        assert_eq!(size_weight("- [ ] feat(a): odd #size/huge"), 1);
+        assert_eq!(projects::size_weight("- [ ] epic(a): big #size/xl"), 21);
+        assert_eq!(projects::size_weight("- [ ] feat(a): tiny #size/xs"), 1);
+        assert_eq!(projects::size_weight("- [ ] feat(a): odd #size/huge"), 1);
         assert!(is_epic("- [ ] epic(a): outcome #high"));
         assert!(!is_epic("- [ ] feat(epic): not one"));
     }

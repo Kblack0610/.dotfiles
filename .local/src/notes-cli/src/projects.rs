@@ -1318,24 +1318,21 @@ pub(crate) fn fmt_version(v: (u32, u32, u32)) -> String {
     format!("v{}.{}.{}", v.0, v.1, v.2)
 }
 
-fn scan_versions(dir: &Path, best: &mut Option<(u32, u32, u32)>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let path = e.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if let Some(v) = parse_version(stem) {
-            if best.is_none_or(|b| v > b) {
-                *best = Some(v);
+/// The `vX.Y.Z.md` notes in `dir` (a `versions/`), with their versions, in no order.
+pub(crate) fn version_notes(dir: &Path) -> Vec<(V, PathBuf)> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                return None;
             }
-        }
-    }
+            let v = parse_version(path.file_stem()?.to_str()?)?;
+            Some((v, path))
+        })
+        .collect()
 }
 
 /// The `Version: vX.Y.Z` declared on a working sheet (first such line), parsed. `None`
@@ -1383,9 +1380,10 @@ fn current_version(dir: &Path) -> Option<(u32, u32, u32)> {
             return Some(v);
         }
     }
-    let mut best = None;
-    scan_versions(&dir.join("versions"), &mut best);
-    best
+    version_notes(&dir.join("versions"))
+        .into_iter()
+        .map(|(v, _)| v)
+        .max()
 }
 
 /// The version currently OPEN - the one being worked on.
@@ -1614,7 +1612,7 @@ fn release_blocker(content: &str, name: &str, cur: V, next: V) -> Option<String>
 fn gated_rows(content: &str, cur: V) -> Vec<(usize, &str)> {
     sheet::current_rows(content, Some(cur))
         .into_iter()
-        .filter(|(_, l)| !crate::epics::is_epic(l) || sheet::target(l).is_some())
+        .filter(|(_, l)| crate::epics::in_some_version(l))
         .collect()
 }
 
@@ -2484,12 +2482,8 @@ struct Release {
 /// A project's releases, the open version first, then every later version an open row on
 /// either lane is aimed at.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
-    let read = |p: Option<PathBuf>| {
-        p.and_then(|p| fs::read_to_string(p).ok())
-            .unwrap_or_default()
-    };
-    let human = read(project_tasks::task_sheet(dir));
-    let board = read(project_tasks::task_sheet(&agent_dir(dir)));
+    let human = read_or_empty(project_tasks::task_sheet(dir));
+    let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
     let cur = sheet_version(&human);
     let Some(c) = cur else {
         return Vec::new();
@@ -2657,12 +2651,24 @@ pub(crate) struct Progress {
     pub filed_weight_28d: u32,
 }
 
-/// A row's weight from its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); 1 when it has none.
-pub(crate) fn size_weight(line: &str) -> u32 {
+/// A row's weight from its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); `None` when it has
+/// no size the scale knows, which every rollup weighs at 1 and counts as unsized.
+pub(crate) fn size_of(line: &str) -> Option<u32> {
     project_tasks::size_tag(line)
         .and_then(|t| t.strip_prefix("#size/"))
         .and_then(|s| crate::epics::WEIGHTS.iter().find(|(k, _)| *k == s))
-        .map_or(1, |&(_, w)| w)
+        .map(|&(_, w)| w)
+}
+
+/// A row's weight, 1 when [`size_of`] knows none.
+pub(crate) fn size_weight(line: &str) -> u32 {
+    size_of(line).unwrap_or(1)
+}
+
+/// A file's text, empty when there is no path or it cannot be read.
+fn read_or_empty(p: Option<PathBuf>) -> String {
+    p.and_then(|p| fs::read_to_string(p).ok())
+        .unwrap_or_default()
 }
 
 /// Does a row belong to version `ver` of a sheet whose open version is `cur`: the open
@@ -2716,10 +2722,11 @@ impl Progress {
             if !l.starts_with("- [") || !in_version(l, cur, ver) || !ix.counts(l) {
                 continue;
             }
-            let w = size_weight(l);
+            let size = size_of(l);
+            let w = size.unwrap_or(1);
             self.open += 1;
             self.open_weight += w;
-            if project_tasks::size_tag(l).is_none() {
+            if size.is_none() {
                 self.unsized_open += 1;
             }
             self.filed(l, w, today);
@@ -2741,10 +2748,11 @@ impl Progress {
         today: chrono::NaiveDate,
     ) {
         for l in rows.filter(|l| !md::is_dropped(l) && ix.counts(l)) {
-            let w = size_weight(l);
+            let size = size_of(l);
+            let w = size.unwrap_or(1);
             self.done += 1;
             self.done_weight += w;
-            if project_tasks::size_tag(l).is_none() {
+            if size.is_none() {
                 self.unsized_done += 1;
             }
             self.close(project_tasks::done_on(l), w, today);
@@ -2796,14 +2804,16 @@ pub(crate) fn progress_of(
     ix: &crate::epics::Index,
     today: chrono::NaiveDate,
 ) -> Progress {
-    let read = |p: Option<PathBuf>| {
-        p.and_then(|p| fs::read_to_string(p).ok())
-            .unwrap_or_default()
-    };
     let mut pr = Progress::default();
-    pr.sheet(&read(project_tasks::task_sheet(dir)), cur, ver, ix, today);
     pr.sheet(
-        &read(project_tasks::task_sheet(&agent_dir(dir))),
+        &read_or_empty(project_tasks::task_sheet(dir)),
+        cur,
+        ver,
+        ix,
+        today,
+    );
+    pr.sheet(
+        &read_or_empty(project_tasks::task_sheet(&agent_dir(dir))),
         cur,
         ver,
         ix,
@@ -2811,7 +2821,7 @@ pub(crate) fn progress_of(
     );
     if let Some(v) = ver {
         pr.note(
-            &read(Some(agent_note_path(dir, &fmt_version(v)))),
+            &read_or_empty(Some(agent_note_path(dir, &fmt_version(v)))),
             ix,
             today,
         );
@@ -2828,17 +2838,13 @@ fn goal_line(content: &str) -> String {
 }
 
 fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
-    let read = |p: Option<PathBuf>| {
-        p.and_then(|p| fs::read_to_string(p).ok())
-            .unwrap_or_default()
-    };
     let sheet = project_tasks::task_sheet(dir);
-    let content = read(sheet.clone());
+    let content = read_or_empty(sheet.clone());
     let cur = sheet_version(&content);
     let c = sheet_counts(&content, cur);
     let ix = crate::epics::Index::of(dir, cur);
     let summary = dir.join("summary.md");
-    let (status_date, status) = status_line(&read(Some(summary.clone())))
+    let (status_date, status) = status_line(&read_or_empty(Some(summary.clone())))
         .map(|l| split_status_date(&l))
         .unwrap_or_default();
     ProjectStats {
@@ -2854,7 +2860,11 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         high: c.high,
         low: c.low,
         planned: c.planned,
-        agent: sheet_counts(&read(project_tasks::task_sheet(&agent_dir(dir))), cur).open,
+        agent: sheet_counts(
+            &read_or_empty(project_tasks::task_sheet(&agent_dir(dir))),
+            cur,
+        )
+        .open,
         goal: goal_line(&content),
         progress: progress_of(dir, cur, cur, &ix, chrono::Local::now().date_naive()),
         epics: ix.epics(),
@@ -3720,11 +3730,21 @@ Goal: the board reads itself
         let r = roadmap(&dir, today);
         let cols: Vec<(&str, &str, usize, u32)> = r
             .iter()
-            .map(|r| (r.version.as_str(), r.state, r.progress.open, r.progress.open_weight))
+            .map(|r| {
+                (
+                    r.version.as_str(),
+                    r.state,
+                    r.progress.open,
+                    r.progress.open_weight,
+                )
+            })
             .collect();
         // `agentctl-wave-roll` reads the first two columns: the board's own later release
         // is a planned version like one on the human sheet.
-        assert_eq!(cols, vec![("v1.4.0", "current", 2, 4), ("v1.5.0", "planned", 1, 1)]);
+        assert_eq!(
+            cols,
+            vec![("v1.4.0", "current", 2, 4), ("v1.5.0", "planned", 1, 1)]
+        );
         assert_eq!(r[1].progress.unsized_open, 1);
     }
 
