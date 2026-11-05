@@ -84,7 +84,7 @@ def kind_of(path, first):
 def scan(path, start, end, acc):
     seen, last_t, pending, after_compact = set(), None, "human", False
     ctx_by_mid, wait_mids = {}, set()
-    first, turns = None, 0
+    first, turns, seq = None, 0, 0  # seq: the session's responses, in the window or not
     try:
         fh = open(path, errors="ignore")
     except OSError:
@@ -129,6 +129,7 @@ def scan(path, start, end, acc):
             gap = (now - last_t) if (now and last_t) else None
             last_t = now or last_t
             model = msg.get("model") or "?"
+            seq += model != "<synthetic>"
             if not in_win or model == "<synthetic>":
                 after_compact = False
                 continue
@@ -146,7 +147,7 @@ def scan(path, start, end, acc):
                 b["cache_write"] += cw
                 b["cache_read"] += cr
             acc["files"].add(path)
-            if turns == 1 and kind != "subagent":
+            if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
                 cause = "first-turn"
             elif after_compact:
