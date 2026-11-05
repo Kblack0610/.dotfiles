@@ -157,6 +157,7 @@ Media/Music
 !.claude/skills/workstreams/ingest-prs/
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
+!.claude/skills/workstreams/rigor/
 !.claude/skills/workstreams/stack-review/
 # Agents: allowlist the generic specialists (kb-* and release-coordinator are private).
 !.claude/agents/
