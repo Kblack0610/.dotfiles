@@ -45,6 +45,10 @@ EOF
   assert_output --partial "quiet-buzzed"
   run "$SUBJECT" --channel page --priority low - <<< "Nightly tests recovered."
   assert_success
+  # Sentinel's all-clear wording.
+  run "$SUBJECT" --channel page --priority high - <<< "Home cluster nodes back to normal after 2h."
+  assert_failure 1
+  assert_output --partial "quiet-buzzed"
 }
 
 @test "ids may follow the point but not lead it" {
