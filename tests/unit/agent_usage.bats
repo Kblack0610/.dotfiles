@@ -246,6 +246,10 @@ burn() {
   assert_equal "$(burn '.by_kind | keys')" '["headless","subagent","worktree"]'
 }
 
+@test "burn: each kind counts its sessions, a transcript once however many turns it has" {
+  assert_equal "$(burn '[.by_kind.worktree.sessions, .by_kind.worktree.turns > .by_kind.worktree.sessions]')" '[1,true]'
+}
+
 @test "burn: cache writes are attributed to first turn, idle gap, compaction or flow" {
   assert_equal "$(burn '.cache_write_by_cause | map_values(.cache_write)')" \
     '{"first-turn":54000,"idle-over-1h":51000,"after-compaction":20000,"in-flow":4000}'

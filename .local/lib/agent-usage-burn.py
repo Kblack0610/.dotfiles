@@ -146,7 +146,7 @@ def scan(path, start, end, acc):
                 b["output"] += o
                 b["cache_write"] += cw
                 b["cache_read"] += cr
-            acc["files"].add(path)
+            acc["kind_files"][kind].add(path)
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
                 cause = "first-turn"
@@ -255,7 +255,7 @@ def main():
         return Counter()
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
-           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "files": set()}
+           "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
             if os.path.getmtime(p) < start:
@@ -274,11 +274,12 @@ def main():
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
-                   "transcripts": len(acc["files"])},
+                   "transcripts": len(set().union(*acc["kind_files"].values()))},
         "registry": {"sessions": n, "cost_usd": round(cost, 2)},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
-        "by_kind": {k: dict(v) for k, v in sorted(acc["kind"].items(), key=lambda x: -x[1]["cache_read"])},
+        "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}
+                    for k, v in sorted(acc["kind"].items(), key=lambda x: -x[1]["cache_read"])},
         "by_model": {k: dict(v) for k, v in sorted(acc["model"].items(), key=lambda x: -x[1]["turns"])},
         "context_tokens": ctx_all,
         "merged_prs": prs,
@@ -315,7 +316,7 @@ def main():
         print()
     table("by account (registry)", out["by_account"], ["sessions", "cost_usd", "cache_read", "output"])
     table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
-    table("by kind (transcripts)", out["by_kind"], ["turns", "input", "output", "cache_write", "cache_read"])
+    table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
     f = out["first_turn_context"]
     print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")

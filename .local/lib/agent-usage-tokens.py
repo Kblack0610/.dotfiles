@@ -3,6 +3,7 @@
 
   agent-usage tokens snapshot [--date D] [--no-verify]   write $TOKENS_DIR/<D>.json (default yesterday)
   agent-usage tokens line [--date D]                     the day's one-line row (default newest)
+  agent-usage tokens json --date D                       the day's snapshot, for day-log
   agent-usage tokens check                               the newest day against the 7 before it
 
 No scanner of its own: every number comes from one of the two counted tools, so this file only
@@ -119,6 +120,8 @@ def snapshot(day, verify):
         "by_method": {r["key"]: {**usage(r), "bash_calls": r.get("bash_calls", 0), "filtered": r.get("rewritten", 0)}
                       for r in meth.get("rows") or []},
         "by_model": burn.get("by_model"),
+        "by_account": burn.get("by_account"),
+        "by_kind": burn.get("by_kind"),
         "long_runs": long_runs or None,
         "token_filter": verify_summary(tf),
     }
@@ -234,6 +237,8 @@ def main():
     sp.add_argument("--no-verify", action="store_true", help="skip token-filter verify --apply")
     lp = sub.add_parser("line")
     lp.add_argument("--date", type=dt.date.fromisoformat)
+    jp = sub.add_parser("json")
+    jp.add_argument("--date", type=dt.date.fromisoformat, required=True)
     sub.add_parser("check")
     a = ap.parse_args()
     if a.verb == "snapshot":
@@ -244,6 +249,13 @@ def main():
         print(path)
         print(out["line"])
         return 1 if out["totals"] is None else 0
+    if a.verb == "json":
+        s = load(DIR / f"{a.date}.json")
+        if not s:
+            print(f"agent-usage tokens: no snapshot for {a.date} in {DIR}", file=sys.stderr)
+            return 1
+        print(json.dumps(s))
+        return 0
     if a.verb == "line":
         p = DIR / f"{a.date}.json" if a.date else (snapshots() or [None])[-1]
         s = load(p) if p else None

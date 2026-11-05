@@ -620,6 +620,25 @@ EOF
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 
+@test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
+  export TZ=America/Los_Angeles
+  "$AQ" add --project game --slug a "a"
+  "$AQ" move a running
+  "$AQ" set a started=2026-11-03T10:30:00Z
+  f="$(item running a)"; sed -i 's/^queued: .*/queued: 2026-11-03T10:00:00Z/' "$f"
+  "$AQ" move a done --status ok
+  "$AQ" set a finished=2026-11-03T11:30:00Z
+  "$AQ" add --project game --slug b "b"
+  f="$(item queued b)"; sed -i 's/^queued: .*/queued: 2026-11-04T02:00:00Z/' "$f"
+  "$AQ" move b done --status failed
+  "$AQ" set b finished=2026-11-04T03:00:00Z
+  run "$AQ" stats --json --flow --since 2026-11-03
+  assert_success
+  assert_equal "$(jq -c '.flow["2026-11-03"] | [.queued, .started, .done, .ok, .failed, .lead_minutes, .wait_minutes.p50, .run_minutes.p50]' <<<"$output")" '[2,1,2,1,1,{"n":2,"p50":90,"p90":90},30,60]'
+  run "$AQ" stats --json --flow --since 2026-11-04
+  [ "$(jq -c '.flow | has("2026-11-03")' <<<"$output")" = false ]
+}
+
 @test "stats counts the flow of the last 1, 6 and 24 hours: added by queued, started by started, done and failed by finished" {
   ago() { date -u -d "$1 ago" +%FT%TZ; }
   for spec in "a 3hours 30minutes ok" "b 10hours 5hours failed" "c 30hours 20hours ok"; do

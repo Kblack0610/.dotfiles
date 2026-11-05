@@ -1053,7 +1053,7 @@ FAIL_CLASSES = (
     ("not-read", re.compile(r"has not been read yet|modified since read")),
     ("edit-miss", re.compile(r"String to replace not found|Found \d+ matches")),
     ("no-file", re.compile(r"File does not exist|EISDIR|Path does not exist")),
-    ("zsh", re.compile(r"\(eval\):\d+: (no matches found|defining function based on alias|parse error|bad math)")),
+    ("zsh", re.compile(r"\(eval\):\d+: (no matches found|defining function based on alias|parse error|bad math|= not found)")),
     ("exit-empty", re.compile(r"^Exit code \d+\s*$")),
     ("exit", re.compile(r"^Exit code \d+")),
 )

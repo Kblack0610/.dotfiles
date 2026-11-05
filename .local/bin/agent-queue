@@ -10,7 +10,7 @@
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   mine [--session s]    the slug of the running or waiting item this tmux session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
-#   stats [--json] [--since YYYY-MM-DD]
+#   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see item_weight.
@@ -676,11 +676,12 @@ start_next() {
 }
 
 cmd_stats() {
-  local json="" since d f s
+  local json="" flow=false since d f s
   since="$(date -d '7 days ago' +%F)"
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
+      --flow) flow=true; shift ;;  # only day-log reads it, and the hub polls stats
       --since) since="${2:?}"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
@@ -691,7 +692,7 @@ cmd_stats() {
   stats="$({
     for s in $ACTIVE; do while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s"); done
     done_recs "$since"
-  } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" '
+  } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" --argjson flow "$flow" '
     def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;
@@ -710,6 +711,9 @@ cmd_stats() {
       prs: map(select(has_pr)) | length, wait_minutes_median: (waited | median),
       to_pr_minutes_median: to_pr};
     def group(f): group_by(f) | map({key: (.[0] | f), value: outcomes}) | from_entries;
+    def spread: {n: length, p50: median, p90: p90};
+    def stage($name; f): [.[] | select((f // "") != "") | {day: (f | fromdateiso8601 | strflocaltime("%F")), stage: $name, item: .}];
+    def at($name): map(select(.stage == $name) | .item);
     (map(select(.state == "done"))) as $done
     | (map(select(.state == "queued"))) as $queued
     | ($queued | map(select(.hold == null) | {slug, project, minutes: (.queued | age)}) | sort_by(-.minutes)) as $runnable
@@ -736,6 +740,20 @@ cmd_stats() {
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),
+       # Per local day, the day day-log keeps: each item counts on the day it reached that stage.
+       # .waiting is the last move to waiting, so an item that waited twice counts on the later day.
+       flow: (if $flow | not then null else (stage("queued"; .queued) + stage("started"; .started) + stage("waiting"; .waiting)
+           + ($done | stage("done"; .finished)))
+         | map(select(.day >= $since)) | group_by(.day)
+         | map(at("done") as $fin | at("started") as $went | {key: .[0].day, value: {
+             queued: (at("queued") | length), started: ($went | length), waiting: (at("waiting") | length),
+             done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
+             failed: ($fin | map(select(.status == "failed")) | length),
+             cancelled: ($fin | map(select(.status == "cancelled")) | length),
+             lead_minutes: ([$fin[] | mins(.queued; .finished)] | spread),
+             wait_minutes: ($went | waited | spread),
+             run_minutes: ([$fin[] | mins(.started; .finished)] | spread)}})
+         | from_entries end),
        by_project: ($done | group(.project)),
        by_source: ($done | group(source)),
        done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
