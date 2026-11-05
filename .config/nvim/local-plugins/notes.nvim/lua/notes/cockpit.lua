@@ -437,7 +437,7 @@ function M.open_projects()
     return
   end
   vim.fn.jobstart({
-    "tmux", "display-popup", "-E", "-B", "-w", "80%", "-h", "60%",
+    "tmux", "display-popup", "-E", "-B", "-w", "90%", "-h", "85%", -- the size Prefix+p uses (.tmux.conf)
     vim.fn.expand("$HOME/.local/src/tmux/projects.sh"),
   }, { detach = true })
 end

@@ -13,6 +13,7 @@ hub --tab 'infra ci'             start on a section of Infra (health, red, machi
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
 hub tab projects agent-runtime   the same, opening one project's rows under its card (what tmux Prefix p sends); a name no card has opens All searched for it
 hub --once                       print Home and Infra as plain text at $COLUMNS, then exit
+hub --once --tab 'projects NAME' print one project's card over its open rows, what Enter shows (the tmux Prefix p preview)
 hub --once --tab jobs            print one tab (`jobs` is Infra's jobs table); exit 1 when Prometheus did not answer
 ```
 
