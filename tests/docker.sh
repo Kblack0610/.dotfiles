@@ -78,6 +78,9 @@ fi
 # override the Makefile's `BATS_FLAGS ?=` default -- make treats a set-but-empty environment
 # variable as a definition -- silently dropping --print-output-on-failure.
 [ -n "${BATS_FLAGS:-}" ] && run_args+=(--env "BATS_FLAGS=$BATS_FLAGS")
+# CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
+# into a failure, so a red cannot hide as a skip there.
+[ -n "${CI:-}" ] && run_args+=(--env "CI=$CI")
 
 if [ "${1:-}" = "--shell" ]; then
   shift

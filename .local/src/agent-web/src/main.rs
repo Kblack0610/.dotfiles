@@ -617,32 +617,6 @@ async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
     capture(agent.pane).await
 }
 
-/// Sampling a pane while a paste renders. tmux has no event for "the program in this pane has
-/// read its input", so this is the one bounded loop on one cadence. 40 samples is 2s.
-const PASTE_POLL: Duration = Duration::from_millis(50);
-const PASTE_POLLS: u32 = 40;
-
-/// Wait until `capture` has moved away from `before` and then held still for one sample: the
-/// program has read the paste and drawn it. Claude Code drops an Enter that arrives on the heels
-/// of a paste, which leaves the message sitting unsent in its input box. False when the pane never
-/// settles, as under a running spinner; the caller presses Enter regardless, once.
-async fn paste_settled<F, Fut>(before: &str, mut capture: F, polls: u32, cadence: Duration) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = String>,
-{
-    let mut last: Option<String> = None;
-    for _ in 0..polls {
-        let now = capture().await;
-        if now != before && last.as_deref() == Some(now.as_str()) {
-            return true;
-        }
-        last = Some(now);
-        tokio::time::sleep(cadence).await;
-    }
-    false
-}
-
 async fn capture(pane: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || tmux::capture_pane(&pane, false, SCREEN_LINES))
         .await
@@ -720,30 +694,19 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
 
     if !b.text.is_empty() {
-        let before = capture(agent.pane.clone()).await?;
-        // A bracketed paste, not send-keys -l: a newline inside the text stays part of
-        // the message instead of submitting it half-written.
-        run_tmux(
-            server,
-            &["load-buffer", "-b", "agent-web", "-"],
-            Some(&b.text),
-        )
-        .await?;
-        run_tmux(
-            server,
-            &["paste-buffer", "-p", "-d", "-b", "agent-web", "-t", pane],
-            None,
-        )
-        .await?;
-        if b.submit.unwrap_or(true) {
-            paste_settled(
-                &before,
-                || async { capture(agent.pane.clone()).await.unwrap_or_default() },
-                PASTE_POLLS,
-                PASTE_POLL,
-            )
-            .await;
-            run_tmux(server, &["send-keys", "-t", pane, "Enter"], None).await?;
+        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
+        // drawn before Enter, and the check that the Enter was taken.
+        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
+        let sent =
+            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
+                .await
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if sent == agent_panel::send::Sent::NotSubmitted {
+            return Err(bad(
+                StatusCode::CONFLICT,
+                "the session did not take the Enter; the text is in its input box",
+            ));
         }
     }
     if let Some(k) = b.key.as_deref() {
@@ -1035,24 +998,6 @@ async fn events_stream(
 mod tests {
     use super::*;
 
-    /// Run `paste_settled` over scripted captures; returns its answer and how many it read.
-    async fn settle(script: &[&str], polls: u32) -> (bool, usize) {
-        let mut it = script.iter();
-        let mut read = 0;
-        let settled = paste_settled(
-            "before",
-            || {
-                read += 1;
-                let next = it.next().copied().unwrap_or("before").to_string();
-                async move { next }
-            },
-            polls,
-            Duration::ZERO,
-        )
-        .await;
-        (settled, read)
-    }
-
     #[test]
     fn only_a_dir_directly_under_projects_is_a_new_project() {
         use notify::event::{CreateKind, ModifyKind};
@@ -1066,24 +1011,6 @@ mod tests {
         ));
         let modify = EventKind::Modify(ModifyKind::Any);
         assert!(!is_new_project(&modify, &projects.join("-new"), projects));
-    }
-
-    #[tokio::test]
-    async fn settles_once_the_paste_is_drawn_and_still() {
-        let got = settle(&["before", "before", "pasted", "pasted", "unread"], 40).await;
-        assert_eq!(got, (true, 4));
-    }
-
-    #[tokio::test]
-    async fn a_pane_still_redrawing_has_not_settled() {
-        let got = settle(&["a", "b", "c", "c"], 40).await;
-        assert_eq!(got, (true, 4));
-        assert_eq!(settle(&["a", "b", "c", "d"], 4).await, (false, 4));
-    }
-
-    #[tokio::test]
-    async fn an_unchanged_pane_gives_up_at_the_bound() {
-        assert_eq!(settle(&[], 5).await, (false, 5));
     }
 
     /// A path that cannot be watched comes back as failed and does not stop the others; the
