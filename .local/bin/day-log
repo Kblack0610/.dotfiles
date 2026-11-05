@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# day-log - what a day shipped: every PR you merged in any repo, what is still open, what
+# day-log - what a day shipped, in the status shape (Done, Doing, Next, Needs you): every PR you merged in any repo, what is still open, what
 # waits on you, and the fleet's telemetry, kept as one record per day. The hub Today and
 # History tabs (`hub`, Prefix i) render the records; day-log.timer snapshots today every 5 min.
 #
@@ -143,8 +143,16 @@ gather() {
            [$open[0][] | .repository.name as $r | (.number | tostring) as $n
             | ([$st.sessions[]? | select(.pr == $n and ((.cwd // "") | sub(".*/"; "") | . == $r or startswith($r + "-")))] | first) as $x
             | {repo: $r, number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
-               ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
+               area: ($g.repos[$r] // $r), ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
          else ($p.open // null) end),
+       next: (if $live and $st != null then
+           [$st.sessions[]? | select(.finished != true and (.next_phase // "-") != "-")
+            | (.cwd // "" | sub(".*/"; "")) as $b
+            | ([$g.repos | keys[] | . as $k | ltrimstr(".") as $r
+                | select($b == $k or $b == $r or ($b | startswith($r + "-")))] | max_by(length)) as $k
+            | {area: (if $k then $g.repos[$k] else ($b | sub("-agent-[0-9]+$"; "")) end), who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")),
+               phase: .next_phase, done: .phases_done, total: .phases_total}]
+         else ($p.next // null) end),
        waiting: (if $live and $st != null then
            {main: [$st.main[]? | {repo, reason}],
             needs: [$st.sessions[]? | select(.bucket == "NEEDS") | {who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")), reason, idle_min}],
@@ -247,27 +255,46 @@ def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1
 def spend: (.usage // []) | (map(select(.project == "TOTAL")) | first)
   // {cost_usd: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)}
   | {cost: .cost_usd, tokens: .tokens, sessions: .sessions};
+def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
+def cap: (.[:1] | ascii_upcase) + .[1:];
+def step: gsub("\\*\\*"; "") | sub("^(Phase +[0-9]+[a-z]?( *\\([^)]*\\))?:? *|[0-9]+\\. *)"; "") | (capture("^(?<s>.+?[.])( |$)").s // .);
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 
-# markdown <record>: the day with every PR, for `show` and the notes ref.
+# markdown <record>: the day in the status shape with every PR, for `show` and the notes ref.
 markdown() {
   jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
       "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
-      (if .waiting then "## Waiting on you (as last gathered)", "",
-        (.waiting.main[] | "- NIGHTLY \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
-        (.waiting.needs[] | "- NEEDS \(.who): \(.reason)"),
-        (.waiting.asks[] | "- ASK \(.id) (\(.project)): \(.question | gsub("\n"; " "))"), "" else empty end),
-      "## Merged", "",
+      "## Done", "",
+      (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
       (.merged | group_by(.area)[] | "### \(.[0].area) (\(length))", "",
         (group_by(.group) | sort_by(-length)[] | "#### \(.[0].group) (\(length))", "",
-          (.[] | "- \(.merged_at | hm) [\(.repo)#\(.number)](\(.url)) \(subject)\(if .by then " (\(.by))" else "" end)"), "")),
-      (if .open then "## Still open", "",
-        (.open[] | select(recent($now; $days)) | "- [\(.repo)#\(.number)](\(.url)) \(subject)\(if .draft then " (draft)" else "" end)"),
-        "", "\(.open | map(select(recent($now; $days) | not)) | length) older open PRs not listed.", "" else empty end),
+          (.[] | " [\(.repo)#\(.number)](\(.url))" as $l | " (\(.merged_at | hm), \(.by // "" | clip(40)))\($l)" as $b
+            | (if .by and ($b | length) <= 138 then $b else " (\(.merged_at | hm))\($l)" end) as $t
+            | "- \(subject | cap | clip([198 - ($t | length), 60] | max))\($t)"), "")),
+      (if .open then "## Doing", "",
+        ([.open[] | select(recent($now; $days))] | group_by(.area // .repo)[] | "### \(.[0].area // .[0].repo)", "",
+          (.[] | "\(if .draft then " (draft)" else "" end) [\(.repo)#\(.number)](\(.url))" as $t
+            | "- \(subject | cap | clip([198 - ($t | length), 60] | max))\($t)"), ""),
+        "\(.open | map(select(recent($now; $days) | not)) | length) older open PRs not listed.", "" else empty end),
+      (if .next then "## Next", "",
+        (if (.next | length) == 0 then "- No session has a phase left.", "" else empty end),
+        (.next | group_by(.area)[] | "### \(.[0].area)", "",
+          (.[] | "- \(.phase | step | cap | clip(120)) (\(.who)\(if .total then ", \(.done // 0) of \(.total) done" else "" end))"), "")
+        else empty end),
+      (if .waiting then "## Needs you", "",
+        (if (.waiting.main + .waiting.needs + .waiting.asks | length) == 0 then "- Nothing." else empty end),
+        (.waiting.main[] | "- Nightly red in \(.repo): \(.reason | sub("^[^ ]+ red: "; "") | clip(150))"),
+        (.waiting.needs | map(.why = (.reason | if test("pending ask") then "asks" else . end)) | group_by(.why) | sort_by(-length)[]
+          | (if length == 1 then "1 session" else "\(length) sessions" end) as $n
+          | "- \(if .[0].why == "asks" then "Questions hold up \($n)" else "\($n) \(if length == 1 then "is" else "are" end) \(.[0].why)" end): \(map(.who) | .[:4] | join(", "))\(if length > 4 then ", and \(length - 4) more" else "" end)."),
+        (.waiting.asks | if length > 0 then
+          "- \(length) \(if length == 1 then "question waits" else "questions wait" end) on you. List: fleet-bench asks.",
+          (.[:3][] | "- Question: \(.question | gsub("\n"; " ") | clip(140)) (\(.project), \(.created | hm))")
+          else empty end), "" else empty end),
       (if .bench then "## Sessions", "", .bench.headline, "",
         "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
