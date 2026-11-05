@@ -607,15 +607,18 @@ enum OutboxCmd {
 #[derive(Subcommand)]
 enum IngestCmd {
     /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
-    /// human, or one whose write was `refused`
+    /// human, one whose write was `refused`, or a row the planner `planned`
     Record {
-        #[arg(long, value_parser = ["left", "refused"])]
+        #[arg(long, value_parser = ["left", "refused", "planned"])]
         action: String,
-        /// `outbox`, or the project whose inbox holds the line
+        /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
         #[arg(long)]
         from: String,
         #[arg(long)]
         why: Option<String>,
+        /// The row's id, for `planned`
+        #[arg(long)]
+        id: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1039,10 +1042,12 @@ fn main() -> Result<()> {
                 action,
                 from,
                 why,
+                id,
                 text,
             } => {
                 let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
                 ev.why = why;
+                ev.id = id;
                 ingest::record(&prof, &ev);
                 0
             }
