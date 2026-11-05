@@ -28,7 +28,6 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
-AQ_TMUX_SERVER="${AGENT_QUEUE_TMUX_SERVER:-lab}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -43,6 +42,22 @@ own_session() {
   name="$(tmux display-message -p '#{session_name}' 2>/dev/null)"
   [ -n "$name" ] || return 1
   printf '%s:%s\n' "$(basename "${TMUX%%,*}")" "$name"
+}
+# The caller's session when it is on the agent world, else nothing. An item's session is what
+# cancel and the reap kill, so a hub window never lends its session to one.
+agent_session() {
+  local own
+  own="$(own_session)" || return 1
+  [ "${own%%:*}" = "$(tmux-world agents)" ] || return 1
+  printf '%s\n' "$own"
+}
+# qualified <session> -- `session:` is always <server>:<session>; a bare name is on the agent world.
+qualified() {
+  local world
+  case "$1" in '' | *:*) printf '%s\n' "$1"; return ;; esac
+  world="$(tmux-world agents)"
+  [ -n "$world" ] || die "no world declares @agents: give the session as <server>:$1"
+  printf '%s:%s\n' "$world" "$1"
 }
 # The caller's own window id (@N), which cancel closes: a hand-started item runs in a window of
 # a session it did not make, so the session is never its to close.
@@ -357,12 +372,13 @@ cmd_add() {
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
     esac
   done
-  # A hand-started session records itself, and the window it runs in.
+  # A hand-started session records itself and its window, on the agent world only.
   local window=''
   if [ -n "$running" ] && [ -z "$session" ]; then
-    session="$(own_session)" || session=""
+    session="$(agent_session)" || session=""
     [ -z "$session" ] || window="$(own_window)" || window=""
   fi
+  session="$(qualified "$session")" || exit 1
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   local resolved
@@ -552,9 +568,9 @@ cmd_cancel() {
   local slug="${1:?usage: agent-queue cancel <slug>}" f session server window dest
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  # `session:` is <server>:<tmux session>, as fleet-dispatch writes it; a bare name is on AQ_TMUX_SERVER.
-  session="$(fm_get "$f" session)"; server="$AQ_TMUX_SERVER"; window="$(fm_get "$f" window)"
-  case "$session" in *:*) server="${session%%:*}"; session="${session#*:}" ;; esac
+  # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
+  session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
+  case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
   # Close what the item owns: its window when it recorded one (a hand start), its session only
   # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
@@ -601,7 +617,10 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
-  for kv in "$@"; do header_set "$f" "${kv%%=*}" "${kv#*=}"; done
+  for kv in "$@"; do
+    case "$kv" in session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;; esac
+    header_set "$f" "${kv%%=*}" "${kv#*=}"
+  done
   echo "$slug: $*"
 }
 

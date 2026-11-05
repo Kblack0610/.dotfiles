@@ -7,21 +7,21 @@
 #   <dir>         skip the picker and go straight there -- ANY directory, listed or not
 #   --list        the candidate rows, one per line. Assertable without a terminal.
 #   --name <dir>  the session name that <dir> would produce
-#   --route <dir> "<world> <session>" if a manifest declares <dir>, else "here <name>"
 #   -h, --help    this text
 #
 # The list is repos + manifest-declared dirs + worktrees, NOT every directory under the roots:
 # a session name is a basename, so a deep walk produced colliding names (`dotfiles` x5) and
-# still never reached ~/.worktrees. An arbitrary path is Prefix+S's job (sesh + zoxide).
+# still never reached ~/.worktrees. Any other path is `sessionizer.sh <dir>`.
 # A repo nested inside another repo IS a row unless the outer one declares it in .gitmodules --
 # see repo_roots, and README.md, "Why a nested repo is a row".
 #
 # Row sources and the config keys (SESSIONIZER_ROOTS / _PRUNE / _DEPTH, WT_ROOT,
-# TMUX_SERVERS_DIR): README.md, "Projects and worktrees (Prefix+f)". The world-routing rule:
-# same file, "Which world a directory belongs to".
+# TMUX_SERVERS_DIR): README.md, "Projects and worktrees (Prefix+f)". Which world a row lands in
+# is worlds.sh's answer; the rule is in .config/tmux-servers/README.md.
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
+. "${SELF%/*}/worlds.sh" || exit 1
 
 # Colon-separated, not space-separated, because these are PATHS and a directory may contain a
 # space -- which the space-delimited form simply cannot express. That is not hypothetical: it
@@ -39,71 +39,9 @@ SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 # Shared with worktree.sh, which owns worktrees and puts them here. Same env key, so pointing
 # one at a fixture points both.
 WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
-# The same default servers.sh uses, and overridable for the same reason: the tests point it
-# at a fixture directory.
-MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
-
 # session_name <dir> -- the session this directory lands in. panel-lib owns the rule
 # (leading dot stripped, interior dots folded); this is the `--name` verb's front door.
 session_name() { panel_session_name "$1"; }
-
-# world_hidden <name> -- rc 0 when this machine opts out of a world via $MANIFEST_DIR/hidden.
-# Deliberately servers.sh:world_hidden, same file and same parse, for the reason given below.
-world_hidden() {
-  [ -r "$MANIFEST_DIR/hidden" ] || return 1
-  sed 's/#.*//; s/[[:space:]]//g' "$MANIFEST_DIR/hidden" | grep -qxF -- "$1"
-}
-
-# manifest_rows -- "<world> <session> <dir>" for every session the manifests declare.
-#
-# Reads the manifests directly rather than asking tmux, because the question is "where does
-# this directory BELONG", not "what is running" -- and the answer must be the same whether
-# that world is up, down, or has never been booted on this machine.
-#
-# The parse is deliberately servers.sh:cmd_ensure's, down to the `~` expansion and skipping
-# comments: two readers of one file that disagree about its format are a bug waiting for the
-# first unusual line. Same whitespace-delimited limitation, too -- a manifest cannot express a
-# directory containing a space, which is why nothing here tries to.
-#
-# ONE parse for two callers, which ask opposite questions of the same file: declared_by asks
-# who owns a directory, declared_dirs asks which directories are named at all.
-manifest_rows() {
-  local f world name mdir cmd
-  for f in "$MANIFEST_DIR"/*.conf; do
-    [ -r "$f" ] || continue # an unmatched glob stays literal; -r rejects it
-    world="${f##*/}"
-    world="${world%.conf}"
-    # A hidden world declares nothing here, so its directories open in the current world
-    # instead of hopping to one this machine opted out of.
-    world_hidden "$world" && continue
-    while read -r name mdir cmd; do
-      case "$name" in '' | '#'* | *:*) continue ;; esac # session:window adds a window, owns no dir
-      [ -n "$mdir" ] || continue
-      name="${name#\?}" # `?name` is on demand: not booted, but it still owns its directory
-      mdir="${mdir/#\~/$HOME}"
-      printf '%s %s %s\n' "$world" "$name" "${mdir%/}"
-    done < "$f"
-  done
-  return 0
-}
-
-# declared_by <dir> -- "<world> <session>" for a directory some manifest names, rc 1 if none.
-#
-# Fed by `<<<` and NOT `< <(manifest_rows)`: this loop returns on the first match, and a
-# process substitution still writing when its reader leaves takes SIGPIPE -- which bash
-# reports as `printf: write error: Broken pipe` on stderr, landing in the caller's output.
-# It is a RACE, so it passed on macOS and failed in CI. A here-string has no concurrent
-# writer at all. The empty line an empty here-string produces is harmless: it matches no
-# directory.
-declared_by() {
-  local dir="${1%/}" world name mdir
-  while read -r world name mdir; do
-    [ "$mdir" = "$dir" ] || continue
-    printf '%s %s\n' "$world" "$name"
-    return 0
-  done <<< "$(manifest_rows)"
-  return 1
-}
 
 # declared_dirs -- the manifests' own directories, when they exist on this machine.
 #
@@ -115,7 +53,7 @@ declared_dirs() {
   local world name dir
   while read -r world name dir; do
     [ -d "$dir" ] && printf '%s\n' "$dir"
-  done <<< "$(manifest_rows)" # same reason as declared_by, kept identical on purpose
+  done <<< "$(world_rows)"
   return 0
 }
 
@@ -130,34 +68,6 @@ current_world() {
   sock="$(tmux display-message -p '#{socket_path}' 2>/dev/null)" || return 1
   sock="${sock##*/}"
   [ -n "$sock" ] && [ "$sock" != default ] && printf '%s\n' "$sock"
-}
-
-# owner_repo <dir> -- the main checkout a LINKED worktree belongs to, rc 1 for anything else.
-#
-# A linked worktree's .git is a file; so is a submodule's, whose common dir sits under the
-# superproject's .git/modules and so never strips to a checkout a manifest could name.
-owner_repo() {
-  local common
-  [ -f "$1/.git" ] || return 1
-  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
-  [ "${common##*/}" = .git ] || return 1
-  printf '%s\n' "${common%/.git}"
-}
-
-# route <dir> -- "<world> <session>", where world is `here` for anything undeclared.
-#
-# A worktree is in no manifest (wt makes and recycles them all day), so it takes the world of
-# the repo it was cut from, under its OWN session name. Without that, picking an agent
-# worktree from another world built a second session for it there.
-cmd_route() {
-  local dir="${1%/}" decl main
-  if decl="$(declared_by "$dir")"; then
-    printf '%s\n' "$decl"
-  elif main="$(owner_repo "$dir")" && decl="$(declared_by "$main")"; then
-    printf '%s %s\n' "${decl%% *}" "$(session_name "$dir")"
-  else
-    printf 'here %s\n' "$(session_name "$dir")"
-  fi
 }
 
 # declared_submodule <repo> <relpath> -- true if <repo>/.gitmodules declares <relpath> as a
@@ -288,9 +198,9 @@ cmd_pick() {
 go() {
   local dir="$1" world name
   [ -d "$dir" ] || panel_die "not a directory: $dir"
-  read -r world name <<< "$(cmd_route "$dir")"
+  read -r world name <<< "$(world_route "$dir")"
 
-  # Declared, and it lives somewhere else: hand the hop to tmx, which owns crossing worlds
+  # It lives somewhere else: hand the hop to tmx, which owns crossing worlds
   # (detach-client -E, the back-crumb, and `ensure` on the far side). `goto` and not `land`
   # -- land is the far side and would skip the detach; see servers.sh:_enter.
   #
@@ -298,9 +208,9 @@ go() {
   # (`tmx pick-all`) is a popup that hops worlds exactly this way.
   if [ "$world" != here ] && [ "$world" != "$(current_world)" ]; then
     panel_need tmx
-    # A worktree's session is in no manifest, so tmx's ensure cannot wake it and land would
-    # fall back to that world's last session. Make it on its own server first.
-    declared_by "$dir" >/dev/null ||
+    # A worktree or an undeclared repo is in no manifest, so tmx's ensure cannot wake it and
+    # land would fall back to that world's last session. Make it on its own server first.
+    world_of_dir "$dir" >/dev/null ||
       tmux -L "$world" has-session -t "=$name" 2>/dev/null ||
       tmux -L "$world" new-session -ds "$name" -c "$dir"
     exec tmx goto "$world" "$name"
@@ -317,10 +227,6 @@ case "${1:-}" in
 --name)
   [ $# -eq 2 ] || panel_die "--name needs a directory"
   session_name "$2"
-  ;;
---route)
-  [ $# -eq 2 ] || panel_die "--route needs a directory"
-  cmd_route "$2"
   ;;
 -h | --help) panel_usage ;;
 '')

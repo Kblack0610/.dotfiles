@@ -75,12 +75,9 @@ wind_down() {
 @test "agent-queue cancel of an item recorded as hub:dotfiles closes its window only" {
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   jq -n --arg r "$HOME/.dotfiles" '{paths: {($r): "dotfiles"}}' > "$AGENT_QUEUE_PROJECT_MAP"
-  in_window agent "$AQ" add --project dotfiles --running --slug by-hand "hand-started in hub dotfiles"
-  f="$(ls "$AGENT_QUEUE_DIR"/running/*-by-hand.md)"
-  run grep -x 'session: hub:dotfiles' "$f"
-  assert_success
-  run grep -x "window: $(window_of agent)" "$f"
-  assert_success
+  # A hand start from hub records none of this now; items written before that still do.
+  "$AQ" add --project dotfiles --running --session hub:dotfiles --slug by-hand "hand-started in hub dotfiles"
+  "$AQ" set by-hand "window=$(window_of agent)"
   # The canceller is another session, as it was on 2026-11-04.
   run "$AQ" cancel by-hand
   assert_success

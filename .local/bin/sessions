@@ -613,6 +613,24 @@ session_window() {
   done
 }
 
+# open_window <id> <dir> -- a window running claude -r, in the world and session that directory
+# belongs to, then go there. A directory no manifest claims opens in the current session.
+open_window() {
+  local id="$1" dir="$2" cmd="claude -r '$1'" world='' name='' here
+  [ -z "$dir" ] || read -r world name <<< "$(tmux-world route "$dir")"
+  here="$(basename "${TMUX%%,*}")"
+  if [ "${world:-here}" = here ]; then
+    tmux new-window ${dir:+-c "$dir"} "$cmd" 2>/dev/null
+    return
+  fi
+  if tmux -L "$world" has-session -t "=$name" 2>/dev/null; then
+    tmux -L "$world" new-window -t "=$name:" -c "$dir" "$cmd" 2>/dev/null
+  else
+    tmux -L "$world" new-session -ds "$name" -c "$dir" "$cmd" 2>/dev/null
+  fi || return 1
+  if [ "$world" = "$here" ]; then tmux switch-client -t "=$name"; else tmx goto "$world" "$name"; fi
+}
+
 cmd_resume() {
   local id="" new_window=false
   for a in "$@"; do
@@ -646,8 +664,7 @@ cmd_resume() {
   # From the tmux popup, exec'ing here would trap a full Claude session inside a
   # transient popup - closing it would kill the session. Open a real window.
   if [ "$new_window" = true ] && [ -n "${TMUX:-}" ]; then
-    tmux new-window ${dir:+-c "$dir"} "claude -r '$id'" 2>/dev/null \
-      && return 0
+    open_window "$id" "$dir" && return 0
     echo "sessions: could not open a tmux window, resuming here instead" >&2
   fi
 

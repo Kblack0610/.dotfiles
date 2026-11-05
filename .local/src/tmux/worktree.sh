@@ -12,12 +12,11 @@
 #                     Inside tmux it lands you in the new session AT ONCE; the fetch and
 #                     checkout then run in that session's first pane, where you can watch
 #                     them (and read any error), and the pane becomes your shell.
-#                     A repo a server manifest declares (sessionizer.sh --route) gets its
-#                     session on THAT server, and you hop there, whichever world you
-#                     pressed the key in. --server opens the session on that tmux server
-#                     instead (of the declared one, or the one $TMUX points at); --detach opens it without going there. Together they
-#                     let a caller with no tmux of its own (fleet-dispatch, from a timer)
-#                     start a session on the lab server.
+#                     The session goes on the agent world (worlds.sh), and you hop there,
+#                     whichever world you pressed the key in. --server opens it on that
+#                     tmux server instead; --detach opens it without going there. Together
+#                     they let a caller with no tmux of its own (fleet-dispatch, from a
+#                     timer) start a session.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -61,6 +60,7 @@
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
+. "${SELF%/*}/worlds.sh" || exit 1
 
 WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
 # The command a new session's first window runs. Empty = a plain shell, which is the honest
@@ -682,6 +682,30 @@ wt_lock() {
   ln -s "$$" "$lock" 2>/dev/null
 }
 
+# wt_to_agent_world -- send this run's sessions to the agent world, from whichever world the key
+# was pressed in, or from no tmux at all. An explicit --server still wins. Inside tmux the
+# client has to cross servers too, which WT_HOP tells wt_focus.
+WT_HOP=0
+wt_to_agent_world() {
+  local world
+  [ -z "$WT_SERVER" ] || return 0
+  world="$(world_agents)"
+  [ -n "$world" ] && [ "$world" != "$(wt_current_server)" ] || return 0
+  WT_SERVER="$world"
+  panel_in_tmux && WT_HOP=1
+  return 0
+}
+
+# wt_focus <session> -- go there. switch-client cannot cross servers; tmx owns the hop.
+wt_focus() {
+  if [ "$WT_HOP" = 1 ]; then
+    panel_need tmx
+    tmx goto "$WT_SERVER" "$1"
+  else
+    panel_focus_session "$1"
+  fi
+}
+
 # wt_ensure_session <name> <dir> -- panel_ensure_session, plus the one thing it cannot do.
 wt_ensure_session() {
   local name="$1" dir="$2"
@@ -731,17 +755,7 @@ cmd_new() {
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
-  # The world whose manifest declares this repo (lab.conf names the playground), so Prefix+F
-  # lands the session there from whichever world it was pressed in. The sessionizer's route
-  # is the one routing table; an explicit --server still wins.
-  local world hop=0
-  if [ -z "$WT_SERVER" ] && panel_in_tmux; then
-    read -r world _ <<< "$("${SELF%/*}/sessionizer.sh" --route "$main")"
-    if [ -n "$world" ] && [ "$world" != here ] && [ "$world" != "$(wt_current_server)" ]; then
-      WT_SERVER="$world"
-      hop=1
-    fi
-  fi
+  wt_to_agent_world
 
   lock="$WT_LOCK_DIR/new-$repo.lock"
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
@@ -782,12 +796,8 @@ cmd_new() {
     printf '%s\n' "$name"
     if [ "$detach" = 1 ]; then
       :
-    elif [ "$hop" = 1 ]; then
-      # switch-client cannot cross servers; tmx owns the hop (detach -E, then attach there).
-      panel_need tmx
-      tmx goto "$WT_SERVER" "$name"
     else
-      panel_focus_session "$name"
+      wt_focus "$name"
     fi
     return 0
   fi
@@ -843,8 +853,9 @@ wt_land() {
   local path="$1" name
   [ -d "$path" ] || panel_die "no such worktree: $path"
   name="$(basename "$path")"
+  wt_to_agent_world
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
-  panel_focus_session "$name"
+  wt_focus "$name"
 }
 
 # wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose

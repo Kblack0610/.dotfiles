@@ -14,19 +14,22 @@
 # window in it, because the item recorded the session it was started in.
 set -uo pipefail
 
-MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/worlds.sh" || exit 1
 
 # protected <name> -> the manifest that declares <name>, exit 1 when none does. Any world's
-# manifest counts on any server: a name the human works in is never a disposable session.
-# `?name` is declared on demand, `name:window` declares a window of session name.
+# manifest counts on any server, a hidden one too: a name the human works in is never a
+# disposable session. `?name` is declared on demand, `name:window` declares a window of session
+# name. Fed by `<<<` for the reason world_of_dir gives.
 protected() {
-  local f
+  local f name rest
   for f in "$MANIFEST_DIR"/*.conf; do
     [ -r "$f" ] || continue
-    if awk -v s="$1" '!/^[[:space:]]*#/ && NF { n = $1; sub(/^\?/, "", n); sub(/:.*/, "", n); if (n == s) { f = 1; exit } }
-      END { exit !f }' "$f"; then
-      printf '%s\n' "$f"; return 0
-    fi
+    while read -r name rest; do
+      name="${name#\?}"
+      [ "${name%%:*}" = "$1" ] || continue
+      printf '%s\n' "$f"
+      return 0
+    done <<< "$(world_entries "$f")"
   done
   return 1
 }
