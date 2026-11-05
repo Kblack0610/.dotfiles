@@ -61,7 +61,7 @@ A dispatched session is an ordinary session from then on: the `shepherd` buckets
 
 ## Starved queue: a fleet-lead pass may start the head item
 
-`fleet-dispatch starved` exits 1 when an urgent or high queue item has been runnable over `DISPATCH_STARVED_MIN` minutes and no run pass started anything (the Sentinel watch `queue-starved` runs it, and its trip reaches the pass as a `watch:` due line). On 2026-11-04 four gates in turn held every pass for 7.5h while the shepherd watched and could not act. A `fleet-lead` pass that sees it:
+`fleet-dispatch starved` exits 1 when an urgent or high queue item has been runnable over `DISPATCH_STARVED_MIN` minutes and no run pass started anything, or when runnable sits under `DISPATCH_LOW_WATER` with board rows a pass would pick and no run start in twice that time (the Sentinel watch `queue-starved` runs it, and its trip reaches the pass as a `watch:` due line). On 2026-11-04 four gates in turn held every pass for 7.5h while the shepherd watched and could not act. A `fleet-lead` pass that sees it:
 
 1. `fleet-dispatch run --dry-run` and `agent-hold list` in one call, to read what stops a real pass.
 2. If the block is load (the pace check says HOLD), account room (`claude-acct room`), or an `agent-hold` anyone set, leave it: those are the gates working. Answer the line with `fleet-shepherd skip` naming the gate; the watch has already paged the human.

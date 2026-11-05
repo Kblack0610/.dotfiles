@@ -261,8 +261,10 @@ pub(crate) fn put_note(p: &Profile, target: &str, base: &str, text: &str) -> Res
 /// `notes put <target> --base <hash>`: the note replaced with stdin, then its `show --json`. Exit
 /// 3, with the current `show --json` printed and nothing written, when it changed since `base`.
 pub fn put(p: &Profile, log: &Logger, target: &str, base: &str, text: &str) -> Result<i32> {
-    match put_note(p, target, base, text) {
-        Ok(Put::Written(v)) => {
+    // A refusal is main's one `Error:` line, as for `outbox put`: a `log.warn` also echoes to
+    // stderr, so a page showing stderr would print it twice.
+    match put_note(p, target, base, text)? {
+        Put::Written(v) => {
             log.info(
                 "put",
                 &format!(
@@ -274,14 +276,10 @@ pub fn put(p: &Profile, log: &Logger, target: &str, base: &str, text: &str) -> R
             println!("{v}");
             Ok(0)
         }
-        Ok(Put::Stale(v)) => {
+        Put::Stale(v) => {
             println!("{v}");
             eprintln!("{target} changed since {base}; nothing written");
             Ok(3)
-        }
-        Err(e) => {
-            log.warn("put", &format!("{target}: {e}"));
-            Err(e)
         }
     }
 }

@@ -2128,6 +2128,42 @@ board_item() {
   assert_output --partial 'gm-1 (high'
 }
 
+@test "starved: runnable under the low water with a row a pass would pick and no run start in twice the limit trips it; a recent start, low water 0 or nothing to pick does not" {
+  game_ready
+  stub fleet-presence 'echo "here 0 tmux"'
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'runnable 0 under the low water 3 with no run start since'
+  assert_output --partial '1 board row(s) a pass would pick'
+  DISPATCH_LOW_WATER=0 run cmd_starved
+  assert_success
+  # A run start 90 minutes ago: past the item limit but inside twice it, so the top-up is turning.
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s started game-agent-1 on lab (run) for game: queue item x\n' "$(date -d '-90 min' '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_success
+  rm "$FLEET_DISPATCH_DIR/log.md"
+  # Nothing a pass would pick: the row was judged a skip.
+  verdict game human 'fix crash on load' skip
+  run cmd_starved
+  assert_success
+}
+
+@test "stats: the low water, whether runnable is under it, and the present trickle's starts this hour" {
+  local new
+  new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item one high "$new"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  { printf -- '- %s present start: queue item a (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')"
+    printf -- '- %s present start: queue item b (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-70 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '{low_water, under_low_water, present_per_hour, present_starts_1h}' <<<"$output")" \
+    '{"low_water":3,"under_low_water":1,"present_per_hour":1,"present_starts_1h":1}'
+  DISPATCH_LOW_WATER=1 run cmd_stats
+  assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
+}
+
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
