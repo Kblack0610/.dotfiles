@@ -1395,7 +1395,7 @@ fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
 /// naming the orgs, because guessing which of two live sheets you meant is how edits land in the
 /// copy nothing reads.
 pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
-    let want = name.trim().to_lowercase();
+    let want = crate::registry::canonical(name.trim()).to_lowercase();
 
     // Fast path: the active org has it AND it is the real sheet. No other org is consulted, so
     // the common case costs exactly what it did before.

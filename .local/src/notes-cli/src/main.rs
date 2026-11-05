@@ -865,6 +865,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
             if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
@@ -878,6 +879,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
