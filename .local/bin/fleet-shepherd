@@ -274,19 +274,43 @@ overdue_due() {
     | @tsv')
 }
 
-# limit_due -> a line per session stopped on the account's usage limit. Only the pane says so: no
-# transcript record or session status does. An escalated row is left alone, since that is where a
-# pass puts one no account has room for, and only the human can add room.
+# limit_due -> what a pass moves off an account that is out of usage. Each account at its week or
+# 5h cap (`claude-acct status`) gets a line per live session on it: an idle one moves to the account
+# `claude-acct room` names, one in a dialog is listed for the human, and a busy one or one with
+# shells running waits for a later pass (a move would stop its gate or test). No room anywhere is
+# one line per capped account, for the human. A session the account read does not cover (its
+# account unread, or not in the row) still gets the pane line: only the pane says it stopped. An
+# escalated row is left out of the pane line, since that is where a pass puts one no account has
+# room for, and only the human can add room.
 limit_due() {
-  local target pane server
+  local rows capped room room_name target pane server
+  rows="$(claude-acct status --json 2>/dev/null)" || rows=''
+  capped="$(jq -c '[.[]? | select(.state == "ok" and ((.week_used // 0) >= 100 or (.five_hour // 0) >= 100)) | .name]' \
+    <<<"${rows:-[]}" 2>/dev/null)" || capped='[]'
+  if [ "${capped:-[]}" != '[]' ]; then
+    room_name=''
+    room="$(claude-acct room 2>/dev/null)" \
+      && room_name="$(jq -r --arg d "$room" 'first(.[] | select(.dir == $d) | .name) // empty' <<<"$rows")"
+    jq -r --argjson capped "$capped" --arg room "$room_name" '
+      (.sessions // []) | map((.account // "") as $a
+        | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))
+      | (.[] | select(.activity == "idle" and $room != "")
+             | "limit: \(.target) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
+        (.[] | select(.activity == "waiting")
+             | "limit: \(.target) on \(.account), out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"),
+        (if $room == "" then group_by(.account)[] | select(any(.activity == "idle"))
+           | "limit: \(.[0].account) is out of usage and no account has room; then: tell the human once (\(length) live on it), and fleet-shepherd skip it"
+         else empty end)' "$STATE_FILE" 2>/dev/null
+  fi
   while IFS=$'\t' read -r target pane; do
     server=''
     case "$target" in */*) server="${target%%/*}" ;; esac
     tmux ${server:+-L "$server"} capture-pane -p -t "$pane" 2>/dev/null \
       | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$LIMIT_RE" \
       && echo "limit: $target stopped on the usage limit"
-  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" '(.sessions // [])[]
+  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" '(.sessions // [])[]
     | select((.labels // []) | index("manual") | not)
+    | select((.account // "") as $a | ($capped | index($a)) == null)
     | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
     | [.target, .pane] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
