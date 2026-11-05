@@ -161,7 +161,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || serve(l, tx));
         for (t, q) in [
-            (Tab::Sessions, None),
+            (Tab::Fleet, None),
             (Tab::Board, Some("bnb/demo")),
             (Tab::Overview, None),
         ] {
