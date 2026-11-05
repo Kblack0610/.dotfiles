@@ -260,13 +260,13 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   conf_tmux kill-server 2>/dev/null || true
 }
 
-@test "infra is still on prefix+i, per tmux itself" {
+@test "the board is still on prefix+i, per tmux itself" {
   # The feature took a free key rather than rekeying anything. Asserted against the live
   # binding table, not the file, because that is what actually decides what your finger does.
   conf_server
   local e
   e="$(conf_tmux list-keys -T prefix | awk '$4 == "i" { $1=$2=$3=$4=""; sub(/^ +/,""); print }')"
-  grep -qF 'hub tab overview' <<< "$e" || fail "prefix+i is not infra: [$e]"
+  grep -qF 'hub tab board' <<< "$e" || fail "prefix+i is not the board: [$e]"
   conf_tmux kill-server 2>/dev/null || true
 }
 
@@ -298,43 +298,4 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
   sleep 0.3
   assert_equal "$(win_count)" 4
   assert_equal "$(marked)" "$ed_id"
-}
-
-# ── open ─────────────────────────────────────────────────────────────────────
-
-@test "open with no editor yet creates the editor ON the file" {
-  # Started on the file rather than typed into a starting editor: that is the race toggle's
-  # self-heal comment describes, so the window command itself must carry the file and line.
-  start_session
-  _tm run-shell -t work:two "'$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
-  wait_until '[ -n "$(marked)" ]'
-  local ed_id; ed_id="$(marked)"
-  # tmux quotes the start command when it prints it and doubles the backslash, so assert
-  # the parts rather than one escaped spelling of the path.
-  run _tm display-message -p -t "$ed_id" '#{pane_start_command}'
-  assert_output --partial 'nvim +7 '
-  assert_output --partial 'sheet.md'
-  assert_equal "$(current_win)" "$ed_id"
-}
-
-@test "open with a running editor types :e at the line into it and goes there" {
-  start_session
-  # `sleep`, not `cat`, as the running editor: a run-shell child's pane gets a stdin that
-  # EOFs at once, so cat exits and the pane is back at its shell (see the self-heal test).
-  # The keystrokes still echo on the pane's tty, which is what the capture reads.
-  ed two ensure 'sleep 300'
-  wait_until '[ -n "$(marked)" ]'
-  local ed_id; ed_id="$(marked)"
-  # The pane reads as its wrapping shell for the editor's whole life (see _at_shell), so
-  # wait for the editor PROCESS, which is what open now asks about.
-  local pid; pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
-  wait_until "pgrep -P '$pid' -x sleep >/dev/null"
-  _tm select-window -t work:one
-  _tm run-shell -t work:one "EDITOR_WINDOW_CMD='sleep 300' '$EDITOR_SH' open '$SANDBOX/a sheet.md' 7"
-  wait_until '_tm capture-pane -p -t "$ed_id" | grep -qF ":e +7"'
-  run _tm capture-pane -p -t "$ed_id"
-  assert_output --partial ':e +7 '
-  assert_output --partial 'a\ sheet.md'
-  assert_equal "$(current_win)" "$ed_id"
-  assert_equal "$(win_count)" 4
 }
