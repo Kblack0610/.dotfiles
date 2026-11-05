@@ -2016,7 +2016,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("ALL PROJECTS  5 open rows") < at("DEMO  bnb, alpha"),
+            at("ALL PROJECTS  4 open rows") < at("DEMO  bnb, alpha"),
             "{s}"
         );
         assert!(

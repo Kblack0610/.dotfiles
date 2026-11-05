@@ -152,12 +152,16 @@ pub fn note(p: &Profile, target: &str) -> Result<Value> {
         String::new()
     };
     let vault = fs::canonicalize(&p.vault).unwrap_or_else(|_| p.vault.clone());
-    let rel = crate::config::wikilink(&vault, &file);
-    let rel = if rel == file.to_string_lossy() {
-        crate::config::wikilink(&p.root, &file)
-    } else {
-        rel
-    };
+    // Vault-relative when the note is in the vault, else relative to the profile root (a job
+    // profile's root sits outside the vault).
+    let rel = crate::config::wikilink(
+        if file.starts_with(&vault) {
+            &vault
+        } else {
+            &p.root
+        },
+        &file,
+    );
     let title = markdown
         .lines()
         .find_map(|l| l.strip_prefix("# "))
@@ -283,8 +287,15 @@ mod tests {
 
     #[test]
     fn a_missing_note_is_not_an_error_but_says_it_does_not_exist() {
-        let (root, p) = vault("missing");
-        assert_eq!(note(&p, "gone").unwrap()["exists"], false);
+        let (root, mut p) = vault("missing");
+        let gone = note(&p, "gone").unwrap();
+        assert_eq!(
+            (&gone["exists"], &gone["rel"]),
+            (&Value::Bool(false), &Value::from("gone"))
+        );
+        // A profile whose root is not the vault names a missing note from its root, not as a path.
+        p.vault = root.join("elsewhere");
+        assert_eq!(note(&p, "gone").unwrap()["rel"], "gone");
         let day = note(&p, "daily:2026-11-03").unwrap();
         assert_eq!(day["exists"], false);
         assert_eq!(day["prev"], "2026-11-02");

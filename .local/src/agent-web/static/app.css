@@ -119,6 +119,7 @@ a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px d
 a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
 #focus .opts a.wl { font: 12px var(--mono); }
 #focus pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#focus #f-out { flex: 1; min-width: 12em; }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 /* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and
