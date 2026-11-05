@@ -1,46 +1,36 @@
-//! agent-panel opens fzf with exactly the preview layout the shell panels use: the
-//! `--preview-window` and ctrl-/ toggle `panel_fzf_layout` (`.local/src/tmux/panel-lib.sh`)
-//! prints, for the same `PANEL_LAYOUT`. A stub `fzf` on PATH logs its argv one per line and
-//! exits 130 (aborted), so the chooser runs for real and selects nothing.
+//! agent-panel opens fzf with the preview layout the shell panels use, taken from its one source:
+//! `panel-layout.sh args agent-panel` (`.local/src/tmux/`), found under $HOME. HOME here is a temp
+//! dir whose `.local/src/tmux` links to this repo's, and a stub `fzf` on PATH logs its argv one
+//! per line and exits 130 (aborted), so the chooser runs for real and selects nothing.
 //!
-//! One test in this file on purpose: it sets PATH and PANEL_LAYOUT for the whole process.
+//! One test in this file on purpose: it sets HOME, PATH and XDG_STATE_HOME for the whole process.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn panel_lib() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../tmux/panel-lib.sh")
-}
-
-/// What `panel_fzf_layout` sets for `setting`, one array element per line; None when it fails.
-fn shell_layout(setting: Option<&str>) -> Option<Vec<String>> {
-    let mut cmd = Command::new("bash");
-    cmd.args([
-        "-c",
-        r#"SELF="$1"; . "$1" || exit 9; panel_fzf_layout 2>/dev/null || exit 7; printf '%s\n' "${PANEL_FZF_LAYOUT[@]}""#,
-        "_",
-    ])
-    .arg(panel_lib());
-    match setting {
-        Some(s) => cmd.env("PANEL_LAYOUT", s),
-        None => cmd.env_remove("PANEL_LAYOUT"),
-    };
-    let out = cmd.output().expect("bash runs");
-    assert_ne!(out.status.code(), Some(9), "panel-lib.sh did not source");
-    out.status.success().then(|| {
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(String::from)
-            .collect()
-    })
+fn fzf_argv(log: &Path) -> Vec<String> {
+    fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect()
 }
 
 #[test]
-fn fzf_gets_the_layout_panel_lib_prints_for_each_setting() {
+fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
     let dir = std::env::temp_dir().join(format!("agent-panel-layout-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    fs::create_dir_all(home.join(".local/src")).unwrap();
+    let tmux_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tmux");
+    std::os::unix::fs::symlink(
+        tmux_dir.canonicalize().unwrap(),
+        home.join(".local/src/tmux"),
+    )
+    .unwrap();
+    let state = dir.join("state");
     let log = dir.join("argv");
     let stub = dir.join("fzf");
     fs::write(
@@ -52,48 +42,63 @@ fn fzf_gets_the_layout_panel_lib_prints_for_each_setting() {
     )
     .unwrap();
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_STATE_HOME", &state);
+    std::env::remove_var("PANEL_LAYOUT");
     std::env::set_var(
         "PATH",
         format!("{}:{}", dir.display(), std::env::var("PATH").unwrap()),
     );
     let map = dir.join("map");
+    let helper = home.join(".local/src/tmux/panel-layout.sh");
+    let helper_says = || -> Vec<String> {
+        let out = Command::new(&helper)
+            .args(["args", "agent-panel"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(String::from)
+            .collect()
+    };
 
-    let mut seen = Vec::new();
-    for setting in [None, Some("stacked"), Some("side")] {
-        match setting {
-            Some(s) => std::env::set_var("PANEL_LAYOUT", s),
-            None => std::env::remove_var("PANEL_LAYOUT"),
+    let mut opened = Vec::new();
+    for saved in [None, Some("side"), Some("stacked")] {
+        if let Some(s) = saved {
+            fs::create_dir_all(state.join("panels")).unwrap();
+            fs::write(state.join("panels/agent-panel.layout"), format!("{s}\n")).unwrap();
         }
         let picked = agent_panel::fzf::run("hub/a:1\trow", &map, None).unwrap();
         assert_eq!(picked, None, "an aborted fzf selects nothing");
-        let argv: Vec<String> = fs::read_to_string(&log)
-            .unwrap()
-            .lines()
-            .map(String::from)
-            .collect();
-        let want = shell_layout(setting).expect("panel_fzf_layout succeeds");
+        let argv = fzf_argv(&log);
+        let want = helper_says();
         assert_eq!(want.len(), 2, "{want:?}");
         for line in &want {
             assert!(
                 argv.contains(line),
-                "{setting:?}: fzf argv lacks {line}\n{argv:?}"
+                "{saved:?}: fzf argv lacks {line}\n{argv:?}"
             );
         }
-        // Only the shared layout sets the preview window: no second, legacy one.
+        // Only the shared layout sets the preview window: no second one of agent-panel's own.
         let windows = argv.iter().filter(|a| a.contains("preview-window")).count();
-        assert_eq!(windows, 2, "{setting:?}: {argv:?}");
-        seen.push(want);
+        assert_eq!(windows, 1, "{saved:?}: {argv:?}");
+        assert!(
+            want[1].contains("transform(") && want[1].contains(" next agent-panel "),
+            "{want:?}"
+        );
+        opened.push(want[0].clone());
     }
-    // Negative control: the settings really differ, so equality above is not vacuous.
-    assert_ne!(seen[0], seen[2]);
-    assert_eq!(seen[0], seen[1]);
+    // Negative control: the saved layout really changes what fzf opens with.
+    assert!(opened[0].contains("=down,"), "{opened:?}");
+    assert!(opened[1].contains("=right,"), "{opened:?}");
+    assert_eq!(opened[0], opened[2]);
 
-    // An unknown setting fails in both, before fzf starts.
-    std::env::set_var("PANEL_LAYOUT", "bogus");
+    // A saved value that is not a layout fails before fzf starts.
+    fs::write(state.join("panels/agent-panel.layout"), "bogus\n").unwrap();
     fs::remove_file(&log).unwrap();
     assert!(agent_panel::fzf::run("hub/a:1\trow", &map, None).is_err());
     assert!(!log.exists(), "fzf ran on an unknown layout");
-    assert!(shell_layout(Some("bogus")).is_none());
 
     let _ = fs::remove_dir_all(&dir);
 }
