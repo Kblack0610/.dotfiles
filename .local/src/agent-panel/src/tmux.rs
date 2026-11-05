@@ -197,13 +197,6 @@ pub fn current_target() -> Option<String> {
     (!s.is_empty()).then(|| format!("{server}/{s}"))
 }
 
-/// A status-line message on one client for a few seconds; keys keep going to the pane.
-pub fn notice(socket: &str, client: &str, msg: &str) {
-    let _ = Command::new("tmux")
-        .args(["-S", socket, "display-message", "-c", client, "-d", "6000", msg])
-        .status();
-}
-
 /// Jump to a target. Within the server we are already in, that is `switch-client`.
 /// Anything else is a cross-server hop, which tmux has no command for; `tmx goto`
 /// owns it (detach-client -E + attach, and it records the Prefix+L way back), so
