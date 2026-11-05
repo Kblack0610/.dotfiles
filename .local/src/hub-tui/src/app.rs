@@ -311,6 +311,8 @@ pub struct App {
     /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
+    /// `hub --popup`: a floating window, so Esc with nothing left to close quits.
+    pub popup: bool,
     tx: Sender<Msg>,
     infra_read: Read,
     jobs_read: Read,
@@ -371,6 +373,7 @@ impl App {
             infra_jobs: false,
             scroll: 0,
             quit: false,
+            popup: false,
             tx,
             infra_read: Read::default(),
             jobs_read: Read::default(),
@@ -910,6 +913,8 @@ impl App {
         let tabs = Tab::ALL.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
+            // Every tab's own Esc (a pane, filter, prompt or table) ran above and kept the key.
+            KeyCode::Esc if self.popup => self.quit = true,
             // Each digit opens what DIGITS says, as on the tab bar.
             KeyCode::Char(c @ '0'..='9') => {
                 if let Some((_, t, sec)) = DIGITS.iter().find(|(d, _, _)| *d == c) {
@@ -2809,6 +2814,40 @@ mod tests {
         assert_eq!(a.tab, Tab::Sessions);
         a.handle(key('q'));
         assert!(a.quit);
+    }
+
+    #[test]
+    fn esc_quits_a_popup_only_when_nothing_is_left_to_close() {
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        // Negative control: the tmux hub pane is never closed by Esc.
+        let mut a = app(Tab::Home);
+        a.handle(esc());
+        assert!(!a.quit);
+        // A popup: Esc first backs out of the jobs table, then quits.
+        let mut a = app(Tab::Infra);
+        a.popup = true;
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert!(a.infra_jobs);
+        a.handle(esc());
+        assert!(!a.infra_jobs && !a.quit);
+        a.handle(esc());
+        assert!(a.quit);
+        // An armed confirm keeps its Esc.
+        let mut a = app(Tab::Queue);
+        a.popup = true;
+        a.qv.confirm = Some("x".into());
+        a.handle(esc());
+        assert!(a.qv.confirm.is_none() && !a.quit);
+        a.handle(esc());
+        assert!(a.quit);
+    }
+
+    #[test]
+    fn a_start_query_opens_its_infra_section() {
+        let (t, q) = crate::tabreq::parse("infra ci").unwrap();
+        let mut a = app(t);
+        a.open_query(q);
+        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("ci")));
     }
 
     #[test]
