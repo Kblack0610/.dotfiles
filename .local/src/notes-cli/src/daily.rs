@@ -394,9 +394,8 @@ const SHIPPED: &str = "shipped";
 
 /// `## Morning`: what happened while you were away, below Notes and Focus. It leads with the
 /// two intake links, the outbox to post to and the inbox page saying what the sweep did with
-/// each line, count-free so a sweep never rewrites the note. Then the briefing's headline and its "Needs you" items (each cut before its `-> do:` hint, which stays in the
-/// briefing), the day log's headline, then what the knowledge engine compiled since the last
-/// note listed it.
+/// each line, count-free so a sweep never rewrites the note. Then the briefing's headline and its "Needs you" items, the day log's
+/// headline, then what the knowledge engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
     let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
@@ -429,7 +428,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
                 let Some(body) = item.strip_prefix("- ") else {
                     continue;
                 };
-                let body = body.split(" -> do:").next().unwrap_or(body).trim();
+                let body = body.trim();
                 if !body.is_empty() && body != "nothing" {
                     s.push_str(&format!("  - {body}\n"));
                 }
@@ -2004,8 +2003,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items without
-    /// their `-> do:` hints, the day log's first sentence, then one line for the knowledge logs
+    /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items as
+    /// written, the day log's first sentence, then one line for the knowledge logs
     /// the previous note did not list. Re-running it changes nothing, and `## Refs` lists neither
     /// the briefing nor the day log.
     #[test]
@@ -2017,12 +2016,12 @@ mod tests {
         std::fs::create_dir_all(dir.join("knowledge/_log/2026/09")).unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/briefing.md"),
-            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45, 2 page(s), 1 high.\n\n## Needs you\n\n- wave-roll STALLED -> do: agentctl status wave-roll\n\n## Quiet\n\n- 15 watches OK\n",
+            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45: 1 thing needs you.\n\n## Needs you\n\n- Runner wave-roll stalled. Run agentctl status wave-roll.\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/shipped.md"),
-            "# Day log, 2026-09-30\n\n3 merged in 2 repos, whose spend is $4.5. Gathered by `day-log`.\n",
+            "# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
         for (d, line) in [
@@ -2047,7 +2046,7 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45, 2 page(s), 1 high.\n  - wave-roll STALLED\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 merged in 2 repos, whose spend is $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
+        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Runner wave-roll stalled. Run agentctl status wave-roll.\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
         assert!(

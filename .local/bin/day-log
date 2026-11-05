@@ -255,7 +255,7 @@ markdown() {
   jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
-      "\(.merged | length) merged in \(.merged | map(.repo) | unique | length) repos, \($u.sessions) sessions active, whose whole-session spend is \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
+      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
       (if .waiting then "## Waiting on you (as last gathered)", "",
         (.waiting.main[] | "- NIGHTLY \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
