@@ -8,7 +8,8 @@ use std::process::Command;
 use serde::Serialize;
 use serde_json::Value;
 
-/// The timeout guard on each query, as the bash board's `curl -m 10`.
+/// The timeout guard on each query, as the bash board's `curl -m 10`. `PROM_TIMEOUT` overrides it,
+/// the name `prom.sh` reads, for a caller with a tighter budget.
 const QUERY_TIMEOUT_SECS: &str = "10";
 
 /// Scrape-target labels, stripped so two exporter pods during a rollout read as one row.
@@ -113,7 +114,7 @@ pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Se
     cmd.args([
         "-sf",
         "-m",
-        QUERY_TIMEOUT_SECS,
+        &std::env::var("PROM_TIMEOUT").unwrap_or_else(|_| QUERY_TIMEOUT_SECS.into()),
         "-G",
         &format!("{base}/api/v1/{path}"),
     ]);

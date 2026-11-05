@@ -535,11 +535,12 @@ window_stats() {
 # bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project. Waiting
 # and stalled hours are summed over the project's sessions, the ETA ratio is the median of
 # the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
-# in the window by a session of that project.
+# in the window by a session of that project. The KPIs ride along so a reader never runs `kpi`.
 bench_prom() {
-  local t="$1"
+  local t="$1" kpis
+  kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
   jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
-     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") \
+     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") --argjson k "$kpis" \
      "$JQ_LIB$PROM_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
@@ -556,7 +557,13 @@ bench_prom() {
       gauge("agent_bench_loop_dark_episodes"; "Finding episodes begun in the last 7d that reached the human with nothing but pages.";
         [{}, ($e | map(select(.dark)) | length)]),
       gauge("agent_bench_loop_first_response_minutes"; "Median minutes from a finding episode to its first response that is not a page, last 7d.";
-        [{}, ($e | map(.first_response_min | numbers) | median)])'
+        [{}, ($e | map(.first_response_min | numbers) | median)]),
+      gauge("agent_bench_kpi"; "The KPIs `fleet-bench kpi` prints, by window.";
+        $k | to_entries[] | .key as $n | .value as $v | ("7d", "28d") as $d | [{kpi: $n, window: $d}, $v[$d]]),
+      gauge("agent_bench_kpi_limit"; "Each KPI'"'"'s threshold from kpi-thresholds.";
+        $k | to_entries[] | [{kpi: .key}, .value.threshold]),
+      gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
+        $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)])'
 }
 
 # publish_window <now>: write bench_prom where node_exporter reads it.

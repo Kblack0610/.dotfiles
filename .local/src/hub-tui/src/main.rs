@@ -29,6 +29,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
        hub actions --since WHEN [--json]
+       hub phone --json
   TAB     home|queue|jobs|ci|machines|sessions|today|history|fleet|projects, or a retired
           name (overview, waiting, asks, board, forecast, watch, shepherd) that lands on its
           new tab
@@ -37,6 +38,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would)
+  phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -64,6 +66,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("actions") {
         it.next();
         std::process::exit(actions(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("phone") {
+        it.next();
+        std::process::exit(phone(it.cloned().collect()));
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -115,6 +121,35 @@ fn actions(args: Vec<String>) -> i32 {
         print!("{}", hub_core::actions::digest(&g));
     }
     i32::from(!g.errors.is_empty())
+}
+
+/// `hub phone --json`: the same join Home draws, reduced to the phone's rows.
+fn phone(args: Vec<String>) -> i32 {
+    if args != ["--json"] {
+        die(USAGE);
+    }
+    let state = std::fs::read_to_string(hub_core::boards::fleet_state())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let (queue, infra) = std::thread::scope(|s| {
+        let infra = s.spawn(hub_core::infra::gather);
+        let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
+        (queue, infra.join().unwrap_or_default())
+    });
+    let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let phone = hub_core::phone::build(
+        &home,
+        &hub_core::phone::Inputs {
+            state: &state,
+            queue: Some(&queue),
+            infra: Some(&infra),
+            merged: hub_core::phone::merged_today(),
+            now: chrono::Utc::now().timestamp(),
+        },
+    );
+    println!("{}", serde_json::to_string(&phone).unwrap_or_default());
+    0
 }
 
 /// Epoch seconds, or an RFC 3339 time.
