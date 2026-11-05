@@ -305,6 +305,7 @@ cmd_disarm() {
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
+  rm -f -- "$SPIN_DIR"/*__"$sid".fired
   for f in "$SPIN_DIR"/*__"$sid".request; do
     [ -f "$f" ] && rm -f -- "$f" && removed=1
   done

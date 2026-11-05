@@ -10,8 +10,11 @@
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch start --project P [--profile X] [--agent] [--server S] [--model M]
-#       (--item SLUG | --brief FILE --row KEY [--cwd REPO] | --resume ID --session NAME --cwd DIR [--item SLUG])
+#       (--item SLUG | --brief FILE --row KEY [--cwd REPO]
+#        | --resume ID --session NAME --cwd DIR [--window NAME] [--permission-mode M] [--item SLUG])
 #                                    start ONE session the way every agent must: see cmd_start
+#   fleet-dispatch record            keep each world's pane record; page when a world's server died
+#   fleet-dispatch restore [--server S] [--dry-run]  reopen a lost server's conversations as windows
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -370,6 +373,14 @@ picks() {
 
 # --- launch --------------------------------------------------------------------------
 
+# start_ready <server> <session> <pane> <ready text> -- an account that never opened this folder asks "Do you
+# trust this folder?" first, defaulting to "No, exit". claude-acct trust answers it once and waits
+# for claude's mode footer.
+start_ready() {
+  command -v claude-acct >/dev/null 2>&1 || return 0
+  claude-acct trust "$1" "$3" "$4" >/dev/null || say "$2: claude did not show \"$4\"; look at its pane"
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
 # its server (the human reads [dispatch] as "an agent started this"), and a session doing work
@@ -383,13 +394,16 @@ picks() {
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
 #                           --item SLUG re-attaches the started item that session was working.
+#                           --window NAME opens it as a window of --session instead, which may
+#                           already hold others: a world session like hub:dotfiles.
+#                           --permission-mode M keeps a mode other than bypass (cmd_restore).
 cmd_start() {
   local project='' prof='' lane=human key='' server="$DISPATCH_SERVER" model='' brief_file='' \
-    resume='' cwd='' session='' area='' item='' it='' st='' brief cmd label origin acct mode ready
+    resume='' cwd='' session='' window='' perm='' joined='' target='' area='' item='' it='' st='' ready='' brief cmd label origin acct mode
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
-      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --area | --item) ;;
+      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --permission-mode | --area | --item) ;;
       *) say "start: unknown argument: $1"; return 2 ;;
     esac
     [ $# -ge 2 ] && [ -n "$2" ] || { say "start: $1 needs a value"; return 2; }
@@ -403,6 +417,8 @@ cmd_start() {
       --resume) resume=$2 ;;
       --cwd) cwd=$2 ;;
       --session) session=$2 ;;
+      --window) window=$2 ;;
+      --permission-mode) perm=$2 ;;
       --area) area=$2 ;;
       --item) item=$2 ;;
     esac
@@ -450,17 +466,34 @@ cmd_start() {
     [ -n "$session" ] && [ -n "$cwd" ] || { say "start: --resume needs --session and --cwd"; return 2; }
     [ -d "$cwd" ] || { say "start: not a directory: $cwd"; return 2; }
     # One agent per session: the item and the label belong to the whole session, so a
-    # restore never lands in a session someone already has (a main checkout's, say).
+    # restore never lands in a session someone already has (a main checkout's, say), unless
+    # --window says it is one window among others.
     if session_live "$session" "$server"; then
-      say "start: session $session already exists on $server; pass another --session"
-      return 1
+      if [ -z "$window" ]; then
+        say "start: session $session already exists on $server; pass another --session"
+        return 1
+      fi
+      joined=1
     fi
     origin=${START_ORIGIN:-resume}
-    cmd="$(account_env)claude${model:+ --model $(printf '%q' "$model")} --permission-mode bypassPermissions --resume $(printf '%q' "$resume")"
-    tmux -L "$server" new-session -d -s "$session" -c "$cwd" "$cmd" ||
-      { say "could not create session $session on $server"; return 1; }
+    # As for a plan item below: any mode but bypass still needs bypass allowed at launch.
+    case "${perm:-bypassPermissions}" in
+      bypassPermissions) perm="--permission-mode bypassPermissions" ready="bypass permissions on" ;;
+      plan) perm="--permission-mode plan --allow-dangerously-skip-permissions" ready="plan mode on" ;;
+      *) perm="--permission-mode $(printf '%q' "$perm") --allow-dangerously-skip-permissions" ;;
+    esac
+    cmd="$(account_env)claude${model:+ --model $(printf '%q' "$model")} $perm --resume $(printf '%q' "$resume")"
+    target="=$session:"
+    if [ -n "$joined" ]; then
+      target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
+        { say "could not open window $window in $session on $server"; return 1; }
+    else
+      tmux -L "$server" new-session -d -s "$session" ${window:+-n "$window"} -c "$cwd" "$cmd" ||
+        { say "could not create session $session on $server"; return 1; }
+    fi
     [ -z "$item" ] || agent-queue set "$item" "session=$server:$session" "origin=$origin" >/dev/null ||
       say "restored $session, but could not record it on queue item $item"
+    [ -z "$ready" ] || start_ready "$server" "$session" "$target" "$ready"
   else
     [ -n "$cwd" ] || cwd=$(repo_dir "$project")
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
@@ -479,21 +512,155 @@ cmd_start() {
     agent-queue set "$item" "session=$server:$session" "account=$(basename "${acct:-main}")" "origin=$origin" "model=$model" >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     exec 7>&-
-    # An account that never opened this repo asks "Do you trust this folder?" first, defaulting
-    # to "No, exit". claude-acct trust answers it once and waits for claude's mode footer.
     case "$mode" in plan) ready="plan mode on" ;; *) ready="bypass permissions on" ;; esac
-    if command -v claude-acct >/dev/null 2>&1; then
-      claude-acct trust "$server" "=$session:" "$ready" >/dev/null ||
-        say "$session: claude did not show \"$ready\"; look at its pane"
-    fi
+    start_ready "$server" "$session" "=$session:" "$ready"
   fi
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
-  tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
+  # A session this only joined keeps what it was: the label is for a session an agent started.
+  [ -n "$joined" ] || tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
   logline "started $session on $server ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
+}
+
+# --- the pane record: what a world's server held, and the one way to reopen it --------------
+
+PANES="$DIR/panes"   # <server>.json the live record, <server>.lost.json a dead server's last one
+
+# pane_conversations <pane pids...> -> "pane pid US claude session id US cwd" for each live
+# interactive claude: Claude's own registry names the pid, and that pid is the pane's process
+# or below it (a shell, `cl`). A registry file can outlive its process; a dead pid has no parent
+# here, so it matches nothing. One file per line, so one half written skips itself and not the rest.
+pane_conversations() {
+  local -A parent=() pane=()
+  local p q sid cwd
+  for p in "$@"; do pane[$p]=1; done
+  while read -r p q; do parent[$p]=$q; done < <(ps -eo pid=,ppid=)
+  while IFS=$'\037' read -r p sid cwd; do
+    while [ -n "${parent[$p]:-}" ] && [ -z "${pane[$p]:-}" ]; do p=${parent[$p]}; done
+    [ -z "${pane[$p]:-}" ] || printf '%s\037%s\037%s\n' "$p" "$sid" "$cwd"
+  done < <(awk 1 "$HOME/.claude/sessions"/*.json 2>/dev/null | jq -Rr 'fromjson? |
+    select((.kind // "interactive") == "interactive") | [.pid, .sessionId, .cwd] | map(tostring) | join("\u001f")')
+}
+
+# world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
+# A record with no conversations has nothing to restore, so it never replaces one that does.
+world_lost() {
+  local srv=$1 n
+  n=$(jq '[.panes[] | select(.claude != "")] | length' "$PANES/$srv.json" 2>/dev/null)
+  if [ "${n:-0}" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
+  logline "tmux server $srv died with ${n:-0} conversation(s) on it"
+  agent-notify -p high -t "tmux $srv server died" "${n:-0} conversation(s) were on it. Reopen them: fleet-dispatch restore" ||
+    say "could not page: tmux server $srv died"
+}
+
+# record_world <server> -- rewrite its record, after noticing the server it described is gone. A
+# server has an instance (pid and start time), so one restarted between two records still shows.
+record_world() {
+  local srv=$1 file="$PANES/$1.json" inst was fmt p sess win path sid cwd
+  local -A id=() dir=()
+  inst=$(tmux -L "$srv" display-message -p '#{pid} #{start_time}' 2>/dev/null)
+  was=$(jq -r '.instance // empty' "$file" 2>/dev/null)
+  [ -z "$was" ] || [ "$was" = "$inst" ] || world_lost "$srv"
+  [ -n "$inst" ] || return 0
+  fmt=$'#{pane_pid}\037#{session_name}\037#{window_name}\037#{pane_current_path}'
+  local panes; panes=$(tmux -L "$srv" list-panes -a -F "$fmt" 2>/dev/null) || return 0
+  while IFS=$'\037' read -r p sid cwd; do id[$p]=$sid dir[$p]=$cwd; done \
+    < <(pane_conversations $(cut -d$'\037' -f1 <<<"$panes"))
+  while IFS=$'\037' read -r p sess win path; do
+    jq -cn --arg session "$sess" --arg window "$win" --arg cwd "${dir[$p]:-$path}" --arg claude "${id[$p]:-}" \
+      '{session: $session, window: $window, cwd: $cwd, claude: $claude}'
+  done <<<"$panes" | jq -s --arg server "$srv" --arg instance "$inst" --arg at "$(date -Iseconds)" \
+    '{server: $server, instance: $instance, at: $at, panes: .}' > "$file.tmp" && mv -f "$file.tmp" "$file"
+}
+
+# cmd_record -- every world a manifest declares. fleet-state.service runs it each minute, so a
+# record is at most that old; a world's sockets give no event to await for a pane's cwd or id.
+cmd_record() {
+  local f srv
+  mkdir -p "$PANES"
+  exec 8>"$PANES/.lock"
+  flock 8 || return 1
+  for f in "${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"/*.conf; do
+    [ -r "$f" ] || continue
+    srv=${f##*/}
+    record_world "${srv%.conf}"
+  done
+  exec 8>&-
+}
+
+# conversation_live <id> -- a claude with that id is running now, so reopening it would be a second.
+conversation_live() {
+  local pid
+  for pid in $(awk 1 "$HOME/.claude/sessions"/*.json 2>/dev/null |
+    jq -Rr --arg id "$1" 'fromjson? | select(.sessionId == $id) | .pid'); do
+    kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
+# wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
+wound_down() { compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
+
+# last_mode <id> -> the permission mode it died in, from the transcript, which outlives the
+# server: a permission-mode line, or the mode on a user turn, whichever is last.
+last_mode() {
+  local t
+  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | head -1)
+  [ -n "$t" ] || return 0
+  tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
+}
+
+# restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
+# it was in, through start. The manifest brings back the declared sessions and windows first; a
+# plain shell is listed, not reopened. Consumed only when every reopen worked, so a rerun finishes.
+restore_world() {
+  local f=$1 dry=$2 srv sess win cwd id mode project failed=0 opened=0
+  srv=$(jq -r .server "$f")
+  [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
+  while IFS=$'\037' read -r sess win cwd id; do
+    if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
+    if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
+    if conversation_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
+    if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
+    mode=$(last_mode "$id")
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd (${mode:-bypassPermissions})"; continue; fi
+    project=$(resolve_project_name "$cwd")
+    if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
+        --cwd "$cwd" --resume "$id" ${mode:+--permission-mode "$mode"} </dev/null >/dev/null; then
+      echo "$srv:$sess:$win: reopened in ${mode:-bypassPermissions}"; opened=$((opened + 1))
+    else
+      failed=$((failed + 1))
+    fi
+  done < <(jq -r '.panes[] | [.session, .window, .cwd, .claude] | join("\u001f")' "$f")
+  [ "$dry" = 1 ] && return 0
+  echo "$srv: reopened $opened, failed $failed"
+  [ "$failed" = 0 ] || return 1
+  mv -f "$f" "${f%.lost.json}.restored.json"
+}
+
+# cmd_restore -- the one verb after a lost server or a reboot. A record first, so a death the
+# minute timer has not seen yet counts, and a server already restarted by hand is not missed.
+cmd_restore() {
+  local server='' dry=0 f rc=0 found=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --server) [ $# -ge 2 ] || { say "restore: --server needs a value"; return 2; }; server=$2; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      *) say "restore: unknown argument: $1"; return 2 ;;
+    esac
+  done
+  cmd_record
+  for f in "$PANES"/${server:-*}.lost.json; do
+    [ -r "$f" ] || continue
+    found=1
+    restore_world "$f" "$dry" || rc=1
+  done
+  [ "$found" = 1 ] || echo "restore: no lost server on record"
+  return "$rc"
 }
 
 # --- queue items: agent-queue owns the record, this runner only starts and settles them ----
@@ -1178,9 +1345,11 @@ main() {
     starved) cmd_starved ;;
     stats) cmd_stats ;;
     start) shift; cmd_start "$@" ;;
+    record) shift; cmd_record ;;
+    restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
-    -h | --help) sed -n '2,30p' "$0" ;;
-    *) sed -n '2,14p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,33p' "$0" ;;
+    *) sed -n '2,17p' "$0" >&2; return 2 ;;
   esac
 }
 
