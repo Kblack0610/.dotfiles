@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod boards;
+pub mod epics;
 pub mod fleet;
 pub mod focus;
 pub mod home;
