@@ -189,7 +189,7 @@ def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
-def landed: .open == 0 and .done > 0;
+def leaves_landed: .open == 0 and .done > 0;
 # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
 def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
   - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
@@ -1219,7 +1219,9 @@ ledger_counts() {
 # an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
 # is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+# plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
+# requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
@@ -1231,7 +1233,7 @@ chain_counts() {
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
   ci=null; [ -r "$CI" ] && ci=$(jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
     'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))' "$CI")
-  jq -rn --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
+  jq -rn --argjson t "$t" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
     def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
@@ -1258,8 +1260,12 @@ chain_counts() {
         else $a | map(select(.state == "running" and (.session // "") == "" and (.sessions // "") == "")) | length end))",
       "epic_linked_share=\(n(if $b == null or $p == null then null
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
-      "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(landed)] | length end))"'
+      "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
+      "requested_unstarted_h=\(n(if $b == null then null else [$agent[] | select(.requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
+        | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
+  local orphans
+  if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
     (.steps[] | select(.step | IN("backlog", "queued", "running", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)")'
@@ -2705,7 +2711,7 @@ epics_json() {
             | {file, done: (.phases | map(select(.state != "open")) | length), total: (.phases | length),
                open: (.phases | map(select(.state == "open") | .name)), queued: $na})) as $ep
         | ($P.briefs | map(select(.epic == $e.id)) | first | .file // null) as $brief
-        | ($e.state == "closed" or ($e | landed)) as $over
+        | ($e.state == "closed" or ($e | leaves_landed)) as $over
         | (if $e.state == "closed" and $e.verified then "verified" elif $over then "landed"
            elif ($er | length) > 0 then "rows" elif ($ep | length) > 0 then "plan" elif $brief != null then "brief" else "epic" end) as $step
         | (if $over then {eta: null, why: null}
