@@ -84,7 +84,7 @@ sweep_plans() {
       [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
       continue
     fi
-    if file_row "$board" "finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2"; then
+    if file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2 #size/m"; then
       [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
     fi
   done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
@@ -144,14 +144,14 @@ $prs"
     quote="$(jq -r .quote <<<"$line" | ascii 80)"
     text="$(jq -r .row <<<"$line" | ascii 150)"
     tier="$(jq -r '.tier // 3 | floor' <<<"$line" 2>/dev/null)"; [[ "$tier" =~ ^[123]$ ]] || tier=3
-    size="$(jq -r '.size // "L"' <<<"$line")"
+    size="$(jq -r '.size // "L"' <<<"$line")"; [[ "$size" =~ ^[SML]$ ]] || size=L
     done_is="$(jq -r '.done_is_stated // false' <<<"$line")"
     state="$(jq -r '.human_only // false' <<<"$line")"
     [ -n "$text" ] || continue
     # The same words on a later night, or the same night run twice, are never filed again.
     key="$(printf '%s' "$quote" | tr '[:upper:]' '[:lower:]' | sig)"
     grep -qxF "$key" "$ASK_SWEEP_DIR/asks-filed" 2>/dev/null && continue
-    tags="#requested #tier/$tier"
+    tags="#requested #tier/$tier #size/${size,,}"
     [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$state" != true ] && tags+=" #worker/requested"
     if [ "$state" = true ]; then
       file_row --sheet "$ASK_SWEEP_BOARD" "$text; asked ${date:5} \"$quote\" #low" || continue
