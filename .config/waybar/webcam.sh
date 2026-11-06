@@ -49,7 +49,7 @@ scan() {
 # watch: one line per event ("OPEN <path>", "CLOSE_NOWRITE,CLOSE <path>", "CREATE <path>"),
 # plus inotifywait's own "Watches established." once each watch is armed.
 watch() {
-  trap 'kill $(jobs -p) 2>/dev/null' EXIT TERM
+  trap 'kill $(jobs -p) 2>/dev/null; wait' EXIT TERM
   local nodes=("$dev_dir"/video*)
   inotifywait -m -e create -e delete --include '/video[0-9]+$' --format '%e %w%f' "$dev_dir" 2>&1 &
   if ((${#nodes[@]})); then
@@ -58,13 +58,22 @@ watch() {
   wait
 }
 
+# stop_watcher: end the current watch and wait until its inotifywaits are gone.
+stop_watcher() {
+  [[ -n $watcher ]] || return 0
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  exec {ev}<&-
+  watcher=''
+}
+
 arm() {
-  [[ -n $watcher ]] && { kill "$watcher" 2>/dev/null; exec {ev}<&-; }
+  stop_watcher
   exec {ev}< <(watch)
   watcher=$!
 }
 
-trap '[[ -n $watcher ]] && kill "$watcher" 2>/dev/null' EXIT
+trap stop_watcher EXIT
 trap exit TERM INT
 arm
 while read -r -u "$ev" line; do
