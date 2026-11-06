@@ -24,7 +24,7 @@ Sentinel - the always-on, observe-only monitoring companion. Talk to it to keep 
 - **Autonomy rung:** observe / diagnose (never executes, mutates, or touches release gates)
 - **Carrying primitive:** agentctl service (`sentinel`)
 - **Notify channel:** `agent-notify` (state-change only; ntfy / desktop)
-- **Registry:** `~/.dotfiles/.claude/PERSONAS.md`
+- **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
 
 The standing watch companion. A persistent `agentctl` service
 (`~/.config/agentctl/agents/sentinel.conf`) runs `watch-companion-loop daemon`, which
