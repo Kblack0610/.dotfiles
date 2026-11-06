@@ -278,3 +278,120 @@ EOF2
   PATH="$HOME/bin:$PATH" run "$CHECK" shooter
   assert_output --regexp 'PASS +dev +The docs system meets its criteria'
 }
+
+# -- --file: each FAIL row becomes a story under the open epic for its target --
+
+epics() { jq -n --argjson e "$1" '[{name: "shooter", epics: $e}]' > "$NOTES_FIXTURE/stats.json"; }
+board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' "$1" > "$LAB/agent/README.md"; }
+
+@test "file: the stage epic names the target, and each FAIL row is filed once under it" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
+  # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
+  : > "$NOTES_FIXTURE/calls.log"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +beta +A changelog$'
+  assert_not_called 'ptask'
+}
+
+@test "file: a gap the human dropped or closed is never filed again" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board_row '- [x] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 dropped: not this year -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped'
+  assert_not_called 'ptask'
+  # A row archived into a version note counts as well.
+  rm "$LAB/agent/README.md"; mkdir -p "$LAB/agent/versions"
+  printf '## Done rows\n- [x] chore(beta): A changelog #size/s <!-- id:sh-2 done:2026-10-01 pr:9 -->\n' > "$LAB/agent/versions/v0.0.9.md"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_not_called 'ptask'
+}
+
+@test "file: with no open epic it lists the gap and writes nothing; it never files the epic" {
+  epics '[]'
+  run "$CHECK" shooter --stage beta --file
+  assert_success
+  assert_line --regexp '^no epic +beta +A changelog$'
+  assert_output --partial '1 with no open epic (file `epic(stage): beta ...` on the human sheet)'
+  assert_not_called 'ptask'
+  # An epic for another stage is not this target's epic.
+  epics '[{"id":"sh-1","system":"stage","title":"prod for shooter"}]'
+  run "$CHECK" shooter --stage beta --file
+  assert_line --regexp '^no epic +beta +A changelog$'
+  assert_not_called 'ptask'
+}
+
+@test "file: systems rows go under their system's epic, and a long title is cut with the whole text kept" {
+  write_systems_doc
+  printf '| docs | base | A contributor guide that says how to build, run and test every part of the project from a fresh clone | `false` | onboarding |\n' >> "$SYSTEMS_DOC"
+  epics '[{"id":"sh-5","system":"docs","title":"docs for shooter"}]'
+  run "$CHECK" shooter --systems --file
+  assert_success
+  assert_line --regexp '^filed +docs +An architecture doc$'
+  assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped'
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s'
+  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+}
+
+@test "file: --file with --json is refused, and an unknown project exits 2" {
+  run "$CHECK" shooter --file --json
+  assert_failure 2
+  assert_output --partial '--file and --json do not mix'
+  run "$CHECK" nobody --file
+  assert_failure 2
+}
+
+# -- predicates in the real stages.md, run against fixtures --
+
+# real_check <requirement prefix>: the Check cell of that row in the shipped stages.md, as the
+# only Requirements row of the test's doc.
+real_row() {
+  local row
+  row="$(grep -F "| $1" "$REPO_ROOT/.local/src/docs/stages.md" | head -1)"
+  [ -n "$row" ] || { echo "no row: $1" >&2; return 1; }
+  printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n%s\n' "$row" > "$STAGES_DOC"
+}
+
+@test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
+  real_row 'beta | base | A STATUS line under 14 days old'
+  jq -n --arg d "$(date -d '3 days ago' +%F)" '[{name: "shooter", status_date: $d}]' > "$NOTES_FIXTURE/stats.json"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +A STATUS line under 14 days old$'
+  # NEGATIVE CONTROL: before this row had a predicate it was TODO whatever the date.
+  jq -n --arg d "$(date -d '20 days ago' +%F)" '[{name: "shooter", status_date: $d}]' > "$NOTES_FIXTURE/stats.json"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +A STATUS line under 14 days old$'
+  jq -n '[{name: "shooter", status_date: ""}]' > "$NOTES_FIXTURE/stats.json"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +A STATUS line under 14 days old$'
+}
+
+@test "stages.md: a game needs its build profile and a play test class; the whole-repo playground passes" {
+  real_row 'dev | game | A build profile in'
+  git -C "$REPO" init -q
+  run "$CHECK" shooter --stage dev
+  assert_line --regexp '^FAIL +dev +A build profile'
+  mkdir -p "$REPO/scripts/build/games" "$REPO/Assets/Playground/Tests/Runtime"
+  printf '{}\n' > "$REPO/scripts/build/games/shooter.json"
+  run "$CHECK" shooter --stage dev
+  assert_line --regexp '^FAIL +dev +A build profile'
+  printf 'class ShooterArenaPlayTests {}\n' > "$REPO/Assets/Playground/Tests/Runtime/ShooterArenaPlayTests.cs"
+  git -C "$REPO" add -A
+  run "$CHECK" shooter --stage dev
+  assert_line --regexp '^PASS +dev +A build profile'
+  # The playground project is the repo itself; its games carry the row on their own projects.
+  rm "$REPO/scripts/build/games/shooter.json"
+  jq --arg r "$REPO" '.trackers["games-canon"] += {lab: "personal", type: "game"}' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  mkdir -p "$ROOTS/games-canon"; printf '# games\nVersion: v0.1.0 #dev\n' > "$ROOTS/games-canon/README.md"; printf '# g\n' > "$ROOTS/games-canon/summary.md"
+  run "$CHECK" games-canon --stage dev
+  assert_line --regexp '^PASS +dev +A build profile'
+}
