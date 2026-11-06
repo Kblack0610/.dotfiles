@@ -1240,8 +1240,10 @@ cmd_ledger() {
 
 KPI_NOW="runners_bad board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
-KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct"
+KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
+# Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
+# thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
 # comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
 # KPIs show - rather than an old number
@@ -1308,8 +1310,9 @@ kpi_json() {
      --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
-       ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
-                                                     "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
+       ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
+        | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
+                           "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
        ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # judge-eval: every judge lane scored against its ground truth (~/.local/src/docs/judges.md).
 # The fixture is written as files, never by running a judge: asks under $HOME/.agent/asks,
-# calls.jsonl, dispatch's verdicts.jsonl and a canned agent-queue list.
+# calls.jsonl, dispatch's verdicts.jsonl, a canned agent-queue list and a canned notes ingest record.
 
 setup() {
   bats_require_minimum_version 1.5.0
@@ -14,8 +14,12 @@ setup() {
   unset AGENT_ASK_LIVE_RULES
   mkdir -p "$AGENTCTL_CONF_DIR" "$FLEET_DISPATCH_DIR" "$HOME/.agent/asks/demo"
   echo 'ask policy v2' > "$HOME/ask-policy.md"; echo 'dispatch policy v1' > "$HOME/dispatch-policy.md"
-  printf 'PROMPT="%s"\nLIVE_RULES=fast\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
-  printf 'PROMPT="%s"\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
+  printf 'PROMPT="%s"\nLIVE_RULES=fast\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  printf 'PROMPT="%s"\nSCORE=dispatch-queue\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
+  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
+  echo 'SCORE=plan-dispatched' > "$AGENTCTL_CONF_DIR/inbox-plan.conf"
+  echo 'EFFECT=acts' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
   local ask_sha dispatch_sha
   ask_sha="$(git hash-object "$HOME/ask-policy.md")"; dispatch_sha="$(git hash-object "$HOME/dispatch-policy.md")"
@@ -29,6 +33,21 @@ setup() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$QUEUE" > "$SANDBOX/bin/queue-stub"
   chmod +x "$SANDBOX/bin/queue-stub"
   : > "$QUEUE"
+  # notes log --json --days 30, canned
+  export JUDGE_EVAL_INGEST_CMD=ingest-stub INGEST="$HOME/ingest.jsonl"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$INGEST" > "$SANDBOX/bin/ingest-stub"
+  chmod +x "$SANDBOX/bin/ingest-stub"
+  : > "$INGEST"
+}
+
+# ago <date -d offset>: that time as the ingest record writes it
+ago() { date -d "$1" +%Y-%m-%dT%H:%M:%S.123456789%:z; }
+
+# ev <action> <id> <at> [key=value]...: one ingest record line, by the triager unless a pair says
+ev() {
+  local a="$1" id="$2" at="$3" kv; shift 3
+  { printf '{"action":"%s","id":"%s","ts":"%s","from":"demo","by":"","text":"row %s"}' "$a" "$id" "$at" "$id"
+    for kv in "$@"; do jq -cn --arg k "${kv%%=*}" --arg v "${kv#*=}" '{($k): $v}'; done; } | jq -sc add
 }
 
 # call <id> <agent> <prompt sha> <ms> <cost>: one calls.jsonl line
@@ -121,7 +140,8 @@ ask_fixture() {
   assert_success
   run jq -c '.agents[0] | [.total | .verdicts, .errors, .tp, .fp, .pending, .unscorable, .cost_per_verdict],
     (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[6,1,1,2,1,1,0.1]'
+  # row five's skip is recent and nothing started it: pending, not yet a right defer
+  assert_line '[6,1,1,2,2,0,0.1]'
   assert_line '[["row three","failed"],["row two","done/failed"]]'
 }
 
@@ -231,4 +251,101 @@ SH
   run "$JUDGE_EVAL" replay
   assert_success
   assert_output --partial 'no labelled asks'
+}
+
+# --- the registry and the runner lanes ------------------------------------------------------
+
+@test "the lanes are the confs that name a SCORE: one without it is not a lane" {
+  run "$JUDGE_EVAL" --json
+  assert_success
+  assert_equal "$(jq -c '[.agents[] | [.agent, .score]]' <<<"$output")" \
+    '[["ask-judge","ask-answers"],["ask-sweep","unrecorded"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-triage","triage-untouched"]]'
+  echo 'SCORE=no-such-source' > "$AGENTCTL_CONF_DIR/shepherd.conf"
+  run "$JUDGE_EVAL" shepherd
+  assert_success
+  assert_line --partial 'truth: unknown SCORE "no-such-source"'
+  sed -i '/^SCORE=/d' "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  run "$JUDGE_EVAL" ask-sweep
+  assert_failure 2
+  assert_output --partial 'no scored lane'
+}
+
+@test "inbox-triage: a filed row is right when nothing touches it for 48h; the planner's writes and session filings do not count" {
+  {
+    ev filed t-kept "$(ago '-3 days')"
+    ev filed t-edited "$(ago '-3 days')"; ev edited t-edited "$(ago '-3 days +2 hours')" by=ab12cd34
+    ev filed t-late "$(ago '-5 days')"; ev dropped t-late "$(ago '-2 days')"
+    ev filed t-moved "$(ago '-4 days')" by=human; ev rehomed t-moved "$(ago '-4 days +1 hour')"
+    ev filed t-young "$(ago '-1 hour')"
+    ev filed t-session "$(ago '-3 days')" by=ab12cd34
+    ev filed t-planned "$(ago '-3 days')"; ev tagged t-planned "$(ago '-3 days +10 min')" 'why=+#size/m'
+    ev planned t-planned "$(ago '-3 days +10 min +20 sec')"
+  } > "$INGEST"
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_success
+  # tp: t-kept, t-late (dropped after the window), t-planned; fp: t-edited, t-moved; pending: t-young
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
+  assert_line '[6,3,2,1,5,60]'
+  assert_line '[["t-edited","edited by ab12cd34"],["t-moved","rehomed"]]'
+}
+
+@test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at the bar" {
+  local i
+  for i in $(seq 1 30); do ev filed "t-$i" "$(ago '-3 days')"; ev dropped "t-$i" "$(ago '-3 days +1 hour')" by=ab12cd34; done > "$INGEST"
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_success
+  assert_equal "$(jq -c '.agents[0].total | [.scored, .tp, .fp, .precision]' <<<"$output")" '[30,0,30,0]'
+  run "$JUDGE_EVAL" inbox-triage
+  assert_line --regexp '^  all +30 +0 +100% +30 +0% \[0-11\.4\]'
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":0,"28d":0}'
+  # one short of the bar, no score
+  sed -i '1,2d' "$INGEST"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'
+}
+
+@test "inbox-plan: a planned row is right when it, or a row it split into, starts before anyone re-splits it" {
+  local p; p="$(ago '-2 days')"
+  {
+    ev planned p-whole "$p"
+    ev added p-kid "$(ago '-2 days -10 sec')" 'text=part one #of/p-split'; ev planned p-split "$p"
+    ev planned p-resplit "$p"; ev added p-late "$(ago '-1 day')" 'text=more #of/p-resplit' by=ab12cd34
+    ev planned p-twice "$p"; ev planned p-twice "$(ago '-1 day')"
+    ev planned p-idle "$p"
+  } > "$INGEST"
+  {
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, origin: "run"}'
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "human", row: "demo:p-kid", started: $s}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, origin: "hand"}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, origin: "run"}'
+  } > "$QUEUE"
+  run "$JUDGE_EVAL" inbox-plan --json
+  assert_success
+  # tp: p-whole, p-split (its child started); fp: p-resplit, p-twice (re-split before the start); pending: p-idle
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .precision], (.misses | map(.id) | sort)' <<<"$output"
+  assert_line '[5,2,2,1,50]'
+  assert_line '["p-resplit","p-twice"]'
+}
+
+@test "dispatch-judge: a skip is a false defer when the row is started by hand after its skips began" {
+  v() { jq -cn --arg v "$1" --arg k "$2" --arg at "$(date -d "$3" -Iseconds)" '{verdict: $v, project: "p", key: $k, at: $at, rule: "too-big", judge_call: "d1"}'; }
+  st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {origin: $o} end)'; }
+  {
+    v skip hand '-5 days'; v skip hand '-1 day'
+    v skip button '-5 days'
+    v skip run '-5 days'
+    v skip resume '-5 days'
+    v skip before '-5 days'
+    v skip quiet '-5 days'
+    v skip young '-1 hour'
+  } > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' run; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
+  run "$JUDGE_EVAL" dispatch-judge --json
+  assert_success
+  # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young
+  run jq -c '.agents[0].total | [.deferred, .fn, .tn, .pending, .false_defer_pct]' <<<"$output"
+  assert_output '[7,2,4,1,33.3]'
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":33.3,"28d":33.3}'
 }
