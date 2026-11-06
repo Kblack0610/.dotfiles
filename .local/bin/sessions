@@ -700,7 +700,7 @@ cmd_compact() {
 Write a concise digest to $out with these markdown sections: \
 '# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
 Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
-  agentctl-run --role curate -p "$prompt" >/dev/null 2>&1 \
+  agentctl-run --agent session-compact -p "$prompt" >/dev/null 2>&1 \
     && echo "Digest written: $out" >&2 \
     || echo "sessions: compact run failed (see claude output)" >&2
 }

@@ -37,6 +37,7 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/route.sh"
 . "$SELF_DIR/lib/agent.sh"
 . "$SELF_DIR/lib/calls.sh"
+. "$SELF_DIR/lib/budget.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
 # MODEL is the conf key (it arrives as environment on a supervised runner);
@@ -199,6 +200,7 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   # ANTHROPIC_BASE_URL shows up here and nowhere else.
   printf 'env scrubbed: %s\n' "${SCRUBBED:-(none)}"
   route_explain
+  budget_explain
   if [ -n "$ROLE_FAMILY_EXCLUDE" ]; then
     printf 'excludes:    %s%s\n' "$ROLE_FAMILY_EXCLUDE" \
       "$([ "$ROLE_FAMILY_EXCLUDE" = author ] && printf ' -> %s' "$(role_family_of "${AGENT_AUTHOR_FAMILY:-}")")"
@@ -213,4 +215,5 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   exit 0
 fi
 
+budget_check
 harness_exec "${args[@]+"${args[@]}"}"
