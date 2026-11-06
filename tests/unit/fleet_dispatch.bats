@@ -862,6 +862,60 @@ refuses() {
   refuses 'no account has room under its weekly pace'
 }
 
+# room_on_floor: claude-acct room finds room only with the pace line lifted, as the real one would
+# for an account over its pace but outside its reserve.
+room_on_floor() {
+  stub claude-acct '[ "$1" = room ] || exit 0
+[ "${CLAUDE_ACCT_PACE_SLACK_PCT:-}" = 100 ] && { echo /home/u/.claude-personal; exit 0; }
+echo "claude-acct: no account has room; main is the closest, 1 point over its weekly pace" >&2; exit 1'
+  stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
+}
+
+@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
+  game_ready
+  room_on_floor
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  export DISPATCH_RUN_FLOOR=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on the run floor (DISPATCH_RUN_FLOOR=2)'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "the run floor counts this pass's starts: past it the pace holds again; 0 is no floor" {
+  two_items
+  room_on_floor
+  export DISPATCH_PER_PASS=3 DISPATCH_RUN_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game on the run floor'
+  assert_output --partial 'over its weekly pace; real idle 10.0% is under 30%, the pass stops after 1 started'
+  refute_output --partial 'started queue item fix-app'
+  # the negative control: no floor, the same room and idle start nothing
+  export DISPATCH_RUN_FLOOR=0
+  rm -f "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+}
+
+@test "the run floor never lifts the load pace or a room refusal it cannot lift" {
+  game_ready
+  room_on_floor
+  export DISPATCH_RUN_FLOOR=2
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over the'
+  assert_not_called 'wt new'
+  # an account in its reserve: room refuses whatever the slack
+  echo "0.10 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 90% of its week used, inside the last 15% kept for the human" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'inside the last 15% kept for the human'
+  assert_not_called 'wt new'
+}
+
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
   # the gate's ask finds room; the start's ask, a moment later, finds none
