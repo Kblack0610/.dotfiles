@@ -33,6 +33,7 @@ Scripts send through the same path: `agent-voice send --to tmux:hub/dotfiles:3 "
 | "unknown flag --print" in gungan.log | The main checkout's gungan submodule is older than gungan-speak #5 | `git -C ~/.dotfiles submodule update .local/src/gungan` |
 | "Voice: not sent ... in a dialog" | The session showed a prompt between the pick and the send | Answer the dialog, then paste the text from the clipboard |
 | "Voice: not submitted" | The pane did not take the Enter | Press Enter in that pane; the text is in its input box |
+| A "Mic not found" popup, and no take starts | The mic named by `GUNGAN_SOURCE` is gone, usually a webcam that dropped off USB (`journalctl -k \| grep -i 'cannot enable'`) | Replug it on a port on the PC itself, then check with `gungan health`. The kernel gives up on a failing port, so only a replug brings it back. |
 | Every take is "nothing heard" | gungan is recording a silent source | `wpctl status` lists the sources; set `GUNGAN_SOURCE` in `~/.config/gungan/config` to the mic, and check its volume (`wpctl set-volume <id> 0.7`; at 1.0 loud speech clips) |
 | No red mic on the bar during a take | Waybar was started before `custom/gungan` existed | `systemctl --user restart waybar` |
 | The bind does nothing | Hyprland has not reloaded the config | `hyprctl reload` |

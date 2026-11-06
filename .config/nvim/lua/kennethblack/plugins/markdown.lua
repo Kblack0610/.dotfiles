@@ -111,8 +111,8 @@ return {
       -- <leader>nt, greppable via `notes tags urgent`) and they never collide
       -- with markdown `# headings` (which are line-start only).
       --   Levels:  #low  #high  #urgent
-      --   Keymaps: <leader>tP raise / <leader>tp lower (cycle, cursor follows the task)
-      --            ring: none -> low -> high -> urgent -> none
+      --   Keymaps: <leader>tP raise / <leader>tp lower (cursor follows the task),
+      --            stopping at either end of low -> high -> urgent
       local PRIORITIES = { "low", "high", "urgent" }
 
       -- Return (base_without_tag, current_level_or_nil): strip the priority tag wherever it
@@ -120,7 +120,7 @@ return {
       --
       -- Deliberately NOT anchored to end-of-line. It used to be, which was fine while a
       -- priority tag was always last; a release tag now follows it (`#high #v0.0.2`), and an
-      -- anchored match reads such a task as untagged, so `<leader>tP` would restart the ring
+      -- anchored match reads such a task as untagged, so `<leader>tP` would restart the ladder
       -- from nothing every time. Mirrors md::split_priority, which never anchored.
       local function strip_priority(line)
         local level
@@ -847,8 +847,8 @@ return {
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
           --   tt  convert line to task, or add an indented subtask if already one
-          --   tP  raise priority  none -> low -> high -> urgent -> none
-          --   tp  lower priority  (the same ring, the other way)
+          --   tP  raise priority  low -> high -> urgent, stops at urgent
+          --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
           -- `tt`, not `tc`: notes.nvim binds `<leader>tc` globally to the task cockpit,
           -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
@@ -873,8 +873,8 @@ return {
             { buffer = buf, desc = "Convert line to task / add subtask", silent = true }
           )
 
-          -- Task priority cycle: tP raises toward urgent, tp lowers, through the ring
-          -- none -> low -> high -> urgent -> none. Each press re-sweeps and follows the task
+          -- Task priority: tP raises toward urgent, tp lowers, along low -> high -> urgent,
+          -- stopping at either end. Each press re-sweeps and follows the task
           -- to its new lane so the cursor rides along. Current line (normal) / selection (visual).
           for _, m in ipairs { { "P", 1, "Raise task priority" }, { "p", -1, "Lower task priority" } } do
             local key, dir, desc = m[1], m[2], m[3]

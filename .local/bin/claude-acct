@@ -342,8 +342,8 @@ cmd_run() {
     # shellcheck source=/dev/null
     . "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null
     set -u
-    if declare -F claude_telemetry_project >/dev/null; then
-        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"; export OTEL_RESOURCE_ATTRIBUTES
+    if declare -F claude_telemetry_launch >/dev/null; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"; export OTEL_RESOURCE_ATTRIBUTES
     fi
     exec claude "$@"
 }
