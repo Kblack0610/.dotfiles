@@ -39,6 +39,7 @@ fake_claude() {
   {
     echo '#!/usr/bin/env bash'
     echo "printf '%s\n' \"\$@\" > '$SANDBOX/claude.argv'"
+    echo "[ -t 0 ] || cat > '$SANDBOX/claude.stdin'"
     echo "printf 'OTEL=%s\nNAME=%s\n' \"\${OTEL_RESOURCE_ATTRIBUTES:-}\" \"\${AGENTCTL_NAME:-}\" > '$SANDBOX/claude.env'"
     echo "case \" \$* \" in *' --output-format json '*) cat '$SANDBOX/claude.reply' ;; *) echo plain ;; esac"
   } > "$SANDBOX/bin/claude"
@@ -49,10 +50,10 @@ fake_claude() {
   run "$RUN" --agent judge -p "the input"
   assert_success
   assert_output 'VERDICT-OK'
-  # one argument: the PROMPT file, a blank line, then the caller's input
-  run grep -c 'You are the fixture judge.' "$SANDBOX/claude.argv"
+  # one input on stdin: the PROMPT file, a blank line, then the caller's input
+  run grep -c 'You are the fixture judge.' "$SANDBOX/claude.stdin"
   assert_output 1
-  run grep -A2 'You are the fixture judge.' "$SANDBOX/claude.argv"
+  run grep -A2 'You are the fixture judge.' "$SANDBOX/claude.stdin"
   assert_output "$(printf 'You are the fixture judge.\n\nthe input')"
   run jq -r '[.agent, .role, .exit, .session_id, .cost_usd, ."gen_ai.usage.input_tokens", ."gen_ai.response.model", .raw] | @tsv' "$CALLS"
   assert_output "$(printf 'judge\twatcher\t0\tsess-1\t0.012\t120\tclaude-sonnet-5-5\tVERDICT-OK')"
