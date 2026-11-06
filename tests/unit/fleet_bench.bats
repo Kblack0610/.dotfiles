@@ -1214,7 +1214,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"requested_unstarted_h":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2492,4 +2492,38 @@ requests_setup() {
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- week to 2026-10-27 (7 of 7 days): 14 merged (+7)'
+}
+
+@test "chain: requested_unstarted_h is the oldest open #requested agent row; started and unrequested rows do not count" {
+  chain_fixture
+  local old new
+  old=$(date -u -d "@$((T0 - 3 * 86400))" +%F) new=$(date -u -d "@$((T0 - 86400))" +%F)
+  jq -cn --arg old "$old" --arg new "$new" '{rows: [
+    {project: "game", id: "g-2", lane: "agent", state: "open", requested: true, since: $new, tags: []},
+    {project: "game", id: "g-3", lane: "agent", state: "doing", requested: true, since: "2020-01-01", tags: []},
+    {project: "game", id: "g-4", lane: "agent", state: "open", requested: false, since: "2020-01-01", tags: []},
+    {project: "game", id: "g-5", lane: "agent", state: "open", requested: true, since: $old, tags: []}]}' > "$BJSON"
+  run "$SUBJECT" chain --json
+  assert_success
+  local h; h=$(jq -r '.requested_unstarted_h["7d"]' <<<"$output")
+  [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
+}
+
+@test "chain: plans_unqueued counts an approved plan with open phases and no session or item; unreadable sessions read ?" {
+  chain_fixture
+  export PLAN_LEDGER="$SANDBOX/approved.jsonl"
+  printf '## Phases\n\n- [x] one\n- [ ] two\n' > "$SANDBOX/open.md"
+  printf '## Phases\n\n- [x] one\n- [-] two\n' > "$SANDBOX/closed.md"
+  jq -nc --arg p "$SANDBOX/open.md" --argjson e "$(date +%s)" '{epoch: $e, plan: $p, project: "game", session: "gone"}' >> "$PLAN_LEDGER"
+  jq -nc --arg p "$SANDBOX/closed.md" --argjson e "$(date +%s)" '{epoch: $e, plan: $p, project: "game", session: "gone"}' >> "$PLAN_LEDGER"
+  printf '#!/usr/bin/env bash\necho some-other-session\n' > "$SANDBOX/bin/agent-ask"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-ask" "$SANDBOX/bin/agent-queue"
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -r '.plans_unqueued["7d"]' <<<"$output")" 1
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-ask"
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -r '.plans_unqueued["7d"]' <<<"$output")" null
 }
