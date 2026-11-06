@@ -6,6 +6,7 @@
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers, and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
+//! | tonight      | the workers and the user timers again, in the order they run until 07:00 (`tonight`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
@@ -17,9 +18,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local, NaiveTime, TimeZone};
 use serde::{Deserialize, Serialize};
 
+use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 
@@ -37,6 +39,8 @@ const ACTIVITY_TAIL: u64 = 16 << 10;
 const CALLS_TAIL: u64 = 2 << 20;
 /// Calls listed under a runner's row, newest first; the rest are `agentctl-run` lines on disk.
 const RECENT_CALLS: usize = 5;
+/// The Tonight order runs from now to the next of this local hour.
+const MORNING_HOUR: u32 = 7;
 
 /// Each runner's dollars in the last day, by the OTel resource attribute agentctl sets.
 const COST_BY_RUNNER: &str = r#"sum by (agentctl_runner) (increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
@@ -87,6 +91,8 @@ pub struct Fleet {
     /// claude-acct's series as Prometheus gave them.
     pub accounts: Vec<Series>,
     pub workers: Vec<Worker>,
+    /// The workers in the order they run tonight, the order the human can pick over the default.
+    pub tonight: Tonight,
     /// Every agentctl run's dollars in the last day, labelled or not.
     pub cost_24h: Option<f64>,
     pub dispatch: Dispatch,
@@ -109,10 +115,34 @@ pub struct Worker {
     /// The newest activity.log line: the runner's own word on why.
     pub why: Option<Outcome>,
     pub next: Option<i64>,
+    /// A call's CALLER: the runner (or program) that makes it.
+    pub called_by: Option<String>,
     /// None until its cost series carries the runner label.
     pub cost_24h: Option<f64>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
+}
+
+/// The workers from now to the next 07:00 local: always-on runners first, then each timer in
+/// time order, each call directly under the runner that makes it.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Tonight {
+    /// The window's end, unix seconds; a start at or after it is the morning's, not tonight's.
+    pub until: i64,
+    pub slots: Vec<Slot>,
+    /// User timers outside agentctl that fire in the window. Their rows are Infra's Jobs
+    /// (dashboards.md rule 2), so here they are only this count.
+    pub other_timers: u32,
+}
+
+/// One worker's place in the Tonight order. `at` and `under` both None is an always-on runner.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Slot {
+    pub name: String,
+    /// Its timer's next start.
+    pub at: Option<i64>,
+    /// The caller it is listed under, for a call.
+    pub under: Option<String>,
 }
 
 /// One runner as its conf defines it (`~/.config/agentctl/README.md`, "What an agent is"), and
@@ -376,6 +406,7 @@ pub fn files(paths: &Paths) -> Fleet {
     for w in &mut workers {
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
     }
+    let tonight = tonight(&workers, &timers, at);
 
     let mut dispatch = match tail(&paths.dispatch.join("verdicts.jsonl"), VERDICT_TAIL) {
         Ok((text, cut)) => verdicts(&text, cut, at),
@@ -392,6 +423,7 @@ pub fn files(paths: &Paths) -> Fleet {
         at,
         errors,
         workers,
+        tonight,
         dispatch,
         judge,
         ..Default::default()
@@ -472,6 +504,8 @@ pub struct Conf {
     pub model: String,
     pub prompt: String,
     pub effect: String,
+    /// A call's CALLER; empty on a runner.
+    pub caller: String,
 }
 
 /// A conf's (or a role's) `KEY=value` lines as agentctl sources them, for the keys asked for.
@@ -516,6 +550,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             "MODEL",
             "PROMPT",
             "EFFECT",
+            "CALLER",
         ],
         home,
     );
@@ -536,6 +571,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
         model: get("MODEL"),
         prompt: get("PROMPT"),
         effect: get("EFFECT"),
+        caller: get("CALLER"),
     }
 }
 
@@ -764,10 +800,11 @@ pub fn workers(
             let mine: Vec<&Job> = runs.iter().filter(|j| j.name == c.name).collect();
             let mut w = Worker {
                 next: timers
-                    .get(&format!("agentctl@{}.service", c.name))
+                    .get(&format!("{AGENTCTL_PREFIX}{}.service", c.name))
                     .copied()
                     .filter(|&n| n > 0),
                 why: activity.get(&c.name).cloned(),
+                called_by: Some(c.caller).filter(|v| !v.is_empty()),
                 name: c.name,
                 lane: c.lane,
                 description: c.description,
@@ -807,6 +844,70 @@ pub fn workers(
         .collect();
     out.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.cmp(&b.name)));
     out
+}
+
+/// The workers (their registry read) in the order they run from `at` to the next 07:00 local:
+/// running always-on runners first, then every timer in the window by its next start, and each
+/// call straight after the runner its CALLER names. A call whose caller is not a runner in the
+/// window (agent-ask, a by-hand tool) has no slot. `timers` is the same `timer_starts` read the
+/// workers took their `next` from; the ones outside agentctl are only counted.
+pub fn tonight(ws: &[Worker], timers: &HashMap<String, i64>, at: i64) -> Tonight {
+    let until = morning(at);
+    let due = |n: i64| n > at && n < until;
+    let always = ws.iter().filter(|w| {
+        w.registry.kind == "persistent" && w.running_since.is_some() && w.next.is_none()
+    });
+    let mut timed: Vec<&Worker> = ws.iter().filter(|w| w.next.is_some_and(due)).collect();
+    timed.sort_by(|a, b| a.next.cmp(&b.next).then_with(|| a.name.cmp(&b.name)));
+    let mut calls: Vec<&Worker> = ws.iter().filter(|w| w.called_by.is_some()).collect();
+    calls.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut slots = vec![];
+    for w in always.chain(timed) {
+        slots.push(Slot {
+            name: w.name.clone(),
+            at: w.next,
+            under: None,
+        });
+        for c in calls
+            .iter()
+            .filter(|c| c.called_by.as_deref() == Some(&w.name))
+        {
+            slots.push(Slot {
+                name: c.name.clone(),
+                at: None,
+                under: Some(w.name.clone()),
+            });
+        }
+    }
+    let other_timers = timers
+        .iter()
+        .filter(|(unit, &n)| !unit.starts_with(AGENTCTL_PREFIX) && due(n))
+        .count() as u32;
+    Tonight {
+        until,
+        slots,
+        other_timers,
+    }
+}
+
+/// The first `MORNING_HOUR`:00 local after `at`.
+fn morning(at: i64) -> i64 {
+    let (Some(now), Some(hour)) = (
+        Local.timestamp_opt(at, 0).single(),
+        NaiveTime::from_hms_opt(MORNING_HOUR, 0, 0),
+    ) else {
+        return at + DAY;
+    };
+    let day = now.date_naive();
+    let day = if now.time() < hour {
+        day
+    } else {
+        day.succ_opt().unwrap_or(day)
+    };
+    Local
+        .from_local_datetime(&day.and_time(hour))
+        .earliest()
+        .map_or(at + DAY, |d| d.timestamp())
 }
 
 /// The verdicts tail: the newest first, and counts by verdict for the day and the week before
@@ -1412,5 +1513,178 @@ mod tests {
         assert!(!tail(&p, 1000).unwrap().1);
         assert_eq!(tail(&dir.join("none"), 10).unwrap(), (String::new(), false));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 2026-11-05 at `h:m` local, unix seconds; `d` days on.
+    fn local(d: u32, h: u32, m: u32) -> i64 {
+        Local
+            .with_ymd_and_hms(2026, 11, 5 + d, h, m, 0)
+            .unwrap()
+            .timestamp()
+    }
+
+    fn timed(name: &str, next: i64) -> Worker {
+        Worker {
+            name: name.into(),
+            next: Some(next),
+            ..Default::default()
+        }
+    }
+
+    fn names(t: &Tonight) -> Vec<(&str, Option<&str>)> {
+        t.slots
+            .iter()
+            .map(|s| (s.name.as_str(), s.under.as_deref()))
+            .collect()
+    }
+
+    #[test]
+    fn a_conf_reads_its_caller() {
+        let c = parse_conf(
+            "ask-sweep",
+            "KIND=call\nCALLER=dream\n",
+            "/h",
+            Path::new("/st"),
+        );
+        assert_eq!(c.caller, "dream");
+        let w = workers(
+            vec![c, conf("dream", true)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            T,
+        );
+        let by = |n: &str| w.iter().find(|w| w.name == n).unwrap().called_by.clone();
+        assert_eq!(by("ask-sweep").as_deref(), Some("dream"));
+        assert_eq!(by("dream"), None, "a runner has no caller");
+    }
+
+    #[test]
+    fn tonight_runs_from_now_to_the_next_seven_in_time_order() {
+        let now = local(0, 20, 25);
+        let ws = [
+            timed("dream", local(1, 3, 4)),
+            timed("nightly-sync", local(0, 23, 3)),
+            timed("briefing", local(1, 6, 45)),
+            timed("theme-day", local(1, 7, 0)),
+        ];
+        let t = tonight(&ws, &HashMap::new(), now);
+        assert_eq!(t.until, local(1, 7, 0));
+        assert_eq!(
+            names(&t),
+            [("nightly-sync", None), ("dream", None), ("briefing", None)]
+        );
+        assert_eq!(t.slots[0].at, Some(local(0, 23, 3)));
+        // Before 07:00 the window ends the same morning.
+        let early = tonight(&ws, &HashMap::new(), local(1, 4, 0));
+        assert_eq!(early.until, local(1, 7, 0));
+        assert_eq!(
+            names(&early),
+            [("briefing", None)],
+            "a start already gone is not tonight's"
+        );
+    }
+
+    #[test]
+    fn a_timer_after_seven_is_not_tonight() {
+        // The negative control: the same rows with only the times moved past 07:00.
+        let now = local(0, 20, 25);
+        let ws = [
+            timed("perf-round", local(2, 8, 0)),
+            timed("lab-sync", local(1, 7, 1)),
+        ];
+        let timers = HashMap::from([
+            ("theme-day.service".to_string(), local(1, 7, 0)),
+            ("storage-scan.service".to_string(), local(1, 15, 8)),
+        ]);
+        let t = tonight(&ws, &timers, now);
+        assert!(t.slots.is_empty(), "{:?}", t.slots);
+        assert_eq!(t.other_timers, 0);
+    }
+
+    #[test]
+    fn a_call_sits_under_its_caller() {
+        let now = local(0, 20, 25);
+        let call = |name: &str, caller: &str| Worker {
+            name: name.into(),
+            called_by: Some(caller.into()),
+            ..Default::default()
+        };
+        let ws = [
+            call("ask-sweep", "dream"),
+            call("ask-judge", "agent-ask"),
+            timed("token-usage", local(1, 3, 42)),
+            timed("dream", local(1, 3, 4)),
+            timed("fleet-dispatch", local(0, 20, 27)),
+            call("dispatch-judge", "fleet-dispatch"),
+        ];
+        let t = tonight(&ws, &HashMap::new(), now);
+        assert_eq!(
+            names(&t),
+            [
+                ("fleet-dispatch", None),
+                ("dispatch-judge", Some("fleet-dispatch")),
+                ("dream", None),
+                ("ask-sweep", Some("dream")),
+                ("token-usage", None),
+            ],
+            "a call whose caller is no runner tonight (agent-ask) has no slot"
+        );
+        assert_eq!(t.slots[1].at, None);
+    }
+
+    #[test]
+    fn always_on_runners_come_first() {
+        let now = local(0, 20, 25);
+        let persistent = |name: &str, running: bool| Worker {
+            name: name.into(),
+            running_since: running.then_some(now - 3600),
+            registry: Registry {
+                kind: "persistent".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut oneshot = persistent("inbox-plan", true);
+        oneshot.registry.kind = "oneshot".into();
+        let ws = [
+            timed("nightly-sync", local(0, 23, 3)),
+            persistent("sentinel", true),
+            persistent("inbox-triage", true),
+            persistent("down", false),
+            oneshot,
+        ];
+        let t = tonight(&ws, &HashMap::new(), now);
+        assert_eq!(
+            names(&t),
+            [
+                ("sentinel", None),
+                ("inbox-triage", None),
+                ("nightly-sync", None)
+            ],
+            "a stopped persistent runner and a running oneshot with no timer are not always on"
+        );
+        assert_eq!(t.slots[0].at, None);
+    }
+
+    #[test]
+    fn other_timers_in_the_window_are_only_counted() {
+        let now = local(0, 20, 25);
+        let timers = HashMap::from([
+            (
+                "journal-daily-summarize.service".to_string(),
+                local(1, 1, 0),
+            ),
+            ("journal-index-rebuild.service".to_string(), local(1, 1, 15)),
+            ("theme-day.service".to_string(), local(1, 7, 0)),
+            ("agentctl@dream.service".to_string(), local(1, 3, 4)),
+            ("never.service".to_string(), 0),
+        ]);
+        let t = tonight(&[], &timers, now);
+        assert_eq!(t.other_timers, 2);
+        assert!(
+            t.slots.is_empty(),
+            "a timer is a slot only through its worker"
+        );
     }
 }
