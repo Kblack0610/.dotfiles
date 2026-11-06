@@ -69,6 +69,9 @@ enum Cmd {
         /// Only the sessions waiting on the human: a pending ask or a prompt (ctrl-y).
         #[arg(long)]
         asking: bool,
+        /// Move the saved sort first: `next` key (C-o) or `reverse` direction (A-o).
+        #[arg(long, value_enum)]
+        sort: Option<agent_panel::sort::Step>,
     },
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
@@ -107,7 +110,7 @@ fn main() -> anyhow::Result<()> {
             }
             None => std::process::exit(1),
         },
-        Some(Cmd::Rows { map_file, asking }) => chooser::run_rows(&map_file, asking),
+        Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

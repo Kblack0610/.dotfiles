@@ -57,6 +57,10 @@ route_file() {
 # Required keys start at the __unset__ sentinel so that "the author forgot
 # ROUTE_PERSONAL_SAFE" and "ROUTE_PERSONAL_SAFE=no" can never be the same
 # observable. role.sh uses the same trick for the same reason.
+# route_native -> 0 when the transport is a vendor's own endpoint on the CLI's own login: no
+# router in the path, so no failover edge exists.
+route_native() { case "$ROUTE_TRANSPORT" in anthropic-native|openai-native) return 0 ;; esac; return 1; }
+
 route_load() {
   local name="$1" f
   f="$(route_file "$name")" || route_die "unknown route '$name'.
@@ -79,14 +83,14 @@ Every key is explicit here on purpose: a forgotten one must not read as a 'no'."
   done
 
   case "$ROUTE_TRANSPORT" in
-    anthropic-native|anthropic-gateway|openai-compatible) ;;
-    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|anthropic-gateway|openai-compatible" ;;
+    anthropic-native|openai-native|anthropic-gateway|openai-compatible) ;;
+    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|openai-native|anthropic-gateway|openai-compatible" ;;
   esac
 
   # I1. A gateway route claiming personal-safety while sitting behind a failover
   # edge is a silent paid-route spill expressed as a config error. Fallbacks fire INSIDE
   # the router, AFTER the key check, so a scoped key cannot stop the spill.
-  if [ "$ROUTE_PERSONAL_SAFE" = yes ] && [ "$ROUTE_TRANSPORT" != anthropic-native ] \
+  if [ "$ROUTE_PERSONAL_SAFE" = yes ] && ! route_native \
      && [ "$ROUTE_FALLBACK_SAFE" != yes ]; then
     route_die "route '$name' claims PERSONAL_SAFE=yes on a non-native transport while
 FALLBACK_SAFE=no. A failover edge fires inside the router, after the key check,
@@ -104,7 +108,7 @@ do nothing. Use ROUTE_MODEL_RAW for ids with spaces or parentheses."
 
   # I3. An unfalsifiable safety claim is not a safety claim: if a route asserts
   # FALLBACK_SAFE it must name what `make verify-routes` should probe.
-  if [ "$ROUTE_FALLBACK_SAFE" = yes ] && [ "$ROUTE_TRANSPORT" != anthropic-native ] \
+  if [ "$ROUTE_FALLBACK_SAFE" = yes ] && ! route_native \
      && { [ -z "$ROUTE_VERIFY_MODEL" ] || [ -z "$ROUTE_VERIFY_API_BASE" ]; }; then
     route_die "route '$name' claims FALLBACK_SAFE=yes but names no ROUTE_VERIFY_MODEL /
 ROUTE_VERIFY_API_BASE, so nothing can ever check it."
@@ -116,8 +120,8 @@ ROUTE_VERIFY_API_BASE, so nothing can ever check it."
   fi
 
   # I5. A native route with a base URL is a gateway route lying about itself.
-  if [ "$ROUTE_TRANSPORT" = anthropic-native ] && [ -n "$ROUTE_BASE_URL" ]; then
-    route_die "route '$name': anthropic-native must not set ROUTE_BASE_URL."
+  if route_native && [ -n "$ROUTE_BASE_URL" ]; then
+    route_die "route '$name': $ROUTE_TRANSPORT must not set ROUTE_BASE_URL."
   fi
 }
 
@@ -125,7 +129,9 @@ ROUTE_VERIFY_API_BASE, so nothing can ever check it."
 # on absence is what makes migration a provable no-op: a runner that names no
 # route keeps the behaviour it had.
 route_resolve() {
-  printf '%s' "${AGENTCTL_ROUTE:-${ROUTE:-${ROLE_ROUTE:-subscription}}}"
+  local def=subscription
+  [ "${harness:-}" != codex ] || def=chatgpt   # each native harness defaults to its own login
+  printf '%s' "${AGENTCTL_ROUTE:-${ROUTE:-${ROLE_ROUTE:-$def}}}"
 }
 
 # route_data_class -- what KIND of data this invocation handles.
@@ -237,6 +243,7 @@ route_apply() {
       if [ -n "$key" ]; then export ANTHROPIC_AUTH_TOKEN="$key"; fi
       unset ANTHROPIC_API_KEY
       ;;
+    openai-native) ;;   # the Codex CLI's own ChatGPT login; the scrub already took any API key
     openai-compatible)
       export LLM_BASE_URL="$ROUTE_BASE_URL"
       if [ -n "$ROUTE_MODEL_RAW" ]; then export LLM_MODEL="$ROUTE_MODEL_RAW"; fi

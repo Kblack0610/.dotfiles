@@ -6,7 +6,8 @@
 # Steps, stopping at the first failure: fetch (HEAD must contain origin/<base> before the
 # checks; after them, a base that moved on is merged in, pushed and landed on the same gate), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
-# only the PR finds its work item; a stale "Item:" line is rewritten), checks (the PR's checks pass: CI, a required check), merge (--squash
+# only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
+# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
 # --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
@@ -64,6 +65,7 @@ wait_checks() {
     queued=$(gh run list --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
     [ "${queued:-0}" -eq 0 ] || try=0
     [ "$try" -lt "$CHECKS_TRIES" ] || {
+      [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
       echo "checks: none reported"
       return 0
     }
@@ -199,7 +201,7 @@ score_body() {
 # is left alone; any other "Item:" line is replaced, else the line is appended. Before the checks,
 # so a CI job that reads the body runs on the stamped one.
 stamp_item() {
-  local body new out
+  local new out
   body=$(gh pr view "$pr" --json body -q .body 2>&1) || fail item-line "gh pr view: $(lastline "$body")"
   if grep -qxF "Item: $item" <<<"$body"; then
     echo "item-line: present"
@@ -211,7 +213,27 @@ stamp_item() {
     new=$(printf '%s\n\nItem: %s' "$body" "$item")
   fi
   out=$(printf '%s\n' "$new" | gh pr edit "$pr" --body-file - 2>&1) || fail item-line "gh pr edit: $(lastline "$out")"
+  body=$new
   echo "item-line: added \"Item: $item\" to the body"
+}
+
+# review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
+# queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
+# <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
+# (wait_checks refuses "none reported" for it). The line is a claim, not proof: CI and the post-merge
+# hold check are the backstops.
+# Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
+# tier counts as 3, the side that waits.
+tier='' body=''
+review_gate() {
+  tier=$("$(dirname "$(readlink -f "$0")")/fleet-dispatch" item-tier "$item" 2>/dev/null) || tier=3
+  [ "$tier" = 3 ] || return 0
+  local line
+  line=$(grep -m1 '^Review: ' <<<"$body" || true)
+  [[ "$line" =~ ^Review:\ /code-review\ (low|medium|high|xhigh|max),\ *([^[:space:]].*)$ ]] &&
+    ! [[ "${BASH_REMATCH[2],,}" =~ ^(n/?a|none|-|tbd|todo)[[:space:].]*$ ]] ||
+    fail review "tier-3 item $item: no \"Review: /code-review <level>, <what it found and what you did>\" line in the PR body${line:+ (found: $line)}. Run /code-review high, fix or answer each finding, then add that line (~/.claude/skills/fix-red/SKILL.md step 5)"
+  echo "review: present (tier 3)"
 }
 
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
@@ -240,7 +262,8 @@ fi
 
 if [ "$dry" -eq 1 ]; then
   echo "item-line: gh pr view $pr --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
-  echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none)"
+  echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
+  echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
   echo "body: gh pr view $pr --json body | comms-lint --channel pr-body -  (a score, never a gate)"
@@ -265,6 +288,7 @@ if [ "$state" = MERGED ]; then
 else
   # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
+  review_gate
   current_with_base
   wait_checks
   while ! catch_up; do wait_checks; done

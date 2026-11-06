@@ -128,25 +128,34 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 # close_panel: esc, and wait for the panel (the server's only pane) to exit.
 close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tmux_stop; }
 
-@test "the panel reopens in the layout ctrl-/ left it in, and hidden is never kept" {
+@test "the panel reopens in the layout ctrl-/ left it in, hidden included" {
+  local f="$XDG_STATE_HOME/panels/questions.layout"
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
+  # side -> hidden: closed with no card, it reopens with no card.
+  tmux_keys C-/
+  wait_until 'screen_lacks "list on top, card below"'
+  close_panel
+  [ "$(cat "$f")" = hidden ]
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'screen_has "3 questions waiting"'
+  run screen_has "list on top, card below"
+  assert_failure
+  keep_screen reopened_hidden_200x50
+  # hidden -> stacked, even though fzf opened hidden; it reopens stacked.
   tmux_keys C-/
   wait_until 'screen_has "list on top, card below" && ! side_by_side'
   close_panel
-  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = stacked ]
+  [ "$(cat "$f")" = stacked ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'screen_has "list on top, card below"'
   run side_by_side
   assert_failure
-  keep_screen reopened_stacked_200x50
-  # stacked -> side -> hidden: closed while hidden, it reopens side, the last one shown.
+  # stacked -> side, and it reopens side.
   tmux_keys C-/
   wait_until 'side_by_side'
-  tmux_keys C-/
-  wait_until 'screen_lacks "list on top, card below"'
   close_panel
-  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = side ]
+  [ "$(cat "$f")" = side ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
 }

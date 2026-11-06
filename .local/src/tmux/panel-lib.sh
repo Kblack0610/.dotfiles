@@ -211,23 +211,23 @@ panel_fzf_preview() {
 }
 
 # panel_fzf_layout [default] -- sets PANEL_FZF_LAYOUT, the one preview layout every picker
-# uses: the window it opens with, and a ctrl-/ that cycles to the other one, then hidden, then
-# back. stacked = list on top at full width, preview below; side = list left, preview right.
-# A panel reopens in the layout ctrl-/ last left it in: the opening layout is the panel's state
-# file (panel_layout_file), else ${PANEL_LAYOUT} (`set-environment -g PANEL_LAYOUT side` in
-# .tmux.conf flips every panel that has none), else [default], else stacked. agent-panel (Rust)
-# gets the same two arguments from `panel-layout.sh args agent-panel`.
+# uses: the window it opens with, and a ctrl-/ that steps stacked -> side -> hidden -> stacked.
+# stacked = list on top at full width, preview below; side = list left, preview right; hidden =
+# no preview. A panel reopens in the layout ctrl-/ last left it in: the opening layout is the
+# panel's state file (panel_layout_file), else ${PANEL_LAYOUT} (`set-environment -g PANEL_LAYOUT
+# side` in .tmux.conf flips every panel that has none), else [default], else stacked.
+# agent-panel (Rust) gets the same two arguments from `panel-layout.sh args agent-panel`.
 panel_fzf_layout() {
   local file first='' helper
   file="$(panel_layout_file "$PANEL_NAME")"
   if [ -f "$file" ]; then first="$(<"$file")"; fi
   first="${first:-${PANEL_LAYOUT:-${1:-stacked}}}"
   _panel_layout_spec "$first" >/dev/null ||
-    panel_fail "unknown layout: $first (stacked or side; saved in $file?)" || return 1
+    panel_fail "unknown layout: $first (stacked, side or hidden; saved in $file?)" || return 1
   helper="$(realpath "${BASH_SOURCE[0]}")"
   helper="$(printf '%q' "${helper%/*}/panel-layout.sh")"
   PANEL_FZF_LAYOUT=(--preview-window="$(_panel_layout_spec "$first")"
-    "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME") $first)")
+    "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME"))")
 }
 
 # panel_layout_file <panel> -- where a panel keeps the layout it was last left in, one word.
@@ -235,26 +235,27 @@ panel_layout_file() {
   printf '%s/panels/%s.layout\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"
 }
 
-# _panel_layout_spec stacked|side -- the --preview-window value for a layout.
+# _panel_layout_spec stacked|side|hidden -- the --preview-window value for a layout. hidden is
+# stacked with the preview off, so the window has a shape to come back in.
 _panel_layout_spec() {
   local w
   case "$1" in
   stacked) w="$(panel_fzf_preview down 60)" ;;
   side) w="$(panel_fzf_preview right 65)" ;;
+  hidden) w="$(panel_fzf_preview down 60),hidden" ;;
   *) return 1 ;;
   esac
   printf '%s\n' "${w#--preview-window=}"
 }
 
-# panel_layout_next <panel> <first> -- ctrl-/'s fzf transform: print the next step of
-# <first> -> the other -> hidden -> <first>, and save a shown layout as the panel's. The step
-# fzf is on comes from the preview geometry it exports to child processes: no columns is
-# hidden, a preview under three quarters of fzf's width is side. Reading it, not tracking it,
-# leaves no per-picker file to clean up. hidden is never saved.
+# panel_layout_next <panel> -- ctrl-/'s fzf transform: print the next step of stacked -> side ->
+# hidden -> stacked and save it as the panel's layout. The step fzf is on comes from the preview
+# geometry it exports to child processes: no columns is hidden, a preview under three quarters
+# of fzf's width is side. Reading it, not tracking it, leaves no per-picker file to clean up.
+# A third argument (the opening layout an fzf
+# started before the fixed cycle still passes) is ignored.
 panel_layout_next() {
-  local panel="$1" first="$2" other=stacked now next file
-  [ "$first" = stacked ] && other=side
-  _panel_layout_spec "$first" >/dev/null || panel_fail "unknown layout: $first" || return 1
+  local panel="$1" now next file
   if [ "${FZF_PREVIEW_COLUMNS:-0}" -eq 0 ]; then
     now=hidden
   elif [ $((FZF_PREVIEW_COLUMNS * 4)) -lt $((${FZF_COLUMNS:-0} * 3)) ]; then
@@ -263,12 +264,9 @@ panel_layout_next() {
     now=stacked
   fi
   case "$now" in
-  hidden) next="$first" ;;
-  "$first") next="$other" ;;
-  *)
-    printf 'change-preview-window(hidden)\n'
-    return 0
-    ;;
+  stacked) next=side ;;
+  side) next=hidden ;;
+  hidden) next=stacked ;;
   esac
   file="$(panel_layout_file "$panel")"
   mkdir -p "${file%/*}" && printf '%s\n' "$next" >"$file"
