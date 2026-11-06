@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is three totals, the queue
-# items, the open agent board rows and the items done in 24h, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
+# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is three totals, the items
+# ready to start next, the open agent board rows and the items done in 24h, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
 # pass are red; each number takes its own colour; a second host's series count once; Prometheus
@@ -73,12 +73,12 @@ text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
 # bar <q> <b> <d> -> the bar text: dim letters, the numbers as given.
-bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span> %s  <span color='#7f7f7f'>D</span> %s" "$1" "$2" "$3"; }
+bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%s <span color='#7f7f7f'>D</span>%s" "$1" "$2" "$3"; }
 
 @test "a deep queue that is moving is neutral: the three totals, nothing else" {
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$(bar 84 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
   assert_equal "$(class)" ok
 }
 
@@ -114,7 +114,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "each capacity number takes its own colour: green with room, amber near its limit, red past it" {
   feed summary_dispatch.room_live_runs=24 summary_dispatch.room_load=40 summary_dispatch.room_idle=20
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 84 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
   run tip
   assert_output --partial "capacity: run units <span color='$Y'>24/24</span>"
   assert_output --partial "load <span color='$R'>40 of 36</span>"
@@ -163,7 +163,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "a feed without the queue or room numbers reads - and says no headroom, never 0" {
   feed summary_dispatch.queued=- summary_dispatch.done_6h=- summary_dispatch.room_max_live=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar - 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
   run tip
   assert_line --index 1 "<b>Queue</b>  - items: - queued, 14 running, 10 waiting on you"
   assert_line --index 6 "drain 6h: -"
@@ -173,7 +173,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "a pass that left ready work waiting (BLOCKED) is amber and leads the hover" {
   feed runner_fleet_dispatch.blocked=1
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "<span color='$Y'>84</span>" 1522 38)"
+  assert_equal "$(text)" "$(bar "<span color='$Y'>39</span>" 1522 38)"
   assert_equal "$(class)" warn
   run tip
   assert_line --index 2 "<span color='$Y'>the last pass left ready work waiting (BLOCKED)</span>"
@@ -216,7 +216,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "queue-starved tripped is red, whatever else is fine" {
   feed watch_queue_starved.tripped=1
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "<span color='$R'>84</span>" 1522 38)"
+  assert_equal "$(text)" "$(bar "<span color='$R'>39</span>" 1522 38)"
   assert_equal "$(class)" critical
   run tip
   assert_output --partial "queue-starved is tripped"
@@ -241,7 +241,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "a second host's queue series count once, by their max" {
   feed h2:summary_dispatch.runnable=3 h2:watch_queue_starved.tripped=0 dup:summary_dispatch.runnable=39
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 84 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
 }
 
 @test "the shepherd section shows its last pass and 24h; an unhandled due line is amber; off the feed it is left out" {
@@ -277,7 +277,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "a board the feed lacks reads -, never 0, on the bar and in the hover" {
   feed summary_dispatch.board_agent=- summary_dispatch.board_human=- summary_dispatch.board_playtest=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 84 - 38)"
+  assert_equal "$(text)" "$(bar 39 - 38)"
   run tip
   assert_line --index 7 "board: - agent rows, - yours, - playtest checks"
 }
@@ -285,13 +285,13 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "D is done less failed in 24h; a feed without it reads -, never 0" {
   feed summary_dispatch.done_24h=- summary_dispatch.failed_24h=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 84 1522 -)"
+  assert_equal "$(text)" "$(bar 39 1522 -)"
 }
 
 @test "the hover opens by saying what each letter counts" {
   run "$MODULE"
   run tip
-  assert_line --index 0 "Q in the queue, B on the board, D done in 24h"
+  assert_line --index 0 "Q ready to start next, B on the board, D done in 24h"
 }
 
 @test "no summary/dispatch on the feed reads - in amber, never 0" {
@@ -306,7 +306,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
 @test "Prometheus unreadable reads ? in amber, never blank" {
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(text)" "<span color='$Y'>Q ?</span>"
+  assert_equal "$(text)" "<span color='$Y'>Q?</span>"
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "cannot read http://prom.test"
@@ -316,12 +316,12 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
   feed summary_dispatch.low_water=3 summary_dispatch.present_per_hour=1 summary_dispatch.present_starts_1h=1
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$(bar 84 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
   assert_output --partial "39 ready (32 urgent or high) of low water 3"
   assert_output --partial "present trickle: 1 of 1 board starts this hour"
   feed
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 84 1522 38)"
+  assert_equal "$(text)" "$(bar 39 1522 38)"
   refute_output --partial "low water"
   refute_output --partial "present trickle"
 }
