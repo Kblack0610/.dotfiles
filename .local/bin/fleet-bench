@@ -31,6 +31,9 @@
 #                                each windowed KPI over N days before a change landed against N after
 #   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold,
 #                                and per lesson that recurred in BENCH_GUARD_RECUR sessions (a guard row)
+#   fleet-bench triage [--dry-run]
+#                                one agent-board row per FAILED or STALLED scheduled runner, failed
+#                                user unit and Sentinel watch tripped past TRIAGE_WATCH_AFTER
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -84,6 +87,7 @@ set -uo pipefail
 : "${BENCH_CAL_MAX:=4}"              # nor stretch it to days
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
 : "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
+: "${BENCH_ASKS_ALL_CMD:=agent-ask list --all}"   # every ask, for the ask KPIs
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/docs/bench}"
@@ -101,6 +105,10 @@ set -uo pipefail
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_EFFECT_DAYS:=14}"        # effect: the window on each side of a change
 : "${BENCH_EFFECT_FLAT:=0.1}"       # effect: a relative move inside this is flat
+: "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
+: "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
+: "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
+: "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
 : "${BENCH_NOTES_CMD:=notes}"
@@ -159,6 +167,9 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
+# agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
+def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
+  - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
 def run_rows: split("\n") | map(select(. != "") | split("\t")
@@ -972,14 +983,11 @@ cmd_review() {
 ask_rows() {
   local asks
   asks=$($BENCH_ASKS_CMD) || return 1
-  jq -n --argjson t "$1" --rawfile a <(printf '%s' "$asks") --slurpfile live <(latest_live) '
-    # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
-    def epoch: (.[0:19] + "Z" | fromdateiso8601)
-      - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
+  jq -n --argjson t "$1" --rawfile a <(printf '%s' "$asks") --slurpfile live <(latest_live) "$JQ_LIB"'
     def tsess: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "");
     [$a | split("\n")[] | select(length > 0) | split("\t")
      | {id: .[0], project: .[1], kind: .[4], question: .[5], recommend: (.[10] // ""),
-        session: (if (.[15] // "") != "" then .[15] else (.[12] // "") end), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | epoch)) / 3600 end)}
+        session: (if (.[15] // "") != "" then .[15] else (.[12] // "") end), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | ask_epoch)) / 3600 end)}
      | .session as $s
      | (if $s == "" then null
         else [$live[] | select(.session_id == $s or (.target | tsess) == $s)] | sort_by(.target) | first end) as $l
@@ -1083,7 +1091,7 @@ cmd_asks() {
 LEDGER_GATED="runners timers launches_direct"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
-# claude outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
+# claude or opencode outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
 # Anthropic /v1/messages URL) with no registered agent at all. Comments, echo lines, docs and
 # tests are not call sites, and agent-run's harnesses are the launcher itself.
 # git grep honours .gitignore, so 1.8G of build output under .local/src is never read;
@@ -1094,10 +1102,20 @@ headless_launches() {
   for d in "$@"; do
     [ -d "$d" ] || continue
     (cd "$d" && git grep --no-index --exclude-standard -nIiE \
-      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
+      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|\bopencode run\b|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
       -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )' | grep -v '/agent-run/harnesses/'
+}
+
+# scheduled_runner <conf> -> the runner's name, failing for one fired by hand. fleet-liveness's
+# roster: a retired runner keeps its state dir, and a conf with no SCHEDULE or AUTOSTART=yes is
+# fired by hand, so neither can count as bad. The caller has already skipped KIND=call and ENABLED=no.
+scheduled_runner() {
+  local name
+  grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$1" || grep -qE '^AUTOSTART=["'"'"']?yes' "$1" || return 1
+  name=$(sed -n 's/^NAME=//p' "$1" | head -1)
+  printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
 # ledger_counts -> key=value lines
@@ -1111,10 +1129,7 @@ ledger_counts() {
     n_conf=$((n_conf + 1))
     grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
     n_on=$((n_on + 1))
-    # fleet-liveness's roster: a retired runner keeps its state dir, and a conf with no
-    # SCHEDULE or AUTOSTART=yes is fired by hand, so neither can count as bad
-    grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$c" || grep -qE '^AUTOSTART=["'"'"']?yes' "$c" || continue
-    name=$(sed -n 's/^NAME=//p' "$c" | head -1); name="${name:-$(basename "$c" .conf)}"
+    name=$(scheduled_runner "$c") || continue
     [ -n "$sd" ] && grep -qE '^(FAILED|STALLED)' "$sd/$name/last-outcome" 2>/dev/null && n_bad=$((n_bad + 1))
   done
   echo "runners=$n_conf"
@@ -1223,15 +1238,39 @@ cmd_ledger() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad asks_stale board_open loop_dark $KPI_CHAIN"
+KPI_NOW="runners_bad board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
-KPI_JUDGE="judge_errors judge_precision ask_false_defer_pct ask_unclear_pct"
+KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct"
+KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 
 # comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
 # KPIs show - rather than an old number
 comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
+# ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
+# human_answered_per_day: asks the human answered in the window, a day. An answer with no answered_by
+# is an in-session capture from before the field existed, so the human's.
+# ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
+# pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
+# A cancelled ask was withdrawn by its asker and waited on no one.
+ask_kpi() {
+  local asks
+  asks=$($BENCH_ASKS_ALL_CMD 2>/dev/null) || { echo '{}'; return 0; }
+  jq -nc --argjson t "$1" --rawfile a <(printf '%s' "$asks") "$JQ_LIB"'
+    def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;   # nearest rank
+    [$a | split("\n")[] | select(length > 0) | split("\t")
+     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // "")}
+     | select(.c != "")
+     | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
+     | .x |= (if . == "" then null else ask_epoch end)] as $r
+    | def w($d): ($t - $d * 86400) as $s
+        | {human_answered_per_day: ([$r[] | select(.status == "answered" and (.by == "" or .by == "human")
+                                                  and .a != null and .a > $s and .a <= $t)] | length / $d | round1),
+           ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
+                               | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};
+    w(7) as $x | w(28) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
+}
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
@@ -1262,11 +1301,11 @@ kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
 # (kpi --at) leaves the comms and the counted-now KPIs null: nothing records them as of a past time.
 kpi_json() {
   local lim='{}' cm='{}'
-  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
-  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi))
+  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
+  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
@@ -1645,7 +1684,7 @@ retro_guard_rows() {
 # matches writes nothing. An add that exits 3 found the row already open (a near-dup), so it
 # counts as filed.
 cmd_retro() {
-  local json rows='' grows board p text pri have rc added=0 edited=0 why=()
+  local json rows='' grows why=()
   if [ -r "$KPI_THRESHOLDS" ]; then
     json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
     rows=$(retro_rows "$json")
@@ -1662,9 +1701,19 @@ cmd_retro() {
     report_outcome NOOP "$(IFS=';'; echo "${why[*]}")"
     return 0
   fi
+  board_upsert "$rows"
+}
+
+# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
+# row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
+# that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
+# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
+# #size/s. Reports the outcome: WORKED with the counts, NOOP when every row was current.
+board_upsert() {
+  local board p text pri have rc added=0 edited=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
-    text+=" #size/s"   # every retro row is a small check
+    text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
       rc=0
@@ -1679,13 +1728,78 @@ cmd_retro() {
         || { report_outcome FAILED "edit failed for $p"; return 1; }
       edited=$((edited + 1))
     fi
-  done <<<"$rows"
-  say "$(grep -c . <<<"$rows") rows due: $added added, $edited refreshed"
+  done <<<"$1"
+  say "$(grep -c . <<<"$1") rows due: $added added, $edited refreshed"
   if [ $((added + edited)) -eq 0 ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$added added, $edited refreshed"
   fi
+}
+
+# triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
+# scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
+# watch held at TRIP past TRIAGE_WATCH_AFTER. FAILED, a failed unit and a high or urgent watch
+# are #high. Sentinel stays observe-only: this reads its state files.
+triage_rows() {
+  local c name sd v detail u res load f n since sev what t
+  t=$(now)
+  proof_lib && sd=$(proof_state_dir)
+  for c in "$LEDGER_CONF_DIR"/*.conf; do
+    [ -e "$c" ] && [ -n "$sd" ] || continue
+    grep -qE '^KIND=["'"'"']?call' "$c" && continue
+    grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
+    name=$(scheduled_runner "$c") || continue
+    v=$(awk 'NR == 1 { print $1 }' "$sd/$name/last-outcome" 2>/dev/null)
+    case "$v" in FAILED|STALLED) ;; *) continue ;; esac
+    detail=$(grep "outcome=$v" "$sd/$name/activity.log" 2>/dev/null | tail -1 \
+      | sed -E 's/^\[([0-9-]{10})[^]]*\] outcome=[A-Z]+ ?/\1 /' | cut -c1-100)
+    printf 'fix(runner): %s is\tfix(runner): %s is %s: %s\t%s\n' "$name" "$name" "$v" "${detail:-no detail}" \
+      "$([ "$v" = FAILED ] && echo '#high' || echo '#low')"
+  done
+  $TRIAGE_SYSTEMCTL --user list-units --failed --plain --no-legend 2>/dev/null | awk '{ print $1 }' |
+  while read -r u; do
+    [ -n "$u" ] || continue
+    res=$($TRIAGE_SYSTEMCTL --user show -p Result --value "$u" 2>/dev/null)
+    load=$($TRIAGE_SYSTEMCTL --user show -p LoadState --value "$u" 2>/dev/null)
+    printf 'fix(unit): %s failed\tfix(unit): %s failed: %s%s\t#high\n' "$u" "$u" "${res:-unknown}" \
+      "$([ "$load" = not-found ] && echo ', the unit file is gone')"
+  done
+  for f in "$TRIAGE_WATCH_STATE"/*.state; do
+    [ -e "$f" ] || continue
+    [ "$(cat "$f")" = TRIP ] || continue
+    n=$(basename "$f" .state)
+    since=$(cat "$TRIAGE_WATCH_STATE/$n.since" 2>/dev/null) || continue
+    [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$TRIAGE_WATCH_AFTER" ] || continue
+    sev=$(sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null | head -1)
+    # `what:` is one line or a folded block whose first sentence is the healthy state; Sentinel keeps
+    # no probe output, so the row says what was expected
+    what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
+                on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
+      | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
+    printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s\t%s\n' "$n" "$n" \
+      "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
+      "$(case "$sev" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)"
+  done
+}
+
+# triage [--dry-run] files one agent-board row per runtime fault (triage_rows) through
+# board_upsert, so a fault that persists is one row refreshed in place, never a row a day.
+# --dry-run prints the rows and writes nothing.
+cmd_triage() {
+  local rows
+  case "${1:-}" in
+    "") ;;
+    --dry-run) triage_rows | cut -f2,3 | tr '\t' ' '; return 0 ;;
+    *) say "usage: fleet-bench triage [--dry-run]"; return 2 ;;
+  esac
+  rows=$(triage_rows | grep .)
+  if [ -z "$rows" ]; then
+    say "no runner, unit or watch at fault"
+    report_outcome NOOP "no runner, unit or watch at fault"
+    return 0
+  fi
+  board_upsert "$rows"
 }
 
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
@@ -2247,6 +2361,7 @@ main() {
     chain) shift; cmd_chain "$@" ;;
     effect) shift; cmd_effect "$@" ;;
     retro) cmd_retro ;;
+    triage) shift; cmd_triage "$@" ;;
     findings) shift; cmd_findings "$@" ;;
     respond) shift; cmd_respond "$@" ;;
     loop) shift; cmd_loop "$@" ;;

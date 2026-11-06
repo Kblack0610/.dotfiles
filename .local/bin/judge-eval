@@ -8,6 +8,9 @@
 #       --any-prompt counts verdicts under every prompt; --days keeps the last N days.
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
+#   judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]
+#       the answer judge's verdicts, newest first and under any prompt: what it said, why, the
+#       quote behind it and what you did. The same rows reach Log's Judges' verdicts section.
 #
 #   judge-eval replay [--limit N] [--out DIR] [--json]
 #       the answer judge's current policy over the asks the human answered with an option, newest
@@ -35,6 +38,9 @@ AGENTS="ask-judge dispatch-judge ask-sweep"
 # judge_precision counts only rules with this many scored answers: below it one miss swings 10+ points.
 KPI_LABELS=10
 MISSES=10
+# Verdicts one read carries to the dashboards: about a week of asks, so a filter still has rows.
+VERDICTS=200
+LOG_LIMIT=50
 
 say() { printf 'judge-eval: %s\n' "$*" >&2; }
 
@@ -76,7 +82,7 @@ eval_json() {
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
-    --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" \
+    --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
   return "$rc"
@@ -106,14 +112,16 @@ JQ_EVAL='
       | ($since == null or ($e != null and $e >= $since))
         and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-"));
 
-  # One verdict row each: {agent, id, project, question, rule, kind (answer|defer|error), want,
-  # outcome (tp|fp|fn|tn|pending|unscorable), human, reason, at, call}.
+  # One verdict row each: {agent, id, project, question, rule, type, kind (answer|defer|error),
+  # live, want, outcome (tp|fp|fn|tn|pending|unscorable), human, reason, evidence, at, call}.
   [$asks[] | select(.judge_rule != "gate" or (.judge_call // "") != "")
     | . as $a | ($a.judge | if . == "human" then "defer" elif . == "error" then "error" else "answer" end) as $kind
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want
     | ($picks[$a.id] // (if ($a.answer // "") | startswith("in session:") then null else $a.answer end)) as $human
     | {agent: "ask-judge", id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
-       kind: $kind, want: $want, human: ($human // $a.answer // ""), reason: ($a.judge_reason // ""),
+       type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"), want: $want,
+       human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
+       reason: ($a.judge_reason // ""), evidence: ($a.judge_evidence // ""),
        at: $a.judged_at, answered_at: $a.answered_at, judge_call: ($a.judge_call // ""),
        outcome: (if $kind == "error" then null
          elif $a.answered_by == "judge" then
@@ -151,19 +159,28 @@ JQ_EVAL='
       | ($r | map(select(.kind == "error")) | length) as $err
       | {verdicts: ($r | length), errors: $err,
          answered: ($r | map(select(.kind == "answer")) | length),
+         live_answered: ($r | map(select(.live == true)) | length),
          deferred: ($r | map(select(.kind == "defer")) | length),
          pending: ($r | map(select(.outcome == "pending")) | length),
          unscorable: ($r | map(select(.outcome == "unscorable")) | length),
          tp: ($r | map(select(.outcome == "tp")) | length), fp: ($r | map(select(.outcome == "fp")) | length),
          fn: ($r | map(select(.outcome == "fn")) | length), tn: ($r | map(select(.outcome == "tn")) | length)}
       | . + {scored: (.tp + .fp + .fn + .tn), coverage: pct(.answered; .verdicts - .errors),
-             precision: pct(.tp; .tp + .fp), false_defer_pct: pct(.fn; .fn + .tn), kappa: kappa}
+             live_pct: pct(.live_answered; .verdicts - .errors), precision: pct(.tp; .tp + .fp), false_defer_pct: pct(.fn; .fn + .tn), kappa: kappa}
       | . + (wilson(.tp; .tp + .fp) | {precision_lo: .[0], precision_hi: .[1]})
       # Each verdict carries its share of its call: one dispatch call judges many rows.
       | . + ([$r[] | select($call[.judge_call] != null)] as $j | [$j[] | $call[.judge_call].duration_ms | numbers] as $d
              | {p50_ms: ($d | quantile(0.5)), p95_ms: ($d | quantile(0.95)),
                 cost_per_verdict: (if ($j | length) == 0 then null else
                   (([$j[] | ($call[.judge_call].cost_usd // 0) / $share[.judge_call]] | add) / ($j | length) * 10000 | round) / 10000 end)});
+
+  # One row of the verdict list: what the judge said, and what became of it in plain words.
+  def listed: {id, project, question, rule, type, judge: .want, reason, evidence,
+        said: (if .kind == "error" then "error" elif .live then "answered"
+               elif .kind == "answer" then "would answer" else "passed" end),
+        you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept" else .human end),
+        score: ({tp: "right", tn: "right", fp: "wrong", fn: "needless", pending: "pending"}[.outcome // ""] // "-"),
+        at: (.at | epoch)};
 
   {at: $now, scope: {prompt: (if $any == 1 then "any" else "current" end), days: (if $days == "" then null else ($days | tonumber) end)},
    bar: {labels: $bar, precision: $barp},
@@ -188,7 +205,13 @@ JQ_EVAL='
                 | sort_by(-.verdicts)),
         misses: ($mine | map(select(.outcome == "fp")) | sort_by(-(.answered_at // .at | epoch // 0)) | .[0:$nmiss]
                  | map({id, project, question, judge: .want, reason, answer: .human, rule,
-                        answered_at: (.answered_at // .at | epoch)}))}]}'
+                        answered_at: (.answered_at // .at | epoch)}))}
+       # What the human reads rather than a score, so every prompt counts: a policy change must
+       # not empty the list or reset the week.
+       + (if $ag != "ask-judge" then {} else ($all | map(select(.agent == $ag))) as $every
+          | {week: ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats),
+             verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
+               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end)]}'
 
 # report <json>: the table, one block per agent.
 report() {
@@ -221,15 +244,39 @@ report() {
 # kpi_json: {kpi: {"7d": v, "28d": v}} for fleet-bench, as comms-lint kpi gives its own.
 kpi_json() {
   local w7 w28
-  w7="$(eval_json "$AGENTS" 1 7)" && w28="$(eval_json "$AGENTS" 1 28)" || return 1
+  w7="$(VERDICTS=0 eval_json "$AGENTS" 1 7)" && w28="$(VERDICTS=0 eval_json "$AGENTS" 1 28)" || return 1
   jq -cn --argjson a "$w7" --argjson b "$w28" --argjson min "$KPI_LABELS" '
     def k: {judge_errors: ([.agents[] | if .agent == "ask-sweep" then .calls.errors else .total.errors end] | add),
             judge_precision: ([.agents[].rules[] | select(.tp + .fp >= $min) | .precision] | min),
+            ask_answered_pct: (.agents[] | select(.agent == "ask-judge") | .total.live_pct),
             ask_false_defer_pct: (.agents[] | select(.agent == "ask-judge") | .total.false_defer_pct),
             ask_unclear_pct: (.agents[] | select(.agent == "ask-judge") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end)};
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
+}
+
+# log [filter] [--days N] [--limit N] [--json]: see the header.
+log() {
+  local said="" days="" limit="$LOG_LIMIT" json=0 out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      answered|would-answer|passed|wrong) said="$1"; shift ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
+      --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]"; return 2 ;;
+    esac
+  done
+  # Filtered before the limit, so the whole list is read rather than the dashboards' slice.
+  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --argjson n "$limit" '
+    .agents[0].verdicts | map(select($f == "" or (if $f == "wrong" then .score == "wrong"
+      else .said == ($f | sub("-"; " ")) end))) | .[0:$n]')" || { say "could not read the sources"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
+  jq -r 'if length == 0 then "no verdicts" else .[] |
+      "\(.at | if . then localtime | strftime("%m-%d %H:%M") else "-" end)  \(.project)  \(if .type == "" then .rule else .type end)  \(.said)  you: \(.you | .[0:40])  \(.score)",
+      "    \(.question | .[0:100])",
+      "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)" end' <<<"$out"
 }
 
 # replay_labelled: the id and project of each ask the human answered with one option, newest
@@ -297,6 +344,7 @@ replay() {
 main() {
   local want="" any=0 days="" json=0 a
   if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
+  if [ "${1:-}" = log ]; then shift; log "$@"; return; fi
   if [ "${1:-}" = kpi ]; then
     shift
     case "${1:-}" in --json) kpi_json ;; "") kpi_json | jq -r 'to_entries[] | "\(.key)\t7d \(.value["7d"] // "-")\t28d \(.value["28d"] // "-")"' ;;

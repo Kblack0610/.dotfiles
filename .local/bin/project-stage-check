@@ -1,31 +1,43 @@
 #!/usr/bin/env bash
-# project-stage-check - does a project meet its stage? Runs the Requirements rows of stages.md.
+# project-stage-check - does a project meet its stage, and its systems' criteria?
 #
 #   project-stage-check <name> [--stage <stage>]
+#   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
 #
-# Runs the rows for <stage> (default: the stage its sheet declares) and every stage below, for
-# `base` and the project's type. One PASS, FAIL, HUMAN or TODO line per row, then a `gate:` line.
-# Exit 0 when nothing blocks, 1 when a FAIL blocks (from stages.md's `Enforced from:` date; before
-# it the gate only reports), 2 on usage or an unknown project.
-# Callers: `notes projects --stage <name> --set <stage>` (refuses on 1) and project-map-doctor.
+# Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
+# declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
+# TODO line per row, then a `gate:` line. Exit 0 when nothing blocks, 1 when a FAIL blocks (from
+# stages.md's `Enforced from:` date; before it the gate only reports), 2 on usage or an unknown
+# project. Callers: `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
+# Systems mode runs the Criteria rows of systems.md for every system the project's type has (or
+# one, with --system): the same lines, then met/total per system; --json prints those counts and
+# each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
-NAME="" TARGET=""
+NAME="" TARGET="" SYSTEMS="" ONLY="" JSON=""
+[ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --stage) TARGET="${2:-}"; shift 2 || usage ;;
+    --systems) SYSTEMS=1; shift ;;
+    --system) ONLY="${2:-}"; SYSTEMS=1; shift 2 || usage ;;
+    --json) JSON=1; shift ;;
     -h|--help) usage 0 ;;
     -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
     *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
   esac
 done
 [ -n "$NAME" ] || usage
+[ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
+[ -n "$SYSTEMS" ] || [ -z "$JSON" ] || { echo "project-stage-check: --json needs --systems" >&2; usage; }
 
 STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
-[ -r "$STAGES_DOC" ] || { echo "project-stage-check: $STAGES_DOC not found" >&2; exit 2; }
+SYSTEMS_DOC="${SYSTEMS_DOC:-$HOME/.local/src/docs/systems.md}"
+DOC="$STAGES_DOC"; [ -z "$SYSTEMS" ] || DOC="$SYSTEMS_DOC"
+[ -r "$DOC" ] || { echo "project-stage-check: $DOC not found" >&2; exit 2; }
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
@@ -34,9 +46,6 @@ STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
 # lab_roots lives in the private overlay; without it there is no lab dir and no declared stage.
 # shellcheck source=/dev/null
 [ -r "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}" ] && . "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}"
-
-LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
-[ -n "$LAB_STAGES" ] || { echo "project-stage-check: notes projects --stages printed nothing" >&2; exit 2; }
 
 LAB=""
 if declare -F lab_roots >/dev/null; then
@@ -54,6 +63,106 @@ ROOT="${REPO:+$REPO${sub:+/$sub}}"
 [ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 
+# rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
+# A row starts with a lowercase id, so the header and the `---` line never match. `\|` is a
+# literal pipe inside a cell, as GitHub markdown spells it.
+rows() {
+  awk -v want="## $2" '
+    /^## / { intable = ($0 == want); next }
+    intable && /^\| *[a-z][a-z-]* *\|/ {
+      line = $0; gsub(/\\\|/, "\001", line)
+      n = split(line, c, "|"); out = ""
+      for (i = 2; i < n; i++) { gsub(/^ +| +$/, "", c[i]); gsub("\001", "|", c[i]); out = out (i > 2 ? "\t" : "") c[i] }
+      print out
+    }' "$1"
+}
+
+# applies <cell>: the Applies cell names `base` or the project's type.
+applies() { case ", $1, " in *", base, "*|*", ${TYPE:-none}, "*) return 0 ;; esac; return 1; }
+
+# With no repo, predicates run from an empty dir: `[ -f README.md ]` must not match a lab file.
+EMPTY="$(mktemp -d)"; trap 'rmdir "$EMPTY"' EXIT
+
+# judge <check>: PASS, FAIL, HUMAN or TODO for one Check cell.
+judge() {
+  local pred
+  case "$1" in
+    human) echo HUMAN ;;
+    \`*\`)
+      pred="${1#\`}"; pred="${pred%\`}"
+      # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
+      case "$pred" in *\`*) echo TODO; return ;; esac
+      # A predicate is plain shell: `ls a b | grep -q .` must not fail on this script's pipefail.
+      if (set +o pipefail; export NAME TYPE REPO ROOT LAB; cd "${ROOT:-$EMPTY}" || exit 1; eval "$pred") >/dev/null 2>&1; then
+        echo PASS
+      else
+        echo FAIL
+      fi ;;
+    *) echo TODO ;;
+  esac
+}
+
+# line <result> <tag> <text> <check>: one report line; a TODO names what checks it today.
+# The tag column is a stage (5 wide) or a system id (10 wide).
+line() {
+  local w=5; [ -z "$SYSTEMS" ] || w=10
+  case "$1" in
+    TODO) printf '%-5s %-*s  %s (%s)\n' "$1" "$w" "$2" "$3" "$4" ;;
+    *) printf '%-5s %-*s  %s\n' "$1" "$w" "$2" "$3" ;;
+  esac
+}
+
+systems() {
+  local id app sys crit check r known="" ids=() res=""
+  while IFS=$'\t' read -r id app _; do
+    known="${known:+$known }$id"
+    applies "$app" || continue
+    [ -z "$ONLY" ] || [ "$id" = "$ONLY" ] || continue
+    ids+=("$id")
+  done < <(rows "$SYSTEMS_DOC" Systems)
+  if [ -n "$ONLY" ] && [ "${#ids[@]}" -eq 0 ]; then
+    case " $known " in
+      *" $ONLY "*) echo "project-stage-check: system \"$ONLY\" does not apply to a ${TYPE:-untyped} project" >&2 ;;
+      *) echo "project-stage-check: unknown system \"$ONLY\" (want: $known)" >&2 ;;
+    esac
+    exit 2
+  fi
+  while IFS=$'\t' read -r sys app crit check _; do
+    case " $known " in *" $sys "*) ;; *) echo "project-stage-check: a Criteria row names unknown system \"$sys\"" >&2; exit 2 ;; esac
+    case " ${ids[*]} " in *" $sys "*) ;; *) continue ;; esac
+    applies "$app" || continue
+    r="$(judge "$check")"
+    res+="$sys"$'\t'"$r"$'\t'"$crit"$'\t'"$check"$'\n'
+    [ -n "$JSON" ] || line "$r" "$sys" "$crit" "$check"
+  done < <(rows "$SYSTEMS_DOC" Criteria)
+
+  if [ -n "$JSON" ]; then
+    printf '%s' "$res" | jq -R -s --arg name "$NAME" --arg type "$TYPE" --args '
+      [split("\n")[] | select(length > 0) | split("\t") | {system: .[0], result: .[1], criterion: .[2], check: .[3]}] as $rows
+      | [$ARGS.positional[] as $id | ($rows | map(select(.system == $id))) as $r
+          | {id: $id, met: ($r | map(select(.result == "PASS")) | length), total: ($r | length),
+             fail: ($r | map(select(.result == "FAIL")) | length),
+             human: ($r | map(select(.result == "HUMAN")) | length),
+             todo: ($r | map(select(.result == "TODO")) | length),
+             criteria: ($r | map(del(.system)))}] as $s
+      | {project: $name, type: (if $type == "" then null else $type end),
+         met: ([$s[].met] | add // 0), total: ([$s[].total] | add // 0), systems: $s}' "${ids[@]}"
+  else
+    printf '%s' "$res" | awk -F'\t' -v name="$NAME" -v order="${ids[*]}" '
+      { n[$1]++; if ($2 == "PASS") m[$1]++ }
+      END { k = split(order, id, " "); out = ""
+            for (i = 1; i <= k; i++) out = out (i > 1 ? ", " : "") id[i] " " m[id[i]] + 0 "/" n[id[i]] + 0
+            print "systems: " name ": " out }'
+  fi
+  case "$res" in *$'\t'FAIL$'\t'*) exit 1 ;; esac
+  exit 0
+}
+
+[ -z "$SYSTEMS" ] || systems
+
+LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
+[ -n "$LAB_STAGES" ] || { echo "project-stage-check: notes projects --stages printed nothing" >&2; exit 2; }
+
 if [ -z "$TARGET" ]; then
   # shellcheck disable=SC2086 # the ladder is a word list on purpose
   [ -n "$LAB" ] && TARGET="$(lab_head_tag "$(lab_front_page "$LAB")" $LAB_STAGES)"
@@ -61,45 +170,17 @@ if [ -z "$TARGET" ]; then
 fi
 lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check: unknown stage \"$TARGET\" (want: $LAB_STAGES)" >&2; exit 2; }
 
-# The Requirements table: `| stage | applies | requirement | check |` rows. `\|` is a literal pipe
-# inside a cell, as GitHub markdown spells it.
-rows() {
-  awk '
-    /^## / { inreq = ($0 == "## Requirements"); next }
-    inreq && /^\| *[a-z]+ *\|/ {
-      line = $0; gsub(/\\\|/, "\001", line)
-      n = split(line, c, "|")
-      if (n < 6) next
-      for (i = 2; i <= 5; i++) { gsub(/^ +| +$/, "", c[i]); gsub("\001", "|", c[i]) }
-      if (c[2] == "Stage") next
-      printf "%s\t%s\t%s\t%s\n", c[2], c[3], c[4], c[5]
-    }' "$STAGES_DOC"
-}
-
-# With no repo, predicates run from an empty dir: `[ -f README.md ]` must not match a lab file.
-EMPTY="$(mktemp -d)"; trap 'rmdir "$EMPTY"' EXIT
-
 enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
 fails=0
-while IFS=$'\t' read -r stage applies req check; do
+while IFS=$'\t' read -r stage app req check; do
   lab_stage_at_least "$TARGET" "$stage" || continue
-  case ", $applies, " in *", base, "*|*", ${TYPE:-none}, "*) ;; *) continue ;; esac
-  case "$check" in
-    human) printf 'HUMAN %-5s  %s\n' "$stage" "$req" ;;
-    \`*\`)
-      pred="${check#\`}"; pred="${pred%\`}"
-      # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
-      case "$pred" in *\`*) printf 'TODO  %-5s  %s (%s)\n' "$stage" "$req" "$check"; continue ;; esac
-      if (export NAME TYPE REPO ROOT LAB; cd "${ROOT:-$EMPTY}" || exit 1; eval "$pred") >/dev/null 2>&1; then
-        printf 'PASS  %-5s  %s\n' "$stage" "$req"
-      else
-        printf 'FAIL  %-5s  %s\n' "$stage" "$req"; fails=$((fails + 1))
-      fi ;;
-    *) printf 'TODO  %-5s  %s (%s)\n' "$stage" "$req" "$check" ;;
-  esac
-done < <(rows)
+  applies "$app" || continue
+  r="$(judge "$check")"
+  line "$r" "$stage" "$req" "$check"
+  [ "$r" != FAIL ] || fails=$((fails + 1))
+done < <(rows "$STAGES_DOC" Requirements)
 
 if [ "$fails" -eq 0 ]; then
   echo "gate: $NAME meets #$TARGET"

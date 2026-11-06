@@ -5,7 +5,7 @@
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
 // open: the runners whose registry row is expanded, kept across refreshes.
-const fst = { data: null, err: null, open: new Set() };
+const fst = { data: null, err: null, open: new Set(), said: "all" };
 
 const refreshFleet = coalesce(async () => {
   try { fst.data = await api("/api/fleet"); fst.err = null; } catch (e) { fst.err = e.message; }
@@ -114,10 +114,21 @@ function judgeTiles(j) {
   return `<div class="tiles">${tiles}</div>`;
 }
 
+// The answer judge's filters: hub_core::fleet::ASK_FILTERS, read as the row they keep.
+const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
+const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
+
 function judgeList(j) {
-  const rows = j.disagreements.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.answered_at)}</td><td>${esc(x.project)}</td><td class="wrap">${cut(x.question)}</td>` +
-    `<td>${cut(x.judge, 30)}</td><td>${cut(x.answer, 30)}</td><td class="wrap muted">${esc(x.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">answered</th><th>project</th><th>question</th><th>judge</th><th>you</th><th>judge's reason</th></tr>${rows}</table>` : `<div class="empty">No disagreements.</div>`}</div>` + older(j.disagreements.length - LOG_ROWS);
+  const pct = (x) => (x == null ? "-" : `${x}%`);
+  const shown = j.verdicts.filter((v) => askShown(v, fst.said));
+  const seg = `<div class="seg fseg">` + ASK_FILTERS.map((f) =>
+    chipBtn(f === fst.said, "data-said", f, f, j.verdicts.filter((v) => askShown(v, f)).length)).join("") + `</div>`;
+  const why = (x) => `${x.rule && x.rule !== x.type ? `<b>${esc(x.rule)}</b> ` : ""}${x.evidence ? `"${esc(x.evidence)}" ` : ""}${esc(x.reason)}`;
+  const rows = shown.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
+    `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
+    `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
+  return `<div class="muted">7d: ${pct(j.week.live_pct)} answered, ${pct(j.week.coverage)} would answer, ${pct(j.week.precision)} right</div>${seg}` +
+    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th>said</th><th>question</th><th>why</th><th>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
 }
 
 function renderFleet() {
@@ -131,18 +142,25 @@ function renderFleet() {
   html += `<h2 class="sec" id="sec-workers">Workers <span class="muted">${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run; click a runner for its role, prompt, calls and judge table</span></h2>` +
     `<div class="panel scroll">${workersTable(d.workers)}</div>`;
   html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
-  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; the disagreements are on Log</span></h2>${judgeTiles(d.judge)}`;
+  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
   paint(el, html);
 }
 
-// Log's Judges' verdicts section: the dispatch judge's newest verdicts and where the answer judge
-// called it differently from you.
+// Log's Judges' verdicts section: the dispatch judge's newest verdicts and everything the answer
+// judge said, with why and what you did.
 function renderLogVerdicts() {
   const el = $("log-verdicts"), d = fst.data;
   if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading."}</div>`; return; }
   paint(el, `<h3 class="sub">Dispatch judge <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
-    `<h3 class="sub">Answer judge disagreements <span class="muted">${d.judge.disagreements.length}</span></h3>${judgeList(d.judge)}`);
+    `<h3 class="sub">Answer judge <span class="muted">newest ${d.judge.verdicts.length}</span></h3>${judgeList(d.judge)}`);
 }
+
+$("log-verdicts").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-said]");
+  if (!b) return;
+  fst.said = b.dataset.said;
+  renderLogVerdicts();
+});
 
 $("fleet").addEventListener("click", (e) => {
   if (e.target.closest("a[target]")) return;
