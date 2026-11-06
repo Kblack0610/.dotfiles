@@ -700,7 +700,8 @@ judged_keys() {
 
 # cmd_candidates -> one JSON line per open row a worker takes (with SUGGEST=1, every agent row too)
 # that no verdict holds, with its details. A #plan row waits for inbox-plan and is left out; suggest
-# shows it as blocked.
+# shows it as blocked. CLEANUP_ONLY (fill_day's cleanup floor) reads only the cleanup projects'
+# cleanup rows.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind
@@ -714,6 +715,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
+      [ -z "${CLEANUP_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
@@ -731,6 +733,7 @@ cmd_candidates() {
           off=$(row_off "$name" "$stage" "$key" "$text")
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
+          [ -z "${CLEANUP_ONLY:-}" ] || [ "$(cleanup_row "$name" "$text")" = 0 ] || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -2388,22 +2391,24 @@ judge_once() {
   return "$JUDGE_RC"
 }
 
-# day_picks <room> [cleanup] -> the rows a merging session may take: picks over every open row,
-# judged ones included (a row judged on an earlier pass can be picked now), and the tier-3 cleanup
-# rows (t3_cleanup_picks), in RANK_JQ order, one an area, up to <room>. With `cleanup`, only cleanup rows.
+# day_picks <room> -> the rows a merging session may take: picks over every open row, judged ones
+# included (a row judged on an earlier pass can be picked now), and the tier-3 cleanup rows
+# (t3_cleanup_picks), in RANK_JQ order, one an area, up to <room>.
 day_picks() {
   { picks "$(all_open)" 999; t3_cleanup_picks "$(night_rows '')"; } |
-    jq -sc --argjson room "$1" --arg only "${2:-}" "$RANK_JQ"'map(select($only == "" or .cleanup == 0))
-      | rank | unique_by([.project, .area]) | rank | .[:$room] | .[]'
+    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, .area]) | rank | .[:$room] | .[]'
 }
 
 # fill_day <room> [cleanup] -- promote up to <room> day_picks into the queue, `from: board:`. A cleanup
-# row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier).
+# row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier). With
+# `cleanup` (the floor, over the low water) every scan under it, the judge's included when this pass
+# has not judged yet, reads only the cleanup rows of DISPATCH_CLEANUP_PROJECTS (CLEANUP_ONLY).
 fill_day() {
-  local picked c tags
+  local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-}
+  [ "${2:-}" != cleanup ] || CLEANUP_ONLY=1
   FILLED=0
   judge_once || return 1
-  picked=$(day_picks "$1" "${2:-}")
+  picked=$(day_picks "$1")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
@@ -2559,6 +2564,7 @@ night_rows() {
       [ -z "$t" ] || [ "$t" = 3 ] || continue
       body=${text#- \[ \] }
       grep -qiE -- "$DISPATCH_NIGHT_SKIP" <<<"${body%%<!--*}" && continue
+      [ -z "${CLEANUP_ONLY:-}" ] || [ "$(cleanup_row "$name" "$text")" = 0 ] || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       line=$(printf '%s' "$text" | sig)

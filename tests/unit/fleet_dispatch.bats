@@ -1533,6 +1533,27 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
 }
 
+@test "the cleanup floor's fill reads and judges only cleanup rows of the cleanup projects; a plain fill judges them all" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PROFILES=bnb
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game human 'new map' "- [ ] feat(game): a new map $T"
+  row game human 'crash' "- [ ] fix(game): crash on load $T"
+  row app human 'app crash' "- [ ] fix(app): crash on open $T"
+  stub judge-stub 'printf "%s\n" "$@" > "$NOTES_FIXTURE/judge.prompt"; echo "{\"verdicts\":[]}"'
+  DRY=0 JUDGE_RC='' fill_day 2 cleanup || true
+  run cat "$NOTES_FIXTURE/judge.prompt"
+  assert_output --partial '"key":"crash"'
+  refute_output --partial '"key":"new map"'
+  refute_output --partial '"key":"app crash"'
+  # negative control: without the floor, the same fill judges every row
+  rm -f "$NOTES_FIXTURE/judge.prompt"
+  DRY=0 JUDGE_RC='' fill_day 2 || true
+  run cat "$NOTES_FIXTURE/judge.prompt"
+  assert_output --partial '"key":"new map"'
+  assert_output --partial '"key":"app crash"'
+}
+
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
 finding() { jq -cn --arg r "$1" --arg s "$2" --argjson repos "${3:-null}" --arg b "${4:-}" --argjson e "$(date +%s)" '{rule: $r, scope: $s, repos: $repos, epoch: $e} + (if $b == "" then {} else {bind: $b} end)'; }
 # findings <row>... -- fleet-bench reports exactly those rows
