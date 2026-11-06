@@ -116,3 +116,33 @@ allowed() { assert_success; assert_output ""; }
   run env HOME="$BATS_TEST_TMPDIR" bash -c "echo '{}' | $cmd"
   assert_success
 }
+
+# A live background run holds its tasks/<id>.output open; the guard scans /proc for that holder.
+# The id is unique to the test, since the unit tier runs tests in parallel and every process is scanned.
+live_task() {
+  TASK_ID="bp${$}x${BATS_TEST_NUMBER}x${RANDOM}"
+  OUT="$BATS_TEST_TMPDIR/sess/tasks/$TASK_ID.output"
+  mkdir -p "${OUT%/*}"
+  sleep 60 > "$OUT" &
+  HOLDER=$!
+}
+
+@test "reading a live background task's output in the foreground is denied" {
+  live_task
+  run fg "tail -n 20 $OUT"
+  kill "$HOLDER"
+  denied
+  assert_output --partial "$TASK_ID is still running"
+  assert_output --partial 'Monitor'
+}
+
+@test "the same read is allowed once the run exits, and in the background while it runs" {
+  live_task
+  run bg "until grep -q done $OUT; do sleep 5; done"
+  allowed
+  kill "$HOLDER"; wait "$HOLDER" 2>/dev/null || true
+  run fg "tail -n 20 $OUT"
+  allowed
+  run fg "cat $BATS_TEST_TMPDIR/sess/tasks/nobody${RANDOM}.output"
+  allowed
+}

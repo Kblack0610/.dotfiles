@@ -63,7 +63,7 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Matcher | File | Job |
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
-| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, and a foreground `until`/`while`/`for` loop that sleeps (a wait): it points at `run_in_background` and the completion notice. A background loop, a script file and quoted text are allowed |
+| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, a foreground `until`/`while`/`for` loop that sleeps (a wait), and a foreground read of a background task's `tasks/<id>.output` while a process still holds it open (the run is live): it points at `run_in_background`, Monitor and the completion notice. A background loop, a script file, quoted text and a read after the run exits are allowed |
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
