@@ -1,14 +1,16 @@
-# Who gets this workstation, read by .local/bin/machine-mode.
-# Format:  mode|runners|unity_slots|unity_burst|dispatch
+# Who gets this workstation, read by .local/lib/machine-mode.sh.
+# Format:  mode|runners|unity_slots|unity_burst|dispatch|level
 #   mode         the word you type and the chip shows
 #   runners      pool runners on this host taking new jobs (the governor's slot pin)
 #   unity_slots  local Unity runs always open (slots.sh)
 #   unity_burst  more local Unity runs when the machine has room
 #   dispatch     paused holds new fleet-dispatch sessions; as-today leaves its usual gates
+#   level        how fast the fleet starts work, a row of the levels file; mid is the confs' own numbers
 #
 # File order is the order `machine-mode next` and the chip's click walk. The last row is the
 # mode with nothing set, so it must stay what the machine does with no mode at all.
 
-reserved|0|1|0|paused
-shared|1|2|0|as-today
-open|2|2|1|as-today
+full|2|2|1|as-today|high
+reserved|0|1|0|paused|low
+shared|1|2|0|as-today|mid
+open|2|2|1|as-today|mid
