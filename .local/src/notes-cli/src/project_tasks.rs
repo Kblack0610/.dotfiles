@@ -1015,6 +1015,9 @@ pub fn done(
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
     refuse_open_children(p, name, pick, lane, "finish")?;
+    if proof.is_some() {
+        refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
+    }
     let on = done_token(chrono::Local::now().date_naive());
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
@@ -1142,6 +1145,38 @@ pub fn drop(
 fn refuse_epic_on_board(lane: Lane, texts: &[&str]) -> Result<()> {
     if lane == Lane::Agent && texts.iter().any(|t| crate::epics::is_epic(t)) {
         bail!("an epic belongs on the human sheet: file it on the human lane, not the agent board");
+    }
+    Ok(())
+}
+
+/// Refuse to close an epic on a PR alone: all its leaves landing is the state before verified,
+/// and closing there would turn merged back into done. Checked before the edit, so a refusal
+/// writes nothing. `--unverified` stays open to it: that stamp says so out loud, and the
+/// epic then reads closed but not verified.
+fn refuse_landed_as_proof(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    stamp: &str,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    match find_open(&content, pick) {
+        Some(row) => check_epic_proof(&row, stamp),
+        None => Ok(()),
+    }
+}
+
+/// The gate itself, kept out of [`refuse_landed_as_proof`] so it is testable without a vault.
+fn check_epic_proof(row: &str, stamp: &str) -> Result<()> {
+    if crate::epics::is_epic(row) && !crate::epics::proves_outcome(stamp) {
+        // One line: agent-land reports only a failure's last line.
+        bail!(
+            "an epic closes on proof of its outcome, and a PR only proves it landed: pass \
+             --proof with what was seen live (a URL, a run, a screenshot, the human's word)"
+        );
     }
     Ok(())
 }
@@ -1721,6 +1756,24 @@ Version: v0.1.0
         assert!(out.contains("- [x] second task"));
         // the backlog task in the next section is untouched
         assert!(out.contains("## Backlog\n- [ ] later"));
+    }
+
+    #[test]
+    fn an_epic_never_closes_on_a_pr_alone() {
+        // NEGATIVE CONTROL: before this, `ptask done <epic> --proof pr:1` closed it as done.
+        let epic = "- [ ] epic(ui): one page <!-- id:ar-1 -->";
+        for landed in ["pr:1", "pr:1 pr:2", "https://github.com/a/b/pull/7"] {
+            assert!(check_epic_proof(epic, landed).is_err(), "{landed}");
+        }
+        for seen in [
+            "https://agents.example/p",
+            "pr:1 run:42",
+            "seen live by the human",
+        ] {
+            assert!(check_epic_proof(epic, seen).is_ok(), "{seen}");
+        }
+        // Every other row keeps closing on its PR.
+        assert!(check_epic_proof("- [ ] fix(ui): a bug", "pr:1").is_ok());
     }
 
     // A sheet with a roadmap: the open version plus rows aimed at two later ones.
