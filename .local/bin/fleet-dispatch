@@ -1666,13 +1666,17 @@ held_by() {
 
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
+# It classifies the item's title (else its first line) and weight, never the whole task: the body
+# carries the same dispatch boilerplate on every item, and its words would pick the lane.
 # Every start of an item comes through cmd_start (a pass, a hand start, a plan phase, an after: chain),
 # so this is the one place an item's model is picked.
 lane_pick() {
-  local it
+  local it weight
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
-  model-lane classify "$(jq -r .task <<<"$it")" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null |
+  weight=$(jq -r '.weight // "" | select(. == "light" or . == "heavy")' <<<"$it")
+  model-lane classify "$(jq -r '(.title // "" | select(. != "")) // (.task | split("\n")[0])' <<<"$it")" \
+    --floor "$DISPATCH_LANE_FLOOR" ${weight:+--weight "$weight"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }
 
