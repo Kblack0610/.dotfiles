@@ -38,11 +38,11 @@ at() {
 
 @test "an unknown verb says so and leaves the client attached" {
   at hub daily 0
-  run "$TMX" back
+  run "$TMX" nosuchverb
   assert_success
   assert_called "display-message"
   assert_not_called "detach-client"
-  assert_not_called "land back"
+  assert_not_called "land nosuchverb"
 }
 
 @test "an unknown world outside tmux fails instead of booting a server" {
@@ -153,8 +153,71 @@ bound_command() {
   done
 }
 
-@test "Prefix+L is tmux's stock last-session: .tmux.conf leaves it alone" {
-  # Asked 2026-11-06: the custom back key and its code are gone, L is stock.
-  run grep -nE '^[[:space:]]*bind(-key)?[[:space:]]+L[[:space:]]' "$REPO_ROOT/.tmux.conf"
-  assert_failure
+# ── Prefix+L: the last session, across a world hop too ───────────────────────
+#
+# Asked 2026-11-06: after Prefix i or N, L did not go back. Both hopped by detach plus a fresh
+# attach even within one server, and a fresh client has no last session for tmux to use.
+
+@test "a hop within one server switches the client instead of re-attaching it" {
+  at hub notes 1
+  run "$TMX" goto hub daily
+  assert_success
+  assert_called "switch-client -t =daily"
+  assert_not_called "detach-client"
+  assert_not_called "attach"
+}
+
+@test "root on the server you are on switches to the landing page" {
+  at hub notes 1
+  run "$TMX" root hub
+  assert_success
+  assert_called "switch-client -t =daily"
+  assert_not_called "detach-client"
+}
+
+@test "back returns across the last hop this terminal made" {
+  export STUB_CLIENT_TTY=/dev/pts/3
+  at lab work 4
+  run "$TMX" goto hub notes
+  assert_success
+  assert_called "land hub notes"
+  printf 'work\nprojects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  at hub notes 0
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$TMX" back
+  assert_success
+  assert_called "detach-client -E"
+  assert_called "land lab work"
+}
+
+@test "another terminal's hop is not this terminal's way back" {
+  export STUB_CLIENT_TTY=/dev/pts/3
+  at lab work 4
+  run "$TMX" goto hub notes
+  export STUB_CLIENT_TTY=/dev/pts/4
+  at hub notes 0
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$TMX" back
+  assert_success
+  assert_called "display-message"
+  assert_not_called "detach-client"
+}
+
+@test "back to a session that has gone says so instead of hopping" {
+  export STUB_CLIENT_TTY=/dev/pts/3
+  at lab work 4
+  run "$TMX" goto hub notes
+  printf 'projects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  at hub notes 0
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$TMX" back
+  assert_success
+  assert_called "display-message"
+  assert_not_called "detach-client"
+}
+
+@test "Prefix+L is stock switch-client -l, and tmx back only when the client has no last session" {
+  run grep -E '^bind (-N "[^"]*" )?L ' "$REPO_ROOT/.tmux.conf"
+  assert_success
+  assert_output --partial 'if -F "#{client_last_session}" "switch-client -l" "run-shell '"'"'tmx back'"'"'"'
 }
