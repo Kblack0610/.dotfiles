@@ -37,7 +37,7 @@ HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0
+DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0; STOPPED=0
 declare -A NO_BOARD=()
 
 say() { printf 'ask-sweep: %s\n' "$*" >&2; }
@@ -168,7 +168,7 @@ $prs"
   rm -rf -- "$wd"
   case "$rc" in
     0) ;;
-    75) say "$board: stopped at its budget"; proof_why "$board: stopped at its budget"; return 1 ;;
+    75) STOPPED=1; say "$board: stopped at its budget"; proof_why "$board: stopped at its budget"; return 1 ;;
     *) FAULT=1; say "$board: model call failed (exit $rc)"; proof_why "$board: model call failed (exit $rc)"; return 1 ;;
   esac
   grep -qx 'ASK-SWEEP-START' <<<"$out" || { FAULT=1; say "$board: model returned no answer block"; proof_why "$board: the model returned no answer block"; return 1; }
@@ -239,6 +239,8 @@ cmd_run() {
   # A budget stop alone is the cap holding, not a fault; the watermarks resume it next run.
   [ "$rc" != 0 ] && verdict=BLOCKED
   [ "$FAULT" = 1 ] && verdict=FAILED
+  # "budget: " is what agentctl-briefing reads on the last outcome line.
+  [ "$verdict" = BLOCKED ] && [ "$STOPPED" = 1 ] && { rc=75; summary="budget: $summary"; }
   proof_report "$NAME" "$verdict" "$summary"
   return "$rc"
 }
