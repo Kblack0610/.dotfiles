@@ -76,3 +76,32 @@ EOF
   assert_failure
 }
 
+
+# The input travels on stdin end to end: an argument is capped at 128 KiB by the kernel
+# (E2BIG), and inbox-triage's prompt, every open row of a project, outgrew it on 2026-11-05.
+stub_claude_io() {
+  cat > "$SANDBOX/bin/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$SANDBOX/claude-argv.txt"
+cat > "$SANDBOX/claude-stdin.txt"
+EOF
+  chmod +x "$SANDBOX/bin/claude"
+}
+
+@test "a print call's input reaches claude on stdin, not as an argument" {
+  stub_claude_io
+  run "$RUN" --role fixture -p "the input"
+  assert_success
+  assert_equal "$(cat "$SANDBOX/claude-stdin.txt")" "the input"
+  run grep -qx 'the input' "$SANDBOX/claude-argv.txt"
+  assert_failure
+}
+
+@test "-p with no value reads the input from stdin, past the 128 KiB argument cap" {
+  stub_claude_io
+  run bash -c "head -c 200000 /dev/zero | tr '\\0' x | '$RUN' --role fixture -p --max-turns 3"
+  assert_success
+  assert_equal "$(tr -d '\n' < "$SANDBOX/claude-stdin.txt" | wc -c)" 200000
+  run grep -qx -- '--max-turns' "$SANDBOX/claude-argv.txt"
+  assert_success
+}
