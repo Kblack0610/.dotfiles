@@ -57,13 +57,23 @@ client() { printf '%s %s %s %s\n' "$2" "$1" "$3" "$4" >> "$NOTES_FIXTURE/tmux.cl
 }
 
 @test "goto with no tty hops that terminal in place: no attach here, no new window" {
+  client hub 300 /dev/pts/1 11
+  client lab 100 /dev/pts/5 55
+  run "$TMX" goto lab work < /dev/null
+  assert_success
+  assert_called "tmux -L hub detach-client -t /dev/pts/1 -E $TMX land lab work"
+  assert_not_called 'attach'
+  assert_not_called 'kitty'
+}
+
+@test "goto with no tty to the world that terminal is on switches it, keeping its last session" {
   client hub 100 /dev/pts/1 11
   client lab 300 /dev/pts/5 55
   run "$TMX" goto lab work < /dev/null
   assert_success
-  assert_called "tmux -L lab detach-client -t /dev/pts/5 -E $TMX land lab work"
+  assert_called "tmux -L lab switch-client -c /dev/pts/5 -t =work"
+  assert_not_called 'detach-client'
   assert_not_called 'attach'
-  assert_not_called 'kitty'
 }
 
 @test "with a tty it attaches right here, as a shell in a fresh terminal expects" {
