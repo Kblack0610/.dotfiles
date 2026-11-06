@@ -17,6 +17,8 @@ setup() {
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
+  # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
+  export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -912,6 +914,92 @@ loop_fixture() {
   run "$SUBJECT" kpi
   assert_success
   assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
+}
+
+# chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
+# item (one repo-qualified, one bare); every started agent row has an active item; the one done
+# item's row is closed; the running item has a session; the one agent row in a project with an
+# open epic is filed under it, and that epic still has an open leaf; the doctor passed.
+chain_fixture() {
+  kpi_setup
+  mkdir -p "$FLEET_BENCH_DIR"
+  printf '%s\n' ledger_coverage_min=0.95 untracked_merged_prs_max=0 board_orphan_started_max=0 merged_open_rows_max=0 \
+    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 doctor_fail_max=0 >> "$KPI_THRESHOLDS"
+  ci_row '{repo: "O/R", number: 7, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/other", number: 9, session_id: "h2", merged_epoch: ($t - 172800), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 1, session_id: "h3", merged_epoch: ($t - 864000), ci_red: 0}'
+  export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_PROJECTS_CMD=projects-stub
+  items_stub "$(item run running high board:game:g-1 '{"session":"lab:game-agent-1","pr":"o/r#7"}')"
+  DONE="$SANDBOX/done.jsonl"
+  item fin done high board:game:g-2 '{"pr":"9","merged":"abc123"}' > "$DONE"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
+  BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
+  jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
+                   {project: "game", lane: "human", state: "open", id: "g-0", type: "epic", tags: []},
+                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: []}]}' > "$BJSON"
+  jq -cn '[{name: "game", epics: [{id: "g-0", open: 1, done: 2}]}, {name: "tools", epics: []}]' > "$PJSON"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$BJSON" > "$SANDBOX/bin/board-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$PJSON" > "$SANDBOX/bin/projects-stub"
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/board-stub" "$SANDBOX/bin/projects-stub"
+  printf 'PASS  map is valid JSON\nWARN  one stale anchor\n' > "$BENCH_DOCTOR_LAST"
+}
+
+@test "chain: a clean work chain has every link at its bound, and --check passes" {
+  chain_fixture
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
+  run "$SUBJECT" chain --json
+  assert_success
+  run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"]}'
+  # the done items are read back a day past the window, so an item done before its PR merged counts
+  run sort -u "$DONE.calls"
+  assert_output '--since 2026-10-19'
+}
+
+@test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
+  chain_fixture
+  cp "$SANDBOX/items.jsonl" "$SANDBOX/items.ok"; cp "$DONE" "$DONE.ok"; cp "$BJSON" "$BJSON.ok"; cp "$PJSON" "$PJSON.ok"
+  restore() { cp "$SANDBOX/items.ok" "$SANDBOX/items.jsonl"; cp "$DONE.ok" "$DONE"; cp "$BJSON.ok" "$BJSON"; cp "$PJSON.ok" "$PJSON"
+              printf 'PASS  map is valid JSON\n' > "$BENCH_DOCTOR_LAST"; }
+  check() { run "$SUBJECT" chain --check; assert_failure 1; assert_output "$1"; restore; }
+  # a merged PR no item names: coverage drops and it counts as untracked
+  ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
+  check "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
+  sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # a started row no active item names
+  jq -c '.rows += [{project: "game", lane: "agent", state: "doing", id: "g-5", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  check 'board_orphan_started 1 (max 0)'
+  # a merged item whose row is still open
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-2", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  check 'merged_open_rows 1 (max 0)'
+  # a running item no session owns
+  item lost running high human '{"pr":"o/r#7"}' >> "$SANDBOX/items.jsonl"
+  check 'ownerless_running 1 (max 0)'
+  # an agent row in a project with an open epic, filed under no epic
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-6", type: "fix", tags: []},
+                   {project: "game", lane: "agent", state: "open", id: "g-7", type: "fix", tags: []}]' "$BJSON.ok" > "$BJSON"
+  check 'epic_linked_share 0.333 (min 0.5)'
+  # an open epic whose every leaf is done, waiting on proof of its outcome
+  jq -c '.[0].epics[0].open = 0' "$PJSON.ok" > "$PJSON"
+  check 'landed_unverified 1 (max 0)'
+  # the doctor failed a check
+  printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
+  check 'doctor_fail 1 (max 0)'
+}
+
+@test "chain: an unreadable source reads ? and never trips a bound; the KPIs ride the kpi table and its gauges" {
+  chain_fixture
+  export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/none"
+  run "$SUBJECT" chain --check
+  assert_success
+  run "$SUBJECT" kpi
+  assert_line '| board_orphan_started (now) | - | - | max 0 | - |'
+  assert_line '| ownerless_running (now) | 0 | - | max 0 | ok |'
+  assert_line '| ledger_coverage (now) | 1 | - | min 0.95 | ok |'
+  run "$SUBJECT" ledger
+  assert_line 'doctor_fail=?'
 }
 
 @test "retro adds exactly one row per KPI past its threshold, #high when more than 2x past" {

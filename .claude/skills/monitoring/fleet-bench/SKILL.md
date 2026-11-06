@@ -46,6 +46,7 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 - `ledger [--json|--check]`: the consolidation ledger. It counts runner confs (`runners`, `runners_on` without `ENABLED=no`), generated `agentctl-*.timer` files, files with a direct headless `claude -p|--print` outside agentctl-run (`launches_direct`, gitignored build output skipped), distinct `last-outcome` verdicts, pending asks and those older than `ASK_STALE_DAYS` (14), and open agent-board rows. `--check` prints each of `runners`, `timers` and `launches_direct` that is over `~/.config/agentctl/ledger-baseline` and exits 1 (2 with no baseline). To add a runner, timer or launch, retire one or raise the baseline in the same PR with a why. The scorecard carries the counts and the check under "Consolidation ledger". `--launches DIR...` prints the scan's matches; `runner_contract.bats` uses it.
 
 - `kpi [--json] [--at T | --trend DAYS]`: the KPI table over the last 7 and 28 days (`| KPI | 7d | 28d | threshold | status |`), or one JSON object keyed by KPI; the scorecard carries it under "KPIs", right after the headline. `--at T` evaluates both windows as of a past time (the comms and counted-now KPIs read null, since nothing records them as of then). `--trend N` prints one row a day of the 7d windowed KPIs, oldest first. The outcome rows are the history, so neither keeps a store of its own.
+- `chain [--json|--check]`: the work-chain rows of the KPI table (the `KPI_CHAIN` keys below), counted now; `--check` prints `<kpi> <value> (<bound> <threshold>)` for each one past its threshold and exits 1, which is the probe of the `board-chain` Sentinel watch. A source that cannot be read leaves its KPI `-`, never past.
 - `effect <T | owner/repo#N> [--days N] [--json]`: each windowed KPI over the N days (default 14) up to a change against the N days after it, where a PR is read as its merge time. The verdict per KPI is improved or regressed when it moved more than `BENCH_EFFECT_FLAT` (10%) in the direction that is better for it, flat inside that, and pending until the after window has ended. Many changes land in any window, so a verdict is a lead to look at, never proof that one change did it.
 
 - `retro`: for each KPI whose 7d value is past its threshold, keeps exactly one open row `kpi: <key> past threshold: 7d <v> (28d <v>, max <t>)` on the agent-runtime agent board (`now <v> (max <t>)` for a count taken now): it adds the row (`#high` when more than 2x past, else `#low`) or refreshes its numbers with `ptask edit`, and touches no other row. WORKED when it wrote, NOOP otherwise, and NOOP with no notes call when there is no thresholds file. The briefing runs it on Mondays.
@@ -100,6 +101,14 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `asks_stale` (now) | the ledger's `asks_stale` |
 | `board_open` (now) | the ledger's `board_open` |
 | `loop_dark` (now) | finding episodes of the last 7d still firing that reached class human with no response but a page (`loop`) |
+| `ledger_coverage` (now) | PRs merged in the last `CHAIN_DAYS` (7) in `pr-ci.jsonl` that an active or done item's `pr` names (`owner/repo#N` or a forge URL by repo, a bare `N` by number) / all of them |
+| `untracked_merged_prs` (now) | those same PRs no item names |
+| `board_orphan_started` (now) | started (`[/]`) agent rows in `notes board --json` that no active item's `row` names |
+| `merged_open_rows` (now) | items done in the window with `merged:` whose row is still open |
+| `ownerless_running` (now) | running items with neither `session` nor `sessions` |
+| `epic_linked_share` (now) | open agent rows filed under an epic (`#of/`) / open agent rows, in projects with an open epic (`notes projects --stats --json`) |
+| `landed_unverified` (now) | open epics whose every leaf is done: landed, waiting on proof of the outcome |
+| `doctor_fail` (now) | `FAIL` lines in the last `notes doctor` run (`BENCH_DOCTOR_LAST`) |
 
 Thresholds are data in `KPI_THRESHOLDS` (default `~/.config/agentctl/kpi-thresholds`, private overlay), one `<kpi>_max=` or `<kpi>_min=` line each. A KPI with no line has status `-`; a missing file leaves every status `-` and makes `retro` a NOOP.
 

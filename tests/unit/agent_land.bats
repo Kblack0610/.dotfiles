@@ -96,6 +96,9 @@ EOF
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
 }
 
+# board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
+board_calls() { grep '^notes' "$LOG" | grep -v '^notes ingest record ' || true; }
+
 # item <slug> [from] [lane] [profile] -> a running queue item
 item() {
   mkdir -p "$AGENT_QUEUE_DIR/running"
@@ -434,8 +437,8 @@ EOF
   assert_success
   assert_line --index 6 'item: tidy-loader done with pr:o/r#42'
   assert_line --index 7 'landed #42'
-  run grep -c '^notes' "$LOG"
-  assert_output 0
+  run board_calls
+  assert_output ''
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
@@ -447,7 +450,7 @@ EOF
   run "$LAND" 42 --item menus
   assert_success
   assert_line --index 7 'board: closed "db-12" with pr:42 commit:fedcba987654'
-  run grep '^notes' "$LOG"
+  run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:42 commit:fedcba987654'
 }
 
@@ -483,7 +486,7 @@ EOF
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
   assert_line --index 7 'board: closed "fix crash: on load" with pr:42 commit:fedcba987654'
-  run grep '^notes' "$LOG"
+  run board_calls
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42 commit:fedcba987654'
 }
 
@@ -506,8 +509,10 @@ EOF
   run "$LAND" 42 --item old
   assert_failure 2
   assert_output --partial 'queue item old is done ok, not open'
-  run grep -c 'pr merge\|^notes' "$LOG"
+  run grep -c 'pr merge' "$LOG"
   assert_output 0
+  run board_calls
+  assert_output ''
 }
 
 @test "a re-run after a failed board step finds the item done with this PR and closes the row" {

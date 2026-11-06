@@ -25,6 +25,8 @@
 #   fleet-bench kpi [--json] [--at T | --trend DAYS]
 #                                KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS;
 #                                --at as of a past time, --trend one row a day of the 7d values
+#   fleet-bench chain [--json|--check]
+#                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--json]
 #                                each windowed KPI over N days before a change landed against N after
 #   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold
@@ -58,7 +60,8 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
 
@@ -106,6 +109,10 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
+: "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
+: "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
+: "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
+: "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
@@ -145,6 +152,7 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
+def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
 def run_rows: split("\n") | map(select(. != "") | split("\t")
   | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
@@ -1117,6 +1125,58 @@ ledger_counts() {
   fi
   echo "board_open=$(compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] ')"
   echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
+  chain_counts "$t"
+}
+
+# The work chain, intake -> backlog row -> queue item -> session -> PR -> merge -> closed row, as
+# counts taken now; each is 0 (or 1 for a share) when every link holds. ledger_coverage and
+# untracked_merged_prs: of the PRs merged in the last CHAIN_DAYS (pr-ci.jsonl), how many an item
+# names (owner/repo#N, a forge URL, or a bare N by number). board_orphan_started: started agent rows
+# no active item names. merged_open_rows: done items with merge proof whose row is still open.
+# ownerless_running: running items with no session. epic_linked_share: the agent rows filed under
+# an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
+# is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail"
+
+# chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
+chain_counts() {
+  local t=$1 since active done board projects ci
+  since=$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)
+  active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
+  done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
+  board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
+  projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
+  ci=null; [ -r "$CI" ] && ci=$(jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
+    'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))' "$CI")
+  jq -rn --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
+     --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
+     --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
+    def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
+    def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
+      | ([scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"]
+         + [gsub("[a-z0-9_.-]+/[a-z0-9_.-]+(?:#|/pulls?/)[0-9]+"; " ") | scan("[0-9]+") | "#\(.)"]);
+    def n($v): if $v == null then "?" else $v end;
+    $a[0] as $a | $d[0] as $d | $b[0] as $b | $p[0] as $p | $c[0] as $c
+    | (if $a == null or $d == null or $c == null then null
+       else (($a + $d) | map(prkeys[]) | INDEX(.)) as $refs
+         | {total: ($c | length),
+            hit: ($c | map(select($refs["\(.repo | ascii_downcase)#\(.number)"] or $refs["#\(.number)"])) | length)} end) as $cov
+    | ($b // [] | map(select(.lane == "agent"))) as $agent
+    | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
+    | ($p // [] | map(select((.epics // []) | length > 0) | .name) | INDEX(.)) as $epicked
+    | ($agent | map(select($epicked[.project] and .type != "epic"))) as $linkable
+    | "ledger_coverage=\(n(if $cov == null then null else ratio($cov.hit; $cov.total) end))",
+      "untracked_merged_prs=\(n(if $cov == null then null else $cov.total - $cov.hit end))",
+      "board_orphan_started=\(n(if $a == null or $b == null then null else ($a | map(rowkey | strings) | INDEX(.)) as $live
+        | $agent | map(select(.state == "doing" and ($live["\(.project):\(.id)"] | not))) | length end))",
+      "merged_open_rows=\(n(if $d == null or $b == null then null
+        else $d | map(select(.merged and any(rowkey | strings; $open[.] != null))) | length end))",
+      "ownerless_running=\(n(if $a == null then null
+        else $a | map(select(.state == "running" and (.session // "") == "" and (.sessions // "") == "")) | length end))",
+      "epic_linked_share=\(n(if $b == null or $p == null then null
+        else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
+      "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(.open == 0 and .done > 0)] | length end))"'
+  if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
 }
 
 # ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
@@ -1154,7 +1214,7 @@ cmd_ledger() {
 # counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad asks_stale board_open loop_dark"
+KPI_NOW="runners_bad asks_stale board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
 
 # comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
@@ -1165,8 +1225,7 @@ comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
 # rows and $c the CI rows (slurped). Older lines have no runner field; _runner is where headless
 # runs are filed.
-KPI_DEFS='
-  def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;
+KPI_DEFS="$JQ_LIB"'
   def total(f): map(f // 0) | add // 0;
   def bots: $o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.);
   def win($t; $d): bots as $bot | ($t - $d * 86400) as $since
@@ -1418,6 +1477,22 @@ cmd_kpi() {
   fi
   if [ -n "$at" ]; then t=$(kpi_json "$t" "" 1); else t=$(kpi_json "$t" "$(ledger_counts)"); fi || return 1
   if [ "$json" = 1 ]; then jq -c . <<<"$t"; else kpi_table "$t"; fi
+}
+
+# chain [--json|--check] -- the KPI_CHAIN rows of the KPI table, counted now. --check prints one
+# line per chain KPI past its threshold and exits 1 when any is: the board-chain watch's probe.
+cmd_chain() {
+  local t json
+  case "${1:-}" in ""|--json|--check) ;; *) say "usage: fleet-bench chain [--json|--check]"; return 2 ;; esac
+  t=$(now)
+  json=$(kpi_json "$t" "$(chain_counts "$t")" | jq -c --arg k "$KPI_CHAIN" '($k | split(" ")) as $ks | with_entries(select(.key | IN($ks[])))') || return 1
+  case "${1:-}" in
+    --json) printf '%s\n' "$json" ;;
+    --check) jq -re 'to_entries | map(select(.value.status == "past")
+        | "\(.key) \(.value["7d"]) (\(.value.bound) \(.value.threshold))") | if length == 0 then empty else .[] end' <<<"$json" && return 1
+      return 0 ;;
+    *) kpi_table "$json" ;;
+  esac
 }
 
 # effect <T | owner/repo#N> [--days N] [--json] -- what changed after a change landed: each windowed
@@ -2069,6 +2144,7 @@ main() {
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
+    chain) shift; cmd_chain "$@" ;;
     effect) shift; cmd_effect "$@" ;;
     retro) cmd_retro ;;
     findings) shift; cmd_findings "$@" ;;
@@ -2080,8 +2156,8 @@ main() {
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
-    -h | --help) sed -n '2,53p' "$0" ;;
-    *) sed -n '2,47p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,59p' "$0" ;;
+    *) sed -n '2,57p' "$0" >&2; return 2 ;;
   esac
 }
 
