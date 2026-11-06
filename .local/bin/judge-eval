@@ -55,12 +55,12 @@ prompt_sha() {
   [ -n "$p" ] && [ -r "$p" ] && git hash-object "$(readlink -f "$p")" 2>/dev/null
 }
 
-# score_of <lane>: its conf's SCORE, the truth source judge-eval scores it by (judges.md).
-score_of() { ( . "$CONF_DIR/$1.conf" 2>/dev/null; printf '%s' "${SCORE:-}"); }
-
 # The scored lanes, the registry: every runner conf that names a SCORE.
-AGENTS="$(for a in "$CONF_DIR"/*.conf; do a="$(basename "$a" .conf)"; [ -n "$(score_of "$a")" ] && printf '%s ' "$a"; done)"
-AGENTS="${AGENTS% }"
+# SCORES is {lane: its conf's SCORE, the truth source it is scored by (judges.md)}.
+SCORES="$(for c in "$CONF_DIR"/*.conf; do s="$( . "$c" 2>/dev/null; printf '%s' "${SCORE:-}")"
+  [ -n "$s" ] && printf '%s\t%s\n' "$(basename "$c" .conf)" "$s"; done |
+  jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}')"
+AGENTS="$(jq -r 'keys | join(" ")' <<<"$SCORES")"
 
 # in_session_picks: {ask id: option} for each answer typed in a session as free text that names
 # exactly one of the ask's options (agent-ask's named_option); the rest stay unscorable.
@@ -75,7 +75,7 @@ in_session_picks() {
 
 # eval_json <agents> <any-prompt 0|1> <days or empty> -> the whole report as one JSON object
 eval_json() {
-  local want="$1" any="$2" days="$3" shas="{}" src="{}" a sha tmp rc=0
+  local want="$1" any="$2" days="$3" shas="{}" src a sha tmp rc=0
   tmp="$(mktemp -d)" || return 1
   judge_ask_docs "$ASKS_ROOT" | jq -sc 'map(select((.judge // "") != ""))' > "$tmp/asks"
   zcat -f -- "$AGENTCTL_CALLS"* 2>/dev/null | jq -sc --arg a "$AGENTS" \
@@ -88,10 +88,10 @@ eval_json() {
   for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
   in_session_picks "$(cat "$tmp/asklines")" > "$tmp/picks"
+  src="$(jq -c --arg a "$AGENTS" '. as $m | $a | split(" ") | map({(.): ($m[.] // "")}) | add // {}' <<<"$SCORES")"
   for a in $AGENTS; do
     sha="$(prompt_sha "$a")"
     shas="$(jq -c --arg a "$a" --arg s "${sha:-}" '. + {($a): $s}' <<<"$shas")"
-    src="$(jq -c --arg a "$a" --arg s "$(score_of "$a")" '. + {($a): $s}' <<<"$src")"
   done
   jq -n --slurpfile A "$tmp/asks" --slurpfile C "$tmp/calls" --slurpfile V "$tmp/verdicts" \
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
@@ -118,6 +118,7 @@ JQ_EVAL='
     ($k / $n) as $p | 3.8416 as $z2 | (1 + $z2 / $n) as $d
     | (($p + $z2 / (2 * $n)) / $d) as $c | (((($p * (1 - $p) / $n) + $z2 / (4 * $n * $n)) | sqrt) * 1.96 / $d) as $h
     | [(($c - $h) * 1000 | round) / 10 | if . <= 0 then 0 else . end, (($c + $h) * 1000 | round) / 10 | if . > 100 then 100 else . end] end;
+  def bykey(f): group_by(f) | map({((.[0] | f)): .}) | add // {};
   def kappa: (.tp + .fp + .fn + .tn) as $n | if $n == 0 then null else
     ((.tp + .tn) / $n) as $po | (((.tp + .fp) * (.tp + .fn) + (.fn + .tn) * (.fp + .tn)) / ($n * $n)) as $pe
     | if $pe >= 1 then null else ((($po - $pe) / (1 - $pe)) * 100 | round) / 100 end end;
@@ -161,17 +162,17 @@ JQ_EVAL='
       | map({key: (.from | ltrimstr("board:")), value: (.state + "/" + (.status // ""))}) | from_entries) as $item
    # Every start of a queue item, keyed by its board row; run is fleet-dispatch, resume a restore.
    | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), origin})) as $starts
-   | ($starts | group_by(.key) | map({(.[0].key): .}) | add // {}) as $startsby
+   | ($starts | bykey(.key)) as $startsby | ($starts | bykey(.key | split(":") | last)) as $startsbyid
    # The ingest record, each event with its epoch. The planner writes in the minute up to its
    # `planned` record on the row, and those writes touch nothing.
    | ($ingest | map(. + {e: (.ts | epoch)}) | map(select(.e != null))) as $ev
-   | ($ev | map(select(.action == "planned")) | group_by(.id) | map({(.[0].id): map(.e)}) | add // {}) as $plans
-   | def planner($id; $e): any(($plans[$id] // [])[]; (. - 60) <= $e and $e <= .);
+   | ($ev | map(select(.action == "planned")) | bykey(.id)) as $plans
+   | def planner($id; $e): any(($plans[$id] // [])[].e; (. - 60) <= $e and $e <= .);
    # Split rows, by the row they were split from (#of/<id> on an added or re-tagged row).
    ($ev | map(select(.action == "added" or .action == "tagged")
         | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
-      | group_by(.p) | map({(.[0].p): .}) | add // {}) as $kids
-   | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | group_by(.id) | map({(.[0].id): .}) | add // {}) as $touch
+      | bykey(.p)) as $kids
+   | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
    # Triage: each row the triager filed (no session or queue item behind the write), right when
    # nothing edits, drops, moves or re-tags it for the settle window.
    | [$ev[] | select(.action == "filed" and ((.by // "human") | . == "" or . == "human")) | . as $f
@@ -183,10 +184,10 @@ JQ_EVAL='
          outcome: (if $t != null then "fp" elif ($now - $f.e) >= $settle then "tp" else "pending" end)}] as $triagerows
    # Plan: each row the planner planned, right when it (or a row split from it in the same run)
    # starts before any re-split: a later plan, or a row split from it by someone else.
-   | [$ev | map(select(.action == "planned")) | group_by(.id)[] | min_by(.e) as $p
+   | [$plans[] | min_by(.e) as $p
       | ([$p.id] + [($kids[$p.id] // [])[] | select(planner($p.id; .e)) | .id]) as $ids
-      | ([$starts[] | select(.e != null and .e >= $p.e and (.key | split(":") | last | IN($ids[]))) | .e] | min) as $go
-      | ([($plans[$p.id] // [])[] | select(. > $p.e)] + [($kids[$p.id] // [])[] | select(planner($p.id; .e) | not) | .e] | min) as $resplit
+      | ([$ids[] as $i | ($startsbyid[$i] // [])[] | select(.e != null and .e >= $p.e) | .e] | min) as $go
+      | ([($plans[$p.id] // [])[].e | select(. > $p.e)] + [($kids[$p.id] // [])[] | select(planner($p.id; .e) | not) | .e] | min) as $resplit
       | ($resplit != null and ($go == null or $resplit < $go)) as $wrong
       | {agent: $by["plan-dispatched"], id: $p.id, project: ($p.from // ""), question: ($p.text // ""), rule: "",
          kind: "answer", want: "started whole", human: (if $wrong then "re-split" elif $go != null then "started" else "" end),
