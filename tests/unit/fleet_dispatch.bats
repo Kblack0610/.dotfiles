@@ -29,6 +29,9 @@ setup() {
   stub fleet-shepherd 'exit 1'
   stub claude-acct 'exit 0'   # main account; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
+  # Spilling to Lazer is off but in its own tests (spill_ready): an account test means the accounts.
+  export DISPATCH_SPILL_MAX_LIVE=0
+  stub lazer-spend 'exit 1'
   stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   stub judge-stub 'echo "judge called" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
   # The real agent-queue, copied (never linked: a test that restubs it must not write through).
@@ -2370,6 +2373,16 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   cmd_start --item r >/dev/null || fail "start r"
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_output --partial '/one-shot --pr-only fix r'
+  assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
+}
+
+@test "red: a plain item's brief does not name fix-red" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug p --tags 'night' "fix p"
+  cmd_start --item p >/dev/null || fail "start p"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  refute_output --partial 'fix-red'
 }
 
 @test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
@@ -3319,11 +3332,11 @@ harness_ready() {
   harness_ready 150
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
   assert_failure
-  assert_output --partial 'the eval key is spent'
+  assert_output --partial 'the opencode key is spent'
   stub curl 'exit 22'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
   assert_failure
-  assert_output --partial "cannot read the eval key's budget"
+  assert_output --partial "cannot read the opencode key's budget"
   assert_not_called 'wt new'
 }
 
@@ -3336,7 +3349,7 @@ harness_ready() {
   assert_output --partial '--resume is for claude'
 }
 
-@test "a pass never starts a gateway item: it goes on to the claude item behind it" {
+@test "a pass never starts an eval item (agent: opencode): it goes on to the claude item behind it" {
   harness_ready
   agent-queue add --project game --slug gw-first --agent opencode --priority urgent "Eval" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -3358,4 +3371,118 @@ harness_ready() {
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lazer.md 2>/dev/null)" ] || fail "a claude-lazer item whose claude exited stayed active"
   [ -n "$(qitem running oc)" ] || fail "an opencode run was settled while its session lives"
+}
+
+# --- spill to Lazer: a run pass past every account's cap ------------------------------------
+
+# Every account past its pace, spilling on (cap 2, line 80%), lazer-reserve on its own key, the
+# Lazer pool $1 of $250 spent (default 100, 40%), the key $2 of $100 (default 1), and model-lane
+# putting every task on Sonnet.
+spill_ready() {
+  harness_ready
+  printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
+  jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
+    "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; alt is the closest, 4 points over its weekly pace" >&2; exit 1'
+  stub lazer-spend "echo '{\"spend\":${1:-100},\"max_budget\":250}'"
+  stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${2:-1},\"max_budget\":100}}'"
+  sonnet_lane
+  export DISPATCH_SPILL_MAX_LIVE=2 DISPATCH_SPILL_POOL_PCT=80
+}
+sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; case "$1" in log) echo run-9 ;; classify) echo "{\"lane\":\"${LANE:-sonnet}\",\"by\":\"rule\",\"model\":\"${LANE:-sonnet}\",\"dispatch_model\":\"${LANE:-sonnet}\"}" ;; esac'; }
+
+@test "past every account's cap a pass spills a Sonnet-lane item to Lazer on the claude-reserve key" {
+  spill_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu on Lazer (lazer-reserve, sonnet), spilled: no account has room; alt is the closest'
+  assert_equal "$(outcome)" WORKED
+  assert_called 'claude-lazer --model sonnet --permission-mode bypassPermissions'
+  assert_called 'reserve.key'
+  assert_not_called 'eval.key'
+  grep -q 'Bearer sk-reserve' "$NOTES_FIXTURE/curl.stdin" || fail "the budget check read another key"
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet --harness lazer-reserve'
+  # the verdict that let it spill is the one logged: model-lane is asked once, not again by cmd_start
+  [ "$(grep -c '^model-lane classify' "$NOTES_FIXTURE/calls.log")" -eq 1 ]
+  assert_not_called '--lane eval'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" origin) $(qfield "$f" model)" 'lazer-reserve gateway run sonnet'
+}
+
+@test "spill refuses an Opus-lane item and says so, and a later pass does not ask model-lane again that day" {
+  spill_ready
+  export LANE=opus
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item may spill to Lazer: fix-menu (model-lane puts it on opus)'
+  assert_equal "$(outcome)" BLOCKED
+  assert_not_called 'wt new'
+  rm -f "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fix-menu (model-lane puts it on opus)'
+  assert_not_called 'model-lane classify'
+  [ -n "$(qitem queued fix-menu)" ] || fail "an Opus item left the queue"
+}
+
+@test "spill skips an item past the tier ceiling and goes on to the Sonnet item behind it" {
+  spill_ready
+  agent-queue add --project game --slug ci-first --priority urgent "ci: the runner retries a dead batch" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queue item ci-first may not spill to Lazer: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item spilled"
+  [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not spill"
+}
+
+@test "spill holds when the pool is at its line, the key is spent, or the gateway cannot answer" {
+  spill_ready 200
+  refuses 'no account has room; alt is the closest, 4 points over its weekly pace (spill to Lazer shut: the Lazer pool is at 80%, the line is DISPATCH_SPILL_POOL_PCT=80%)'
+  assert_equal "$(outcome)" BLOCKED
+  stub lazer-spend "echo '{\"spend\":100,\"max_budget\":250}'"
+  stub curl "cat > /dev/null; echo '{\"info\":{\"spend\":100,\"max_budget\":100}}'"
+  refuses 'spill to Lazer shut: the lazer-reserve key is spent ($0 left)'
+  stub lazer-spend 'exit 1'
+  refuses "spill to Lazer shut: the Lazer pool's spend is unreadable"
+  # a map with no lazer-reserve key_file never falls back to the gateway's (eval) key
+  jq 'del(.harnesses["lazer-reserve"].key_file)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  : > "$NOTES_FIXTURE/calls.log"
+  refuses "spill to Lazer unset: $DISPATCH_HARNESSES has no lazer-reserve with its own key_file"
+  run cat "$NOTES_FIXTURE/calls.log"
+  refute_output --partial 'curl'
+}
+
+@test "spill never lifts another gate: load holds it" {
+  spill_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  refuses 'over the'
+  assert_not_called 'claude-lazer'
+}
+
+@test "spill stops at DISPATCH_SPILL_MAX_LIVE, counting this pass's own, and 0 turns it off" {
+  spill_ready
+  agent-queue add --project game --slug fix-next --priority high "Fix the next menu" >/dev/null
+  export DISPATCH_PER_PASS=3 DISPATCH_SPILL_MAX_LIVE=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu on Lazer'
+  assert_output --partial 'full: 1 of DISPATCH_SPILL_MAX_LIVE=1 spill sessions live), the pass stops after 1 started'
+  [ -n "$(qitem queued fix-next)" ] || fail "a spill went past the cap"
+  # a live spill from an earlier pass counts the same
+  rm -f "$NOTES_FIXTURE/calls.log"
+  refuses 'full: 1 of DISPATCH_SPILL_MAX_LIVE=1 spill sessions live'
+  # off: the account stop reads as it did before spilling
+  export DISPATCH_SPILL_MAX_LIVE=0
+  refuses 'no account has room; alt is the closest, 4 points over its weekly pace, queue item fix-next waits'
+  refute_output --partial 'spill'
+}
+
+@test "reap settles a lazer-reserve item whose claude exited: its launcher is claude-lazer" {
+  spill_ready
+  started_item spilled lab:game-agent-1
+  sed -i 's/^agent: claude/agent: lazer-reserve/' "$AGENT_QUEUE_DIR"/running/*-spilled.md
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
+  stub agent-ask 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-spilled.md 2>/dev/null)" ] || fail "a spilled item whose claude exited stayed active"
 }

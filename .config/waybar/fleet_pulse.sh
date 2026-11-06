@@ -14,7 +14,7 @@
 # render green while half the fleet was never heard from. The roster is the
 # independent list of who SHOULD be reporting; absent from the API means amber.
 #
-#   green  = every roster host fresh + success
+#   green  = every roster host fresh + success: no chip (empty text), custom/health says it
 #   amber  = >=1 host never-reported/stale/failing (but API reachable)
 #   red    = statuses API unreachable
 #
@@ -255,6 +255,10 @@ for tok in $FLEET_DISPLAY; do
     fi
     [[ "$st" == up ]] || text="${text} ${lbl}$(dot "$st")"
 done
+# A fleet with nothing to say is no chip at all: custom/health already carries "all is well",
+# so the pulse appears beside it only when a host is not up or a token is a ghost. Empty text
+# is what hide-empty-text drops; the class and tooltip still go out for anything reading them.
+[[ "$cls" == healthy && "$text" == "$(printf "<span color='%s'>%s</span>" "$C_GRN" "$ICON")" ]] && text=""
 
 # --- tooltip: full fleet, grouped by gatus group -----------------------------
 tooltip="Fleet pulse:"
