@@ -10,11 +10,37 @@
 # over either, the run does not call, says why, reports BLOCKED and exits 75 (EX_TEMPFAIL).
 # Only a named call (--agent, or AGENTCTL_NAME from the unit) is budgeted; a person running
 # agentctl-run by hand is not an automated lane.
+#
+# A cap is a checkpoint, not a wall: development comes first. The first stop of the day pages
+# once, naming the raise (`agentctl budget <name> raise <usd>`), which lifts today's day cap and
+# hour cap without a conf edit. The raise is in the name's state dir and expires at midnight.
 
 BUDGET_DEFAULT_CALL_USD=2
 BUDGET_DEFAULT_DAY_USD=10
 BUDGET_DEFAULT_CALLS_HOUR=20
 EX_BUDGET=75
+
+# shellcheck source=../../../lib/agent-proof.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"
+budget_state() { printf '%s/%s' "$(proof_state_dir)" "$1"; }
+
+# budget_raise <name> -> "<dollars> <calls>" raised for today, "0 0" when none
+budget_raise() {
+  local d usd calls
+  if read -r d usd calls 2>/dev/null < "$(budget_state "$1")/budget-raise" && [ "$d" = "$(date +%F)" ]; then
+    printf '%s %s\n' "${usd:-0}" "${calls:-0}"
+  else
+    echo "0 0"
+  fi
+}
+
+# budget_caps <name> -> "<day cap> <hour cap>": the conf's (or the default), plus today's raise
+budget_caps() {
+  local usd calls
+  read -r usd calls < <(budget_raise "$1")
+  awk -v d="${BUDGET_DAY_USD:-$BUDGET_DEFAULT_DAY_USD}" -v r="$usd" \
+      -v h="${MAX_CALLS_HOUR:-$BUDGET_DEFAULT_CALLS_HOUR}" -v c="$calls" 'BEGIN { print d + r, h + c }'
+}
 
 # budget_spent <name> -> "<dollars today> <calls in the last hour>" from calls.jsonl. `at` is
 # local ISO time, so a string compare against a local cutoff orders it.
@@ -27,11 +53,17 @@ budget_spent() {
     | "\(.[0] * 100 | round / 100) \(.[1])"' "$AGENTCTL_CALLS"
 }
 
-# budget_stop <name> <why>: the call is not made, and the runner's state says so
+# budget_stop <name> <why>: the call is not made, the runner's state says so, and the first
+# stop of the day pages with the raise. The detail starts "budget:", which the briefing reads.
 budget_stop() {
-  echo "agentctl-run: $1 $2; not calling" >&2
-  # shellcheck source=/dev/null
-  if . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null; then proof_report "$1" BLOCKED "$2" || true; fi
+  local raise="agentctl budget $1 raise <usd>" seen
+  echo "agentctl-run: $1 $2; not calling. To go on today: $raise" >&2
+  proof_report "$1" BLOCKED "budget: $2" || true
+  seen="$(budget_state "$1")/budget-paged"
+  if [ "$(cat "$seen" 2>/dev/null)" != "$(date +%F)" ] && command -v agent-notify >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$seen")" && date +%F > "$seen"
+    agent-notify -t "$1 stopped at its budget" "$1 $2. To go on today: $raise" >/dev/null 2>&1 || true
+  fi
   exit "$EX_BUDGET"
 }
 
@@ -40,8 +72,7 @@ budget_check() {
   local name usd hour day cap
   name="$(calls_name)"
   [ -n "$name" ] || return 0
-  day="${BUDGET_DAY_USD:-$BUDGET_DEFAULT_DAY_USD}"
-  cap="${MAX_CALLS_HOUR:-$BUDGET_DEFAULT_CALLS_HOUR}"
+  read -r day cap < <(budget_caps "$name")
   read -r usd hour < <(budget_spent "$name")
   if awk -v u="$usd" -v d="$day" 'BEGIN { exit !(u >= d) }'; then
     budget_stop "$name" "over its daily budget: \$$usd of \$$day (BUDGET_DAY_USD)"
@@ -61,8 +92,7 @@ budget_call_usd() {
 budget_explain() {
   local name; name="$(calls_name)"
   if [ -z "$name" ]; then printf 'budget:      none (a hand run)\n'; return 0; fi
-  local usd hour; read -r usd hour < <(budget_spent "$name")
+  local usd hour day cap; read -r usd hour < <(budget_spent "$name"); read -r day cap < <(budget_caps "$name")
   printf 'budget:      %s: $%s a call, $%s of $%s today, %s of %s calls this hour\n' "$name" \
-    "$(budget_call_usd)" "$usd" "${BUDGET_DAY_USD:-$BUDGET_DEFAULT_DAY_USD}" \
-    "$hour" "${MAX_CALLS_HOUR:-$BUDGET_DEFAULT_CALLS_HOUR}"
+    "$(budget_call_usd)" "$usd" "$day" "$hour" "$cap"
 }
