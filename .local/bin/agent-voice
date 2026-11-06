@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# agent-voice - say something into a Claude session: a gungan take is typed into a live
+# session's pane, or starts a new one. Super+Ctrl+R runs it. Usage: .config/hypr/docs/voice.md.
+#
+#   agent-voice                  the hotkey: first press starts a take, second opens the picker
+#   agent-voice pick <file>      fzf over the targets for the transcript in FILE; Enter sends
+#   agent-voice targets          the picker's rows, `<target><TAB><label>`, the likeliest first
+#   agent-voice send --to <target> [text...]   text from args, else stdin; TARGET is
+#       tmux:<server>/<session>:<window> (a page's ref), pane:<server>/<pane>, or new:<project>
+#
+# Typing goes only through `agent-panel send`, behind the one-pane guard in
+# .local/lib/agent-pane.sh: a dead target, a session in a dialog, or two panes for one target
+# type nothing (exit 2). Exit 3: the text sits in the pane's input box, unsent.
+set -euo pipefail
+
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+TAKES="${XDG_RUNTIME_DIR:-/tmp}/agent-voice"
+# How many recent pages are searched for a tmux: ref; older than that, no session is "paged".
+REF_PAGES=50
+
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$SELF")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../lib/agent-pane.sh
+. "${AGENT_PANE_LIB:-$(dirname "$SELF")/../lib/agent-pane.sh}"
+
+die() { echo "agent-voice: $*" >&2; exit 1; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+
+# toast <title> <body>: the picker's window is gone by the time a send ends, so the outcome is a
+# popup. gungan's stack tag, so it replaces gungan's own "transcribed" card instead of piling up.
+toast() {
+  notify-send -t 5000 -h string:x-dunst-stack-tag:gungan "$1" "$2" 2>/dev/null || true
+}
+
+cmd_take() {
+  local text f
+  mkdir -p "$TAKES"
+  # stderr to a file: on the starting press the recorder keeps it open for the whole take.
+  text="$(gungan --print record 2>"$TAKES/gungan.log")" ||
+    { toast "Voice: gungan failed" "$(tail -n 1 "$TAKES/gungan.log")"; exit 1; }
+  [ -n "$text" ] || exit 0   # the take just started, or nothing was heard
+  f="$(mktemp "$TAKES/take.XXXXXX")"
+  printf '%s\n' "$text" > "$f"
+  exec kitty --class floating-term -e "$SELF" pick "$f"
+}
+
+cmd_targets() {
+  local rows ref map
+  rows="$(agent-panel list --json 2>/dev/null)" || rows=''
+  ref="$(agent-notify list -n "$REF_PAGES" 2>/dev/null |
+    awk -F'\t' '$5 ~ /^tmux:/ { r = substr($5, 6) } END { print r }')" || ref=''
+  # A session in a dialog is left out: a line typed there would answer the dialog.
+  jq -rs --arg ref "$ref" '
+    def rank: if .target == $ref then 0 elif .status == "busy" then 2 else 1 end;
+    def flat: gsub("[\t\n]+"; " ");
+    map(select(.status != "waiting")) | sort_by(rank, -(.idle_since // 0))[]
+    | "pane:\(.pane)\t\(if rank == 0 then "paged  " else "" end)\(.target)  \(.status)  \(.project // "")  \((.doing // "") | flat | .[0:60])"
+  ' <<<"$rows"
+  map="$(project_map_file)"
+  [ -f "$map" ] || return 0
+  # The projects with a checkout (the `paths` half of project_keys): a new session needs a repo.
+  jq -r '[.paths[]] | unique[] | "new:\(.)\tnew session in \(.)"' "$map"
+}
+
+cmd_send() {
+  local to='' text key rows out slug rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) to=${2:-}; shift 2 ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$to" ] || die "send: --to <target> (see --help)"
+  if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
+  [ -n "${text//[[:space:]]/}" ] || die "send: no text"
+
+  case "$to" in
+    new:?*)
+      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human)" ||
+        die "send: agent-queue add failed for ${to#new:}"
+      read -r _ slug _ <<<"$out"
+      fleet-dispatch start --item "$slug" ||
+        die "send: queued $slug, but it could not start now; the next dispatch pass starts it"
+      return 0 ;;
+    tmux:?*) key=target ;;
+    pane:?*) key=pane ;;
+    *) die "send: unknown target '$to' (tmux:, pane: or new:)" ;;
+  esac
+  rows="$(agent-panel list --json 2>/dev/null | jq -c --arg k "$key" --arg v "${to#*:}" 'select(.[$k] == $v)')" || rows=''
+  pane_one "${to#*:}" "$rows" || exit 2
+  agent-panel send --pane "$PANE" "$text" || rc=$?
+  case "$rc" in
+    0) echo "sent to $PANE" ;;
+    3) echo "agent-voice: the text is in $PANE's input box; press Enter there" >&2; exit 3 ;;
+    *) die "send: agent-panel send failed ($rc)" ;;
+  esac
+}
+
+cmd_pick() {
+  local f=${1:-} text target out rc=0
+  [ -f "$f" ] || die "pick: no take file: $f"
+  text="$(<"$f")"; rm -f "$f"
+  target="$(cmd_targets | fzf --delimiter '\t' --with-nth 2 --no-sort --header-first \
+    --header "$(fold -s -w 100 <<<"$text")" --prompt 'say it to > ' | cut -f1)" || target=''
+  if [ -z "$target" ]; then
+    toast "Voice: not sent" "The text is on the clipboard."
+    return 0
+  fi
+  out="$(cmd_send --to "$target" "$text" 2>&1)" || rc=$?
+  case "$rc" in
+    0) toast "Voice: sent" "$out" ;;
+    3) toast "Voice: not submitted" "$out" ;;
+    *) toast "Voice: not sent" "$out" ;;
+  esac
+  return "$rc"
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    '') cmd_take ;;
+    pick) cmd_pick "$@" ;;
+    targets) cmd_targets ;;
+    send) cmd_send "$@" ;;
+    -h|--help|help) usage ;;
+    *) die "unknown command '$cmd' (see --help)" ;;
+  esac
+}
+
+main "$@"
