@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# control-menu - every waybar chip's hover from the keyboard (Super+A Space, leader.conf).
+#
+#   control-menu                the menu: fzf, the chip list on the left, the selected chip's
+#                               tooltip on the right; Enter is the chip's click, alt-Enter its
+#                               right-click, ctrl-r re-reads the bar text, Esc closes
+#   control-menu rows [--live]  the list: key, label, and with --live the chip's bar text
+#   control-menu preview <key>  one chip's tooltip as terminal text
+#   control-menu click <key> [right]   run the chip's on-click (or on-click-right), detached
+#
+# It holds no list of its own. Which chips exist is modules.registry (key|label|ids); what each
+# runs and what a click does is the waybar config (config.base, plus config.pin-full for the
+# pin-only machines chip). A chip hidden from the bar (modules.sh) still lists, because the
+# preview runs the command behind its `modules.sh gate <id>` prefix, not the gate.
+
+set -u
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
+REGISTRY="$CONF_DIR/modules.registry"
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+# shellcheck source=../../.config/waybar/pango.sh
+. "$CONF_DIR/pango.sh"
+
+# The waybar config as one JSON object of module definitions. The files are JSONC; every
+# comment in them is a whole line, so dropping those lines leaves JSON (a URL's // survives).
+# control_menu.bats parses the real files, so a comment added mid-line fails there first.
+config_json() {
+    local f
+    for f in "$CONF_DIR/config.base" "$CONF_DIR/config.pin-full"; do
+        [ -r "$f" ] && sed '/^[[:space:]]*\/\//d' "$f"
+    done | jq -s 'map(if type == "array" then add else . end) | add'
+}
+
+# registry rows: key<TAB>label<TAB>first module id
+registry() {
+    awk -F'|' '!/^[[:space:]]*(#|$)/ { split($3, ids, " "); printf "%s\t%s\t%s\n", $1, $2, ids[1] }' "$REGISTRY"
+}
+
+# field <module-id> <exec|on-click|on-click-right>, from the config JSON on stdin
+field() { jq -r --arg m "$1" --arg f "$2" '.[$m][$f] // empty'; }
+
+# The command behind the gate: `.../modules.sh gate <id> <cmd...>` is <cmd...>.
+ungated() { sed -E 's#^.*modules\.sh gate [^ ]+ ##'; }
+
+# run_exec <module-id>: the chip's JSON, or a reason on stderr and a non-zero exit.
+run_exec() {
+    local cmd
+    cmd="$(config_json | field "$1" exec | ungated)"
+    [ -n "$cmd" ] || { echo "no exec for $1 in the waybar config" >&2; return 3; }
+    sh -c "$cmd"
+}
+
+hidden() { grep -qxF "$1" "${XDG_STATE_HOME:-$HOME/.local/state}/waybar/modules.off" 2>/dev/null; }
+
+rows() {
+    local live="${1:-}" key label id text n=0
+    local conf tmp
+    conf="$(config_json)"
+    tmp="$(mktemp -d)"
+    # --live asks every chip at once and waits for all of them: one slow chip (fleet_pulse's
+    # curl) costs its own time, not the sum.
+    if [ "$live" = --live ]; then
+        while IFS=$'\t' read -r key label id; do
+            n=$((n + 1))
+            [ -n "$(field "$id" exec <<<"$conf")" ] &&
+                (run_exec "$id" 2>/dev/null | jq -r '.text // empty' 2>/dev/null |
+                    NO_COLOR=1 pango_ansi | tr '\n' ' ' >"$tmp/$n") &
+        done < <(registry)
+        wait
+    fi
+    n=0
+    while IFS=$'\t' read -r key label id; do
+        n=$((n + 1))
+        if [ -z "$(field "$id" exec <<<"$conf")" ]; then
+            text="(not in the waybar config: $id)"
+        elif [ "$live" = --live ]; then
+            text="$(cat "$tmp/$n" 2>/dev/null)"
+            [ -n "$text" ] || text="-"
+        else
+            text=""
+        fi
+        hidden "$id" && text="$text (hidden on bar)"
+        printf '%s\t%-9s %-34s %s\n' "$key" "$key" "$label" "$text"
+    done < <(registry)
+    rm -rf "$tmp"
+}
+
+id_of() { registry | awk -F'\t' -v k="$1" '$1 == k { print $3; exit }'; }
+
+preview() {
+    local key="$1" id out rc err
+    id="$(id_of "$key")"
+    [ -n "$id" ] || { echo "no chip '$key' in $REGISTRY"; return 0; }
+    err="$(mktemp)"
+    out="$(run_exec "$id" 2>"$err")"
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+        echo "$id: exit $rc, no output"
+        cat "$err"
+    else
+        jq -r '.tooltip // .text // empty' <<<"$out" | pango_ansi
+    fi
+    rm -f "$err"
+    local conf left right
+    conf="$(config_json)"
+    left="$(field "$id" on-click <<<"$conf")"
+    right="$(field "$id" on-click-right <<<"$conf")"
+    echo
+    echo "enter: ${left:-nothing}"
+    [ -n "$right" ] && echo "alt-enter: $right"
+    return 0
+}
+
+click() {
+    local id cmd which=on-click
+    [ "${2:-}" = right ] && which=on-click-right
+    id="$(id_of "$1")"
+    cmd="$(config_json | field "$id" "$which")"
+    if [ -z "$cmd" ]; then
+        echo "$1 has no $which" >&2
+        return 1
+    fi
+    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+}
+
+menu() {
+    command -v fzf >/dev/null 2>&1 || { echo "control-menu needs fzf" >&2; exit 2; }
+    # The first list is the registry alone, so the menu opens at once; the bar texts replace it
+    # when every chip has answered (fleet_pulse can take its 8s curl timeout).
+    rows | fzf --ansi --no-sort --layout=reverse --height=100% \
+        --delimiter=$'\t' --with-nth=2.. \
+        --prompt='control> ' \
+        --header='enter click   alt-enter right-click   ctrl-r refresh   esc close' \
+        --preview="$SELF preview {1}" --preview-window='right,60%,wrap' \
+        --bind="start:reload($SELF rows --live)" \
+        --bind="ctrl-r:reload($SELF rows --live)+refresh-preview" \
+        --bind="enter:become($SELF click {1})" \
+        --bind="alt-enter:become($SELF click {1} right)"
+}
+
+case "${1:-menu}" in
+    menu) menu ;;
+    rows) rows "${2:-}" ;;
+    preview) preview "${2:?usage: control-menu preview <key>}" ;;
+    click) click "${2:?usage: control-menu click <key> [right]}" "${3:-}" ;;
+    -h | --help) sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    *) echo "usage: control-menu [rows [--live] | preview <key> | click <key> [right]]" >&2; exit 2 ;;
+esac
