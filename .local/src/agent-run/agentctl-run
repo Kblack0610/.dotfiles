@@ -185,7 +185,7 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
     printf 'agent:       %s (%s)\n' "$agent" "${AGENT_KIND:-?}"
     printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}}"
     printf 'schema:      %s\n' "${AGENT_SCHEMA:-(none)}"
-    printf 'live rules:  %s\n' "${AGENT_LIVE_RULES:-(none)}"
+    printf 'delay rules: %s\n' "${AGENT_DELAY_RULES:-(none)}"
     printf 'call log:    %s\n' "$AGENTCTL_CALLS"
   fi
   printf 'role:        %s\n'  "$ROLE_NAME"
