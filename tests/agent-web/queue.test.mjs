@@ -39,7 +39,7 @@ test("a waiting card shows the open ask, its options and the recommended one", (
   assert.match(html, /class="qneed"/);
   assert.match(html, /Ship it\?/);
   assert.match(html, /data-a="yes"/);
-  assert.match(html, /class="btn rec" data-a="no">no \(recommended\)/);
+  assert.match(html, /<button class="aopt rec" data-a="no"><span class="aok">no<\/span><span class="aow">recommended<\/span>/);
   assert.doesNotMatch(html, /Waiting on a prompt/);
 });
 

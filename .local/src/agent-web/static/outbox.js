@@ -1,6 +1,6 @@
 "use strict";
-// The Outbox tab, the landing page: the outbox as a doc you type into, and what intake did with
-// its lines today. GET /api/outbox is hub_core::outbox (the hub TUI's reader); PUT /api/outbox
+// The outbox view, Daily's `#daily/outbox` (focus.js shows it in the note's place): the outbox as
+// a doc you type into, and what intake did with its lines today. GET /api/outbox is hub_core::outbox (the hub TUI's reader); PUT /api/outbox
 // {base, text} is `notes outbox put --base`, a compare-and-swap on the items' hash. The triager
 // sweeps 30s after the last save and takes the lines it files out of the doc, so the page and the
 // sweep both write it: every write names the hash it started from, and a 409 hands back the
@@ -153,7 +153,7 @@ function build() {
   if (obx.built) return;
   obx.built = true;
   $("outbox").innerHTML =
-    `<div class="bhead"><span>OUTBOX</span><span class="opts"><a class="btn sm" href="#focus/status/inbox">Inbox status</a></span></div>` +
+    `<div class="dhead"><div class="dtitle"><h2>Outbox</h2></div><div class="opts"><a class="btn sm" href="#daily">Back to Daily</a><a class="btn sm" href="#daily/status/inbox">Inbox</a></div></div>` +
     `<textarea id="o-doc" spellcheck="true" placeholder="One ask per line. Tag #plan to have it planned, #p:project to say where it goes."></textarea>` +
     `<div id="o-said"></div><div id="o-handled"></div>`;
   const b = box();
@@ -162,11 +162,12 @@ function build() {
   b.addEventListener("blur", () => { clearTimeout(obx.timer); sync(); });
 }
 
-TABS.outbox = {
+// Not a tab of its own: Daily calls these.
+const OUTBOX = {
   show() { build(); obx.wantRead = true; sync(); },
   onEvent(ev) {
     if (ev.kind !== "outbox" && ev.kind !== "resync") return;
     obx.wantRead = true;
-    if (st.tab === "outbox") sync();
+    if (st.tab === "daily" && st.arg === "outbox") sync();
   },
 };
