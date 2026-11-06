@@ -8,7 +8,7 @@
 use hub_core::pipeline::{self, Pipeline};
 use hub_core::queue::{Candidate, Candidates, Item, Queue, State, SECTIONS};
 use hub_core::tasks::Write;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, Cell, Table};
@@ -79,7 +79,10 @@ impl QueueView {
             .min(n.saturating_sub(1));
     }
 
-    pub fn key(&mut self, k: KeyEvent, q: Option<&Queue>, c: &[Candidate]) -> Ask {
+    /// `page` is the body's height in rows: PgUp/PgDn and space move the selection a page,
+    /// Ctrl-d/Ctrl-u half of one, g/G to the first and last row. The app keeps the selected row
+    /// in view, so every move scrolls the page with it.
+    pub fn key(&mut self, k: KeyEvent, q: Option<&Queue>, c: &[Candidate], page: usize) -> Ask {
         if let Some(slug) = &self.confirm {
             return match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -96,12 +99,20 @@ impl QueueView {
         }
         let Some(q) = q else { return Ask::Pass };
         let n = active(q).len() + self.shown(c).len();
+        let last = n.saturating_sub(1);
+        let half = (page / 2).max(1);
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let busy = || Some(Err("an action is still running".to_string()));
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.sel = (self.sel + 1).min(n.saturating_sub(1))
-            }
+            KeyCode::Char('d') if ctrl => self.sel = (self.sel + half).min(last),
+            KeyCode::Char('u') if ctrl => self.sel = self.sel.saturating_sub(half),
+            _ if ctrl => return Ask::Pass,
+            KeyCode::Char('j') | KeyCode::Down => self.sel = (self.sel + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => self.sel = self.sel.saturating_sub(1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.sel = (self.sel + page.max(1)).min(last),
+            KeyCode::PageUp => self.sel = self.sel.saturating_sub(page.max(1)),
+            KeyCode::Char('g') | KeyCode::Home => self.sel = 0,
+            KeyCode::Char('G') | KeyCode::End => self.sel = last,
             KeyCode::Char('f') => {
                 self.cands_open = !self.cands_open;
                 self.reselect(None, q, c);
@@ -252,8 +263,9 @@ pub fn page(
     p: Palette,
     now: i64,
     w: usize,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = pipeline_lines(pipe.0, pipe.1, p, w);
+    let mut at_line = None;
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -302,13 +314,16 @@ pub fn page(
         if s != State::Done {
             if let Some(at) = rows.iter().position(|i| Some(&i.slug) == sel.as_ref()) {
                 t[at + 1].style = p.sel();
+                at_line = Some(out.len() + at + 1);
             }
         }
         out.append(&mut t);
     }
     out.push(Line::raw(""));
-    out.extend(candidates(q, v, cands, p, w));
-    out
+    let top = out.len();
+    let (more, cand_at) = candidates(q, v, cands, p, w);
+    out.extend(more);
+    (out, at_line.or(cand_at.map(|a| a + top)))
 }
 
 /// The Candidates fold: its heading counts every ranked row and how many a worker takes; open,
@@ -319,7 +334,7 @@ fn candidates(
     cands: Option<&Result<Candidates, String>>,
     p: Palette,
     w: usize,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mark = if v.cands_open { "-" } else { "+" };
     let hint = if v.cands_open {
         "f folds, p promotes"
@@ -345,15 +360,15 @@ fn candidates(
                 Line::styled(format!("No candidates: {e}"), p.warn()),
                 w,
             ));
-            return out;
+            return (out, None);
         }
         Some(Ok(c)) if v.cands_open => c,
-        _ => return out,
+        _ => return (out, None),
     };
     let shown = v.shown(&c.rows);
     if shown.is_empty() {
         out.push(Line::styled("No open board row to start.", p.dim()));
-        return out;
+        return (out, None);
     }
     let rows = shown
         .iter()
@@ -388,12 +403,14 @@ fn candidates(
         cap: vec![(1, 22), (2, 16), (3, 40)],
     }
     .fit(w, p.head());
+    let mut sel_at = None;
     if let Some(at) = v
         .sel
         .checked_sub(active(q).len())
         .filter(|i| *i < shown.len())
     {
         t[at + 1].style = p.sel();
+        sel_at = Some(out.len() + at + 1);
     }
     out.append(&mut t);
     if c.more() > 0 {
@@ -415,7 +432,7 @@ fn candidates(
             w,
         ));
     }
-    out
+    (out, sel_at)
 }
 
 fn status_line(v: &QueueView, p: Palette, w: usize) -> Line<'static> {
@@ -480,6 +497,7 @@ pub(crate) mod tests {
         w: usize,
     ) -> String {
         page(q, v, c, (None, false), Palette { no_color: true }, 0, w)
+            .0
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -540,53 +558,53 @@ pub(crate) mod tests {
         let q = fixture();
         let mut v = QueueView::default();
         assert_eq!(v.selected(&q).unwrap().slug, "pick-sides");
-        assert_eq!(v.key(key('c'), Some(&q), &[]), Ask::Done);
+        assert_eq!(v.key(key('c'), Some(&q), &[], 10), Ask::Done);
         assert_eq!(v.confirm.as_deref(), Some("pick-sides"));
         assert!(text(&q, &v, 200).contains("Cancel pick-sides?"));
-        assert_eq!(v.key(key('n'), Some(&q), &[]), Ask::Done, "n drops it");
+        assert_eq!(v.key(key('n'), Some(&q), &[], 10), Ask::Done, "n drops it");
         assert!(v.confirm.is_none());
-        v.key(key('c'), Some(&q), &[]);
+        v.key(key('c'), Some(&q), &[], 10);
         assert_eq!(
-            v.key(key('y'), Some(&q), &[]),
+            v.key(key('y'), Some(&q), &[], 10),
             Ask::Cancel("pick-sides".into())
         );
 
         assert_eq!(
-            v.key(key('+'), Some(&q), &[]),
+            v.key(key('+'), Some(&q), &[], 10),
             Ask::Bump("pick-sides".into(), "urgent")
         );
         for _ in 0..9 {
-            v.key(key('j'), Some(&q), &[]);
+            v.key(key('j'), Some(&q), &[], 10);
         }
         let at = |v: &QueueView| v.selected(&q).unwrap().slug.clone();
         assert_eq!(at(&v), "night-sweep", "j stops at the last active item");
-        assert_eq!(v.key(key('-'), Some(&q), &[]), Ask::Done);
+        assert_eq!(v.key(key('-'), Some(&q), &[], 10), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already low")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('+'), Some(&q), &[]),
+            v.key(key('+'), Some(&q), &[], 10),
             Ask::Bump("night-sweep".into(), "high")
         );
-        v.key(key('k'), Some(&q), &[]);
+        v.key(key('k'), Some(&q), &[], 10);
         assert_eq!(at(&v), "next-up");
-        assert_eq!(v.key(key('+'), Some(&q), &[]), Ask::Done);
+        assert_eq!(v.key(key('+'), Some(&q), &[], 10), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already urgent")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('-'), Some(&q), &[]),
+            v.key(key('-'), Some(&q), &[], 10),
             Ask::Bump("next-up".into(), "high")
         );
 
         v.running = Some("cancel x".into());
-        v.key(key('c'), Some(&q), &[]);
+        v.key(key('c'), Some(&q), &[], 10);
         assert!(v.confirm.is_none(), "no second action while one runs");
-        assert_eq!(v.key(key('x'), Some(&q), &[]), Ask::Pass);
+        assert_eq!(v.key(key('x'), Some(&q), &[], 10), Ask::Pass);
     }
 
     #[test]
@@ -626,7 +644,7 @@ pub(crate) mod tests {
         let q = fixture();
         let c = Ok(cands());
         let mut v = QueueView::default();
-        assert_eq!(v.key(key('f'), Some(&q), &cands().rows), Ask::Done);
+        assert_eq!(v.key(key('f'), Some(&q), &cands().rows, 10), Ask::Done);
         let s = text_with(&q, &v, Some(&c), 200);
         assert!(
             s.contains("- CANDIDATES (3, 2 auto)  f folds, p promotes"),
@@ -671,7 +689,7 @@ pub(crate) mod tests {
         let c = cands().rows;
         let mut v = QueueView::default();
         assert_eq!(
-            v.key(key('p'), Some(&q), &c),
+            v.key(key('p'), Some(&q), &c, 10),
             Ask::Done,
             "shut: nothing to promote"
         );
@@ -680,9 +698,9 @@ pub(crate) mod tests {
             "{:?}",
             v.said
         );
-        v.key(key('f'), Some(&q), &c);
+        v.key(key('f'), Some(&q), &c, 10);
         for _ in 0..4 {
-            v.key(key('j'), Some(&q), &c);
+            v.key(key('j'), Some(&q), &c, 10);
         }
         assert_eq!(
             v.selected_cand(&q, &c).unwrap().key,
@@ -690,7 +708,7 @@ pub(crate) mod tests {
             "j runs on past the items"
         );
         assert!(text_with(&q, &v, Some(&Ok(cands())), 200).contains("fix the jump arc"));
-        let Ask::Promote(label, w) = v.key(key('p'), Some(&q), &c) else {
+        let Ask::Promote(label, w) = v.key(key('p'), Some(&q), &c, 10) else {
             panic!("p promotes")
         };
         assert_eq!(label, "promote shape-city bar-17");
@@ -709,23 +727,23 @@ pub(crate) mod tests {
             ]
         );
         // NEGATIVE CONTROL: the human-lane row is promoted with no --agent.
-        v.key(key('j'), Some(&q), &c);
-        v.key(key('j'), Some(&q), &c);
-        let Ask::Promote(_, w) = v.key(key('p'), Some(&q), &c) else {
+        v.key(key('j'), Some(&q), &c, 10);
+        v.key(key('j'), Some(&q), &c, 10);
+        let Ask::Promote(_, w) = v.key(key('p'), Some(&q), &c, 10) else {
             panic!("p promotes")
         };
         let argv = hub_core::tasks::argv(&w).unwrap();
         assert!(argv.contains(&"trader".to_string()), "{argv:?}");
         assert!(!argv.contains(&"--agent".to_string()), "{argv:?}");
-        assert_eq!(v.key(key('c'), Some(&q), &c), Ask::Done);
+        assert_eq!(v.key(key('c'), Some(&q), &c, 10), Ask::Done);
         assert!(v.confirm.is_none(), "c does not cancel a candidate");
 
-        v.key(key('f'), Some(&q), &c);
+        v.key(key('f'), Some(&q), &c, 10);
         assert_eq!(v.sel, 3, "folding brings the selection back to the items");
         v.running = Some("promote x".into());
-        v.key(key('f'), Some(&q), &c);
+        v.key(key('f'), Some(&q), &c, 10);
         assert_eq!(
-            v.key(key('p'), Some(&q), &c),
+            v.key(key('p'), Some(&q), &c, 10),
             Ask::Done,
             "no second action while one runs"
         );
