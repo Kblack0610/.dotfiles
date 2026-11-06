@@ -75,6 +75,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
+: "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
@@ -727,6 +728,19 @@ launch_mode() {
   esac
 }
 
+# dropped_tools <item json> -- " --disallowedTools <DISPATCH_DROP_TOOLS>" for a new claude start, or
+# nothing. Those tools' schemas ride on every turn of a session that never calls them: in the 7 days
+# to 2026-11-06, Workflow had 1 call and ScheduleWakeup 43 (all /loop) across about 2,900 sessions,
+# for about 10K chars a turn. A task that names one of them, ultracode or /loop keeps every tool.
+# It goes before --permission-mode: the flag takes a list, so the brief after it would join it.
+dropped_tools() {
+  [ -n "$DISPATCH_DROP_TOOLS" ] || return 0
+  [[ "$DISPATCH_DROP_TOOLS" =~ ^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$ ]] ||
+    { say "DISPATCH_DROP_TOOLS is not a comma list of tool names: $DISPATCH_DROP_TOOLS; dropping none"; return 0; }
+  jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${DISPATCH_DROP_TOOLS//,/|}" && return 0
+  printf ' --disallowedTools %s' "$DISPATCH_DROP_TOOLS"
+}
+
 # last_mode <id> -> the permission mode it last ran in, from the transcript, which outlives its
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
 last_mode() {
@@ -912,7 +926,7 @@ cmd_start() {
     if [ "$harness" = claude ]; then
       model=${model:-opus}
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(account_env "$acct")claude --model $(printf '%q' "$model")"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(account_env "$acct")claude --model $(printf '%q' "$model")$(dropped_tools "$it")"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
