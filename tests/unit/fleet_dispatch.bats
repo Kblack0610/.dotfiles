@@ -2114,24 +2114,37 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
 @test "night: at most 3 active, one an area: subtract or fix first, then observer rows, then oldest #high" {
   night_ready
   row agent-runtime agent 'add a panel' '- [ ] add a panel for y #high'
-  row agent-runtime agent 'kpi: board_open' '- [ ] kpi: board_open past threshold #high'
+  row agent-runtime agent 'shorter briefs' '- [ ] shorter briefs for night items #kpi/board_open #high'
   row agent-runtime agent 'add a column' '- [ ] add a column to z #high'
   row agent-runtime agent 'retire the timer' '- [ ] retire the dead timer #low'
   row agent-runtime agent 'retire the hook' '- [ ] retire the dead hook #low'
   row agent-runtime agent 'add w' '- [ ] add w #low'
-  night_verdict 'add a panel'; night_verdict 'kpi: board_open'; night_verdict 'add a column'
+  night_verdict 'add a panel'; night_verdict 'shorter briefs'; night_verdict 'add a column'
   night_verdict 'retire the timer' timers; night_verdict 'retire the hook' timers; night_verdict 'add w'
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'retire the hook,kpi: board_open,add a column'
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'retire the hook,shorter briefs,add a column'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
   [ "$(state_of 'retire the hook')" = '- [ ]' ] || fail "fill --dry-run started a row"
   fill
   assert_success
-  assert_equal "$(night_keys)" 'add a column,kpi: board_open,retire the hook'
+  assert_equal "$(night_keys)" 'add a column,retire the hook,shorter briefs'
   [ "$(state_of 'add a panel')" = '- [ ]' ] || fail "a fourth row was started"
   fill
   assert_equal "$(agent-queue list --json --state queued | grep -c .)" 3
+}
+
+@test "night: a typed finding and a #kpi/ row rank as observer rows, the word kpi in a body does not" {
+  night_ready
+  row agent-runtime agent 'add a kpi chip' '- [ ] add a kpi: chip to the hub #high'
+  row agent-runtime agent 'check kpi' '- [ ] check(kpi): board_open past threshold #low'
+  row agent-runtime agent 'tagged' '- [ ] shorter briefs #kpi/ask_answered_pct #low'
+  night_verdict 'add a kpi chip'; night_verdict 'check kpi'; night_verdict 'tagged'
+
+  fill --dry-run --json
+  # Both observer rows rank ahead of the #high row that only names kpi in its body.
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | tail -1)" 'add a kpi chip'
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | head -2 | sort | paste -sd,)" 'check kpi,tagged'
 }
 
 @test "night: a row agent-queue will not take is un-started again" {

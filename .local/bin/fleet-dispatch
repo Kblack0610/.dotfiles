@@ -97,7 +97,9 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 : "${DISPATCH_NIGHT_SKIP:=^decide[:(]|\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Ranking, first match wins: rows that delete or fix a broken mechanism, then observer findings.
 : "${DISPATCH_NIGHT_FIRST:=\b(delete|remove|drop|retire|prune|strip|broken|never|fails|failing|failed|dead|wrong|stale|leaks?|orphans?|races?)\b}"
-: "${DISPATCH_NIGHT_OBSERVER:=^(kpi|retro|dream)\b}"
+# Observer rows: an improvement row (`#kpi/<k>`, filed by `fleet-bench improve`) or a typed finding
+# retro and triage file. jq (Oniguruma) regex, matched case-insensitively against the row body.
+: "${DISPATCH_NIGHT_OBSERVER:=#kpi/|^[a-z]+\((kpi|lesson|watch|runner|unit|logs)\):}"
 # The AI systems: in these projects a row that fixes something or names a DISPATCH_NIGHT_FIRST word
 # ranks ahead of the rest of its project-priority and due-date bucket, day and night (the human's ask
 # of 2026-11-05 that cleanup of the AI systems be the most urgent work). Empty turns it off.
