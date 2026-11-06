@@ -441,6 +441,15 @@ account_env() {
   if [ -n "$dir" ]; then printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"; else printf 'env -u CLAUDE_CONFIG_DIR '; fi
 }
 
+# telemetry_env <cwd> [item]: the launch-line prefix that labels a session's spans with its project
+# and queue item. A pane gets the tmux server's environment, so only its launch line can say which
+# item it works. Empty off the LAN, where the snippet defines nothing and nothing is exported.
+telemetry_env() {
+  local attrs
+  attrs=$(cd "$1" && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_telemetry_launch' 2>/dev/null) || return 0
+  printf 'OTEL_RESOURCE_ATTRIBUTES=%q ' "$attrs"
+}
+
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
 # state, weight, agent, started, Claude session ids. The item's `session:` is the one record of where
@@ -1048,7 +1057,7 @@ gateway_launch() {
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
       cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") $flags $(printf '%q' "$brief")"
       ;;
     opencode)
@@ -1181,7 +1190,7 @@ cmd_start() {
     origin=${START_ORIGIN:-resume}
     mode=$(last_mode "$resume")
     launch_mode "${mode:-bypassPermissions}"
-    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(account_env)claude${model:+ --model $(printf '%q' "$model")} $flags --resume $(printf '%q' "$resume")"
+    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)claude${model:+ --model $(printf '%q' "$model")} $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
         { say "could not open window $window in $session on $server"; return 1; }
@@ -1203,7 +1212,7 @@ cmd_start() {
       [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(account_env "$acct")claude --model $(printf '%q' "$model")$(dropped_tools "$it")"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")claude --model $(printf '%q' "$model")$(dropped_tools "$it")"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
