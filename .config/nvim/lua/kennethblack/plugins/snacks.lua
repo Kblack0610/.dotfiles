@@ -99,7 +99,7 @@ return {
           hidden = true,
           ignored = true,
           exclude = {
-            "node_modules", "dist", ".serena",
+            "node_modules", "dist",
             -- UNITY
             "QFSW", "Sirenix", "AstarPathfindingProject", "MonKey Commander", "PrettyHierarchy", --PLUGINS
             "Art", "*.shader", "*.wav", "*.fbx", "*.FBX", "*.obj", "*.anim", --3D

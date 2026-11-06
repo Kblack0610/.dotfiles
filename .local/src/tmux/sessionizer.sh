@@ -33,7 +33,7 @@ IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$
 # `vendor` and `.claude` are here for the same reason `node_modules` is: they hold real git
 # checkouts that are somebody else's code or an agent's scratch, and nesting is now allowed
 # (see repo_roots), so the walk has to be told about them rather than being saved by accident.
-IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:.claude:node_modules:vendor:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
+IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.claude:node_modules:vendor:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
 # How deep to look FOR A REPO under a root, not how deep a row may be.
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 # Shared with worktree.sh, which owns worktrees and puts them here. Same env key, so pointing
