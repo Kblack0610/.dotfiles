@@ -905,23 +905,22 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
     inbox_page_in(p, &all_project_dirs())
 }
 
-/// The inbox status page: what the intake sweep did today, one row per line in one shape
-/// whatever its source, and what still waits on the human. A row is
-/// `HH:MM <verb> [<id>] in <project> (<lane>): <words>`, the verbs being the ones
-/// `Feed::guide` explains, with `from:` (where the line was, when not its project's own inbox),
-/// `was:` (the words before filing, when they changed) and `why:` sub-lines only when they
-/// say something.
+/// The inbox status page: what the intake sweep did today and what still waits on the human.
+/// A handled row is one short line, `HH:MM <verb> <id> <project>[ (agent board)]: <words>`,
+/// the id a link to its sheet and the words the line's first [`ROW_WORDS`]; `notes log --id`
+/// keeps the full record. The verbs are the ones `Feed::guide` explains.
 ///
-/// - Needs you: each line the sweep left or a write refused, each line still in the outbox,
-///   and today's quick-captures (the bullet lines in `inbox/<today>.md`, each with a short
-///   `(sess <id>)` suffix when it carried a session marker, so it links back via `claude -r`).
-/// - Handled today: each line filed or joined to an open row, each row the planner planned,
+/// - Needs you: each line the sweep left or a write refused (`HH:MM <verb> (<project>): <line>`
+///   with `why:`), each line still in the outbox, and today's quick-captures (the bullet lines
+///   in `inbox/<today>.md`, each with a short `(sess <id>)` suffix when it carried a session
+///   marker, so it links back via `claude -r`).
+/// - Handled today: each line filed or joined to an open row, each row the planner planned
+///   (with `added:`), each new row a session put on a human sheet (`added ... by <session>`),
 ///   and each line moved to a project inbox and not filed yet. A line moved and then filed
-///   reads as one row, the filing, its `from:` saying where it came from.
+///   reads as one row, the filing.
 /// - Waiting in project inboxes: each sheet whose `## Inbox` holds lines, with the count.
 ///
-/// Each project name links its sheet, found in `dirs` (project name, dir), which the kept
-/// count reads too.
+/// Each project is found in `dirs` (project name, dir), which the kept count reads too.
 fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     use crate::agent_sheet::Lane;
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
@@ -938,32 +937,34 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
             .find(|(n, _)| n == name)
             .and_then(|(_, d)| crate::project_tasks::task_sheet(&lane.dir(d)))
     };
-    // A project name as a link to its sheet; anything else (outbox, focus) as written.
-    let name = |n: &str, lane: &str| {
+    // `label` as a link to project `n`'s sheet on `lane`; as written when it has none (outbox,
+    // focus, a project not in `dirs`).
+    let to_sheet = |label: &str, n: &str, lane: &str| {
         let lane = if lane == "agent" {
             Lane::Agent
         } else {
             Lane::Human
         };
         match sheet(n, lane) {
-            Some(s) => format!("[[{}|{n}]]", config::wikilink(&p.vault, &s)),
-            None => n.to_string(),
+            Some(s) => format!("[[{}|{label}]]", config::wikilink(&p.vault, &s)),
+            None => label.to_string(),
         }
     };
+    let name = |n: &str, lane: &str| to_sheet(n, n, lane);
+    // A row id linking its sheet, then its project: `[[<sheet>|ar-12]] demo (agent board)`.
+    let link = |id: &str, n: &str, lane: &str| {
+        let board = if lane == "agent" {
+            " (agent board)"
+        } else {
+            ""
+        };
+        format!("{} {n}{board}", to_sheet(id, n, lane))
+    };
     let mut rows: Vec<status::Row> = Vec::new();
-    let (mut filed, mut joined, mut planned, mut left, mut refused) = (0, 0, 0, 0, 0);
+    let (mut filed, mut joined, mut planned, mut left, mut refused, mut added) = (0, 0, 0, 0, 0, 0);
     for (i, ev) in events.iter().enumerate() {
         let at = ev.ts.get(11..16).unwrap_or("--:--");
-        let lane = if ev.lane.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", ev.lane)
-        };
-        let id = ev
-            .id
-            .as_deref()
-            .map(|i| format!(" {i}"))
-            .unwrap_or_default();
+        let id = ev.id.as_deref().unwrap_or_default();
         let mut detail: Vec<(String, String)> = Vec::new();
         let (attention, head) = match ev.action.as_str() {
             "moved" => {
@@ -975,10 +976,13 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                 if events[i + 1..].iter().any(filed_later) {
                     continue;
                 }
-                detail.push(("from".into(), ev.from.clone()));
                 (
                     false,
-                    format!("{at} moved to {}: {}", name(&ev.to, ""), ev.text),
+                    format!(
+                        "{at} moved to {} inbox: {}",
+                        name(&ev.to, ""),
+                        few(&ev.text)
+                    ),
                 )
             }
             "filed" | "dup" => {
@@ -989,24 +993,21 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                     filed += 1;
                     "filed"
                 };
-                let from = events[..i]
-                    .iter()
-                    .rev()
-                    .find(|m| m.action == "moved" && m.to == ev.from && m.text == ev.text)
-                    .map(|m| m.from.as_str())
-                    .unwrap_or(ev.from.as_str());
-                if from != ev.to {
-                    detail.push(("from".into(), from.to_string()));
-                }
                 let words = ev.row.as_deref().unwrap_or(&ev.text);
-                if ev.row.is_some() && crate::ingest::row_words(&ev.text) != words {
-                    detail.push(("was".into(), ev.text.clone()));
-                }
+                (
+                    false,
+                    format!("{at} {verb} {}: {}", link(id, &ev.to, &ev.lane), few(words)),
+                )
+            }
+            "added" if session_intake(ev) => {
+                added += 1;
                 (
                     false,
                     format!(
-                        "{at} {verb}{id} in {}{lane}: {words}",
-                        name(&ev.to, &ev.lane)
+                        "{at} added {} by {}: {}",
+                        link(id, &ev.from, &ev.lane),
+                        ev.by,
+                        few(&ev.text)
                     ),
                 )
             }
@@ -1015,7 +1016,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                 detail.push(("added".into(), ev.why.clone().unwrap_or_default()));
                 (
                     false,
-                    format!("{at} planned{id} in {}: {}", name(&ev.from, ""), ev.text),
+                    format!("{at} planned {}: {}", link(id, &ev.from, ""), few(&ev.text)),
                 )
             }
             action @ ("left" | "refused") => {
@@ -1090,7 +1091,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     status::Page {
         feed: status::Feed::Inbox,
         stat: Some(format!(
-            "{today}: {filed} filed, {joined} joined, {planned} planned, {left} left, {refused} refused, {} in the outbox, {captured} captured{}",
+            "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {refused} refused, {} in the outbox, {captured} captured{}",
             waiting.len(),
             if scored > 0 {
                 format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
@@ -1183,17 +1184,39 @@ fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) ->
     lines
 }
 
+/// Words a Handled today row shows of its line; the id's link opens the whole row.
+const ROW_WORDS: usize = 8;
+
+/// The first [`ROW_WORDS`] of `text` without its tags, `...` when there were more.
+fn few(text: &str) -> String {
+    let all = crate::ingest::row_words(text);
+    let words: Vec<&str> = all.split_whitespace().collect();
+    let mut out = words[..words.len().min(ROW_WORDS)].join(" ");
+    if words.len() > ROW_WORDS {
+        out.push_str(" ...");
+    }
+    out
+}
+
+/// A session's new row on a human sheet: intake that did not come through the sweep, so the
+/// page tells it under Handled today. The human's own adds and the agent lane's follow-ups
+/// stay under Sheet actions.
+fn session_intake(e: &crate::ingest::Event) -> bool {
+    e.action == "added" && e.lane == "human" && e.id.is_some() && e.by != "human"
+}
+
 /// Past this many, the page lists the newest and points at `notes log`.
 const SHEET_ACTIONS_SHOWN: usize = 40;
 
 /// The day's verb writes for the page: a line each for Focus and the human lane, oldest first,
 /// and one line per action and board for the agent lane, which writes far too many to list.
-/// Intake has its own rows above, so a line added to the outbox, or added and then filed, is
-/// not told twice here.
+/// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
+/// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
     const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
     let told_above = |i: usize, e: &crate::ingest::Event| {
         INTAKE.contains(&e.action.as_str())
+            || session_intake(e)
             || (e.action == "added"
                 && (e.from == "outbox"
                     || events[i + 1..].iter().any(|n| {
@@ -2672,7 +2695,8 @@ mod tests {
         filed.row = Some("feat(ui): loading screens".into());
         record(&p, &filed);
         let demo = root.join("demo");
-        std::fs::create_dir_all(&demo).unwrap();
+        std::fs::create_dir_all(demo.join("agent")).unwrap();
+        std::fs::write(demo.join("agent").join("README.md"), "## Tasks\n").unwrap();
         std::fs::write(
             demo.join("README.md"),
             "## Inbox\n- [ ] still in the inbox\n\n## Tasks\n- [ ] feat(ui): loading screens #size/s <!-- id:dm-4 filed:2026-11-05 -->\n",
@@ -2699,6 +2723,19 @@ mod tests {
             let line = format!("- [ ] a row <!-- id:{id} -->");
             record(&p, &Event::row("edited", "demo", "", "agent", &line));
         }
+        // A session's new row on the human sheet is intake; the human's own add is not.
+        let line = "- [ ] decide(squad): followers and a squad that join and fight with you #size/m <!-- id:dm-6 -->";
+        let mut session_add = Event::row("added", "demo", "", "human", line);
+        session_add.by = "5227cc0a".into();
+        record(&p, &session_add);
+        let mut own_add = Event::row("added", "demo", "", "human", "- [ ] mine <!-- id:dm-8 -->");
+        own_add.by = "human".into();
+        record(&p, &own_add);
+        let mut agent_filed = Event::new("filed", "outbox", "demo", "a follow-up");
+        agent_filed.lane = "agent".into();
+        agent_filed.id = Some("dm-7".into());
+        agent_filed.row = Some("test(x): a follow-up".into());
+        record(&p, &agent_filed);
         record(
             &p,
             &Event::new("moved", "focus", "demo", "still in the inbox"),
@@ -2739,25 +2776,25 @@ mod tests {
 - waiting in the outbox: new one
 
 ## Handled today
-- HH:MM filed dm-4 in [[demo/README|demo]] (human): feat(ui): loading screens
-  - from: outbox
-  - was: loading screens
-- HH:MM joined nc-9 in nc: focus and outbox
-- HH:MM planned dm-5 in [[demo/README|demo]]: feat(ui): a brand kit #size/l
+- HH:MM filed [[demo/README|dm-4]] demo: feat(ui): loading screens
+- HH:MM joined nc-9 nc: focus and outbox
+- HH:MM planned [[demo/README|dm-5]] demo: feat(ui): a brand kit
   - added: 3 plan lines, split into 2 rows
-- HH:MM moved to [[demo/README|demo]]: still in the inbox
-  - from: focus
+- HH:MM added [[demo/README|dm-6]] demo by 5227cc0a: decide(squad): followers and a squad that join and ...
+- HH:MM filed [[demo/agent/README|dm-7]] demo (agent board): test(x): a follow-up
+- HH:MM moved to [[demo/README|demo]] inbox: still in the inbox
 
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting
 
 ## Sheet actions
 - HH:MM removed focus by human: a Focus row
+- HH:MM added dm-8 demo (human) by human: mine
 - agent lane: edited 2 on demo (dm-1, dm-2)
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 1 filed, 1 joined, 1 planned, 1 left, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 1 as filed (7d)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),
