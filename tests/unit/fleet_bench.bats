@@ -18,7 +18,7 @@ setup() {
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
-  export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
+  export BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -137,6 +137,7 @@ agent_bench_kpi{kpi="runners_bad",window="7d"} 0
 agent_bench_kpi{kpi="asks_stale",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
+agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
 # HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
 # TYPE agent_bench_kpi_limit gauge
 agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
@@ -954,9 +955,10 @@ chain_fixture() {
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
   assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"]}'
-  # the done items are read back a day past the window, so an item done before its PR merged counts
+  # the done items are read back a day past the window (8 days before T0, a local date), so an item
+  # done before its PR merged counts
   run sort -u "$DONE.calls"
-  assert_output '--since 2026-10-19'
+  assert_output "--since $(date -d "@$((T0 - 8 * 86400))" +%F)"
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
@@ -988,6 +990,16 @@ chain_fixture() {
   # the doctor failed a check
   printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   check 'doctor_fail 1 (max 0)'
+}
+
+@test "chain: a CI row with no repo is a PR no item names, and the other KPIs still count" {
+  # NEGATIVE CONTROL: `.repo | ascii_downcase` on a repo-less row failed the whole jq program, and every chain KPI read ?
+  chain_fixture
+  ci_row '{session_id: "h4", merged_epoch: ($t - 3600), ci_red: 0}'
+  run "$SUBJECT" chain --json
+  assert_success
+  run jq -c '[.ledger_coverage["7d"], .untracked_merged_prs["7d"], .ownerless_running["7d"]]' <<<"$output"
+  assert_output '[0.667,1,0]'
 }
 
 @test "chain: an unreadable source reads ? and never trips a bound; the KPIs ride the kpi table and its gauges" {

@@ -1163,7 +1163,7 @@ chain_counts() {
     | (if $a == null or $d == null or $c == null then null
        else (($a + $d) | map(prkeys[]) | INDEX(.)) as $refs
          | {total: ($c | length),
-            hit: ($c | map(select($refs["\(.repo | ascii_downcase)#\(.number)"] or $refs["#\(.number)"])) | length)} end) as $cov
+            hit: ($c | map(select($refs["\(.repo // "" | ascii_downcase)#\(.number)"] or $refs["#\(.number)"])) | length)} end) as $cov
     | ($b // [] | map(select(.lane == "agent"))) as $agent
     | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
     | ($p // [] | map(select((.epics // []) | length > 0) | .name) | INDEX(.)) as $epicked
