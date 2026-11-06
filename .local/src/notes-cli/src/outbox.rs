@@ -7,7 +7,7 @@
 //! The section has the inbox grammar (`sheet::lines_in`), so a line is any top-level line and
 //! its indented lines are its details. A `#p:<name>` word forces the project.
 //!
-//! The section is also a doc the human edits from agent-web's Outbox tab: `notes outbox show`
+//! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
 //! Every write here holds one lock (`.outbox.lock` beside the file).
