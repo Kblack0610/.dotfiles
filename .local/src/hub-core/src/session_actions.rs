@@ -308,6 +308,12 @@ pub fn plan(
 /// Runs one argv: its stdout, or its stderr (else its exit status) when it fails.
 pub trait Runner {
     fn run(&self, argv: &[String]) -> Result<String, String>;
+
+    /// The exit code and stdout, for a command whose non-zero exit still prints its answer
+    /// (`project-stage-check --json` exits 1 on a failing row). Err only when it could not run.
+    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+        self.run(argv).map(|o| (0, o))
+    }
 }
 
 /// The real runner: the command with no shell and no stdin.
@@ -331,6 +337,20 @@ impl Runner for System {
                 err
             })
         }
+    }
+
+    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+        let (cmd, args) = argv.split_first().ok_or("empty command")?;
+        let out = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("{cmd}: {e}"))?;
+        let code = out
+            .status
+            .code()
+            .ok_or_else(|| format!("{cmd}: {}", out.status))?;
+        Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 }
 

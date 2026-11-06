@@ -153,6 +153,7 @@ agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
 agent_bench_kpi{kpi="plans_unqueued",window="7d"} 0
+agent_bench_kpi{kpi="routes_unresolved",window="7d"} 0
 # HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
 # TYPE agent_bench_kpi_limit gauge
 agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
@@ -1183,10 +1184,15 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   : > "$PLOG"; : > "$ITEMS"
   triage_setup_two() { watch one TRIP -25200 high; watch two TRIP -25200 high; }
   triage_setup_two
-  printf 'check.watch.: (one|two) tripped\tagent\t-\tshared\t-\n' > "$TRIAGE_ROUTES"
+  printf 'check.watch.: [ot][nw][eo] tripped\tagent\t-\tshared\t-\n' > "$TRIAGE_ROUTES"
   run "$SUBJECT" triage
   assert_success
   [ "$(grep -c . "$PLOG")" = 1 ]
+  : > "$PLOG"
+  printf 'check.watch.: (one|two) tripped\tagent\t-\tshared\t-\n' > "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c . "$PLOG")" = 2 ]
 }
 
 @test "triage: alert and owned take no row and no item, script files a row, a human route files and pages once" {
@@ -1221,6 +1227,36 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
+}
+
+# coverage_setup: an empty route table, a standing watch, a one-off watch and a runner
+coverage_setup() {
+  export TRIAGE_ROUTES="$SANDBOX/triage-routes" TRIAGE_WATCHES="$SANDBOX/cov-watches" LEDGER_CONF_DIR="$SANDBOX/cov-confs"
+  mkdir -p "$TRIAGE_WATCHES" "$LEDGER_CONF_DIR"
+  printf 'name: standing\nexpiry: null\n' > "$TRIAGE_WATCHES/standing.yaml"
+  printf 'name: bake\nexpiry: 2026-11-07T00:00:00Z\n' > "$TRIAGE_WATCHES/bake.yaml"
+  : > "$LEDGER_CONF_DIR/alpha.conf"
+  printf '^check.watch.: standing tripped\talert\t-\tpages\t-\n^fix.runner.: ([a-z-]+) is\tagent\t-\tfix it\t-\n' > "$TRIAGE_ROUTES"
+}
+
+@test "triage --coverage: every standing watch and runner resolves; a one-off watch needs no line" {
+  coverage_setup
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+}
+
+@test "triage --coverage: a watch or runner losing its route line fails and names it" {
+  coverage_setup
+  sed -i '/standing/d' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing'
+  coverage_setup
+  sed -i '/runner/d' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'runner alpha'
 }
 
 @test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
@@ -1355,7 +1391,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"requested_unstarted_h":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"requested_unstarted_h":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2793,7 +2829,7 @@ epics_fixture() {
     {slug: "d1", project: "game", mode: "oneshot", state: "done", row: "game:gm-2", pr: 101},
     {slug: "l1", project: "game", mode: "plan", state: "queued", plan: $loose, hold: "night (22:00-06:00)"}' > "$SANDBOX/all-items.jsonl"
   jq -n '[{version: "v1", epics: [
-      {id: "gm-1", title: "Menus", version: "v1", open: 2, done: 2, open_weight: 2, done_weight: 2, verified: false, proof: ""},
+      {id: "gm-1", title: "Menus", system: "ui", version: "v1", open: 2, done: 2, open_weight: 2, done_weight: 2, verified: false, proof: ""},
       {id: "gm-9", title: "Nothing filed", version: "v1", open: 0, done: 0, open_weight: 0, done_weight: 0, verified: false, proof: ""}],
     closed_epics: [{id: "gm-5", title: "Shipped", version: "v1", open: 0, done: 1, open_weight: 0, done_weight: 1, verified: true, proof: "played it"}],
     rows: [
@@ -2817,6 +2853,9 @@ epics_fixture() {
   run jq -c '.projects[0].epics | map({id, step, brief: (.brief != null), plans: (.plans | map({done, total, open, queued})),
       rows: (.rows | map(.id)), items: (.items | map("\(.slug) \(.row)")), prs}) | INDEX(.id) | [.["gm-1"], .["gm-9"].step, .["gm-5"].step]' <<<"$output"
   assert_output '[{"id":"gm-1","step":"rows","brief":true,"plans":[{"done":1,"total":3,"open":["two","three"],"queued":0}],"rows":["gm-13","gm-2","gm-3","gm-4"],"items":["d1 gm-2","q1 gm-3"],"prs":["101"]},"epic","verified"]'
+  # The system groups epics on the project page; a roadmap from before it was carried reads empty.
+  run jq -c '.projects[0].epics | INDEX(.id) | [.["gm-1"].system, .["gm-9"].system]' <<<"$(BENCH_NOW=$((T0 + 600)) "$SUBJECT" epics --json)"
+  assert_output '["ui",""]'
 }
 
 @test "epics gives an open epic an ETA from its queued rows plus its unqueued work, and none to an epic with nothing filed" {
@@ -2924,6 +2963,15 @@ epics_fixture() {
   assert_success
   local h; h=$(jq -r '.requested_unstarted_h["7d"]' <<<"$output")
   [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
+}
+
+@test "chain: routes_unresolved counts the watches and runners with no route line" {
+  chain_fixture
+  coverage_setup
+  sed -i '/standing/d' "$TRIAGE_ROUTES"
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -r '.routes_unresolved["7d"]' <<<"$output")" 1
 }
 
 @test "chain: plans_unqueued counts an approved plan with open phases and no session or item; unreadable sessions read ?" {

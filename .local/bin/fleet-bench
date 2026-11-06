@@ -1247,11 +1247,12 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+# routes_unresolved: standing watches and runners no triage-routes line resolves (triage_coverage).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
@@ -1299,6 +1300,7 @@ chain_counts() {
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   local orphans
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
+  echo "routes_unresolved=$(triage_coverage | grep -c .)"
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
     (.steps[] | select(.step | IN("backlog", "queued", "running", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)")'
@@ -2219,7 +2221,8 @@ triage_red_rows() {
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
 # whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
-# is that line's ERE hashed, so every row one line explains is one cause.
+# is that line's ERE hashed, so every row one line explains is one cause; a capture group in the ERE
+# adds its value, so one line can name many causes, such as one per runner.
 triage_route() {
   local key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
@@ -2244,6 +2247,7 @@ triage_route() {
       printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
       continue
     fi
+    [[ "$text" =~ $re ]] && re+=${BASH_REMATCH[1]:-}
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
     text+="${note:+; $note}"
     for t in ${tags:-}; do
@@ -2296,12 +2300,36 @@ triage_promote() {
   echo "$n"
 }
 
+# triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, one a line.
+# It builds the row each would file, so a line that stops matching the real row text counts too. A
+# watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
+triage_coverage() {
+  local f n rows=
+  for f in "$TRIAGE_WATCHES"/*.yaml; do
+    [ -e "$f" ] || continue
+    grep -qE '^expiry: *[^n[:space:]]' "$f" && continue
+    n=${f##*/} n=${n%.yaml}
+    rows+="watch $n"$'\t'"check(watch): $n tripped since 2026-01-01, expected: -"$'\t-\n'
+  done
+  for f in "$LEDGER_CONF_DIR"/*.conf; do
+    [ -e "$f" ] || continue
+    n=${f##*/} n=${n%.conf}
+    rows+="runner $n"$'\t'"fix(runner): $n is FAILED: -"$'\t-\n'
+  done
+  [ -z "$rows" ] || triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
+}
+
 cmd_triage() {
   local rows filed dry=0 q h
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
-    *) say "usage: fleet-bench triage [--dry-run]"; return 2 ;;
+    --coverage)
+      rows=$(triage_coverage)
+      [ -z "$rows" ] || { echo "$rows"; return 1; }
+      return 0
+      ;;
+    *) say "usage: fleet-bench triage [--dry-run|--coverage]"; return 2 ;;
   esac
   rows=$({ triage_rows; triage_log_rows; triage_red_rows; } | grep .)
   [ -n "$rows" ] && rows=$(triage_route "$rows")
@@ -2987,7 +3015,7 @@ epics_json() {
                           factor: $f, cal_p50: (if $f == null then null else ($t + ($p50 - $t) * $f | floor) end)}, why: null}
                end end) as $x
         | $B[$k] as $b
-        | {id: $e.id, title: $e.title, version: $e.version, state: $e.state, verified: $e.verified, proof: $e.proof,
+        | {id: $e.id, title: $e.title, system: ($e.system // ""), version: $e.version, state: $e.state, verified: $e.verified, proof: $e.proof,
            open: $e.open, done: $e.done, open_weight: $e.open_weight, done_weight: $e.done_weight,
            progress: ratio($e.done_weight; $e.open_weight + $e.done_weight), step: $step, brief: $brief, plans: $ep,
            rows: ($er | map({id, kind, title, size, state, prs})), items: $ei,

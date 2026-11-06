@@ -4,13 +4,12 @@
 //! owns the join and derives every step; this module only types it and says the flow line, so
 //! agent-web and the hub TUI print the same words and compute nothing.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 
 use crate::session_actions::Runner;
 
 /// How many of each artifact the project has, in chain order.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Flow {
     pub ideas: u32,
@@ -23,7 +22,7 @@ pub struct Flow {
 }
 
 /// Open rows with no epic above them, and active queue items whose plan names no epic.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Unlinked {
     pub rows: Vec<String>,
@@ -32,7 +31,7 @@ pub struct Unlinked {
 
 /// A plan whose `epic:` line names the epic: its phases ticked of total, the open ones by name,
 /// and how many of those an active queue item carries.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Plan {
     pub file: String,
@@ -43,7 +42,7 @@ pub struct Plan {
 }
 
 /// A leaf row under the epic (through `#of/`, up to three levels).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Row {
     pub id: String,
@@ -55,7 +54,7 @@ pub struct Row {
 }
 
 /// A queue item made from one of the epic's rows.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Item {
     pub slug: String,
@@ -65,7 +64,7 @@ pub struct Item {
 }
 
 /// The epic's finish estimate, epoch seconds; `cal_p50` once its basis has scored epics.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Eta {
     pub p50: i64,
@@ -74,11 +73,13 @@ pub struct Eta {
     pub cal_p50: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Epic {
     pub id: String,
     pub title: String,
+    /// The system it builds, the area in its `epic(<system>):` row; empty from an older reader.
+    pub system: String,
     pub version: String,
     /// `open` or `closed`.
     pub state: String,
@@ -103,7 +104,7 @@ pub struct Epic {
 }
 
 /// One project's chain.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Chain {
     pub project: String,
@@ -123,12 +124,7 @@ struct Out {
 /// `fleet-bench epics --json --project <name>`. A project the reader does not list (no roadmap,
 /// or no such name) is an error that says so, never an empty chain.
 pub fn chain(runner: &dyn Runner, name: &str) -> Result<Chain, String> {
-    let ok = !name.is_empty()
-        && !name.starts_with('-')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if !ok {
+    if !crate::projects::safe_name(name) {
         return Err(format!("refusing project name {name:?}"));
     }
     let out = runner.run(&[
@@ -152,13 +148,6 @@ pub fn flow_line(f: &Flow) -> String {
         "ideas {} | briefs {} | plans {} | epics {} | rows {} | landed {} | verified {}",
         f.ideas, f.briefs, f.plans, f.epics, f.rows, f.landed, f.verified
     )
-}
-
-/// The chain as JSON with its `flow_line`, so a reader prints the words the TUI will.
-pub fn to_json(c: &Chain) -> Value {
-    let mut v = serde_json::to_value(c).unwrap_or_default();
-    v["flow_line"] = flow_line(&c.flow).into();
-    v
 }
 
 #[cfg(test)]
@@ -235,16 +224,5 @@ mod tests {
             assert!(chain(&r, bad).is_err(), "{bad}");
         }
         assert!(r.1.borrow().is_empty());
-    }
-
-    #[test]
-    fn the_json_carries_the_flow_line_every_surface_prints() {
-        let c = chain(&Fixed(OUT, Default::default()), "agent-runtime").unwrap();
-        let v = to_json(&c);
-        assert_eq!(
-            v["flow_line"],
-            "ideas 19 | briefs 2 | plans 1 | epics 1 | rows 13 | landed 0 | verified 0"
-        );
-        assert_eq!(v["epics"][0]["step"], "rows");
     }
 }
