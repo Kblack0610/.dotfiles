@@ -37,18 +37,19 @@ done
 
 command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PATH" >&2; exit 1; }
 
-# Run one resume command, headless through agentctl-run (build role). agentctl-run
+# Run one resume command, headless as the ask-resume agent (its conf: build role, its own
+# budget, never the answering runner's). agentctl-run
 # scrubs the inherited transport env and applies the route, so a resume never runs on
 # whatever gateway its caller happened to export.
 run_resume() { # $1=id $2=project $3=command
   local id="$1" project="$2" cmd="$3"
-  if [ "$DRY" = 1 ]; then echo "would run: agentctl-run --role build -p '$cmd'   (ask $id)"; return 0; fi
+  if [ "$DRY" = 1 ]; then echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; return 0; fi
   command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
   mkdir -p "$log"
-  setsid -f agentctl-run --role build -p "$cmd" \
+  setsid -f agentctl-run --agent ask-resume -p "$cmd" \
     --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }
