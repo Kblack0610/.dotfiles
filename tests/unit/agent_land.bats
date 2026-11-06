@@ -369,7 +369,7 @@ EOF
   agent-queue set menus row=db:db-12
   run "$LAND" 42 --item menus
   assert_success
-  assert_line --index 6 'board: closed "db-12" with pr:42 commit:fedcba987654'
+  assert_line --index 7 'board: closed "db-12" with pr:42 commit:fedcba987654'
   run grep '^notes' "$LOG"
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:42 commit:fedcba987654'
 }
