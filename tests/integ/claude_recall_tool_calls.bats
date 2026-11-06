@@ -105,6 +105,11 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
   assert_output '[1,1,1,1,4]'
 }
 
+@test "cards: the kind column is the same session kind, and subagents get no card" {
+  run bash -c "\"$RECALL\" cards | cut -f1,13 | sort"
+  assert_output "$(printf 's1\thand\ns2\tdispatched\ns3\trunner')"
+}
+
 @test "a call is priced by the response after it" {
   run jq -c '[.tools[] | select(.key=="ToolSearch") | [.calls,.next_ctx]]' <<<"$(out)"
   assert_output '[[1,2000]]'
