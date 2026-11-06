@@ -1010,7 +1010,10 @@ cmd_stats() {
            ($done | since(.finished)) as $fin
          | {("done_\($h)h"): ($fin | length), ("failed_\($h)h"): ($fin | map(select(.status == "failed")) | length),
             ("started_\($h)h"): ($all | since(.started) | length),
-            ("added_\($h)h"): ($all | since(.queued) | length)}) | add),
+            ("added_\($h)h"): ($all | since(.queued) | length)}) | add
+         # Finished ok since local midnight, the day day-log keeps.
+         | . + {done_today: ($done | map(select(.status == "ok" and (.finished // "") != ""
+             and (.finished | fromdateiso8601 | strflocaltime("%F")) == (now | strflocaltime("%F")))) | length)}),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),
