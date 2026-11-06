@@ -156,7 +156,7 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --tab sessions",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab sessions",
         "tooltip": true
     },
     "custom/fleet": {
@@ -178,7 +178,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/load $HOME/.config/waybar/load.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab 'infra machines'",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra machines'",
         "tooltip": true
     },
     // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
@@ -190,7 +190,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/ci $HOME/.config/waybar/ci_runners.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab 'infra ci'",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra ci'",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
@@ -203,7 +203,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/health $HOME/.config/waybar/health.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab home",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
@@ -225,8 +225,8 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/dispatch $HOME/.config/waybar/dispatch.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab queue",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab queue",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup",
         "tooltip": true
     },
     // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
@@ -238,8 +238,8 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/day $HOME/.config/waybar/day.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab today",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab today",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup",
         "tooltip": true
     },
     "custom/timebox": {
