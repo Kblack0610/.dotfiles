@@ -125,14 +125,47 @@ ask_fixture() {
   assert_line '[["row three","failed"],["row two","done/failed"]]'
 }
 
-@test "kpi --json: the four fleet-bench KPIs over 7 and 28 days, every prompt" {
+@test "kpi --json: the five fleet-bench KPIs over 7 and 28 days, every prompt" {
   ask_fixture
   printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run "$JUDGE_EVAL" kpi --json
   assert_success
-  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
-  # judge_precision needs 10 scored answers in a rule: none here
-  assert_output '[2,null,33.3,8.3]'
+  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
+  # judge_precision needs 10 scored answers in a rule: none here. 3 of 12 asks were answered live.
+  assert_output '[2,null,25,33.3,8.3]'
+}
+
+@test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
+  ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
+  ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
+  ask would judge=take-recommend answer=no
+  ask pass judge=human judge_rule=knowledge judge_type=human_fact judge_reason=only-you answer=yes
+  ask wait judge=human status=pending answer=
+  ask old judge=human judge_call=c0 answer=no
+  ask err1 judge=error judge_rule= answer=yes
+  ask gate judge=human judge_rule=gate judge_call= answer=yes
+  # No verdict at all: never shown, so it cannot read as a pass (negative control).
+  printf 'id: none\nproject: demo\nquestion: none?\nstatus: pending\n' > "$HOME/.agent/asks/demo/none.md"
+  run "$JUDGE_EVAL" log --json
+  assert_success
+  run jq -c 'sort_by(.id) | map([.id, .said, .you, .score])' <<<"$output"
+  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["old","passed","no","right"],["pass","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
+  run "$JUDGE_EVAL" log passed --json
+  run jq -c 'map(.id) | sort' <<<"$output"
+  assert_output '["old","pass","wait"]'
+  run "$JUDGE_EVAL" log wrong --limit 1 --json
+  run jq 'length' <<<"$output"
+  assert_output 1
+  run "$JUDGE_EVAL" log
+  assert_output --partial 'knowledge: only-you'
+  assert_output --partial 'ship_deploy  answered  you: kept  right'
+  assert_output --partial 'merged  "merged"'
+  run "$JUDGE_EVAL" log sideways
+  assert_failure 2
+  # The dashboards read the same rows, with the week beside them; the scores stay current-prompt.
+  run "$JUDGE_EVAL" ask-judge --json
+  run jq -c '.agents[0] | [(.verdicts | length), .week.verdicts, .week.live_answered, .week.live_pct, .total.verdicts]' <<<"$output"
+  assert_output '[7,7,2,33.3,6]'
 }
 
 @test "nothing to score reads as no verdicts, and an unknown lane is a usage error" {

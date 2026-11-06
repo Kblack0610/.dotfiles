@@ -710,6 +710,10 @@ game_ready() {
   assert_called 'The PR body carries the line "Item: gm-1" and the line "Task: gm-1".'
   run grep -c 'ptask game done' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # A question blocks one step, and reap, not the session, moves the item to waiting.
+  assert_called 'only that step is blocked, not the task'
+  run grep -cE 'agent-queue move gm-1 waiting|then stop and leave' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
   [ ! -e "$FLEET_DISPATCH_DIR/live" ] || fail "wrote the retired dispatch/live ledger"
   # The session holds a runner slot on its area, read from the item alone.
@@ -1488,17 +1492,21 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 }
 
 # 2026-11-03: a plan item sat in running/ at its plan, and the Overview's "Waiting for you" was empty.
-@test "reap moves an item to waiting while its session waits on the human or owns a pending ask, and back after" {
+@test "reap moves an item to waiting while its session waits on the human or stopped on a pending ask, and back after" {
   project game beta "$SANDBOX/repos/game"
   started_item p lab:game-agent-1
   started_item q lab:game-agent-2
-  printf 'game-agent-1\ngame-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
-  stub agent-ask 'printf "a1\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-2\n"'
+  started_item r lab:game-agent-3
+  started_item s lab:game-agent-4
+  printf 'game-agent-%s\n' 1 2 3 4 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'for x in 1:waiting 2:idle 3:busy 4:shell; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  stub agent-ask 'for n in 2 3 4; do printf "a$n\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-$n\n"; done'
   run cmd_reap
   assert_success
   [ -n "$(qitem waiting p)" ] || fail "the session at its plan is not waiting"
-  [ -n "$(qitem waiting q)" ] || fail "the session with a pending ask is not waiting"
+  [ -n "$(qitem waiting q)" ] || fail "the session stopped on a pending ask is not waiting"
+  # carrying on past its ask: busy, or in a shell (agent-panel's own working pair, so a gate never flaps)
+  [ -n "$(qitem running r)" ] && [ -n "$(qitem running s)" ] || fail "a session still working past its ask moved to waiting"
 
   stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
   stub agent-ask 'exit 0'

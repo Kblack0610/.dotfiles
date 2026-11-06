@@ -84,6 +84,7 @@ set -uo pipefail
 : "${BENCH_CAL_MAX:=4}"              # nor stretch it to days
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
 : "${BENCH_ASKS_CMD:=agent-ask list --all --pending}"
+: "${BENCH_ASKS_ALL_CMD:=agent-ask list --all}"   # every ask, for the ask KPIs
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/docs/bench}"
@@ -159,6 +160,9 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
+# agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
+def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
+  - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
 def run_rows: split("\n") | map(select(. != "") | split("\t")
@@ -972,14 +976,11 @@ cmd_review() {
 ask_rows() {
   local asks
   asks=$($BENCH_ASKS_CMD) || return 1
-  jq -n --argjson t "$1" --rawfile a <(printf '%s' "$asks") --slurpfile live <(latest_live) '
-    # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
-    def epoch: (.[0:19] + "Z" | fromdateiso8601)
-      - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
+  jq -n --argjson t "$1" --rawfile a <(printf '%s' "$asks") --slurpfile live <(latest_live) "$JQ_LIB"'
     def tsess: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "");
     [$a | split("\n")[] | select(length > 0) | split("\t")
      | {id: .[0], project: .[1], kind: .[4], question: .[5], recommend: (.[10] // ""),
-        session: (if (.[15] // "") != "" then .[15] else (.[12] // "") end), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | epoch)) / 3600 end)}
+        session: (if (.[15] // "") != "" then .[15] else (.[12] // "") end), age_h: (if (.[11] // "") == "" then 0 else ($t - (.[11] | ask_epoch)) / 3600 end)}
      | .session as $s
      | (if $s == "" then null
         else [$live[] | select(.session_id == $s or (.target | tsess) == $s)] | sort_by(.target) | first end) as $l
@@ -1223,15 +1224,39 @@ cmd_ledger() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad asks_stale board_open loop_dark $KPI_CHAIN"
+KPI_NOW="runners_bad board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
-KPI_JUDGE="judge_errors judge_precision ask_false_defer_pct ask_unclear_pct"
+KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct"
+KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 
 # comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
 # KPIs show - rather than an old number
 comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
+# ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
+# human_answered_per_day: asks the human answered in the window, a day. An answer with no answered_by
+# is an in-session capture from before the field existed, so the human's.
+# ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
+# pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
+# A cancelled ask was withdrawn by its asker and waited on no one.
+ask_kpi() {
+  local asks
+  asks=$($BENCH_ASKS_ALL_CMD 2>/dev/null) || { echo '{}'; return 0; }
+  jq -nc --argjson t "$1" --rawfile a <(printf '%s' "$asks") "$JQ_LIB"'
+    def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;   # nearest rank
+    [$a | split("\n")[] | select(length > 0) | split("\t")
+     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // "")}
+     | select(.c != "")
+     | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
+     | .x |= (if . == "" then null else ask_epoch end)] as $r
+    | def w($d): ($t - $d * 86400) as $s
+        | {human_answered_per_day: ([$r[] | select(.status == "answered" and (.by == "" or .by == "human")
+                                                  and .a != null and .a > $s and .a <= $t)] | length / $d | round1),
+           ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
+                               | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};
+    w(7) as $x | w(28) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
+}
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
@@ -1262,11 +1287,11 @@ kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
 # (kpi --at) leaves the comms and the counted-now KPIs null: nothing records them as of a past time.
 kpi_json() {
   local lim='{}' cm='{}'
-  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z_]+=' "$KPI_THRESHOLDS" | kv_json)
-  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi))
+  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
+  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ($commskeys | split(" ")[] | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),

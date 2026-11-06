@@ -63,6 +63,7 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | Outbox tab (both surfaces) | Daily: `#daily/outbox` on the web, the first button in the note's links row; `o` on the TUI Daily tab | The human asked for a clean daily note view with a link to the outbox, not a tab of its own (2026-11-05) |
 | Focus tab (both surfaces) | Daily, second after Home | It is the daily note, so it is named for it; Home is the landing page again (2026-11-05) |
 | Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections (#1077; folded at the bottom of Sessions from #961 until then) | Audit trails behind a click (rule 3) |
+| Answer judge disagreements list | Log, Judges' verdicts: every answer verdict, its `wrong` filter is the old list | Asked for 2026-11-05: see what the judge said yes to and why, not only where it missed |
 | New: ranked sessions and the session card (`agentctl-session-outcomes worst`, `card`) | Log, folded section (#1077) | Asked for 2026-11-04 (session telemetry); one reader, `hub_core::outcomes`, for both surfaces (rule 8) |
 | Web Shepherd pass card | Sessions, one line | It is one status line, too small for a tab |
 | Web Shepherd chat | Sessions: the shepherd session pinned first, opened like any session | The chat is that session's transcript and compose box, which Sessions already has |
