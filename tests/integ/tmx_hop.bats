@@ -85,7 +85,7 @@ at() {
 
 # bound_command <key> -- the quoted shell command .tmux.conf binds to a prefix key.
 bound_command() {
-  sed -nE "s/^bind $1 (run-shell|detach-client -E) \"(.*)\"$/\2/p" "$REPO_ROOT/.tmux.conf"
+  sed -nE "s/^bind (-N \"[^\"]*\" )?$1 (run-shell|detach-client -E) \"(.*)\"$/\3/p" "$REPO_ROOT/.tmux.conf"
 }
 
 @test "every server-hop key binds a tmx command at all" {

@@ -37,9 +37,15 @@ plan_phases() {
 PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
 
-# plan_epic <plan file> -> the `<code>-<N>` of the plan's `epic:` line, or nothing.
-plan_epic() {
-  [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1
+# plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
+plan_epic() { _epic_line epic "$1"; }
+
+# brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
+brief_epic() { _epic_line Epic "$1"; }
+
+# _epic_line <key> <file>: the one parse of an epic id after `<key>:`
+_epic_line() {
+  [ -f "$2" ] && sed -nE "s/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/\\1/p" "$2" | head -1
 }
 
 # plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when
