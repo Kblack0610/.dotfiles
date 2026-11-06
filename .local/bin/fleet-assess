@@ -101,18 +101,33 @@ classify() {
     case "$comm" in "tmux: server") pane=1; break ;; systemd) break ;; esac
   done
   [ -n "$class" ] || { [ -n "$pane" ] && class=shell || class=orphan; }
-  printf '%s\t%s\n' "$class" "$(session_of "$pid")"
+  printf '%s\t%s\t%s\n' "$class" "$(session_of "$pid")" "$(pane_of "$pid")"
+}
+
+# tmux_env <pid> -> "<socket path> <pane id>" from the process's environment, or nothing.
+tmux_env() {
+  local env sock pane
+  env="$(tr '\0' '\n' 2>/dev/null < "/proc/$1/environ")"
+  sock="$(sed -n 's/^TMUX=//p' <<<"$env")"; sock="${sock%%,*}"
+  pane="$(sed -n 's/^TMUX_PANE=//p' <<<"$env")"
+  [ -n "$sock" ] && [ -n "$pane" ] && echo "$sock $pane"
 }
 
 # The tmux session, asked of the server the process was started under. There is more
 # than one server on this box (hub, lab), so `tmux list-panes -a` alone misses most.
 session_of() {
-  local env sock pane
-  env="$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null)"
-  sock="$(sed -n 's/^TMUX=//p' <<<"$env")"; sock="${sock%%,*}"
-  pane="$(sed -n 's/^TMUX_PANE=//p' <<<"$env")"
-  [ -n "$sock" ] && [ -n "$pane" ] || { echo -; return; }
+  local sock pane
+  read -r sock pane < <(tmux_env "$1")
+  [ -n "$pane" ] || { echo -; return; }
   tmux -S "$sock" display-message -p -t "$pane" '#S' 2>/dev/null || echo -
+}
+
+# The pane as agent-panel names it, <server>/<pane id>: a session's windows share its name,
+# so only the pane says which agent a heavy process belongs to (ar-290).
+pane_of() {
+  local sock pane
+  read -r sock pane < <(tmux_env "$1")
+  [ -n "$pane" ] && echo "${sock##*/}/$pane" || echo -
 }
 
 worktree_of() {
@@ -129,8 +144,8 @@ rows() {
   ps -eo pid=,ni=,pcpu=,comm=,args= --sort=-pcpu 2>/dev/null \
     | awk -v min="$FLEET_ROW_CPU" '$3 + 0 >= min || ($4 == "Unity" && / -batchmode/) { print }' \
     | while read -r pid ni cpu comm _; do
-        IFS=$'\t' read -r class sess < <(classify "$pid")
-        printf '%-8s %5s %3s  %-8s %-28s %-34s %s\n' "$pid" "$cpu" "$ni" "$class" "$sess" "$(worktree_of "$pid")" "$comm"
+        IFS=$'\t' read -r class sess pane < <(classify "$pid")
+        printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %s\n' "$pid" "$cpu" "$ni" "$class" "$sess" "$(worktree_of "$pid")" "$comm" "$pane"
       done
 }
 
@@ -173,7 +188,7 @@ blocked_rows() {
     comm="$(cat "/proc/$pid/comm" 2>/dev/null)" || continue
     wchan="$(ps -Lo stat=,wchan:40= -p "$pid" 2>/dev/null | awk '$1 ~ /^D/ { print $2; exit }')"
     args="$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-160)"
-    IFS=$'\t' read -r class sess < <(classify "$pid")
+    IFS=$'\t' read -r class sess _ < <(classify "$pid")
     printf '%s\t%s\t%sm\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pid" "$n" "$((age / 60))" "$comm" "$class" "$sess" \
       "$(worktree_of "$pid")" "${wchan:--}" "$(open_path "$pid")" "$args"
   done
@@ -363,7 +378,7 @@ main() {
   fi
   echo "verdict: $verdict"
   echo
-  printf '%-8s %5s %3s  %-8s %-28s %-34s %s\n' PID CPU NI CLASS SESSION WORKTREE COMM
+  printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %s\n' PID CPU NI CLASS SESSION WORKTREE COMM PANE
   rows
   blocked="$(blocked_rows)"
   [ -n "$blocked" ] || return 0

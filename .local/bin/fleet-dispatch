@@ -6,7 +6,7 @@
 #   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item (night)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
@@ -77,6 +77,13 @@ unset _k _v
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_NIGHT_PROJECTS:=agent-runtime notes-cockpit}"
 : "${DISPATCH_NIGHT_MAX:=3}"
+# The machine-mode level scales the three limits that bind starts; the conf holds the mid numbers.
+# Scaled into names of their own, never back into the exported DISPATCH_* a child would scale again.
+# shellcheck source=../lib/machine-mode.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"
+LEVEL=$(machine_level)
+read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" \
+  DISPATCH_NIGHT_MAX "$DISPATCH_NIGHT_MAX" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 : "${DISPATCH_NIGHT_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
 # Rows fill never promotes for the night, whatever the judge says: asks, decisions, anything needing a
 # device or the human's own machine, secrets, prod, wishes. Case-insensitive ERE.
@@ -1200,7 +1207,7 @@ start_items() {
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   why=$(gate)
   [ -z "$why" ] || return 0
-  local limit=DISPATCH_PER_PASS; [ "$room" -lt "$DISPATCH_PER_PASS" ] && limit=DISPATCH_MAX_LIVE
+  local limit=DISPATCH_PER_PASS; [ "$room" -lt "$PER_PASS" ] && limit=DISPATCH_MAX_LIVE
   settle WORKED "under-used: started $n, $limit is the limit while $(grep -c . <<<"$items") runnable wait and the gates are open (fleet-dispatch headroom)"
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
@@ -1436,11 +1443,11 @@ cmd_headroom() {
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
-    --argjson per_pass "$DISPATCH_PER_PASS" --argjson could "$could" --argjson cores "$cores" \
-    --arg load "${load:-}" --arg max_load "$DISPATCH_MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
+    --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
+    --arg load "${load:-}" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" '
     def num: if . == "" then null else tonumber end;
-    {could_start: $could, per_pass: $per_pass, per_pass_limited: ($could > $per_pass),
+    {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
@@ -1454,7 +1461,7 @@ cmd_headroom() {
         elif startswith("real idle") then "idle" elif test("account") then "account"
         elif startswith("fleet-assess") then "assess" else "other" end)' |
     if [ "${1:-}" = --json ]; then cat; else
-      jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass))" +
+      jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
@@ -1649,8 +1656,8 @@ gate() {
   infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
-  awk -v l="${load:-0}" -v c="$cores" -v m="$DISPATCH_MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
-    why+=("load ${load} on ${cores} cores is over the ${DISPATCH_MAX_LOAD} pace")
+  awk -v l="${load:-0}" -v c="$cores" -v m="$MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
+    why+=("load ${load} on ${cores} cores is over the ${MAX_LOAD} pace")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
@@ -1708,7 +1715,7 @@ cmd_run() {
   FLOOR_LIVE=$(live_runs | grep -c . || true)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   room=$UNITS_FREE
-  [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
+  [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP.
   if [ "$room" -le 0 ]; then settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
@@ -1798,7 +1805,7 @@ fill_night() {
   judge_once || jrc=1
   active=$(agent-queue list --json --state active 2>/dev/null |
     jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
-  active=$(( DISPATCH_NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
+  active=$(( NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
   night=$(night_picks "$(night_rows '')" | head -n "$active")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -1844,18 +1851,18 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] --raw LINE -- queue one row as the human saw it: the
+# cmd_promote --project P [--profile X] [--agent] [--tags T] --raw LINE -- queue one row as the human saw it: the
 # Board tab's Start. A row that changed since, or is already started, is refused. No gate: the item
 # starts like any board item: when the human is away, or within the present trickle.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' board key
+  local project='' prof='' lane=human raw='' tags='' board key
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
-      --project | --profile | --raw) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
+      --project | --profile | --raw | --tags) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;
     esac
-    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; esac
+    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; --tags) tags=$2 ;; esac
     shift 2
   done
   [ -n "$project" ] && [ -n "$raw" ] || { say "promote: --project and --raw are required"; return 2; }
@@ -1863,7 +1870,7 @@ cmd_promote() {
   key=$(R="$raw" awk -F'\t' 'substr($0, length($1) + 2) == ENVIRON["R"] { print $1; exit }' <<<"$board")
   [ -n "$key" ] || { say "promote: not on the $project $lane board as given, so it changed: $raw"; return 1; }
   promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" \
-    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "" "$(sed 's/^- \[.\] //' <<<"$raw")"
+    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "$tags" "$(sed 's/^- \[.\] //' <<<"$raw")"
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
@@ -1883,7 +1890,7 @@ cmd_fill() {
   if [ "$dry" = 0 ]; then
     DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
     flock -n 9 || { say "fill: another pass is running"; return 0; }
-    fill_now "$DISPATCH_PER_PASS"; return
+    fill_now "$PER_PASS"; return
   fi
   open=$(all_open)
   ready=$(picks "$open" 999)
@@ -1943,7 +1950,7 @@ night_rows() {
 # collide. Subtract or fix first, then observer rows, then most urgent, then oldest.
 night_picks() {
   [ -n "$1" ] || return 0
-  jq -sc --arg sig "$(policy_sig)" --argjson max "$DISPATCH_NIGHT_MAX" --slurpfile v <(latest_verdicts) '
+  jq -sc --arg sig "$(policy_sig)" --argjson max "$NIGHT_MAX" --slurpfile v <(latest_verdicts) '
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d != null and $d.tier3_only == true and $d.tier == 3

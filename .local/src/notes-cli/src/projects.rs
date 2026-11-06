@@ -967,15 +967,20 @@ pub(crate) fn row_type_area(line: &str) -> Option<(String, String)> {
 }
 
 /// `(type, area, title)` of a well-formed `type(area): title`.
-fn row_prefix(text: &str) -> Option<(&str, &str, &str)> {
+pub(crate) fn row_prefix(text: &str) -> Option<(&str, &str, &str)> {
     let (ty, rest) = text.split_once('(')?;
     let (area, title) = rest.split_once("): ")?;
-    let kebab = !area.is_empty()
-        && !area.starts_with('-')
-        && area
+    (ROW_TYPES.contains(&ty) && is_area(area) && !title.trim().is_empty())
+        .then_some((ty, area, title))
+}
+
+/// Whether `word` is the grammar's area: one lowercase kebab word.
+pub(crate) fn is_area(word: &str) -> bool {
+    !word.is_empty()
+        && !word.starts_with('-')
+        && word
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    (ROW_TYPES.contains(&ty) && kebab && !title.trim().is_empty()).then_some((ty, area, title))
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A row's title as the grammar counts it: its text with the stamps, the hashtags and the
@@ -1072,7 +1077,7 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     }
     if let Some(first) = unprefixed.first() {
         out.push(format!(
-            "{} open row(s) not in `type(area): title` form (first: line {first})",
+            "{} open row(s) not in `type(area): title` form (first: line {first}; `notes doctor --projects --untyped` proposes each)",
             unprefixed.len()
         ));
     }
@@ -1121,6 +1126,14 @@ pub(crate) fn duplicate_open_rows(content: &str) -> Vec<(String, usize)> {
     }
     seen.retain(|(_, n)| *n > 1);
     seen
+}
+
+/// Every indexed project of `p` with its directory.
+pub(crate) fn indexed_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
+    indexed(p)
+        .into_iter()
+        .filter_map(|(name, summary)| Some((name, summary.parent()?.to_path_buf())))
+        .collect()
 }
 
 /// `notes doctor --projects`: [`shape_findings`] for every indexed project in every
@@ -2126,10 +2139,7 @@ fn strip_ai_tags(content: &str) -> (String, usize) {
 pub fn retire_ai_tag(p: &Profile, log: &Logger, name: Option<&str>, dry_run: bool) -> Result<()> {
     let dirs: Vec<(String, PathBuf)> = match name {
         Some(n) => vec![(n.to_string(), project_dir(p, n)?)],
-        None => indexed(p)
-            .into_iter()
-            .filter_map(|(n, s)| s.parent().map(|d| (n, d.to_path_buf())))
-            .collect(),
+        None => indexed_dirs(p),
     };
 
     let (mut sheets, mut rows) = (0usize, 0usize);
@@ -5051,7 +5061,7 @@ mod move_layout_tests {
                 "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
                 "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
                 "line 6: done with no proof marker (<!-- pr:N -->)",
-                "4 open row(s) not in `type(area): title` form (first: line 2)",
+                "4 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
                 "4 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
             ]
         );
@@ -5088,7 +5098,7 @@ mod move_layout_tests {
                 "line 9: #oneshot is retired (nothing reads it)",
                 "line 9: #ci is retired (nothing reads it)",
                 "line 10: since: is retired, the created stamp is #cMMDD",
-                "2 open row(s) not in `type(area): title` form (first: line 5)",
+                "2 open row(s) not in `type(area): title` form (first: line 5; `notes doctor --projects --untyped` proposes each)",
                 "1 open row(s) with a title over 80 chars, detail goes on an indented line (first: line 7)",
                 "7 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 4)",
             ]

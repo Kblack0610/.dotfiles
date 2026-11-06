@@ -51,10 +51,11 @@ jobs:
         run: make -C tests bootstrap
       # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
       # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
-      - name: GNU parallel, inotify-tools
+      # sqlite3: session_outcomes.bats builds a fixture opencode DB.
+      - name: GNU parallel, inotify-tools, sqlite3
         run: |
-          { command -v parallel && command -v inotifywait; } >/dev/null ||
-            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools; }
+          { command -v parallel && command -v inotifywait && command -v sqlite3; } >/dev/null ||
+            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools sqlite3; }
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
@@ -153,8 +154,8 @@ jobs:
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
           NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
-      - name: Inbox triager, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=integ/inbox_triage.bats BATS_FLAGS="--print-output-on-failure"
+      - name: Inbox triager and planner, on the real notes
+        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)

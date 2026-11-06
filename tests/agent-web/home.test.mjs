@@ -45,18 +45,20 @@ test("an ask or an open dialog on Needs you is its answer card; a red nightly is
   assert.match(html, /<span class="nkind">Failing<\/span><span>unity-core<\/span><span>nightly failed<\/span><\/div><div class="ntitle">PlayMode\.Lobby red/, "the id that only repeats the project is not shown twice");
 });
 
-test("Needs you is grouped by kind, plans first, the server's order kept within a kind", () => {
+test("Needs you keeps the server's ranked order and says what each row holds", () => {
   const plan = (t) => ({ target: t, short: t, session: t, project: "p", summary: t, items: [], actions: [], question: { kind: "plan", text: "do it" } });
+  const score = (holds) => ({ human: true, holds, value: 1 });
   const html = draw(home({ needs: [
-    { kind: "queue", project: "p", text: "blocked one", id: "q1" },
-    { kind: "session", project: "p", text: "s1", id: "s1", target: "s1" },
-    { kind: "ask", project: "p", text: "first ask", id: "x1" },
+    { kind: "queue", project: "p", text: "blocked one", id: "q1", score: score("2 queued") },
+    { kind: "session", project: "p", text: "s1", id: "s1", target: "s1", score: score("session") },
+    { kind: "ask", project: "p", text: "first ask", id: "x1", score: score("") },
     { kind: "session", project: "p", text: "s2", id: "s2", target: "s2" },
-    { kind: "ask", project: "p", text: "second ask", id: "x2" },
   ] }), [plan("s1"), plan("s2")]);
   const at = (s) => html.indexOf(s);
-  assert.ok(at('data-t="s1"') < at('data-t="s2"') && at('data-t="s2"') < at("first ask") && at("first ask") < at("second ask") && at("second ask") < at("blocked one"), html);
-  assert.match(html, /<span class="nchip k-plan">Plan to approve <b>2<\/b><\/span><span class="nchip k-ask">Question <b>2<\/b><\/span><span class="nchip k-blocked">Blocked <b>1<\/b><\/span>/);
+  // Negative control: a queue row the server ranked first is not moved below the plans.
+  assert.ok(at("blocked one") < at('data-t="s1"') && at('data-t="s1"') < at("first ask") && at("first ask") < at('data-t="s2"'), html);
+  assert.match(html, /<span class="nkind">Blocked<\/span>.*<span>holds 2 queued<\/span>/s);
+  assert.match(html, /<span class="nchip k-plan">Plan to approve <b>2<\/b><\/span><span class="nchip k-ask">Question <b>1<\/b><\/span><span class="nchip k-blocked">Blocked <b>1<\/b><\/span>/);
 });
 
 test("a need whose session is gone has no Open button; a waiting queue item opens the queue", () => {

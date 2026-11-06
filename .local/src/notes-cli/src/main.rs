@@ -33,6 +33,7 @@ mod playtest;
 mod project_sweep;
 mod project_tasks;
 mod projects;
+mod propose;
 mod registry;
 mod sheet;
 mod show;
@@ -376,6 +377,10 @@ enum Cmd {
         /// `<profile>/<project>: <finding>` line each
         #[arg(long)]
         projects: bool,
+        /// With --projects: list instead each open agent-board row with no type and the row
+        /// proposed for it, `<profile>/<project><TAB><id><TAB><row>`. Writes nothing
+        #[arg(long, requires = "projects")]
+        untyped: bool,
     },
     /// What was written to which row, and by whom: today, or `--day` / `--days`
     Log {
@@ -626,6 +631,13 @@ enum PtaskCmd {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]
         dry_run: bool,
+    },
+    /// Print the `type(area): title` row proposed for this text, tags off and the title cut to
+    /// the limit. Writes nothing
+    Propose {
+        /// The row's words
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        text: Vec<String>,
     },
     /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
     Inbox {
@@ -1025,7 +1037,10 @@ fn main() -> Result<()> {
             // Every verb that writes holds the ptask lock across its read-modify-write and id
             // minting, so two writers never lose a row or mint one id twice.
             let _lock = match &sub {
-                None | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. }) => None,
+                None
+                | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. } | PtaskCmd::Propose { .. }) => {
+                    None
+                }
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
@@ -1095,6 +1110,10 @@ fn main() -> Result<()> {
                     project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::Propose { text }) => {
+                    println!("{}", propose::proposed_row(&text.join(" "), &name));
+                    0
+                }
                 Some(PtaskCmd::File {
                     rows,
                     dup,
@@ -1472,8 +1491,11 @@ fn main() -> Result<()> {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
-        Cmd::Doctor { projects: true } => doctor::projects()?,
-        Cmd::Doctor { projects: false } => doctor::run(&prof, &log)?,
+        Cmd::Doctor { untyped: true, .. } => doctor::untyped()?,
+        Cmd::Doctor { projects: true, .. } => doctor::projects()?,
+        Cmd::Doctor {
+            projects: false, ..
+        } => doctor::run(&prof, &log)?,
         Cmd::Config { profiles } => {
             if profiles {
                 for name in config::all_profile_names()? {

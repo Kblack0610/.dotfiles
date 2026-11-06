@@ -561,6 +561,31 @@ landed_fixture() {
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
 }
 
+@test "end to end: a heavy child counts only for its own pane, not every window of its tmux session (ar-290)" {
+  local since=$(( $(date +%s) - 3600 ))
+  row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
+  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$(row 1 7)" "$(row 2 8)" > "$SANDBOX/bin/agent-panel"
+  # fleet-assess as it prints: rows under the PID header, PANE last, then a blank line and the
+  # blocked table, whose columns differ and must not be read as rows.
+  cat > "$SANDBOX/bin/fleet-assess" <<'SH'
+#!/usr/bin/env bash
+echo 'verdict: OK load 1.0x cores'
+echo
+echo 'PID        CPU  NI  CLASS    SESSION                      WORKTREE                           COMM       PANE'
+echo '4242       300   0  claude   s1                           dotfiles-agent-2                   cargo      lab/%8'
+echo
+echo 'PID      THR   AGE  COMM         CLASS    SESSION                      WORKTREE                           WCHAN                OPEN'
+echo '4343       1   10m  rg           claude   s1                           dotfiles-agent-1                   -                    lab/%7'
+SH
+  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/gh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.target == "lab/s1:2") | .reason' <<<"$output")" = 'heavy child process' ]
+  [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
+}
+
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
   landed_fixture
 
@@ -1325,7 +1350,8 @@ SH
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
   landed_fixture
   PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 \
+    --options 'a=ship|b=hold' --recommend a 'ship it?' >/dev/null
   local doc="$XDG_STATE_HOME/fleet/state.json"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
@@ -1343,6 +1369,9 @@ SH
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
+  [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
+  [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
   # no temp file left beside it
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
