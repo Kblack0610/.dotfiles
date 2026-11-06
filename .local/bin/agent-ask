@@ -96,7 +96,7 @@
 
 set -uo pipefail
 
-ASKS_ROOT="$HOME/.agent/asks"
+ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # jq: a dollar amount to the cent ("$0.08"), for the card's telemetry line and trace's call line.
 JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";'
 : "${AGENT_ASK_QUESTION_MAX:=150}"

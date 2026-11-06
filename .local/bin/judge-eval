@@ -9,7 +9,13 @@
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
 #
-# Read-only. The standard, each lane's truth and the formulas: ~/.local/src/docs/judges.md.
+#   judge-eval replay [--limit N] [--out DIR] [--json]
+#       the answer judge's current policy over the asks the human answered with an option, newest
+#       first: the real `agent-ask judge` on blind copies, by its own agent `ask-judge-replay`,
+#       then the usual ask-judge report on the copies. --out keeps them.
+#
+# Read-only: replay works on copies and spends a model call per ask. The standard, each lane's
+# truth and the formulas: ~/.local/src/docs/judges.md.
 
 set -uo pipefail
 
@@ -20,6 +26,10 @@ set -uo pipefail
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
+# replay's judge, and what it must not see of an ask: every field the human's answer left on it.
+: "${JUDGE_EVAL_REPLAY_CMD:=agentctl-run --agent ask-judge-replay}"
+: "${JUDGE_EVAL_REPLAY_JOBS:=4}"
+: "${JUDGE_EVAL_BLIND_FIELDS:=answer answered_at answered_by answer_note resume resumed_at closed_at closed_reason}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 AGENTS="ask-judge dispatch-judge ask-sweep"
 # judge_precision counts only rules with this many scored answers: below it one miss swings 10+ points.
@@ -222,8 +232,71 @@ kpi_json() {
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
 }
 
+# replay_labelled: the id and project of each ask the human answered with one option, newest
+# first, gates and approvals out. Free text and bare settle-session stamps carry no label.
+replay_labelled() {
+  local asks
+  asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered" and (.answered_by // "human") == "human"
+    and (.options // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
+  jq -sr --argjson picks "$(in_session_picks "$asks")" '
+    map(select(.answer as $a | $picks[.id] or (.options | split("|") | index($a))))
+    | sort_by(.created // "") | reverse | .[] | [.id, .project] | @tsv' <<<"$asks"
+}
+
+# replay_blind <ask file> <copy>: the ask as it stood when it was posted, pending and unjudged.
+# Fails when the answer survived, so a label can never reach the judge.
+replay_blind() {
+  local fields
+  fields="$(tr ' ' '|' <<<"$JUDGE_EVAL_BLIND_FIELDS")"
+  sed -E -e '/^(judge|judge_[a-z]+|judged_at): /d' -e "s/^($fields): .*/\\1: /" -e 's/^status: .*/status: pending/' "$1" > "$2"
+  ! grep -qE '^answer: .*[^ ]' "$2"
+}
+
+# replay [--limit N] [--out DIR] [--json]: see the header. The verdicts are moved onto copies of
+# the answered asks, so judge-eval's one scoring reads them like any other.
+replay() {
+  local limit="" dir="" json=0 ask id project n=0 out rc=0
+  ask="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
+      --out) [ -n "${2:-}" ] || { say "--out takes a directory"; return 2; }; dir="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: judge-eval replay [--limit N] [--out DIR] [--json]"; return 2 ;;
+    esac
+  done
+  local keep=1
+  [ -n "$dir" ] || { dir="$(mktemp -d)" || return 1; keep=0; }
+  mkdir -p "$dir" || return 1
+  while IFS=$'\t' read -r id project; do
+    mkdir -p "$dir/blind/$project" "$dir/scored/$project"
+    replay_blind "$ASKS_ROOT/$project/$id.md" "$dir/blind/$project/$id.md" ||
+      { say "the answer to $id survived the blinding; nothing was sent"; rc=1; break; }
+    n=$((n + 1))
+    [ "$n" = "${limit:-0}" ] && break
+  done < <(replay_labelled)
+  if [ "$rc" = 0 ] && [ "$n" -gt 0 ]; then
+    find "$dir/blind" -mindepth 2 -name '*.md' -printf '%f\n' | sed 's/\.md$//' |
+      AGENT_ASK_ROOT="$dir/blind" AGENT_ASK_JUDGE_CMD="$JUDGE_EVAL_REPLAY_CMD" \
+        xargs -r -P "$JUDGE_EVAL_REPLAY_JOBS" -n 1 "$ask" judge >/dev/null 2>&1
+    local copy pat='^(judge|judge_[a-z]+|judged_at): '
+    while IFS= read -r copy; do
+      project="$(basename "$(dirname "$copy")")"; id="$(basename "$copy")"
+      { grep -Ev "$pat" "$ASKS_ROOT/$project/$id"; grep -E "$pat" "$copy"; } > "$dir/scored/$project/$id"
+    done < <(find "$dir/blind" -mindepth 2 -name '*.md')
+    say "replayed $n ask(s) on blind copies"
+    out="$(ASKS_ROOT="$dir/scored" AGENTS="ask-judge ask-judge-replay" eval_json ask-judge 1 "")" || rc=1
+    if [ "$rc" = 0 ]; then if [ "$json" = 1 ]; then printf '%s\n' "$out"; else report "$out"; fi; fi
+  elif [ "$rc" = 0 ]; then
+    say "no labelled asks to replay"
+  fi
+  [ "$keep" = 1 ] || rm -rf -- "$dir"
+  return "$rc"
+}
+
 main() {
   local want="" any=0 days="" json=0 a
+  if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
   if [ "${1:-}" = kpi ]; then
     shift
     case "${1:-}" in --json) kpi_json ;; "") kpi_json | jq -r 'to_entries[] | "\(.key)\t7d \(.value["7d"] // "-")\t28d \(.value["28d"] // "-")"' ;;
