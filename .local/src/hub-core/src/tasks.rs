@@ -10,7 +10,7 @@ use crate::queue::PRIORITIES;
 use crate::session_actions::Runner;
 
 /// The lanes a board can write. The feed's `focus` rows are counted into `Feed::focus` and
-/// left out of `rows`: a profile's Focus is the Focus tab's (`crate::focus`), and a board shows
+/// left out of `rows`: a profile's Focus is the Daily tab's (`crate::focus`), and a board shows
 /// only how many are open, linking there.
 pub const LANES: [&str; 3] = ["human", "agent", "playtest"];
 

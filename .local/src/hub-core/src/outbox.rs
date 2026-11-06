@@ -1,4 +1,4 @@
-//! The Outbox tab's reader, for both hub surfaces: the outbox as the editor holds it
+//! The outbox's reader (Daily's outbox view), for both hub surfaces: the outbox as the editor holds it
 //! (`notes outbox show --json`) and what intake did today (`notes log --day <today> --json`, the
 //! ingest record `status/inbox.md` is drawn from). The writer is `notes outbox put --base`, run
 //! by agent-web, which this reader never calls: a read cannot change the file.
