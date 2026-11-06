@@ -37,6 +37,11 @@ plan_phases() {
 PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
 
+# plan_epic <plan file> -> the `<code>-<N>` of the plan's `epic:` line, or nothing.
+plan_epic() {
+  [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1
+}
+
 # plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when
 # the file or its checklist is missing.
 plan_phase_list() {
