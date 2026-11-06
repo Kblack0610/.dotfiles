@@ -333,9 +333,12 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 .fw { overflow-wrap: anywhere; }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
-.tbl tr.jr { cursor: pointer; }
-.tbl tr.jr:hover td { background: var(--bg); }
-.tbl tr.jr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.jr, .tbl tr.wr { cursor: pointer; }
+.tbl tr.jr:hover td, .tbl tr.wr:hover td { background: var(--bg); }
+.tbl tr.jr.sel td, .tbl tr.wr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* Fleet: a runner's expanded registry row (fleet.js workerDetail). */
+.tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
+.tbl tr.wdet .tbl { margin-top: 6px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
   .board { padding: 12px; }
