@@ -1,7 +1,7 @@
 ---
 name: usage-cleanup
 description: >-
-  A token and agent usage cleanup pass: baseline, find the burn, fix waste at the root, re-measure, report. Use for "we're burning too much", "where do the tokens go", "usage cleanup pass N". Per-task model choice: model-lane; spend alerts: sentinel.
+  A token and agent usage cleanup pass: baseline, find the burn, fix waste at the root, re-measure, report. Use for "what's our burn rate", "we're burning too much", "where do the tokens go", "usage cleanup pass N". Per-task model choice: model-lane; spend alerts: sentinel.
 metadata:
   category: ops
   tags: [tokens, cost, usage, agents, fleet, context]
