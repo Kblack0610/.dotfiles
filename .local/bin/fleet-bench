@@ -1489,24 +1489,26 @@ cmd_ledger() {
 # rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local row src anchor cmd value anchored
-  while IFS= read -r row; do
-    { read -r src; read -r anchor; read -r cmd; } < <(jq -r '.source, .anchor, (.measure // "")' <<<"$row")
+  local src anchor cmd value anchored
+  while IFS=$'\x1f' read -r src anchor cmd; do
     src="${src/#\~/$HOME}"
     if [ ! -f "$src" ]; then anchored=null
     elif grep -qF -- "$anchor" "$src"; then anchored=true
     else anchored=false
     fi
     value=""
-    [ -z "$cmd" ] || value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>/dev/null | tail -1)
-    jq -c --argjson a "$anchored" --arg v "$value" '
-      . + {anchored: $a, value: ($v | tonumber? // null)}
+    [ -z "$cmd" ] || value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>/dev/null </dev/null | tail -1)
+    printf '%s\x1f%s\n' "$anchored" "$value"
+  done < <(jq -r '[.source, .anchor, (.measure // "")] | join("\u001f")' "$RULES_REGISTER") |
+    jq -cRn --slurpfile rows "$RULES_REGISTER" '
+      [inputs | split("\u001f")] as $seen
+      | range($rows | length) as $i
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
       | (.max != null or .min != null) as $bounded
       | .dead = ($bounded and .value == null)
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
-      | .moved = (.holds != null and .holds != (.confidence != "low"))' <<<"$row"
-  done < "$RULES_REGISTER"
+      | .moved = (.holds != null and .holds != (.confidence != "low"))'
 }
 
 # rules_problems <states array> -> one line per row --check fails on.

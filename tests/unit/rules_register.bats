@@ -129,12 +129,15 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   assert_equal "$miss" ''
 }
 
-@test "register: the text of every rule is still in its source, and every bounded measure prints a number" {
+@test "register: the text of every rule here is still in its source, and every bounded measure prints a number" {
   real_register
   HOME="$REAL_HOME" RULES_REGISTER="$REAL" run "$SUBJECT" rules --json
   assert_success
   local states="$output"
-  run jq -r '.[] | select(.anchored == false or .dead) | "\(.source): \(.anchor)"' <<<"$states"
+  # Only this repo's sources: a rule edited in another repo is the scorecard's line, and must not go
+  # red on a session here that only touched fleet-bench.
+  run jq -r '.[] | select((.anchored == false and (.source | startswith("~/.dotfiles/"))) or .dead)
+    | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
   [ "$(jq '[.[] | select(.anchored == true)] | length' <<<"$states")" -gt 0 ]
