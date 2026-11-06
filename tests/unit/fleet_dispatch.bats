@@ -2323,7 +2323,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'started game-agent-1: game: fix-menu'
   assert_called 'model-lane classify Fix the menu sides --floor sonnet'
   assert_called 'claude --model sonnet'
-  assert_called 'model-lane log --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" model) $(qfield "$f" lane_run)" 'sonnet run-7'
 }
@@ -2386,7 +2386,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_success
   assert_called 'model-lane classify Fix the menu sides --floor sonnet'
   assert_called 'claude --model sonnet'
-  assert_called 'model-lane log --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" model) $(qfield "$f" origin) $(qfield "$f" lane_run)" 'sonnet hand run-8'
 }
@@ -3199,7 +3199,7 @@ harness_ready() {
   assert_called 'OPENCODE_CONFIG='
   assert_called '</dev/null'
   assert_not_called 'claude --model'
-  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness opencode --picked qwen --ran qwen'
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness opencode --picked qwen --ran qwen'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen gateway run-9'
   grep -q 'ses_eval' <<<"$(qfield "$f" sessions)" || fail "the run's session id is not on the item"
@@ -3233,7 +3233,7 @@ harness_ready() {
   assert_success
   assert_called 'env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY='
   assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --permission-mode bypassPermissions'
-  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
   assert_not_called 'claude-acct pick'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer gateway'
@@ -3368,7 +3368,7 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_called 'reserve.key'
   assert_not_called 'eval.key'
   grep -q 'Bearer sk-reserve' "$NOTES_FIXTURE/curl.stdin" || fail "the budget check read another key"
-  assert_called 'model-lane log --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet --harness lazer-reserve'
+  assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet --harness lazer-reserve'
   # the verdict that let it spill is the one logged: model-lane is asked once, not again by cmd_start
   [ "$(grep -c '^model-lane classify' "$NOTES_FIXTURE/calls.log")" -eq 1 ]
   assert_not_called '--lane eval'
