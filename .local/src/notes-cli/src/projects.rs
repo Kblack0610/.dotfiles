@@ -620,13 +620,13 @@ fn summary_template(name: &str) -> String {
 ///
 /// - `README.md`: the human's sheet (what only the human can do), `summary.md`: STATUS + AUTO.
 /// - `agent/README.md`: the agents' working board.
-/// - `ideas.md`: unshaped ideas, where `notes focus sweep` puts an `#idea:<project>` row.
+/// - `ideas.md`: unshaped ideas, kept by hand.
 ///
 /// Every other note doc (pitch, briefs, research) lives in `docs/`. A project's registry
 /// type adds root files on top of this core: [`Overlays`].
 pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
-/// A fresh `ideas.md`. Also the header `notes focus sweep` gives one it creates.
+/// A fresh `ideas.md`.
 pub(crate) fn ideas_template(name: &str) -> String {
     include_str!("../templates/ideas.md").replace("{name}", name)
 }
