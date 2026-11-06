@@ -1,7 +1,7 @@
 ---
 name: fix-red
 description: >-
-  Take one red to a fix: read its evidence, reproduce it, fix the cause, re-run the probe, open a PR. Use for "fix this red", "why did this watch trip", "investigate this fault", or a `red` queue item. Why CI keeps failing: ci-failures.
+  Take one red to a fix: read its evidence, reproduce it, fix the cause, re-run the probe, review and merge it. Use for "fix this red", "why did this watch trip", "investigate this fault", or a `red` queue item. Why CI keeps failing: ci-failures.
 metadata:
   category: monitoring
   tags: [fleet, triage, watches, runners, reds]
@@ -14,7 +14,7 @@ A red is a watch tripped, a runner failed, a unit failed, or an error signature 
 
 ## Scope and triggers
 
-Use it for one red, from evidence to an open PR or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped.
+Use it for one red, from evidence to a merged fix or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped.
 
 Out of scope: why CI keeps failing across runs (`ci-failures`), the red checks on one PR (`/my:fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
 
@@ -53,11 +53,17 @@ Never make a red go away by changing the alarm: no widening a threshold, editing
 
 Never touch auth tokens, logs, sqlite or other runtime state, and never restart a daemon on a guess.
 
-## 5. Prove it and open the PR
+## 5. Prove it, review it, merge it
 
 Re-run the same probe or check from step 2 and put the before and after in the PR body. A fix that only takes effect after a merge or a deploy says what to re-run then.
 
-A `red` item stops at an open PR, at any hour, and never merges: `~/.config/fleet-dispatch/policy.md`. A human session lands it as usual.
+A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet red too (`~/.config/fleet-dispatch/policy.md`). Nobody watches it merge, so it gets one more check than other work:
+
+1. Run `/code-review high` on the diff. Fix each finding it confirms, or say in the PR why it does not apply.
+2. Merge with `agent-land <N>`. It waits for every check, merges only that head and records the merge on the item. A red check is fixed, never re-run: after two failed attempts, stop and go to step 6.
+3. Once the merge is live (the project's post-land step), re-run the probe. Still red is a finding: say so on the board row.
+
+`fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not. `reds_unfixed` on `fleet-bench chain` counts the misses.
 
 ## 6. When there is no fix
 

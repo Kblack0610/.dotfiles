@@ -39,7 +39,6 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 |---|---|
 | Prefix+f, `sessionizer.sh <dir>` | `world_route` |
 | Prefix+F, `wt new`, `wt pick` | `@agents`, inside tmux or out; `--server` overrides |
-| Prefix+S, `tmx pick-session` | the world's own rows, generated at pick time |
 | `tmx ensure <world> <session>`, `tmx goto <world> <session>` | the world that declares the session, whichever was named |
 | `fleet-dispatch start` | `@agents`; `--server` is for `--resume` only, to put a session back where it was |
 | `agent-queue add --running` | records its session only on the `@agents` world |
