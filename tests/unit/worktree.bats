@@ -627,6 +627,146 @@ make_squash_candidate() {
   assert_output 'a running process is inside it'
 }
 
+# -- an orphan daemon does not hold a tree --
+
+# fake_proc <pid> <cwd> <exe> <ppid> -- one process in a fake /proc. The parent gets a comm of
+# systemd when <ppid> is 1030, the user manager's shape, and bash otherwise.
+fake_proc() {
+  export WT_PROC_ROOT="$SANDBOX/proc"
+  mkdir -p "$WT_PROC_ROOT/$1" "$WT_PROC_ROOT/$4"
+  ln -s "$2" "$WT_PROC_ROOT/$1/cwd"
+  ln -s "$3" "$WT_PROC_ROOT/$1/exe"
+  printf 'Name:\tx\nPPid:\t%s\n' "$4" > "$WT_PROC_ROOT/$1/status"
+  if [ "$4" = 1030 ]; then echo systemd; else echo bash; fi > "$WT_PROC_ROOT/$4/comm"
+}
+
+# orphan_tree -- repo-agent-1, landed and clean, with a daemon in Library/ under the user manager
+orphan_tree() {
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  mkdir -p "$T/Library/mcp-server"
+  fake_proc 500 "$T/Library/mcp-server" "$T/Library/mcp-server/server" 1030
+  # Stubbed, so no test here signals a real pid. The fake process exits on TERM unless told not to.
+  kill() {
+    printf '%s\n' "$*" >> "$SANDBOX/kill.log"
+    [ -e "$SANDBOX/kill.ignored" ] || rm -rf "$WT_PROC_ROOT/500"
+  }
+  waitpid() { :; }
+}
+
+@test "gc ends an orphan daemon and reaps the tree it pinned" {
+  orphan_tree
+  run cmd_gc
+  assert_success
+  assert_output --partial 'repo-agent-1 (orphan daemon 500)'
+  assert_output --partial '1 of 1 reapable'
+  [ ! -d "$T" ]
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "gc -n names the orphan daemon and signals nothing" {
+  orphan_tree
+  run cmd_gc -n
+  assert_success
+  assert_output --partial 'repo-agent-1 (orphan daemon 500)'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "an orphan whose parent is init does not pin the tree" {
+  orphan_tree
+  printf 'PPid:\t1\n' > "$WT_PROC_ROOT/500/status"
+  run wt_reap_reason "$T"
+  assert_success
+}
+
+@test "a daemon that outlives SIGTERM keeps its tree" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run cmd_reap "$T"
+  assert_failure
+  assert_output --partial 'an orphan daemon outlived SIGTERM'
+  [ -d "$T" ]
+}
+
+@test "gc counts a tree whose daemon will not exit as kept, naming the pid" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run cmd_gc
+  assert_success
+  assert_output --partial '0 of 1 reapable, 1 kept'
+  assert_output --partial 'an orphan daemon outlived SIGTERM (orphan daemon 500)'
+  [ -d "$T" ]
+}
+
+@test "a path with glob characters matches itself and no other tree" {
+  fake_proc 600 "$SANDBOX/a[1]/x" /bin/true 2000
+  fake_proc 601 "$SANDBOX/a1/x" /bin/true 2000
+  run wt_pids_inside "$SANDBOX/a[1]"
+  assert_output 600
+}
+
+@test "an idle slot is not recycled over a daemon that will not exit" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run wt_recycle "$T" 1 origin/main
+  assert_failure
+}
+
+@test "recycling a slot ends its orphan daemon" {
+  orphan_tree
+  wt_recycle "$T" 1 origin/main
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "a daemon with an open editor is left alone" {
+  # The daemon's parent is systemd even while its editor runs, so the editor check is what
+  # protects it.
+  orphan_tree
+  wt_editor_open() { [ "$1" = "$T" ]; }
+  run cmd_gc
+  assert_output --partial 'a Unity editor has it open'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "a Library binary with a live parent still pins the tree" {
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  fake_proc 500 "$T/Library" "$T/Library/server" 400
+  run wt_reap_reason "$T"
+  assert_failure
+  assert_output 'a running process is inside it'
+}
+
+@test "a detached server outside Library/ still pins the tree" {
+  # Left running from a build directory: someone's, so unattended gc does not signal it.
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  fake_proc 500 "$T" "$T/target/server" 1030
+  run wt_reap_reason "$T"
+  assert_failure
+  assert_output 'a running process is inside it'
+}
+
+@test "an orphan beside a real process does not free the tree" {
+  orphan_tree
+  fake_proc 600 "$T" /usr/bin/make 400
+  run cmd_gc
+  assert_output --partial 'a running process is inside it'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "a dirty tree held only by an orphan reads stranded and the orphan lives" {
+  orphan_tree
+  echo edit > "$T/wip"
+  run cmd_gc
+  assert_output --partial 'stranded, nobody in it'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
 # -- done: kill, then reap, on the server --
 
 # done_from_inside <tree> -- `wt done` the way an agent runs it: from a shell in its own tree,
