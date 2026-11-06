@@ -319,11 +319,6 @@ impl View {
             .join(" ")
     }
 
-    /// The query with `key` set to just `value`.
-    pub fn with<R: Row>(&self, key: &str, value: &str) -> String {
-        joined(&self.without::<R>(key), key, value)
-    }
-
     /// Each of `R::FACETS` as a dropdown. A value's count is what picking it would show:
     /// the rest of the query and the chip still apply, the column's own terms do not.
     pub fn facets<R: Row>(&self, rows: &[R]) -> Vec<Facet> {
@@ -346,6 +341,15 @@ impl View {
                     if let Some(v) = r.val(key).text().filter(|v| !v.is_empty()) {
                         *counts.entry(v).or_default() += 1;
                     }
+                }
+                // A prefix term (`source:ag`) is its own option, so the dropdown shows what is on.
+                if let Some(v) = on.as_ref().filter(|v| !counts.contains_key(*v)) {
+                    let n = counts
+                        .iter()
+                        .filter(|(k, _)| k.starts_with(v.as_str()))
+                        .map(|(_, n)| n)
+                        .sum();
+                    counts.insert(v.clone(), n);
                 }
                 let values = counts
                     .into_iter()
@@ -624,7 +628,7 @@ mod tests {
         let project = &fs[0];
         assert_eq!(project.on, None);
         assert_eq!(project.values[0].q, "kind:fix nightly project:playground");
-        assert_eq!(q("").with::<T>("name", "hub sort"), "name:\"hub sort\"");
+        assert_eq!(joined("", "name", "hub sort"), "name:\"hub sort\"");
     }
 
     #[test]

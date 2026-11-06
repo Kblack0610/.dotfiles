@@ -50,7 +50,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `j`/`k`, PgUp/PgDn, space, `g`/`G` | Scroll a page; in the jobs table, move the selection |
 | `n` / `N` | Infra: the next / previous section |
 | Enter, Esc | Infra: open the jobs table; at the table's root (no log, history, query, state or sort), back to the summary |
-| `/` | Jobs table: type a query (Enter applies, Esc clears): words AND, `key:value` matches a column by prefix (`source:ci`, `result:failure`), a repeated key ORs, `-key:value` excludes, a bare word matches the row's text |
+| `/` | Jobs table: type a query (Enter applies, Esc drops the draft and keeps the query in force): words AND, `key:value` matches a column by prefix (`source:ci`, `result:failure`), a repeated key ORs, `-key:value` excludes, a bare word matches name, detail, result and source |
 | `f` | Jobs table: cycle the state chip (all, running, queued, done, failed) |
 | `s` / `S` | Jobs table: sort by the next column (descending, the header carries ` v` or ` ^`) / flip the direction |
 | `x` | Jobs table: clear the query, chip and sort |
