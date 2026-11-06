@@ -18,7 +18,8 @@ const on = {};
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { on[ev] = f; if (ev === "click") click = f; } });
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
-const parts = { "fw-body": Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] }), "fw-chips": Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] }) };
+const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
+const parts = { "fw-body": part(), "fw-chips": part(), "fleet-head": part(), "fleet-tail": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
@@ -204,7 +205,7 @@ const fleet = {
 const st = vm.runInContext("st", ctx);
 const show = (query) => {
   st.tab = "fleet";
-  st.query = query;
+  st.views.fleet = query;
   vm.runInContext("fst", ctx).data = fleet;
   vm.runInContext("fst", ctx).tonight = false;
   ctx.renderFleet();
@@ -237,13 +238,13 @@ test("a chip and a sort write the hash, and the plain view is a bare #fleet", ()
 
 test("a tab hop keeps the view and a bare link clears it", () => {
   show("s=off");
-  st.kept.fleet = st.query;
   ctx.setTab("home");
-  assert.equal(st.query, "");
+  assert.equal(vm.runInContext("history", ctx).url, "/");
   ctx.setTab("fleet");
-  assert.equal(st.query, "s=off");
+  assert.equal(st.views.fleet, "s=off");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=off");
   ctx.setTab("fleet", "", "");
-  assert.equal(st.query, "");
+  assert.equal(st.views.fleet, "");
 });
 
 test("each chip counts under the search and lane, whichever chip is on", () => {
@@ -289,7 +290,7 @@ test("Tonight keeps its own order: the filter applies, the headers do not sort",
   ctx.renderFleet();
   assert.deepEqual(names(box.innerHTML), ["stuck", "calm"]);
   assert.doesNotMatch(box.innerHTML, /data-fsort/);
-  st.query = "s=running";
+  st.views.fleet = "s=running";
   ctx.renderFleet();
   assert.deepEqual(names(box.innerHTML), ["stuck"]);
   vm.runInContext("fst", ctx).tonight = false;
@@ -302,12 +303,14 @@ test("typing repaints the rows and leaves the search box in place", () => {
   assert.equal(box.innerHTML, before);
   assert.deepEqual(names(parts["fw-body"].innerHTML), ["stuck"]);
   assert.equal(chip(parts["fw-chips"].innerHTML, "All"), "1");
-  assert.equal(st.query, "q=stuck");
+  assert.equal(st.views.fleet, "q=stuck");
   ctx.renderFleet();
   assert.equal(box.innerHTML, before);
+  assert.match(parts["fleet-head"].innerHTML, /Claude accounts/, "a refresh still reaches the rest of the page");
+  assert.match(parts["fleet-tail"].innerHTML, /Answer judge/);
   doc.activeElement = null;
   on.change({ target: { id: "fw-lane", value: "deliver" } });
-  assert.equal(st.query, "q=stuck&lane=deliver");
+  assert.equal(st.views.fleet, "q=stuck&lane=deliver");
 });
 
 test("a run past its usual length says so", () => {

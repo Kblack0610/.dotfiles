@@ -3074,8 +3074,7 @@ mod tests {
             "{s}"
         );
 
-        // f steps the state: all, then failed.
-        a.handle(ch('f'));
+        // f steps the state on from all.
         a.handle(ch('f'));
         let s = screen(&mut a, 160, 40);
         assert!(s.contains("[failed 24h 1]") && s.contains("dream"), "{s}");
@@ -3086,7 +3085,7 @@ mod tests {
         a.handle(ch('f'));
         a.handle(ch('f'));
         a.handle(ch('f'));
-        assert_eq!(a.fleet_view.state, "");
+        assert!(a.fleet_view.is_empty());
         a.handle(ch('/'));
         assert!(screen(&mut a, 160, 40).contains("type to search"));
         for c in "idle".chars() {

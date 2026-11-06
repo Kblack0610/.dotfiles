@@ -6,7 +6,7 @@
 // rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], query: "", kept: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -336,7 +336,7 @@ function route(hash) {
 function setTab(t, arg, query) {
   st.tab = t;
   st.arg = arg || "";
-  st.query = st.kept[t] = query ?? st.kept[t] ?? "";
+  st.views[t] = query ?? st.views[t] ?? "";
   for (const n of TAB_NAMES) {
     $("tab-" + n).classList.toggle("on", t === n);
     if (n !== "sessions") $(n).hidden = t !== n;
@@ -346,13 +346,17 @@ function setTab(t, arg, query) {
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
-  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (st.query ? "?" + st.query : "");
-  try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !st.query ? location.pathname : frag); } catch (e) { /* not fatal */ }
+  showUrl();
+}
+function showUrl() {
+  const t = st.tab, q = st.views[t];
+  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
+  try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !q ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 // The open tab's view state changed: the URL follows it without a history entry.
 function setQuery(q) {
-  st.query = st.kept[st.tab] = q;
-  try { history.replaceState(null, "", "#" + st.tab + (q ? "?" + q : "")); } catch (e) { /* not fatal */ }
+  st.views[st.tab] = q;
+  showUrl();
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -409,7 +413,7 @@ function connect() {
 // Back and Forward, and every in-app link, change the fragment; show what it names.
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
-  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== st.query) setTab(r.tab, r.arg, r.query);
+  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
 });
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.

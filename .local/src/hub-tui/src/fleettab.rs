@@ -196,7 +196,7 @@ fn hhmm(t: i64) -> String {
 fn chips(ws: &[Worker], v: &WorkerView, tonight: bool, p: Palette) -> Line<'static> {
     let mut spans = vec![Span::raw("  ")];
     for (f, n) in v.counts(ws) {
-        let on = f == v.state || f == "all" && v.state.is_empty();
+        let on = f == v.state;
         let label = if f == "failed" { "failed 24h" } else { f };
         spans.push(if on {
             Span::styled(format!("[{label} {n}] "), p.head())
@@ -252,7 +252,7 @@ fn workers(
                 cell(format!("{label} (off)"), p.dim())
             };
             let (last, when) = match (&r.running_since, &r.last) {
-                (Some(t), _) if r.overdue => (cell("overdue", p.bad()), clock(*t, now)),
+                (Some(t), _) if r.overdue => (cell("overdue", p.warn()), clock(*t, now)),
                 (Some(t), _) => (cell("running", p.warn()), clock(*t, now)),
                 (None, Some(o)) => (
                     cell(

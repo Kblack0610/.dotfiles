@@ -146,7 +146,7 @@ const OVERDUE_FLOOR_S: i64 = 60;
 
 impl Worker {
     /// Whether this runner is under one of `WORKER_FILTERS`.
-    pub fn shown(&self, filter: &str) -> bool {
+    fn shown(&self, filter: &str) -> bool {
         match filter {
             "all" => true,
             "failed" => self.failed_24h > 0,
@@ -191,14 +191,25 @@ pub fn lanes(ws: &[Worker]) -> Vec<String> {
     set.into_iter().cloned().collect()
 }
 
-/// A filtered and sorted view of the Workers table. Empty fields keep everything in hub-core's
+/// A filtered and sorted view of the Workers table. The default keeps everything in hub-core's
 /// exceptions-first order; `state` is one of `WORKER_FILTERS`, `sort` one of `WORKER_SORTS`.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkerView {
     pub q: String,
     pub lane: String,
     pub state: String,
     pub sort: String,
+}
+
+impl Default for WorkerView {
+    fn default() -> Self {
+        Self {
+            q: String::new(),
+            lane: String::new(),
+            state: WORKER_FILTERS[0].to_string(),
+            sort: String::new(),
+        }
+    }
 }
 
 impl WorkerView {
@@ -209,29 +220,25 @@ impl WorkerView {
 
     /// Whether the search, lane and state all keep `w`.
     pub fn keeps(&self, w: &Worker) -> bool {
-        self.matches(w) && (self.state.is_empty() || w.shown(&self.state))
+        self.matches(w) && w.shown(&self.state)
     }
 
     /// The rows it keeps, in its sort or else in `ws`'s own order.
     pub fn apply<'a>(&self, ws: &'a [Worker]) -> Vec<&'a Worker> {
         let mut out: Vec<&Worker> = ws.iter().filter(|w| self.keeps(w)).collect();
-        if WORKER_SORTS.contains(&self.sort.as_str()) {
-            out.sort_by(
-                |a, b| match (a.sort_value(&self.sort), b.sort_value(&self.sort)) {
-                    (Some(x), Some(y)) => y.total_cmp(&x),
-                    (x, y) => y.is_some().cmp(&x.is_some()),
-                },
-            );
-        }
+        out.sort_by(
+            |a, b| match (a.sort_value(&self.sort), b.sort_value(&self.sort)) {
+                (Some(x), Some(y)) => y.total_cmp(&x),
+                (x, y) => y.is_some().cmp(&x.is_some()),
+            },
+        );
         out
     }
 
     /// How many runners each of `WORKER_FILTERS` would show under the search and lane.
     pub fn counts(&self, ws: &[Worker]) -> [(&'static str, usize); 5] {
-        WORKER_FILTERS.map(|f| {
-            let n = ws.iter().filter(|w| self.matches(w) && w.shown(f)).count();
-            (f, n)
-        })
+        let kept: Vec<&Worker> = ws.iter().filter(|w| self.matches(w)).collect();
+        WORKER_FILTERS.map(|f| (f, kept.iter().filter(|w| w.shown(f)).count()))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -239,7 +246,9 @@ impl WorkerView {
     }
 
     pub fn cycle_state(&mut self) {
-        self.state = next_of(&WORKER_FILTERS, &self.state);
+        let at = WORKER_FILTERS.iter().position(|f| *f == self.state);
+        let next = at.map_or(0, |i| (i + 1) % WORKER_FILTERS.len());
+        self.state = WORKER_FILTERS[next].to_string();
     }
 
     pub fn cycle_sort(&mut self) {
@@ -876,9 +885,8 @@ pub fn calls(text: &str, lf: &str, at: i64) -> HashMap<String, Calls> {
         .map(|(k, (mut c, mut durs))| {
             c.recent.reverse();
             durs.sort_unstable();
-            // Nearest rank, as judge-eval's p95.
-            c.p95_ms = (!durs.is_empty())
-                .then(|| durs[((durs.len() * 95).div_ceil(100)).saturating_sub(1)]);
+            // As judge-eval's p95.
+            c.p95_ms = nearest_rank(&durs, 95);
             (k, c)
         })
         .collect()
@@ -1022,7 +1030,13 @@ fn usual(mut lengths: Vec<i64>) -> Option<i64> {
         return None;
     }
     lengths.sort_unstable();
-    lengths.get((lengths.len() * 9).div_ceil(10) - 1).copied()
+    nearest_rank(&lengths, 90)
+}
+
+/// The nearest-rank `pct`th percentile of `sorted`, None when it is empty.
+fn nearest_rank<T: Copy>(sorted: &[T], pct: usize) -> Option<T> {
+    let rank = (sorted.len() * pct).div_ceil(100);
+    sorted.get(rank.saturating_sub(1)).copied()
 }
 
 /// The workers (their registry read) in the order they run from `at` to the next 07:00 local:
@@ -1889,25 +1903,32 @@ mod tests {
             state: state.into(),
             ..Default::default()
         };
-        assert_eq!(shown(&view("", "", ""), &ws).len(), 4, "blank keeps all");
+        assert_eq!(
+            shown(&view("", "", "all"), &ws).len(),
+            4,
+            "all keeps every runner"
+        );
         assert_eq!(shown(&view("", "", "failed"), &ws), ["triage", "dispatch"]);
         assert_eq!(shown(&view("", "", "running"), &ws), ["dispatch"]);
         assert_eq!(shown(&view("", "", "idle"), &ws), ["triage", "dream"]);
         assert_eq!(shown(&view("", "", "off"), &ws), ["retired"]);
-        assert_eq!(shown(&view("", "deliver", ""), &ws), ["dispatch", "dream"]);
-        assert_eq!(shown(&view("", "deliver", "failed"), &ws), ["dispatch"]);
-        assert_eq!(shown(&view("DREAM", "", ""), &ws), ["dream"], "the name");
         assert_eq!(
-            shown(&view("inbox", "", ""), &ws),
+            shown(&view("", "deliver", "all"), &ws),
+            ["dispatch", "dream"]
+        );
+        assert_eq!(shown(&view("", "deliver", "failed"), &ws), ["dispatch"]);
+        assert_eq!(shown(&view("DREAM", "", "all"), &ws), ["dream"], "the name");
+        assert_eq!(
+            shown(&view("inbox", "", "all"), &ws),
             ["dispatch"],
             "the description"
         );
         assert_eq!(
-            shown(&view("rate limit", "", ""), &ws),
+            shown(&view("rate limit", "", "all"), &ws),
             ["triage"],
             "the why"
         );
-        assert!(shown(&view("nothing like it", "", ""), &ws).is_empty());
+        assert!(shown(&view("nothing like it", "", "all"), &ws).is_empty());
     }
 
     #[test]
@@ -1964,14 +1985,18 @@ mod tests {
     }
 
     #[test]
-    fn each_filter_cycles_through_its_list_and_back_to_blank() {
+    fn each_filter_cycles_through_its_list_and_back_to_the_start() {
         let mut v = WorkerView::default();
-        for f in WORKER_FILTERS {
+        for f in WORKER_FILTERS
+            .iter()
+            .cycle()
+            .skip(1)
+            .take(WORKER_FILTERS.len())
+        {
             v.cycle_state();
-            assert_eq!(v.state, f);
+            assert_eq!(v.state, *f);
         }
-        v.cycle_state();
-        assert_eq!(v.state, "");
+        assert!(v.is_empty());
         for k in WORKER_SORTS {
             v.cycle_sort();
             assert_eq!(v.sort, k);

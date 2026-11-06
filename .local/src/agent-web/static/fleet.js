@@ -86,7 +86,7 @@ const W_VALUE = {
 };
 
 function fleetView() {
-  const p = new URLSearchParams(st.query);
+  const p = new URLSearchParams(st.views.fleet);
   const s = p.get("s"), sort = p.get("sort");
   return { q: p.get("q") || "", lane: p.get("lane") || "", s: W_FILTERS.includes(s) ? s : "all", sort: W_SORTS.includes(sort) ? sort : "", asc: p.get("dir") === "asc" };
 }
@@ -124,18 +124,16 @@ function workersShown(ws, v) {
   });
 }
 
-// A sortable header; a click goes biggest first, smallest first, back to the default order.
-function sortTh(key, label, cls, v) {
-  const on = v.sort === key;
-  return `<th${cls ? ` class="${cls}"` : ""}${on ? ` aria-sort="${v.asc ? "ascending" : "descending"}"` : ""}><button class="thsort" data-fsort="${key}" title="sort by ${label}">${label}${on ? (v.asc ? " ^" : " v") : ""}</button></th>`;
-}
-
 // slots, when given, prefixes each name with its Tonight slot: a time, "always", or a call's
 // indent under its caller, and the headers do not sort. v is the filter in force.
 function workersTable(ws, slots, v) {
   const filtered = v.q || v.lane || v.s !== "all";
   if (!ws.length) return `<div class="empty">${filtered ? "No runner matches this filter." : slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
-  const th = (key, label, cls) => (slots ? `<th${cls ? ` class="${cls}"` : ""}>${label}</th>` : sortTh(key, label, cls, v));
+  // A click on a sortable header goes biggest first, smallest first, back to the default order.
+  const th = (key, label, cls) => {
+    const on = !slots && v.sort === key;
+    return `<th${cls ? ` class="${cls}"` : ""}${on ? ` aria-sort="${v.asc ? "ascending" : "descending"}"` : ""}>${slots ? label : `<button class="thsort" data-fsort="${key}" title="sort by ${label}">${label}${on ? (v.asc ? " ^" : " v") : ""}</button>`}</th>`;
+  };
   return `<table class="tbl"><tr><th>runner</th><th>lane</th>${th("last", "last")}<th class="n">when</th>${th("runs", "runs 24h", "n")}${th("failed", "failed", "n")}<th>why</th><th class="n">next</th>${th("cost", "$ 24h", "n")}<th>score 7d</th></tr>${ws.map((w, i) => {
     const over = w.overdue ? `, over its usual ${secs(w.usual_s)}` : "";
     const last = w.running_since ? `<td class="${w.overdue ? "warn" : "muted"}">running since ${when(w.running_since)}${over}</td><td class="n">-</td>`
@@ -233,19 +231,24 @@ function renderFleet() {
   const el = $("fleet");
   const d = fst.data;
   if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
-  // A refresh must not take the search box or an open lane list from under the human.
-  if (document.activeElement?.id?.startsWith("fw-")) { paintWorkers(); return; }
   const v = fleetView();
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  let html = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
-  if (errs.length) html += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  html += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
+  let head = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
+  if (errs.length) head += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  head += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
   const order = `<button class="btn sm" data-tonight>${fst.tonight ? "Default order" : "Tonight"}</button>`;
-  html += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>` +
-    workersFilter(d, v) + `<div class="panel scroll" id="fw-body">${workersBody(d, v)}</div>`;
-  html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
-  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
-  paint(el, html);
+  head += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>`;
+  const tail = `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}` +
+    `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
+  // A refresh must not take the search box or an open lane list from under the human, so
+  // everything around them repaints and they stay.
+  if (["fw-q", "fw-lane"].includes(document.activeElement?.id)) {
+    paint($("fleet-head"), head);
+    paintWorkers();
+    paint($("fleet-tail"), tail);
+    return;
+  }
+  paint(el, `<div id="fleet-head">${head}</div>${workersFilter(d, v)}<div class="panel scroll" id="fw-body">${workersBody(d, v)}</div><div id="fleet-tail">${tail}</div>`);
 }
 
 // Log's Judges' verdicts section: the dispatch judge's newest verdicts and everything the answer
