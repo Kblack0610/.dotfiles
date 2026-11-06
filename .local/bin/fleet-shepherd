@@ -230,6 +230,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(overdue_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(improve_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
   b="$(findings_due)"
   [ -z "$b" ] || out="$b${out:+$'\n'}$out"
@@ -258,6 +260,20 @@ findings_due() {
     | [("finding-\(.rule)-\(.scope)" | gsub("/"; "-")), "\(.fact) \(.decision_class)",
        "\(.decision_class): \(.rule) \(.scope): \(.conclusion)" + (if (.cost // "") != "" then " (\(.cost))" else "" end)]
     | @tsv' <<<"$rows")
+}
+
+# improve_due -> one line for the KPI furthest past its threshold that no live row owns
+# (`fleet-bench improve`), so a pass files a defined row with a check, or claims the row or plan
+# that already owns it. The line carries no measured value, so its due_key holds still while the
+# number moves. Silent when fleet-bench fails: findings_due already names it unreadable.
+improve_due() {
+  local pick
+  pick="$(fleet-bench improve --json 2>/dev/null)" || return 0
+  [ -n "$pick" ] || return 0
+  jq -r '"improve: \(.kpi) past \(.bound) \(.threshold), no live row"
+    + (if .last then ", last \(.last.subject) \(.last.verdict)" else "" end)
+    + "; then: fleet-bench improve file \(.kpi) \"<defined fix>\", or claim \(.kpi) <id> when a row or plan already owns it"' \
+    <<<"$pick" 2>/dev/null || true
 }
 
 # overdue_due -> a line per WORKING session, or NEEDS one carrying on past its question, not
@@ -637,8 +653,8 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
-# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding and
-# infra lines are fleet-lead's own.
+# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding, infra
+# and improve lines are fleet-lead's own.
 line_role() {
   case "${1#unhandled: }" in
     nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
