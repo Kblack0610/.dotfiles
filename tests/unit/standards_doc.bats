@@ -7,6 +7,7 @@ setup() {
   load '../vendor/bats-assert/load'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   DOC="$REPO_ROOT/.local/src/docs/standards.md"
+  SKILLS_DOC="$REPO_ROOT/.local/src/docs/skills.md"
 }
 
 # refs <doc> -> "file<TAB>test name" for each `tests/...bats` "name" pair in a Test(s): clause
@@ -28,6 +29,16 @@ check() {
   [ "$(refs "$DOC" | wc -l)" -ge 5 ]
   run check "$DOC"
   assert_success
+}
+
+@test "every test the skill standard names exists" {
+  [ "$(refs "$SKILLS_DOC" | wc -l)" -ge 3 ]
+  run check "$SKILLS_DOC"
+  assert_success
+}
+
+@test "the skill standard stays under 15 rules" {
+  [ "$(grep -c '^- ' "$SKILLS_DOC")" -lt 15 ]
 }
 
 @test "a renamed test is caught (negative control)" {
