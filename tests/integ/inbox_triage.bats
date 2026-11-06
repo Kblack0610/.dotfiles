@@ -215,8 +215,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed sc-1 in \[\[[^]]*\|scratch\]\] \(human\): chore\(build\): drop the old cache'
-  assert_output --partial '  - from: outbox'
+  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
+  refute_output --partial '  - from: outbox'
   assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
