@@ -242,11 +242,12 @@ findings_due() {
     | @tsv' <<<"$rows")
 }
 
-# overdue_due -> a line per WORKING session, not mid-turn, whose open phase has run twice its
-# fleet-bench estimate and at least FLEET_SHEPHERD_OVERDUE_MIN. No other line looks at a WORKING
-# row: on 2026-11-03 agent-53 sat 22h at 0/4 and agent-8 at 1/8 and no pass named either. The fact
-# is the phase, so it is nudged once; once the nudge is a phase-length old (at least the floor) and
-# the phase has not moved, it goes to the human, once.
+# overdue_due -> a line per WORKING session, or NEEDS one carrying on past its question, not
+# mid-turn (activity busy), whose open phase has run twice its fleet-bench estimate and at least
+# FLEET_SHEPHERD_OVERDUE_MIN. No other line looks at a WORKING row: on 2026-11-03 agent-53 sat 22h
+# at 0/4 and agent-8 at 1/8 and no pass named either. The fact is the phase, so it is nudged once;
+# once the nudge is a phase-length old (at least the floor) and the phase has not moved, it goes to
+# the human, once.
 overdue_due() {
   local eta now sid key line esc at
   eta="$(fleet-bench eta --json 2>/dev/null)" || {
@@ -267,7 +268,8 @@ overdue_due() {
     fi
   done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
       --slurpfile s "$STATE_FILE" --arg eta "$eta" '
-    ($s[0].sessions // [] | map(select(.bucket == "WORKING" and ((.reason // "") | startswith("busy") | not)
+    ($s[0].sessions // [] | map(select((.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
+                                       and .activity != "busy"
                                        and ((.labels // []) | index("manual") | not)))
        | map({key: .session_id, value: .}) | from_entries) as $w
     | $eta | split("\n")[] | select(length > 0) | fromjson
