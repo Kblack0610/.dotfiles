@@ -109,6 +109,9 @@ pub struct Row {
     pub dwell_n: usize,
     pub dwell_p50_min: Option<i64>,
     pub dwell_p90_min: Option<i64>,
+    /// The queue items the record holds in the step, by slug, so a reader can set each against
+    /// the queue folders.
+    pub items: Vec<String>,
 }
 
 /// Nearest-rank percentile of sorted `v`.
@@ -160,7 +163,7 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
             }
         }
     }
-    for (s, since) in at.values() {
+    for (key, (s, since)) in &at {
         if *s == "done" {
             continue;
         }
@@ -168,8 +171,12 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
         r.open += 1;
         let age = (now - *since).num_minutes();
         r.oldest_min = Some(r.oldest_min.map_or(age, |o| o.max(age)));
+        if let Key::Item(slug) = key {
+            r.items.push(slug.clone());
+        }
     }
     for (r, d) in rows.iter_mut().zip(dwell.iter_mut()) {
+        r.items.sort_unstable();
         d.sort_unstable();
         r.dwell_n = d.len();
         r.dwell_p50_min = pct(d, 50);
@@ -182,14 +189,34 @@ fn cell(v: Option<i64>) -> String {
     v.map_or("-".into(), |m| m.to_string())
 }
 
-/// `notes log --steps`: one line per step, or one JSON object per step with `--json`.
+/// When the record begins, or with `items` when it first saw a queue item, in UTC
+/// (`%Y-%m-%dT%H:%M:%SZ`, the queue's own stamp), so a reader can tell work older than the record
+/// from work it missed. Queue events began later than row events, so the two differ.
+fn since(events: &[Event], items: bool) -> Option<String> {
+    events
+        .iter()
+        .filter(|e| !items || e.action.starts_with("item-"))
+        .find_map(|e| DateTime::parse_from_rfc3339(&e.ts).ok())
+        .map(|t| {
+            t.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        })
+}
+
+/// `notes log --steps`: one line per step, or with `--json` one object, `{since, items_since, steps}`.
 pub fn print(p: &crate::config::Profile, json: bool) -> anyhow::Result<i32> {
     let events = crate::ingest::all(p);
     let rows = replay(&events, chrono::Local::now().fixed_offset());
     if json {
-        for r in &rows {
-            println!("{}", serde_json::to_string(r)?);
-        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "since": since(&events, false),
+                "items_since": since(&events, true),
+                "steps": rows
+            })
+        );
         return Ok(0);
     }
     println!(
@@ -302,6 +329,17 @@ mod tests {
         assert_eq!(running.oldest_min, Some(30));
         assert_eq!(get(&rows, "done").in_24h, 1);
         assert_eq!(get(&rows, "done").open, 0);
+        // the record names what it holds, so a reader can set it against the queue folders
+        assert_eq!(running.items, vec!["hand".to_string()]);
+        assert!(get(&rows, "done").items.is_empty());
+        assert_eq!(
+            since(&events, false).as_deref(),
+            Some("2026-11-05T18:00:00Z")
+        );
+        assert_eq!(
+            since(&events, true).as_deref(),
+            Some("2026-11-05T19:20:00Z")
+        );
     }
 
     /// An item the record never saw queued still leaves the step its move names, with no dwell.

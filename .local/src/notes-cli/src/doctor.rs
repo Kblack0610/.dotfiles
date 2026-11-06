@@ -47,6 +47,19 @@ impl Report {
     }
 }
 
+/// `notes doctor --projects --untyped`: the type proposed for each untyped agent-board row.
+pub fn untyped() -> Result<i32> {
+    let rows = crate::propose::untyped_report()?;
+    for r in &rows {
+        println!("{r}");
+    }
+    println!(
+        "{} untyped row(s); apply one with `notes ptask <project> --agent edit --was --text \"<row>\" -- <id>`",
+        rows.len()
+    );
+    Ok(0)
+}
+
 /// `notes doctor --projects`: every project in every profile against the project shape
 /// (`projects::SHAPE` plus its registry type's overlay), one line per finding and a count.
 /// Exit 0 either way: a finding is a WARN, never a broken vault. With no project registry
