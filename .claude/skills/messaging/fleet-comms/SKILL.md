@@ -51,7 +51,7 @@ One message, three or four short lines:
 Example:
 
 ```
-From cap-concurrent-unity-tests (~/.worktrees/unity-core-playground-slots).
+From cap-concurrent-unity-tests (unity-core-playground-agent-3).
 Hold all headless Unity runs: the box is at load 96 on 24 cores.
 Until GO from me, or until `agent-hold check unity-tests` exits 0.
 Reply once with what you stopped; no other reply needed.
