@@ -22,6 +22,7 @@ mod infra;
 mod jobs;
 mod outbox;
 mod outcomes;
+mod pipeline;
 mod projects;
 mod queue;
 mod shepherd;
@@ -72,6 +73,7 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     fleet: fleet::Cache,
+    pipeline: pipeline::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -96,6 +98,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
         fleet: fleet::Cache::default(),
+        pipeline: pipeline::Cache::default(),
     });
 
     let api = Router::new()
@@ -115,6 +118,7 @@ async fn main() -> Result<()> {
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
+        .route("/api/pipeline", get(pipeline_line))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
@@ -1002,6 +1006,14 @@ async fn infra_board(State(s): State<Shared>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
         s.infra.get().await,
+    )
+        .into_response()
+}
+
+async fn pipeline_line(State(s): State<Shared>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.pipeline.get().await,
     )
         .into_response()
 }
