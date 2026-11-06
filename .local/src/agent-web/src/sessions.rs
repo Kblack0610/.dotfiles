@@ -95,12 +95,10 @@ impl Cache {
         if let Some((_, got)) = c.as_ref().filter(|(at, _)| at.elapsed() < CAPACITY_CACHE) {
             return Ok(got.clone());
         }
-        let got = tokio::task::spawn_blocking(|| {
-            capacity::read(&System, &session_table::read_state(&boards::fleet_state()))
-        })
-        .await
-        .map(Arc::new)
-        .map_err(|e| e.to_string())?;
+        let got = tokio::task::spawn_blocking(|| capacity::read_fleet(&System))
+            .await
+            .map(Arc::new)
+            .map_err(|e| e.to_string())?;
         *c = Some((Instant::now(), got.clone()));
         Ok(got)
     }
