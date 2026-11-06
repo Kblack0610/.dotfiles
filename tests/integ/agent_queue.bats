@@ -902,6 +902,16 @@ EOF
   assert_failure; assert_output --partial "no item: nope"
 }
 
+@test "credit-of prints what attribute would record and writes nothing" {
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Arena/B.cs\nAssets/Level/L.cs'
+  assert_success; assert_output $'arena\tarena level'
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Level/L.cs'
+  assert_output $'\tarena level'
+  run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
+  assert_success; assert_output ''
+  [ ! -e "$AGENT_QUEUE_DIR" ]
+}
+
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture

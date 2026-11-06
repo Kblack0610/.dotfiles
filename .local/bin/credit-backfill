@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# credit-backfill - credit past work to the project and the feature it built: one proposal per
+# repo for the human to review, then the reviewed lines written through the existing writers.
+#
+#   propose <project>   write $CREDIT_BACKFILL_DIR/<project>.tsv and print its counts
+#   apply <project>     write every line of that file not yet applied; a rerun skips applied lines
+#
+# <project> is a repo (unity-core-playground, dotfiles); the proposal covers every registry project
+# sharing its checkout. Lines are TSV `kind key project system size state proof item text id`:
+# attr (an item its PR credits elsewhere), epic (a plan of 2+ phases, or a system's FAIL criteria)
+# and story (a phase, a criterion, a done item with no row). The human edits or deletes lines; apply
+# writes each id it gets into the last column. Plan: why-is-so-litel-stateless-puppy.md, P4.
+set -uo pipefail
+
+CB_DIR="${CREDIT_BACKFILL_DIR:-$HOME/.agent/backfill}"
+CB_CACHE="${CREDIT_BACKFILL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/credit-backfill}"
+CB_PLANS="${CREDIT_BACKFILL_PLANS:-$HOME/.agent/plans}"
+CB_LIVE_PLANS="${CREDIT_BACKFILL_LIVE_PLANS:-$HOME/.claude/plans}"
+AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+SYSTEMS_MD="${CREDIT_BACKFILL_SYSTEMS:-$HERE/../src/docs/systems.md}"
+SYSTEM_CHECK="${CREDIT_BACKFILL_SYSTEM_CHECK:-$HERE/project-system-check}"
+# A story's size from its PR's diff (additions plus deletions): up to S_MAX is s, up to M_MAX m, else l.
+S_MAX=150 M_MAX=800
+# A plan's open phase is filed when an item is on it or the plan changed in the last FRESH_DAYS:
+# an open story is dispatch-eligible, and a stale plan's leftovers are not work anyone asked for.
+FRESH_DAYS="${CREDIT_BACKFILL_FRESH_DAYS:-7}"
+# The default words that name a system in a plan's title, first match wins; the human reviews every guess.
+SYSTEM_WORDS='ui	menu|menus|title|hud|screen|ui|panel|lobby screen
+netcode	multiplayer|online|netcode|lobby|server|join|relay|matchmaking
+save	save|saves|persist|persistence|locker|account
+input	input|controller|gamepad|rebind|bindings|keyboard
+audio	audio|music|sound|sfx
+perf	perf|lag|fps|hitch|hitches|frame time|memory
+look	look|art|style|lighting|shader|vfx|palette
+onboarding	tutorial|onboarding|first-run|first run
+store	store|steam|listing|rating|testflight|play console
+ci	ci|gate|nightly|runner|runners|pipeline
+tests	test|tests|playtest
+deploy	deploy|release|rollout
+docs	doc|docs|readme
+telemetry	telemetry|crash|crashes|sentry|logs
+security	secret|secrets|security|auth'
+
+die() { echo "credit-backfill: $*" >&2; exit 1; }
+PROJECT_MAP_FILE="$AQ_MAP"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../lib/plan-phases.sh
+. "$HERE/../lib/plan-phases.sh"
+
+# family <project> -> every registry project sharing its checkout, the repo's own owner first.
+family() {
+  jq -r --arg r "$(project_repo_name "$1")" '
+    (.trackers // {}) as $t
+    | ([$t[$r] | objects | .owner // empty] + [$t | to_entries[] | select(.value | objects)
+       | select(.key == $r or .value.repo == $r) | .key]) | unique[]' "$AQ_MAP"
+}
+
+# owner <project> -> the project an item on the repo key itself counts on.
+owner() { jq -r --arg p "$1" '(.trackers[$p] | objects | .owner) // $p' "$AQ_MAP"; }
+
+# gh_slug <project> -> owner/repo of the project's checkout's origin, or nothing.
+gh_slug() {
+  local dir url
+  dir="$(project_repo_path "$1")"; [ -n "$dir" ] || return 0
+  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
+  sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' <<<"$url"
+}
+
+# pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
+pr_facts() {
+  local f="$CB_CACHE/${1//\//_}-$2.json" out
+  if [ ! -s "$f" ]; then
+    out="$(gh pr view "$2" -R "$1" --json files,additions,deletions 2>/dev/null)" || return 0
+    mkdir -p "$CB_CACHE" && printf '%s\n' "$out" >"$f"
+  fi
+  jq -c --argjson s "$S_MAX" --argjson m "$M_MAX" 'select(.files != null and (.files | length) > 0)
+    | (.additions + .deletions) as $n
+    | {files: [.files[].path], size: (if $n <= $s then "s" elif $n <= $m then "m" else "l" end)}' "$f"
+}
+
+# credit <project> <owner/repo> <N>... -> the project the PRs' changed files credit, or nothing.
+credit() {
+  local p="$1" slug="$2" n; shift 2
+  for n in "$@"; do pr_facts "$slug" "$n" | jq -r '.files[]'; done |
+    agent-queue credit-of "$p" | cut -f1
+}
+
+# phase_prs <phase text> -> its bare `#N` refs (a PR of the plan's own repo), one a line. A ref
+# after a repo name (`unity-core #836`, `platform #1476`) is another repo's and is left out.
+phase_prs() { grep -oE '(^|[(,;] *|and )#[0-9]+' <<<"$1" | grep -oE '[0-9]+$'; }
+
+# words <text> -> the row's words: no markup or #tags, one line.
+words() { sed -E 's/`|\*\*//g; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/\t/ /g; s/ +/ /g; s/^ //; s/ $//' <<<"$1"; }
+
+# guess_system <type> <title> -> a systems.md id applying to <type>, from SYSTEM_WORDS.
+guess_system() {
+  local type="$1" title sys pat
+  title="$(tr '[:upper:]' '[:lower:]' <<<"$2")"
+  while IFS=$'\t' read -r sys pat; do
+    applies "$sys" "$type" || continue
+    grep -qwE "$pat" <<<"$title" && { echo "$sys"; return 0; }
+  done <<<"$SYSTEM_WORDS"
+  if [ "$type" = game ]; then echo gameplay; else echo '?'; fi
+}
+
+# applies <system> <type> -- the systems.md Systems row for <system> applies to <type> (or base).
+applies() {
+  awk -F'|' -v s="$1" -v t="$2" '
+    /^## Systems/ { on = 1; next } /^## / { on = 0 }
+    on && NF > 3 { id = $2; gsub(/ /, "", id); if (id != s) next
+      n = split($3, a, ","); for (i = 1; i <= n; i++) { gsub(/ /, "", a[i]); if (a[i] == "base" || a[i] == t) ok = 1 } }
+    END { exit !ok }' "$SYSTEMS_MD"
+}
+
+# typed <text> <area> <type> -> the text as a board row's `type(area): title`; one that already has
+# a type keeps it (notes refuses a type it does not know).
+typed() { if grep -qE '^[a-z]+\([a-z0-9][a-z0-9-]*\): .' <<<"$1"; then echo "$1"; else echo "$3($2): $1"; fi; }
+
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n' "$@"; }
+
+cmd_propose() {
+  [ $# -eq 1 ] || die "usage: credit-backfill propose <project>"
+  [ -f "$AQ_MAP" ] || die "no registry at $AQ_MAP"
+  local top="$1" slug dflt fam items out
+  [ -n "$(project_repo_path "$top")" ] || die "unknown project: $top (no checkout for it in $AQ_MAP)"
+  slug="$(gh_slug "$top")"; [ -n "$slug" ] || die "$top: its checkout has no origin remote"
+  dflt="$(owner "$top")"
+  mapfile -t fam < <(family "$top")
+  items="$(agent-queue list --json --state all --since 2000-01-01 2>/dev/null |
+    jq -sc --args '[.[] | select(.project as $p | $ARGS.positional | index($p))]' "${fam[@]}")"
+  out="$CB_DIR/$top.tsv"
+  mkdir -p "$CB_DIR"
+  {
+    printf '# credit-backfill proposal for %s, %s. Delete or edit lines, then: credit-backfill apply %s\n' "$top" "$(date +%F)" "$top"
+    printf '# kind\tkey\tproject\tsystem\tsize\tstate\tproof\titem\ttext\tid\n'
+    propose_items "$top" "$slug" "$items"
+    propose_plans "$top" "$slug" "$dflt" "$items" "${fam[@]}"
+    propose_criteria "${fam[@]}"
+  } >"$out.new" && mv "$out.new" "$out"
+  echo "$out: $(awk -F'\t' '!/^#/ { n[$1]++ } END { printf "%d attr, %d epic, %d story", n["attr"], n["epic"], n["story"] }' "$out")"
+}
+
+# pr_num <pr field> -> the PR number when the item's PR is in <owner/repo> (or bare), else nothing.
+pr_num() { sed -nE "s#^(${2//\//\\/}\#|\#)?([0-9]+)\$#\2#p" <<<"$1"; }
+
+# The items: a credit move for each whose PR names another project, and a closed story for each
+# done one with a PR and no row whose plan is not backfilled as an epic here (propose_plans files those).
+propose_items() {
+  local top="$1" slug="$2" s p pr plan merged title n win facts size epic to
+  while IFS=$'\t' read -r s p pr plan merged title; do
+    n="$(pr_num "$pr" "$slug")"; [ -n "$n" ] || continue
+    [ "$merged" = - ] && merged=""
+    facts="$(pr_facts "$slug" "$n")" to="$p" size=m
+    if [ -n "$facts" ]; then
+      size="$(jq -r .size <<<"$facts")"
+      win="$(jq -r '.files[]' <<<"$facts" | agent-queue credit-of "$p")"
+      if [ -n "${win%%$'\t'*}" ] && [ "${win%%$'\t'*}" != "$p" ]; then
+        to="${win%%$'\t'*}"
+        row attr - "$to" - - - "touches:${win#*$'\t'}" "$s" "from $p"
+      fi
+    fi
+    [ "$plan" = - ] || [ "$(plan_phase_list "$(plan_file "$plan")" | jq length)" -lt 2 ] || [ -n "$(plan_epic "$(plan_file "$plan")")" ] || continue
+    epic="$( [ "$plan" = - ] || plan_epic "$(plan_file "$plan")")"
+    row story "${epic:--}" "$to" - "$size" done "pr:$n${merged:+ commit:${merged:0:12}}" "$s" "$(words "$title")"
+  done < <(jq -r '.[] | select(.state == "done" and .status == "ok" and (.pr // "") != "" and (.row // "") == "")
+      | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$3")
+}
+
+# plan_epic <plan> -> the `<code>-<N>` of its `epic:` line, or nothing.
+plan_epic() { [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1; }
+
+# plan_file <path or name> -> the plan as the backfill reads it: the live ~/.claude copy when it
+# exists (agent-land ticks that one), else the ~/.agent/plans cache.
+plan_file() {
+  local b="${1##*/}"
+  if [ -f "$CB_LIVE_PLANS/$b" ]; then echo "$CB_LIVE_PLANS/$b"; else echo "$1"; fi
+}
+
+propose_plans() {
+  local top="$1" slug="$2" dflt="$3" items="$4" m f pf base phases title prj type sys i st name n prs it its size proof text fresh left stories i_slug i_state i_pr i_merged
+  shift 4
+  for m in "$@"; do
+    for f in "$CB_PLANS/$m"/*.md; do
+      [ -f "$f" ] || continue
+      pf="$(plan_file "$f")" base="$(basename "$f" .md)"
+      [ -z "$(plan_epic "$pf")" ] || continue
+      phases="$(plan_phase_list "$pf")"
+      [ "$(jq length <<<"$phases")" -ge 2 ] || continue
+      its="$(jq -c --arg b "$base.md" '[.[] | select(((.plan // "") | split("/") | last) == $b)]' <<<"$items")"
+      mapfile -t prs < <(
+        jq -r '.[].name' <<<"$phases" | while IFS= read -r name; do phase_prs "$name"; done
+        jq -r '.[].pr // empty' <<<"$its" | while IFS= read -r i; do pr_num "$i" "$slug"; done)
+      prj="$( ((${#prs[@]})) && credit "$m" "$slug" "${prs[@]}")"
+      prj="${prj:-$( [ "$m" = "$top" ] && echo "$dflt" || echo "$m")}"
+      type="$(project_field "$prj" type)"
+      title="$(sed -nE '0,/^# /s/^# +//p' "$pf")"; title="$(words "${title:-$base}")"
+      sys="$(guess_system "${type:-infra}" "$title")"
+      fresh=0; [ -n "$(find "$pf" -mtime -"$FRESH_DAYS" 2>/dev/null)" ] && fresh=1
+      i=0 left=0 stories=""
+      while IFS=$'\t' read -r st name; do
+        i=$((i + 1))
+        it="$(jq -r --arg n "$i" '[.[] | select((.phases // "" | split(" ")) | index($n))]
+          | (map(select(.state == "done" and .status == "ok")) + map(select(.state != "done"))) | first
+          | select(.) | [.slug, .state, .pr, .merged] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
+        [ -n "$it" ] || it=$'-\t-\t-\t-'
+        IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
+        [ "$i_slug" = - ] && i_slug=""; [ "$i_pr" = - ] && i_pr=""; [ "$i_merged" = - ] && i_merged=""
+        n="$(pr_num "${i_pr:-}" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | head -1)"
+        size=m proof=-
+        [ -n "$n" ] && { size="$(pr_facts "$slug" "$n" | jq -r .size)"; size="${size:-m}"; proof="pr:$n${i_merged:+ commit:${i_merged:0:12}}"; }
+        case "$st" in
+          done) [ -n "$n" ] || proof="unverified:plan $base ticks it with no PR" ;;
+          deferred) proof="why:deferred in plan $base" ;;
+          open)
+            # An item that landed the phase is the record even when the plan's box was never ticked.
+            if [ "$i_state" = done ] && [ -n "$n" ]; then st=done
+            else
+              left=$((left + 1))
+              if [ -n "$i_slug" ]; then [ "$i_state" != done ] || continue; else [ "$fresh" = 1 ] || continue; fi
+            fi ;;
+        esac
+        text="$(words "$name")"; [ "$st" = open ] && text="$text (plan $base, phase $i)"
+        stories+="$(row story "$base" "$prj" - "$size" "$st" "$proof" "${i_slug:--}" "$text")"$'\n'
+      done < <(jq -r '.[] | [.state, .name] | @tsv' <<<"$phases")
+      st=done; [ "$left" -eq 0 ] || st=open
+      row epic "$base" "$prj" "$sys" - "$st" "plan:$base" - "$title"
+      printf '%s' "$stories"
+    done
+  done
+}
+
+# Each FAIL criterion of a typed project is a story under `epic(<sys>): <sys> to standard`.
+propose_criteria() {
+  local m json
+  for m in "$@"; do
+    [ -n "$(project_field "$m" type)" ] && [ -n "$(project_field "$m" code)" ] || continue
+    json="$("$SYSTEM_CHECK" "$m" --json 2>/dev/null)" || [ -n "$json" ] || continue
+    jq -r --arg m "$m" '.systems[] | .id as $s | [.criteria[] | select(.result == "FAIL")] | select(length > 0)
+      | (["epic", "std:\($m):\($s)", $m, $s, "-", "open", "-", "-", "\($s) to standard", ""] | @tsv),
+        (.[] | ["story", "std:\($m):\($s)", $m, "-", "s", "open", "-", "-", "\($s): \(.criterion | gsub("`"; ""))", ""] | @tsv)' <<<"$json"
+  done
+}
+
+# --- apply ---
+
+# ptask <project> [--agent] <args>... -> notes ptask on the project's lab profile.
+ptask() { local p="$1"; shift; notes --profile "$(project_field "$p" lab)" ptask "$p" "$@"; }
+
+# add_row <project> <lane> <text> -> the new row's id (an open twin's id when one exists), or fail.
+add_row() {
+  local p="$1" lane="$2" text="$3" detail=() out rc=0 id
+  if [ "${#text}" -gt 80 ]; then
+    detail=(--detail "$text"); text="${text:0:80}"; [[ "$text" != *' '* ]] || text="${text% *}"
+  fi
+  out="$(ptask "$p" $lane add "${detail[@]}" -- "$text${4:+ $4}" 2>&1)" || rc=$?
+  id="$(sed -nE 's/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/\1/p' <<<"$out" | head -1)"
+  { [ "$rc" = 0 ] || [ "$rc" = 3 ]; } && [ -n "$id" ] || { echo "credit-backfill: ${out##*$'\n'}" >&2; return 1; }
+  echo "$id"
+}
+
+# close_row <project> <lane> <id> <state> <proof>
+close_row() {
+  local p="$1" lane="$2" id="$3"
+  case "$4:$5" in
+    open:*) return 0 ;;
+    deferred:why:*) ptask "$p" $lane drop "$id" --why "${5#why:}" ;;
+    *:unverified:*) ptask "$p" $lane done "$id" --unverified "${5#unverified:}" ;;
+    *:pr:*) ptask "$p" $lane done "$id" --proof "$5" ;;
+    *) ptask "$p" $lane done "$id" --unverified "backfilled by credit-backfill with no proof" ;;
+  esac >/dev/null
+}
+
+cmd_apply() {
+  [ $# -eq 1 ] || die "usage: credit-backfill apply <project>"
+  local f="$CB_DIR/$1.tsv" tmp n=0 bad
+  [ -f "$f" ] || die "no proposal at $f: run credit-backfill propose $1 first"
+  bad="$(awk -F'\t' '$1 == "epic" && $4 == "?" && $10 == "" { print $2 }' "$f")"
+  [ -z "$bad" ] || die "name a system for these epics first (column 4 is ?): $(paste -sd' ' <<<"$bad")"
+  declare -A ids=() epic_sys=()
+  local kind key prj sys size st proof item text id lane eid area
+  while IFS=$'\t' read -r kind key prj sys size st proof item text id; do
+    [ "$kind" = epic ] || continue
+    epic_sys[$key]="$sys"; [ -z "$id" ] || ids[$key]="$id"
+  done <"$f"
+  tmp="$f.new"; : >"$tmp"
+  while IFS= read -r line; do
+    IFS=$'\t' read -r kind key prj sys size st proof item text id <<<"$line"
+    if [[ "$line" == '#'* ]] || [ -n "$id" ] || [ -z "$kind" ]; then printf '%s\n' "$line" >>"$tmp"; continue; fi
+    id=""
+    case "$kind" in
+      attr)
+        agent-queue set "$item" project="$prj" touches="${proof#touches:}" >/dev/null && id=set ;;
+      epic)
+        id="$(add_row "$prj" "" "epic($sys): $text")" && ids[$key]="$id" ;;
+      story)
+        eid="${ids[$key]:-}"
+        [[ "$key" =~ ^[a-z0-9]+-[0-9]+$ ]] && eid="$key"
+        if [ "$key" != - ] && [ -z "$eid" ]; then
+          echo "credit-backfill: story under $key skipped: that epic is not applied" >&2
+        else
+          area="$sys"; [ "$area" != - ] || area="${epic_sys[$key]:-$prj}"
+          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")"
+          id="$(add_row "$prj" --agent "$text" "#size/$size${eid:+ #of/$eid}")" || id=""
+        fi
+        if [ -n "$id" ]; then
+          lane=--agent
+          # An open story an item works on is started, so dispatch does not start it a second time.
+          if [ "$st" != open ]; then close_row "$prj" "$lane" "$id" "$st" "$proof"
+          elif [ "$item" != - ]; then ptask "$prj" --agent start "$id" >/dev/null 2>&1; fi
+          [ "$item" = - ] || agent-queue set "$item" row="$prj:$id" project="$prj" >/dev/null
+        fi ;;
+    esac
+    [ -n "$id" ] && n=$((n + 1))
+    printf '%s\t%s\n' "${line%$'\t'*}" "$id" >>"$tmp"
+  done <"$f"
+  mv "$tmp" "$f"
+  # The epics: close a done plan's epic once its stories are, and give the plan its `epic:` line.
+  while IFS=$'\t' read -r kind key prj sys size st proof item text id; do
+    [ "$kind" = epic ] && [ -n "$id" ] || continue
+    [ "$st" = done ] && [[ "$proof" == plan:* ]] &&
+      ptask "$prj" done "$id" --unverified "backfilled: every phase of plan ${proof#plan:} is ticked" >/dev/null 2>&1
+    [[ "$proof" == plan:* ]] && file_plan "${proof#plan:}" "$id" "$prj"
+  done <"$f"
+  echo "$f: $n lines applied"
+}
+
+# file_plan <plan name> <epic id> <project> -- the plan's `epic: <id>` line under its title, in the
+# live plan and its cache, and the cache filed under the epic's project (85-sync-plans keeps it there).
+file_plan() {
+  local name="$1.md" c
+  for c in "$CB_LIVE_PLANS/$name" "$CB_PLANS"/*/"$name"; do
+    [ -f "$c" ] && ! grep -q '^epic: ' "$c" || continue
+    awk -v e="epic: $2" '!done && /^# / { print; print ""; print e; done = 1; next } { print }
+      END { if (!done) print e }' "$c" >"$c.new" && mv "$c.new" "$c"
+  done
+  c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -print -quit)"
+  if [ -n "$c" ] && [ "$(dirname "$c")" != "$CB_PLANS/$3" ]; then mkdir -p "$CB_PLANS/$3" && mv "$c" "$CB_PLANS/$3/"; fi
+  return 0
+}
+
+case "${1:-}" in
+  propose | apply) v="$1"; shift; "cmd_$v" "$@" ;;
+  -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (try --help)" ;;
+esac
