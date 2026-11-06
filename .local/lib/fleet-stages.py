@@ -39,7 +39,8 @@ NEEDS = (("plan_approval", ("plan awaiting approval",)), ("ask", ("pending ask",
 STALLED = (("main_red", ("nightly red after", "main red after")), ("merged_dirty", ("merged, ",)),
            ("after_merge", ("commits after merged PR",)), ("ci_red", ("CI red",)),
            ("green_unmerged", ("green, not merged",)), ("conflict", ("conflicts with",)),
-           ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)))
+           ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)),
+           ("pr_closed", ("closed without merging",)), ("item_running", ("is running here",)))
 FINISHED = ("DONE", "LANDED")
 FLICKER_MIN = 2   # a gone and a new of one window this close is one session the probe missed for a tick
 AGENT_SUFFIX = re.compile(r"(-agent-\d+[\w-]*)?(:\d+)?$")
