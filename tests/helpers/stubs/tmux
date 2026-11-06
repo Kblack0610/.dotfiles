@@ -77,6 +77,10 @@ case "$verb" in
       cat "$FIX/tmux.panes"
     fi
     ;;
+  list-clients)
+    # tmux.clients.<server>: that server's clients, each line already in the -F shape asked.
+    [ -n "$server" ] && [ -f "$FIX/tmux.clients.$server" ] && cat "$FIX/tmux.clients.$server"
+    ;;
   has-session)
     # `-L <server>` with a tmux.sessions.<server> fixture answers from that file alone,
     # ahead of the global switches below, so one server can hold a session the current

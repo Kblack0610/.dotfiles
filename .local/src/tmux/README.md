@@ -85,6 +85,9 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
+| `tmx client` | `<server> <client>` of the terminal you typed in last, for `display-popup -c` from outside tmux |
+
+**From the desktop, a hop drives your terminal.** `goto`, `hop` and `open` run with no `$TMUX` and no tty (a Hyprland key, a waybar click, `agent-panel` from the pin) move the terminal you typed in last (`tmx client`) to the target and focus its window on Hyprland, instead of attaching inside a new window. With a tty they attach right where they stand, and with no terminal attached anywhere they open one kitty on the target.
 
 **Resume vs root.** `C-h` resumes: it attaches to the most recently used session of the other world that is *not* its landing page, and a session restores its own active window, so flipping between two pieces of work is one key. `N` roots: it puts hub's landing page, today's note, back on screen. `tmx root <world>` is the world's first booted entry; `tmx root <world> <session>` is that session's page.
 
