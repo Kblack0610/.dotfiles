@@ -637,7 +637,9 @@ struct PageQuery {
 
 async fn transcript_page(Query(q): Query<PageQuery>) -> ApiResult<Json<transcript::Page>> {
     let path = match find_any(&q.t).await {
-        Ok(agent) => agent.jsonl,
+        Ok(agent) => agent
+            .jsonl
+            .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?,
         // An ended session is on no pane; the registry still names its transcript.
         Err(gone) => {
             let id = q.t.clone();
@@ -646,11 +648,9 @@ async fn transcript_page(Query(q): Query<PageQuery>) -> ApiResult<Json<transcrip
             })
             .await
             .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .map(Some)
             .ok_or(gone)?
         }
-    }
-    .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?;
+    };
     let limit = q.limit.unwrap_or(PAGE_DEFAULT).clamp(1, PAGE_MAX);
     let page = tokio::task::spawn_blocking(move || match q.after {
         Some(after) => transcript::page_after(&path, after, limit),

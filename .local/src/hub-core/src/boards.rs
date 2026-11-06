@@ -64,7 +64,7 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
 }
 
 /// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
-fn asks(tsv: &str) -> Vec<Value> {
+pub fn asks(tsv: &str) -> Vec<Value> {
     let some = |v: &str| (!v.is_empty()).then(|| v.to_string());
     tsv.lines()
         .filter(|l| !l.is_empty())
@@ -72,9 +72,9 @@ fn asks(tsv: &str) -> Vec<Value> {
             let f: Vec<&str> = l.split('\t').collect();
             let col = |i: usize| f.get(i).copied().unwrap_or("");
             json!({
-                "id": col(0), "project": col(1), "kind": col(4), "question": col(5),
+                "id": col(0), "project": col(1), "status": col(3), "kind": col(4), "question": col(5),
                 "task": some(col(7)), "created": col(11), "session": some(col(12)),
-                "recommend": some(col(10)), "judge": some(col(16)),
+                "recommend": some(col(10)), "claude_session": some(col(15)), "judge": some(col(16)),
             })
         })
         .collect()

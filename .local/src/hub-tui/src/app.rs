@@ -2800,9 +2800,10 @@ mod tests {
             s.contains("DETAIL  lab/unity-core-playground-agent-10:1"),
             "{s}"
         );
-        for want in ["3 behind", "2 ahead", "test 10m", "cargo test"] {
+        for want in ["test 10m", "cargo test"] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
+        assert!(!s.contains("3 behind"), "the page's Worktree says it: {s}");
         assert!(s.contains("TIMELINE"), "{s}");
         assert!(s.contains("PAGE       reading"), "{s}");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));

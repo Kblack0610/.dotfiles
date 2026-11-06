@@ -17,8 +17,8 @@
 #                          skipped and paged due lines, 24h nudges, escalations and skips from
 #                          log.md, passes, the pass running now (id, status, age, attach line),
 #                          the last scored one (id, verdict) and why the shepherd is stuck, if it is
-#   fleet-shepherd budget <item>
-#                          the item's `<size> <usd>` budget, which hub_core::session_page shows
+#   fleet-shepherd budget <task text>
+#                          an item's `<size> <usd>` budget, by its task's #size/ tag, which hub_core::session_page shows
 #   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
 #                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
 #                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
@@ -1197,10 +1197,8 @@ cmd_stuck() {
 
 # cmd_budget <item>: its size and budget, for the session page
 cmd_budget() {
-  [ -n "${1:-}" ] || die "usage: fleet-shepherd budget <item>"
-  local item
-  item="$(agent-queue show "$1" --json)" || exit
-  item_budget "$item"
+  [ $# -eq 1 ] || die "usage: fleet-shepherd budget <task text>"
+  item_budget "$(jq -n --arg task "$1" '{$task}')"
 }
 
 case "${1:-}" in

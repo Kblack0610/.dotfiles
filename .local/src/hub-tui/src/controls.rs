@@ -23,6 +23,8 @@ use crate::fmt::{clock, dur, older, Palette};
 
 /// Rows drawn; a day's ended sessions run to hundreds, and `/` reaches the rest.
 const OPEN: usize = 200;
+/// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
+const ON_PAGE: [&str; 7] = ["SYNC", "CONFLICTS", "TREE", "PR", "PRS", "CI", "PLAN"];
 
 /// The key that asks for each action.
 pub const KEYS: [(char, Action); 7] = [
@@ -579,7 +581,7 @@ impl Controls {
         }
         if let Some(x) = r.state {
             for (k, c) in fleet::HEAD.iter().zip(fleet::row(x, p)).skip(1) {
-                if !matches!(c.text.as_str(), "-" | "") {
+                if !ON_PAGE.contains(k) && !matches!(c.text.as_str(), "-" | "") {
                     out.push(field(k, &c.text));
                 }
             }

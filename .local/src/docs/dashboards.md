@@ -75,7 +75,7 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | Web Sessions Asks and Nightly tiles | Home: Needs you, Health (#1246) | Home already owns both |
 | Web Sessions inline row unfold (fleet-state card, outcome card) | The session's page, `#sessions/<id>`, in its Fleet state and Outcome card folds | Every session opens the same page, ended or live, and it has a URL |
 | Web open session's first view, the transcript | A view beside the page, read on click | Heavy detail on open (rule 10); the page answers what the session is first |
-| TUI detail fields BRANCH, NEXT PHASE, PLAN FILE, QUEUE, SOURCE, ITEM, CARD | The page's Worktree, Plan and Queue item parts, and its outcome card in place of the card command | One reader for both surfaces (rule 8) |
+| TUI detail fields BRANCH, NEXT PHASE, PLAN FILE, QUEUE, SOURCE, ITEM, CARD, SYNC, CONFLICTS, TREE, PR, PRS, CI, PLAN | The page's Worktree, PR, Plan and Queue item parts, and its outcome card in place of the card command | One reader for both surfaces (rule 8) |
 | TUI Sessions columns SYNC, CONFLICTS, TREE, PRS, WORK, WAIT, AGE, LABELS | The session's detail pane (#1246) | They did not fit beside the shared columns; Enter shows every one |
 
 ### Retired names

@@ -134,11 +134,11 @@ function openAgent(a) {
 async function openSession(id) {
   if (st.sel && (sessionId(st.sel) === id || st.sel.target === id)) return;
   if (!st.agents.length) {
-    try { st.agents = await api("/api/agents"); } catch (e) { console.warn(e); }
+    await refreshAgents();
     if (st.arg !== id) return;
   }
   const a = st.agents.find((x) => x.session === id || x.target === id);
-  select(a || { target: id, session: id, paneless: true, parked: true, status: "", summary: "", actions: [] });
+  select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
 }
 
 const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;

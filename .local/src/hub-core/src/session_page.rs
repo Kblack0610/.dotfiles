@@ -10,9 +10,11 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::boards;
 use crate::home::str_of;
 use crate::outcomes;
 use crate::queue::{self, Item};
+use crate::reds;
 use crate::session_actions::Runner;
 use crate::session_table::{SessionRow, Source};
 use crate::tasks;
@@ -72,8 +74,10 @@ pub struct SessionPage {
 
 /// The row a page id names: a session id, a live row's target or an ended row's item.
 pub fn find<'a>(rows: &'a [SessionRow], id: &str) -> Option<&'a SessionRow> {
+    if id.is_empty() {
+        return None;
+    }
     rows.iter()
-        .filter(|_| !id.is_empty())
         .find(|r| r.session_id == id || r.key == id || r.target == id || r.item == id)
 }
 
@@ -125,20 +129,18 @@ pub fn read(
         .flatten();
     let budget = item
         .as_ref()
-        .and_then(|i| budget(runner, &i.slug).map_err(|e| fail("budget", e)).ok());
+        .and_then(|i| budget(runner, &i.task).map_err(|e| fail("budget", e)).ok());
     let board = item
         .as_ref()
         .and_then(|i| i.row.as_deref())
         .map(|r| board_part(runner, r, &mut fail));
     let asks = if row.session_id.is_empty() {
-        Ok(vec![])
+        Some(vec![])
     } else {
         asks(runner, &row.session_id)
+            .map_err(|e| fail("agent-ask", e))
+            .ok()
     };
-    let asks_part = asks_part(&asks);
-    if let Err(e) = asks {
-        fail("agent-ask", e);
-    }
     let parts = vec![
         item_part(&row, item.as_ref(), live),
         board.unwrap_or_else(|| Part::new("Board row", "no board row")),
@@ -146,14 +148,12 @@ pub fn read(
         worktree_part(live, item.as_ref()),
         pr_part(&row, live, item.as_ref()),
         spend_part(&row, budget.as_ref()),
-        asks_part,
+        asks_part(asks.as_deref()),
         shepherd_part(&Ledger::read(ledger, &row.session_id), live),
     ];
-    let outcome = match card {
-        Some(c) => c,
-        None if ended => NO_CARD.to_string(),
-        None => String::new(),
-    };
+    let outcome = card
+        .or_else(|| ended.then(|| NO_CARD.to_string()))
+        .unwrap_or_default();
     Some(SessionPage {
         name: name(&row),
         session_id: row.session_id.clone(),
@@ -266,7 +266,8 @@ fn plan_part(live: Option<&Value>, item: Option<&Item>) -> Part {
             text += &format!("  phases {d}/{t}");
         }
         if let Some(n) = known(&s["next_phase"]) {
-            text += &format!(", next: {n}");
+            let name = n.split_once(": ").map_or(n, |(name, _)| name);
+            text += &format!(", next: {name}");
         }
     }
     Part::new(label, text)
@@ -310,13 +311,9 @@ fn pr_url(number: &str, live: Option<&Value>, item: Option<&Item>) -> Option<Str
                 .as_i64()
                 .is_some_and(|n| n.to_string() == number)
         })
-        .map(|p| str_of(p, "repo"));
-    let by_item = || {
-        let (repo, n) = item?.pr.as_deref()?.split_once('#')?;
-        (n == number && repo.contains('/')).then_some(repo)
-    };
-    let repo = listed.or_else(by_item)?;
-    Some(format!("https://github.com/{repo}/pull/{number}"))
+        .map(|p| format!("{}#{number}", str_of(p, "repo")));
+    let pr = listed.or_else(|| item?.pr.clone())?;
+    reds::pr_url(&pr).filter(|u| u.ends_with(&format!("/pull/{number}")))
 }
 
 fn pr_part(r: &SessionRow, live: Option<&Value>, item: Option<&Item>) -> Part {
@@ -348,8 +345,8 @@ fn pr_part(r: &SessionRow, live: Option<&Value>, item: Option<&Item>) -> Part {
 }
 
 /// `fleet-shepherd budget`'s `<size> <usd>`, which owns the sizes and their numbers.
-fn budget(runner: &dyn Runner, slug: &str) -> Result<(String, f64), String> {
-    let argv = ["fleet-shepherd", "budget", slug].map(String::from);
+fn budget(runner: &dyn Runner, task: &str) -> Result<(String, f64), String> {
+    let argv = ["fleet-shepherd", "budget", task].map(String::from);
     let out = runner.run(&argv)?;
     let mut f = out.split_whitespace();
     match (f.next(), f.next().and_then(|n| n.parse().ok())) {
@@ -379,36 +376,20 @@ fn spend_part(r: &SessionRow, budget: Option<&(String, f64)>) -> Part {
 }
 
 /// One ask a session filed.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Ask {
-    id: String,
-    status: String,
-    question: String,
-}
-
-/// The asks `session` filed, from `agent-ask list`'s TSV: its id, status, question and
-/// `claude_session` columns.
-fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<Ask>, String> {
+/// The asks `session` filed, as `boards::asks` reads them.
+fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<Value>, String> {
     let argv = ["agent-ask", "list", "--all"].map(String::from);
-    Ok(runner
-        .run(&argv)?
-        .lines()
-        .map(|l| l.split('\t').collect::<Vec<_>>())
-        .filter(|f| f.get(15).copied() == Some(session))
-        .map(|f| Ask {
-            id: f[0].to_string(),
-            status: f[3].to_string(),
-            question: f[5].to_string(),
-        })
-        .collect())
+    let mut all = boards::asks(&runner.run(&argv)?);
+    all.retain(|a| a["claude_session"] == session);
+    Ok(all)
 }
 
-fn asks_part(asks: &Result<Vec<Ask>, String>) -> Part {
+fn asks_part(asks: Option<&[Value]>) -> Part {
     let label = "Asks";
-    let Ok(all) = asks else {
+    let Some(all) = asks else {
         return Part::new(label, "could not be read").warn(true);
     };
-    let open: Vec<&Ask> = all.iter().filter(|a| a.status == "pending").collect();
+    let open: Vec<&Value> = all.iter().filter(|a| a["status"] == "pending").collect();
     let closed = all.len() - open.len();
     let was = if closed > 0 {
         format!(", {closed} closed")
@@ -418,7 +399,11 @@ fn asks_part(asks: &Result<Vec<Ask>, String>) -> Part {
     match open.first() {
         Some(a) if open.len() == 1 => Part::new(
             label,
-            format!("1 open: {} ({}){was}", cap(&a.question, TITLE_MAX), a.id),
+            format!(
+                "1 open: {} ({}){was}",
+                cap(str_of(a, "question"), TITLE_MAX),
+                str_of(a, "id")
+            ),
         )
         .link("#home")
         .warn(true),
@@ -512,7 +497,7 @@ mod tests {
             "row": "agent-runtime:ar-455", "task": "do it", "plan": "/p/from-item.md"});
         Fake(vec![
             ("agent-queue show the-item --json", Ok(item.to_string())),
-            ("fleet-shepherd budget the-item", Ok("m 25\n".into())),
+            ("fleet-shepherd budget do it", Ok("m 25\n".into())),
             ("notes board --json", Ok(board.to_string())),
             ("agent-ask list --all", Ok(asks)),
             (
@@ -542,7 +527,7 @@ mod tests {
     fn state() -> Value {
         json!({"target": "lab/dotfiles-agent-6:1", "session_id": SID, "cwd": "/w/dotfiles-agent-6",
             "branch": "feat/x", "plan_file": "/p/plan.md", "phases_done": 2, "phases_total": 4,
-            "next_phase": "P3", "fact": "WORKING idle 3m", "ahead": 2, "dirty": 0, "conflicts": false,
+            "next_phase": "P3 the page: the long text", "fact": "WORKING idle 3m", "ahead": 2, "dirty": 0, "conflicts": false,
             "item": {"slug": "the-item", "is": "own"},
             "prs": [{"repo": "o/r", "number": 12, "state": "OPEN"}, {"repo": "o/r", "number": 9, "state": "MERGED"}]})
     }
@@ -595,7 +580,10 @@ mod tests {
             text(&p, "Board row"),
             "agent-runtime ar-455 \"notice and close\" (doing)"
         );
-        assert_eq!(text(&p, "Plan"), "/p/plan.md  phases 2/4, next: P3");
+        assert_eq!(
+            text(&p, "Plan"),
+            "/p/plan.md  phases 2/4, next: P3 the page"
+        );
         assert_eq!(
             text(&p, "Worktree"),
             "/w/dotfiles-agent-6  branch feat/x, 2 ahead"

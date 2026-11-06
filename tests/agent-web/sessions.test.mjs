@@ -118,14 +118,14 @@ test("the URL opens the session on a pane on its page, and one with no pane has 
   assert.equal(run("!!__opened[0].paneless"), false);
   await run(`openSession("s9")`);
   assert.equal(run("__opened[1].paneless"), true);
-  assert.equal(run("__opened[1].parked"), true, "parked keeps the compose box and Screen off");
+  assert.equal(run("__opened[1].paneless"), true, "no pane keeps the compose box and Screen off");
   run(`select = __select`);
 });
 
 test("a page draws hub-core's parts: links, amber, errors, the open outcome card, and no card while it lives", async () => {
   setup();
   ctx.PAGE_STUB = PAGE;
-  run(`api = async () => PAGE_STUB; st.sel = { target: "s9", session: "s9", paneless: true, parked: true, actions: [] }; wst.open = {}`);
+  run(`api = async () => PAGE_STUB; st.sel = { target: "s9", session: "s9", paneless: true, actions: [] }; wst.open = {}`);
   await run(`loadPage()`);
   const html = boxes.scroll.innerHTML;
   assert.match(html, /<a href="#queue">ucp-394 \(done, high\)<\/a>/);

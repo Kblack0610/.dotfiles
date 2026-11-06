@@ -125,8 +125,9 @@ function renderHead() {
   $("d-dot").className = "dot " + st.sel.status;
   $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
-  $("compose").hidden = !!st.sel.parked;
-  $("v-screen").disabled = !!st.sel.parked;
+  const noPane = !!(st.sel.parked || st.sel.paneless);
+  $("compose").hidden = noPane;
+  $("v-screen").disabled = noPane;
   renderActs();
 }
 

@@ -1369,17 +1369,13 @@ jq -n --arg t "${STUB_TASK:-a task}" "{slug: \"q1\", task: \$t, sessions: \"s-ol
 brow() { jq -n --arg b "$1" '{target:"lab/w-agent-1:1", bucket:$b, nudged:false, escalated:true, labels:[], session_id:"s-now", dispatch:"dotfiles: q1"}'; }
 parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
 
-@test "budget <item> prints the size and budget of its #size/ tag, and an unknown item fails" {
-  stub agent-queue '[ "$1 $3" = "show --json" ] || exit 2
-case "$2" in sized) echo "{\"task\":\"do it #size/l\"}" ;; bare) echo "{\"task\":\"do it #size/large\"}" ;; *) echo "no item $2" >&2; exit 1 ;; esac'
-  run "$SH" budget sized
+@test "budget <task text> prints the size and budget of its #size/ tag, and no text fails" {
+  run "$SH" budget 'do it #size/l'
   assert_success
   assert_output "l 50"
-  run "$SH" budget bare
+  run "$SH" budget 'do it #size/large'
   assert_success
   assert_output "unsized 25"
-  run "$SH" budget gone
-  assert_failure
   run "$SH" budget
   assert_failure
 }

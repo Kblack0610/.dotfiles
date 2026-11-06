@@ -98,7 +98,6 @@ impl Cache {
     /// One session's page, or None when nothing names `id`. The open page refreshes with the
     /// list, so the last one is kept as the list's read is.
     pub async fn page(&self, id: String) -> Result<Option<Arc<SessionPage>>, String> {
-        let read = self.read().await?;
         let mut c = self.page.lock().await;
         let kept = c
             .as_ref()
@@ -106,6 +105,7 @@ impl Cache {
         if let Some((_, _, p)) = kept {
             return Ok(Some(p.clone()));
         }
+        let read = self.read().await?;
         let key = id.clone();
         let page = tokio::task::spawn_blocking(move || {
             session_page::read(
