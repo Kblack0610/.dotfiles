@@ -795,6 +795,32 @@ pub fn version_tag(line: &str) -> Option<String> {
     split_version(line).1
 }
 
+/// What a tag is for: `Task` tags are row state the system reads (the row grammar in the README,
+/// "The task row"), `Topic` tags say what something is about. One `#` syntax, so the kind comes
+/// from the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum TagKind {
+    Topic,
+    Task,
+}
+
+/// The kind of `tag` (bare, lower-case, no `#`). `p` is `#p:<project>`: the tag charset stops at `:`.
+pub fn tag_kind(tag: &str) -> TagKind {
+    let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
+        || matches!(tag, "requested" | "agent" | "p")
+        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || looks_like_tier(tag)
+        || is_parent_tag(tag)
+        || is_version_tag(tag)
+        || is_created_tag(tag)
+        || is_due_tag(tag);
+    if task {
+        TagKind::Task
+    } else {
+        TagKind::Topic
+    }
+}
+
 /// The tier a `#tier/N` hashtag (without its `#`) names, 1 to 3 as `fleet-dispatch` reads it
 /// (`row_tier`); None for any other tag, a malformed tier included.
 pub fn tier_tag(tag: &str) -> Option<u8> {
@@ -1986,6 +2012,31 @@ after
         let b = task_key("- [ ] ship it");
         assert_eq!(a, b);
         assert_eq!(a, "ship it");
+    }
+
+    #[test]
+    fn tag_kind_tells_row_state_from_topics() {
+        for t in [
+            "urgent",
+            "high",
+            "low",
+            "size/s",
+            "tier/2",
+            "tier3",
+            "of/tr-37",
+            "worker/fleet",
+            "requested",
+            "agent",
+            "p",
+            "v0.5.0",
+            "c1026",
+            "due1031",
+        ] {
+            assert_eq!(tag_kind(t), TagKind::Task, "{t}");
+        }
+        for t in ["software", "troubleshooting", "sizes", "v0", "interview"] {
+            assert_eq!(tag_kind(t), TagKind::Topic, "{t}");
+        }
     }
 
     #[test]
