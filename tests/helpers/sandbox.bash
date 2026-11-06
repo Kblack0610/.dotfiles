@@ -41,7 +41,9 @@ GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 # The chain event writer agent-queue, fleet-dispatch and agent-land share, same reason again.
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB
+# The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
+PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds

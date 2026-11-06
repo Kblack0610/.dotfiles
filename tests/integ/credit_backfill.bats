@@ -25,8 +25,15 @@ setup() {
       "arena": {repo: "game", path: "Assets/Arena", code: "ar", lab: "personal", type: "game"},
       "level": {repo: "game", path: "Assets/Level", code: "lv", lab: "personal", type: "game"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
   printf '#!/bin/sh\nexec "%s/.local/bin/agent-queue" "$@"\n' "$REPO_ROOT" >"$SANDBOX/bin/agent-queue"
-  # gh pr view N: $GH_PRS/N.json, else a failure, as gh gives for a PR it cannot read.
-  printf '#!/usr/bin/env bash\necho "gh $*" >>"$NOTES_FIXTURE/gh.log"\ncat "$GH_PRS/$3.json" 2>/dev/null\n' >"$SANDBOX/bin/gh"
+  # gh api repos/<r>/pulls/N[/files]: served from $GH_PRS/N.json, else a failure, as gh gives for a
+  # PR it cannot read. The stub answers the --jq the script asks for.
+  cat >"$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >>"$NOTES_FIXTURE/gh.log"
+p="${2#repos/*/pulls/}" f="$GH_PRS/${p%/files}.json"
+[ -f "$f" ] || exit 1
+case "$p" in */files) jq -r '.files[]?.path' "$f" ;; *) jq -r '.additions + .deletions' "$f" ;; esac
+SH
   printf '#!/bin/sh\ncat "$NOTES_FIXTURE/criteria-$1.json" 2>/dev/null\n' >"$SANDBOX/bin/system-check"
   printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/gh" "$SANDBOX/bin/system-check" "$SANDBOX/bin/fleet-dispatch"
@@ -81,16 +88,19 @@ lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'
   assert_line 'story|act-two|level|-|m|open|-|-|P4 the rest (plan act-two, phase 4)'
 }
 
-@test "propose survives a PR gh cannot read: the story is filed at size m with no credit move" {
-  printf '{"additions": 0, "deletions": 0, "files": null}\n' >"$GH_PRS/31.json"
-  done_item huge 31
+@test "propose survives a PR gh cannot read: the story is filed at size m with no credit move, and gh is asked once" {
+  printf '{"additions": 0, "deletions": 0, "files": []}\n' >"$GH_PRS/31.json"
+  done_item empty 31
   done_item gone 32
   run "$CB" propose game
   assert_success
   run lines
-  assert_line 'story|-|game|-|m|done|pr:31|huge|huge'
+  assert_line 'story|-|game|-|m|done|pr:31|empty|empty'
   assert_line 'story|-|game|-|m|done|pr:32|gone|gone'
   refute_line --partial 'attr|'
+  : >"$NOTES_FIXTURE/gh.log"
+  "$CB" propose game
+  [ ! -s "$NOTES_FIXTURE/gh.log" ]
 }
 
 @test "propose files a typed project's FAIL criteria as stories under one epic per system" {
@@ -123,10 +133,11 @@ notes_vault() {
 }
 
 @test "apply writes the epic on the sheet, its stories closed on the board, the item moved and linked, and the plan its epic: line" {
-  notes_vault
   pr 11 40 Assets/Arena/A.cs
   pr 21 40 Assets/Level/L.cs
+  # Added before notes is on PATH: an item from before every add filed its story row (#1133).
   done_item arena-fix 11
+  notes_vault
   printf '%s\n' '# Level: done' '' '## Phases' '' '- [x] P1 one (#21)' '- [x] P2 two (#21)' >"$CREDIT_BACKFILL_PLANS/game/lv-done.md"
   "$CB" propose game
   run "$CB" apply game

@@ -33,6 +33,9 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+# The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
+# shellcheck source=../lib/plan-phases.sh
+. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
@@ -367,11 +370,6 @@ project_resolve() {
 # (the playground's games, dotfiles' agent-runtime and notes-cockpit): project_credit at add,
 # cmd_attribute at land. Both only move an item between projects that share one checkout.
 
-# plan_epic <plan> -> the `<code>-<N>` of the plan's `epic:` line, or nothing.
-plan_epic() {
-  [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1
-}
-
 # project_credit <project> <from> <epic> -> the project the item's own evidence names: the sheet its
 # row is on (`from: board:<p>:<key>`), else the sheet whose row code the epic id `<code>-<N>`
 # carries; when that project shares <project>'s checkout. Else <project>.
@@ -563,9 +561,6 @@ item_weight() {
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
 # Every slug is checked before any item is written.
 add_plan() {
-  # The one reader of a plan's `## Phases` checklist, shared with fleet-sessions; only this verb needs it.
-  # shellcheck source=../lib/plan-phases.sh
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || die "cannot read plan-phases.sh"
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
   [ -n "$project" ] || project="$(project_of_cwd)"
@@ -913,8 +908,6 @@ phases_ticked() {
   local plan phases
   plan="$(fm_get "$1" plan)" phases="$(fm_get "$1" phases)"
   [ -n "$plan" ] && [ -n "$phases" ] && [ -f "$plan" ] || return 1
-  # shellcheck source=../lib/plan-phases.sh
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || return 1
   plan_phase_list "$plan" | jq -e --arg ph "$phases" '
     . as $all | ($ph | split(" ") | map(tonumber? // empty)) as $n
     | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null

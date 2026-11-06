@@ -47,18 +47,10 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../lib/plan-phases.sh
-. "$HERE/../lib/plan-phases.sh"
+. "${PLAN_PHASES_LIB:-$HERE/../lib/plan-phases.sh}"
 
-# family <project> -> every registry project sharing its checkout, the repo's own owner first.
-family() {
-  jq -r --arg r "$(project_repo_name "$1")" '
-    (.trackers // {}) as $t
-    | ([$t[$r] | objects | .owner // empty] + [$t | to_entries[] | select(.value | objects)
-       | select(.key == $r or .value.repo == $r) | .key]) | unique[]' "$AQ_MAP"
-}
-
-# owner <project> -> the project an item on the repo key itself counts on.
-owner() { jq -r --arg p "$1" '(.trackers[$p] | objects | .owner) // $p' "$AQ_MAP"; }
+# family <project> -> every registry project sharing its checkout, and the repo's owner.
+family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; project_lab_names "$r"; } | sort -u; }
 
 # gh_slug <project> -> owner/repo of the project's checkout's origin, or nothing.
 gh_slug() {
@@ -69,15 +61,21 @@ gh_slug() {
 }
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
+# The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
+# files and gives none for a large PR). A PR gh cannot read is cached as {} so a rerun skips it.
 pr_facts() {
-  local f="$CB_CACHE/${1//\//_}-$2.json" out
+  local f="$CB_CACHE/${1//\//_}-$2.json" files n
   if [ ! -s "$f" ]; then
-    out="$(gh pr view "$2" -R "$1" --json files,additions,deletions 2>/dev/null)" || return 0
-    mkdir -p "$CB_CACHE" && printf '%s\n' "$out" >"$f"
+    mkdir -p "$CB_CACHE"
+    if n="$(gh api "repos/$1/pulls/$2" --jq '.additions + .deletions' 2>/dev/null)" &&
+      files="$(gh api "repos/$1/pulls/$2/files" --paginate --jq '.[].filename' 2>/dev/null)"; then
+      jq -cRn --argjson n "$n" '{files: [inputs | select(. != "")], n: $n}' <<<"$files" >"$f"
+    else
+      echo '{}' >"$f"
+    fi
   fi
-  jq -c --argjson s "$S_MAX" --argjson m "$M_MAX" 'select(.files != null and (.files | length) > 0)
-    | (.additions + .deletions) as $n
-    | {files: [.files[].path], size: (if $n <= $s then "s" elif $n <= $m then "m" else "l" end)}' "$f"
+  jq -c --argjson s "$S_MAX" --argjson m "$M_MAX" 'select((.files // []) | length > 0)
+    | {files, size: (if .n <= $s then "s" elif .n <= $m then "m" else "l" end)}' "$f"
 }
 
 # credit <project> <owner/repo> <N>... -> the project the PRs' changed files credit, or nothing.
@@ -126,7 +124,7 @@ cmd_propose() {
   local top="$1" slug dflt fam items out
   [ -n "$(project_repo_path "$top")" ] || die "unknown project: $top (no checkout for it in $AQ_MAP)"
   slug="$(gh_slug "$top")"; [ -n "$slug" ] || die "$top: its checkout has no origin remote"
-  dflt="$(owner "$top")"
+  dflt="$(project_field "$top" owner)"; dflt="${dflt:-$top}"
   mapfile -t fam < <(family "$top")
   items="$(agent-queue list --json --state all --since 2000-01-01 2>/dev/null |
     jq -sc --args '[.[] | select(.project as $p | $ARGS.positional | index($p))]' "${fam[@]}")"
@@ -135,7 +133,7 @@ cmd_propose() {
   {
     printf '# credit-backfill proposal for %s, %s. Delete or edit lines, then: credit-backfill apply %s\n' "$top" "$(date +%F)" "$top"
     printf '# kind\tkey\tproject\tsystem\tsize\tstate\tproof\titem\ttext\tid\n'
-    propose_items "$top" "$slug" "$items"
+    propose_items "$slug" "$items"
     propose_plans "$top" "$slug" "$dflt" "$items" "${fam[@]}"
     propose_criteria "${fam[@]}"
   } >"$out.new" && mv "$out.new" "$out"
@@ -148,7 +146,7 @@ pr_num() { sed -nE "s#^(${2//\//\\/}\#|\#)?([0-9]+)\$#\2#p" <<<"$1"; }
 # The items: a credit move for each whose PR names another project, and a closed story for each
 # done one with a PR and no row whose plan is not backfilled as an epic here (propose_plans files those).
 propose_items() {
-  local top="$1" slug="$2" s p pr plan merged title n win facts size epic to
+  local slug="$1" s p pr plan merged title n win w touches facts size epic to pf
   while IFS=$'\t' read -r s p pr plan merged title; do
     n="$(pr_num "$pr" "$slug")"; [ -n "$n" ] || continue
     [ "$merged" = - ] && merged=""
@@ -156,20 +154,21 @@ propose_items() {
     if [ -n "$facts" ]; then
       size="$(jq -r .size <<<"$facts")"
       win="$(jq -r '.files[]' <<<"$facts" | agent-queue credit-of "$p")"
-      if [ -n "${win%%$'\t'*}" ] && [ "${win%%$'\t'*}" != "$p" ]; then
-        to="${win%%$'\t'*}"
-        row attr - "$to" - - - "touches:${win#*$'\t'}" "$s" "from $p"
+      IFS=$'\t' read -r w touches <<<"$win"
+      if [ -n "$w" ] && [ "$w" != "$p" ]; then
+        to="$w"
+        row attr - "$to" - - - "touches:$touches" "$s" "from $p"
       fi
     fi
-    [ "$plan" = - ] || [ "$(plan_phase_list "$(plan_file "$plan")" | jq length)" -lt 2 ] || [ -n "$(plan_epic "$(plan_file "$plan")")" ] || continue
-    epic="$( [ "$plan" = - ] || plan_epic "$(plan_file "$plan")")"
+    epic=""
+    if [ "$plan" != - ]; then
+      pf="$(plan_file "$plan")" epic="$(plan_epic "$pf")"
+      [ -n "$epic" ] || [ "$(plan_phase_list "$pf" | jq length)" -lt 2 ] || continue
+    fi
     row story "${epic:--}" "$to" - "$size" done "pr:$n${merged:+ commit:${merged:0:12}}" "$s" "$(words "$title")"
   done < <(jq -r '.[] | select(.state == "done" and .status == "ok" and (.pr // "") != "" and (.row // "") == "")
-      | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$3")
+      | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$2")
 }
-
-# plan_epic <plan> -> the `<code>-<N>` of its `epic:` line, or nothing.
-plan_epic() { [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1; }
 
 # plan_file <path or name> -> the plan as the backfill reads it: the live ~/.claude copy when it
 # exists (agent-land ticks that one), else the ~/.agent/plans cache.
@@ -206,8 +205,8 @@ propose_plans() {
           | select(.) | [.slug, .state, .pr, .merged] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
         [ -n "$it" ] || it=$'-\t-\t-\t-'
         IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
-        [ "$i_slug" = - ] && i_slug=""; [ "$i_pr" = - ] && i_pr=""; [ "$i_merged" = - ] && i_merged=""
-        n="$(pr_num "${i_pr:-}" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | head -1)"
+        [ "$i_slug" = - ] && i_slug=""; [ "$i_merged" = - ] && i_merged=""
+        n="$(pr_num "$i_pr" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | head -1)"
         size=m proof=-
         [ -n "$n" ] && { size="$(pr_facts "$slug" "$n" | jq -r .size)"; size="${size:-m}"; proof="pr:$n${i_merged:+ commit:${i_merged:0:12}}"; }
         case "$st" in
@@ -260,15 +259,15 @@ add_row() {
   echo "$id"
 }
 
-# close_row <project> <lane> <id> <state> <proof>
+# close_row <project> <id> <state> <proof> -- close a story on the project's agent board.
 close_row() {
-  local p="$1" lane="$2" id="$3"
-  case "$4:$5" in
+  local p="$1" id="$2"
+  case "$3:$4" in
     open:*) return 0 ;;
-    deferred:why:*) ptask "$p" $lane drop "$id" --why "${5#why:}" ;;
-    *:unverified:*) ptask "$p" $lane done "$id" --unverified "${5#unverified:}" ;;
-    *:pr:*) ptask "$p" $lane done "$id" --proof "$5" ;;
-    *) ptask "$p" $lane done "$id" --unverified "backfilled by credit-backfill with no proof" ;;
+    deferred:why:*) ptask "$p" --agent drop "$id" --why "${4#why:}" ;;
+    *:unverified:*) ptask "$p" --agent done "$id" --unverified "${4#unverified:}" ;;
+    *:pr:*) ptask "$p" --agent done "$id" --proof "$4" ;;
+    *) ptask "$p" --agent done "$id" --unverified "backfilled by credit-backfill with no proof" ;;
   esac >/dev/null
 }
 
@@ -279,7 +278,7 @@ cmd_apply() {
   bad="$(awk -F'\t' '$1 == "epic" && $4 == "?" && $10 == "" { print $2 }' "$f")"
   [ -z "$bad" ] || die "name a system for these epics first (column 4 is ?): $(paste -sd' ' <<<"$bad")"
   declare -A ids=() epic_sys=()
-  local kind key prj sys size st proof item text id lane eid area
+  local kind key prj sys size st proof item text id eid area
   while IFS=$'\t' read -r kind key prj sys size st proof item text id; do
     [ "$kind" = epic ] || continue
     epic_sys[$key]="$sys"; [ -z "$id" ] || ids[$key]="$id"
@@ -288,7 +287,6 @@ cmd_apply() {
   while IFS= read -r line; do
     IFS=$'\t' read -r kind key prj sys size st proof item text id <<<"$line"
     if [[ "$line" == '#'* ]] || [ -n "$id" ] || [ -z "$kind" ]; then printf '%s\n' "$line" >>"$tmp"; continue; fi
-    id=""
     case "$kind" in
       attr)
         agent-queue set "$item" project="$prj" touches="${proof#touches:}" >/dev/null && id=set ;;
@@ -305,9 +303,8 @@ cmd_apply() {
           id="$(add_row "$prj" --agent "$text" "#size/$size${eid:+ #of/$eid}")" || id=""
         fi
         if [ -n "$id" ]; then
-          lane=--agent
           # An open story an item works on is started, so dispatch does not start it a second time.
-          if [ "$st" != open ]; then close_row "$prj" "$lane" "$id" "$st" "$proof"
+          if [ "$st" != open ]; then close_row "$prj" "$id" "$st" "$proof"
           elif [ "$item" != - ]; then ptask "$prj" --agent start "$id" >/dev/null 2>&1; fi
           [ "$item" = - ] || agent-queue set "$item" row="$prj:$id" project="$prj" >/dev/null
         fi ;;
@@ -318,10 +315,10 @@ cmd_apply() {
   mv "$tmp" "$f"
   # The epics: close a done plan's epic once its stories are, and give the plan its `epic:` line.
   while IFS=$'\t' read -r kind key prj sys size st proof item text id; do
-    [ "$kind" = epic ] && [ -n "$id" ] || continue
-    [ "$st" = done ] && [[ "$proof" == plan:* ]] &&
+    [ "$kind" = epic ] && [ -n "$id" ] && [[ "$proof" == plan:* ]] || continue
+    [ "$st" != done ] ||
       ptask "$prj" done "$id" --unverified "backfilled: every phase of plan ${proof#plan:} is ticked" >/dev/null 2>&1
-    [[ "$proof" == plan:* ]] && file_plan "${proof#plan:}" "$id" "$prj"
+    file_plan "${proof#plan:}" "$id" "$prj"
   done <"$f"
   echo "$f: $n lines applied"
 }
@@ -337,7 +334,6 @@ file_plan() {
   done
   c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -print -quit)"
   if [ -n "$c" ] && [ "$(dirname "$c")" != "$CB_PLANS/$3" ]; then mkdir -p "$CB_PLANS/$3" && mv "$c" "$CB_PLANS/$3/"; fi
-  return 0
 }
 
 case "${1:-}" in
