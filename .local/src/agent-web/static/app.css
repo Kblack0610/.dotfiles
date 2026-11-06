@@ -105,8 +105,8 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #home > *, #home h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
 #home .hnum span { white-space: nowrap; }
 #q-list .card { max-width: none; }
-#board > *, #board h2.sec, #p-cards > *, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
-#b-list .card, #b-list h2.sec { max-width: none; }
+#board > *, #board h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+#b-list .card, #b-list h2.sec, #p-cards .card { max-width: none; }
 #board summary { cursor: pointer; }
 #board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
@@ -218,8 +218,6 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .legend button.lg:focus-visible { outline: 1px solid var(--accent); }
 .meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 3px; }
-.pcard[data-open] { cursor: pointer; }
-.pcard:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .pcard .pprog { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; }
 .pcard .pprog .meter { flex: 1; width: auto; height: 8px; }
 .pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
