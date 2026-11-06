@@ -95,8 +95,8 @@ fi
 
 mkdir -p "$CODEX_HOME" "$GEMINI_HOME" "$OPENCODE_HOME"
 
-# Claude Code's CLAUDE.md and .mcp.json are stow-managed from ~/.dotfiles/.claude/
-# — do NOT write them here; it would clobber the stow symlinks.
+# Claude Code's CLAUDE.md is stow-managed from ~/.dotfiles-private/.claude/ and MCP servers live in each
+# repo's .mcp.json - do NOT write them here; it would clobber the stow symlinks.
 cp "$stage_dir/AGENTS.md" "$CODEX_HOME/AGENTS.md"
 if [ "$gemini_rules" = 1 ]; then
     cp "$stage_dir/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
