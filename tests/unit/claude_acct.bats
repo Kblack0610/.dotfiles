@@ -431,12 +431,14 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   week alt 30 84
   local p
   # main last too: its line once came out empty and $(...) dropped it
-  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT" 5:claude:""; do
+  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT" 5:claude:"" 6:claude:""; do
     IFS=: read -r pid comm dir <<<"$p"
     mkdir -p "$SANDBOX/proc/$pid"
     echo "$comm" > "$SANDBOX/proc/$pid/comm"
     [ -z "$dir" ] && : > "$SANDBOX/proc/$pid/environ" || printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$SANDBOX/proc/$pid/environ"
   done
+  # a claude-lazer session (no CLAUDE_CONFIG_DIR, on the gateway) spends no account
+  printf 'ANTHROPIC_BASE_URL=https://llm.example\0' > "$SANDBOX/proc/6/environ"
   run --separate-stderr "$ACCT" status --json
   [ "$(field main .live <<<"$output")" = 3 ]
   [ "$(field alt .live <<<"$output")" = 1 ]
