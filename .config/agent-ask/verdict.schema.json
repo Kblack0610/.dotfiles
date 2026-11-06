@@ -2,11 +2,31 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "type",
     "decisions",
     "reason",
     "answer"
   ],
   "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "proceed_or_hold",
+        "product_taste",
+        "agent_policy",
+        "ci_capacity_ops",
+        "human_fact",
+        "cleanup_restructure",
+        "ship_deploy",
+        "human_physical_action",
+        "engineering_design",
+        "credential_or_account",
+        "accept_recommendations",
+        "session_status",
+        "other"
+      ],
+      "description": "What kind of question this is, named before the score; other when none fits"
+    },
     "decisions": {
       "type": "array",
       "minItems": 1,
@@ -20,9 +40,9 @@
           "external",
           "taste",
           "unclear-ask",
+          "against-precedent",
           "reversible",
-          "grounded",
-          "restates-rule"
+          "grounded"
         ],
         "properties": {
           "decision": {
@@ -45,7 +65,7 @@
                 "type": "boolean"
               }
             },
-            "description": "Only the human knows or can do this"
+            "description": "The ask needs something the agent cannot get"
           },
           "external": {
             "type": "object",
@@ -81,7 +101,7 @@
                 "type": "boolean"
               }
             },
-            "description": "It is product or design taste"
+            "description": "It turns on how something looks, feels, plays or reads"
           },
           "unclear-ask": {
             "type": "object",
@@ -100,6 +120,24 @@
               }
             },
             "description": "The ask cannot be judged as written"
+          },
+          "against-precedent": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The precedent's id and the words that match, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "A listed past disagreement covers this same decision"
           },
           "reversible": {
             "type": "object",
@@ -135,25 +173,7 @@
                 "type": "boolean"
               }
             },
-            "description": "The ask and the rules give the answer"
-          },
-          "restates-rule": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "evidence",
-              "met"
-            ],
-            "properties": {
-              "evidence": {
-                "type": "string",
-                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
-              },
-              "met": {
-                "type": "boolean"
-              }
-            },
-            "description": "The ask restates a rule the agent already has"
+            "description": "A rule or stated fact picks this option over every other listed one"
           }
         }
       }

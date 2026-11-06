@@ -692,7 +692,7 @@ pub mod tests {
                             prompt_sha: "3fa1c2d".into(),
                             rules: vec![
                                 Score {
-                                    rule: "restates-rule".into(),
+                                    rule: "ship_deploy".into(),
                                     verdicts: 9,
                                     scored: 6,
                                     precision: Some(100.0),
@@ -952,7 +952,7 @@ pub mod tests {
             taste.contains("18%") && taste.contains("no (6/30 to bar)"),
             "{taste}"
         );
-        let live = lines.iter().find(|l| l.contains("restates-rule")).unwrap();
+        let live = lines.iter().find(|l| l.contains("ship_deploy")).unwrap();
         assert!(
             live.contains("100%") && live.trim_end().ends_with("yes"),
             "{live}"

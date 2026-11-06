@@ -605,7 +605,7 @@ judge_fixture() {
   export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
   mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
   printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
-    'judge_rule: restates-rule' 'judge_reason: landing is standing authorization' \
+    'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' \
     'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
   # a gate: never sent to the model, so no call and no score
   printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
@@ -628,7 +628,7 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   assert_equal "$(judge_posted | wc -l)" 2
   run judge_posted
   assert_line --partial '"id":"jv:c1:ask-1","sessionId":"js-1","name":"ask-judge","value":"take-recommend"'
-  assert_line --partial '"comment":"restates-rule: landing is standing authorization"'
+  assert_line --partial '"comment":"ship_deploy: landing is standing authorization"'
   assert_line --partial '"id":"jv:c2:p/agent/k1","sessionId":"js-2","name":"dispatch-judge","value":"skip"'
   assert_line --partial '"comment":"tier3: tier 3"'
   # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
