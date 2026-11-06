@@ -19,7 +19,6 @@
 BUDGET_DEFAULT_CALL_USD=2
 BUDGET_DEFAULT_DAY_USD=10
 BUDGET_DEFAULT_CALLS_HOUR=20
-EX_BUDGET=75
 
 # shellcheck source=../../../lib/agent-proof.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"
