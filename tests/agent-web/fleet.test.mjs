@@ -32,12 +32,12 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "board.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, state: "idle", running_since: null, usual_s: null, overdue: false, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null,
+  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null, detail: "",
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -148,9 +148,9 @@ test("Tonight lists the slots in hub-core's order, a call under its caller, and 
   const h = box.innerHTML;
   assert.deepEqual(rows(), ["sentinel", "dream", "ask-judge"], "a slot with no worker is skipped");
   const clock = vm.runInContext("clock", ctx);
-  assert.match(h, /<td title="">always sentinel<\/td>/);
-  assert.match(h, new RegExp(`<td title="">${clock((1793942659 + 3600) * 1e3)} dream</td>`));
-  assert.match(h, /<td title=""><span class="muted" title="called by dream">`- <\/span> ask-judge<\/td>/);
+  assert.match(h, /<td title="">always <a href="#fleet\/sentinel">sentinel<\/a><\/td>/);
+  assert.match(h, new RegExp(`<td title="">${clock((1793942659 + 3600) * 1e3)} <a href="#fleet/dream">dream</a></td>`));
+  assert.match(h, /<td title=""><span class="muted" title="called by dream">`- <\/span> <a href="#fleet\/ask-judge">ask-judge<\/a><\/td>/);
   assert.match(h, new RegExp(`\\+ 12 other timers before ${clock((1793942659 + 6 * 3600) * 1e3)}: <a href="#jobs">Infra Jobs</a>`));
   assert.match(h, /data-tonight>Default order<\/button>/);
   click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
@@ -307,7 +307,7 @@ test("typing repaints the rows and leaves the search box in place", () => {
   ctx.renderFleet();
   assert.equal(box.innerHTML, before);
   assert.match(parts["fleet-head"].innerHTML, /Claude accounts/, "a refresh still reaches the rest of the page");
-  assert.match(parts["fleet-tail"].innerHTML, /Answer judge/);
+  assert.match(parts["fleet-tail"].innerHTML, /ANSWER JUDGE/);
   doc.activeElement = null;
   on.change({ target: { id: "fw-lane", value: "deliver" } });
   assert.equal(st.views.fleet, "q=stuck&lane=deliver");
@@ -316,4 +316,101 @@ test("typing repaints the rows and leaves the search box in place", () => {
 test("a run past its usual length says so", () => {
   const h = show("q=stuck");
   assert.match(h, /<td class="warn">running since [^<]*, over its usual 2m<\/td>/);
+});
+
+// The runner page, `#fleet/<name>`: hub_core::fleet::runner's JSON, fetched only when it opens.
+const totals = (o) => ({ calls: 0, errors: 0, tokens: 0, cost: null, p50_ms: null, ...o });
+const runnerPage = (name, o = {}) => ({
+  at: 1793942659, name, errors: [], lane: "observe", description: "files the inbox", enabled: true, state: "idle", running_since: null,
+  next: 1793946000, registry: worker(name, { kind: "persistent", trigger: "always on" }).registry,
+  conf: [{ key: "KIND", value: "persistent" }, { key: "DETAIL", value: "ingest" }, { key: "API_TOKEN", value: "(set)" }],
+  status: { state: "idle", detail: "3 filed; retry 14:20", next: "1793946000", updated: "1793942000" },
+  activity: [{ word: "WORKED", ok: true, at: 1793942000, text: "3 filed" }],
+  runs: [
+    { source: "agentctl", name, state: "done", ok: false, result: "FAILED", started: 1793941000, finished: 1793941060, secs: 60, detail: "inv 1a2b3c4d", runs: 1,
+      log: { kind: "runner", invocation: "1a2b3c4d", out: [0, 120], err: [0, 0] } },
+    { source: "agentctl", name, state: "done", ok: true, result: "WORKED", started: 1793930000, finished: 1793930030, secs: 30, detail: "inv 9f8e7d6c", runs: 1 },
+  ],
+  runs_total: 2, failed_total: 1,
+  days: Array.from({ length: 14 }, (_, i) => ({ day: `11-${String(i + 1).padStart(2, "0")}`, runs: i === 13 ? 2 : 0, failed: i === 13 ? 1 : 0 })),
+  calls: { day: totals({ calls: 4, errors: 1, tokens: 12000, cost: 0.42, p50_ms: 2100 }), week: totals({ calls: 30, tokens: 90000, cost: 3.1, p50_ms: 2400 }), partial: true, recent: [call("s9")] },
+  extras: { kind: "ingest", counts_7d: { filed: 5, routed: 2 }, partial: false, steps: [{ ts: "2026-11-06T10:00:00Z", action: "filed", from: "inbox", to: "board", lane: "", text: "fix the thing", id: null, why: null }] },
+  ...o,
+});
+const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: "", headers: { get: () => (status < 400 ? "application/json" : "text/plain") }, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
+const flush = () => new Promise((r) => setImmediate(r));
+let asked = [];
+const serve = (pages) => { asked = []; ctx.fetch = async (url) => { asked.push(url); const m = url.match(/^\/api\/fleet\/runner\?name=(.*)$/); if (m) { const p = pages[decodeURIComponent(m[1])]; return p ? answer(p) : answer(`no runner named ${decodeURIComponent(m[1])}`, 404); } if (url.startsWith("/api/jobs/log?ref=")) return answer("run log text"); return answer(url === "/api/fleet" ? data : {}); }; };
+const openPage = async (name, pages) => { serve(pages); ctx.setTab("fleet", name, ""); await flush(); return box.innerHTML; };
+
+test("a Workers row links to its runner page, and the page is read only when opened", async () => {
+  serve({});
+  ctx.setTab("fleet", "", "");
+  vm.runInContext("fst", ctx).data = data;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the Fleet tab never reads a runner page");
+  assert.equal(ctx.route("#fleet/inbox-triage").arg, "inbox-triage");
+});
+
+test("a runner page draws its runs, status next, activity, 24h and 7d calls, extras and conf", async () => {
+  const h = await openPage("inbox-triage", { "inbox-triage": runnerPage("inbox-triage") });
+  assert.deepEqual(asked.filter((u) => u.includes("/runner")), ["/api/fleet/runner?name=inbox-triage"]);
+  assert.match(h, /<span class="tl">RUNS 14D<\/span><span class="tv">2<\/span><span class="ts1">1 failed<\/span>/);
+  assert.match(h, /status: 3 filed; retry 14:20/);
+  assert.match(h, /<td class="bad">FAILED<\/td>/);
+  assert.match(h, /<td>7d<\/td><td class="n">30\+<\/td>/, "a partial week is a floor");
+  assert.match(h, /<span class="tl">FILED<\/span><span class="tv">5<\/span>/);
+  assert.match(h, /<td>API_TOKEN<\/td><td class="wrap muted">\(set\)<\/td>/);
+  assert.match(h, /href="#fleet">All runners<\/a>/);
+  click({ target: { closest: (sel) => (sel === "tr.rr" ? { dataset: { i: "0" } } : null) } });
+  await flush();
+  assert.match(box.innerHTML, /<pre class="panel joblog">run log text<\/pre>/);
+  assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
+});
+
+test("a runner with no runs says no run in 14 days, not an error", async () => {
+  const h = await openPage("quiet", { quiet: runnerPage("quiet", { runs: [], runs_total: 0, failed_total: 0, days: [], status: {}, activity: [], extras: { kind: "none" } }) });
+  assert.match(h, /<div class="empty">no run in 14 days<\/div>/);
+  assert.doesNotMatch(h, /panel down/);
+  assert.match(h, /No status file\./);
+});
+
+test("an unknown runner shows the server's words, and a judge page carries the moved judge section", async () => {
+  const miss = await openPage("nope", {});
+  assert.match(miss, /<div class="panel down">Could not read fleet \(HTTP 404\): no runner named nope/);
+  const disp = { counts_24h: { dispatch: 2, skip: 5 }, counts_7d: { dispatch: 9, skip: 30 }, log_24h: { started: 2, reaped: 1 }, partial: false,
+    recent: [{ ts: 1793942000, project: "dotfiles", key: "fix the thing", verdict: "dispatch", tier: 2, clear: true, reason: "clear and small" }] };
+  const h = await openPage("dispatch-judge", { "dispatch-judge": runnerPage("dispatch-judge", { extras: { kind: "dispatch-verdicts", dispatch: disp } }) });
+  assert.match(h, /<h2 class="sec">Dispatch judge /);
+  assert.match(h, /<span class="tl">STARTED<\/span><span class="tv">2<\/span>/);
+  assert.match(h, /clear and small/);
+  const j = await openPage("ask-judge", { "ask-judge": runnerPage("ask-judge", { extras: { kind: "ask-judge", judge } }) });
+  assert.match(j, /<h2 class="sec">Answer judge /);
+  assert.match(j, /<span class="tl">AGREE<\/span>/);
+  assert.match(j, /land it\?/);
+  ctx.setTab("fleet", "", "");
+});
+
+test("the Fleet tab keeps one tile per judge linking to the runner whose DETAIL= draws it, and Log's verdict headers link there too", () => {
+  const fs = vm.runInContext("fst", ctx);
+  // The links follow the confs: a renamed runner moves the link, no name is hard-coded.
+  const judges = { ...data, workers: [{ ...data.workers[0], detail: "ask-judge" }, { ...worker("dispatch-judge"), detail: "dispatch-verdicts" }] };
+  st.tab = "fleet";
+  fs.data = judges;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<a class="tile" href="#fleet\/dispatch-judge"[^>]*><span class="tl">DISPATCH JUDGE/);
+  assert.match(box.innerHTML, /<a class="tile" href="#fleet\/ask-judge"[^>]*><span class="tl">ANSWER JUDGE/);
+  assert.doesNotMatch(box.innerHTML, /<span class="tl">AGREE/, "the full judge tiles moved to the page");
+  st.tab = "log";
+  ctx.renderLogVerdicts();
+  assert.match(logBox.innerHTML, /<a href="#fleet\/dispatch-judge">Dispatch judge<\/a>/);
+  assert.match(logBox.innerHTML, /<a href="#fleet\/ask-judge">Answer judge<\/a>/);
+  // Negative control: no conf names the block, so the tile and header are plain, not a dead link.
+  fs.data = data;
+  ctx.renderLogVerdicts();
+  assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
+  st.tab = "fleet";
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<div class="tile"[^>]*><span class="tl">DISPATCH JUDGE/);
 });

@@ -5,11 +5,13 @@
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
-//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers, and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
+//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers (else the runner's own status `next=`), and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
 //! | tonight      | the workers and the user timers again, in the order they run until 07:00 (`tonight`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
+//!
+//! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
 //!
 //! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
 //! server can cache it apart and `apply` it to a fresh file read.
@@ -24,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
+
+pub mod runner;
 
 const DAY: i64 = 24 * 3600;
 const WEEK: i64 = 7 * DAY;
@@ -62,6 +66,8 @@ pub struct Paths {
     pub calls: PathBuf,
     /// The judge scorer; `JUDGE_EVAL` overrides it (tests, a checkout).
     pub judge_eval: String,
+    /// The notes CLI's state dir, which holds the ingest record (`ingest.jsonl`).
+    pub notes_state: PathBuf,
 }
 
 impl Paths {
@@ -78,6 +84,7 @@ impl Paths {
             jobs,
             dispatch: crate::boards::dispatch_dir(),
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
+            notes_state: home.join(".local/state/notes"),
         }
     }
 }
@@ -131,6 +138,18 @@ pub struct Worker {
     pub registry: Registry,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
+    /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
+    /// The Fleet tab's judge tiles link to the runner whose block they summarise.
+    pub detail: String,
+}
+
+/// The runner whose page draws the `detail` extras block (`DETAIL=` in its conf), for a link
+/// from a summary of that block; None when no conf names it.
+pub fn page_for<'a>(workers: &'a [Worker], detail: &str) -> Option<&'a str> {
+    workers
+        .iter()
+        .find(|w| w.detail == detail)
+        .map(|w| w.name.as_str())
 }
 
 /// The Workers state chips, in order; `Worker::shown` says what each keeps. agent-web's
@@ -559,22 +578,16 @@ pub fn files(paths: &Paths) -> Fleet {
         .collect();
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
+        // A runner no timer starts can name its own next try (inbox-triage's retry).
+        w.next = w
+            .next
+            .or_else(|| runner::status_next(&paths.jobs.agentctl, &w.name));
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
         w.score = scores.get(&w.name).cloned();
     }
     let tonight = tonight(&workers, &timers, at);
 
-    let mut dispatch = match tail(&paths.dispatch.join("verdicts.jsonl"), VERDICT_TAIL) {
-        Ok((text, cut)) => verdicts(&text, cut, at),
-        Err(e) => {
-            errors.push(format!("dispatch: {e}"));
-            Dispatch::default()
-        }
-    };
-    match tail(&paths.dispatch.join("log.md"), LOG_TAIL) {
-        Ok((text, _)) => dispatch.log_24h = log_counts(&text, &local_minute(at - DAY)),
-        Err(e) => errors.push(format!("dispatch log: {e}")),
-    }
+    let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
     Fleet {
         at,
         errors,
@@ -584,6 +597,22 @@ pub fn files(paths: &Paths) -> Fleet {
         judge,
         ..Default::default()
     }
+}
+
+/// fleet-dispatch's verdicts and log.md counts, for the Fleet tab's tile and its runner page.
+fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
+    let mut dispatch = match tail(&dir.join("verdicts.jsonl"), VERDICT_TAIL) {
+        Ok((text, cut)) => verdicts(&text, cut, at),
+        Err(e) => {
+            errors.push(format!("dispatch: {e}"));
+            Dispatch::default()
+        }
+    };
+    match tail(&dir.join("log.md"), LOG_TAIL) {
+        Ok((text, _)) => dispatch.log_24h = log_counts(&text, &local_minute(at - DAY)),
+        Err(e) => errors.push(format!("dispatch log: {e}")),
+    }
+    dispatch
 }
 
 /// The Prometheus part: accounts, cost per runner and the total, asked at once.
@@ -662,19 +691,21 @@ pub struct Conf {
     pub effect: String,
     /// A call's CALLER; empty on a runner.
     pub caller: String,
+    pub detail: String,
 }
 
-/// A conf's (or a role's) `KEY=value` lines as agentctl sources them, for the keys asked for.
-/// Quotes are stripped and `$HOME` expanded; nothing fancier is.
-fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
+/// A conf's (or a role's) `KEY=value` lines as agentctl sources them, in file order. Quotes are
+/// stripped and `$HOME` expanded; nothing fancier is. A comment or a line whose left side is not
+/// a shell name is skipped.
+fn assignments(text: &str, home: &str) -> Vec<(String, String)> {
+    let mut out = vec![];
     for l in text.lines() {
         let l = l.trim();
         let l = l.strip_prefix("export ").unwrap_or(l);
         let Some((k, v)) = l.split_once('=') else {
             continue;
         };
-        if !keys.contains(&k) {
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
         let v = v.trim();
@@ -683,12 +714,20 @@ fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
             .and_then(|x| x.strip_suffix('"'))
             .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
             .unwrap_or(v);
-        out.insert(
+        out.push((
             k.to_string(),
             v.replace("${HOME}", home).replace("$HOME", home),
-        );
+        ));
     }
     out
+}
+
+/// The `assignments` for the keys asked for; a later line wins, as in the shell.
+fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
+    assignments(text, home)
+        .into_iter()
+        .filter(|(k, _)| keys.contains(&k.as_str()))
+        .collect()
 }
 
 /// One runner's conf, for the keys the tab shows.
@@ -707,6 +746,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             "PROMPT",
             "EFFECT",
             "CALLER",
+            "DETAIL",
         ],
         home,
     );
@@ -728,6 +768,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
         prompt: get("PROMPT"),
         effect: get("EFFECT"),
         caller: get("CALLER"),
+        detail: get("DETAIL"),
     }
 }
 
@@ -824,59 +865,67 @@ fn langfuse_sessions(conf: &Path) -> String {
     }
 }
 
+/// One calls.jsonl line: the agent that made it, the call, and its prompt's short sha. A line
+/// that does not parse, or has no agent or time, is None.
+pub(crate) fn parse_call(l: &str, lf: &str) -> Option<(String, Call, String)> {
+    let v = serde_json::from_str::<serde_json::Value>(l).ok()?;
+    let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let agent = s("agent");
+    let at = ts(&s("at"))?;
+    if agent.is_empty() {
+        return None;
+    }
+    let sid = s("session_id");
+    let call = Call {
+        id: s("id"),
+        at,
+        ms: n("duration_ms"),
+        ok: n("exit") == 0 && v.get("is_error").and_then(|x| x.as_bool()) != Some(true),
+        model: Some(s("gen_ai.response.model"))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| s("gen_ai.request.model")),
+        cost: v.get("cost_usd").and_then(|x| x.as_f64()),
+        tokens: n("gen_ai.usage.input_tokens")
+            + n("gen_ai.usage.output_tokens")
+            + n("cache_read_tokens")
+            + n("cache_write_tokens"),
+        link: if lf.is_empty() || sid.is_empty() {
+            String::new()
+        } else {
+            format!("{lf}{sid}")
+        },
+    };
+    Some((agent, call, s("prompt_sha").chars().take(7).collect()))
+}
+
 /// Each runner's calls from calls.jsonl: the day before `at` counted, and the newest
 /// `RECENT_CALLS` in the tail listed. `lf` is the Langfuse sessions URL a call's session_id
 /// joins; empty leaves the links empty.
 pub fn calls(text: &str, lf: &str, at: i64) -> HashMap<String, Calls> {
+    calls_of(text.lines().filter_map(|l| parse_call(l, lf)), at)
+}
+
+/// `calls` over lines already parsed by `parse_call`, in file order.
+pub(crate) fn calls_of(
+    rows: impl IntoIterator<Item = (String, Call, String)>,
+    at: i64,
+) -> HashMap<String, Calls> {
     let mut by: HashMap<String, (Calls, Vec<u64>)> = HashMap::new();
-    let n = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    for l in text.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
-            continue;
-        };
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let agent = s("agent");
-        let Some(t) = ts(&s("at")) else { continue };
-        if agent.is_empty() {
-            continue;
-        }
-        let ok = n(&v, "exit") == 0 && v.get("is_error").and_then(|x| x.as_bool()) != Some(true);
-        let tokens = n(&v, "gen_ai.usage.input_tokens")
-            + n(&v, "gen_ai.usage.output_tokens")
-            + n(&v, "cache_read_tokens")
-            + n(&v, "cache_write_tokens");
-        let cost = v.get("cost_usd").and_then(|x| x.as_f64());
-        let ms = n(&v, "duration_ms");
-        let sid = s("session_id");
-        let model = Some(s("gen_ai.response.model"))
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| s("gen_ai.request.model"));
+    for (agent, call, sha) in rows {
         let (c, durs) = by.entry(agent).or_default();
-        if t >= at - DAY {
+        if call.at >= at - DAY {
             c.n_24h += 1;
-            c.errors_24h += u32::from(!ok);
-            if let Some(x) = cost {
+            c.errors_24h += u32::from(!call.ok);
+            if let Some(x) = call.cost {
                 *c.cost_24h.get_or_insert(0.0) += x;
             }
-            c.tokens_24h += tokens;
-            durs.push(ms);
+            c.tokens_24h += call.tokens;
+            durs.push(call.ms);
         }
         // The file is in write order, so the last line seen is the newest.
-        c.prompt_sha = s("prompt_sha").chars().take(7).collect();
-        c.recent.push(Call {
-            id: s("id"),
-            at: t,
-            ms,
-            ok,
-            model,
-            cost,
-            tokens,
-            link: if lf.is_empty() || sid.is_empty() {
-                String::new()
-            } else {
-                format!("{lf}{sid}")
-            },
-        });
+        c.prompt_sha = sha;
+        c.recent.push(call);
         if c.recent.len() > RECENT_CALLS {
             c.recent.remove(0);
         }
@@ -961,6 +1010,7 @@ pub fn workers(
                     .filter(|&n| n > 0),
                 why: activity.get(&c.name).cloned(),
                 called_by: Some(c.caller).filter(|v| !v.is_empty()),
+                detail: c.detail,
                 name: c.name,
                 lane: c.lane,
                 description: c.description,
@@ -1309,6 +1359,29 @@ mod tests {
     }
 
     #[test]
+    fn a_judge_block_links_to_the_runner_whose_conf_names_it() {
+        let c = parse_conf(
+            "dj",
+            "DETAIL=dispatch-verdicts\n",
+            "/home/k",
+            Path::new("/st"),
+        );
+        assert_eq!(c.detail, "dispatch-verdicts");
+        let w = |name: &str, detail: &str| Worker {
+            name: name.into(),
+            detail: detail.into(),
+            ..Default::default()
+        };
+        let ws = [w("dream", ""), w("dispatch-judge", "dispatch-verdicts")];
+        assert_eq!(page_for(&ws, "dispatch-verdicts"), Some("dispatch-judge"));
+        assert_eq!(
+            page_for(&ws, "ask-judge"),
+            None,
+            "no conf names it, no link"
+        );
+    }
+
+    #[test]
     fn a_conf_reads_its_keys_and_defaults_the_rest() {
         let c = parse_conf(
             "brief",
@@ -1324,6 +1397,7 @@ mod tests {
             c.inbox,
             PathBuf::from("/home/k/.local/state/agentctl/brief")
         );
+        assert_eq!(c.detail, "", "no DETAIL= is no extras block");
         let off = parse_conf("x", "ENABLED=no\n", "/home/k", Path::new("/st"));
         assert!(!off.enabled);
         assert_eq!(

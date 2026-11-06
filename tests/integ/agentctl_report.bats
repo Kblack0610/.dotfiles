@@ -5,7 +5,7 @@
 # ~/.local/state/agentctl/<name>/status, and readers (fleet.sh, the cockpit) parse that file
 # directly. So these tests assert on the file the writer leaves behind, never on its stdout
 # -- if `report` starts writing a different shape, the readers break silently and only this
-# tier notices. The keys are state/project/item/detail/updated.
+# tier notices. The keys are state/project/item/detail/next/updated.
 #
 # Two properties matter more than the rest and are each pinned by a test below:
 #   MERGE      `report item=...` must not wipe `project`, or a runner reporting progress
@@ -40,13 +40,13 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
 @test "the file is exactly one line per key, so a reader can parse it line-wise" {
   "$AGENTCTL_BIN" report --name alpha state=idle
   run wc -l < "$STATUS"
-  assert_output '5'
+  assert_output '6'
 }
 
 @test "a multi-line value is flattened instead of forging extra records" {
   # A runner reporting a command's output would otherwise inject `item`-looking lines.
   "$AGENTCTL_BIN" report --name alpha "item=$(printf 'first\nsecond')"
-  assert_equal "$(wc -l < "$STATUS")" '5'
+  assert_equal "$(wc -l < "$STATUS")" '6'
   assert_equal "$(field item)" 'first second'
 }
 
@@ -131,11 +131,13 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
 # touching its own script. That is what makes the contract adoptable one runner at a time.
 
 @test "--lifecycle start marks the runner working and clears the previous item" {
-  "$AGENTCTL_BIN" report --name alpha state=idle project=dotfiles item='last run did a thing'
+  "$AGENTCTL_BIN" report --name alpha state=idle project=dotfiles item='last run did a thing' next=1793990000
   run "$AGENTCTL_BIN" report --name alpha --lifecycle start
   assert_success
   assert_equal "$(field state)" 'working'
   assert_equal "$(field item)" ''
+  # A retry the last run scheduled is that run's: a fresh start is the try.
+  assert_equal "$(field next)" ''
   # project survives a restart: it is a property of the runner, not of one fire.
   assert_equal "$(field project)" 'dotfiles'
 }

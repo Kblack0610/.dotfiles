@@ -69,17 +69,22 @@ function renderJobs() {
   seekSection();
 }
 
+// A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
+// The Fleet tab's runner page reads its runs' logs here too.
+async function jobLogText(j) {
+  if (!j.log) return j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log.";
+  try {
+    return await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
+  } catch (e) {
+    return "Could not read the log: " + e.message;
+  }
+}
+
 async function openLog(j) {
   jst.sel = jobKey(j);
-  const title = `${j.source} ${j.name} ${when(j.started)}`;
-  if (!j.log) { jst.log = { title, text: j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log." }; renderJobs(); return; }
-  jst.log = { title, text: "Loading..." };
+  const log = jst.log = { title: `${j.source} ${j.name} ${when(j.started)}`, text: "Loading..." };
   renderJobs();
-  try {
-    jst.log.text = await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
-  } catch (e) {
-    jst.log.text = "Could not read the log: " + e.message;
-  }
+  log.text = await jobLogText(j);
   if (st.tab === "infra") renderJobs();
 }
 
