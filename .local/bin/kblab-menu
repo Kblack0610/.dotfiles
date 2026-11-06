@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# kblab-menu: fuzzy-pick a home-lab site and open it. Bound to Super+K in
+# hypr/conf.d/keybindings.conf. Type any part of the name, group or address.
+#
+# Sites come from the ingress manifests through home-config's gen-ha-launcher.py
+# --list-sites, so the list is never kept by hand and no host lives in this repo.
+# Opening a site that is already open lands in its tab through the tab-keeper
+# extension (.config/firefox/tab-keeper).
+set -euo pipefail
+
+notify() { command -v notify-send >/dev/null && notify-send "kblab" "$1"; }
+
+menu() {
+    if command -v wofi >/dev/null 2>&1; then
+        wofi --dmenu -i --matching=fuzzy -p "$1" --width 700 --height 600
+    elif command -v rofi >/dev/null 2>&1; then
+        rofi -dmenu -i -matching fuzzy -p "$1"
+    else
+        return 1
+    fi
+}
+
+gen="${HOME_CONFIG:-$HOME/dev/home/home-config}/scripts/gen-ha-launcher.py"
+[ -f "$gen" ] || { notify "home-config not found: $gen"; exit 1; }
+
+# One line per site: name | group | url. The url stays last so the selection can
+# be cut back to it.
+lines=$("$gen" --list-sites | awk -F'\t' '{print $1 "  |  " $2 "  |  " $3}') \
+    || { notify "could not list sites from $gen"; exit 1; }
+choice=$(sort -f <<<"$lines" | menu "kblab") || exit 0
+url=${choice##*  |  }
+[ -n "$url" ] || exit 0
+
+xdg-open "$url" >/dev/null 2>&1
+if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl dispatch focuswindow 'class:^(firefox)$' >/dev/null
+fi
