@@ -402,6 +402,12 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'model call failed: You have hit your weekly limit'
   assert_output --partial 'the sweep failed; it runs again in 1s'
   assert_output --partial 'filed 1, left 0, refused 0'
+  # The retry's time is the runner's own next= (the Workers next column has no timer to read),
+  # and the clean sweep clears it.
+  grep -qE '^agentctl report --name inbox-triage .*; retry [0-9]{2}:[0-9]{2} next=[0-9]+$' "$NOTES_FIXTURE/calls.log" \
+    || fail "$(cat "$NOTES_FIXTURE/calls.log")"
+  [ "$(grep '^agentctl report --name inbox-triage' "$NOTES_FIXTURE/calls.log" | tail -1 | grep -o 'next=.*')" = 'next=' ] \
+    || fail "$(cat "$NOTES_FIXTURE/calls.log")"
   # The negative control: after the clean sweep the watch waited for a save, so no third call.
   [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 2 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
   run tasks
