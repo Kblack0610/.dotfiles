@@ -20,7 +20,7 @@ case "$(jq -r '.hook_event_name // empty' <<<"$INPUT")" in
       '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
     ;;
   PreToolUse)
-    jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Manual mode is investigate-only: answer without changing anything. The human switches mode (Shift+Tab) to allow edits or a plan."}}'
+    jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "manual-mode-investigate: Manual mode is investigate-only: answer without changing anything. The human switches mode (Shift+Tab) to allow edits or a plan."}}'
     ;;
 esac
 exit 0
