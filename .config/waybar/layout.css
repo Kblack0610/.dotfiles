@@ -31,9 +31,10 @@
     border-radius: 0 6px 6px 0;
 }
 
-/* Keys are bypassing Hyprland (passthrough.sh). Fixed red on purpose: an alarm
- * should read the same under every theme. */
-#custom-passthrough {
+/* Keys are bypassing Hyprland (passthrough.sh), or a gungan voice take is live. Fixed red on
+ * purpose: an alarm should read the same under every theme. */
+#custom-passthrough,
+#custom-gungan {
     padding: 0 10px;
     margin: 5px 3px;
     border-radius: 6px;
