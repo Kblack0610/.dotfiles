@@ -119,6 +119,7 @@ A **session** row with one agent window reads as its state, idle time and task; 
 | symptom | cause | fix |
 |---|---|---|
 | `fleet state is old` at the bottom, no states or stranded marks | the fleet state is over 5 minutes old, or its last pass could not read agent-panel, so every agent would look stranded | `systemctl --user status fleet-state.service`, then `fleet-sessions tick` |
+| `Prefix+H` takes seconds to open on a loaded machine | `tmx rows` forking per session or window: at load 60+ each fork costs milliseconds, and lab holds thirty sessions | it asks each world three things whatever it holds (`tests/integ/tmx_rows_cost.bats`); `time tmx rows` is about 0.25s at load 66 |
 
 **No preview pane, deliberately.** A preview only describes the row under the cursor, so with hundreds of windows you would arrow through the list to find out what is in it. The list answers "what is this" itself, and starting collapsed is what keeps it short.
 
