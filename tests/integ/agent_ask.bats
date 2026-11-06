@@ -601,11 +601,14 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   assert_output --partial 'session gone: the answer becomes a row on the demo board'
   run "$AGENT_ASK" card "$resumed"
   assert_output --partial 'session gone: the answer starts `/captain resume`'
+  assert_output --partial 'g reopens the session'
   # Negative controls: a live session, and an ask no session owns.
   run "$AGENT_ASK" card "$live"
   refute_output --partial 'session gone'
+  refute_output --partial 'g reopens'
   run "$AGENT_ASK" card "$loose"
   refute_output --partial 'session gone'
+  refute_output --partial 'g reopens'
   # The questions panel's gone mark reads the same source.
   run "$AGENT_ASK" live-sessions
   assert_output 'sid-1'
