@@ -11,7 +11,8 @@ setup() {
 fg() { jq -nc --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}' | python3 "$GUARD"; }
 bg() { jq -nc --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c, run_in_background:true}}' | python3 "$GUARD"; }
 
-denied() { assert_success; assert_output --partial '"permissionDecision": "deny"'; }
+# the reason leads with the hook's name: session-outcomes counts a denial by it (guards)
+denied() { assert_success; assert_output --partial '"permissionDecision": "deny"'; assert_output --partial '"permissionDecisionReason": "block-poll: '; }
 allowed() { assert_success; assert_output ""; }
 
 @test "gh run watch is denied, foreground or background, and names agent-land" {
