@@ -1,0 +1,25 @@
+{
+  "id": "loop-firing",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#989",
+  "base": "dde1631d5742fcbde7d37ce22466c1b4c955659e",
+  "merge": "fab76530f82fb1c0151a5fcaa4b127c12844757c",
+  "task": "feat(fleet-bench): loop --firing prints one sentence per dark finding still firing",
+  "accept": [
+    "loop --firing: one sentence per dark episode still firing, and nothing when none fires"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_bench.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(loop --firing: one sentence per dark episode still firing, and nothing when none fires)$",
+      "tests/unit/fleet_bench.bats"
+    ]
+  }
+}
