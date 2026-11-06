@@ -123,6 +123,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial 'logo'
 }
 
+@test "a duplicate of an agent-board row joins it there" {
+  sheet '- which lane should a game take\n' ''
+  mkdir -p "$PROJ/scratch/agent"
+  printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-7 -->\n' >"$PROJ/scratch/agent/README.md"
+  answer '{"n": 1, "action": "dup", "id": "sc-7"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx '  was: which lane should a game take' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run inbox
+  refute_output --partial 'which lane'
+}
+
 @test "--dry-run writes nothing" {
   sheet '- the gun sound is off\n' ''
   answer '{"n": 1, "action": "file", "rows": ["fix(audio): gun sound"]}'
@@ -209,6 +221,40 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial '  - why: no project named'
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
+}
+
+@test "outbox: an <id>: line answers its open row with no model, closing a decide row; an id with no open row is left" {
+  sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
+  mkdir -p "$PROJ/scratch/agent"
+  printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-3 -->\n' >"$PROJ/scratch/agent/README.md"
+  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 3 from the outbox, filed 3, left 2, refused 0'
+  # Only the line that is no answer reaches the model.
+  grep -qx '1. \[outbox\] stays for the model' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run grep -c '^[0-9]*\. \[' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 1
+  run tasks
+  assert_output --regexp '\[x\] decide\(squad\): followers that fight with you .*ingest:[0-9-]{10}'
+  assert_output --partial 'sc-1: yes, build it after the bully fix'
+  assert_output --regexp '\[ \] feat\(ui\): a colour for the squad'
+  assert_output --partial 'sc-2: the blue one'
+  run cat "$PROJ/scratch/agent/README.md"
+  assert_output --regexp '\[x\] decide\(lanes\): which lane a game takes .*ingest:'
+  assert_output --partial 'sc-3: the agent lane'
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'sc-1:'
+  refute_output --partial 'sc-2:'
+  assert_output --partial '- [ ] zz-9: yes'
+  assert_output --partial '- [ ] stays for the model'
+  run "$NOTES_BIN" ingest page
+  page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
+  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/inbox"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
+  run cat "$page"
+  assert_output --partial 'left (outbox): zz-9: yes'
+  assert_output --partial 'why: no open row zz-9'
 }
 
 @test "outbox: the model routes a line to its project, flags it for a plan, and a dup joins the open row's project" {
