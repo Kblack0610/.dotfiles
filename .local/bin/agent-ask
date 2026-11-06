@@ -3,7 +3,7 @@
 # to ASK the human a question and later READ the answer.
 #
 #   agent-ask post [opts] "question?"   create a pending ask; print its id
-#     --options a|b|c   the fixed answer vocabulary; `a=what a means|b=...` adds each meaning
+#     --options a=..|b=..  the fixed answer vocabulary, each option with its meaning (required)
 #     --recommend b     which of them YOU recommend; shown marked on the card
 #     --why "reason"    why you recommend it, one sentence; shown under that option
 #     --context "why"   the background the human needs; the question itself stays one line
@@ -33,7 +33,8 @@
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
 #   agent-ask judge <id>                the answer judge: record what it would answer
-#                                       (judge, judge_rule, judge_reason, judge_call); post runs it
+#                                       (judge, judge_rule, judge_reason, judge_call); post runs
+#                                       it and answers a LIVE_RULES class at once
 #   agent-ask judge-report [project|--all]
 #                                       the judge's call against the human's answer
 #
@@ -81,19 +82,27 @@
 # on as a board row nobody could answer. `stale` in old files is history; nothing writes it now.
 # cancel stamps `closed_at` and, when given, `closed_reason`.
 #
-# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one call to the
-# registered agent `ask-judge` (its conf sets role, model and the policy prompt) writes
-# `judge: human | take-recommend | answer:<text> | error`, the policy rule that decided it
-# (`judge_rule`), `judge_reason`, and `judge_call`, its line in calls.jsonl. It never answers:
-# the human still does, and `judge-report` scores its calls against their answers. A gate or
-# approval is never sent to the model; it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips
-# the call (the test sandbox sets it), and AGENT_ASK_JUDGE_CMD replaces the call (tests).
+# THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
+# one call to the registered agent `ask-judge` (its conf sets role, model and the policy prompt)
+# writes `judge: human | take-recommend | answer:<text> | error`, the policy rule that decided it
+# (`judge_rule`), `judge_reason`, and `judge_call`, its line in calls.jsonl. A rule listed in the
+# conf's LIVE_RULES is answered live (`answered_by: judge`, see "live answers" below); every
+# other rule is shadow, and the human answers. A gate or approval is never sent to the model;
+# it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it),
+# AGENT_ASK_JUDGE_CMD replaces it, and AGENT_ASK_LIVE_RULES replaces the conf's list (tests).
 
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_QUESTION_MAX:=150}"
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
+# The guard on post's foreground judge call (seconds); past it the ask stays with the human.
+: "${AGENT_ASK_JUDGE_TIMEOUT:=30}"
+# A live class goes back to shadow on an override among its first AGENT_ASK_LIVE_BAR live
+# answers, or when its precision falls under AGENT_ASK_LIVE_PRECISION percent after that.
+: "${AGENT_ASK_LIVE_BAR:=30}" "${AGENT_ASK_LIVE_PRECISION:=90}"
+: "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
+: "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the ask); read
 # here only for the rule ids a verdict may name (judge.sh judge_rules).
 : "${AGENT_ASK_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
@@ -295,19 +304,25 @@ cmd_post() {
     return 2
   fi
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
-  # into `option_notes:`. Plain `a|b` options carry no notes.
-  local option_notes="" o has_note=0
+  # into `option_notes:`.
+  local option_notes="" o bare=""
   if [ -n "$options" ]; then
     local parts=()
     IFS='|' read -r -a parts <<< "$options"
     options=""
     for o in "${parts[@]}"; do
       local slug="${o%%=*}" note=""
-      [ "$slug" != "$o" ] && { note="${o#*=}"; has_note=1; }
+      [ "$slug" != "$o" ] && note="${o#*=}"
       slug="$(oneline "$slug")"; note="$(oneline "$note")"
       options+="${options:+|}$slug"; option_notes+="${option_notes:+|}$note"
+      [ -n "$note" ] || bare+="${bare:+, }$slug"
     done
-    [ "$has_note" = 1 ] || option_notes=""
+    # Every option carries its meaning: a bare label is what the judge defers on (unclear-ask)
+    # and what the human cannot weigh from a board.
+    if [ -n "$bare" ]; then
+      echo "agent-ask post: every option needs its meaning, --options 'slug=what it does|slug=what it does' (no meaning: $bare)." >&2
+      return 2
+    fi
   fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
@@ -400,6 +415,21 @@ cmd_post() {
   } > "$file"
   queue_changed
 
+  # The judge runs before the asker is told anything: a class it answers live comes back as the
+  # answer, and the asker goes on. The timeout is a guard on an external model call (a stuck one
+  # leaves today's pending ask with an error verdict), not a wait for an event.
+  if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
+    timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
+    case $? in
+      124|137) [ -n "$(field "$file" judge)" ] ||
+        judge_record "$file" error "" "the judge call timed out after ${AGENT_ASK_JUDGE_TIMEOUT}s" "" ;;
+    esac
+    if answer_live "$file"; then
+      if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
+      return 0
+    fi
+  fi
+
   # A session the human is attached to asks in the conversation AND here: the file is what every
   # board and the shepherd read, and the session shows the same text, rendered from the file, in
   # its own pane. No page per ask: the pane already has it, the shepherd's "N need you" pages
@@ -408,11 +438,6 @@ cmd_post() {
     { render_ask "$file"
       echo "End your turn on this question and its numbered options as written above, never on 'filed as ask $id'."
     } >&2
-  fi
-
-  # The judge is an event on the post, detached so a headless producer exits at once.
-  if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
-    setsid -f "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null || true
   fi
 
   if [ "$wait" -eq 1 ]; then
@@ -518,11 +543,7 @@ cmd_answer() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
 
-  set_field "$f" status answered
-  set_field "$f" answer "$answer"
-  set_field "$f" answered_at "$(now_iso)"
-  set_field "$f" answered_by "$by"
-  queue_changed
+  record_answer "$f" "$by" "$answer"
 
   # No page: only the human answers, so "ask answered" told them what they just did. The
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
@@ -534,12 +555,100 @@ cmd_answer() {
   elif [ -z "$(field "$f" resume)" ]; then
     file_board_row "$f" "$(field "$f" question) -> answered: $answer"
   fi
+  start_resume "$id"
+}
 
-  # Answering IS starting (see header). ask-resume marks before it runs and detaches the
-  # long work, so this returns promptly; its failure must not fail the answer.
+# record_answer <file> <by> <answer>: the ask's answer fields, and the boards told.
+record_answer() {
+  set_field "$1" status answered
+  set_field "$1" answer "$3"
+  set_field "$1" answered_at "$(now_iso)"
+  set_field "$1" answered_by "$2"
+  queue_changed
+}
+
+# start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
+# detaches the long work, so this returns promptly; its failure must not fail the answer.
+start_resume() {
   if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
-    ask-resume "$id" >&2 || true
+    ask-resume "$1" >&2 || true
   fi
+}
+
+# --- live answers ----------------------------------------------------------
+#
+# A rule class in ask-judge.conf's LIVE_RULES is answered by the judge at post: the asker gets
+# the answer in place of the question and goes on. Each live answer is reviewed by the human's
+# next message in that session (settle-session): naming another option records judge_override,
+# and an override demotes the class (judge_demote_check). A demote is runtime state, not a conf
+# edit: a script writing the tracked conf would leave the private repo's main checkout dirty,
+# so the demote list subtracts from LIVE_RULES until the human re-promotes or drops the class
+# from the conf by PR.
+
+# live_rules: the rule ids answered live now, one per line: LIVE_RULES (space or comma
+# separated) minus the demoted ones.
+live_rules() {
+  local rules
+  if [ -n "${AGENT_ASK_LIVE_RULES+x}" ]; then
+    rules="$AGENT_ASK_LIVE_RULES"
+  else
+    rules="$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${LIVE_RULES:-}")"
+  fi
+  tr ', ' '\n\n' <<<"$rules" | grep . | grep -vxF -f <(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null; echo) || true
+}
+
+# answer_live <file>: answer the ask as its judge said when its rule is live, and tell the asker.
+# Fails (the ask stays pending) on anything else: a gate, a human or error call, a shadow rule.
+answer_live() {
+  local f="$1" judge rule ans reason
+  case "$(field "$f" kind)" in gate|approval) return 1 ;; esac
+  judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
+  case "$judge" in
+    take-recommend) ans="$(field "$f" recommend)" ;;
+    answer:*) ans="${judge#answer:}" ;;
+    *) return 1 ;;
+  esac
+  [ -n "$ans" ] && [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 1
+  # The asker is the one reading this, so the answer is not typed into its pane or filed as a row.
+  record_answer "$f" judge "$ans"
+  reason="$(field "$f" judge_reason)"
+  echo "Answered by the judge ($rule): $ans - ${reason%.}. Proceed; the human can override in this session." >&2
+  start_resume "$(field "$f" id)"
+}
+
+# judge_demote_check <file>: after an override on this live answer, take its rule out of the
+# live set when the class has failed its bar: an override among its first 30 live answers, or
+# precision under 90% after that. Pages once and files one board row.
+judge_demote_check() {
+  local f="$1" rule id stats pos total over
+  rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
+  [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 0
+  # Every live answer of this class in answer order: its position, the total, the overrides.
+  stats="$(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" -v me="$id" '
+    FNR == 1 { if (by == "judge" && r == rule) { n++; at[n] = when; o[n] = ov; ids[n] = i } by = r = when = ov = i = "" }
+    /^answered_by: / && by == "" { by = substr($0, 14) }
+    /^judge_rule: / && r == "" { r = substr($0, 13) }
+    /^answered_at: / && when == "" { when = substr($0, 14) }
+    /^judge_override: / && ov == "" { ov = substr($0, 17) }
+    /^id: / && i == "" { i = substr($0, 5) }
+    END {
+      if (by == "judge" && r == rule) { n++; at[n] = when; o[n] = ov; ids[n] = i }
+      for (k = 1; k <= n; k++) { p = 1; for (j = 1; j <= n; j++) if (at[j] < at[k]) p++
+        if (ids[k] == me) pos = p; if (o[k] != "" && o[k] != "none") over++ }
+      print pos + 0, n + 0, over + 0
+    }' 2>/dev/null)"
+  read -r pos total over <<<"$stats"
+  [ "${pos:-0}" -gt 0 ] || return 0
+  if [ "$pos" -gt "$AGENT_ASK_LIVE_BAR" ] && [ $(( (total - over) * 100 )) -ge $(( total * AGENT_ASK_LIVE_PRECISION )) ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$AGENT_ASK_DEMOTED")" 2>/dev/null
+  printf '%s\t%s\t%s\n' "$rule" "$(now_iso)" "override on ask $id: live answer $pos of $total, $over overridden" >> "$AGENT_ASK_DEMOTED"
+  agent-notify -p high -t 'Judge demoted' \
+    "The ask judge no longer answers $rule asks: you overrode ask $id. A board row says how to undo it." >/dev/null 2>&1 || true
+  notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
+    "check(judge): ask-judge $rule went back to shadow after the override on ask $id (live answer $pos of $total, $over overridden); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from LIVE_RULES in ask-judge.conf by PR" \
+    >/dev/null 2>&1 || true
 }
 
 # cmd_target [--reopen] <id>: the live asking session's `<server>/<session>:<window>`, for a
@@ -838,7 +947,9 @@ cmd_settle_session() {
   local text f opts pick n=0; text="$(oneline "$*" | cut -c1-200)"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    [ "$(field "$f" status)" = pending ] && [ "$(field "$f" claude_session)" = "$owner" ] || continue
+    [ "$(field "$f" claude_session)" = "$owner" ] || continue
+    review_live_answer "$f" "$text"
+    [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
     if [ -n "$opts" ]; then
       pick="$(named_option "$opts" "$text")"
@@ -855,6 +966,27 @@ cmd_settle_session() {
   done < <(ask_files --all)
   [ "$n" -gt 0 ] && queue_changed
   return 0
+}
+
+# review_live_answer <file> <text>: the human's first message after a live judge answer in its
+# session is that answer's review. Naming one other option records judge_override (the label
+# judge-eval scores) and runs the demote check; anything else stamps `none`, so later messages
+# about other things cannot read as an override. An answer typed in from a board ("Answer to
+# ask ...") is not the human reviewing this one.
+review_live_answer() {
+  local f="$1" text="$2" pick
+  [ "$(field "$f" answered_by)" = judge ] && [ -z "$(field "$f" judge_override)" ] || return 0
+  case "$text" in "Answer to ask "*) return 0 ;; esac
+  pick="$(named_option "$(field "$f" options)" "$text")"
+  if [ -n "$pick" ] && [ "${pick,,}" != "$(field "$f" answer | tr '[:upper:]' '[:lower:]')" ]; then
+    set_field "$f" judge_override "$pick"
+    set_field "$f" judge_override_note "in session: $text"
+    set_field "$f" judge_override_at "$(now_iso)"
+    queue_changed
+    judge_demote_check "$f"
+  else
+    set_field "$f" judge_override none
+  fi
 }
 
 # close_ask <status> <id> [reason...]: cancel, from the CLI or the questions panel's drop.

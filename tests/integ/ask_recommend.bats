@@ -20,10 +20,10 @@ setup() {
 
 gate() { # [recommended]
   if [ -n "${1:-}" ]; then
-    "$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold|cancel' \
+    "$AGENT_ASK" post --project alpha --kind gate --options 'approve=go ahead|hold=wait|cancel=drop it' \
       --recommend "$1" 'Create the 3 tickets and cut the branch?'
   else
-    "$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold|cancel' \
+    "$AGENT_ASK" post --project alpha --kind gate --options 'approve=go ahead|hold=wait|cancel=drop it' \
       'Create the 3 tickets and cut the branch?'
   fi
 }
@@ -48,14 +48,14 @@ gate() { # [recommended]
 # A recommendation outside the offered vocabulary would mark nothing in the picker and the
 # human would never learn the agent meant to advise. Fail the caller instead.
 @test "a recommendation that is not one of the options is refused" {
-  run "$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold' \
+  run "$AGENT_ASK" post --project alpha --kind gate --options 'approve=go ahead|hold=wait' \
     --recommend maybe 'bad?'
   assert_failure
   assert_output --partial "not one of 'approve|hold'"
 }
 
 @test "a refused recommendation creates no ask file at all" {
-  "$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold' \
+  "$AGENT_ASK" post --project alpha --kind gate --options 'approve=go ahead|hold=wait' \
     --recommend maybe 'bad?' 2>/dev/null || true
   run bash -c 'find "$HOME/.agent/asks" -name "*.md" | wc -l'
   assert_output '0'
@@ -77,12 +77,12 @@ gate() { # [recommended]
 # The why travels with the option it argues for: it shows under that option on the card, a new
 # recommendation replaces or clears it, and a why with nothing recommended is refused.
 @test "post --why is stored and shown under the recommended option" {
-  local id; id="$("$AGENT_ASK" post --project alpha --options 'approve|hold' --recommend hold \
+  local id; id="$("$AGENT_ASK" post --project alpha --options 'approve=go ahead|hold=wait' --recommend hold \
     --why 'the release branch is frozen until Friday' 'Cut the branch?')"
   run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^recommend_why: //p"' _ "$id"
   assert_output 'the release branch is frozen until Friday'
   run env COLUMNS=80 "$AGENT_ASK" card "$id"
-  assert_line --index 3 '  2  hold     (recommended)'
+  assert_line --index 3 '  2  hold     wait  (recommended)'
   assert_line --index 4 '     because: the release branch is frozen until Friday'
   # Negative control: no why, no because line.
   run env COLUMNS=80 "$AGENT_ASK" card "$(gate approve)"
@@ -90,7 +90,7 @@ gate() { # [recommended]
 }
 
 @test "post refuses --why without --recommend, and files nothing" {
-  run "$AGENT_ASK" post --project alpha --options 'approve|hold' --why 'because' 'Cut the branch?'
+  run "$AGENT_ASK" post --project alpha --options 'approve=go ahead|hold=wait' --why 'because' 'Cut the branch?'
   assert_failure
   assert_output --partial 'give --recommend too'
   run bash -c 'find "$HOME/.agent/asks" -name "*.md" | wc -l'
@@ -133,7 +133,7 @@ gate() { # [recommended]
 
 @test "notes do not stop the answer from being resumable" {
   local id
-  id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve|hold|cancel' \
+  id="$("$AGENT_ASK" post --project alpha --kind gate --options 'approve=go ahead|hold=wait|cancel=drop it' \
         --recommend approve --resume '/captain alpha go' 'go?')"
   "$AGENT_ASK" answer "$id" 'approve - only T1' >/dev/null 2>&1
   run bash -c '"$AGENT_ASK" resumable alpha | cut -f4'
