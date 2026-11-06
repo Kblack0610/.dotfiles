@@ -1491,10 +1491,14 @@ queue_section() {
   done
 }
 
-# models_json <now>: per model, the queue items finished in the last BENCH_QUEUE_DAYS days (the
-# model= fleet-dispatch stamped at start) joined to their sessions' outcomes (cost_usd, reverts),
-# and model-lane's runs in the same days by the model they ran on (redo). Landed is done ok with a
-# PR; a cancel counts against no model. This is the evidence a lane graduates or demotes on.
+# models_json <now>: per model and harness (the item's agent, claude when unset), the queue items
+# finished in the last BENCH_QUEUE_DAYS days (the model= fleet-dispatch stamped at start) joined to
+# their sessions' outcomes (cost_usd, reverts), and model-lane's runs in the same days by the model
+# and harness they ran on (redo). Landed is done ok with a PR; a cancel counts against no pairing.
+# An item's gateway_cost_usd beats its sessions' sum: one is metered dollars, the other a list-price
+# estimate. A session counts once per row, however many items of a chain it ran. source says which
+# a row's cost is, and mixed means it holds both. cost_per_pr divides by priced, the landed items with a known cost: a landed item with none would pass as free and pull
+# the row under pairings that are fully priced. This is the evidence a lane graduates or demotes on.
 models_json() {
   local since; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
   jq -cn --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
@@ -1503,24 +1507,30 @@ models_json() {
      --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) '
     def ratio($a; $b): if $b > 0 then ($a / $b * 100 | round / 100) else null end;
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+    def landed: .status == "ok" and (.pr // "") != "";
+    def metered: (.gateway_cost_usd // "") != "";
     ($outcomes[0] // {}) as $o
-    | ($items | map(select(.status != "cancelled") | . + {m: (.model // "unrecorded")})) as $done
-    | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since))) as $rs
-    | ([$done[].m] + [$rs[].ran] | unique) as $models
-    | {days: $days, models: ($models | map(. as $m
-        | ($done | map(select(.m == $m))) as $it
-        | ($it | map(select(.status == "ok" and (.pr // "") != "")) | length) as $landed
-        | ($it | map(sids[] | $o[.] // empty)) as $sess
-        | ($rs | map(select(.ran == $m))) as $r
+    | ($items | map(select(.status != "cancelled") | . + {m: (.model // "unrecorded"), h: (.agent // "claude")})) as $done
+    | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since) | . + {h: (.harness // "claude")})) as $rs
+    | ([$done[] | [.m, .h]] + [$rs[] | [.ran, .h]] | unique) as $pairs
+    | {days: $days, models: ($pairs | map(. as [$m, $h]
+        | ($done | map(select(.m == $m and .h == $h))) as $it
+        | ($it | map(select(landed)) | length) as $landed
+        | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
+        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.] != null) then "list" else null end)})) as $priced_items
+        | ($rs | map(select(.ran == $m and .h == $h))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
-        | ($sess | map(.cost_usd // 0) | add // 0) as $cost
-        | {key: $m, value: {done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
-            failed: ($it | map(select(.status == "failed")) | length),
-            runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
-            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
-            cost_usd: ($cost * 100 | round / 100), cost_per_pr: (if $landed > 0 then ($cost / $landed * 100 | round / 100) else null end)}})
-        | from_entries)}'
+        | (($it | map(select(metered) | .gateway_cost_usd | tonumber) | add // 0)
+           + ($it | map(select(metered | not) | sids[]) | unique | map($o[.].cost_usd // 0) | add // 0)) as $cost
+        | ($priced_items | map(.source // empty) | unique) as $src
+        | ($priced_items | map(select(.landed and .source)) | length) as $priced
+        | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
+           failed: ($it | map(select(.status == "failed")) | length),
+           runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
+           reverts: ($sess | map(.reverted_7d // 0) | add // 0),
+           cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
+           source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end)}))}'
 }
 
 # models_section <now>: the models table, in the scorecard
@@ -1528,14 +1538,14 @@ models_section() {
   local j
   echo "## Models"
   echo
-  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model they started on, joined to their sessions' outcomes; redo is model-lane's runs on that model that were put back in the queue (\`model-lane report\`). Landed is done ok with a PR."
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`). Landed is done ok with a PR. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. Counts, not a winner: pairings ran different tasks."
   echo
   j=$(models_json "$1") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
-  echo "| Model | Done | Landed | Landed rate | Failed | Runs rated | Redo | Redo rate | Reverts | Cost | Cost per PR |"
+  echo "| Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source |"
   echo "|---|---|---|---|---|---|---|---|---|---|---|"
   jq -r 'def d: if . == null then "-" else tostring end;
-    .models | to_entries | sort_by(-.value.done)[] | .key as $m | .value
-    | "| \($m) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | \(.rated) | \(.redo) | \(.redo_rate | d) | \(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) |"' <<<"$j"
+    .models | sort_by(-.done)[]
+    | "| \(.model) | \(.harness) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | \(.redo) | \(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) |"' <<<"$j"
 }
 
 cmd_models() {
