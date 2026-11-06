@@ -777,6 +777,17 @@ cx_rollouts() {
   assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
 }
 
+@test "two sessions with no transcript side by side still let every PR get its state" {
+  cx_rollouts
+  jq -cn --arg t0 "$(date -u -d "@$STOP" +%Y-%m-%dT%H:%M:%S.000Z)" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-two", cwd: "/w/proj", source: "exec"}}
+  ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-03-00-cx-two.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  refute_output --partial 'parse error'
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "cx-root")) | last | .prs[0] | "\(.number) \(.state)"')" '12 MERGED'
+}
+
 @test "an unreadable codex rollout costs its own line only, and the rest still write" {
   cx_rollouts
   printf '{not json\n' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-bad.jsonl"

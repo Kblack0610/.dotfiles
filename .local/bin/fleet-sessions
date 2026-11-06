@@ -94,7 +94,7 @@ LABELS="$LEDGER/labels"
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug> while it runs here, moved:<slug> (<where>) once it is done,
-#                 requeued or running in another session, or ->
+#                 requeued or running in another session, here:<slug> waiting here, or ->
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -710,14 +710,20 @@ parked_lines() {
 # (<where>) once it is done, requeued or running elsewhere, or -. sessions: (Claude session ids)
 # is the strong match. session: (the tmux session) counts only when one claude lives there, and a
 # done item by it only when it finished after this claude started: worktree names are recycled.
-# An item still running or waiting here wins over one that moved on.
+# An item still running or waiting here wins over one that moved on; an item that recorded no
+# session: (added by hand, `add --running`) is here when it names this Claude session, and
+# here:<slug> is one waiting here, which decides no bucket but names the item on the row.
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
     {
       bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me)
       if (!bysid && !bysess) next
-      if (($1 == "running" || $1 == "waiting") && $2 == me) { if ($1 == "running" && own == "") own = $4; here = 1; next }
+      if (($1 == "running" || $1 == "waiting") && ($2 == me || ($2 == "-" && bysid))) {
+        if ($1 == "running" && own == "") own = $4
+        if (hereslug == "") hereslug = $4
+        here = 1; next
+      }
       if ($1 == "done" && !bysid && !(start ~ /^[0-9]+$/ && $5 + 0 >= start + 0)) next
       if (moved != "") next
       where = ($1 == "done" || $1 == "queued") ? $1 : $1 " in " $2
@@ -725,7 +731,7 @@ item_of() {
     }
     END {
       if (own != "") print "own:" own
-      else if (here) print "-"
+      else if (here) print "here:" hereslug
       else if (moved != "") print "moved:" moved
       else print "-"
     }' <<<"$1"
@@ -803,6 +809,16 @@ collect() {
       asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
       item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
     fi
+    # The row's queue item (item_of's one join), with the board row it came from and its origin.
+    local islug=- irel=- irow=- iorigin=-
+    case "$item" in
+      own:* | moved:* | here:*)
+        irel="${item%%:*}"; islug="${item#*:}"; islug="${islug%% *}"
+        IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
+          | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
+              | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
+        irow="${irow:--}"; iorigin="${iorigin:--}" ;;
+    esac
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
     # No PR for this branch here: an open PR of its own in another repo is the row's PR. Its
     # conflict is not this clone's to measure, so it is unknown (-).
@@ -853,12 +869,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin"
   done
   main_rows
   shared_rows
@@ -1094,7 +1110,10 @@ json_rows() {
       said: (if (.[40] // "-") == "-" then null else .[40] end),
       main_red: (if (.[43] // "-") == "RED" then true elif (.[43] // "-") == "OK" then false else null end),
       phases: ((.[44] // "[]") | fromjson),
-      account: (if (.[45] // "-") == "-" then null else .[45] end)}'
+      account: (if (.[45] // "-") == "-" then null else .[45] end),
+      item: (if (.[46] // "-") == "-" then null else
+        {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
+         origin: (if .[49] == "-" then null else .[49] end)} end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
@@ -1178,6 +1197,9 @@ sessions_prom() {
       | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
       .counts | to_entries[] | [{bucket: .key}, .value]),
+    gauge("agent_sessions_unlinked"; "Live sessions with no agent-queue item, by the item_of join.";
+      [{}, ([.sessions[] | select((.labels // []) | index("shepherd") | not)
+             | select(.bucket != "NIGHTLY" and .bucket != "SHARED" and .item == null)] | length)]),
     gauge("agent_asks_open"; "Pending asks waiting on the human.";
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }

@@ -6,13 +6,14 @@
 // sweep both write it: every write names the hash it started from, and a 409 hands back the
 // current doc, which is merged line by line (mergeLines) before saving again.
 //
-// The line under the cursor is held back (outgoing) until Enter or leaving the box, so a sweep
-// never files half a sentence. Reads and writes run one at a time through `sync`.
+// The line under the cursor is held back (outgoing) until Enter, Send or leaving the box, so a
+// sweep never files half a sentence. Reads and writes run one at a time through `sync`.
 
 // The idle wait before a save: a UI debounce, not a poll. Each save restarts the sweep's 30s.
 const OUTBOX_SAVE_IDLE_MS = 1500;
 
-const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false };
+// `flush` is a Send: the next save takes every line, the one under the cursor too.
+const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false, flush: false };
 
 const norm = (s) => {
   const ls = String(s || "").split("\n").map((l) => l.replace(/\s+$/, ""));
@@ -84,17 +85,14 @@ function adopt(doc) {
   if (obx.view) obx.view.doc = doc;
 }
 
-async function putOutbox(base, text) {
-  const r = await fetch("/api/outbox", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ base, text }) });
-  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
-  if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
-  const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
-  throw new Error(`Could not save the outbox (HTTP ${r.status})${said ? ": " + said : ""}. Your text is still here; it saves again on the next change.`);
-}
+const putOutbox = (base, text) => putBase("/api/outbox", { base, text }, "the outbox", " Your text is still here; it saves again on the next change.");
 
 // One read or write at a time: a reply from an older state merged after a newer one would bring
 // back lines the sweep took.
 const sync = coalesce(async () => {
+  // Send asks for this one save only; a failed read must not leave it on for the next autosave.
+  const flush = obx.flush;
+  obx.flush = false;
   try {
     if (obx.wantRead || !obx.view) {
       obx.wantRead = false;
@@ -104,10 +102,12 @@ const sync = coalesce(async () => {
       renderHandled();
     }
     // A 409 is the sweep landing between our read and write: merge and go again, at most twice.
+    // The cursor is read each try, since a merge moves it.
     for (let tries = 0; tries < 3; tries++) {
-      const out = outgoing(box().value, focused() ? box().selectionStart : -1, norm(obx.baseText));
+      const out = outgoing(box().value, focused() && !flush ? box().selectionStart : -1, norm(obx.baseText));
       obx.held = out.held;
-      if (norm(out.text).join("\n") === norm(obx.baseText).join("\n")) break;
+      // Send with nothing new still says when the outbox last had everything.
+      if (norm(out.text).join("\n") === norm(obx.baseText).join("\n")) { if (flush) obx.savedAt = Date.now(); break; }
       const r = await putOutbox(obx.base, out.text);
       adopt(r.doc);
       if (!r.stale) { obx.savedAt = Date.now(); break; }
@@ -127,10 +127,10 @@ function statusText() {
   const v = obx.view;
   if (!v) return `<span class="muted">Reading the outbox...</span>`;
   const parts = [`${v.doc.waiting} waiting`];
-  if (obx.savedAt) parts.push(`saved ${clock(obx.savedAt)}`);
-  if (obx.held) parts.push("the line you are on saves on Enter");
+  if (obx.savedAt) parts.push(`sent ${clock(obx.savedAt)}`);
+  if (obx.held) parts.push("the line you are on sends on Enter or Send");
   parts.push("the sweep files lines 30s after you stop typing");
-  return `<span class="muted">${esc(parts.join(". "))}.</span>`;
+  return `<span class="muted">${esc(parts.join("; "))}.</span>`;
 }
 
 function handledHtml(v) {
@@ -146,24 +146,36 @@ function handledHtml(v) {
 }
 
 function renderStatus() { $("o-said").innerHTML = statusText(); }
-function renderHandled() { if (obx.view) $("o-handled").innerHTML = handledHtml(obx.view); renderStatus(); }
+function renderHandled() { if (obx.view) $("o-handled").innerHTML = handledHtml(obx.view); renderStatus(); OUTBOX.changed(); }
 
-// Drawn once: a redraw would drop the cursor and the selection out of the box.
+// Send: save now, the line under the cursor included (Ctrl+Enter in the box does the same).
+function send() {
+  clearTimeout(obx.timer);
+  obx.flush = true;
+  sync();
+}
+
+// Drawn once: a redraw would drop the cursor and the selection out of the box. Daily's nav is
+// the way back, so the head is the title alone.
 function build() {
   if (obx.built) return;
   obx.built = true;
   $("outbox").innerHTML =
-    `<div class="dhead"><div class="dtitle"><h2>Outbox</h2></div><div class="opts"><a class="btn sm" href="#daily">Back to Daily</a><a class="btn sm" href="#daily/status/inbox">Inbox</a></div></div>` +
+    `<div class="dhead"><div class="dtitle"><h2>Outbox</h2></div></div>` +
     `<textarea id="o-doc" spellcheck="true" placeholder="One ask per line. Tag #plan to have it planned, #p:project to say where it goes."></textarea>` +
-    `<div id="o-said"></div><div id="o-handled"></div>`;
+    `<div class="o-send"><button class="btn primary" id="o-send">Send</button><div id="o-said"></div></div><div id="o-handled"></div>`;
   const b = box();
   b.addEventListener("input", soon);
-  b.addEventListener("keydown", (e) => { if (e.key === "Enter") soon(); });
+  b.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } else if (e.key === "Enter") soon();
+  });
   b.addEventListener("blur", () => { clearTimeout(obx.timer); sync(); });
+  $("o-send").addEventListener("click", send);
 }
 
-// Not a tab of its own: Daily calls these.
+// Not a tab of its own: Daily calls these, and sets `changed` to redraw its nav's waiting count.
 const OUTBOX = {
+  changed() {},
   show() { build(); obx.wantRead = true; sync(); },
   onEvent(ev) {
     if (ev.kind !== "outbox" && ev.kind !== "resync") return;

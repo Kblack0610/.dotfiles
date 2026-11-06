@@ -2759,10 +2759,26 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_success
   assert_output --partial 'started game-agent-1: game: fix-menu'
   assert_called 'model-lane classify Fix the menu sides --floor sonnet'
+  assert_not_called 'model-lane classify Fix the menu sides --floor sonnet --size'
   assert_called 'claude --model sonnet'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" model) $(qfield "$f" lane_run)" 'sonnet run-7'
+}
+
+@test "the model-lane pick reads the item's headline and #size tag, never its body or weight" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high --weight heavy --title "fix(menu): sides overlap" \
+    "Fix the menu sides #size/s. Repo note: dotfiles-land says which repo; merge and deploy when done." >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
+    case "$1" in classify) echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\"}" ;; log) echo run-7 ;; esac'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'model-lane classify fix(menu): sides overlap --floor sonnet --size s'
+  assert_not_called 'model-lane classify Fix the menu sides'
+  assert_not_called 'weight'
+  assert_called 'model-lane log --item fix-menu --task fix(menu): sides overlap --lane sonnet'
 }
 
 @test "a failing model-lane still starts the item, on opus, with no lane_run" {
@@ -2813,14 +2829,25 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   refute_output --partial 'fix-red'
 }
 
-@test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
+@test "next_items keeps the queue's order (agent-queue owns it), drops a waiting board item and a gateway one" {
   runnable() {
-    printf '%s\n' '{"slug":"a","waits":false}' '{"slug":"w","waits":true}' '{"slug":"b","waits":false,"tags":"reddish"}' \
-      '{"slug":"r1","waits":false,"tags":"red cause:x"}' '{"slug":"r2","waits":false,"tags":"cause:y red"}'
+    printf '%s\n' '{"slug":"r1","waits":false,"tags":"red"}' '{"slug":"w","waits":true}' '{"slug":"c","waits":false,"tags":"cleanup"}' \
+      '{"slug":"g","waits":false,"agent":"lazer"}' '{"slug":"a","waits":false}'
   }
   run next_items
   assert_success
-  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 r2 a b '
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 c a '
+}
+
+@test "next_items from the real queue: a low red, then high cleanup, then an older plain high" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug plain "plain"
+  agent-queue add --project game --slug tidy --tags cleanup "tidy"
+  agent-queue add --project game --slug broke --priority low --tags 'red cause:ab12' "broke"
+  stub fleet-presence 'echo away 0 x'
+  run next_items
+  assert_success
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke tidy plain '
 }
 
 @test "red: a board item with the red tag does not wait while the human is here, a plain one does" {

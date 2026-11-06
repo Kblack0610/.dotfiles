@@ -70,7 +70,29 @@ test("a 409 merges the sweep's doc and saves again against its hash; the typed l
   await vm.runInContext(`sync()`, ctx);
   assert.deepEqual(puts, [{ base: "aa", text: "one\ntwo\nthree" }, { base: "bb", text: "two\nthree" }]);
   assert.equal(area.value, "two\nthree", "the swept line left the box; the typed one stayed");
-  assert.match(box("o-said").innerHTML, /2 waiting\. saved \d\d:\d\d/);
+  assert.match(box("o-said").innerHTML, /2 waiting; sent \d\d:\d\d/);
+});
+
+test("Send sends the line under the cursor that typing holds back", async () => {
+  const puts = [];
+  ctx.fetch = async (path, opts) => {
+    const ok = (status, body) => ({ ok: status < 300, status, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" });
+    if (!opts || !opts.method) return ok(200, { doc: { path: "/n/outbox.md", hash: "aa", text: "one", waiting: 1 }, handled: [], counts: "" });
+    const b = JSON.parse(opts.body);
+    puts.push(b);
+    return ok(200, { path: "/n/outbox.md", hash: "h" + puts.length, text: b.text, waiting: 2 });
+  };
+  vm.runInContext(`obx.view = null; obx.wantRead = true; OUTBOX.show();`, ctx);
+  await new Promise((r) => setImmediate(r));
+  area.value = "one\nhalf a thou";
+  area.selectionStart = area.value.length;
+  doc.activeElement = area;
+  await vm.runInContext(`sync()`, ctx);
+  assert.equal(puts.length, 0, "the line being typed waits");
+  assert.match(box("o-said").innerHTML, /the line you are on sends on Enter or Send/);
+  await vm.runInContext(`send()`, ctx);
+  assert.deepEqual(puts, [{ base: "aa", text: "one\nhalf a thou" }]);
+  doc.activeElement = null;
 });
 
 test("Handled today says what was done to each line, newest first, and left lines stand out", () => {
