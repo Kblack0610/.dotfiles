@@ -840,12 +840,14 @@ struct Ask {
     reason: String,
     answered_by: String,
     answer_note: String,
+    /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
+    assume_at: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note.
+/// judge_reason, answer_note, assume_at.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -881,6 +883,7 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     rule: col(21).into(),
                     reason: col(22).into(),
                     answer_note: col(23).into(),
+                    assume_at: col(24).into(),
                 }
             })
         })
@@ -1279,6 +1282,10 @@ mod tests {
             ("human", "judge", "taste", "only you know", "in session: b")
         );
         assert_eq!(parse_asks(noted)[0].rule, "");
+        // assume_at after them, for the card's deadline.
+        let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
+        assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
+        assert_eq!(parse_asks(ruled)[0].assume_at, "");
     }
 
     #[test]

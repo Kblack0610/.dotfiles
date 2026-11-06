@@ -34,7 +34,7 @@ set -uo pipefail
 # replay's judge, and what it must not see of an ask: every field the human's answer left on it.
 : "${JUDGE_EVAL_REPLAY_CMD:=agentctl-run --agent ask-judge-replay}"
 : "${JUDGE_EVAL_REPLAY_JOBS:=4}"
-: "${JUDGE_EVAL_BLIND_FIELDS:=answer answered_at answered_by answer_note resume resumed_at closed_at closed_reason}"
+: "${JUDGE_EVAL_BLIND_FIELDS:=answer answered_at answered_by answer_note assume_at assume_answer assume_disarmed resume resumed_at closed_at closed_reason}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.
@@ -124,7 +124,8 @@ JQ_EVAL="$JQ_EPOCH"'
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want
     | ($picks[$a.id] // (if ($a.answer // "") | startswith("in session:") then null else $a.answer end)) as $human
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
-       type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"), want: $want,
+       type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),
+       assumed: ($a.answered_by == "judge" and ($a.assume_at // "") != ""), want: $want,
        human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
        reason: ($a.judge_reason // ""), evidence: ($a.judge_evidence // ""),
        at: $a.judged_at, answered_at: $a.answered_at, judge_call: ($a.judge_call // ""),
@@ -205,6 +206,8 @@ JQ_EVAL="$JQ_EPOCH"'
       | {verdicts: ($r | length), errors: $err,
          answered: ($r | map(select(.kind == "answer")) | length),
          live_answered: ($r | map(select(.live == true)) | length),
+         assumed: ($r | map(select(.assumed == true)) | length),
+         assumed_overridden: ($r | map(select(.assumed == true and .outcome == "fp")) | length),
          deferred: ($r | map(select(.kind == "defer")) | length),
          pending: ($r | map(select(.outcome == "pending")) | length),
          unscorable: ($r | map(select(.outcome == "unscorable")) | length),
@@ -295,6 +298,7 @@ report() {
       "\(.agent)  prompt \(.prompt_sha[0:7] | if . == "" then "none" else . end)  live: \(if .live == ["*"] then "every rule" elif .live == [] then "none" else .live | join(", ") end)",
       "  truth: \(.truth)",
       "  calls \(.calls.n), \(.calls.errors) failed, p50 \(.calls.p50_ms | ms), p95 \(.calls.p95_ms | ms), \(.calls.cost_usd | money(2))",
+      (if .total.assumed > 0 then "  assumed \(.total.assumed), \(.total.assumed_overridden) overridden" else empty end),
       (if .total.verdicts == 0 then "  no verdicts in scope" else
         "  " + ("rule" | pad(15)) + ("verd" | lpad(6)) + ("err" | lpad(5)) + ("cover" | lpad(7)) + ("scored" | lpad(7))
           + ("precision [95%]" | lpad(18)) + ("f-defer" | lpad(8)) + ("kappa" | lpad(7)) + ("p95" | lpad(7)) + ("$/v" | lpad(7)) + "  bar",

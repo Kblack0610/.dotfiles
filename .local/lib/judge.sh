@@ -22,6 +22,17 @@ JQ_EPOCH='def epoch: if . == null or . == "" then null else
     $u - ((.[19:] | capture("(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})")
            | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) // 0) end end;'
 
+# The policy's criteria by what they do to an ask: a human one that holds sends it to the human,
+# and so does a needed one that fails. Named here so judge_derive and the hard stops read one list.
+JUDGE_HUMAN_CRITERIA='knowledge external taste unclear-ask against-precedent'
+JUDGE_NEEDED_CRITERIA='reversible'
+# JUDGE_HARD_STOPS: what a DELAY_RULES row can never name, so no wait ever answers it: every rule
+# the policy defines (tests/integ/agent_ask.bats holds this list to it), `other`, which no type
+# covers, and the types that are the human's by nature. A constant, because a failed read of the
+# policy must not open the door.
+# shellcheck disable=SC2034 # read by agent-ask
+JUDGE_HARD_STOPS="$JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA gate grounded other product_taste human_fact human_physical_action credential_or_account"
+
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 
@@ -33,9 +44,9 @@ judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
 # counts its worst item: a human criterion on any decision, a needed one missing on any decision.
 judge_derive() {
-  jq -c '
-    ["knowledge", "external", "taste", "unclear-ask", "against-precedent"] as $human
-    | ["reversible"] as $needed
+  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" '
+    ($human | split(" ")) as $human
+    | ($needed | split(" ")) as $needed
     | ($human + $needed + ["grounded"]) as $all
     | select(type == "object" and (.type | type) == "string" and .type != ""
         and (.decisions | type) == "array" and (.decisions | length) > 0
