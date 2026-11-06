@@ -1548,7 +1548,8 @@ cmd_effect() {
 retro_rows() {
   jq -r 'to_entries[] | select(.value.status == "past") | .key as $k | .value
     | (if .bound == "max" then .["7d"] > 2 * .threshold else .["7d"] < .threshold / 2 end) as $far
-    | [$k, "kpi: \($k) past threshold: "
+    | "check(kpi): \($k) past threshold" as $key
+    | [$key, "\($key): "
         + (if .now then "now \(.["7d"]) (\(.bound) \(.threshold))"
            else "7d \(.["7d"]) (28d \(.["28d"] // "-"), \(.bound) \(.threshold))" end),
        (if $far then "#high" else "#low" end)] | @tsv' <<<"$1"
@@ -1556,11 +1557,11 @@ retro_rows() {
 
 # One open row per KPI, folded by its title prefix: the numbers are refreshed in place, and
 # rows for a KPI back inside its threshold are left for whoever owns them.
-# retro_guard_rows -> one "guard <hash>:<TAB>text<TAB>priority" line per lesson whose sig
+# retro_guard_rows -> one "check(lesson): guard <hash>:<TAB>text<TAB>priority" line per lesson whose sig
 # (so_lesson_sigs) hit in BENCH_GUARD_RECUR or more sessions after it was written: a lesson the
 # fleet keeps relearning wants a hook, test or lint, and the lesson goes once that lands.
 retro_guard_rows() {
-  local sigs sig claim since file n h
+  local sigs sig claim since file n h key
   # shellcheck source=/dev/null
   . "$BENCH_SO_LIB" || return 1
   sigs=$(so_lesson_sigs) || return 1
@@ -1569,19 +1570,22 @@ retro_guard_rows() {
     | select($n >= $min) | [$s.sig, $s.claim, $s.since, $s.file, $n] | @tsv' <<<"$sigs" |
   while IFS=$'\t' read -r sig claim since file n; do
     h=$(printf '%s' "$sig" | sha1sum | cut -c1-8)
-    printf 'guard %s:\tguard %s: lesson "%s" (%s, %s) recurred in %s sessions; make it a hook, test or lint, then delete the lesson\t%s\n' \
-      "$h" "$h" "$claim" "$file" "$since" "$n" "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
+    key="check(lesson): guard $h:"
+    printf '%s\t%s lesson "%s" (%s, %s) recurred in %s sessions; make it a hook, test or lint, then delete the lesson\t%s\n' \
+      "$key" "$key" "$claim" "$file" "$since" "$n" "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
   done
 }
 
 # retro keeps exactly one open agent-board row per finding, keyed by its prefix: a KPI past its
-# threshold (`kpi: <k> past threshold`) or a lesson that keeps recurring (`guard <hash>:`). A row
-# whose numbers moved is edited in place; one that matches writes nothing.
+# threshold (`check(kpi): <k> past threshold`) or a lesson that keeps recurring
+# (`check(lesson): guard <hash>:`). A row whose numbers moved is edited in place; one that
+# matches writes nothing. An add that exits 3 found the row already open (a near-dup), so it
+# counts as filed.
 cmd_retro() {
-  local json rows='' grows board p text pri have added=0 edited=0 why=()
+  local json rows='' grows board p text pri have rc added=0 edited=0 why=()
   if [ -r "$KPI_THRESHOLDS" ]; then
     json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
-    rows=$(retro_rows "$json" | awk -F'\t' -v OFS='\t' '{ $1 = "kpi: " $1 " past threshold"; print }')
+    rows=$(retro_rows "$json")
     [ -n "$rows" ] || why+=("every KPI inside its threshold")
   else
     say "no KPI thresholds at $KPI_THRESHOLDS; retro checks no KPI"
@@ -1597,11 +1601,16 @@ cmd_retro() {
   fi
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
+    text+=" #size/s"   # every retro row is a small check
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null \
-        || { report_outcome FAILED "add failed for $p"; return 1; }
-      added=$((added + 1))
+      rc=0
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
+      case $rc in
+        0) added=$((added + 1)) ;;
+        3) ;;
+        *) report_outcome FAILED "add failed for $p"; return 1 ;;
+      esac
     elif [ "$have" != "${text,,}" ]; then
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null \
         || { report_outcome FAILED "edit failed for $p"; return 1; }

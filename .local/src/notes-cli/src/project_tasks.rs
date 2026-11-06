@@ -229,6 +229,55 @@ impl Pick {
         }
         Ok(())
     }
+
+    /// The pick a verb on `sheet` acts on, refused when it could act on the wrong row (nc-47).
+    /// [`Pick::sole_in`] refuses twin exact lines. Words that hit more than one open row of
+    /// `## Tasks` are refused with each row's id, unless exactly one of them is those words
+    /// whole (its [`md::task_key`]), which is picked by its line. An id on two open rows is
+    /// refused. A missing sheet passes: the verb itself reports that.
+    pub(crate) fn resolve_in(self, sheet: &Path) -> Result<Pick> {
+        if let Pick::Exact(_) = self {
+            self.sole_in(sheet)?;
+            return Ok(self);
+        }
+        let Ok(content) = fs::read_to_string(sheet) else {
+            return Ok(self);
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let Some(span) = md::section_span(&lines, sheet::TASKS) else {
+            return Ok(self);
+        };
+        let hits: Vec<&str> = lines[span]
+            .iter()
+            .copied()
+            .filter(|l| self.hits(l))
+            .collect();
+        if hits.len() < 2 {
+            return Ok(self);
+        }
+        if let Pick::Words(q) = &self {
+            let whole: Vec<&&str> = hits.iter().filter(|l| md::task_key(l) == *q).collect();
+            if let [one] = whole[..] {
+                return Ok(Pick::Exact(one.trim_end().to_string()));
+            }
+        }
+        let named: Vec<String> = hits
+            .iter()
+            .map(|l| {
+                let text: String = md::task_text(l).chars().take(70).collect();
+                format!(
+                    "  {}  {text}",
+                    md::row_id(l).unwrap_or_else(|| "(no id)".into())
+                )
+            })
+            .collect();
+        bail!(
+            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id:\n{}",
+            hits.len(),
+            sheet.display(),
+            named.join("\n")
+        )
+    }
 }
 
 /// The task sheet a ptask verb on `name` and `lane` reads, if the project has one.
@@ -313,6 +362,14 @@ pub fn add(
         refuse_behind(v, cur)?;
     }
     refuse_epic_on_board(lane, &[text])?;
+    if lane == Lane::Agent {
+        if !is_typed(text) {
+            bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
+        }
+        if projects::size_of(&format!("- [ ] {text}")).is_none() {
+            bail!("an agent board row needs its #size/s, #size/m or #size/l, so nothing was added");
+        }
+    }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !is_typed(text) {
@@ -335,9 +392,21 @@ pub fn add(
         eprintln!("already open on {}: {}", path.display(), open.trim());
         return Ok(3);
     }
+    if let Some(near) = near_twin(&content, text) {
+        eprintln!(
+            "near-duplicate of an open row on {}: {}",
+            path.display(),
+            near.trim()
+        );
+        return Ok(3);
+    }
     let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
+        bail!("{why}, so nothing was added");
+    }
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
+    note_ids(&proj_dir, &block)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
     crate::ingest::record(
         p,
@@ -357,6 +426,44 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         .lines()
         .find(|l| md::is_open_task(l) && md::task_key(l) == key)
 }
+
+/// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
+/// words (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
+/// [`NEAR_DUP`] are shared, each title having 3 or more. A word is split on whitespace only and
+/// keeps its inner `_`, `-` and digits, so templated rows that differ by one name
+/// (`retry_rate` and `no_pr_rate`) stay apart. Deterministic, and strict on purpose: a refused
+/// near-dup exits 3, which callers read as already filed, so a false twin would drop a row.
+fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+    let words = |line: &str| -> (Option<(String, String)>, std::collections::BTreeSet<String>) {
+        let title = projects::row_title(line).to_lowercase();
+        let set = title
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+            .filter(|w| w.len() >= 3)
+            .map(str::to_string)
+            .collect();
+        (projects::row_type_area(line), set)
+    };
+    let (kind, want) = words(&format!("- [ ] {text}"));
+    if want.len() < 3 {
+        return None;
+    }
+    content.lines().find(|l| {
+        if !md::is_open_task(l) {
+            return false;
+        }
+        let (k, have) = words(l);
+        if k != kind || have.len() < 3 {
+            return false;
+        }
+        let shared = want.intersection(&have).count();
+        let union = want.union(&have).count();
+        shared * 100 >= union * NEAR_DUP
+    })
+}
+
+/// The share of title words, in percent of both titles' words, that makes a near-duplicate.
+const NEAR_DUP: usize = 80;
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
 /// as needed) and wake the triager. Lines already in the inbox are not written twice, so a
@@ -645,6 +752,7 @@ pub(crate) fn file(
         }
     };
     md::write_atomic(&dest, &new_dest)?;
+    note_ids(&dest_proj, &written)?;
     if !same {
         md::write_atomic(&src, &rest).map_err(|e| {
             anyhow::anyhow!(
@@ -695,10 +803,56 @@ pub(crate) fn file(
 }
 
 /// The next row id for a project: `<code>-<n>`, `n` one past the highest `id:<code>-N` on any
-/// `.md` file under its dir (both lanes, playtest and `versions/`). A dropped row keeps its
-/// id on the sheet and an archived one keeps it in `versions/`, so an id is never reused.
+/// `.md` file under its dir (both lanes, playtest and `versions/`) and in its [`IDS`] file. A
+/// dropped row keeps its id on the sheet and an archived one keeps it in `versions/`; a row
+/// moved to another project, or deleted by hand, takes its id away, and [`IDS`] remembers it,
+/// so an id is never reused.
 pub(crate) fn next_id(proj_dir: &Path, code: &str) -> String {
     format!("{code}-{}", next_id_n(proj_dir, code))
+}
+
+/// The project's id high-water file, `<project>/.ids`: one `id:<code>-<n>` line per code,
+/// the highest id it ever minted. Written by every verb that mints one ([`note_ids`]); synced
+/// with the vault like the sheets.
+pub(crate) const IDS: &str = ".ids";
+
+/// Raise [`IDS`] to the highest id in `lines`, per code, when that is past what it holds.
+/// Called after the sheet write, under [`lock`], so a failed write leaves a gap, never a reuse.
+fn note_ids(proj_dir: &Path, lines: &[String]) -> Result<()> {
+    let split = |id: &str| {
+        id.rsplit_once('-')
+            .and_then(|(c, n)| Some((c.to_string(), n.parse::<u64>().ok()?)))
+    };
+    let path = proj_dir.join(IDS);
+    let mut top: std::collections::BTreeMap<String, u64> = fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("id:").and_then(split))
+        .collect();
+    let mut raised = false;
+    for (code, n) in lines
+        .iter()
+        .filter_map(|l| md::row_id(l))
+        .filter_map(|id| split(&id))
+    {
+        let held = top.entry(code).or_insert(0);
+        if n > *held {
+            *held = n;
+            raised = true;
+        }
+    }
+    if raised {
+        let body: String = top.iter().map(|(c, n)| format!("id:{c}-{n}\n")).collect();
+        md::write_atomic(&path, &body)?;
+    }
+    Ok(())
+}
+
+/// The write lock every `notes ptask` writer holds from its read to its write, and around id
+/// minting: `<state_dir>/ptask.lock`. Without it two writers (a dispatch pass and a session)
+/// read the same sheet, and the second write loses the first one's row, or both mint one id.
+pub(crate) fn lock(p: &Profile) -> Result<md::FileLock> {
+    md::lock_file(&p.state_dir.join("ptask.lock"))
 }
 
 /// The number half of [`next_id`].
@@ -714,7 +868,9 @@ fn next_id_n(proj_dir: &Path, code: &str) -> u64 {
             let path = e.path();
             if e.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(path);
-            } else if path.extension().is_some_and(|x| x == "md") {
+            } else if path.extension().is_some_and(|x| x == "md")
+                || path.file_name().is_some_and(|n| n == IDS)
+            {
                 let Ok(text) = fs::read_to_string(&path) else {
                     continue;
                 };
@@ -1305,8 +1461,10 @@ pub fn retext(
     .0)
 }
 
-/// `notes ptask <name> start <query>` - toggle the first matching task between todo
-/// (`[ ]`) and in-progress (`[/]`).
+/// `notes ptask <name> start <query>` - mark the first matching open task in progress (`[/]`).
+/// A row already started is left as it is (exit 0, "already started"): start sets, it never
+/// toggles, so answering a gate with `start` cannot clear the mark (lesson 2748). `unstart`
+/// hands a row back.
 ///
 /// A row going to `[/]` with no id gets one, as [`add`] would have given it: a started row has
 /// a queue item, and the item joins its row by that id, which survives a retext. The new id
@@ -1316,23 +1474,34 @@ pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> 
     let id = crate::registry::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
-    let (code, matched) = edit(p, log, name, pick, "toggled", None, lane, |l| {
-        Some(toggle_started(l, id.as_deref()))
+    let (rc, matched) = edit(p, log, name, pick, "started", None, lane, |l| {
+        (!is_started(l)).then(|| started(l, id.as_deref()))
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
-        if md::row_id(&toggle_started(&line, Some(&id))).as_deref() == Some(id.as_str()) {
+        let row = started(&line, Some(&id));
+        if !is_started(&line) && md::row_id(&row).as_deref() == Some(id.as_str()) {
+            note_ids(&dir, &[row])?;
             println!("  id:{id}");
         }
     }
-    Ok(code)
+    Ok(rc)
 }
 
-/// One row through `start`: `[/]` goes back to `[ ]` as it is; anything else goes to `[/]`,
-/// stamped with `id` when it carries none.
-fn toggle_started(line: &str, id: Option<&str>) -> String {
-    if line.trim_start().starts_with("- [/]") {
-        return md::set_checkbox(line, ' ');
-    }
+/// `notes ptask <name> unstart <query>` - hand the first matching started task back to todo
+/// (`[/]` -> `[ ]`). A row not started is left as it is (exit 0, "not started").
+pub fn unstart(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
+    Ok(edit(p, log, name, pick, "unstarted", None, lane, |l| {
+        is_started(l).then(|| md::set_checkbox(l, ' '))
+    })?
+    .0)
+}
+
+fn is_started(line: &str) -> bool {
+    line.trim_start().starts_with("- [/]")
+}
+
+/// One row through `start`: `[/]`, stamped with `id` when it carries none.
+fn started(line: &str, id: Option<&str>) -> String {
     let started = md::set_checkbox(line, '/');
     match id.filter(|_| md::row_id(line).is_none()) {
         Some(id) => md::add_marker(&started, &format!("id:{id}")),
@@ -1524,8 +1693,9 @@ pub(crate) fn archive_done_rows(
     Ok((format!("{}\n", kept.join("\n")), ranges.len()))
 }
 
-/// Shared body for `done`/`rm`/`start`: apply `f` to the first open task matching
-/// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
+/// Shared body for `done`/`drop`/`start`/`unstart`/`tag`: apply `f` to the first open task
+/// matching `query`; `f` returning None leaves the row as it is (no write, no record, exit 0,
+/// "unchanged"). Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
 /// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
 /// "matched nothing").
 #[allow(clippy::too_many_arguments)]
@@ -1549,9 +1719,13 @@ where
     let write = |l: &str| {
         let new = f(l);
         after.borrow_mut().clone_from(&new);
-        new
+        Some(new.unwrap_or_else(|| l.to_string()))
     };
     match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), write) {
+        Some((_, matched)) if after.borrow().is_none() => {
+            println!("unchanged {}", matched.trim());
+            Ok((0, Some(matched)))
+        }
         Some((new, matched)) => {
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
@@ -2071,36 +2245,93 @@ Version: v1.2.0
         );
     }
 
+    // `start` sets and `unstart` clears; neither flips a row already where it was asked to
+    // be (lesson 2748: a toggle run twice undid the first start).
     #[test]
-    fn start_toggles_todo_and_in_progress() {
+    fn start_sets_and_never_toggles() {
         let (out, _) = md::edit_first_in_section(
             SHEET,
             sheet::TASKS,
             |l| is_match(l, "first"),
-            |l| Some(toggle_started(l, None)),
+            |l| Some(started(l, None)),
         )
         .unwrap();
         assert!(out.contains("- [/] first task"));
+        assert!(is_started("- [/] a") && !is_started("- [ ] a"));
     }
 
     // The join between a queue item and its row: the first start gives the row its id, and
-    // neither a second start nor a row that already has one mints another.
+    // a row that already has one keeps it.
     #[test]
     fn a_row_going_to_started_gets_its_id_once() {
-        let line = toggle_started("- [ ] fix(a): thing #high", Some("ar-7"));
+        let line = started("- [ ] fix(a): thing #high", Some("ar-7"));
         assert_eq!(line, "- [/] fix(a): thing #high <!-- id:ar-7 -->");
-        let back = toggle_started(&line, Some("ar-8"));
-        assert_eq!(back, "- [ ] fix(a): thing #high <!-- id:ar-7 -->");
+        let back = md::set_checkbox(&line, ' ');
         assert_eq!(
-            toggle_started(&back, Some("ar-8")),
+            started(&back, Some("ar-8")),
             "- [/] fix(a): thing #high <!-- id:ar-7 -->"
         );
         assert_eq!(
-            toggle_started("- [ ] a <!-- carried:1 -->", Some("ar-9")),
+            started("- [ ] a <!-- carried:1 -->", Some("ar-9")),
             "- [/] a <!-- carried:1 id:ar-9 -->"
         );
         // No code, no id: the row still starts, and the caller decides what that means.
-        assert_eq!(toggle_started("- [ ] a", None), "- [/] a");
+        assert_eq!(started("- [ ] a", None), "- [/] a");
+    }
+
+    #[test]
+    fn a_near_duplicate_is_the_same_type_area_and_most_title_words() {
+        let board = "## Tasks\n- [ ] fix(ui): the pause menu flickers on resume #size/s <!-- id:sc-4 -->\n- [x] fix(ui): closed rows are never twins of anything\n";
+        assert!(
+            near_twin(board, "fix(ui): Pause menu flickers on resume #size/m").is_some(),
+            "4 of 5 words shared, case and tags aside"
+        );
+        assert!(
+            near_twin(
+                board,
+                "fix(ui): pause menu flickers on resume again #size/s"
+            )
+            .is_none(),
+            "4 of 6 is under the bar: a false twin would drop a real row"
+        );
+        assert!(
+            near_twin(board, "feat(ui): pause menu flickers on resume #size/s").is_none(),
+            "another type"
+        );
+        assert!(
+            near_twin(board, "fix(ui): pause menu crashes on load #size/s").is_none(),
+            "half the words"
+        );
+        assert!(
+            near_twin(board, "fix(ui): closed rows are never twins of anything").is_none(),
+            "a closed row"
+        );
+        let kpi = "## Tasks\n- [ ] check(kpi): no_pr_rate past threshold: 7d 0.3 (28d 0.2, max 0.1) #size/s\n";
+        assert!(
+            near_twin(
+                kpi,
+                "check(kpi): retry_rate past threshold: 7d 0.5 (28d 0.4, max 0.2) #size/s"
+            )
+            .is_none(),
+            "templated rows for two KPIs are two rows"
+        );
+    }
+
+    // Ids never come back after the row that held the highest one leaves the project.
+    #[test]
+    fn the_id_high_water_outlives_the_row_that_set_it() {
+        let dir = std::env::temp_dir().join(format!("ptask-hw-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        note_ids(&dir, &["- [ ] a <!-- id:ar-41 -->".to_string()]).unwrap();
+        note_ids(&dir, &["- [ ] b <!-- id:ar-7 -->".to_string()]).unwrap();
+        assert_eq!(fs::read_to_string(dir.join(IDS)).unwrap(), "id:ar-41\n");
+        assert_eq!(
+            next_id(&dir, "ar"),
+            "ar-42",
+            "no sheet holds ar-41 any more"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     const BOARD: &str = "\
@@ -2664,5 +2895,58 @@ mod inbox_tests {
             s,
             "a rewrite to the row's own words wrote nothing"
         );
+    }
+
+    #[test]
+    fn start_and_unstart_leave_a_row_already_there_unchanged() {
+        let v = vault("setonly", "", "- [ ] fix(ui): flicker <!-- id:sc-1 -->\n");
+        let one = Pick::Id("sc-1".into());
+        start(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        let once = v.read();
+        assert!(once.contains("- [/] fix(ui): flicker"), "{once}");
+        start(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        assert_eq!(v.read(), once, "a second start is a no-op, not an unstart");
+        unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        assert!(v.read().contains("- [ ] fix(ui): flicker"), "{}", v.read());
+        let ev: Vec<String> = crate::ingest::since(&v.p, 1)
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        assert_eq!(ev, ["started", "unstarted"], "a no-op writes no event");
+    }
+
+    // nc-47: words on two open rows act on neither; the error names both ids.
+    #[test]
+    fn ambiguous_words_are_refused_with_every_id() {
+        let v = vault(
+            "ambig",
+            "",
+            "- [ ] fix(ui): menu flicker <!-- id:sc-1 -->\n- [ ] fix(ui): menu lag <!-- id:sc-2 -->\n",
+        );
+        let err = Pick::new("menu", false)
+            .unwrap()
+            .resolve_in(&v.sheet())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("sc-1") && err.contains("sc-2"), "{err}");
+        assert!(
+            Pick::new("flicker", false)
+                .unwrap()
+                .resolve_in(&v.sheet())
+                .is_ok(),
+            "one hit is fine"
+        );
+        // A row whose whole words are the query is picked over a longer one containing them.
+        let v = vault(
+            "ambig2",
+            "",
+            "- [ ] fix(ui): menu\n- [ ] fix(ui): menu lag\n",
+        );
+        let pick = Pick::new("fix(ui): menu", false)
+            .unwrap()
+            .resolve_in(&v.sheet())
+            .unwrap();
+        assert_eq!(pick, Pick::Exact("- [ ] fix(ui): menu".into()));
     }
 }

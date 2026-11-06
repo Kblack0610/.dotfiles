@@ -57,10 +57,11 @@ started_item() {
   } > "$d/20261103-100000-$1.md"
 }
 
-# A notes stand-in with state: rows.<project>.<lane> holds "key<TAB>raw line". `start` toggles one
-# row, as the real CLI does: the row whose line is the query under --exact, else the one with that
-# id, else the first whose key contains it. A row going to [/] with no id gets the next gm-N and the
-# id goes out on its own line, unless the fixture says the project has no code (nocode.<project>).
+# A notes stand-in with state: rows.<project>.<lane> holds "key<TAB>raw line". `start` sets one
+# row to [/] and `unstart` back to [ ], as the real CLI does, and a row already there is left
+# unchanged: the row whose line is the query under --exact, else the one with that id, else the
+# first whose key contains it. A row going to [/] with no id gets the next gm-N and the id goes
+# out on its own line, unless the fixture says the project has no code (nocode.<project>).
 stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
 #!/usr/bin/env bash
@@ -75,15 +76,17 @@ case "${args[0]}" in
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;
-      start)
+      start|unstart)
         n=$(cat "$F"/rows.*.* | grep -c 'id:gm-'); [ ! -f "$F/nocode.$p" ] || n=''
-        Q="${args[3]}" awk -F'\t' -v OFS='\t' -v exact="$exact" -v n="$n" -v out="$f.out" '
+        Q="${args[3]}" awk -F'\t' -v OFS='\t' -v exact="$exact" -v n="$n" -v out="$f.out" -v verb="${args[2]}" '
           BEGIN { q = ENVIRON["Q"] }
           !done && $2 ~ /^- \[[ \/]\]/ && (exact ? $2 == q : (index($2, "id:" q " ") || index($1, q))) {
-            done = 1; print "toggled " $2 > out
-            if ($2 ~ /^- \[\/\]/) sub(/^- \[\/\]/, "- [ ]", $2)
+            done = 1
+            if (verb == "unstart") {
+              if (sub(/^- \[\/\]/, "- [ ]", $2)) print "unstarted " $2 > out; else print "unchanged " $2 > out
+            } else if ($2 ~ /^- \[\/\]/) print "unchanged " $2 > out
             else {
-              sub(/^- \[ \]/, "- [/]", $2)
+              sub(/^- \[ \]/, "- [/]", $2); print "started " $2 > out
               if (n != "" && $2 !~ /id:/) { id = "gm-" (n + 1); $2 = $2 " <!-- id:" id " -->"; print "  id:" id > out }
             }
           }

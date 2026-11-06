@@ -199,7 +199,7 @@ $open"
           [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
           move_out "$dest" "$raw" "$text" || continue
           src="$dest"
-        elif [ "$action" = file ] && [ -n "$dest" ] && [ "$dest" != "$from" ]; then
+        elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
           args+=(--project "$dest")
         fi
         file_line "$src" "$raw" "$text" "${args[@]}"

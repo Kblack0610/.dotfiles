@@ -647,7 +647,7 @@ judge_demote_check() {
   agent-notify -p high -t 'Judge demoted' \
     "The ask judge no longer answers $rule asks: you overrode ask $id. A board row says how to undo it." >/dev/null 2>&1 || true
   notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
-    "check(judge): ask-judge $rule went back to shadow after the override on ask $id (live answer $pos of $total, $over overridden); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from LIVE_RULES in ask-judge.conf by PR" \
+    "check(judge): ask-judge $rule went back to shadow after the override on ask $id (live answer $pos of $total, $over overridden); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from LIVE_RULES in ask-judge.conf by PR #size/s" \
     >/dev/null 2>&1 || true
 }
 
@@ -727,8 +727,8 @@ deliver_to_session() {
   return 0
 }
 
-# file_board_row <ask file> <text>: an answer nobody is left to act on, as one plain agent board
-# row in the ask's project. The answer is already recorded, so a board that refuses the row
+# file_board_row <ask file> <text>: an answer nobody is left to act on, as one typed, sized agent
+# board row in the ask's project. The answer is already recorded, so a board that refuses the row
 # fails nothing.
 file_board_row() {
   local f="$1" text="$2" project profile board q
@@ -742,7 +742,7 @@ file_board_row() {
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
-    "$q (ask $(field "$f" id))" >/dev/null 2>&1 || true
+    "chore(ask): $q (ask $(field "$f" id)) #size/s" >/dev/null 2>&1 || true
 }
 
 cmd_card() {
