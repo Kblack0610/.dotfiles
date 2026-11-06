@@ -788,15 +788,83 @@ SH
   refute_line --partial 'answer: approve'
 }
 
-@test "judge turns a call the ask cannot carry out into human, and runs once per ask" {
+@test "judge turns a call the ask cannot carry out into human" {
   fake_judge "$(score clear)"
   local id; id="$(post demo 'no recommendation here?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: human'
+}
+
+@test "judge scores a pending ask again and replaces its old verdict, but leaves an answered one" {
+  fake_judge "$(score knowledge "" "only you know")"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
   "$AGENT_ASK" judge "$id"
-  run grep -c "^question: no recommendation here?$" "$BATS_TEST_TMPDIR/judge.calls"
-  assert_output '1'
+  run "$AGENT_ASK" show "$id"; assert_line 'judge: human'; assert_line 'judge_rule: knowledge'
+  fake_judge "$(score restates-rule "" "landing is standing authorization")"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: take-recommend'
+  assert_line 'judge_rule: restates-rule'
+  assert_line 'judge_reason: landing is standing authorization'
+  assert_equal "$(grep -c '^judge_rule: ' "$HOME/.agent/asks/demo/$id.md")" 1
+  # negative control: an answered ask keeps the verdict it is scored on, and no call is made
+  "$AGENT_ASK" answer "$id" no 2>/dev/null
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  run "$AGENT_ASK" show "$id"; assert_line 'judge: take-recommend'
+}
+
+@test "sweep judges the pending queue again, answers live classes as the judge and leaves the rest" {
+  export AGENT_ASK_LIVE_RULES=restates-rule
+  local live shadow gate done
+  live="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
+  shadow="$("$AGENT_ASK" post --project other --options 'a=one|b=two' --recommend a 'which mic?')"
+  gate="$("$AGENT_ASK" post --project demo --kind gate 'merge #9?')"
+  done="$("$AGENT_ASK" post --project demo --options 'x=x|y=y' --recommend x 'old?')"
+  "$AGENT_ASK" answer "$done" y 2>/dev/null
+  # the stale verdict an older policy left on the live one
+  printf 'judge: human\njudge_reason: options are unlabeled\n' >> "$HOME/.agent/asks/demo/$live.md"
+  cat > "$BATS_TEST_TMPDIR/judge" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+case "\$*" in
+  *'fix the flake?'*) printf '%s\n' '$(score restates-rule "" "rules say fix failing CI yourself.")' ;;
+  *) printf '%s\n' '$(score knowledge "" "only you can test the mic")' ;;
+esac
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  run "$AGENT_ASK" sweep --all
+  assert_success
+  assert_line "demo	$live	answered fix	restates-rule	rules say fix failing CI yourself."
+  assert_line "other	$shadow	yours	knowledge	only you can test the mic"
+  assert_line --regexp "^demo	$gate	yours	gate	"
+  refute_output --partial "$done"
+  run "$AGENT_ASK" show "$live"
+  assert_line 'status: answered'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  refute_line 'judge_reason: options are unlabeled'
+  run "$AGENT_ASK" show "$shadow"; assert_line 'status: pending'
+  run "$AGENT_ASK" show "$gate"; assert_line 'status: pending'
+  # an ask with no live session and no resume is filed as a row, saying the judge answered
+  assert_called "notes ptask"
+  assert_equal "$("$AGENT_ASK" count --all)" 2
+}
+
+@test "a judge answer typed into a live session names the judge, its rule and its reason" {
+  unset AGENT_ASK_NO_RESUME
+  export AGENT_ASK_LIVE_RULES=restates-rule
+  printf '{"session_id":"sid-7","pane":"%%7","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix it here?')"
+  fake_judge "$(score restates-rule "" "rules say fix failing CI yourself.")"
+  "$AGENT_ASK" sweep demo >/dev/null
+  assert_called "agent-panel send --pane %7 Answer to ask $id: fix (the judge, restates-rule: rules say fix failing CI yourself; the human can override in this session)"
+  # negative control: a human answer keeps the plain text
+  id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'a=a|b=b' 'pick?')"
+  "$AGENT_ASK" answer "$id" b 2>/dev/null
+  assert_called "agent-panel send --pane %7 Answer to ask $id: b"
 }
 
 @test "judge records a free answer, and a reply with no verdict is an error verdict" {
@@ -1023,7 +1091,7 @@ live_post() {
   assert_line 'status: pending'
 }
 
-@test "override: the human's next message naming another option labels the live answer and demotes the class" {
+@test "override: the human's next message naming another option labels the live answer; one miss does not demote" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_LIVE_RULES=restates-rule
   fake_judge "$(score restates-rule)"
@@ -1033,13 +1101,11 @@ live_post() {
   assert_line 'judge_override: wait'
   assert_line 'judge_override_note: in session: no, wait for the row to be fixed'
   assert_line 'answer: fix'
-  run cat "$HOME/.local/state/agent-ask/demoted"
-  assert_output --regexp "^restates-rule	.+	override on ask $id: live answer 1 of 1, 1 overridden$"
-  assert_called 'agent-notify -p high -t Judge demoted'
-  assert_called 'notes ptask agent-runtime --agent add check(judge): ask-judge restates-rule went back to shadow'
-  # Once demoted, the class is shadow: the next one stays with the human.
+  # 1 live answer is under AGENT_ASK_DEMOTE_MIN: the class stays live and the next one is answered
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  assert_not_called 'agent-notify'
   id="$(live_post sid-2 'and this one?' 2>/dev/null)"
-  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
 }
 
 @test "override: a message that agrees or says nothing about the options closes the review with none" {
@@ -1060,25 +1126,38 @@ live_post() {
   assert_not_called 'agent-notify'
 }
 
-@test "override: past the first 30 live answers, a class stays live while its precision holds 90%" {
-  export AGENT_ASK_LIVE_RULES=restates-rule AGENT_ASK_LIVE_BAR=3
+# live_answer_file <n> <minute> <override>: a reviewed live restates-rule answer on disk.
+live_answer_file() {
+  mkdir -p "$HOME/.agent/asks/demo"
+  printf 'id: L%05d\nproject: demo\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:%02d:00+0000\njudge_rule: restates-rule\njudge_override: %s\n' \
+    "$1" "$2" "$3" > "$HOME/.agent/asks/demo/L$(printf %05d "$1").md"
+}
+
+@test "override: a class demotes when precision over its last live answers falls under the bar, once it has the minimum" {
+  export AGENT_ASK_LIVE_RULES=restates-rule AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
   local d="$HOME/.agent/asks/demo" i
-  mkdir -p "$d"
-  # Four live answers already reviewed, none overridden.
-  for i in 1 2 3 4; do
-    printf 'id: L%05d\nproject: demo\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:0%d:00+0000\njudge_rule: restates-rule\njudge_override: none\n' "$i" "$i" > "$d/L$(printf %05d "$i").md"
-  done
-  # The fifth is overridden: 4 of 5 is 80%, under the bar.
-  printf 'id: L00005\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:05:00+0000\njudge_rule: restates-rule\n' > "$d/L00005.md"
-  export AGENT_ASK_LIVE_PRECISION=90
+  # An old override outside the window of 5, then four good answers.
+  live_answer_file 1 1 wait
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  # The sixth is overridden: the window is answers 2-6, 4 of 5 is 80%, under 85.
+  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: restates-rule\n' > "$d/L00006.md"
   "$AGENT_ASK" settle-session sid-9 answered "wait"
-  assert [ -s "$HOME/.local/state/agent-ask/demoted" ]
+  run cat "$HOME/.local/state/agent-ask/demoted"
+  assert_output --regexp "^restates-rule	.+	override on ask L00006: 1 of its last 5 live answers overridden, under 85%$"
+  assert_called 'agent-notify -p high -t Judge demoted'
+  assert_called 'notes ptask agent-runtime --agent add check(judge): ask-judge restates-rule went back to shadow'
   # negative control: at a 75% bar the same override keeps the class live
   rm "$HOME/.local/state/agent-ask/demoted"
-  sed -i '/^judge_override/d' "$d/L00005.md"
-  export AGENT_ASK_LIVE_PRECISION=75
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  export AGENT_ASK_DEMOTE_PRECISION=75
   "$AGENT_ASK" settle-session sid-9 answered "wait"
-  run "$AGENT_ASK" show L00005; assert_line 'judge_override: wait'
+  run "$AGENT_ASK" show L00006; assert_line 'judge_override: wait'
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # under the minimum nothing demotes, even at 0%: the window counts only these two
+  rm "$d"/L0000[1-4].md
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  export AGENT_ASK_DEMOTE_PRECISION=85
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
 }
 
