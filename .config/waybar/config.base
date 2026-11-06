@@ -116,6 +116,7 @@
         "modules": [
             "custom/timebox",
             "custom/health",
+            "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
             "custom/fleet",
@@ -204,6 +205,19 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
+        "tooltip": true
+    },
+    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
+    // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // board on Projects.
+    "custom/projects": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/projects $HOME/.config/waybar/projects.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab projects",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
