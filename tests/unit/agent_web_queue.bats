@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# agent-web's Queue, answer, Home and Projects cards, the Focus tab, the Log's hour chart and project groups and the Sessions list
+# agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups and the Sessions list
 # are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions}.test.mjs); skips where node is absent.
 
 setup() {
