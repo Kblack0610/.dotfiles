@@ -25,6 +25,10 @@ A judge is a model call that decides something a human would otherwise decide: t
 - Each verdict names its call (`judge_call`, one `calls.jsonl` line), so latency and cost per verdict are the call's, shared across the rows one call judged. Why: estimated costs drift, and a dispatch call judges many rows at once. Test: `judge_eval.bats` "dispatch-judge: the newest verdict per row" (cost per verdict).
 - The judge KPIs (`judge_errors`, `judge_precision`, `ask_false_defer_pct`, `ask_unclear_pct`) are fleet-bench KPIs with thresholds in `~/.config/agentctl/kpi-thresholds`, so `fleet-bench retro` files a row when one trips. `judge_precision` is the lowest precision among rules with 10 or more scored answers. Why: a judge drifting wrong was visible only to someone who went looking. Test: `tests/unit/fleet_bench.bats` "kpi: the judge KPIs come from judge-eval kpi".
 
+## Replay
+
+`judge-eval replay` scores a changed policy before it earns live labels: the real `agent-ask judge` over blind copies of the asks the human answered with an option, as the agent `ask-judge-replay`, whose own budget keeps it off `ask-judge`'s. The copies are then scored like any other verdicts, so its numbers are a replay's, never counted into the KPIs, and a run that would leak an answer sends nothing. Test: `judge_eval.bats` "replay".
+
 ## How the numbers are computed
 
 Each verdict is one of: TP (answered, right), FP (answered, wrong), FN (deferred, but the human took the recommendation), TN (deferred, rightly), pending, unscorable, or an error.
