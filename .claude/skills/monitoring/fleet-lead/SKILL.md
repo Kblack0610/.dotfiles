@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, coordination, shepherd, binks]
-  reviewed: 2026-11-05
+  reviewed: 2026-11-06
 ---
 
 # fleet-lead
@@ -18,7 +18,7 @@ The fleet lead is persona **Binks** (`~/.dotfiles-private/.claude/PERSONAS.md`):
 | `shepherd` | delivery state: the buckets, nudges, escalation, overdue phases |
 | `fleet-dispatch` | keeping the queue topped up from the board and starting its sessions (away rate, present trickle), and `fleet-dispatch start` |
 
-The aim is pace. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting near 100% idle is as much a failure as one at 0% idle. Every pass looks at both directions.
+The aim is measured improvement: the KPIs in `fleet-bench kpi` move the better way, one at a time, each through a row that carries its check (an `improve:` line, step 3), and nothing counts as improved until retro has read the number after the PR. Pace is the means. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting near 100% idle is as much a failure as one at 0% idle. Every pass looks at both directions.
 
 ## Verb: `pass`
 
@@ -40,11 +40,13 @@ One pass. It runs two ways, and neither waits for the other:
    | `nudge <bucket>:`, `escalate <bucket>:`, `overdue:`, `escalate overdue:`, `nightly red:`, `shared red:` | `shepherd`, "Verb: nudge" |
    | `watch: queue-starved` | `fleet-dispatch`, "Starved queue" |
    | `finding`, `infra:`, other `watch:` | this skill, step 2 and Reporting |
+   | `improve:` | this skill, step 3 |
 
    On HOLD, or idle under 5% or over 60% in that sample, run `fleet-pace`'s pace check.
-2. **Findings**, from `fleet-bench findings --json` or a `finding` due line, once each, skipping report class and any seen on one sample (`epoch` equal to `episode`). Quote a finding's evidence when naming a limit, or say there is none; a finding never authorizes messaging a WORKING session. Class `human`: add it to this pass's page with its conclusion and cost. Class `shepherd`: act if a standing order covers it (slots and runner counts today, with a before and after from `fleet-bench throughput`), otherwise log it. A starved pool finding is yours to try first: `fleet-shepherd sweep-cancel "<fact>"` cancels the run when one `workflow_dispatch` run on a `sweep/*` branch holds most of the pool and most of its finished jobs failed, records the cancel on the finding, and prints the session to tell (send it with `SendMessage`); exit 1 names why it left the pool alone. Then run the ledger call the due line prints, `fleet-sessions escalate finding-<rule>-<scope> "<fact> <class>"` with `/` in the id written `-`, so a promotion to human is news. Each act on a finding is recorded against it, `fleet-bench respond "<fact>" binks <asked|filed-row|fixed> <ref>` (the ask id, row text or PR); the escalation records the page and `sweep-cancel` its cancel. A human-class episode with nothing but pages reads DARK in `fleet-bench loop`, and `loop_dark` past its threshold files a retro row.
-3. **Every due line gets an answer:** moved (a message plus its `mark`, or an `escalate`), or `fleet-shepherd skip "<line>" "<why>"` when you leave it on purpose (a hold you keep, a session the human is already on). `fleet-shepherd check` leads with `unhandled: <line>` for each line the last pass was given and did neither for. The skips and their reasons are the record of what Binks chose not to do.
-4. Report, then page (Reporting). Lead with the NIGHTLY rows, then findings, then the pace line: load, idle, and what you did about it.
+2. **Findings**, from `fleet-bench findings --json` or a `finding` due line, once each, skipping report class and any seen on one sample (`epoch` equal to `episode`). Quote a finding's evidence when naming a limit, or say there is none; a finding never authorizes messaging a WORKING session. Class `human`: add it to this pass's page with its conclusion and cost. Class `shepherd`: act if a standing order covers it (slots and runner counts today, with a before and after from `fleet-bench throughput`), otherwise log it. A starved pool finding is yours to try first: `fleet-shepherd sweep-cancel "<fact>"` cancels the run when one `workflow_dispatch` run on a `sweep/*` branch holds most of the pool and most of its finished jobs failed, records the cancel on the finding, and prints the session to tell (send it with `SendMessage`); exit 1 names why it left the pool alone. Then run the ledger call the due line prints, `fleet-sessions escalate finding-<rule>-<scope> "<fact> <class>"` with `/` in the id written `-`, so a promotion to human is news. Each act on a finding is recorded against it, `fleet-bench respond "<fact>" binks <asked|filed-row|fixed> <ref>` (the ask id, row text or PR); the escalation records the page and `sweep-cancel` its cancel. A human-class episode with nothing but pages reads DARK in `fleet-bench loop`, and `loop_dark` past its threshold comes back as an `improve:` line.
+3. **Improve**, once per `improve:` line: the KPI furthest past its threshold that no live row owns. If an open board row or a plan's queue item already works on that KPI (a legacy `chore(kpi):` row counts), adopt it: `fleet-bench improve claim <kpi> <ar-N|item:slug>`. Otherwise file one defined fix a worker can land in one PR, never "improve <kpi>": `fleet-bench improve file <kpi> "<type(scope): the change>"`. It tags the row `#kpi/<kpi>`, writes its check as a detail line and records the 7d value as the baseline; exit 3 means its twin is open, so claim that row. `last <id> flat` or `unproven` on the line means that fix did not move it: file a different one. Starting the row is dispatch's (it ranks `#kpi/` rows first at night), and retro reads the number 14 days after the PR lands (`fleet-bench`, "improve").
+4. **Every due line gets an answer:** moved (a message plus its `mark`, or an `escalate`), or `fleet-shepherd skip "<line>" "<why>"` when you leave it on purpose (a hold you keep, a session the human is already on). `fleet-shepherd check` leads with `unhandled: <line>` for each line the last pass was given and did neither for. The skips and their reasons are the record of what Binks chose not to do.
+5. Report, then page (Reporting). Lead with the NIGHTLY rows, then findings, then the pace line: load, idle, and what you did about it.
 
 ## Reporting
 
@@ -84,6 +86,7 @@ These hold for every role; each role skill adds its own.
 - Broadcast to every `ListAgents` row. A message goes to the sessions a role names.
 - Push, merge, or answer a gate on a session's behalf. A nudge recommends the step; the session takes it.
 - Edit product code. Binks moves sessions; the sessions do the work.
+- Edit a board row or `kpi-thresholds`. A KPI moves through a new row (step 3), and its bar is the human's.
 - Start sessions for board rows from a pass, or write an order telling one to. New work comes from the `fleet-dispatch` runner, which has the gates. Two exceptions: a session the human asked for by name, and the starved self-heal in `fleet-dispatch`, "Starved queue".
 
 ## Related

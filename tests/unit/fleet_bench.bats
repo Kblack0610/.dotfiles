@@ -161,6 +161,13 @@ agent_bench_kpi_limit{kpi="runners_bad"} 2
 # TYPE agent_bench_kpi_past gauge
 agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
+# HELP agent_bench_improve Improvement claims live now, and verdicts of each kind, from effect.jsonl.
+# TYPE agent_bench_improve gauge
+agent_bench_improve{state="live"} 0
+agent_bench_improve{state="improved"} 0
+agent_bench_improve{state="flat"} 0
+agent_bench_improve{state="regressed"} 0
+agent_bench_improve{state="unproven"} 0
 # HELP agent_chain_wip Items at each step of the work chain now, from the state files.
 # TYPE agent_chain_wip gauge
 agent_chain_wip{step="queued"} 0
@@ -705,13 +712,27 @@ case "$4" in
   list) cat "$B" ;;
   add) [ -z "$ADD_RC" ] || exit "$ADD_RC"
        k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
-       printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B" ;;
+       printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B"
+       printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
 esac
 NS
   chmod +x "$SANDBOX/bin/notes"
+  # the row and item record: `notes log --json` lines from $SANDBOX/log.jsonl
+  export BENCH_LOG_CMD=log-stub NOTES_LOG="$SANDBOX/log.jsonl"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q.args\ncat %q 2>/dev/null || true\n' "$NOTES_LOG" "$NOTES_LOG" > "$SANDBOX/bin/log-stub"
+  chmod +x "$SANDBOX/bin/log-stub"
 }
+
+# claim <subject> <kpi> <from> <bound> <threshold> <days ago>: one effect.jsonl claim line
+claim() {
+  mkdir -p "$FLEET_BENCH_DIR"
+  jq -cn --argjson t "$T0" --arg s "$1" --arg k "$2" --argjson f "$3" --arg b "$4" --argjson h "$5" --argjson d "$6" \
+    '{type: "claim", at: ($t - $d * 86400), kpi: $k, subject: $s, from: $f, bound: $b, threshold: $h}' >> "$FLEET_BENCH_DIR/effect.jsonl"
+}
+# closed <jq object, $t is T0 and $ago(d) an ISO time d days back>: one `notes log --json` line
+closed() { jq -cn --argjson t "$T0" "def ago(\$d): \$t - \$d * 86400 | todate; $1" >> "$NOTES_LOG"; }
 
 # out_row <project dir> <jq object, $t is T0>: one session-outcomes line
 out_row() { jq -cn --argjson t "$T0" "$2" >> "$BENCH_OUTCOMES_DIR/$1/2026-10.jsonl"; }
@@ -743,7 +764,7 @@ kpi_fixture() {
   assert_line '| cost_per_pr | 2 | 2 | - | - |'
 }
 
-@test "kpi: the comms KPIs come from the comms snapshot, and retro files the one past its threshold" {
+@test "kpi: the comms KPIs come from the comms snapshot, and improve names the one past its threshold" {
   kpi_setup
   printf '%s\n' buzzes_per_day_max=15 comms_pass_pct_min=60 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
@@ -753,15 +774,12 @@ kpi_fixture() {
   assert_line '| buzzes_per_day | 63.1 | 28.5 | max 15 | past |'
   assert_line '| comms_pass_pct | 61 | 40 | min 60 | ok |'
   assert_line '| rows_pass_pct | - | - | - | - |'
-  run "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
-  run grep -c 'check(kpi): buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #size/s #high' "$BOARD"
-  assert_output 1
-  run grep -c 'check(kpi): comms_pass_pct' "$BOARD"
-  assert_output 0
+  assert_equal "$(jq -r .kpi <<<"$output")" buzzes_per_day
 }
 
-@test "kpi: the judge KPIs come from judge-eval kpi, and retro files the one past its threshold" {
+@test "kpi: the judge KPIs come from judge-eval kpi, and improve names the one past its threshold" {
   kpi_setup
   printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_answered_pct_min=50 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
@@ -773,12 +791,9 @@ kpi_fixture() {
   assert_line '| ask_answered_pct | 52 | 0 | min 50 | ok |'
   assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
   assert_line '| ask_unclear_pct | - | - | - | - |'
-  run "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
-  run grep -c 'check(kpi): judge_precision past threshold' "$BOARD"
-  assert_output 1
-  run grep -c 'check(kpi): judge_errors\|check(kpi): ask_false_defer_pct' "$BOARD"
-  assert_output 0
+  assert_equal "$(jq -r .kpi <<<"$output")" judge_precision
 }
 
 @test "kpi --check: exits 1 on a KPI past its threshold only when its scope names it, and a scope matching none is an error" {
@@ -814,7 +829,7 @@ ask_row() {
     "$1" "$2" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "$5" >> "$ASKSALL"
 }
 
-@test "kpi: ask load counts human answers only, ask wait counts pending age, and retro files the one past its threshold" {
+@test "kpi: ask load counts human answers only, ask wait counts pending age, and improve names the one past its threshold" {
   kpi_setup
   printf '%s\n' human_answered_per_day_max=0.2 ask_wait_p90_min_max=10000 >> "$KPI_THRESHOLDS"
   local d=86400
@@ -833,17 +848,12 @@ ask_row() {
   run "$SUBJECT" kpi
   assert_line '| human_answered_per_day | 0.3 | 0.1 | max 0.2 | past |'
   assert_line '| ask_wait_p90_min | 60 | 60 | max 10000 | ok |'
-  run "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
-  run "$SUBJECT" retro
-  assert_success
-  run grep -c 'check(kpi): human_answered_per_day past threshold' "$BOARD"
-  assert_output 1
-  run grep -c 'check(kpi): ask_wait_p90_min' "$BOARD"
-  assert_output 0
+  assert_equal "$(jq -r .kpi <<<"$output")" human_answered_per_day
 }
 
-@test "kpi: a runner_score_ KPI shows from judge-eval or its threshold alone, and retro files it past the threshold" {
+@test "kpi: a runner_score_ KPI shows from judge-eval or its threshold alone, and improve names it past the threshold" {
   kpi_setup
   printf '%s\n' runner_score_inbox_plan_min=70 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
@@ -854,12 +864,9 @@ ask_row() {
   assert_line '| runner_score_inbox_triage | 0 | 12.5 | - | - |'
   assert_line '| runner_score_inbox_plan | 80 | - | min 70 | ok |'
   printf '%s\n' runner_score_inbox_triage_min=70 >> "$KPI_THRESHOLDS"
-  run "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
-  run grep -c 'check(kpi): runner_score_inbox_triage past threshold' "$BOARD"
-  assert_output 1
-  run grep -c 'check(kpi): runner_score_inbox_plan' "$BOARD"
-  assert_output 0
+  assert_equal "$(jq -r .kpi <<<"$output")" runner_score_inbox_triage
 }
 
 @test "kpi: an empty window and zero merged PRs print - and null, never an error" {
@@ -1294,15 +1301,14 @@ loop_fixture() {
   assert_failure 2
 }
 
-@test "kpi: loop_dark counts dark episodes still firing, and retro files it past loop_dark_max" {
+@test "kpi: loop_dark counts dark episodes still firing, and improve names it past loop_dark_max" {
   kpi_setup; loop_fixture
   echo loop_dark_max=0 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
   assert_line '| loop_dark (now) | 1 | - | max 0 | past |'
-  run "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
-  run grep -c 'check(kpi): loop_dark past threshold' "$BOARD"
-  assert_output 1
+  assert_equal "$(jq -r .kpi <<<"$output")" loop_dark
 }
 
 @test "kpi: no thresholds file leaves every status -" {
@@ -1535,59 +1541,183 @@ pipeline_fixture() {
   assert_line 'agent_bench_kpi_limit{kpi="chain_drift"} 0'
 }
 
-@test "retro adds exactly one row per KPI past its threshold, #high when more than 2x past" {
+@test "improve: the KPI furthest past its threshold, relative to it; a live claim's KPI is skipped; exit 1 at the cap or when none is past" {
   kpi_setup; kpi_fixture
+  run "$SUBJECT" improve --json
+  assert_success
+  assert_output '{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}'
+  run "$SUBJECT" improve
+  assert_output 'revert_rate 7d 0.25 past max 0.1'
+  claim ar-139 revert_rate 0.3 max 0.1 2
+  run "$SUBJECT" improve --json
+  [ "$(jq -r .kpi <<<"$output")" = interrupts_per_session ]
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 > "$KPI_THRESHOLDS"
+  : > "$FLEET_BENCH_DIR/effect.jsonl"
+  run "$SUBJECT" improve
+  assert_failure 1
+}
+
+@test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" improve file revert_rate 'fix(ci): retry flaky steps once'
+  assert_success
+  assert_output 'ar-92 claims revert_rate from 0.25'
+  run grep ' add ' "$NLOG"
+  assert_output 'ptask agent-runtime --agent add fix(ci): retry flaky steps once #kpi/revert_rate #size/s --detail check: kpi revert_rate from 0.25 (max 0.1), read 14d after the PR lands; kpi-thresholds is not edited'
+  run jq -c 'del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output '{"type":"claim","kpi":"revert_rate","subject":"ar-92","from":0.25,"bound":"max","threshold":0.1}'
+  # a size the text already carries is kept
+  run "$SUBJECT" improve file interrupts_per_session 'fix(brief): shorter #size/m'
+  assert_success
+  run grep -c '#size/m #kpi/interrupts_per_session --detail' "$NLOG"
+  assert_output 1
+  refute grep -q '#size/m #kpi/interrupts_per_session #size/s' "$NLOG"
+}
+
+@test "improve file: a claimed KPI, one not past, or a failed add writes no claim; an open twin exits 3 and says to claim it" {
+  kpi_setup; kpi_fixture
+  claim ar-139 revert_rate 0.3 max 0.1 2
+  run "$SUBJECT" improve file revert_rate 'another try'
+  assert_failure 1
+  assert_output --partial 'already claimed by ar-139'
+  run "$SUBJECT" improve file prs_per_session 'more PRs'
+  assert_failure 1
+  assert_output --partial 'not past its threshold (ok)'
+  ADD_RC=3 run "$SUBJECT" improve file interrupts_per_session 'shorter briefs'
+  assert_failure 3
+  assert_output --partial 'fleet-bench improve claim interrupts_per_session <its id>'
+  ADD_RC=1 run "$SUBJECT" improve file interrupts_per_session 'shorter briefs'
+  assert_failure 1
+  [ "$(wc -l < "$FLEET_BENCH_DIR/effect.jsonl")" -eq 1 ]
+}
+
+@test "improve claim: a row id or item:slug adopts a KPI with no board write; a bad subject exits 2, a live one is refused; list shows both" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" improve claim revert_rate ar-141
+  assert_success
+  assert_output 'ar-141 claims revert_rate from 0.25'
+  run "$SUBJECT" improve claim interrupts_per_session 'ar-1; rm -rf'
+  assert_failure 2
+  run "$SUBJECT" improve claim interrupts_per_session ar-141
+  assert_failure 1
+  assert_output --partial 'ar-141 already claims revert_rate'
+  run "$SUBJECT" improve claim interrupts_per_session item:judge-stage-3
+  assert_success
+  [ ! -e "$NLOG" ]
+  run "$SUBJECT" improve list
+  assert_line 'live claims: 2 of 3'
+  assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
+  assert_line '  item:judge-stage-3 interrupts_per_session from 2 (max 1), 0d'
+}
+
+# check_fixture: one claim of each kind, closed 15 days ago unless said
+check_fixture() {
+  claim ar-1 revert_rate 0.5 max 0.1 20                        # 0.5 -> 0.25: improved
+  claim ar-2 interrupts_per_session 2 max 1 20                  # 2 -> 2: flat
+  claim ar-3 prs_per_session 8 min 1 20                         # 8 -> 4: regressed
+  claim ar-4 ci_red_per_pr 3 max 5 20                           # dropped: unproven
+  claim ar-5 revert_rate 0.5 max 0.1 20                         # merged 3 days ago: still live
+  claim ar-6 cost_per_pr 2 max 1 20                             # open: still live
+  claim item:judge-stage-3 interrupts_per_session 4 max 1 30    # item done with a PR: 4 -> 2 improved
+  closed '{id: "ar-1", action: "done", why: "pr:981 commit:abc", ts: ago(15)}'
+  closed '{id: "ar-2", action: "done", why: "pr:982 commit:abd", ts: ago(15)}'
+  closed '{id: "ar-3", action: "done", why: "pr:983 commit:abe", ts: ago(15)}'
+  closed '{id: "ar-4", action: "dropped", ts: ago(15)}'
+  closed '{id: "ar-5", action: "done", why: "pr:985", ts: ago(3)}'
+  closed '{id: "ar-6", action: "added", ts: ago(20)}'
+  # notes writes its local time with nanoseconds and an offset
+  closed '{item: "judge-stage-3", action: "item-moved", to: "done", pr: 990, ts: (ago(16) | sub("Z$"; "") | strptime("%Y-%m-%dT%H:%M:%S") | mktime - 28800 | strftime("%Y-%m-%dT%H:%M:%S.270291638-08:00"))}'
+}
+
+@test "retro check: a verdict per claim closed 14d ago from the 7d value against its baseline; dropped is unproven; under 14d or open stays live" {
+  kpi_setup; kpi_fixture; check_fixture
   run "$SUBJECT" retro
   assert_success
-  run cut -f4 "$BOARD"
-  assert_output "$(printf '%s\n' '- [ ] other task #low' \
-    '- [ ] check(kpi): revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #size/s #high' \
-    '- [ ] check(kpi): interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #size/s #low')"
-  run grep -c ' add ' "$NLOG"
-  assert_output 2
-  run grep -c -e '--to' "$NLOG"
-  assert_output 0
+  assert_output --partial '5 checked: 2 improved, 1 flat, 1 regressed, 1 unproven'
+  run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict, .from, .after, .pr]] | sort' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output '[["ar-1","improved",0.5,0.25,"981"],["ar-2","flat",2,2,"982"],["ar-3","regressed",8,4,"983"],["ar-4","unproven",3,null,null],["item:judge-stage-3","improved",4,2,990]]'
+  run "$SUBJECT" improve list --json
+  run jq -c '[.live[].subject] | sort' <<<"$output"
+  assert_output '["ar-5","ar-6","ar-92"]'
   run outcome
   assert_output --partial WORKED
+  # the log is read back as far as the oldest live claim, and no further
+  run cat "$NOTES_LOG.args"
+  assert_output '--days 32'
 }
 
-@test "a second retro edits the row in place instead of adding a duplicate; unchanged numbers write nothing" {
-  kpi_setup; kpi_fixture
+@test "retro check: regressed files one #high revert row and claims it from the new value; a rerun files nothing" {
+  kpi_setup; kpi_fixture; check_fixture
   "$SUBJECT" retro
-  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 3600), prs_merged: 4, reverted_7d: 2, cost_usd: 8, corrections: {interrupts: 2}}'
+  run grep ' add ' "$NLOG"
+  assert_output 'ptask agent-runtime --agent add fix(kpi): revert 983, prs_per_session went from 8 to 4 #kpi/prs_per_session #high #size/s --detail check: kpi prs_per_session from 4 (min 1), read 14d after the PR lands; kpi-thresholds is not edited'
+  run jq -c 'select(.subject == "ar-92") | del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output '{"type":"claim","kpi":"prs_per_session","subject":"ar-92","from":4,"bound":"min","threshold":1}'
   : > "$NLOG"
   run "$SUBJECT" retro
   assert_success
-  [ "$(wc -l < "$BOARD")" -eq 3 ]
-  run grep -c 'check(kpi): revert_rate past threshold' "$BOARD"
-  assert_output 1
-  run grep 'revert_rate' "$BOARD"
-  assert_output --partial '7d 0.5 (28d 0.4, max 0.1)'
-  run cat "$NLOG"
-  assert_line 'ptask agent-runtime --agent edit check(kpi): revert_rate past threshold --text check(kpi): revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1) #size/s'
-  refute_output --partial ' add '
-  refute_output --partial 'interrupts_per_session'
-  run head -1 "$BOARD"
-  assert_output "$(printf 'board.md\t1\tother task\t- [ ] other task #low')"
-  : > "$NLOG"
-  run "$SUBJECT" retro
-  assert_success
-  run grep -cv ' list$' "$NLOG"
-  assert_output 0
+  assert_output --partial '3 improvement claims not yet due'
+  refute grep -q ' add ' "$NLOG"
   run outcome
   assert_output --partial NOOP
 }
 
-@test "retro reads an add that exits 3 (an open near-dup) as filed, and any other failure as FAILED" {
+@test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
-  ADD_RC=3 run "$SUBJECT" retro
+  claim ar-2 interrupts_per_session 2 max 1 20
+  claim ar-6 revert_rate 0.5 max 0.1 20
+  closed '{id: "ar-2", action: "done", why: "pr:982", ts: ago(15)}'
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  "$SUBJECT" retro
+  run "$SUBJECT" improve --json
   assert_success
+  assert_output '{"kpi":"interrupts_per_session","value":2,"threshold":1,"bound":"max","last":{"subject":"ar-2","verdict":"flat"}}'
+}
+
+@test "retro check: an edited kpi-thresholds gives the same verdicts, since it compares values, not status" {
+  kpi_setup; kpi_fixture; check_fixture
+  "$SUBJECT" retro
+  strict=$(jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict]] | sort' "$FLEET_BENCH_DIR/effect.jsonl")
+  : > "$FLEET_BENCH_DIR/effect.jsonl"; : > "$NOTES_LOG"
+  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 prs_per_session_min=0 > "$KPI_THRESHOLDS"
+  check_fixture
+  "$SUBJECT" retro
+  run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict]] | sort' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output "$strict"
+  assert_output --partial '["ar-2","flat"]'
+}
+
+@test "retro files no KPI row while KPIs are past their thresholds, and a failed log read is FAILED" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" retro
+  assert_success
+  assert_output --partial 'no live improvement claim'
+  refute grep -q ' add \| edit ' "$NLOG"
+  [ "$(wc -l < "$BOARD")" -eq 1 ]
   run outcome
   assert_output --partial NOOP
-  ADD_RC=1 run "$SUBJECT" retro
+  claim ar-6 revert_rate 0.5 max 0.1 20
+  BENCH_LOG_CMD=false run "$SUBJECT" retro
   assert_failure
   run outcome
-  assert_output --partial FAILED
+  assert_output --partial 'FAILED'
+}
+
+@test "improve: the gauge counts live claims and each verdict kind" {
+  kpi_setup; kpi_fixture; check_fixture
+  "$SUBJECT" retro
+  source "$SUBJECT"
+  run bench_prom "$T0"
+  assert_success
+  assert_line 'agent_bench_improve{state="live"} 3'
+  assert_line 'agent_bench_improve{state="improved"} 2'
+  assert_line 'agent_bench_improve{state="flat"} 1'
+  assert_line 'agent_bench_improve{state="regressed"} 1'
+  assert_line 'agent_bench_improve{state="unproven"} 1'
 }
 
 @test "retro keeps one guard row per lesson whose sig recurred in 2+ sessions, refreshed in place; one session is not enough" {
@@ -1615,17 +1745,6 @@ pipeline_fixture() {
   run grep -c ' edit check(lesson): guard ' "$NLOG"
   assert_output 1
   refute grep -q ' add ' "$NLOG"
-}
-
-@test "retro with no thresholds file is NOOP and never calls notes" {
-  kpi_setup; kpi_fixture
-  rm "$KPI_THRESHOLDS"
-  run "$SUBJECT" retro
-  assert_success
-  assert_output --partial 'no KPI thresholds'
-  [ ! -e "$NLOG" ]
-  run outcome
-  assert_output --partial NOOP
 }
 
 @test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models and the sessions" {
