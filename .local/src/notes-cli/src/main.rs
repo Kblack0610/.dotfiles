@@ -327,7 +327,7 @@ enum Cmd {
         /// With --stats or --roadmap: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
         #[arg(long)]
         json: bool,
-        /// Print a project's maturity stage; with --set, declare it.
+        /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
         /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,
