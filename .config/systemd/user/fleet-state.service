@@ -7,5 +7,8 @@ Type=oneshot
 # minute this keeps is what `fleet-dispatch restore` reopens from.
 ExecStartPre=-%h/.local/bin/fleet-dispatch record
 ExecStart=%h/.local/bin/fleet-sessions tick
+# Then one page for what is new on hub Home's NEEDS YOU list, under the bar and cap in
+# channels.toml [pager.needs]. Allowed to fail: a missed page leaves the list on Home and in the journal.
+ExecStartPost=-%h/.local/bin/hub needs --page
 StandardOutput=null
 TimeoutStartSec=120

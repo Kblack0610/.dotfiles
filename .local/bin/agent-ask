@@ -462,8 +462,8 @@ cmd_post() {
 
   # A session the human is attached to asks in the conversation AND here: the file is what every
   # board and the shepherd read, and the session shows the same text, rendered from the file, in
-  # its own pane. No page per ask: the pane already has it, the shepherd's "N need you" pages
-  # pending asks, and the briefing pages headless ones. A page per ask was 53 a day.
+  # its own pane. No page per ask: the pane already has it, and `hub needs --page` pages asks new
+  # above the bar, grouped and capped by channels.toml [pager.needs]. A page per ask was 53 a day.
   if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
     { render_ask "$file"
       echo "End your turn on this question and its numbered options as written above, never on 'filed as ask $id'."

@@ -26,12 +26,15 @@ function needKind(n) {
   return "red";
 }
 
+// What a ranked row holds (hub_core::home::Score::holds), the reason it sits where it does.
+const holds = (n) => (n.score && n.score.holds ? `holds ${esc(n.score.holds)}` : "");
+
 // A row with no answer card: what it is, how long it has waited, and a way to it.
 function needCard(n) {
   const k = n.need;
   const what = n.kind === "nightly" ? "nightly failed" : n.kind === "red" ? "red now" : n.kind === "queue" ? "queue item" : "";
   const id = [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
-  const band = needBand(k, [esc(n.project), what, id, n.since ? ago(n.since) : ""]);
+  const band = needBand(k, [esc(n.project), what, id, n.since ? ago(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
     : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
@@ -42,7 +45,7 @@ function needCard(n) {
 function needHtml(n) {
   if (n.kind === "ask") {
     const a = st.asks.find((x) => x.id === n.id);
-    if (a) return askCard(a);
+    if (a) return askCard(a, holds(n));
   }
   if (n.kind === "session") {
     const a = st.agents.find((x) => x.target === n.target && x.question);
@@ -51,13 +54,9 @@ function needHtml(n) {
   return needCard(n);
 }
 
-// Needs you in NEED_ORDER (plans first: each one holds a session), the server's order kept
-// within a kind, each row carrying its kind as `need`; and one chip per kind with its count,
-// so the list reads at a glance.
-function needsSorted(needs) {
-  const at = (n) => NEED_ORDER.indexOf(n.need);
-  return needs.map((n, i) => [{ ...n, need: needKind(n) }, i]).sort((x, y) => at(x[0]) - at(y[0]) || x[1] - y[1]).map(([n]) => n);
-}
+// Needs you in the server's order (hub_core::home::needs ranks it; nothing here re-sorts), each
+// row carrying its kind as `need`; and one chip per kind with its count, so the list reads at a
+// glance.
 function needsTally(needs) {
   const c = {};
   for (const n of needs) c[n.need] = (c[n.need] || 0) + 1;
@@ -86,13 +85,13 @@ function drawHome() {
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
   const sec = (title, n, body) => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}</h2>${body}`;
   const errs = [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
-  // A long list shows its first `shown` rows; the rest fold under "+N older" (dashboards: capped lists).
+  // A long list shows its first `shown` rows; the rest fold under "+N more" (dashboards: capped lists).
   const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
     rows.slice(0, h.shown).map(card).join("") +
     (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  const sorted = needsSorted(h.needs);
-  const needs = (sorted.length ? `<div class="ntally">${needsTally(sorted)}</div>` : "") +
-    capped("home-needs", sorted, needHtml, "more", "Nothing waits on you.");
+  const rows = h.needs.map((n) => ({ ...n, need: needKind(n) }));
+  const needs = (rows.length ? `<div class="ntally">${needsTally(rows)}</div>` : "") +
+    capped("home-needs", rows, needHtml, "more", "Nothing waits on you.");
   const running = capped("home-running", h.running, runningCard, "more", "Nothing running from the queue.");
   const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
   // The two summary lines lead, so a long Needs list never buries them.

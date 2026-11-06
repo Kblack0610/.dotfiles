@@ -121,7 +121,7 @@ that file. When the session leaves a real follow-up that should come back up on 
 put it on the project board, picking the lane by who has to do it:
 
 ```bash
-notes ptask <project> --agent add "<the next action>"   # an agent can do it: the default
+notes ptask <project> --agent add "<type(area): the next action> #size/s"   # an agent can do it: the default
 notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 

@@ -64,21 +64,35 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             p.head(),
         ));
         let t = Table {
-            header: vec!["KIND", "PROJECT", "AGE", "WHAT", "ID"],
+            header: vec!["KIND", "PROJECT", "AGE", "HOLDS", "WHAT", "ID"],
             rows: h
                 .needs
                 .iter()
                 .take(h.shown)
                 .map(|n| {
-                    let style = match n.kind {
-                        Kind::Nightly | Kind::Red => p.bad(),
-                        _ => ratatui::style::Style::new(),
+                    // A row the judge said a machine can answer is dim and marked `~` (it ranks
+                    // below every row only the human can act on).
+                    let machine = n.score.as_ref().is_some_and(|s| !s.human);
+                    let (mark, style) = match n.kind {
+                        Kind::Nightly | Kind::Red => ("", p.bad()),
+                        _ if machine => ("~", p.dim()),
+                        _ => ("", ratatui::style::Style::new()),
+                    };
+                    let holds = match &n.score {
+                        Some(s) if !s.holds.is_empty() => s.holds.clone(),
+                        Some(_) => "-".into(),
+                        None => "".into(),
                     };
                     vec![
-                        cell(kind(n.kind), style),
+                        cell(format!("{mark}{}", kind(n.kind)), style),
                         n.project.clone().into(),
                         age(n.since, now).into(),
-                        n.text.clone().into(),
+                        holds.into(),
+                        if machine {
+                            cell(n.text.clone(), p.dim())
+                        } else {
+                            n.text.clone().into()
+                        },
                         // A red or nightly row is its own id: say it once.
                         if n.id == n.text {
                             "".into()
@@ -88,15 +102,16 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     ]
                 })
                 .collect(),
-            keep: vec![0, 3, 1, 2, 4],
-            flex: Some(3),
+            // The rank's two factors (AGE, HOLDS) outlast PROJECT as the page narrows.
+            keep: vec![0, 4, 2, 3, 1, 5],
+            flex: Some(4),
             flexmin: 20,
             flexkeep: true,
             right: vec![2],
-            cap: vec![(1, 22), (4, 34)],
+            cap: vec![(1, 22), (3, 20), (5, 34)],
         };
         out.extend(t.fit(w, p.dim()));
-        more(&mut out, h.needs.len(), h.shown, "older", p);
+        more(&mut out, h.needs.len(), h.shown, "more", p);
     }
 
     out.push(Line::raw(""));
@@ -192,7 +207,7 @@ pub fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::home::{Chip, Need, Number};
+    use hub_core::home::{Chip, Need, Number, Score};
 
     fn home() -> Home {
         Home {
@@ -203,6 +218,8 @@ mod tests {
                 id: "a1".into(),
                 target: None,
                 since: Some(1_000 - 120),
+                recommend: None,
+                score: Some(Score::new(true, true, 3, 0, 2)),
             }],
             numbers: vec![Number {
                 label: "queue",
@@ -270,6 +287,23 @@ mod tests {
         h.needs = (0..h.shown + 3).map(|_| one.clone()).collect();
         let out = text(&h);
         assert_eq!(out.matches("Which lobby?").count(), h.shown, "{out}");
-        assert!(out.contains("+3 older"), "{out}");
+        assert!(out.contains("+3 more"), "{out}");
+    }
+
+    #[test]
+    fn a_row_says_what_it_holds_and_a_machine_answerable_one_is_marked() {
+        let mut h = home();
+        let mut auto = h.needs[0].clone();
+        auto.id = "b2".into();
+        auto.text = "Keep the alias?".into();
+        auto.score = Some(Score::new(false, false, 0, 0, 2));
+        h.needs.push(auto);
+        let out = text(&h);
+        assert!(out.contains("HOLDS"), "{out}");
+        assert!(out.contains("session, 3 phases"), "{out}");
+        let line = out.lines().find(|l| l.contains("Keep the alias?")).unwrap();
+        assert!(line.trim_start().starts_with("~ask") && line.contains(" - "), "{out}");
+        // The server's order is kept: the human's row first.
+        assert!(out.find("Which lobby?") < out.find("Keep the alias?"), "{out}");
     }
 }

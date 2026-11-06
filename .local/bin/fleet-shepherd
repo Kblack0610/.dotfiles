@@ -542,8 +542,9 @@ settle() {
   if [ "${working:-1}" -gt 0 ]; then rm -f "$LEDGER/.settled"; return 0; fi
   [ -e "$LEDGER/.settled" ] && return 0
   : > "$LEDGER/.settled"
+  # The count is Home's NEEDS YOU list (hub_core::home::needs), less what a machine can answer.
   local n
-  n="$(jq '[(.sessions // [])[] | select(.bucket == "NEEDS")] | length' "$STATE_FILE")"
+  n="$(hub needs --json | jq '[.needs[] | select(.score.human)] | length')" || n="?"
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 

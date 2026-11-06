@@ -440,10 +440,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure 2
 }
 
-@test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
-  f="$(item queued typed)"
+@test "add --running records the Claude session, a queued add does not; the row grammar's type and area; claim adds a session once" {
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
+  f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  [ -z "$(field "$(item queued later)" sessions)" ]
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
   "$AQ" add --project game --slug untyped "Menu: pick sides"
@@ -930,6 +932,7 @@ EOF
 # story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
 # every call lands in calls.log; `ptask ... add` prints its row with id lv-9 and exits 0, or, with
 # story.rc set, prints story.out on stderr and exits story.rc (3 is ptask's "already open").
+# `ptask ... propose` prints propose.out, else its words unchanged; propose.rc makes it refuse.
 story_notes() {
   jq '.trackers.level.lab = "bnb" | .trackers.arena.lab = "bnb"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json"
   mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
@@ -937,6 +940,10 @@ story_notes() {
 #!/usr/bin/env bash
 printf 'notes %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
 case " $* " in
+*' propose '*)
+  if [ -e "$NOTES_FIXTURE/propose.rc" ]; then echo "error: unrecognized subcommand 'propose'" >&2; exit 2; fi
+  if [ -e "$NOTES_FIXTURE/propose.out" ]; then cat "$NOTES_FIXTURE/propose.out"; else printf '%s\n' "${@: -1}"; fi
+  exit 0 ;;
 *' add '*)
   rc=$(cat "$NOTES_FIXTURE/story.rc" 2>/dev/null || echo 0)
   if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
@@ -952,8 +959,9 @@ STUB
   assert_success
   assert_line "story lv-9 on the level agent board, under lv-3"
   run grep '^notes' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 0 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
-  assert_line --index 1 'notes --profile bnb ptask level --agent start lv-9'
+  assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
+  assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
   f="$(item queued menus)"
   [ "$(field "$f" project)" = level ]
   [ "$(field "$f" row)" = level:lv-9 ]
@@ -965,9 +973,12 @@ STUB
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
   story_notes
   printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"
+  echo 'feat(level): lv P1: one' > "$NOTES_FIXTURE/propose.out"
   run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
   assert_success
-  run grep -c -- '--agent add -- lv P1: P1 one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent propose -- lv P1: P1 one$' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run grep -c -- '--agent add -- feat(level): lv P1: one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -975,6 +986,7 @@ STUB
 @test "an epic of another project is not linked, and a long title becomes the row's detail" {
   story_notes
   long="fix(menu): $(printf 'word%.0s ' {1..20})end"
+  echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "--agent add --detail $long -- fix(menu): word"
@@ -995,6 +1007,17 @@ STUB
   "$AQ" add --project level --slug taken "feat(menu): taken"
   [ "$(field "$(item queued taken)" row)" = level:lv-5 ]
   run grep -c -- '--agent start lv-5' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "a notes that cannot type the words files no row and never stops the add" {
+  story_notes
+  touch "$NOTES_FIXTURE/propose.rc"
+  run "$AQ" add --project level --slug no-verb "x"
+  assert_success
+  assert_output --partial "no story row filed on level: error: unrecognized subcommand 'propose'"
+  [ -z "$(field "$(item queued no-verb)" row)" ]
+  run grep -c -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
 

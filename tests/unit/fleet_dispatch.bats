@@ -818,6 +818,20 @@ game_ready() {
   grep -qF -- '- [/] the row #low' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
 }
 
+@test "fleet-dispatch promote --tags puts the tags on the item; without it the item has none" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
+  row game human 'fix two' '- [ ] fix two #low <!-- id:gm-6 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --tags night --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_success
+  assert_equal "$(qfield "$(qitem queued gm-5)" tags)" night
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --raw '- [ ] fix two #low <!-- id:gm-6 -->'
+  assert_success
+  assert_equal "$(qfield "$(qitem queued gm-6)" tags)" ""
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --tags
+  assert_failure 2
+}
+
 @test "fill --dry-run keys a row by its id and shows the priority it would queue at" {
   project game beta "$SANDBOX/repos/game"
   row game human gm-5 "- [ ] fix crash on load #low $T <!-- id:gm-5 -->"
@@ -1277,7 +1291,7 @@ held_game_app_row() {
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1)'
+  assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
 }
 
@@ -1321,6 +1335,21 @@ held_game_app_row() {
   assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
   DISPATCH_MAX_LIVE=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .max_live <<<"$output")" 2
+}
+
+@test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  two_items
+  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
+  mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
+  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t2.1\t24'
+  # Night items too, and into names of their own: the exported DISPATCH_* a child reads stay the conf's.
+  export DISPATCH_PER_PASS=3 DISPATCH_NIGHT_MAX=6
+  source "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_equal "$PER_PASS $NIGHT_MAX $DISPATCH_PER_PASS $DISPATCH_NIGHT_MAX" "6 12 3 6"
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {

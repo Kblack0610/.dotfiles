@@ -405,7 +405,7 @@ project_of_cwd() {
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 file_story() {
-  local project="$1" text="$2" prio="$3" size=s of="" lab code out rc=0 id detail=()
+  local project="$1" text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=()
   [ "$4" = heavy ] && size=m
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r lab code < <(jq -r --arg p "$project" \
@@ -413,14 +413,14 @@ file_story() {
   [ -n "$lab" ] && [ -n "$code" ] || return 0
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
   [ "${5%-*}" = "$code" ] && of=" #of/$5"
-  # The row's words: no markers or #tags of the task's own; past the board's 80, the whole line is its detail.
+  # The row's words: no markers or #tags of the task's own. The board refuses untyped text, so the
+  # row is `notes`'s typed form of them, cut to the board's 80; past that the whole line is its detail.
   text="$(sed -E 's/<!--[^>]*-->//g; s/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$text")"
   [ -n "$text" ] || return 0
-  if [ "${#text}" -gt 80 ]; then
-    detail=(--detail "$text")
-    text="${text:0:80}"; [[ "$text" != *' '* ]] || text="${text% *}"
-  fi
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" -- "$text #size/$size #$prio$of" 2>&1)" || rc=$?
+  row="$(notes --profile "$lab" ptask "$project" --agent propose -- "$text" 2>&1)" ||
+    { echo "agent-queue: no story row filed on $project: ${row##*$'\n'}" >&2; return 0; }
+  [ "${#text}" -le 80 ] || detail=(--detail "$text")
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" -- "$row #size/$size #$prio$of" 2>&1)" || rc=$?
   id="$(sed -nE 's/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/\1/p' <<<"$out" | head -1)"
   case "$rc" in
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
@@ -506,11 +506,13 @@ cmd_add() {
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
   # `type(area): title`, the board's row grammar, on the task's first line or its --title.
-  local ctype='' carea='' sid
+  local ctype='' carea='' sid=''
   if [[ "$(head -1 <<<"${title:-$text}")" =~ ^([a-z]+)\(([A-Za-z0-9_./-]+)\)!?:\  ]]; then
     ctype="${BASH_REMATCH[1]}" carea="${BASH_REMATCH[2]}"
   fi
-  sid="$(claude_sid)" || sid=
+  # Only a session taking the item works it. One queueing it for later did not, and outcomes
+  # would charge that session's cost and revert count to this item.
+  [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story=''
   case "$from" in board:*) ;; *) story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;; esac
   mkdir -p "$AQ_DIR/$state"

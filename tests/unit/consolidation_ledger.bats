@@ -17,7 +17,7 @@ setup() {
   export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_TIMER_DIR="$SANDBOX/timers"
   export LEDGER_SRC="$SANDBOX/src" LEDGER_BASELINE="$SANDBOX/baseline"
   export LEDGER_BOARDS="$SANDBOX/board.md"
-  export BENCH_ASKS_CMD=asks-stub BENCH_NOW=1793160000
+  export BENCH_NEEDS_CMD=needs-stub BENCH_NOW=1793160000
   mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_TIMER_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
   for n in alpha beta; do
     printf 'NAME=%s\nKIND=oneshot\n' "$n" > "$LEDGER_CONF_DIR/$n.conf"
@@ -26,8 +26,15 @@ setup() {
   printf 'exec claude "${flags[@]}" "$@"\n' > "$LEDGER_SRC/harness.sh"
   printf 'runners=2\ntimers=2\nlaunches_direct=0\n' > "$LEDGER_BASELINE"
   # One ask filed 20 days before BENCH_NOW, one filed 1 day before.
-  printf '#!/usr/bin/env bash\nprintf "old\\tp\\t\\tpending\\tgate\\tq\\ta|b\\t\\t\\t\\t\\t2026-10-07T00:00:00+0000\\t\\nnew\\tp\\t\\tpending\\tgate\\tq\\ta|b\\t\\t\\t\\t\\t2026-10-26T00:00:00+0000\\t\\n"\n' > "$SANDBOX/bin/asks-stub"
-  chmod +x "$SANDBOX/bin/asks-stub"
+  # hub needs --json: two asks, 20 days and one day old, and a session row that is no ask
+  cat > "$SANDBOX/bin/needs-stub" <<'NS'
+#!/usr/bin/env bash
+echo '{"errors": [], "needs": [
+  {"kind": "ask", "id": "old", "project": "p", "text": "q", "score": {"session": false, "phases": 0, "holds": "", "age_min": 28800}},
+  {"kind": "session", "id": "lab/p:1", "project": "p", "text": "s", "score": {"session": true, "phases": 0, "holds": "session", "age_min": 60}},
+  {"kind": "ask", "id": "new", "project": "p", "text": "q", "score": {"session": false, "phases": 0, "holds": "", "age_min": 1440}}]}'
+NS
+  chmod +x "$SANDBOX/bin/needs-stub"
   printf '%s\n' '- [ ] open one' '- [/] in progress' '- [x] done one' > "$LEDGER_BOARDS"
 }
 
