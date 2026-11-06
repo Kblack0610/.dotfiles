@@ -21,7 +21,7 @@ Super+Alt+R sends speech to a Claude session that you are not looking at, or sta
    - Last come the `new session in <project>` rows. Each one queues the text as an agent-queue item and starts it with `fleet-dispatch start --item`.
 4. A popup says what happened. Esc sends nothing, and the text stays on the clipboard.
 
-gungan records the source named by `GUNGAN_SOURCE` in `~/.config/gungan/config` (here the Brio 101 webcam mic), not the system default, because audio work moves the default to an instrument input.
+gungan records the source named by `GUNGAN_SOURCE` in `~/.config/gungan/config`, not the system default, because audio work moves the default to an instrument input.
 
 Scripts send through the same path: `agent-voice send --to tmux:hub/dotfiles:3 "text"`, `--to pane:hub/%77`, or `--to new:dotfiles`. Typing goes through `agent-panel send` behind the one-pane guard in `.local/lib/agent-pane.sh`, which `agent-request send --session` uses too.
 
@@ -33,6 +33,6 @@ Scripts send through the same path: `agent-voice send --to tmux:hub/dotfiles:3 "
 | "unknown flag --print" in gungan.log | The main checkout's gungan submodule is older than gungan-speak #5 | `git -C ~/.dotfiles submodule update .local/src/gungan` |
 | "Voice: not sent ... in a dialog" | The session showed a prompt between the pick and the send | Answer the dialog, then paste the text from the clipboard |
 | "Voice: not submitted" | The pane did not take the Enter | Press Enter in that pane; the text is in its input box |
-| Every take is "nothing heard" | gungan is recording a silent source | `wpctl status` lists the sources; set `GUNGAN_SOURCE` in `~/.config/gungan/config` to the mic, and check its volume (`wpctl set-volume <id> 0.8`) |
+| Every take is "nothing heard" | gungan is recording a silent source | `wpctl status` lists the sources; set `GUNGAN_SOURCE` in `~/.config/gungan/config` to the mic, and check its volume (`wpctl set-volume <id> 0.7`; at 1.0 loud speech clips) |
 | No red mic on the bar during a take | Waybar was started before `custom/gungan` existed | `systemctl --user restart waybar` |
 | The bind does nothing | Hyprland has not reloaded the config | `hyprctl reload` |
