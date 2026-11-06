@@ -522,7 +522,7 @@ function fixesSection() {
 function renderInfra() {
   const el = $("infra-main"), tail = $("infra-tail");
   const d = ist.data;
-  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; tail.innerHTML = ""; return; }
+  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? fixesSection() : ""); tail.innerHTML = ""; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
   if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${fixesSection()}`; tail.innerHTML = ""; seekSection(); return; }

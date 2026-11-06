@@ -33,6 +33,9 @@ use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
 /// evaluate every 30-60s anyway.
 pub const PROM_REFRESH: Duration = Duration::from_secs(60);
+/// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
+/// Red fixes only this often; entering Infra and `r` still read it at once.
+pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -343,6 +346,8 @@ pub struct App {
     forecast_read: Read,
     ranked_read: Read,
     reds_read: Read,
+    /// When the last Red fixes read finished, for `REDS_REFRESH`.
+    reds_at: Option<std::time::Instant>,
     actions_read: Read,
     fleet_read: Read,
     pipeline_read: Read,
@@ -417,6 +422,7 @@ impl App {
             forecast_read: Read::default(),
             ranked_read: Read::default(),
             reds_read: Read::default(),
+            reds_at: None,
             actions_read: Read::default(),
             fleet_read: Read::default(),
             pipeline_read: Read::default(),
@@ -490,7 +496,7 @@ impl App {
     }
 
     /// fleet-bench reds writes no file to watch, so Infra reads it on entering, on `r` and on
-    /// the tick while it is shown, with Prometheus.
+    /// the tick while it is shown, at most every `REDS_REFRESH`.
     pub fn read_reds(&mut self) {
         if self.reds_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -844,7 +850,9 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
-                if self.tab == Tab::Infra {
+                if self.tab == Tab::Infra
+                    && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
+                {
                     self.read_reds();
                 }
                 // With no file watch, the board files are only read here.
@@ -908,7 +916,8 @@ impl App {
             }
             Msg::Reds(r) => {
                 self.reds = Some(r);
-                if self.reds_read.done() {
+                self.reds_at = Some(std::time::Instant::now());
+                if self.reds_read.done() && self.tab == Tab::Infra {
                     self.read_reds();
                 }
             }
@@ -3306,6 +3315,25 @@ mod tests {
         assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
         assert!(at("RED FIXES") < at("MACHINE "), "{s}");
         assert!(s.contains("reds: cannot read the queue"), "{s}");
+    }
+
+    #[test]
+    fn the_tick_rereads_red_fixes_only_after_reds_refresh_and_r_reads_at_once() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Infra, tx);
+        a.handle(Msg::Reds(Err("x".into())));
+        assert!(!a.reds_read.busy);
+        // A fresh answer: the tick leaves it alone (one read is about 2s of fleet-bench).
+        a.handle(Msg::Tick);
+        assert!(!a.reds_read.busy, "the tick re-read a fresh answer");
+        // r always reads.
+        a.handle(key('r'));
+        assert!(a.reds_read.busy, "r did not read red fixes");
+        a.reds_read.done();
+        // An answer older than REDS_REFRESH is re-read on the tick.
+        a.reds_at = std::time::Instant::now().checked_sub(REDS_REFRESH);
+        a.handle(Msg::Tick);
+        assert!(a.reds_read.busy, "the tick did not re-read a stale answer");
     }
 
     #[test]

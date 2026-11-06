@@ -90,11 +90,17 @@ impl Red {
     }
 
     /// How long ago it was queued, as `text::age` words; `-` when the time does not parse.
-    pub fn age(&self, now: i64) -> String {
+    /// When the fix was queued, as epoch seconds.
+    pub fn queued_at(&self) -> Option<i64> {
         self.queued
             .as_deref()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map_or("-".into(), |t| crate::text::age(now - t.timestamp()))
+            .map(|t| t.timestamp())
+    }
+
+    pub fn age(&self, now: i64) -> String {
+        self.queued_at()
+            .map_or("-".into(), |t| crate::text::age(now - t))
     }
 
     fn rank(&self) -> usize {
@@ -143,8 +149,14 @@ pub fn split(rows: Vec<Red>) -> Reds {
             r
         })
         .partition(Red::open);
-    open.sort_by(|a, b| a.rank().cmp(&b.rank()).then(a.queued.cmp(&b.queued)));
-    settled.sort_by(|a, b| b.queued.cmp(&a.queued));
+    // By the instant queued, oldest first among open and newest first among settled; a row
+    // with no readable time goes last in both, never ahead of a dated one.
+    let last = |r: &Red| (r.queued_at().is_none(), r.queued_at().unwrap_or_default());
+    open.sort_by_key(|r| (r.rank(), last(r)));
+    settled.sort_by_key(|r| {
+        let (none, t) = last(r);
+        (none, std::cmp::Reverse(t))
+    });
     let summary = summary(&open, &settled);
     Reds {
         open,

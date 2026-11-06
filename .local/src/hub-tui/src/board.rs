@@ -1103,9 +1103,16 @@ pub fn fixes(
             "needs merge" => p.warn(),
             _ => Style::default(),
         };
-        let pr =
-            f.pr.as_deref()
-                .map_or(String::new(), |n| format!("  PR {n}"));
+        // The number only: a URL or `owner/repo#N` would push the age off a narrow line.
+        let pr = f.pr.as_deref().map_or(String::new(), |n| {
+            let n = n.trim_end_matches('/');
+            let tail = n.rsplit(['#', '/']).next().unwrap_or(n);
+            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+                format!("  #{tail}")
+            } else {
+                format!("  PR {n}")
+            }
+        });
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("  {:<11}", f.outcome.to_uppercase()), style),
@@ -1555,10 +1562,7 @@ pub(crate) mod tests {
             lines[0],
             "RED FIXES  2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m"
         );
-        assert_eq!(
-            lines[1],
-            "  CAME BACK    runner dream  ar-3  PR Kblack0610/.dotfiles#1170  24h"
-        );
+        assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
         assert_eq!(
             lines[2],
             "  QUEUED       watch playground-nightly  ar-2  1h"
