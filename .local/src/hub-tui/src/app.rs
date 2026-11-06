@@ -200,6 +200,8 @@ pub enum Msg {
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
+    /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
+    Reds(Result<hub_core::reds::Reds, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
@@ -268,6 +270,8 @@ pub struct App {
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
+    /// Infra's Red fixes section; None until the first read.
+    pub reds: Option<Result<hub_core::reds::Reds, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
@@ -338,6 +342,7 @@ pub struct App {
     boards_read: Read,
     forecast_read: Read,
     ranked_read: Read,
+    reds_read: Read,
     actions_read: Read,
     fleet_read: Read,
     pipeline_read: Read,
@@ -372,6 +377,7 @@ impl App {
             boards: None,
             forecast: None,
             ranked: None,
+            reds: None,
             fleet: None,
             pipeline: None,
             focus: None,
@@ -410,6 +416,7 @@ impl App {
             boards_read: Read::default(),
             forecast_read: Read::default(),
             ranked_read: Read::default(),
+            reds_read: Read::default(),
             actions_read: Read::default(),
             fleet_read: Read::default(),
             pipeline_read: Read::default(),
@@ -478,6 +485,17 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
+            });
+        }
+    }
+
+    /// fleet-bench reds writes no file to watch, so Infra reads it on entering, on `r` and on
+    /// the tick while it is shown, with Prometheus.
+    pub fn read_reds(&mut self) {
+        if self.reds_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Reds(hub_core::reds::read(runner.as_ref())));
             });
         }
     }
@@ -826,6 +844,9 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
+                if self.tab == Tab::Infra {
+                    self.read_reds();
+                }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
                     self.read_boards();
@@ -883,6 +904,12 @@ impl App {
                 self.ranked = Some(r);
                 if self.ranked_read.done() {
                     self.read_ranked();
+                }
+            }
+            Msg::Reds(r) => {
+                self.reds = Some(r);
+                if self.reds_read.done() {
+                    self.read_reds();
                 }
             }
             Msg::Fleet(f) => {
@@ -1073,6 +1100,9 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
+                if self.tab == Tab::Infra {
+                    self.read_reds();
+                }
                 if self.tab == Tab::Queue {
                     self.read_candidates();
                     self.read_pipeline();
@@ -1169,6 +1199,9 @@ impl App {
         }
         if t == Tab::Fleet {
             self.read_fleet();
+        }
+        if t == Tab::Infra {
+            self.read_reds();
         }
         if t == Tab::Daily {
             self.daily_outbox = false;
@@ -1943,6 +1976,14 @@ impl App {
             // Infra's sections in hub_core::layout order, a blank line between them.
             (_, _, Some(i)) => {
                 let mut secs = board::infra(i, self.p, now, w, &self.hosts);
+                // Red fixes is read on its own, so it goes in under Red now (or last, when a
+                // failed Prometheus read left only the error).
+                let at = secs
+                    .iter()
+                    .position(|s| s.0 == "red")
+                    .map_or(secs.len(), |n| n + 1);
+                let fixes = board::fixes(self.reds.as_ref(), self.p, now, w);
+                secs.insert(at, ("fixes", fixes));
                 let at = secs
                     .iter()
                     .position(|s| s.0 == "cloud")
@@ -3248,6 +3289,23 @@ mod tests {
     /// The first body line under the tab bar.
     fn top(s: &str) -> &str {
         s.lines().nth(1).unwrap_or("")
+    }
+
+    #[test]
+    fn entering_infra_reads_red_fixes_and_draws_them_under_red_now() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        a.infra = Some(board::tests::fixture());
+        a.handle(Msg::Tab(Tab::Infra, None));
+        // The read went through the app's runner (the Fake), never a real fleet-bench.
+        let m = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(matches!(m, Msg::Reds(Ok(_))));
+        a.handle(Msg::Reds(Err("reds: cannot read the queue".into())));
+        let s = screen(&mut a, 160, 80);
+        let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
+        assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
+        assert!(at("RED FIXES") < at("MACHINE "), "{s}");
+        assert!(s.contains("reds: cannot read the queue"), "{s}");
     }
 
     #[test]

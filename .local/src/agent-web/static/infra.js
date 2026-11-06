@@ -12,12 +12,16 @@ const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "pla
 // A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
 const FAILED_OPEN = 25;
 // Each failed group's folded state, which outlives the re-render on every refresh.
-const ist = { data: null, err: null, open: {} };
+const ist = { data: null, err: null, open: {}, reds: null, redsErr: null };
 // Recent runs shown before the rest fold away.
 const RECENT_OPEN = 30;
 
 const refreshInfra = coalesce(async () => {
+  // The red fixes come from fleet-bench, not Prometheus, so a failed read of either leaves the
+  // other up; a failed reds read drops its rows rather than leave a stale list.
+  const reds = api("/api/reds").then((r) => { ist.reds = r; ist.redsErr = null; }, (e) => { ist.reds = null; ist.redsErr = e.message; });
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
+  await reds;
   if (st.tab === "infra") renderInfra();
 });
 
@@ -495,13 +499,33 @@ $("infra").addEventListener("click", (e) => {
   setTimeout(() => { if (cst.armed === k) { cst.armed = ""; renderInfra(); } }, 4000);
 });
 
+// Red fixes: each red the triage queued as a fix in the last week, from /api/reds, which
+// (hub_core::reds) orders the open ones worst first and words the summary; the settled ones
+// fold to a count. A failed read says so here, never an empty list that reads as all fixed.
+const FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
+  fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
+function fixRow(r) {
+  const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
+  return `<div class="pr"><span class="chip sm" style="--c:${FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
+    `<span class="pt">${esc(r.red)}</span><span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
+}
+function fixesSection() {
+  const head = (sub) => `<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">${esc(sub)}</span></h2>`;
+  if (ist.redsErr) return head("read failed") + `<div class="panel down">${esc(ist.redsErr)}</div>`;
+  const r = ist.reds;
+  if (!r) return head("Loading...");
+  const open = r.open.length ? `<div class="panel">${r.open.map(fixRow).join("")}</div>` : "";
+  const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${ist.open["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(fixRow).join("")}</div></details>` : "";
+  return head(r.summary) + open + settled;
+}
+
 function renderInfra() {
   const el = $("infra-main"), tail = $("infra-tail");
   const d = ist.data;
   if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; tail.innerHTML = ""; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`; tail.innerHTML = ""; seekSection(); return; }
+  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${fixesSection()}`; tail.innerHTML = ""; seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
@@ -514,6 +538,7 @@ function renderInfra() {
   html += red.length
     ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
     : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is registered and online</span></h2>`;
+  html += fixesSection();
   html += `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
   html += ciSection(cc, inst, t1);
   paint(el, html, ist.open);
