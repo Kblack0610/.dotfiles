@@ -43,9 +43,10 @@
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
-#                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER and runner
-#                                stderr error signature recurring in BENCH_GUARD_RECUR runs; a row a
-#                                TRIAGE_CAUSES line explains is queued as a night fix
+#                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
+#                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
+#                                cc:red_now item nothing here reads; TRIAGE_ROUTES decides where
+#                                each one goes, and an agent route queues a red fix
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -128,7 +129,13 @@ set -uo pipefail
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
-: "${TRIAGE_CAUSES:=$HOME/.config/agentctl/triage-causes}"   # triage: <ERE> TAB <fix> lines; a row they match is queued
+: "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
+: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
+: "${TRIAGE_FIX_DAYS:=7}"           # triage: days a queued fix keeps its cause from being queued again
+: "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
+: "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
+: "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
+: "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
 : "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
@@ -2067,7 +2074,7 @@ board_upsert() {
   UPSERT_ADDED=0; UPSERT_EDITED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
-    text+=" #size/s"
+    [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
       rc=0
@@ -2182,55 +2189,114 @@ triage_log_rows() {
   done | sort
 }
 
-# triage_causes <rows> -> the rows, each one a TRIAGE_CAUSES line matches carrying "; known cause:
-# <fix>" and a fourth field, 1. The table is content: <ERE> TAB <fix>, # comments.
-triage_causes() {
-  local key text pri re fix hit
+# red_items <epoch> -> the cc:red_now items red now and TRIAGE_WATCH_AFTER ago, the same patience a
+# watch gets, because the rule has no "since" to read.
+red_items() {
+  prom_q "cc:red_now and (cc:red_now offset ${TRIAGE_WATCH_AFTER}s)" "$1" 2>/dev/null | jq -r '.data.result[]?.metric.item // empty'
+}
+
+# triage_red_rows -> a row for each cc:red_now item with no state on this machine: reds another host
+# watches, such as the voice pucks. A watch or runner with local state already has its own row.
+triage_red_rows() {
+  local item n
+  $TRIAGE_RED_CMD "$(now)" | while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    n=${item#* }; n=${n//_/-}
+    [ -e "$TRIAGE_WATCH_STATE/$n.state" ] || [ -e "$LEDGER_CONF_DIR/$n.conf" ] && continue
+    printf 'check(red): %s is red\tcheck(red): %s is red\t#low\n' "$item" "$item"
+  done
+}
+
+# triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
+# whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
+# is that line's ERE hashed, so every row one line explains is one cause.
+triage_route() {
+  local key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
-    hit=''
-    if [ -r "$TRIAGE_CAUSES" ]; then
-      while IFS=$'\t' read -r re fix; do
+    hit=0 cause=- extra=
+    if [ -r "$TRIAGE_ROUTES" ]; then
+      while IFS=$'\t' read -r re route skill fix tags; do
         [[ -n "$re" && "$re" != \#* && -n "$fix" ]] || continue
-        grep -qE -- "$re" <<<"$text" && { hit=$fix; break; }
-      done < "$TRIAGE_CAUSES"
+        grep -qE -- "$re" <<<"$text" && { hit=1; break; }
+      done < "$TRIAGE_ROUTES"
     fi
-    if [ -n "$hit" ]; then
-      printf '%s\t%s; known cause: %s\t%s\t1\n' "$key" "$text" "${hit//#/no.}" "$pri"
-    else
-      printf '%s\t%s\t%s\t0\n' "$key" "$text" "$pri"
+    if [ "$hit" = 1 ]; then
+      fix=${fix//#/no.}
+      case "$route" in
+        agent) note="fix${skill:+ with $skill}: $fix"; [ "$skill" != - ] || note="fix: $fix" ;;
+        script) note="script: $fix" ;;
+        human:?*) note="for the human: $fix" ;;
+        alert | owned:?*) note='' ;;
+        *) say "triage: $TRIAGE_ROUTES: no such route: $route"; hit=0 ;;
+      esac
     fi
+    if [ "$hit" = 0 ]; then
+      printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
+      continue
+    fi
+    cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
+    text+="${note:+; $note}"
+    for t in ${tags:-}; do
+      case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
+    done
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$key" "$text" "$pri" "$route" "$cause" "$extra"
   done <<<"$1"
 }
 
-# triage_promote <rows with the cause flag> -> how many it queued: each known-cause row still open
-# and not yet started is promoted as it stands on the board, tagged night (a fix at tier 3 stops at
-# a PR). A started row is already someone's.
-triage_promote() {
-  local board key raw n=0
-  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
-  while IFS=$'\t' read -r key _ _ known; do
-    [ "$known" = 1 ] || continue
-    raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
-    [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags night --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+# triage_filed <rows> -> the rows for the agent board. An alert, an owned red and a human's red take
+# no agent row: dispatch would read an open one as work.
+triage_filed() { awk -F'\t' '$4 == "-" || $4 == "agent" || $4 == "script"' <<<"$1"; }
+
+# triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
+triage_human() {
+  local key text pri route sheet have n=0
+  while IFS=$'\t' read -r key text pri route _; do
+    case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
+    have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
+    awk -F'\t' -v p="${key,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$have" && continue
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
+    $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
+    n=$((n + 1))
   done <<<"$1"
   echo "$n"
 }
 
-# triage [--dry-run] files one agent-board row per runtime fault (triage_rows) through
-# board_upsert, so a fault that persists is one row refreshed in place, never a row a day.
-# --dry-run prints the rows and writes nothing.
+# triage_promote <rows> -> how many agent routes were queued as red fixes. A red fix opens its PR at
+# any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
+# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, and one item
+# stands for a cause across the window. An item that closed with the red still here counts too: its
+# PR waits on the human or it failed, and a second session would only repeat it.
+triage_promote() {
+  local board key raw route cause tags items used n=0 seen=' '
+  $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
+  items=$($TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .) || { echo 0; return 0; }
+  used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
+    '[.[] | select(((" " + (.tags // "") + " ") | contains(" red ")) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
+  while IFS=$'\t' read -r key _ _ route cause tags; do
+    [ "$route" = agent ] || continue
+    [ $((used + n)) -lt "$TRIAGE_FIX_CAP" ] || break
+    [[ "$seen" != *" $cause "* ]] || continue
+    seen+="$cause "
+    jq -e --arg c " cause:$cause " 'any(.[]; (" " + (.tags // "") + " ") | contains($c))' <<<"$items" >/dev/null && continue
+    raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
+    [[ "$raw" == '- [ ]'* ]] || continue
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+  done <<<"$1"
+  echo "$n"
+}
+
 cmd_triage() {
-  local rows dry=0 q
+  local rows filed dry=0 q h
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
     *) say "usage: fleet-bench triage [--dry-run]"; return 2 ;;
   esac
-  rows=$({ triage_rows; triage_log_rows; } | grep .)
-  [ -n "$rows" ] && rows=$(triage_causes "$rows")
+  rows=$({ triage_rows; triage_log_rows; triage_red_rows; } | grep .)
+  [ -n "$rows" ] && rows=$(triage_route "$rows")
   if [ "$dry" = 1 ]; then
-    [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == 1 ? " (queued as a night fix)" : "") }' <<<"$rows"
+    [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == "-" ? "" : " (" $4 ")") }' <<<"$rows"
     return 0
   fi
   if [ -z "$rows" ]; then
@@ -2238,9 +2304,11 @@ cmd_triage() {
     report_outcome NOOP "no runner, unit, watch or log error at fault"
     return 0
   fi
-  board_upsert "$(cut -f1-3 <<<"$rows")" || return 1
+  filed=$(triage_filed "$rows")
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
+  h=$(triage_human "$rows")
   q=$(triage_promote "$rows")
-  upsert_report "$rows" "$([ "$q" -gt 0 ] && echo "$q queued as night fixes")"
+  upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
 }
 
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
