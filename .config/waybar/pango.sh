@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034  # the colours are for the scripts that source this
-# pango.sh - markup helpers for the waybar load, CI, day, dispatch, agents, health and projects chips (load.sh, ci_runners.sh, day.sh, dispatch.sh, ai_agents.sh, health.sh, projects.sh). The
+# pango.sh - markup helpers for the waybar load, CI, day, dispatch, agents, health, projects and webcam chips (load.sh, ci_runners.sh, day.sh, dispatch.sh, ai_agents.sh, health.sh, projects.sh, webcam.sh). The
 # Prometheus reader they share with the hub board is .local/lib/prom.sh.
 
 # Bar theme (Jackie Brown) colours, the set fleet_pulse.sh uses: the pale Catppuccin
