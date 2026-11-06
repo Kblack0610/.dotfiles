@@ -114,7 +114,7 @@ extract_tickets() {
   fi
 }
 
-# strip <think>...</think> spans — reasoning models (Qwen3 etc.) emit them and the origin
+# strip <think>...</think> spans: reasoning models (Qwen3 etc.) emit them and the origin
 # does not. Handles same-line, multi-line, and a trailing unclosed span (truncated thinking).
 strip_think() {
   awk '
