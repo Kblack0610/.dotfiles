@@ -99,7 +99,15 @@ impl Event {
         Event {
             lane: lane.into(),
             id: crate::md::row_id(line),
-            stage: Some("backlog".into()),
+            // A line put on the outbox is a capture the sweep has yet to file, not a row.
+            stage: Some(
+                if from == "outbox" {
+                    "intake"
+                } else {
+                    "backlog"
+                }
+                .into(),
+            ),
             ..Event::new(action, from, to, &crate::md::task_text(line))
         }
     }
@@ -189,6 +197,11 @@ pub fn on_day(p: &Profile, day: &str) -> Vec<Event> {
 fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
     let head = format!("{{\"ts\":\"{day}");
     read(p, |l| l.starts_with(&head))
+}
+
+/// Every event the record holds, oldest first.
+pub fn all(p: &Profile) -> Vec<Event> {
+    read(p, |_| true).0
 }
 
 /// Every event of the last `days` days, today included, oldest first.
@@ -438,6 +451,8 @@ mod tests {
             .proof("pr:1080 commit:becad5bb1234");
         assert_eq!(e.stage.as_deref(), Some("backlog"));
         assert_eq!(e.id.as_deref(), Some("ar-1"));
+        let capture = Event::row("added", "outbox", "", "", "- [ ] a capture");
+        assert_eq!(capture.stage.as_deref(), Some("intake"));
         assert_eq!(
             (e.pr.as_deref(), e.sha.as_deref()),
             (Some("1080"), Some("becad5bb1234"))

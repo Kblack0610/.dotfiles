@@ -5,6 +5,7 @@ How mature a project is, what it must have at each stage, and which check proves
 - The stage is a hashtag on the lab sheet's `Version:` line, for example `Version: v0.3.0 #alpha`. Its one writer is `notes projects --stage <name> --set <stage>`; a hand edit works too, and the nightly `project-map-doctor` catches a sheet that drifts.
 - The ladder itself has one definition, `STAGES` in `.local/src/notes-cli/src/projects.rs`. Shell readers get it from `notes projects --stages` (or `lab_stages` and `lab_stage_at_least` in `.local/lib/lab-feed.sh`) and never keep a copy.
 - The project type (`game`, `app`, `infra`) comes from `type` in `project-map.json`, the same field `planning.md` reads.
+- A project's type standard is its systems and their criteria, base plus its type's overlay, in `systems.md`; `project-system-check <name>` reports met/total per system.
 
 ## The ladder
 
@@ -40,7 +41,7 @@ The `Check` cell is one of three things:
 | draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
 | dev | base | CI green on the default branch | not yet: needs the forge API |
-| dev | base | README with build, run and test; `docs/architecture.md`; a standards file or a link to the shared one | `[ -f README.md ] && [ -f docs/architecture.md ] && grep -rqil --include='*.md' standards README.md docs` |
+| dev | base | The `docs` system meets its `systems.md` criteria: a README with build, run and test, `docs/architecture.md`, a standards file or a link to the shared one | `project-stage-check "$NAME" --system docs` |
 | dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | not yet |
 | dev | app | Typecheck, lint and unit tests in the shared CI config | `jq -e '.scripts.typecheck and .scripts.lint and .scripts.test' "$REPO/package.json"` |
 | alpha | base | A deploy workflow green to the private target on every merge | not yet: needs the forge API |

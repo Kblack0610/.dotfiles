@@ -33,9 +33,13 @@
 #   agent-ask settle-session <sid> answered [text...]
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
-#   agent-ask judge <id>                the answer judge: record what it would answer
-#                                       (judge, judge_rule, judge_reason, judge_call); post runs
-#                                       it and answers a LIVE_RULES class at once
+#   agent-ask judge <id>                the answer judge: score a pending ask and record what it
+#                                       would answer (judge, judge_rule, judge_reason, judge_call),
+#                                       replacing any older verdict; post runs it and answers a
+#                                       LIVE_RULES class at once
+#   agent-ask sweep [project|--all]     judge every pending ask again and answer each live one as
+#                                       the judge, through `answer`'s delivery; one line per ask.
+#                                       Run it after the policy or LIVE_RULES changes
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
 #                                       (model, time, cost, prompt sha, raw) and Langfuse link
 #
@@ -103,9 +107,12 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
 # The guard on post's foreground judge call (seconds); past it the ask stays with the human.
 : "${AGENT_ASK_JUDGE_TIMEOUT:=30}"
-# A live class goes back to shadow on an override among its first AGENT_ASK_LIVE_BAR live
-# answers, or when its precision falls under AGENT_ASK_LIVE_PRECISION percent after that.
+# The bar judge-eval shows beside each class: AGENT_ASK_LIVE_BAR scored answers at
+# AGENT_ASK_LIVE_PRECISION percent. A class goes live on the human's call (ask-judge.conf).
 : "${AGENT_ASK_LIVE_BAR:=30}" "${AGENT_ASK_LIVE_PRECISION:=90}"
+# A live class goes back to shadow when precision over its last AGENT_ASK_LIVE_BAR live answers
+# falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
+: "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # shellcheck source=../lib/judge.sh
@@ -158,6 +165,16 @@ find_ask() {
 # queue_changed: the queue's one change signal. fleet-state.path watches this file, so a post,
 # answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
+# drop_field <file> <key>: remove the key's line, so a stale value cannot outlive its verdict.
+drop_field() {
+  local f="$1" k="$2" tmp
+  tmp="$(mktemp)"
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    awk -v k="$k" '$0 !~ "^" k ": "' "$f" > "$tmp" && mv "$tmp" "$f"
+  ) 9>"$(dirname "$f")/.lock"
+}
+
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
 # set_field <file> <key> <value> - update an existing key in place (in-place rewrite).
@@ -563,9 +580,10 @@ cmd_answer() {
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
 
-  local row; row="$(live_row "$(field "$f" claude_session)")"
+  local row said="$answer"; row="$(live_row "$(field "$f" claude_session)")"
+  [ "$by" = judge ] && said="$answer (the judge, $(field "$f" judge_rule): $(field "$f" judge_reason | sed 's/\.$//'); the human can override in this session)"
   if [ -n "$row" ]; then
-    deliver_to_session "$f" "$answer" "$row"
+    deliver_to_session "$f" "$said" "$row"
   elif [ -z "$(field "$f" resume)" ]; then
     file_board_row "$f" "$(field "$f" question) -> answered: $answer"
   fi
@@ -611,10 +629,10 @@ live_rules() {
   tr ', ' '\n\n' <<<"$rules" | grep . | grep -vxF -f <(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null; echo) || true
 }
 
-# answer_live <file>: answer the ask as its judge said when its rule is live, and tell the asker.
-# Fails (the ask stays pending) on anything else: a gate, a human or error call, a shadow rule.
-answer_live() {
-  local f="$1" judge rule ans reason
+# live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
+# anything else: a gate, a human or error call, a shadow rule. The one place that decides.
+live_answer() {
+  local f="$1" judge rule ans
   case "$(field "$f" kind)" in gate|approval) return 1 ;; esac
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
   case "$judge" in
@@ -623,45 +641,70 @@ answer_live() {
     *) return 1 ;;
   esac
   [ -n "$ans" ] && [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 1
-  # The asker is the one reading this, so the answer is not typed into its pane or filed as a row.
+  printf '%s\n' "$ans"
+}
+
+# judge_said <file> <answer>: the line that tells a session the judge answered and why.
+judge_said() {
+  local reason; reason="$(field "$1" judge_reason)"
+  printf 'Answered by the judge (%s): %s - %s. Proceed; the human can override in this session.' \
+    "$(field "$1" judge_rule)" "$2" "${reason%.}"
+}
+
+# answer_live <file>: at post, answer the ask as its judge said when its rule is live. The asker
+# is the one reading this, so the answer goes to its stderr, not typed into its pane or filed.
+answer_live() {
+  local f="$1" ans
+  ans="$(live_answer "$f")" || return 1
   record_answer "$f" judge "$ans"
-  reason="$(field "$f" judge_reason)"
-  echo "Answered by the judge ($rule): $ans - ${reason%.}. Proceed; the human can override in this session." >&2
+  judge_said "$f" "$ans" >&2; echo >&2
   start_resume "$(field "$f" id)"
 }
 
+# cmd_sweep [project|--all]: judge every pending ask again and answer the live ones as the judge,
+# through cmd_answer's delivery (typed into a live session, else a board row, then resume).
+cmd_sweep() {
+  local scope="${1:---all}" f id ans
+  while IFS= read -r f; do
+    [ "$(field "$f" status)" = pending ] || continue
+    id="$(field "$f" id)"
+    "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
+    if ans="$(live_answer "$f")"; then
+      cmd_answer --by judge "$id" "$ans" 2>/dev/null
+      printf '%s\t%s\tanswered %s\t%s\t%s\n' "$(field "$f" project)" "$id" "$ans" "$(field "$f" judge_rule)" "$(field "$f" judge_reason)"
+    else
+      printf '%s\t%s\tyours\t%s\t%s\n' "$(field "$f" project)" "$id" "$(field "$f" judge_rule)" "$(field "$f" judge_reason)"
+    fi
+  done < <(ask_files "$scope" | sort)
+}
+
 # judge_demote_check <file>: after an override on this live answer, take its rule out of the
-# live set when the class has failed its bar: an override among its first 30 live answers, or
-# precision under 90% after that. Pages once and files one board row.
+# live set when precision over the class's last AGENT_ASK_LIVE_BAR live answers is under
+# AGENT_ASK_DEMOTE_PRECISION, once there are AGENT_ASK_DEMOTE_MIN of them. A window, not a
+# lifetime count, so one early miss does not end a class that is right 9 times in 10.
+# Pages once and files one board row.
 judge_demote_check() {
-  local f="$1" rule id stats pos total over
+  local f="$1" rule id n over
   rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
   [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 0
-  # Every live answer of this class in answer order: its position, the total, the overrides.
-  stats="$(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" -v me="$id" '
-    FNR == 1 { if (by == "judge" && r == rule) { n++; at[n] = when; o[n] = ov; ids[n] = i } by = r = when = ov = i = "" }
+  # The class's live answers as "<answered_at> <0|1 overridden>", newest last, then the window.
+  read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
+    function out() { if (by == "judge" && r == rule) print when, (ov != "" && ov != "none") }
+    FNR == 1 { if (NR > 1) out(); by = r = when = ov = "" }
     /^answered_by: / && by == "" { by = substr($0, 14) }
     /^judge_rule: / && r == "" { r = substr($0, 13) }
     /^answered_at: / && when == "" { when = substr($0, 14) }
     /^judge_override: / && ov == "" { ov = substr($0, 17) }
-    /^id: / && i == "" { i = substr($0, 5) }
-    END {
-      if (by == "judge" && r == rule) { n++; at[n] = when; o[n] = ov; ids[n] = i }
-      for (k = 1; k <= n; k++) { p = 1; for (j = 1; j <= n; j++) if (at[j] < at[k]) p++
-        if (ids[k] == me) pos = p; if (o[k] != "" && o[k] != "none") over++ }
-      print pos + 0, n + 0, over + 0
-    }' 2>/dev/null)"
-  read -r pos total over <<<"$stats"
-  [ "${pos:-0}" -gt 0 ] || return 0
-  if [ "$pos" -gt "$AGENT_ASK_LIVE_BAR" ] && [ $(( (total - over) * 100 )) -ge $(( total * AGENT_ASK_LIVE_PRECISION )) ]; then
-    return 0
-  fi
+    END { out() }' 2>/dev/null | sort | tail -n "$AGENT_ASK_LIVE_BAR" | awk '{ n++; o += $2 } END { print n + 0, o + 0 }')
+  [ "${n:-0}" -ge "$AGENT_ASK_DEMOTE_MIN" ] || return 0
+  [ $(( (n - over) * 100 )) -lt $(( n * AGENT_ASK_DEMOTE_PRECISION )) ] || return 0
+  local why="$over of its last $n live answers overridden, under ${AGENT_ASK_DEMOTE_PRECISION}%"
   mkdir -p "$(dirname "$AGENT_ASK_DEMOTED")" 2>/dev/null
-  printf '%s\t%s\t%s\n' "$rule" "$(now_iso)" "override on ask $id: live answer $pos of $total, $over overridden" >> "$AGENT_ASK_DEMOTED"
+  printf '%s\t%s\t%s\n' "$rule" "$(now_iso)" "override on ask $id: $why" >> "$AGENT_ASK_DEMOTED"
   agent-notify -p high -t 'Judge demoted' \
-    "The ask judge no longer answers $rule asks: you overrode ask $id. A board row says how to undo it." >/dev/null 2>&1 || true
+    "The ask judge no longer answers $rule asks: $why. A board row says how to undo it." >/dev/null 2>&1 || true
   notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
-    "check(judge): ask-judge $rule went back to shadow after the override on ask $id (live answer $pos of $total, $over overridden); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from LIVE_RULES in ask-judge.conf by PR #size/s" \
+    "check(judge): ask-judge $rule went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from LIVE_RULES in ask-judge.conf by PR #size/s" \
     >/dev/null 2>&1 || true
 }
 
@@ -1092,7 +1135,10 @@ cmd_judge() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask judge <id>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
-  [ -z "$(field "$f" judge)" ] || return 0
+  # A pending ask is scored every time: a verdict made under an older policy must not pin it.
+  # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
+  [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
+  local k; for k in judge_rule judge_met judge_call; do drop_field "$f" "$k"; done
   case "$(field "$f" kind)" in
     gate|approval)
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
@@ -1254,6 +1300,7 @@ case "$sub" in
   mark-resumed) cmd_mark_resumed "$@" ;;
   settle-session) cmd_settle_session "$@" ;;
   judge)        cmd_judge "$@" ;;
+  sweep)        cmd_sweep "$@" ;;
   trace)        cmd_trace "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;

@@ -23,8 +23,16 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-/// `details` puts each runner's registry lines under its row (the hub's `d`).
-pub fn page(f: &Fleet, p: Palette, now: i64, w: usize, details: bool) -> Vec<Line<'static>> {
+/// `details` puts each runner's registry lines under its row (the hub's `d`); `tonight` lists
+/// the runners in hub-core's Tonight order in place of the default (the hub's `t`).
+pub fn page(
+    f: &Fleet,
+    p: Palette,
+    now: i64,
+    w: usize,
+    details: bool,
+    tonight: bool,
+) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &f.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -32,19 +40,49 @@ pub fn page(f: &Fleet, p: Palette, now: i64, w: usize, details: bool) -> Vec<Lin
     out.push(heading("CLAUDE ACCOUNTS", String::new(), p));
     out.extend(accounts(&f.accounts, p, now, w));
     out.push(Line::raw(""));
-    out.push(clip_line(
-        heading(
-            "WORKERS",
-            format!(
-                "  {} runners, {} in 24h across every agentctl run",
-                f.workers.len(),
-                usd(f.cost_24h)
-            ),
-            p,
-        ),
-        w,
-    ));
-    out.extend(workers(&f.workers, p, now, w, details));
+    let rest = if tonight {
+        format!("  tonight, {} -> {}", hhmm(f.at), hhmm(f.tonight.until))
+    } else {
+        format!(
+            "  {} runners, {} in 24h across every agentctl run",
+            f.workers.len(),
+            usd(f.cost_24h)
+        )
+    };
+    out.push(clip_line(heading("WORKERS", rest, p), w));
+    if tonight {
+        let (ws, slots): (Vec<&Worker>, Vec<String>) = f
+            .tonight
+            .slots
+            .iter()
+            .filter_map(|s| {
+                let r = f.workers.iter().find(|r| r.name == s.name)?;
+                let slot = match (&s.under, s.at) {
+                    (Some(_), _) => "  `-".to_string(),
+                    (None, Some(t)) => hhmm(t),
+                    (None, None) => "always".to_string(),
+                };
+                Some((r, slot))
+            })
+            .unzip();
+        out.extend(workers(&ws, Some(&slots), p, now, w, details));
+        if f.tonight.other_timers > 0 {
+            out.push(clip_line(
+                Line::styled(
+                    format!(
+                        "  + {} other timers before {}: 6 Infra, Enter for Jobs",
+                        f.tonight.other_timers,
+                        hhmm(f.tonight.until)
+                    ),
+                    p.dim(),
+                ),
+                w,
+            ));
+        }
+    } else {
+        let ws: Vec<&Worker> = f.workers.iter().collect();
+        out.extend(workers(&ws, None, p, now, w, details));
+    }
     out.push(Line::raw(""));
     out.push(dispatch_head(&f.dispatch, p, w));
     out.push(judge_head(&f.judge, p, w));
@@ -130,20 +168,44 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
     .fit(w, p.head())
 }
 
-fn workers(ws: &[Worker], p: Palette, now: i64, w: usize, details: bool) -> Vec<Line<'static>> {
+/// A local time as HH:MM, for a slot inside the next day.
+fn hhmm(t: i64) -> String {
+    chrono::TimeZone::timestamp_opt(&chrono::Local, t, 0)
+        .single()
+        .map_or("-".into(), |d| d.format("%H:%M").to_string())
+}
+
+/// One row per runner; `slots`, when given, prefixes each name with its Tonight slot.
+fn workers(
+    ws: &[&Worker],
+    slots: Option<&[String]>,
+    p: Palette,
+    now: i64,
+    w: usize,
+    details: bool,
+) -> Vec<Line<'static>> {
     if ws.is_empty() {
         return vec![Line::styled(
-            "No runners configured in ~/.config/agentctl/agents.",
+            if slots.is_some() {
+                "No runner runs before morning."
+            } else {
+                "No runners configured in ~/.config/agentctl/agents."
+            },
             p.dim(),
         )];
     }
     let rows = ws
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
+            let label = match slots.and_then(|s| s.get(i)) {
+                Some(s) => format!("{s:<6} {}", r.name),
+                None => r.name.clone(),
+            };
             let name = if r.enabled {
-                cell(r.name.clone(), p.head())
+                cell(label, p.head())
             } else {
-                cell(format!("{} (off)", r.name), p.dim())
+                cell(format!("{label} (off)"), p.dim())
             };
             let (last, when) = match (&r.running_since, &r.last) {
                 (Some(t), _) => (cell("running", p.warn()), clock(*t, now)),
@@ -193,7 +255,7 @@ fn workers(ws: &[Worker], p: Palette, now: i64, w: usize, details: bool) -> Vec<
         flex: Some(8),
         flexmin: 20,
         right: vec![4, 5, 7],
-        cap: vec![(0, 28)],
+        cap: vec![(0, if slots.is_some() { 35 } else { 28 })],
         ..Default::default()
     }
     .fit(w, p.head());
@@ -540,7 +602,7 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{Bar, Call, Calls, JudgeWeek, Outcome, Score, Verdict};
+    use hub_core::fleet::{Bar, Call, Calls, JudgeWeek, Outcome, Score, Slot, Tonight, Verdict};
 
     pub const NOW: i64 = 1_793_661_428;
 
@@ -648,6 +710,7 @@ pub mod tests {
                 },
             ],
             cost_24h: Some(4.5),
+            tonight: Tonight::default(),
             dispatch: Dispatch {
                 recent: vec![Verdict {
                     project: "dotfiles".into(),
@@ -714,7 +777,7 @@ pub mod tests {
     /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        page(f, p, NOW, w, false)
+        page(f, p, NOW, w, false, false)
             .iter()
             .chain(verdicts(f, "all", p, NOW, w).iter())
             .map(plain)
@@ -790,8 +853,15 @@ pub mod tests {
 
     #[test]
     fn a_narrow_page_fits() {
-        for details in [false, true] {
-            for l in page(&fixture(), Palette { no_color: true }, NOW, 40, details) {
+        for (details, tonight) in [(false, false), (true, false), (false, true), (true, true)] {
+            for l in page(
+                &tonight_fixture(),
+                Palette { no_color: true },
+                NOW,
+                40,
+                details,
+                tonight,
+            ) {
                 assert!(plain(&l).chars().count() <= 40, "{:?}", plain(&l));
             }
         }
@@ -800,7 +870,7 @@ pub mod tests {
     #[test]
     fn details_put_each_runners_registry_under_its_row() {
         let p = Palette { no_color: true };
-        let lines: Vec<String> = page(&fixture(), p, NOW, 160, true)
+        let lines: Vec<String> = page(&fixture(), p, NOW, 160, true, false)
             .iter()
             .map(plain)
             .collect();
@@ -835,8 +905,110 @@ pub mod tests {
             .position(|l| l.starts_with("idle-one"))
             .unwrap();
         assert_eq!(lines[idle + 1].trim_end(), "    -", "{lines:#?}");
-        assert!(!page(&fixture(), p, NOW, 160, false)
+        assert!(!page(&fixture(), p, NOW, 160, false, false)
             .iter()
             .any(|l| plain(l).contains("trigger")));
+    }
+
+    /// The fixture with a call under dream, and its Tonight order: idle-one always on, then
+    /// dream, then dream's call.
+    pub fn tonight_fixture() -> Fleet {
+        let mut f = fixture();
+        f.workers.push(Worker {
+            name: "ask-sweep".into(),
+            enabled: true,
+            called_by: Some("dream".into()),
+            ..Default::default()
+        });
+        f.tonight = Tonight {
+            until: NOW + 6 * 3600,
+            other_timers: 3,
+            slots: vec![
+                Slot {
+                    name: "idle-one".into(),
+                    ..Default::default()
+                },
+                Slot {
+                    name: "dream".into(),
+                    at: Some(NOW + 3600),
+                    under: None,
+                },
+                Slot {
+                    name: "ask-sweep".into(),
+                    at: None,
+                    under: Some("dream".into()),
+                },
+            ],
+        };
+        f
+    }
+
+    #[test]
+    fn tonight_lists_the_slots_in_order_with_a_call_under_its_caller() {
+        let p = Palette { no_color: true };
+        let f = tonight_fixture();
+        let lines: Vec<String> = page(&f, p, NOW, 160, false, true)
+            .iter()
+            .map(plain)
+            .collect();
+        let at = |want: &str| {
+            lines
+                .iter()
+                .position(|l| l.starts_with(want))
+                .unwrap_or_else(|| panic!("{want:?} missing from {lines:#?}"))
+        };
+        let head = format!(
+            "WORKERS  tonight, {} -> {}",
+            hhmm(NOW),
+            hhmm(NOW + 6 * 3600)
+        );
+        assert!(lines.iter().any(|l| l.starts_with(&head)), "{lines:#?}");
+        let (always, dream, call) = (
+            at("always idle-one (off)"),
+            at(&format!("{}  dream", hhmm(NOW + 3600))),
+            at("  `-   ask-sweep"),
+        );
+        assert!(always < dream && dream + 1 == call, "{lines:#?}");
+        assert!(
+            lines.iter().any(|l| l.trim()
+                == format!(
+                    "+ 3 other timers before {}: 6 Infra, Enter for Jobs",
+                    hhmm(NOW + 6 * 3600)
+                )),
+            "{lines:#?}"
+        );
+        // The default order is untouched: no slot words, every runner by its own name.
+        let default: Vec<String> = page(&f, p, NOW, 160, false, false)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            !default
+                .iter()
+                .any(|l| l.contains("always") || l.contains("other timers")),
+            "{default:#?}"
+        );
+        assert!(
+            default.iter().any(|l| l.starts_with("ask-sweep")),
+            "{default:#?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_night_says_so() {
+        let p = Palette { no_color: true };
+        let s: Vec<String> = page(&fixture(), p, NOW, 160, false, true)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            s.iter()
+                .any(|l| l.contains("No runner runs before morning.")),
+            "{s:#?}"
+        );
+        assert!(
+            !s.iter().any(|l| l.contains("other timers")),
+            "a zero count draws no line"
+        );
     }
 }
