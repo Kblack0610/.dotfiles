@@ -71,6 +71,8 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Bash | `~/.claude/hooks/token-filter.sh` | Rewrite a command through the method in `~/.agent/token-filter/mode` so less output reaches the model. Never denies; see "Token filter" |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 
+A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-outcomes counts each denial under that name in the outcome row's `guards`, which is how a guard's effect is counted; a reason with no name lead is invisible to it (`tests/unit/session_outcomes.bats` "guards").
+
 ## PostToolUse hooks (user-global)
 
 | Matcher | File | Job |
