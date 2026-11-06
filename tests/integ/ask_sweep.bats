@@ -42,7 +42,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --date 2026-10-30
   assert_success
-  assert_called 'ptask board --agent add finish stale: 2 phases left, next: two #requested #tier/2'
+  assert_called 'ptask board --agent add chore(plan): finish stale: 2 phases left, next: two #requested #tier/2 #size/m'
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run --date 2026-10-30
   assert_success
@@ -87,15 +87,15 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
 
 @test "a missed ask is filed with its quote, and a small clear one joins the downtime queue" {
   message 'add a slide to the gym'
-  answer '{"quote":"add a slide","row":"gym: add a slide","tier":2,"size":"S","done_is_stated":true,"human_only":false}' \
-         '{"quote":"new town","row":"build a town","tier":2,"size":"L","done_is_stated":false,"human_only":false}' \
-         '{"quote":"retune ci","row":"tune ci","tier":3,"size":"S","done_is_stated":true,"human_only":false}'
+  answer '{"quote":"add a slide","row":"feat(gym): add a slide","tier":2,"size":"S","done_is_stated":true,"human_only":false}' \
+         '{"quote":"new town","row":"feat(town): build a town","tier":2,"size":"L","done_is_stated":false,"human_only":false}' \
+         '{"quote":"retune ci","row":"ci(build): tune ci","tier":3,"size":"S","done_is_stated":true,"human_only":false}'
   run "$SWEEP" run --date 2026-10-30
   assert_success
-  assert_called 'gym: add a slide; asked 10-30 "add a slide" #requested #tier/2 #worker/requested'
-  assert_called 'build a town; asked 10-30 "new town" #requested #tier/2'
-  assert_not_called 'build a town; asked 10-30 "new town" #requested #tier/2 #worker'
-  assert_not_called 'tune ci; asked 10-30 "retune ci" #requested #tier/3 #worker'
+  assert_called 'feat(gym): add a slide; asked 10-30 "add a slide" #requested #tier/2 #size/s #worker/requested'
+  assert_called 'feat(town): build a town; asked 10-30 "new town" #requested #tier/2 #size/l'
+  assert_not_called 'build a town; asked 10-30 "new town" #requested #tier/2 #size/l #worker'
+  assert_not_called 'tune ci; asked 10-30 "retune ci" #requested #tier/3 #size/s #worker'
 }
 
 @test "a human-only ask goes on the human sheet, never the agent board" {
@@ -122,7 +122,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan a '1 day ago 1 hour ago' "$OPEN"; plan b '1 day ago 1 hour ago' "$OPEN"; plan c '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --date 2026-10-30
   assert_success
-  [ "$(grep -c ' add finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
+  [ "$(grep -c ' add chore(plan): finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
   run "$SWEEP" report
   assert_output --partial '(1 more over the cap)'
 }
@@ -152,7 +152,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --dry-run --date 2026-10-30
   assert_success
-  assert_output --partial 'would file [board] finish stale'
+  assert_output --partial 'would file [board] chore(plan): finish stale'
   assert_not_called ' add '
   [ ! -f "$ASK_SWEEP_DIR/plans-filed" ]
 }
