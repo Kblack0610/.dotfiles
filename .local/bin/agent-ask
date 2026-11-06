@@ -10,8 +10,9 @@
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, judge
-#   agent-ask target <id>               where the asking session runs now, as an agent-panel
-#                                       jump target; fails saying why (ended, or no session)
+#   agent-ask target [--reopen] <id>    where the asking session runs now, as an agent-panel
+#                                       jump target; fails saying why (ended, or no session).
+#                                       --reopen starts an ended one again first
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
@@ -535,17 +536,59 @@ cmd_answer() {
   fi
 }
 
-# cmd_target <id>: the live asking session's `<server>/<session>:<window>`, for a board that
-# jumps to it (the questions panel's g). When there is none it fails and says why.
+# cmd_target [--reopen] <id>: the live asking session's `<server>/<session>:<window>`, for a
+# board that jumps to it (the questions panel's g). When there is none it fails and says why;
+# --reopen starts an ended session again (reopen_session) and prints where it now runs.
 cmd_target() {
-  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask target <id>" >&2; return 2; }
+  local reopen=0
+  [ "${1:-}" = --reopen ] && { reopen=1; shift; }
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask target [--reopen] <id>" >&2; return 2; }
   local f sid row; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   sid="$(field "$f" claude_session)"
   [ -n "$sid" ] || { echo "no Claude session owns this ask" >&2; return 1; }
   row="$(live_row "$sid")"
-  [ -n "$row" ] || { echo "session ended; resume with claude --resume $sid" >&2; return 1; }
+  if [ -z "$row" ]; then
+    [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
+    reopen_session "$f" "$sid"
+    return
+  fi
   jq -r .target <<< "$row"
+}
+
+# reopen_session <ask file> <claude session>: start an ended conversation again and print its
+# jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
+# it too); this picks only where: the directory the conversation started in, which `claude
+# --resume` needs to find it, and the world and session that directory routes to, as window
+# ask-<id>. A world session that is up gains the window; one that is not starts with it.
+reopen_session() {
+  local f="$1" sid="$2" cwd world sess win out
+  # A running process outside tmux has no pane to go to, and a second resume would fork it.
+  session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
+  cwd="$(session_cwd "$sid")"
+  [ -n "$cwd" ] && [ -d "$cwd" ] ||
+    { echo "session ended and its directory ${cwd:+$cwd }is gone; resume with claude --resume $sid" >&2; return 1; }
+  read -r world sess <<< "$(tmux-world route "$cwd")"
+  # `here` is the caller's own world: the server this panel runs on.
+  [ "$world" != here ] || { world="${TMUX%%,*}"; world="${world##*/}"; }
+  [ -n "$world" ] && [ -n "$sess" ] || { echo "no world to reopen $cwd in; resume with claude --resume $sid" >&2; return 1; }
+  win="ask-$(field "$f" id)"
+  out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
+    --window "$win" --cwd "$cwd" --resume "$sid" </dev/null 2>&1)" ||
+    { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
+  echo "$world/$sess:$win"
+}
+
+# session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
+# any copy will do.
+session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+
+# session_cwd <claude session>: the directory the conversation started in, from the first
+# transcript line that records one.
+session_cwd() {
+  local t; t="$(session_transcript "$1")"
+  [ -n "$t" ] || return 0
+  grep -m1 '"cwd":' "$t" | jq -r '.cwd // empty' 2>/dev/null
 }
 
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
@@ -645,6 +688,7 @@ session_gone_note() {
   else
     echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
   fi
+  echo "  g reopens the session"
 }
 
 # render_story <file>: what a panel's card adds under render_ask, one labelled block per line
@@ -678,7 +722,7 @@ render_story() {
   # prompt), the prompt the asking turn answered, and that turn's own words.
   local title="" first="" prompt="" words="" t said
   title="$(session_titles <<<"$sid" | cut -f2)"
-  t="$(ls "$HOME"/.claude*/projects/*/"$sid".jsonl 2>/dev/null | head -1)"
+  t="$(session_transcript "$sid")"
   if [ -n "$t" ] && command -v agent-panel >/dev/null 2>&1 &&
      said="$(agent-panel said "$t" --around "${ASK[id]:-}" 2>/dev/null)"; then
     first="$(jq -r '.first // ""' <<<"$said")"
