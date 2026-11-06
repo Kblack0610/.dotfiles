@@ -193,26 +193,36 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     if text.is_empty() {
         bail!("nothing to add (provide the item's text)");
     }
-    let _lock = lock(p)?;
-    let content = read(p)?;
     let line = format!("- [ ] {text}");
-    if !sheet::lines_in(&content, HEADING)
-        .iter()
-        .any(|l| l.raw == line)
-    {
-        if let Some(dir) = p.outbox.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        md::write_atomic(
-            &p.outbox,
-            &sheet::put_in(&content, HEADING, std::slice::from_ref(&line)),
-        )?;
-        project_tasks::inbox_changed(p);
-        log.info("outbox", &format!("added to {}", p.outbox.display()));
+    if append(p, log, std::slice::from_ref(&line))? {
         ingest::record(p, &Event::row("added", "outbox", "", "", &line));
     }
     println!("outbox: {line}");
     Ok(0)
+}
+
+/// Append `block`, a top-level line and its indented details, to the outbox and wake the sweep,
+/// unless that line already waits there. True when it was written. `add` and
+/// `notes focus ingest` both write through here, so a line from either is swept the same way.
+pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool> {
+    let Some(line) = block.first() else {
+        return Ok(false);
+    };
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    if sheet::lines_in(&content, HEADING)
+        .iter()
+        .any(|l| &l.raw == line)
+    {
+        return Ok(false);
+    }
+    if let Some(dir) = p.outbox.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    md::write_atomic(&p.outbox, &sheet::put_in(&content, HEADING, block))?;
+    project_tasks::inbox_changed(p);
+    log.info("outbox", &format!("added to {}", p.outbox.display()));
+    Ok(true)
 }
 
 /// `notes outbox list [--json]`: TSV `line<TAB>text`, or one JSON array of
