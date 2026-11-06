@@ -2022,6 +2022,10 @@ settle() {
   # What the night fill promoted, or its judge failing, is part of the pass whatever stopped it after.
   [ "${NIGHT_FILLED:-0}" = 0 ] || [ "$DRY" = 1 ] || set -- "$1" "queued $NIGHT_FILLED for the night; $2"
   [ "${PLAN_TAGGED:-0}" = 0 ] || set -- "$1" "tagged $PLAN_TAGGED for a plan; $2"
+  case "${TRIAGE_FAILED:+x}:$1" in
+    x:NOOP | x:BLOCKED) set -- FAILED "triage failed ($TRIAGE_FAILED); $2" ;;
+    x:*) set -- "$1" "triage failed ($TRIAGE_FAILED); $2" ;;
+  esac
   case "${JUDGE_RC:-0}:$1:$2" in
     0:* | *:"could not judge"*) ;;
     *:NOOP:* | *:BLOCKED:*) set -- FAILED "$(judge_failed); $2" ;;
@@ -2045,6 +2049,13 @@ settle_board() {
   elif [ -n "${QUEUE_HELD:-}" ] && [ "$1" = NOOP ]; then settle BLOCKED "$QUEUE_HELD; $2"; else settle "$@"; fi
 }
 
+# triage_pass: reds become rows and red items before the pass counts its room, so a fix queued here
+# starts this pass. The guards live in fleet-bench. A failure is named in the outcome, never stops the pass.
+triage_pass() {
+  local out
+  out=$(fleet-bench triage 2>&1) || TRIAGE_FAILED=$(tail -n 1 <<<"$out" | cut -c1-100)
+}
+
 cmd_run() {
   local why live room
   DRY=0
@@ -2055,8 +2066,9 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 SPILLED=0 NO_ROOM=
+  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
   NO_SPILL=()
+  [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
   # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED.

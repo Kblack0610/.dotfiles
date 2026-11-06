@@ -2421,6 +2421,23 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run for a model the human chose"
 }
 
+@test "triage: a run pass triages before it counts its room, and a dry run does not" {
+  stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_not_called 'fleet-bench triage'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_called 'fleet-bench triage'
+}
+
+@test "triage: a failed triage is named in the pass and turns a quiet pass FAILED, and the pass still runs" {
+  stub fleet-bench '[ "$1" = triage ] && { echo "board unreadable"; exit 1; }; exit 0'
+  TRIAGE_FAILED='board unreadable' DRY=1
+  run settle NOOP 'nothing to do'
+  assert_output --partial 'triage failed (board unreadable); nothing to do'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'triage failed (board unreadable)'
+}
+
 @test "a queue item runs /one-shot in bypass mode, a night item --pr-only, a plan item in plan mode" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
