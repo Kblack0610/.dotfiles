@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapshot today's day log every 5 minutes (the hub Today tab, the waybar day chip)
+Description=Snapshot today's day log every 5 minutes (the hub Log tab, the waybar day chip)
 
 # Merges have no local event to await, so this samples. Each pass is three gh searches; five
 # minutes keeps the day chip inside its 900s stale check.
