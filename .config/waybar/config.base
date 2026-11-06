@@ -194,8 +194,8 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // System health: a pulse and one dot per system, worst first; the hover says what is down
-    // and what is up (health.sh). Click opens the hub board on Home.
+    // System health: the heart in the overall colour; the hover leads with one dot per system,
+    // worst first, then says what is down and what is up (health.sh). Click opens the hub board on Home.
     "custom/health": {
         "format": "{}",
         "return-type": "json",
