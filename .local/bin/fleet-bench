@@ -55,13 +55,14 @@
 #                                once per run; verify proves each oracle fails at base, passes at merge
 #   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
-#   fleet-bench triage [--dry-run|--coverage|--route <text>...]
+#   fleet-bench triage [--dry-run|--coverage|--route <key>...]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
 #                                cc:red_now item nothing here reads; TRIAGE_ROUTES decides where
 #                                each one goes, and an agent route queues a red fix. --route prints
-#                                each row text with its route, skill and tags, filing nothing
+#                                each key (watch X, runner X, unit X) with its route, skill and
+#                                tags, filing nothing
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
@@ -2463,9 +2464,20 @@ triage_line() {
   [ -r "$TRIAGE_ROUTES" ] || return 1
   while IFS=$'\t' read -r re route skill fix tags; do
     [[ -n "$re" && "$re" != \#* && -n "$fix" ]] || continue
-    grep -qE -- "$re" <<<"$1" && return 0
+    [[ "$1" =~ $re ]] && return 0
   done < "$TRIAGE_ROUTES"
   return 1
+}
+
+# triage_shape <kind> <name>: the row a failure of that kind files, into the caller's text, with
+# its date and cause as stand-ins: the shape the route table matches on.
+triage_shape() {
+  case "$1" in
+    watch) text="check(watch): $2 tripped since 2026-01-01, expected: -" ;;
+    runner) text="fix(runner): $2 is FAILED: -" ;;
+    unit) text="fix(unit): $2 failed: failed" ;;
+    *) text= ;;
+  esac
 }
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
@@ -2548,17 +2560,19 @@ triage_promote() {
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
 # watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
 triage_coverage() {
-  local f n rows=
+  local f n text rows=
   for f in "$TRIAGE_WATCHES"/*.yaml; do
     [ -e "$f" ] || continue
     grep -qE '^expiry: *[^n[:space:]]' "$f" && continue
     n=${f##*/} n=${n%.yaml}
-    rows+="watch $n"$'\t'"check(watch): $n tripped since 2026-01-01, expected: -"$'\t-\n'
+    triage_shape watch "$n"
+    rows+="watch $n"$'\t'"$text"$'\t-\n'
   done
   for f in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$f" ] || continue
     n=${f##*/} n=${n%.conf}
-    rows+="runner $n"$'\t'"fix(runner): $n is FAILED: -"$'\t-\n'
+    triage_shape runner "$n"
+    rows+="runner $n"$'\t'"$text"$'\t-\n'
   done
   [ -z "$rows" ] || triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
 }
@@ -2642,18 +2656,19 @@ cmd_reds() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags
+  local rows filed dry=0 q h text re route skill fix tags key
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
     --route)
-      # The route table as a query, one row text an argument: the Schedules tab's triage column.
+      # The route table as a query, one row key an argument: the Schedules tab's triage column.
       shift
-      for text in "$@"; do
+      for key in "$@"; do
+        triage_shape "${key%% *}" "${key#* }"
         if triage_line "$text"; then
-          printf '%s\t%s\t%s\t%s\n' "$text" "$route" "$skill" "$tags"
+          printf '%s\t%s\t%s\t%s\n' "$key" "$route" "$skill" "$tags"
         else
-          printf '%s\t-\t-\t\n' "$text"
+          printf '%s\t-\t-\t\n' "$key"
         fi
       done
       return 0
@@ -2663,7 +2678,7 @@ cmd_triage() {
       [ -z "$rows" ] || { echo "$rows"; return 1; }
       return 0
       ;;
-    *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <text>...]"; return 2 ;;
+    *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <key>...]"; return 2 ;;
   esac
   rows=$({ triage_rows; triage_log_rows; triage_red_rows; } | grep .)
   [ -n "$rows" ] && rows=$(triage_route "$rows")

@@ -44,7 +44,7 @@ const table = {
   columns: ["kind", "name", "schedule", "last", "result", "streak", "triage", "repo", "next"].map(col),
   facets: [{ key: "kind", on: null, clear: "", values: [{ value: "ci", n: 2, q: "kind:ci" }] }],
 };
-const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
+const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
 const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}` });
 const nightly = row("ci", "playground / Tests", {
   purpose: "the only full run of every class on main", triage: "queued nightly-triage-1", status: "red since 11-01, triage queued, next 02:00",
@@ -52,7 +52,7 @@ const nightly = row("ci", "playground / Tests", {
   runs: [run1(0), run1(1), run1(2), run1(3)],
 });
 const data = { at: 1793942700, summary: "3 scheduled, 2 red, 1 no purpose, CI read 7m ago", errors: [], table,
-  rows: [nightly, row("timer", "journal-sync"), row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9 })] };
+  rows: [nightly, row("timer", "journal-sync"), row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_word: "green 9" })] };
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
 const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("renderSchedules()"); };

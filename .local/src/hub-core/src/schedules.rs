@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike};
 use serde::{Deserialize, Serialize};
 
-use crate::fleet::{self, runner::Watch, Conf};
+use crate::fleet::{self, runner, runner::Watch, Conf};
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 use crate::queue;
@@ -77,6 +77,8 @@ pub struct Schedule {
     pub page: String,
     /// The detail's head: `red since 11-01, triage no fix ar-485, next 02:00`.
     pub status: String,
+    /// `streak_text` for a surface that has only the JSON.
+    pub streak_word: String,
     /// The service it starts, as a red's `unit <name>` names it.
     #[serde(skip)]
     unit: String,
@@ -411,13 +413,12 @@ fn layers(jobs: &[CiJob]) -> String {
     names.join(" -> ")
 }
 
+/// The rows, when the state file was written, and the repos it could not read.
+type CiRead = (Vec<Schedule>, Option<i64>, Vec<String>);
+
 /// The GitHub rows, and when the state file was written. A workflow with no cron is not a
 /// schedule; a run still going has no result yet.
-fn ci_rows(
-    text: &str,
-    at: i64,
-    off: i32,
-) -> Result<(Vec<Schedule>, Option<i64>, Vec<String>), String> {
+fn ci_rows(text: &str, at: i64, off: i32) -> Result<CiRead, String> {
     let st: CiState = serde_json::from_str(text).map_err(|e| format!("state.json: {e}"))?;
     let mut rows = vec![];
     let mut errors = vec![];
@@ -526,11 +527,14 @@ fn agentctl_rows(confs: Vec<Conf>, runs: &[Job], timers: &[Listed]) -> Vec<Sched
         .collect()
 }
 
-/// `systemctl show` output: each unit's properties by its `Id`. A property can repeat.
-fn parse_show(text: &str) -> HashMap<String, Vec<(String, String)>> {
+/// One unit's `systemctl show` properties, in order. A property can repeat.
+type Props = Vec<(String, String)>;
+
+/// `systemctl show` output: each unit's properties by its `Id`.
+fn parse_show(text: &str) -> HashMap<String, Props> {
     text.split("\n\n")
         .filter_map(|b| {
-            let kv: Vec<(String, String)> = b
+            let kv: Props = b
                 .lines()
                 .filter_map(|l| l.split_once('='))
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -541,13 +545,13 @@ fn parse_show(text: &str) -> HashMap<String, Vec<(String, String)>> {
         .collect()
 }
 
-fn prop<'a>(kv: Option<&'a Vec<(String, String)>>, key: &str) -> &'a str {
+fn prop<'a>(kv: Option<&'a Props>, key: &str) -> &'a str {
     kv.and_then(|kv| kv.iter().find(|(k, _)| k == key))
         .map_or("", |(_, v)| v.as_str())
 }
 
 /// A unit's own Description. systemd falls back to the unit's name, which says nothing.
-fn described(kv: Option<&Vec<(String, String)>>) -> &str {
+fn described(kv: Option<&Props>) -> &str {
     let d = prop(kv, "Description");
     if d == prop(kv, "Id") {
         ""
@@ -558,7 +562,7 @@ fn described(kv: Option<&Vec<(String, String)>>) -> &str {
 
 /// A timer's triggers as words and as written, from `TimersCalendar={ OnCalendar=x ; ... }` and
 /// `TimersMonotonic={ OnUnitActiveUSec=5min ; ... }`.
-fn triggers(kv: Option<&Vec<(String, String)>>) -> (String, String) {
+fn triggers(kv: Option<&Props>) -> (String, String) {
     let (mut words, mut raw) = (vec![], vec![]);
     for (k, v) in kv.into_iter().flatten() {
         if k != "TimersCalendar" && k != "TimersMonotonic" {
@@ -583,7 +587,7 @@ fn triggers(kv: Option<&Vec<(String, String)>>) -> (String, String) {
 }
 
 /// The command in `ExecStart={ path=... ; argv[]=<command> ; ... }`, with the home folded.
-fn exec(kv: Option<&Vec<(String, String)>>, home: &str) -> String {
+fn exec(kv: Option<&Props>, home: &str) -> String {
     let e = prop(kv, "ExecStart");
     let cmd = e
         .split_once("argv[]=")
@@ -600,8 +604,8 @@ fn exec(kv: Option<&Vec<(String, String)>>, home: &str) -> String {
 /// systemd's own last start and result, as a streak of one.
 fn timer_rows(
     listed: &[Listed],
-    timers: &HashMap<String, Vec<(String, String)>>,
-    services: &HashMap<String, Vec<(String, String)>>,
+    timers: &HashMap<String, Props>,
+    services: &HashMap<String, Props>,
     runs: &[Job],
     home: &str,
 ) -> Vec<Schedule> {
@@ -655,11 +659,10 @@ struct Cron {
 /// The CronJobs kube-state-metrics reports. Its cron is in the controller's zone, UTC here. The
 /// purpose is the `description` annotation, once its allowlist exposes it.
 fn k8s_rows(c: &Cron, runs: &[Job], off: i32) -> Vec<Schedule> {
-    let find = |of: &'_ [Series], ns: &str, job: &str| -> Option<Series> {
+    fn find<'a>(of: &'a [Series], ns: &str, job: &str) -> Option<&'a Series> {
         of.iter()
             .find(|s| s.label("namespace") == ns && s.label("cronjob") == job)
-            .cloned()
-    };
+    }
     let mut seen: BTreeMap<(String, String), String> = BTreeMap::new();
     for s in &c.info {
         seen.insert(
@@ -696,23 +699,6 @@ fn k8s_rows(c: &Cron, runs: &[Job], off: i32) -> Vec<Schedule> {
         .collect()
 }
 
-/// A Sentinel watch and its `where:`, which names what it looks at.
-struct Seen {
-    watch: Watch,
-    place: String,
-}
-
-/// The text of a watch file's `where:`, a one-liner or a folded block.
-fn place(yaml: &str) -> String {
-    let mut lines = yaml.lines().skip_while(|l| !l.starts_with("where:"));
-    let first = lines.next().unwrap_or("");
-    let rest = lines.take_while(|l| l.starts_with(' ') || l.is_empty());
-    std::iter::once(first.trim_start_matches("where:"))
-        .chain(rest)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Whether `text` has `word` on its own: `unity-core` is not in `unity-core-playground`.
 fn mentions(text: &str, word: &str) -> bool {
     let part = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
@@ -725,11 +711,11 @@ fn mentions(text: &str, word: &str) -> bool {
 /// Whether the watch looks at this row: it shares the row's name, or its `where:` names all the
 /// row's words. Only the `where:`: the rest of a watch file mentions tools it runs and fixes it
 /// suggests, and none of those is what the watch looks at.
-fn about(row: &Schedule, seen: &Seen) -> bool {
-    seen.watch.name == row.name || row.words.iter().all(|w| mentions(&seen.place, w))
+fn about(row: &Schedule, watch: &Watch) -> bool {
+    watch.name == row.name || row.words.iter().all(|w| mentions(&watch.place, w))
 }
 
-/// A route from the table, as `fleet-bench triage --route` prints it.
+/// A route from the table, as `fleet-bench triage --route` prints it, by the key asked about.
 #[derive(Debug, Clone, PartialEq)]
 struct Route {
     route: String,
@@ -750,62 +736,43 @@ fn parse_routes(out: &str) -> HashMap<String, Route> {
     out.lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
-            let text = f.next()?.to_string();
+            let key = f.next()?.to_string();
             let route = f.next()?.to_string();
             let skill = f.next().unwrap_or("").to_string();
             let tags = f.next().unwrap_or("").to_string();
-            Some((text, Route { route, skill, tags }))
+            Some((key, Route { route, skill, tags }))
         })
         .filter(|(_, r)| r.route != "-")
         .collect()
 }
 
-/// The row text each of `row`'s failures would file, in the shape `fleet-bench` writes them, its
-/// watches first: the route table matches on these.
-fn route_texts(row: &Schedule, mine: &[&Seen]) -> Vec<String> {
-    let mut out: Vec<String> = mine
-        .iter()
-        .map(|s| {
-            format!(
-                "check(watch): {} tripped since 2026-01-01, expected: -",
-                s.watch.name
-            )
-        })
-        .collect();
-    match row.kind.as_str() {
-        AGENTCTL => out.push(format!("fix(runner): {} is FAILED: -", row.name)),
-        TIMER => out.push(format!("fix(unit): {} failed: failed", row.unit)),
-        _ => {}
+/// What `fleet-bench` calls `row`'s failures, its watches first: a red's `red`, a route's key.
+fn red_keys(row: &Schedule, mine: &[&Watch]) -> Vec<String> {
+    let mut keys: Vec<String> = mine.iter().map(|w| format!("watch {}", w.name)).collect();
+    if row.kind == AGENTCTL {
+        keys.push(format!("runner {}", row.name));
     }
-    out
+    if !row.unit.is_empty() {
+        keys.push(format!("unit {}", row.unit));
+    }
+    keys
 }
 
 /// Fill what depends on the rest of the fleet: the triage word, the open reds, and After.
 fn join(
     row: &mut Schedule,
-    mine: &[&Seen],
+    mine: &[&Watch],
     routes: &HashMap<String, Route>,
     reds: &[Red],
     held: &HashMap<String, usize>,
 ) {
-    let mut keys: Vec<String> = mine
-        .iter()
-        .map(|s| format!("watch {}", s.watch.name))
-        .collect();
-    if !row.unit.is_empty() {
-        keys.push(format!("unit {}", row.unit));
-    }
-    if row.kind == AGENTCTL {
-        keys.push(format!("runner {}", row.name));
-    }
+    let keys = red_keys(row, mine);
     let open: Vec<&Red> = reds.iter().filter(|r| keys.contains(&r.red)).collect();
     row.open = open
         .iter()
         .map(|r| format!("{} ({})", r.slug, r.outcome))
         .collect();
-    let route = route_texts(row, mine)
-        .iter()
-        .find_map(|t| routes.get(t).cloned());
+    let route = keys.iter().find_map(|k| routes.get(k));
     row.triage = match (open.first(), &route) {
         (Some(r), _) => format!("{} {}", r.outcome, r.slug),
         (None, Some(r)) => r.word(),
@@ -813,8 +780,7 @@ fn join(
     };
     row.after = mine
         .iter()
-        .map(|s| {
-            let w = &s.watch;
+        .map(|w| {
             let tripped = if w.state == "TRIP" { ", tripped" } else { "" };
             format!("Sentinel {} (pages {}{tripped})", w.name, w.severity)
         })
@@ -895,23 +861,12 @@ fn path(var: &str, home: &str, rel: &str) -> PathBuf {
         .unwrap_or_else(|| Path::new(home).join(rel))
 }
 
-fn seen_watches(dir: &Path, state: &Path) -> Result<Vec<Seen>, String> {
-    Ok(fleet::runner::watches(dir, state)?
-        .into_iter()
-        .map(|watch| {
-            let file = dir.join(format!("{}.yaml", watch.name));
-            let place = place(&std::fs::read_to_string(file).unwrap_or_default());
-            Seen { watch, place }
-        })
-        .collect())
-}
-
 /// `systemctl --user show` for `units`, or nothing with none to ask about.
 fn show(
     runner: &dyn Runner,
     units: &[&str],
     props: &str,
-) -> Result<HashMap<String, Vec<(String, String)>>, String> {
+) -> Result<HashMap<String, Props>, String> {
     if units.is_empty() {
         return Ok(HashMap::new());
     }
@@ -922,35 +877,102 @@ fn show(
     runner.run(&argv).map(|o| parse_show(&o))
 }
 
-fn read_cron(errors: &mut Vec<String>) -> Cron {
-    let base = match prom::base() {
-        Ok(b) => b,
-        Err(e) => {
-            errors.push(format!("k8s: {e}"));
-            return Cron::default();
-        }
-    };
-    let mut q = |m: &str| {
-        prom::instant(&base, m).unwrap_or_else(|e| {
-            errors.push(format!("k8s: {e}"));
-            vec![]
-        })
-    };
-    Cron {
-        info: q("kube_cronjob_info"),
-        next: q("kube_cronjob_next_schedule_time"),
-        suspended: q("kube_cronjob_spec_suspend"),
-        annotations: q("kube_cronjob_annotations"),
-    }
+/// `r`'s value, or its error noted under `src` and nothing.
+fn noted<T: Default>(r: Result<T, String>, src: &str, errors: &mut Vec<String>) -> T {
+    r.unwrap_or_else(|e| {
+        errors.push(format!("{src}: {e}"));
+        T::default()
+    })
 }
 
-/// Every schedule the four sources know of.
-pub fn read(paths: &fleet::Paths, runner: &dyn Runner) -> Schedules {
+fn tagged(found: Vec<String>, src: &str, errors: &mut Vec<String>) {
+    errors.extend(found.into_iter().map(|e| format!("{src}: {e}")));
+}
+
+/// The k8s rows and what went wrong reading them.
+fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
+    let mut errors = vec![];
+    let cron = match prom::base() {
+        Ok(base) => {
+            let mut q = |m: &str| noted(prom::instant(&base, m), "k8s", &mut errors);
+            Cron {
+                info: q("kube_cronjob_info"),
+                next: q("kube_cronjob_next_schedule_time"),
+                suspended: q("kube_cronjob_spec_suspend"),
+                annotations: q("kube_cronjob_annotations"),
+            }
+        }
+        Err(e) => {
+            errors.push(format!("k8s: {e}"));
+            Cron::default()
+        }
+    };
+    let (runs, e) = jobs::k8s_runs(at, at - WEEK);
+    tagged(e, "k8s", &mut errors);
+    (k8s_rows(&cron, &runs, off), errors)
+}
+
+/// Every timer systemd lists, the rows of those agentctl does not own, and what went wrong.
+fn read_timers(
+    runner: &dyn Runner,
+    at: i64,
+    home: &str,
+) -> (Vec<Listed>, Vec<Schedule>, Vec<String>) {
+    let mut errors = vec![];
+    let list = runner
+        .run(&["systemctl", "--user", "list-timers", "--all", "-o", "json"].map(String::from))
+        .and_then(|o| serde_json::from_str(&o).map_err(|e| format!("list-timers: {e}")));
+    let listed: Vec<Listed> = noted(list, "timers", &mut errors);
+    let plain: Vec<&Listed> = listed
+        .iter()
+        .filter(|t| !t.activates.starts_with("agentctl@"))
+        .collect();
+    let units: Vec<&str> = plain.iter().map(|t| t.unit.as_str()).collect();
+    let services: Vec<&str> = plain.iter().map(|t| t.activates.as_str()).collect();
+    let timers = noted(
+        show(
+            runner,
+            &units,
+            "Id,Description,TimersCalendar,TimersMonotonic",
+        ),
+        "timers",
+        &mut errors,
+    );
+    let ran = noted(
+        show(runner, &services, "Id,Description,Result,ExecStart"),
+        "timers",
+        &mut errors,
+    );
+    let (runs, e) = jobs::timer_runs(at - WEEK, at);
+    tagged(e, "timers", &mut errors);
+    let rows = timer_rows(&listed, &timers, &ran, &runs, home);
+    (listed, rows, errors)
+}
+
+/// Every schedule the four sources know of. They read at once, as `jobs::collect` does: only the
+/// triage routes wait, on the rows they are asked about.
+pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     let at = jobs::now();
     let off = Local::now().offset().local_minus_utc();
     let home = std::env::var("HOME").unwrap_or_default();
     let mut errors = vec![];
     let mut rows = vec![];
+
+    let (timers, k8s, reds, queued) = std::thread::scope(|s| {
+        let timers = s.spawn(|| read_timers(runner, at, &home));
+        let k8s = s.spawn(|| read_k8s(at, off));
+        let reds = s.spawn(|| reds::read(runner).map(|r| r.open));
+        let queued = s.spawn(|| queue::list(runner, "queued"));
+        let gone = || "panicked".to_string();
+        (
+            timers
+                .join()
+                .unwrap_or_else(|_| (vec![], vec![], vec![gone()])),
+            k8s.join().unwrap_or_else(|_| (vec![], vec![gone()])),
+            reds.join().unwrap_or_else(|_| Err(gone())),
+            queued.join().unwrap_or_else(|_| Err(gone())),
+        )
+    });
 
     let state = path(
         "SCHEDULES_STATE",
@@ -972,93 +994,54 @@ pub fn read(paths: &fleet::Paths, runner: &dyn Runner) -> Schedules {
         }
     };
 
-    let listed: Vec<Listed> = runner
-        .run(&["systemctl", "--user", "list-timers", "--all", "-o", "json"].map(String::from))
-        .and_then(|o| serde_json::from_str(&o).map_err(|e| format!("list-timers: {e}")))
-        .unwrap_or_else(|e| {
-            errors.push(format!("timers: {e}"));
-            vec![]
-        });
-
+    let (listed, timer_rows, e) = timers;
+    errors.extend(e);
     let (confs, e) = fleet::read_confs(&paths.agents, &paths.jobs.agentctl);
-    errors.extend(e.into_iter().map(|e| format!("agentctl: {e}")));
+    tagged(e, "agentctl", &mut errors);
     let (runs, e) = jobs::agentctl_runs(&paths.jobs, at - WEEK);
-    errors.extend(e.into_iter().map(|e| format!("agentctl: {e}")));
+    tagged(e, "agentctl", &mut errors);
     rows.extend(agentctl_rows(confs, &runs, &listed));
+    rows.extend(timer_rows);
+    let (k8s_rows, e) = k8s;
+    rows.extend(k8s_rows);
+    errors.extend(e);
 
-    let plain: Vec<&Listed> = listed
+    let (dir, sentinel) = runner::watch_dirs(&home, |k| std::env::var(k).unwrap_or_default());
+    let watches = noted(runner::watches(&dir, &sentinel), "sentinel", &mut errors);
+    let mine: Vec<Vec<&Watch>> = rows
         .iter()
-        .filter(|t| !t.activates.starts_with("agentctl@"))
-        .collect();
-    let units: Vec<&str> = plain.iter().map(|t| t.unit.as_str()).collect();
-    let services: Vec<&str> = plain.iter().map(|t| t.activates.as_str()).collect();
-    let mut shown = |units: &[&str], props: &str| {
-        show(runner, units, props).unwrap_or_else(|e| {
-            errors.push(format!("timers: {e}"));
-            HashMap::new()
-        })
-    };
-    let timers = shown(&units, "Id,Description,TimersCalendar,TimersMonotonic");
-    let units_ran = shown(&services, "Id,Description,Result,ExecStart");
-    let (runs, e) = jobs::timer_runs(at - WEEK, at);
-    errors.extend(e.into_iter().map(|e| format!("timers: {e}")));
-    rows.extend(timer_rows(&listed, &timers, &units_ran, &runs, &home));
-
-    let cron = read_cron(&mut errors);
-    let (runs, e) = jobs::k8s_runs(at, at - WEEK);
-    errors.extend(e.into_iter().map(|e| format!("k8s: {e}")));
-    rows.extend(k8s_rows(&cron, &runs, off));
-
-    let watches = seen_watches(
-        &path("SENTINEL_WATCHES", &home, ".agent/watches"),
-        &path("SENTINEL_STATE", &home, ".local/state/watch-companion"),
-    )
-    .unwrap_or_else(|e| {
-        errors.push(format!("sentinel: {e}"));
-        vec![]
-    });
-    let mine: Vec<Vec<&Seen>> = rows
-        .iter()
-        .map(|r| watches.iter().filter(|s| about(r, s)).collect())
+        .map(|r| watches.iter().filter(|w| about(r, w)).collect())
         .collect();
 
     let mut argv: Vec<String> = ["fleet-bench", "triage", "--route"]
         .map(String::from)
         .to_vec();
-    let mut texts: Vec<String> = rows
+    let mut keys: Vec<String> = rows
         .iter()
         .zip(&mine)
-        .flat_map(|(r, m)| route_texts(r, m))
+        .flat_map(|(r, m)| red_keys(r, m))
         .collect();
-    texts.sort();
-    texts.dedup();
-    argv.extend(texts);
-    let routes = runner
-        .run(&argv)
-        .map(|o| parse_routes(&o))
-        .unwrap_or_else(|e| {
-            errors.push(format!("triage routes: {e}"));
-            HashMap::new()
-        });
-    let reds = reds::read(runner).map(|r| r.open).unwrap_or_else(|e| {
-        errors.push(format!("reds: {e}"));
-        vec![]
-    });
+    keys.sort();
+    keys.dedup();
+    argv.extend(keys);
+    let routes = noted(
+        runner.run(&argv).map(|o| parse_routes(&o)),
+        "triage routes",
+        &mut errors,
+    );
+    let reds = noted(reds, "reds", &mut errors);
+    let queued = noted(queued, "queue", &mut errors);
     let mut held: HashMap<String, usize> = HashMap::new();
-    match queue::list(runner, "queued") {
-        Ok(items) => {
-            for t in items.iter().flat_map(|i| i.tag_list()) {
-                if t.starts_with("nightly:") {
-                    *held.entry(t.to_string()).or_default() += 1;
-                }
-            }
+    for t in queued.iter().flat_map(|i| i.tag_list()) {
+        if t.starts_with("nightly:") {
+            *held.entry(t.to_string()).or_default() += 1;
         }
-        Err(e) => errors.push(format!("queue: {e}")),
     }
 
     for (row, m) in rows.iter_mut().zip(&mine) {
         join(row, m, &routes, &reds, &held);
         row.status = status(row, at, off);
+        row.streak_word = row.streak_text();
     }
     rank(&mut rows);
     Schedules {
@@ -1354,9 +1337,12 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         let yaml =
             "name: n\nwhere: >-\n  GitHub, Org/app, test.yml\n  and multi.yml\nprobe: dream\n";
         let mut w = watch("nightly", "OK");
-        w.place = place(yaml);
-        assert_eq!(place("where: one line\nprobe: x").trim(), "one line");
-        assert_eq!(place("name: none"), "");
+        w.place = runner::place(yaml);
+        assert_eq!(
+            runner::place("where: one line\nprobe: x").trim(),
+            "one line"
+        );
+        assert_eq!(runner::place("name: none"), "");
 
         let row = |name: &str, words: &[&str]| Schedule {
             name: name.into(),
@@ -1379,15 +1365,12 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         );
     }
 
-    fn watch(name: &str, state: &str) -> Seen {
-        Seen {
-            watch: Watch {
-                name: name.into(),
-                state: state.into(),
-                severity: "urgent".into(),
-                ..Default::default()
-            },
-            place: String::new(),
+    fn watch(name: &str, state: &str) -> Watch {
+        Watch {
+            name: name.into(),
+            state: state.into(),
+            severity: "urgent".into(),
+            ..Default::default()
         }
     }
 
@@ -1403,10 +1386,8 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
     #[test]
     fn an_open_red_names_the_triage_and_the_route_fills_after() {
         let w = watch("nightly", "TRIP");
-        let text = "check(watch): nightly tripped since 2026-01-01, expected: -";
-        let routes = parse_routes(&format!(
-            "{text}\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n"
-        ));
+        let routes =
+            parse_routes("watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n");
         assert_eq!(routes.len(), 1, "a dash is no route");
         let held = HashMap::from([("nightly:app".to_string(), 2)]);
         let reds = [
@@ -1437,7 +1418,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
 
     #[test]
     fn a_runner_and_a_unit_match_their_own_reds_and_routes() {
-        let routes = parse_routes("fix(runner): dream is FAILED: -\talert\t-\t\n");
+        let routes = parse_routes("runner dream\talert\t-\t\n");
         let mut row = Schedule {
             kind: AGENTCTL.into(),
             name: "dream".into(),

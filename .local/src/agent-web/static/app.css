@@ -347,8 +347,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }
-  .sched tr > :nth-child(1), .sched tr > :nth-child(3) { display: none; }
-  .sched tr.wdet > :nth-child(1) { display: table-cell; }
+  .sched .opt { display: none; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }

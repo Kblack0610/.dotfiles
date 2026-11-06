@@ -104,7 +104,6 @@ impl SchedulesView {
             right: vec![3],
             cap: vec![(1, name), (2, fit(SCHEDULE_FIT)), (4, 8)],
             mark,
-            ..Default::default()
         }
         .fit(w, p.head());
         if sel {
