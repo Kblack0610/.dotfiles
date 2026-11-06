@@ -1152,3 +1152,77 @@ STUB
   assert_failure 2
   [ ! -e "$HOME/gh.calls" ]
 }
+
+# --- session budgets: checkpoints, not walls ---------------------------------------------------
+# budget_setup: claude-acct answers cost from STUB_COST and records parks (STUB_PARK_BUSY refuses
+# one as mid-turn); agent-queue shows item q1 with STUB_TASK and two earlier sessions.
+budget_setup() {
+  stub claude-acct 'case "$1" in
+  cost) printf "%s" "${STUB_COST-}" ;;
+  park) echo "$2" >> "$HOME/park.calls"
+        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $2: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
+esac'
+  stub agent-queue '[ "$1 $2" = "show q1" ] || exit 1
+jq -n --arg t "${STUB_TASK:-a task}" "{slug: \"q1\", task: \$t, sessions: \"s-old1 s-old2\"}"'
+}
+# brow <bucket>: a queue session row for item q1
+brow() { jq -n --arg b "$1" '{target:"lab/w-agent-1:1", bucket:$b, nudged:false, escalated:true, labels:[], session_id:"s-now", dispatch:"dotfiles: q1"}'; }
+parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
+
+@test "budget: a WORKING session past its budget carries on, logged once per checkpoint, and is not parked" {
+  budget_setup
+  doc "[$(brow WORKING)]"
+  export STUB_COST='{"s-old1":10,"s-old2":8,"s-now":9,"other":500}'   # $27: 1x of the unsized $25
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(grep -c 'budget: lab/w-agent-1:1 (q1 spent \$27, 1x its \$25 unsized budget), still working: carries on to 2x' "$FLEET_SHEPHERD_DIR/log.md")" 1
+  assert_equal "$(parks)" 0
+  [ ! -s "$HOME/pages" ]
+  export STUB_COST='{"s-now":51}'   # the next checkpoint is news again
+  run "$SH" check
+  grep -q 'q1 spent \$51, 2x its \$25 unsized budget), still working: carries on to 3x' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "budget: a STALLED session at its size budget is parked and paged once; an unpark buys one more budget" {
+  budget_setup
+  doc "[$(brow STALLED)]"
+  export STUB_TASK='feat(x): y #size/s' STUB_COST='{"s-old1":7,"s-now":6}'   # $13 past the s $12
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(parks)" 1
+  grep -q 'budget: parked lab/w-agent-1:1 (q1 spent \$13, 1x its \$12 s budget, STALLED)' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(grep -c 'lab/w-agent-1:1 parked at its budget' "$HOME/pages")" 1
+  grep -q 'claude-acct unpark lab/w-agent-1:1' "$HOME/pages"
+  export STUB_COST='{"s-now":25}'   # resumed and spent a second budget: the next checkpoint parks again
+  run "$SH" check
+  assert_equal "$(parks)" 2
+}
+
+@test "budget: WORKING past the last extension parks once its turn ends: one page, retried until it takes" {
+  budget_setup
+  doc "[$(brow WORKING)]"
+  export STUB_COST='{"s-now":80}' STUB_PARK_BUSY=1   # 3x of $25
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(parks)" 2
+  grep -q 'budget: lab/w-agent-1:1 (q1 spent \$80, 3x its \$25 unsized budget, WORKING) parks once its turn ends' "$FLEET_SHEPHERD_DIR/log.md"
+  unset STUB_PARK_BUSY
+  run "$SH" check
+  assert_equal "$(parks)" 3
+  grep -q 'budget: parked lab/w-agent-1:1' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(grep -c . "$HOME/pages")" 1
+  run "$SH" check
+  assert_equal "$(parks)" 3
+}
+
+@test "budget: a session waiting on the human is only logged, and an unread cost takes no checkpoint" {
+  budget_setup
+  doc "[$(brow NEEDS)]"
+  export STUB_COST=''
+  run "$SH" check
+  [ ! -e "$FLEET_SHEPHERD_DIR/.budget" ] || [ ! -s "$FLEET_SHEPHERD_DIR/.budget" ]
+  export STUB_COST='{"s-now":30}'
+  run "$SH" check
+  assert_equal "$(parks)" 0
+  grep -q 'budget: lab/w-agent-1:1 (q1 spent \$30, 1x its \$25 unsized budget), NEEDS: not parked, it is not spending' "$FLEET_SHEPHERD_DIR/log.md"
+}

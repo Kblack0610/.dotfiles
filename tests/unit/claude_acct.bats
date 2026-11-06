@@ -772,6 +772,22 @@ STUB
   assert_output --partial 'Prometheus is unreachable'
 }
 
+@test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" > "$HOME/curl.args"
+echo '{"data":{"result":[{"metric":{"session_id":"s1"},"value":[0,"12.345"]},{"metric":{},"value":[0,"9"]}]}}'
+STUB
+  export CC_PROM_URL=http://prom.test
+  run "$ACCT" cost
+  assert_success
+  assert_output '{"s1":12.35}'
+  grep -q 'USD_total\[7d\]' "$HOME/curl.args"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run "$ACCT" cost
+  assert_failure 2
+}
+
 @test "check: an unknown name is a usage error, not a pass" {
   run "$ACCT" check nonsense
   assert_failure 2
