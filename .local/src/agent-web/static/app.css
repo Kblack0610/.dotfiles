@@ -204,8 +204,9 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 10px 15px; font: inherit; overflow: hidden; }
 .tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c); }
-button.tile { cursor: pointer; }
-button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
+button.tile, a.tile { cursor: pointer; }
+a.tile { text-decoration: none; }
+button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
 .tile.wide { grid-column: span 2; }
 .tl { font-size: 11px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 .tv { font-size: 26px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
@@ -292,6 +293,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
 .tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
@@ -352,6 +354,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
+  .thsort { display: inline-block; padding: 10px 2px; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }
@@ -397,7 +400,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
    plan c5, question c1, permission c6, your turn ink; blocked is stalled amber, failing red. */
 /* One colour per need kind, shared by the card stripe and the tally chip. */
 .k-plan { --k: var(--c5); } .k-ask { --k: var(--c1); } .k-perm { --k: var(--c6); }
-.k-turn { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
+.k-turn { --k: var(--ink); } .k-todo { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
 .need { border-left: 5px solid var(--k, var(--muted)); }
 .nband { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
 .nkind { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }

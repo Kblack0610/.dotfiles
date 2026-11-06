@@ -6,7 +6,7 @@
 // rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -320,20 +320,23 @@ function seekSection() {
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
 // (`#daily/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
 // The retired `#outbox` is Daily's outbox (`#daily/outbox`); `#focus/<note>` is `#daily/<note>`.
+// After a `?` is the tab's own view state, so a view can be linked (`#fleet?lane=deliver&s=failed`).
 function route(hash) {
-  const h = String(hash || "").replace(/^#/, "");
+  const [h, query = ""] = String(hash || "").replace(/^#/, "").split(/\?(.*)/s);
   const at = h.indexOf("/");
   const name = at < 0 ? h : h.slice(0, at);
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
-  return { name, tab: tabOf(name), arg };
+  return { name, tab: tabOf(name), arg, query };
 }
-// Show tab t; arg is what it opens (blank for its front). A tab button replaces the URL, so tab
-// hopping makes no history; an in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
-function setTab(t, arg) {
+// Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
+// button leaves as it was. A tab button replaces the URL, so tab hopping makes no history; an
+// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
+function setTab(t, arg, query) {
   st.tab = t;
   st.arg = arg || "";
+  st.views[t] = query ?? st.views[t] ?? "";
   for (const n of TAB_NAMES) {
     $("tab-" + n).classList.toggle("on", t === n);
     if (n !== "sessions") $(n).hidden = t !== n;
@@ -343,8 +346,17 @@ function setTab(t, arg) {
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
-  const frag = st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t;
-  try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
+  showUrl();
+}
+function showUrl() {
+  const t = st.tab, q = st.views[t];
+  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
+  try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !q ? location.pathname : frag); } catch (e) { /* not fatal */ }
+}
+// The open tab's view state changed: the URL follows it without a history entry.
+function setQuery(q) {
+  st.views[st.tab] = q;
+  showUrl();
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
@@ -401,13 +413,13 @@ function connect() {
 // Back and Forward, and every in-app link, change the fragment; show what it names.
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
-  if (r.tab !== st.tab || r.arg !== st.arg) setTab(r.tab, r.arg);
+  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
 });
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
 document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
-  setTab(r.tab, r.arg);
+  setTab(r.tab, r.arg, r.query);
   connect();
 });

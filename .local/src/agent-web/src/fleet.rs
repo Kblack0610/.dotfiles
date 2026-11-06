@@ -1,5 +1,6 @@
 //! The Fleet tab: hub-core's `fleet`, shared with the TUI. The file parts are read on every
 //! request, so a file event shows at once; the Prometheus part is cached here as Infra's is.
+//! A runner's page (`/api/fleet/runner?name=`) is read only when it is opened, never cached.
 
 use std::time::{Duration, Instant};
 
@@ -42,4 +43,12 @@ impl Cache {
             serde_json::json!({"errors": [e.to_string()], "workers": []}).to_string()
         })
     }
+}
+
+/// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
+pub async fn runner(name: String) -> Result<String, String> {
+    let r = tokio::task::spawn_blocking(move || fleet::runner::read(&Paths::from_env(), &name))
+        .await
+        .map_err(|e| e.to_string())??;
+    serde_json::to_string(&r).map_err(|e| e.to_string())
 }

@@ -39,7 +39,8 @@ immediate next steps without checking in.
 Stop and surface a proposal **only** for irreversible or outward-facing actions:
 
 - Destructive / data-loss ops (deleting files you didn't create, dropping tables, `rm -rf`,
-  overwriting un-backed-up state), force-push or history rewrite.
+  overwriting un-backed-up state).
+- Never force push, on any branch, and never offer it: if pushed history is wrong, a new branch and a new PR.
 - Release tags, `deploy.sh`, widening a rollout, executing a rollback, satisfying any
   human approval gate — the release-coordinator **Hard constraints** apply verbatim
   (`~/.claude/skills/release-coordinator/SKILL.md`); do not restate or weaken them.

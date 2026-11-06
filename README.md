@@ -17,7 +17,7 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.config/shared-hooks/` | `project-map.json`, session preflight, stale-plan archiver — used by all AI tools |
 | `.config/{agentctl,playwright,profile}/` | Local agent/orchestration runtime config |
 | `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, settings (see below) |
-| `.opencode/`, `.cursor/`, `.codeium/`, `.serena/` | Per-tool runtime state |
+| `.opencode/`, `.cursor/`, `.codeium/` | Per-tool runtime state |
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
 | `.local/src/{adb-controller,android-suite,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |

@@ -379,41 +379,6 @@ build_local_rust_tools() {
     done
 }
 
-# rtk-oss (Apache-2.0 edition of rtk-ai/rtk): the command filter behind the token-filter
-# hook (.claude/hooks/token-filter.sh). Pinned with its sha256 so a re-run never pulls an
-# unreviewed release; bump both together. The hook is inert until `token-filter use rtk`.
-RTK_VERSION=1.1.0
-RTK_SHA256_X86_64_LINUX=4dec94a64035e08189ae82fd5408fe4ae9ae27a665fc07e3e3ec3c4c2d8e8a3e
-RTK_SHA256_AARCH64_LINUX=57a4fac13d18da77f0577ea8b68def7934b934bf76d0a6e161f0bfd06b1e1078
-install_rtk() {
-    log_section "Installing rtk-oss $RTK_VERSION"
-    if command -v rtk &>/dev/null && rtk --version 2>/dev/null | grep -q "$RTK_VERSION"; then
-        log_info "rtk $RTK_VERSION already installed"
-        return 0
-    fi
-    if [[ "$(uname -s)" == Darwin ]]; then
-        brew install rtk-ai/tap/rtk-oss || log_warning "brew install rtk-oss failed"
-        return 0
-    fi
-    local target sha
-    case "$(uname -m)" in
-        x86_64)  target=x86_64-unknown-linux-musl; sha=$RTK_SHA256_X86_64_LINUX ;;
-        aarch64) target=aarch64-unknown-linux-gnu; sha=$RTK_SHA256_AARCH64_LINUX ;;
-        *) log_warning "rtk: no build for $(uname -m), skipping"; return 0 ;;
-    esac
-    local tmp; tmp=$(mktemp -d)
-    local tgz="rtk-oss-${target}.tar.gz"
-    if curl -fsSL -o "$tmp/$tgz" "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${tgz}" \
-        && echo "$sha  $tmp/$tgz" | sha256sum -c --quiet - \
-        && tar -xzf "$tmp/$tgz" -C "$tmp" rtk; then
-        install -m 755 "$tmp/rtk" "$HOME/.local/bin/rtk"
-        log_info "rtk $RTK_VERSION installed to ~/.local/bin/rtk"
-    else
-        log_warning "rtk download or checksum failed; token-filter stays on its current method"
-    fi
-    rm -rf "$tmp"
-}
-
 # Setup Git configuration
 setup_git() {
     log_section "Configuring Git"

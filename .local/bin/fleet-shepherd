@@ -23,8 +23,8 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
-#                          and ends the turn on 1, so a quiet tick costs one call, not a pass
+#                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
+#                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -110,6 +110,10 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # then it gets one wind-down nudge. The human set 24h when approving the CHAT bucket, 2026-11-05.
 : "${FLEET_CHAT_CLOSE_H:=24}"
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
+SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns each shared red episode
+# The project a shared red's item is filed on: the test failures fleet-sessions reads are the
+# playground's local gate (UNITY_TEST_FAILURES), so that repo owns the quarantine and the fix.
+: "${FLEET_SHARED_RED_PROJECT:=unity-core-playground}"
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -185,15 +189,23 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, a nudged row whose fact
-# survived, or a test red on several branches (shared), is escalated once. PARKED is fleet-pace's, below.
+# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
+# survived, is escalated once. A test red on several branches (shared) is owned by the queue item
+# shared_sample filed, and its sessions are told once; only one with no item escalates.
+# PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" '
+  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
+    --argjson items "$(shared_items)" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
-  , ( (.shared // [])[] | select(.escalated | not)
-      | "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\"" )
+  , ( (.shared // [])[] | select(.escalated | not) | . as $r
+      | ($items[$r.fact] // null) as $item
+      | if $item == null then
+          "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\""
+        elif (.nudged | not) and ((.owners // []) | length) > 0 then
+          "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
+        else empty end )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
@@ -514,6 +526,41 @@ budget_mark() {
 }
 budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev/null 2>&1 || true; }
 
+# shared_items -> {fact: item slug} from $SHARED_ITEMS, as JSON for cmd_due.
+shared_items() {
+  [ -s "$SHARED_ITEMS" ] || { echo '{}'; return; }
+  jq -Rn '[inputs | split("\t") | select(length == 2) | {(.[0]): .[1]}] | add // {}' "$SHARED_ITEMS"
+}
+
+# shared_sample: one queue item owns each shared red episode (ar-623). A test red on several
+# branches at once is a shared cause, and before this every branch's session gated again into it
+# alone: 2026-10-30..11-06, 55% of playground test reds sat on 3+ branches and red gates burned 57%
+# of gate pool hours, while the page these rows sent was answered twice. A live item that already
+# names the test's class owns it (a nightly-fix item, say); otherwise one is filed to quarantine the
+# test with an owner and expiry (playground docs/operations/ci.md rule 5) and fix it. A failed add
+# files nothing, so the row stays a `shared red:` line the pass escalates.
+shared_sample() {
+  local fact test reason cls active slug out
+  touch "$SHARED_ITEMS" 2>/dev/null || return 0
+  active="$(agent-queue list --json --state active 2>/dev/null)"
+  while IFS=$'\t' read -r fact test reason; do
+    awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
+    cls="${test%%(*}"; cls="${cls%.*}"; cls="${cls##*.}"
+    slug="$(jq -r --arg t "${test%%(*}" --arg c "$cls" '
+      select(((.task // "") + " " + (.title // "")) as $x | ($x | contains($t)) or ($c != "" and ($x | test("\\b" + $c + "\\b"))))
+      | .slug' <<<"$active" 2>/dev/null | head -1)"
+    if [ -z "$slug" ]; then
+      out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
+        --slug "shared-red-$cls" --title "fix(test): $cls red on several branches at once" \
+        "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
+      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p; s/.*already in the queue: //p' <<<"$out" | head -1)"
+    fi
+    [ -n "$slug" ] || { cmd_log "shared red: could not file an owner for $test: ${out##*: }" >/dev/null; continue; }
+    printf '%s\t%s\n' "$fact" "$slug" >> "$SHARED_ITEMS"
+    cmd_log "shared red: $reason; owned by queue item $slug" >/dev/null
+  done < <(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
 # guesses it: on 2026-10-28 entries stamped 00:55 and 01:00 UTC 10-29 were written at 23:44 UTC.
 cmd_log() {
@@ -572,7 +619,7 @@ settle() {
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
-# check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
+# check: the refresh and gate a pass starts with, shared by the runner and a fleet-lead pass.
 # Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
 # a quiet fleet.
 cmd_check() {
@@ -582,6 +629,8 @@ cmd_check() {
   infra_sample
   # Parks act on sessions, so only the runner or the lease holder takes the checkpoint.
   cmd_holds 2>/dev/null && budget_sample
+  # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
+  cmd_holds 2>/dev/null && shared_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"

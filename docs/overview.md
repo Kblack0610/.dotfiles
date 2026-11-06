@@ -10,7 +10,7 @@ The tmux cockpit: a set of tmux servers, key-bound popup panels and small CLIs t
 
 - Worlds: each world is a tmux server on its own socket (`hub`, `lab`, plus private ones), so one `kill-server` takes out one world. `tmx` hops, toggles and repairs them (`Prefix+H`, `Prefix+C-h`, `Prefix+N`).
 - Routing: a directory belongs to a world by the manifests in `.config/tmux-servers/`, asked through `tmux-world route <dir>`.
-- Finders: `sessionizer.sh` (`Prefix+f`) opens a repo or worktree as a session, `sesh` (`Prefix+S`) lists the current world, `projects.sh` (`Prefix+p`) lists projects with stage and open counts.
+- Finders: `sessionizer.sh` (`Prefix+f`) opens a repo or worktree as a session, `tmx pick` (`Prefix+H`) is the one picker across every world, `projects.sh` (`Prefix+p`) lists projects with stage and open counts.
 - Worktrees: `wt new` and `wt done` (`Prefix+F`, `Prefix+X`) cut a worktree under `~/.worktrees/` with its own session and reap it again.
 - Agent surfaces: `agent-panel` (`Prefix+g`, `Prefix+G`), `questions.sh` (`Prefix+y`), `fleet.sh` (`Prefix+C-g`), `hub` (`Prefix+i`), and the scratch Claude (`Prefix+A`).
 - Window tags (`tags.sh`, `tmux-tags`) and one editor window per session (`editor.sh`, `Prefix+Space`).

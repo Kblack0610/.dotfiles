@@ -78,7 +78,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | Keys / command | What |
 |---|---|
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
-| `Prefix+H` | **every world as a tree**: opens collapsed to the worlds, open one to see its sessions and windows (also bare `tmx`) |
+| `Prefix+H` | **every world as a tree**: opens collapsed to the worlds; Enter goes to a world, session or window, Tab folds or unfolds a world (also bare `tmx`) |
 | `Prefix+C-h` | **the other world**: hub goes to lab, anywhere else goes to hub, back on the window you left (`tmx toggle`) |
 | `Prefix+N` | **today's daily** on hub (`tmx root hub`) |
 | `tmx ls` | every server + session counts |
@@ -100,7 +100,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 + STRANDED  1  no agent, no manifest
 ```
 
-Enter or a click on a `+` row opens it in place, and again on its `-` row closes it. Enter or a click on a session or window row goes there; on a world that is not running it starts the world and hops in. Typing shows every row, open or not, so `needs` or `stranded` filters across all worlds. An open world:
+Enter or a click on any row goes there: a world resumes where you were on it (starting it if it is down), a session or window opens on that row. Tab or a right-click on a `+` row opens it in place, and again on its `-` row closes it. STRANDED is a group, not a place, so Enter folds it too. Typing shows every row, open or not, so `needs` or `stranded` filters across all worlds. An open world:
 
 ```
 - hub  2 sessions  2 need you
@@ -217,7 +217,14 @@ Two things verified, both load-bearing:
 - tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
   `detach-client -E`, which runs a command after the client detaches so the
   detach+attach reads as one motion. `new-session -A` makes each binding double as
-  the boot path.
+  the boot path. A tmx move to the server you are already on is a plain
+  `switch-client` instead, because a re-attach is a new client and a new client has no
+  last session. `Prefix+L` is `tmx back`: the last place this terminal was, session and
+  window, on any world. Stock `switch-client -l` cannot be it, since it is per server and
+  ignores a window jump within one session (the agent panel's). Hooks in `.tmux.conf`
+  (`client-attached`, `client-session-changed`, `session-window-changed`, index 1) run
+  `tmx mark` on every arrival, whatever moved you, and it keeps the place now and the one
+  before per client tty in `~/.local/state/tmx/places/`.
 
 **tmux cannot move a live session between servers** - there is no `move-session -L`.
 Putting an existing session on another server means recreating it there.

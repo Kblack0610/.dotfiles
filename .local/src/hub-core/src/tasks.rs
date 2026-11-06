@@ -39,6 +39,8 @@ pub struct Row {
     pub lane: String,
     pub version: Option<String>,
     pub game: Option<String>,
+    /// The row's `type(area):` type (`feat`, `run`, ...), when its title has a well-formed one.
+    pub r#type: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,

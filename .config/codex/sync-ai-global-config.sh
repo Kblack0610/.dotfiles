@@ -219,13 +219,9 @@ opencode_path = os.environ["OPENCODE_CONFIG_PATH"]
 opencode_stage_path = os.environ["OPENCODE_STAGE_PATH"]
 opencode_current = read_json(opencode_path)
 opencode_stage = read_json(opencode_stage_path)
-current_mcp = opencode_current.get("mcp", {})
-shared_mcp = opencode_stage.get("mcp", {})
-
-for key, value in shared_mcp.items():
-    current_mcp[key] = value
-
-opencode_current["mcp"] = current_mcp
+# opencode.jsonc is a required rulesync output (asserted above), so the stage is never
+# absent here; replacing the block prunes a removed server, as the Gemini branch does.
+opencode_current["mcp"] = opencode_stage.get("mcp", {})
 write_json(opencode_path, opencode_current)
 PY
 

@@ -37,7 +37,7 @@
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
 #        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
-#        · land <name> <last|root|session[:window]>
+#        · land <name> <last|root|session[:window]> · back · mark
 #        · reload
 
 set -uo pipefail
@@ -319,16 +319,78 @@ cmd_open() {
   _enter "$srv" "$t"
 }
 
-# Where this client is now, as "<server>\t<session>\t<window>". Non-zero outside tmux, or
-# when tmux cannot resolve a current client.
+# Where this client is now, as "<server>\t<session>\t<window>\t<client tty>". Non-zero
+# outside tmux, or when tmux cannot resolve a current client.
 _current_loc() {
   [ -n "${TMUX:-}" ] || return 1
-  local loc sock sess win
-  # One display-message, not three: the fields have to describe the SAME moment.
-  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}" 2>/dev/null)" || return 1
-  IFS=$'\t' read -r sock sess win <<<"$loc"
+  local loc sock sess win tty
+  # One display-message, not four: the fields have to describe the SAME moment.
+  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}"$'\t'"#{client_tty}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r sock sess win tty <<<"$loc"
   [ -n "$sock" ] && [ -n "$sess" ] || return 1
-  printf '%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win"   # socket path -> server name
+  printf '%s\t%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win" "$tty"   # socket path -> server name
+}
+
+# Prefix+L: the last PLACE this terminal was, a session and window on any world. tmux's own
+# switch-client -l cannot answer that: it is per server, so a cross-world hop (a fresh client)
+# has nothing, and per session, so a window jump inside one session (the agent panel, muxpoon)
+# is skipped. The hooks in .tmux.conf call `mark` on every arrival; `back` goes to the place
+# before. Keyed by tty, which survives a hop while the client does not.
+PLACES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/places"
+
+_places_file() { printf '%s/%s\n' "$PLACES_DIR" "${1//\//_}"; }
+
+# _mark_one <tty> <server> <session> <window_id> -- the file holds "now" then "before".
+_mark_one() {
+  local f here now
+  f="$(_places_file "$1")" here="$2"$'\t'"$3"$'\t'"$4"
+  now="$(head -1 "$f" 2>/dev/null)"
+  [ "$now" = "$here" ] && return 0
+  printf '%s\n%s\n' "$here" "$now" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
+}
+
+# mark <socket_path> <session> <window_id> [<tty>] -- this terminal is now here. With no tty
+# (session-window-changed has no client), every terminal attached to that session.
+cmd_mark() {
+  local sock="${1:-}" sess="${2:-}" win="${3:-}" tty="${4:-}" srv
+  [ -n "$sock" ] && [ -n "$sess" ] && [ -n "$win" ] || return 0
+  srv="${sock##*/}"
+  mkdir -p "$PLACES_DIR" 2>/dev/null || return 0
+  if [ -n "$tty" ]; then
+    _mark_one "$tty" "$srv" "$sess" "$win"
+    return 0
+  fi
+  while IFS= read -r tty; do
+    [ -n "$tty" ] && _mark_one "$tty" "$srv" "$sess" "$win"
+  done < <(tmux -L "$srv" list-clients -t "=$sess" -F '#{client_tty}' 2>/dev/null)
+  return 0
+}
+
+# back -- Prefix+L: go to the place before this one. A window that has closed since means its
+# session, on whatever window it shows now.
+cmd_back() {
+  local loc tty="" srv="" sess="" win=""
+  loc="$(_current_loc)" && IFS=$'\t' read -r _ _ _ tty <<<"$loc"
+  [ -n "$tty" ] && { read -r _ && IFS=$'\t' read -r srv sess win; } 2>/dev/null < "$(_places_file "$tty")"
+  if [ -z "$srv" ] || [ -z "$sess" ] || ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null; then
+    # A message, not a failure: run-shell shows a non-zero exit as a broken-key popup.
+    tmux display-message "tmx: no last place"
+    return 0
+  fi
+  tmux -L "$srv" list-windows -t "=$sess" -F '#{window_id}' 2>/dev/null | grep -qxF -- "$win" || win=""
+  _enter "$srv" "$sess${win:+:$win}"
+}
+
+# _arrive <server> [<session>] -- the last step of land: attach this terminal, or, when the
+# client is already on <server> (TMX_ARRIVE=switch), switch it there rather than replace it. TMX_CLIENT names the client to switch; empty means tmux's current one.
+_arrive() {
+  local srv="$1" sess="${2:-}"
+  if [ "${TMX_ARRIVE:-}" = switch ]; then
+    exec tmux -L "$srv" switch-client ${TMX_CLIENT:+-c "$TMX_CLIENT"} ${sess:+-t "=$sess"}
+  fi
+  # $TMUX is still set after a detach -E (see _enter); attach refuses to nest while it is.
+  unset TMUX
+  exec tmux -L "$srv" attach ${sess:+-t "=$sess"}
 }
 
 # Two ways to arrive in a world, on purpose:
@@ -350,6 +412,14 @@ _enter() {
   fi
 
   if [ -n "${TMUX:-}" ]; then
+    local loc srv=""
+    loc="$(_current_loc)" && srv="${loc%%$'\t'*}"
+    # Already on that server: no socket to cross, so switch the client instead of replacing it
+    # with a fresh attach, which blanks the terminal for nothing.
+    if [ "$srv" = "$target" ]; then
+      ( TMX_ARRIVE=switch cmd_land "$target" "$mode" )
+      return 0
+    fi
     # -E runs after this client detaches, so the two halves read as one motion.
     #
     # It MUST dispatch to `land`, not back to hop/root. tmux does NOT clear $TMUX
@@ -391,6 +461,11 @@ _drive_newest() {
   if [ -z "${client:-}" ]; then
     command -v kitty >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || return 1
     setsid -f kitty -e "$SELF" land "$target" "$mode" >/dev/null 2>&1
+    return 0
+  fi
+  if [ "$srv" = "$target" ]; then
+    ( TMX_ARRIVE=switch TMX_CLIENT="$client" cmd_land "$target" "$mode" ) || return 1
+    _focus_terminal "$pid"
     return 0
   fi
   tmux -L "$srv" detach-client -t "$client" -E \
@@ -472,8 +547,7 @@ cmd_land() {
         # session was left.
         [ -n "$want_win" ] &&
           tmux -L "$target" select-window -t "$want_sess:$want_win" 2>/dev/null
-        unset TMUX
-        exec tmux -L "$target" attach -t "=$want_sess"
+        _arrive "$target" "$want_sess"
       fi
       # Picked a session that died between listing and landing — fall through to
       # resume rather than dumping the user on an error.
@@ -491,10 +565,7 @@ cmd_land() {
       lwin="$(_landing_window "$target" "$landing")"
       [ -n "$lwin" ] && tmux -L "$target" select-window -t "$landing:$lwin" 2>/dev/null
       _refresh_landing "$target" "$landing"
-      # $TMUX is still set here (see _enter); attach refuses to nest while it is,
-      # so drop it. -L already selects the server, so nothing else needs it.
-      unset TMUX
-      exec tmux -L "$target" attach -t "=$landing"
+      _arrive "$target" "$landing"
     fi
   fi
 
@@ -520,11 +591,10 @@ cmd_land() {
   # Nothing but the root in this world — go there rather than nowhere.
   [ -n "$last" ] || last="$landing_name"
 
-  unset TMUX
   if [ -n "$last" ] && tmux -L "$target" has-session -t "=$last" 2>/dev/null; then
-    exec tmux -L "$target" attach -t "=$last"
+    _arrive "$target" "$last"
   fi
-  exec tmux -L "$target" attach
+  _arrive "$target"
 }
 
 # _recent_session <server> [exclude] -- the session you were last working on in a world:
@@ -815,9 +885,11 @@ cmd_pick() {
   choice="$(_tree_rows | fzf --reverse --border --no-sort \
     --delimiter=$'\t' --with-nth=4 \
     --prompt='worlds > ' \
-    --header='Enter/click: open a world, go to a session or window . Esc: cancel' \
+    --header='Enter/click: go there . Tab/right-click: fold or unfold a world . Esc: cancel' \
     --bind "enter:transform:$q tree-enter {5}" \
     --bind "left-click:transform:$q tree-enter {5}" \
+    --bind "tab:transform:$q tree-fold {5}" \
+    --bind "right-click:transform:$q tree-fold {5}" \
     --bind 'double-click:ignore' \
     --bind "change:reload:$q tree-rows {q}")"
   rm -rf "$dir"                    # before the hop: _enter may exec tmux
@@ -826,7 +898,7 @@ cmd_pick() {
   IFS=$'\t' read -r srv sess win _ <<<"$choice"
   [ -n "$srv" ] || return 0
   if [ -z "$sess" ]; then
-    cmd_hop "$srv"                 # a world that is down: start it and go there
+    cmd_hop "$srv"                 # a world row: resume where you were on it, starting it if down
   elif [ -n "$win" ]; then
     _enter "$srv" "$sess:$win"
   else
@@ -835,8 +907,8 @@ cmd_pick() {
 }
 
 # _tree_rows [query] -- the picker's rows: <server> <session> <window> <display> <key>.
-# <key> names what Enter on that row opens or closes (a world, or STRANDED); an empty key
-# means Enter goes there. Reads $TMX_PICK_DIR/rows and its `open` list; with a query, every
+# <key> names what Tab on that row opens or closes (a world, or STRANDED); an empty key
+# means there is nothing to fold. Reads $TMX_PICK_DIR/rows and its `open` list; with a query, every
 # row is shown so fzf can search all of them.
 _tree_rows() {
   local dir="${TMX_PICK_DIR:?tree-rows runs inside tmx pick}"
@@ -859,10 +931,18 @@ _tree_rows() {
   ' "$dir/rows"
 }
 
-# tree-enter <key> -- the fzf action for Enter or a click: open or close <key>, or go there.
+# tree-enter <key> -- the fzf action for Enter or a click: go there, a world included (it
+# resumes where you were on it). STRANDED is a group, not a place, so it folds instead.
 _tree_enter() {
-  local dir="${TMX_PICK_DIR:?tree-enter runs inside tmx pick}" key="${1:-}"
-  if [ -z "$key" ]; then echo accept; return; fi
+  [ "${1:-}" = STRANDED ] && { _tree_fold STRANDED; return; }
+  echo accept
+}
+
+# tree-fold <key> -- the fzf action for Tab or a right-click: open or close <key>, a world or
+# STRANDED. A row with no key (a session or window) has nothing to fold.
+_tree_fold() {
+  local dir="${TMX_PICK_DIR:?tree-fold runs inside tmx pick}" key="${1:-}"
+  [ -n "$key" ] || return 0
   if grep -qxF -- "$key" "$dir/open"; then
     grep -vxF -- "$key" "$dir/open" > "$dir/open.new"; mv "$dir/open.new" "$dir/open"
   else
@@ -897,11 +977,14 @@ main() {
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
+    back)         cmd_back ;;
+    mark)         shift; cmd_mark "$@" ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
     pick)         cmd_pick ;;
     rows)         _all_rows ;;
     tree-rows)    shift; _tree_rows "${1:-}" ;;
     tree-enter)   shift; _tree_enter "${1:-}" ;;
+    tree-fold)    shift; _tree_fold "${1:-}" ;;
     reload)       cmd_reload ;;
     -h|--help)    sed -n '2,40p' "$SELF" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case

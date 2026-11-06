@@ -31,6 +31,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
+       hub tab fleet [RUNNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub needs --json | --page
@@ -44,10 +45,11 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its open rows)
+          over its open rows, 'fleet RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
-          no card has opens every project's rows searched for it, as `/` would)
+          no card has opens every project's rows searched for it, as `/` would); fleet takes
+          a runner: `hub tab fleet inbox-triage` opens its page
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
@@ -184,13 +186,14 @@ fn actions(args: Vec<String>) -> i32 {
     i32::from(!g.errors.is_empty())
 }
 
-/// What Home joins: the fleet state with its asks read live, the queue and, unless
-/// `with_infra` is false, infra (a Prometheus round trip).
+/// What Home joins: the fleet state with its asks read live, the queue, the board feed and,
+/// unless `with_infra` is false, infra (a Prometheus round trip).
 fn gather(
     with_infra: bool,
 ) -> (
     serde_json::Value,
     hub_core::queue::Queue,
+    Result<hub_core::tasks::Feed, String>,
     Option<hub_core::infra::Infra>,
 ) {
     let state = hub_core::boards::state(
@@ -200,7 +203,13 @@ fn gather(
     std::thread::scope(|s| {
         let infra = with_infra.then(|| s.spawn(hub_core::infra::gather));
         let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
-        (state, queue, infra.map(|i| i.join().unwrap_or_default()))
+        let board = hub_core::tasks::feed(&hub_core::session_actions::System);
+        (
+            state,
+            queue,
+            board,
+            infra.map(|i| i.join().unwrap_or_default()),
+        )
     })
 }
 
@@ -212,8 +221,8 @@ fn needs(args: Vec<String>) -> i32 {
         ["--page"] => true,
         _ => die(USAGE),
     };
-    let (state, queue, infra) = gather(!page);
-    let home = hub_core::home::build(&state, Some(&queue), infra.as_ref());
+    let (state, queue, board, infra) = gather(!page);
+    let home = hub_core::home::build(&state, Some(&queue), Some(&board), infra.as_ref());
     if !page {
         let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
         println!("{out}");
@@ -239,9 +248,9 @@ fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let (state, queue, infra) = gather(true);
+    let (state, queue, board, infra) = gather(true);
     let infra = infra.unwrap_or_default();
-    let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
     let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
@@ -301,8 +310,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 &hub_core::session_actions::System,
             ));
         }
+        // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
         if t == Tab::Fleet {
-            a.fleet = Some(hub_core::fleet::collect());
+            match section.as_deref().and_then(fleettab::runner_arg) {
+                Some(name) => {
+                    a.fleet_page = Some(name.to_string());
+                    a.fleet_runner = Some(hub_core::fleet::runner::read(
+                        &hub_core::fleet::Paths::from_env(),
+                        name,
+                    ));
+                }
+                None => a.fleet = Some(hub_core::fleet::collect()),
+            }
         }
         a.tab = t;
         for l in a.page_lines(w) {
@@ -380,6 +399,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     // them here or Infra prints "reading".
     if matches!(tab, None | Some(Tab::Infra)) {
         a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
+    }
+    // Home's NEEDS YOU joins the human-sheet rows.
+    if matches!(tab, None | Some(Tab::Home)) {
+        a.tasks = Some(hub_core::tasks::feed(&hub_core::session_actions::System));
     }
     let tabs = match tab {
         Some(t) => vec![t],
@@ -470,6 +493,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     app.read_jobs();
     app.read_boards();
     app.read_queue();
+    if app.tab == Tab::Home {
+        app.read_tasks();
+    }
     if app.tab == Tab::Queue {
         app.read_candidates();
     }

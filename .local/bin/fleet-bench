@@ -24,7 +24,8 @@
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
-#                                KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS;
+#                                KPIs over 7d and 28d of human sessions (the token ones from the
+#                                nightly token-usage snapshots), against KPI_THRESHOLDS;
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
@@ -48,8 +49,8 @@
 #                                a week (retro runs it), start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
 #                                once per run; verify proves each oracle fails at base, passes at merge
-#   fleet-bench room             whether the agent boards take a row nobody asked for: exit 1 while
-#                                board_open is past board_open_max (retro, triage and research-pick hold)
+#   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
+#                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
@@ -88,6 +89,8 @@
 #                                day, wait and time to PR, from `agent-queue stats`
 #   fleet-bench models [--json] landed rate, redo rate, reverts and cost per PR by model over
 #                                BENCH_QUEUE_DAYS: queue model= joined to outcomes and model-lane runs
+#   fleet-bench sizes [--json]  work minutes per row size over BENCH_SIZES_DAYS against the weight
+#                                the rollups use, and cycle and lead time per row kind
 #   fleet-bench requests [--json] [--since T]
 #                                the human's urgent requests, one row each (a plan chain is one row),
 #                                then those finished since T: the head of every shepherd summary
@@ -125,6 +128,8 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
+: "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
@@ -162,6 +167,7 @@ set -uo pipefail
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
+: "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${BENCH_JUDGE_CMD:=judge-eval}"                 # the judge lanes scored against their ground truth: `kpi --json`
@@ -840,6 +846,8 @@ cmd_scorecard() {
     echo
     models_section "$t"
     echo
+    sizes_section "$t"
+    echo
     echo "## Sessions"
     echo
     echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
@@ -1186,7 +1194,7 @@ cmd_asks() {
 LEDGER_GATED="runners timers launches_direct"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
-# claude or opencode outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
+# claude, opencode or codex outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
 # Anthropic /v1/messages URL) with no registered agent at all. Comments, echo lines, docs and
 # tests are not call sites, and agent-run's harnesses are the launcher itself.
 # git grep honours .gitignore, so 1.8G of build output under .local/src is never read;
@@ -1197,7 +1205,7 @@ headless_launches() {
   for d in "$@"; do
     [ -d "$d" ] || continue
     (cd "$d" && git grep --no-index --exclude-standard -nIiE \
-      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|\bopencode run\b|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
+      '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|\bopencode run\b|\b(codex|codex_bin)\b[^|#]* exec( |$|")|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
       -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )' | grep -v '/agent-run/harnesses/'
@@ -1216,9 +1224,9 @@ scheduled_runner() {
 # board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
 board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
 
-# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS, the WIP
-# limit that keeps intake at throughput. A filer holds a row nobody asked for (no #requested)
-# while it is full and says so; no threshold is no limit.
+# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
+# only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
+# board-open watch alerts on; no threshold is no limit.
 intake_room() {
   local n max
   n=$(board_open_count)
@@ -1500,7 +1508,9 @@ ask_kpi() {
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
-# rows, $c the CI rows and $k the canary score rows (slurped). Older lines have no runner field;
+# rows, $c the CI rows and $k the canary score rows (slurped). The token KPIs are sums over the
+# nightly token-usage snapshots ($tk) of the whole days in the window, all sessions, so a token lever
+# gets the same kpi, improve and effect verdicts as a process one. Older lines have no runner field;
 # _runner is where headless runs are filed. A canary session is an eval, not work: it leaves the
 # human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 KPI_DEFS="$JQ_LIB"'
@@ -1514,6 +1524,10 @@ KPI_DEFS="$JQ_LIB"'
     | ($k | map(select(.epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
+    | ($since | strflocaltime("%Y-%m-%d")) as $d0 | ($t | strflocaltime("%Y-%m-%d")) as $d1
+    | ($tk | map(select((.date // "") >= $d0 and .date < $d1))) as $tw
+    | ($tw | map(select(.merged_prs | numbers))) as $tp
+    | ($tw | map(select(.context_split.start | numbers))) as $ts
     | {sessions: ($s | length), prs_per_session: ratio($prs; $s | length),
        revert_rate: ratio(($s | total(.reverted_7d)); $prs),
        interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
@@ -1523,16 +1537,35 @@ KPI_DEFS="$JQ_LIB"'
        canary_runs: ($kw | length), canary_pass_rate: ratio(($kw | map(select(.pass == true)) | length); $kw | length),
        canary_cost_per_task: ratio(($ks | total(.cost_usd)); $ks | length),
        canary_min_per_task: ratio(($ks | total(.duration_s)) / 60; $ks | length),
-       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length)};
+       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length),
+       responses_per_merged_pr: ratio(($tp | total(.totals.responses)); $tp | total(.merged_prs)),
+       context_per_merged_pr: (ratio(($tp | total(.totals.context)); $tp | total(.merged_prs)) | if . then round else . end),
+       tool_chars_per_call: ratio(($tw | total(.totals.tool_chars)); $tw | total(.totals.tool_calls)),
+       locate_read_share: ratio(($tw | total(.reads.locate_then_read)); $tw | total(.reads.reads)),
+       reread_share: ratio(($tw | total(.reads.reread_same_lines)); $tw | total(.reads.reads)),
+       cache_write_share: ratio(($tw | total(.totals.cache_write)); $tw | total(.totals.context)),
+       start_share: ratio(($ts | total(.context_split.start)); $ts | total(.totals.context)),
+       compactions_per_session: ratio(($tw | total(.compactions)); $tw | total(.sessions))};
   # which way is better: -1 lower, 1 higher, 0 neither (sessions is volume, not quality)
   def better: {sessions: 0, prs_per_session: 1, revert_rate: -1, interrupts_per_session: -1,
                cost_per_pr: -1, ci_red_per_pr: -1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
-               canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1};'
+               canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1,
+               responses_per_merged_pr: -1, context_per_merged_pr: -1, tool_chars_per_call: -1,
+               locate_read_share: -1, reread_share: -1, cache_write_share: -1, start_share: -1,
+               compactions_per_session: -1};'
 
 # kpi_ci -> the CI rows file, or /dev/null when there are none
 kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
 # kpi_canary -> the canary score rows file, or /dev/null when there are none
 kpi_canary() { [ -s "$CANARY" ] && printf '%s' "$CANARY" || printf /dev/null; }
+# kpi_tokens -> each nightly token-usage snapshot (agent-usage tokens snapshot is its one writer), cut
+# to the token KPIs' inputs, one a line; nothing when there are none
+kpi_tokens() {
+  local f=("$BENCH_TOKENS_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json)
+  [ -e "${f[0]}" ] || return 0
+  jq -c '{date, merged_prs, compactions, context_split, reads, sessions: ([.by_kind[]?.sessions | numbers] | add),
+           totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
+}
 
 # kpi_json <now> <ledger counts> [historic] -> one object keyed by KPI, in table order. historic=1
 # (kpi --at) leaves the comms and the counted-now KPIs null: nothing records them as of a past time.
@@ -1540,7 +1573,7 @@ kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
-  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" \
+  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
      --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
@@ -1563,7 +1596,7 @@ kpi_json() {
 # kpi_trend <now> <days> -> one object a day, oldest first: {date, <kpi>: its 7d value as of that
 # day's end}. The outcome rows are the history, so a trend needs no store of its own.
 kpi_trend() {
-  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
+  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     range($n - 1; -1; -1) as $i | ($t - $i * 86400) as $at
     | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7)'
 }
@@ -1787,6 +1820,79 @@ cmd_models() {
   if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else models_section "$(now)" | sed '1,4d'; fi
 }
 
+# sizes_json <now> -> the size calibration and per-kind cycle time over BENCH_SIZES_DAYS: each
+# done item (cancelled left out) joined through its `row:` to that row on its project's roadmap,
+# which gives the size, the weight and the kind (the item's own `type:` when no row is found).
+# A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
+# median work over the median of the calibrated weight-1 size with the most items. Percentiles
+# are nearest rank.
+sizes_json() {
+  local since rows projects p items
+  since=$(( $1 - BENCH_SIZES_DAYS * 86400 ))
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null | jq -cs .) || return 1
+  projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
+  # the roadmaps go in as a file: a big project's is past the length of one argument
+  rows=$(for p in $projects; do
+      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind}}'
+    done | jq -cs 'from_entries')
+  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson min "$BENCH_SIZES_MIN" --argjson since "$since" \
+     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
+    def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
+    def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
+    def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
+    $rows[0] as $R
+    | [$items[0][] | select(.status != "cancelled" and ((.finished | epoch) // 0) >= $since)
+       | ($R[.row // ""]) as $r
+       | {size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+          landed: (.status == "ok" and (.pr // "") != ""),
+          work: (.work_min // "" | tonumber? // null),
+          cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
+          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $all
+    | ($all | map(select(.work != null))) as $timed
+    | ($timed | map(select(.size != "")) | group_by(.size)
+       | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
+              work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
+    | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
+    | {days: $days, min_n: $min, base: ($base.size // null),
+       sizes: ($sz | sort_by(.weight, .size) | map(. + {
+         per_point: (if .calibrated then (.work_p50 / .weight * 10 | round / 10) else null end),
+         measured_weight: (if .calibrated and $base != null and $base.work_p50 > 0 then (.work_p50 / $base.work_p50 * 10 | round / 10) else null end)})),
+       unsized: ($timed | map(select(.size == "")) | length),
+       kinds: ($all | group_by(.kind) | map({kind: .[0].kind, done: length, landed: (map(select(.landed)) | length),
+         work_p50: (map(.work // empty) | pct(0.5)),
+         cycle_p50_h: (map(.cycle // empty) | pct(0.5) | hours), cycle_p90_h: (map(.cycle // empty) | pct(0.9) | hours),
+         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind))}'
+}
+
+# sizes_section <now>: the size calibration and the per-kind cycle time, in the scorecard
+sizes_section() {
+  local j
+  echo "## Sizes and kinds"
+  echo
+  echo "Queue items finished in the last ${BENCH_SIZES_DAYS} days, joined through their \`row:\` to the row's size and kind on its roadmap. Work is the items' work_min (minutes a session was working). A size is calibrated at ${BENCH_SIZES_MIN} or more items; its measured weight is its median work over the base size's, to set beside the weight the rollups use. Cycle is started to finished, lead is queued to finished."
+  echo
+  j=$(sizes_json "$1") || { echo "- sizes: ? (the done queue items are unreadable)"; return 0; }
+  jq -r 'def d: if . == null then "-" else tostring end;
+    "| Size | Weight | Items | Work p50 min | Work p75 min | Min per point | Measured weight |",
+    "|---|---|---|---|---|---|---|",
+    (.min_n as $m | .sizes[] | "| \(.size) | \(.weight) | \(.n) | " + (if .calibrated
+       then "\(.work_p50) | \(.work_p75) | \(.per_point) | \(.measured_weight | d) |"
+       else "- | - | - | too few (\(.n) of \($m)) |" end)),
+    "",
+    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)",
+    "",
+    "| Kind | Done | Landed | Work p50 min | Cycle p50 h | Cycle p90 h | Lead p50 h |",
+    "|---|---|---|---|---|---|---|",
+    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$j"
+}
+
+cmd_sizes() {
+  local j
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench sizes [--json]"; return 2 ;; esac
+  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else sizes_section "$(now)" | sed '1,4d'; fi
+}
+
 wakes_lines() {
   local w win="${BENCH_WINDOW_H}h"
   w=$($BENCH_WAKES_CMD --since "$win" --json 2>/dev/null) && jq -e .all <<<"$w" >/dev/null 2>&1 \
@@ -1895,7 +2001,7 @@ cmd_effect() {
   fi
   local out
   out=$(jq -n --argjson t "$t" --argjson d "$days" --argjson now "$(now)" --argjson flat "$BENCH_EFFECT_FLAT" \
-        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
+        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     win($t; $d) as $b | win($t + $d * 86400; $d) as $a | ($now >= $t + $d * 86400) as $done
     | {ref: $ref, at: ($t | todate), days: $d, kpis: [$b | keys_unsorted[] as $k | better[$k] as $dir
         | {kpi: $k, before: $b[$k], after: (if $done then $a[$k] else null end),
@@ -1924,12 +2030,14 @@ def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
 effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
-# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
+# board_open is never picked: a full board is the board-open watch's alert, and a session whose job
+# is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and .key != "board_open" and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
@@ -2129,20 +2237,16 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A new row with no #requested is held while intake_room says full. A row whose
-# condition cleared is left for whoever owns it. Every row is #size/s. Leaves the counts in
-# UPSERT_ADDED, UPSERT_EDITED, UPSERT_HELD and UPSERT_FULL (intake_room's line); FAILED is reported here.
+# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
+# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
-  local board p text pri have rc added=0 edited=0 held=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0
-  UPSERT_FULL=$(intake_room) && UPSERT_FULL=''
+  local board p text pri have rc added=0 edited=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
-    if [ -z "$have" ] && [ -n "$UPSERT_FULL" ] && [[ " $text $pri " != *' #requested '* ]]; then
-      held=$((held + 1))
-    elif [ -z "$have" ]; then
+    if [ -z "$have" ]; then
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
       case $rc in
@@ -2156,16 +2260,15 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_HELD=$held
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
-  [ "${UPSERT_HELD:-0}" -eq 0 ] || did+=", $UPSERT_HELD held ($UPSERT_FULL)"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_HELD:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -2479,7 +2582,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
   h=$(triage_human "$rows")
   q=$(triage_promote "$rows")
   upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
@@ -3447,6 +3550,7 @@ main() {
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
+    sizes) shift; cmd_sizes "$@" ;;
     -h | --help) usage ;;
     *) usage >&2; return 2 ;;
   esac

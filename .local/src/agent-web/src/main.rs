@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
+        .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/pipeline", get(pipeline_line))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
@@ -1001,7 +1002,8 @@ async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::H
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&infra))
+        let board = hub_core::tasks::feed(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
     })
     .await
     .map(Json)
@@ -1030,6 +1032,18 @@ async fn fleet_board(State(s): State<Shared>) -> Response {
         s.fleet.get().await,
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct RunnerQuery {
+    name: String,
+}
+
+async fn fleet_runner(Query(q): Query<RunnerQuery>) -> ApiResult<Response> {
+    let json = fleet::runner(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) -> Response {

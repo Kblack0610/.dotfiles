@@ -62,7 +62,7 @@ EOF
   # returns early, which would make every assertion below pass vacuously.
   printf '%%1\n' > "$NOTES_FIXTURE/tmux.panes"
 
-  # `land`, not `root`: with $TMUX set, `root` only records the crumb and detaches with
+  # `land`, not `root`: with $TMUX set, `root` to another world detaches with
   # `-E ... land <world> root`. The far side is where _refresh_landing actually runs, so
   # that is the subject. TMUX stays UNSET for the same reason land ignores it.
   unset TMUX

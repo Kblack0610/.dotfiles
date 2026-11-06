@@ -5,11 +5,13 @@
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
-//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers, and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
+//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers (else the runner's own status `next=`), and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
 //! | tonight      | the workers and the user timers again, in the order they run until 07:00 (`tonight`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
+//!
+//! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
 //!
 //! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
 //! server can cache it apart and `apply` it to a fresh file read.
@@ -24,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
+
+pub mod runner;
 
 const DAY: i64 = 24 * 3600;
 const WEEK: i64 = 7 * DAY;
@@ -62,6 +66,8 @@ pub struct Paths {
     pub calls: PathBuf,
     /// The judge scorer; `JUDGE_EVAL` overrides it (tests, a checkout).
     pub judge_eval: String,
+    /// The notes CLI's state dir, which holds the ingest record (`ingest.jsonl`).
+    pub notes_state: PathBuf,
 }
 
 impl Paths {
@@ -78,6 +84,7 @@ impl Paths {
             jobs,
             dispatch: crate::boards::dispatch_dir(),
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
+            notes_state: home.join(".local/state/notes"),
         }
     }
 }
@@ -108,6 +115,14 @@ pub struct Worker {
     pub enabled: bool,
     /// Set while its unit runs.
     pub running_since: Option<i64>,
+    /// "running", "idle" or "off", one each; a failure in the last 24h is `failed_24h`, which
+    /// can sit on any of them.
+    pub state: String,
+    /// How long a run usually takes: the 90th percentile of the week's finished runs, seconds.
+    /// None under `USUAL_RUNS` of them.
+    pub usual_s: Option<i64>,
+    /// It is running, and has been for longer than `usual_s` and `OVERDUE_FLOOR_S`.
+    pub overdue: bool,
     /// Its newest finished run in the week, else its newest activity line.
     pub last: Option<Outcome>,
     pub runs_24h: u32,
@@ -123,6 +138,152 @@ pub struct Worker {
     pub registry: Registry,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
+    /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
+    /// The Fleet tab's judge tiles link to the runner whose block they summarise.
+    pub detail: String,
+}
+
+/// The runner whose page draws the `detail` extras block (`DETAIL=` in its conf), for a link
+/// from a summary of that block; None when no conf names it.
+pub fn page_for<'a>(workers: &'a [Worker], detail: &str) -> Option<&'a str> {
+    workers
+        .iter()
+        .find(|w| w.detail == detail)
+        .map(|w| w.name.as_str())
+}
+
+/// The Workers state chips, in order; `Worker::shown` says what each keeps. agent-web's
+/// `W_FILTERS` lists them too.
+pub const WORKER_FILTERS: [&str; 5] = ["all", "failed", "running", "idle", "off"];
+/// What the Workers table sorts by, biggest or newest first; a runner with no value sorts last.
+pub const WORKER_SORTS: [&str; 4] = ["runs", "failed", "cost", "last"];
+/// Fewer finished runs than this in the week say nothing about a usual length.
+const USUAL_RUNS: usize = 3;
+/// One run in ten passes `usual_s` by definition, so a run this short is never overdue: a
+/// three-second runner would otherwise jump the table for a moment at every slow start.
+const OVERDUE_FLOOR_S: i64 = 60;
+
+impl Worker {
+    /// Whether this runner is under one of `WORKER_FILTERS`.
+    fn shown(&self, filter: &str) -> bool {
+        match filter {
+            "all" => true,
+            "failed" => self.failed_24h > 0,
+            state => self.state == state,
+        }
+    }
+
+    /// Whether `q`, in lower case, is in its name, description or why.
+    fn hits(&self, q: &str) -> bool {
+        let why = self
+            .why
+            .as_ref()
+            .map_or(String::new(), |o| format!("{} {}", o.word, o.text));
+        [self.name.as_str(), &self.description, &why]
+            .iter()
+            .any(|t| t.to_lowercase().contains(q))
+    }
+
+    /// What `WORKER_SORTS`' key orders on; a time for "last", where a run in progress counts
+    /// from its start.
+    fn sort_value(&self, key: &str) -> Option<f64> {
+        match key {
+            "runs" => Some(f64::from(self.runs_24h)),
+            "failed" => Some(f64::from(self.failed_24h)),
+            "cost" => self.cost_24h,
+            "last" => self
+                .running_since
+                .or(self.last.as_ref().and_then(|o| o.at))
+                .map(|t| t as f64),
+            _ => None,
+        }
+    }
+}
+
+/// Every lane in `ws`, sorted, for the lane filter.
+pub fn lanes(ws: &[Worker]) -> Vec<String> {
+    let set: std::collections::BTreeSet<&String> = ws
+        .iter()
+        .map(|w| &w.lane)
+        .filter(|l| !l.is_empty())
+        .collect();
+    set.into_iter().cloned().collect()
+}
+
+/// A filtered and sorted view of the Workers table. The default keeps everything in hub-core's
+/// exceptions-first order; `state` is one of `WORKER_FILTERS`, `sort` one of `WORKER_SORTS`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkerView {
+    pub q: String,
+    pub lane: String,
+    pub state: String,
+    pub sort: String,
+}
+
+impl Default for WorkerView {
+    fn default() -> Self {
+        Self {
+            q: String::new(),
+            lane: String::new(),
+            state: WORKER_FILTERS[0].to_string(),
+            sort: String::new(),
+        }
+    }
+}
+
+impl WorkerView {
+    fn matches(&self, w: &Worker) -> bool {
+        let q = self.q.trim().to_lowercase();
+        (self.lane.is_empty() || w.lane == self.lane) && (q.is_empty() || w.hits(&q))
+    }
+
+    /// Whether the search, lane and state all keep `w`.
+    pub fn keeps(&self, w: &Worker) -> bool {
+        self.matches(w) && w.shown(&self.state)
+    }
+
+    /// The rows it keeps, in its sort or else in `ws`'s own order.
+    pub fn apply<'a>(&self, ws: &'a [Worker]) -> Vec<&'a Worker> {
+        let mut out: Vec<&Worker> = ws.iter().filter(|w| self.keeps(w)).collect();
+        out.sort_by(
+            |a, b| match (a.sort_value(&self.sort), b.sort_value(&self.sort)) {
+                (Some(x), Some(y)) => y.total_cmp(&x),
+                (x, y) => y.is_some().cmp(&x.is_some()),
+            },
+        );
+        out
+    }
+
+    /// How many runners each of `WORKER_FILTERS` would show under the search and lane.
+    pub fn counts(&self, ws: &[Worker]) -> [(&'static str, usize); 5] {
+        let kept: Vec<&Worker> = ws.iter().filter(|w| self.matches(w)).collect();
+        WORKER_FILTERS.map(|f| (f, kept.iter().filter(|w| w.shown(f)).count()))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn cycle_state(&mut self) {
+        let at = WORKER_FILTERS.iter().position(|f| *f == self.state);
+        let next = at.map_or(0, |i| (i + 1) % WORKER_FILTERS.len());
+        self.state = WORKER_FILTERS[next].to_string();
+    }
+
+    pub fn cycle_sort(&mut self) {
+        self.sort = next_of(&WORKER_SORTS, &self.sort);
+    }
+
+    pub fn cycle_lane(&mut self, lanes: &[String]) {
+        let lanes: Vec<&str> = lanes.iter().map(String::as_str).collect();
+        self.lane = next_of(&lanes, &self.lane);
+    }
+}
+
+/// The value after `cur` in `list`, then back to blank, which keeps everything.
+fn next_of(list: &[&str], cur: &str) -> String {
+    let after = list.iter().position(|v| *v == cur).map_or(0, |i| i + 1);
+    list.get(after).map_or(String::new(), |v| v.to_string())
 }
 
 /// A lane's score over a window as judge-eval counts and words it (its `score_7d`), never
@@ -417,22 +578,16 @@ pub fn files(paths: &Paths) -> Fleet {
         .collect();
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
+        // A runner no timer starts can name its own next try (inbox-triage's retry).
+        w.next = w
+            .next
+            .or_else(|| runner::status_next(&paths.jobs.agentctl, &w.name));
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
         w.score = scores.get(&w.name).cloned();
     }
     let tonight = tonight(&workers, &timers, at);
 
-    let mut dispatch = match tail(&paths.dispatch.join("verdicts.jsonl"), VERDICT_TAIL) {
-        Ok((text, cut)) => verdicts(&text, cut, at),
-        Err(e) => {
-            errors.push(format!("dispatch: {e}"));
-            Dispatch::default()
-        }
-    };
-    match tail(&paths.dispatch.join("log.md"), LOG_TAIL) {
-        Ok((text, _)) => dispatch.log_24h = log_counts(&text, &local_minute(at - DAY)),
-        Err(e) => errors.push(format!("dispatch log: {e}")),
-    }
+    let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
     Fleet {
         at,
         errors,
@@ -442,6 +597,22 @@ pub fn files(paths: &Paths) -> Fleet {
         judge,
         ..Default::default()
     }
+}
+
+/// fleet-dispatch's verdicts and log.md counts, for the Fleet tab's tile and its runner page.
+fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
+    let mut dispatch = match tail(&dir.join("verdicts.jsonl"), VERDICT_TAIL) {
+        Ok((text, cut)) => verdicts(&text, cut, at),
+        Err(e) => {
+            errors.push(format!("dispatch: {e}"));
+            Dispatch::default()
+        }
+    };
+    match tail(&dir.join("log.md"), LOG_TAIL) {
+        Ok((text, _)) => dispatch.log_24h = log_counts(&text, &local_minute(at - DAY)),
+        Err(e) => errors.push(format!("dispatch log: {e}")),
+    }
+    dispatch
 }
 
 /// The Prometheus part: accounts, cost per runner and the total, asked at once.
@@ -520,19 +691,21 @@ pub struct Conf {
     pub effect: String,
     /// A call's CALLER; empty on a runner.
     pub caller: String,
+    pub detail: String,
 }
 
-/// A conf's (or a role's) `KEY=value` lines as agentctl sources them, for the keys asked for.
-/// Quotes are stripped and `$HOME` expanded; nothing fancier is.
-fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
+/// A conf's (or a role's) `KEY=value` lines as agentctl sources them, in file order. Quotes are
+/// stripped and `$HOME` expanded; nothing fancier is. A comment or a line whose left side is not
+/// a shell name is skipped.
+fn assignments(text: &str, home: &str) -> Vec<(String, String)> {
+    let mut out = vec![];
     for l in text.lines() {
         let l = l.trim();
         let l = l.strip_prefix("export ").unwrap_or(l);
         let Some((k, v)) = l.split_once('=') else {
             continue;
         };
-        if !keys.contains(&k) {
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
         let v = v.trim();
@@ -541,12 +714,20 @@ fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
             .and_then(|x| x.strip_suffix('"'))
             .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
             .unwrap_or(v);
-        out.insert(
+        out.push((
             k.to_string(),
             v.replace("${HOME}", home).replace("$HOME", home),
-        );
+        ));
     }
     out
+}
+
+/// The `assignments` for the keys asked for; a later line wins, as in the shell.
+fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
+    assignments(text, home)
+        .into_iter()
+        .filter(|(k, _)| keys.contains(&k.as_str()))
+        .collect()
 }
 
 /// One runner's conf, for the keys the tab shows.
@@ -565,6 +746,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             "PROMPT",
             "EFFECT",
             "CALLER",
+            "DETAIL",
         ],
         home,
     );
@@ -586,6 +768,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
         prompt: get("PROMPT"),
         effect: get("EFFECT"),
         caller: get("CALLER"),
+        detail: get("DETAIL"),
     }
 }
 
@@ -682,59 +865,67 @@ fn langfuse_sessions(conf: &Path) -> String {
     }
 }
 
+/// One calls.jsonl line: the agent that made it, the call, and its prompt's short sha. A line
+/// that does not parse, or has no agent or time, is None.
+pub(crate) fn parse_call(l: &str, lf: &str) -> Option<(String, Call, String)> {
+    let v = serde_json::from_str::<serde_json::Value>(l).ok()?;
+    let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let agent = s("agent");
+    let at = ts(&s("at"))?;
+    if agent.is_empty() {
+        return None;
+    }
+    let sid = s("session_id");
+    let call = Call {
+        id: s("id"),
+        at,
+        ms: n("duration_ms"),
+        ok: n("exit") == 0 && v.get("is_error").and_then(|x| x.as_bool()) != Some(true),
+        model: Some(s("gen_ai.response.model"))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| s("gen_ai.request.model")),
+        cost: v.get("cost_usd").and_then(|x| x.as_f64()),
+        tokens: n("gen_ai.usage.input_tokens")
+            + n("gen_ai.usage.output_tokens")
+            + n("cache_read_tokens")
+            + n("cache_write_tokens"),
+        link: if lf.is_empty() || sid.is_empty() {
+            String::new()
+        } else {
+            format!("{lf}{sid}")
+        },
+    };
+    Some((agent, call, s("prompt_sha").chars().take(7).collect()))
+}
+
 /// Each runner's calls from calls.jsonl: the day before `at` counted, and the newest
 /// `RECENT_CALLS` in the tail listed. `lf` is the Langfuse sessions URL a call's session_id
 /// joins; empty leaves the links empty.
 pub fn calls(text: &str, lf: &str, at: i64) -> HashMap<String, Calls> {
+    calls_of(text.lines().filter_map(|l| parse_call(l, lf)), at)
+}
+
+/// `calls` over lines already parsed by `parse_call`, in file order.
+pub(crate) fn calls_of(
+    rows: impl IntoIterator<Item = (String, Call, String)>,
+    at: i64,
+) -> HashMap<String, Calls> {
     let mut by: HashMap<String, (Calls, Vec<u64>)> = HashMap::new();
-    let n = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    for l in text.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
-            continue;
-        };
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let agent = s("agent");
-        let Some(t) = ts(&s("at")) else { continue };
-        if agent.is_empty() {
-            continue;
-        }
-        let ok = n(&v, "exit") == 0 && v.get("is_error").and_then(|x| x.as_bool()) != Some(true);
-        let tokens = n(&v, "gen_ai.usage.input_tokens")
-            + n(&v, "gen_ai.usage.output_tokens")
-            + n(&v, "cache_read_tokens")
-            + n(&v, "cache_write_tokens");
-        let cost = v.get("cost_usd").and_then(|x| x.as_f64());
-        let ms = n(&v, "duration_ms");
-        let sid = s("session_id");
-        let model = Some(s("gen_ai.response.model"))
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| s("gen_ai.request.model"));
+    for (agent, call, sha) in rows {
         let (c, durs) = by.entry(agent).or_default();
-        if t >= at - DAY {
+        if call.at >= at - DAY {
             c.n_24h += 1;
-            c.errors_24h += u32::from(!ok);
-            if let Some(x) = cost {
+            c.errors_24h += u32::from(!call.ok);
+            if let Some(x) = call.cost {
                 *c.cost_24h.get_or_insert(0.0) += x;
             }
-            c.tokens_24h += tokens;
-            durs.push(ms);
+            c.tokens_24h += call.tokens;
+            durs.push(call.ms);
         }
         // The file is in write order, so the last line seen is the newest.
-        c.prompt_sha = s("prompt_sha").chars().take(7).collect();
-        c.recent.push(Call {
-            id: s("id"),
-            at: t,
-            ms,
-            ok,
-            model,
-            cost,
-            tokens,
-            link: if lf.is_empty() || sid.is_empty() {
-                String::new()
-            } else {
-                format!("{lf}{sid}")
-            },
-        });
+        c.prompt_sha = sha;
+        c.recent.push(call);
         if c.recent.len() > RECENT_CALLS {
             c.recent.remove(0);
         }
@@ -743,9 +934,8 @@ pub fn calls(text: &str, lf: &str, at: i64) -> HashMap<String, Calls> {
         .map(|(k, (mut c, mut durs))| {
             c.recent.reverse();
             durs.sort_unstable();
-            // Nearest rank, as judge-eval's p95.
-            c.p95_ms = (!durs.is_empty())
-                .then(|| durs[((durs.len() * 95).div_ceil(100)).saturating_sub(1)]);
+            // As judge-eval's p95.
+            c.p95_ms = nearest_rank(&durs, 95);
             (k, c)
         })
         .collect()
@@ -800,7 +990,8 @@ fn word_ok(word: &str) -> Option<bool> {
 
 /// One row per configured runner, from its runs in the ledger (the week before `at`), its
 /// newest activity line, and its timer. A ledger name with no conf is a retired runner and
-/// gets no row. Enabled runners first, then by name.
+/// gets no row. Exceptions first: a failure in 24h, then a run past its usual length; then
+/// enabled runners, then by name.
 pub fn workers(
     confs: Vec<Conf>,
     runs: &[Job],
@@ -819,6 +1010,7 @@ pub fn workers(
                     .filter(|&n| n > 0),
                 why: activity.get(&c.name).cloned(),
                 called_by: Some(c.caller).filter(|v| !v.is_empty()),
+                detail: c.detail,
                 name: c.name,
                 lane: c.lane,
                 description: c.description,
@@ -827,6 +1019,7 @@ pub fn workers(
                 ..Default::default()
             };
             let mut newest: Option<&Job> = None;
+            let mut lengths: Vec<i64> = vec![];
             for j in mine {
                 if j.state == State::Running {
                     w.running_since = j.started.or(Some(at));
@@ -836,10 +1029,21 @@ pub fn workers(
                     w.runs_24h += 1;
                     w.failed_24h += u32::from(j.ok == Some(false));
                 }
+                lengths.extend(j.secs);
                 if newest.is_none_or(|n| j.finished > n.finished) {
                     newest = Some(j);
                 }
             }
+            w.usual_s = usual(lengths);
+            w.overdue = w
+                .running_since
+                .is_some_and(|t| w.usual_s.is_some_and(|u| at - t > u.max(OVERDUE_FLOOR_S)));
+            w.state = match (w.running_since, w.enabled) {
+                (Some(_), _) => "running",
+                (None, true) => "idle",
+                (None, false) => "off",
+            }
+            .into();
             w.last = newest
                 .map(|j| Outcome {
                     word: j.result.clone(),
@@ -856,8 +1060,33 @@ pub fn workers(
             w
         })
         .collect();
-    out.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.cmp(&b.name)));
+    let rank = |w: &Worker| match (w.failed_24h > 0, w.overdue) {
+        (true, _) => 0,
+        (false, true) => 1,
+        (false, false) => 2,
+    };
+    out.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then(b.enabled.cmp(&a.enabled))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
+}
+
+/// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
+fn usual(mut lengths: Vec<i64>) -> Option<i64> {
+    if lengths.len() < USUAL_RUNS {
+        return None;
+    }
+    lengths.sort_unstable();
+    nearest_rank(&lengths, 90)
+}
+
+/// The nearest-rank `pct`th percentile of `sorted`, None when it is empty.
+fn nearest_rank<T: Copy>(sorted: &[T], pct: usize) -> Option<T> {
+    let rank = (sorted.len() * pct).div_ceil(100);
+    sorted.get(rank.saturating_sub(1)).copied()
 }
 
 /// The workers (their registry read) in the order they run from `at` to the next 07:00 local:
@@ -1110,6 +1339,7 @@ fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobs::Source;
 
     const T: i64 = 1_762_200_000; // 2025-11-03T12:00:00-08:00
 
@@ -1129,6 +1359,29 @@ mod tests {
     }
 
     #[test]
+    fn a_judge_block_links_to_the_runner_whose_conf_names_it() {
+        let c = parse_conf(
+            "dj",
+            "DETAIL=dispatch-verdicts\n",
+            "/home/k",
+            Path::new("/st"),
+        );
+        assert_eq!(c.detail, "dispatch-verdicts");
+        let w = |name: &str, detail: &str| Worker {
+            name: name.into(),
+            detail: detail.into(),
+            ..Default::default()
+        };
+        let ws = [w("dream", ""), w("dispatch-judge", "dispatch-verdicts")];
+        assert_eq!(page_for(&ws, "dispatch-verdicts"), Some("dispatch-judge"));
+        assert_eq!(
+            page_for(&ws, "ask-judge"),
+            None,
+            "no conf names it, no link"
+        );
+    }
+
+    #[test]
     fn a_conf_reads_its_keys_and_defaults_the_rest() {
         let c = parse_conf(
             "brief",
@@ -1144,6 +1397,7 @@ mod tests {
             c.inbox,
             PathBuf::from("/home/k/.local/state/agentctl/brief")
         );
+        assert_eq!(c.detail, "", "no DETAIL= is no extras block");
         let off = parse_conf("x", "ENABLED=no\n", "/home/k", Path::new("/st"));
         assert!(!off.enabled);
         assert_eq!(
@@ -1214,8 +1468,8 @@ mod tests {
         let names: Vec<_> = w.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(
             names,
-            ["dream", "idle", "sentinel", "off"],
-            "no row for a retired runner"
+            ["dream", "sentinel", "idle", "off"],
+            "no row for a retired runner; a failure in 24h comes first"
         );
 
         let dream = &w[0];
@@ -1232,12 +1486,12 @@ mod tests {
         assert_eq!(dream.next, Some(T + 900));
         assert_eq!(dream.running_since, None);
 
-        let s = &w[2];
+        let s = &w[1];
         assert_eq!((s.runs_24h, s.failed_24h), (1, 1), "STALLED is a failure");
         assert_eq!(s.running_since, Some(T - 5));
         assert_eq!(s.last.as_ref().unwrap().word, "STALLED");
 
-        let idle = &w[1];
+        let idle = &w[2];
         assert_eq!(idle.runs_24h, 0);
         assert_eq!(
             idle.last.as_ref().unwrap().word,
@@ -1591,6 +1845,245 @@ mod tests {
             next: Some(next),
             ..Default::default()
         }
+    }
+
+    fn run(name: &str, start: i64, secs: i64, ok: bool) -> Job {
+        let mut j = Job::new(Source::Agentctl, name, State::Done);
+        j.ok = Some(ok);
+        j.started = Some(start);
+        j.finished = Some(start + secs);
+        j.secs = Some(secs);
+        j
+    }
+
+    fn running(name: &str, start: i64) -> Job {
+        let mut j = Job::new(Source::Agentctl, name, State::Running);
+        j.started = Some(start);
+        j
+    }
+
+    fn read(confs: Vec<Conf>, runs: &[Job], at: i64) -> Vec<Worker> {
+        workers(confs, runs, &HashMap::new(), &HashMap::new(), at)
+    }
+
+    #[test]
+    fn exceptions_come_first_failed_then_past_their_usual_length() {
+        let at = 1_000_000;
+        let usual = |n: &'static str| (1..=4).map(move |i| run(n, at - i * 1000, 100, true));
+        let mut runs: Vec<Job> = usual("late").chain(usual("on-time")).collect();
+        runs.push(running("late", at - 500));
+        runs.push(running("on-time", at - 90));
+        runs.push(run("bad", at - 2000, 100, false));
+        let ws = read(
+            ["a-quiet", "bad", "late", "on-time", "z-quiet"]
+                .map(|n| conf(n, n != "a-quiet"))
+                .to_vec(),
+            &runs,
+            at,
+        );
+        let order: Vec<&str> = ws.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(order, ["bad", "late", "on-time", "z-quiet", "a-quiet"]);
+        assert!(ws[1].overdue, "500s against a usual 100s");
+        assert!(!ws[2].overdue, "90s against a usual 100s is on time");
+        assert_eq!(ws[1].usual_s, Some(100));
+        assert_eq!(
+            ws.iter().map(|w| w.state.as_str()).collect::<Vec<_>>(),
+            ["idle", "running", "running", "idle", "off"]
+        );
+    }
+
+    #[test]
+    fn a_usual_length_needs_three_runs_and_short_ones_are_never_overdue() {
+        let at = 1_000_000;
+        // Two runs say nothing, however long this one has gone on.
+        let mut runs = vec![
+            run("few", at - 9000, 10, true),
+            run("few", at - 8000, 10, true),
+        ];
+        runs.push(running("few", at - 5000));
+        // Twice its usual 5s, and still under the floor.
+        runs.extend((1..=4).map(|i| run("quick", at - i * 1000, 5, true)));
+        runs.push(running("quick", at - 10));
+        let ws = read(vec![conf("few", true), conf("quick", true)], &runs, at);
+        assert_eq!(ws[0].usual_s, None);
+        assert!(!ws[0].overdue);
+        assert_eq!(ws[1].usual_s, Some(5));
+        assert!(!ws[1].overdue);
+    }
+
+    #[test]
+    fn the_usual_length_is_the_ninetieth_percentile() {
+        assert_eq!(usual(vec![1, 2]), None);
+        assert_eq!(usual(vec![3, 1, 2]), Some(3));
+        assert_eq!(usual((1..=10).collect()), Some(9));
+        assert_eq!(usual((1..=20).collect()), Some(18));
+    }
+
+    fn row(name: &str, lane: &str, state: &str) -> Worker {
+        Worker {
+            name: name.into(),
+            lane: lane.into(),
+            state: state.into(),
+            enabled: state != "off",
+            ..Default::default()
+        }
+    }
+
+    fn table() -> Vec<Worker> {
+        let at = |t| Outcome {
+            at: Some(t),
+            ..Default::default()
+        };
+        vec![
+            Worker {
+                failed_24h: 2,
+                runs_24h: 3,
+                cost_24h: Some(1.5),
+                last: Some(at(100)),
+                why: Some(Outcome {
+                    word: "FAILED".into(),
+                    text: "sweep hit a rate limit".into(),
+                    ..Default::default()
+                }),
+                ..row("triage", "maintain", "idle")
+            },
+            Worker {
+                failed_24h: 1,
+                runs_24h: 9,
+                running_since: Some(300),
+                description: "Reads the Inbox".into(),
+                ..row("dispatch", "deliver", "running")
+            },
+            Worker {
+                runs_24h: 1,
+                cost_24h: Some(4.0),
+                last: Some(at(200)),
+                ..row("dream", "deliver", "idle")
+            },
+            row("retired", "", "off"),
+        ]
+    }
+
+    fn shown(v: &WorkerView, ws: &[Worker]) -> Vec<String> {
+        v.apply(ws).iter().map(|w| w.name.clone()).collect()
+    }
+
+    #[test]
+    fn the_filters_keep_by_state_lane_and_search() {
+        let ws = table();
+        let view = |q: &str, lane: &str, state: &str| WorkerView {
+            q: q.into(),
+            lane: lane.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            shown(&view("", "", "all"), &ws).len(),
+            4,
+            "all keeps every runner"
+        );
+        assert_eq!(shown(&view("", "", "failed"), &ws), ["triage", "dispatch"]);
+        assert_eq!(shown(&view("", "", "running"), &ws), ["dispatch"]);
+        assert_eq!(shown(&view("", "", "idle"), &ws), ["triage", "dream"]);
+        assert_eq!(shown(&view("", "", "off"), &ws), ["retired"]);
+        assert_eq!(
+            shown(&view("", "deliver", "all"), &ws),
+            ["dispatch", "dream"]
+        );
+        assert_eq!(shown(&view("", "deliver", "failed"), &ws), ["dispatch"]);
+        assert_eq!(shown(&view("DREAM", "", "all"), &ws), ["dream"], "the name");
+        assert_eq!(
+            shown(&view("inbox", "", "all"), &ws),
+            ["dispatch"],
+            "the description"
+        );
+        assert_eq!(
+            shown(&view("rate limit", "", "all"), &ws),
+            ["triage"],
+            "the why"
+        );
+        assert!(shown(&view("nothing like it", "", "all"), &ws).is_empty());
+    }
+
+    #[test]
+    fn each_chips_count_follows_the_search_and_lane_but_not_the_chip() {
+        let ws = table();
+        let mut v = WorkerView {
+            state: "off".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            v.counts(&ws),
+            [
+                ("all", 4),
+                ("failed", 2),
+                ("running", 1),
+                ("idle", 2),
+                ("off", 1)
+            ]
+        );
+        v.lane = "deliver".into();
+        assert_eq!(
+            v.counts(&ws),
+            [
+                ("all", 2),
+                ("failed", 1),
+                ("running", 1),
+                ("idle", 1),
+                ("off", 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sort_puts_the_biggest_first_and_a_runner_with_no_value_last() {
+        let ws = table();
+        let by = |k: &str| {
+            shown(
+                &WorkerView {
+                    sort: k.into(),
+                    ..Default::default()
+                },
+                &ws,
+            )
+        };
+        assert_eq!(by("runs"), ["dispatch", "triage", "dream", "retired"]);
+        assert_eq!(by("failed"), ["triage", "dispatch", "dream", "retired"]);
+        assert_eq!(by("cost"), ["dream", "triage", "dispatch", "retired"]);
+        assert_eq!(
+            by("last"),
+            ["dispatch", "dream", "triage", "retired"],
+            "a run in progress is newest"
+        );
+        assert_eq!(by("nonsense"), ["triage", "dispatch", "dream", "retired"]);
+    }
+
+    #[test]
+    fn each_filter_cycles_through_its_list_and_back_to_the_start() {
+        let mut v = WorkerView::default();
+        for f in WORKER_FILTERS
+            .iter()
+            .cycle()
+            .skip(1)
+            .take(WORKER_FILTERS.len())
+        {
+            v.cycle_state();
+            assert_eq!(v.state, *f);
+        }
+        assert!(v.is_empty());
+        for k in WORKER_SORTS {
+            v.cycle_sort();
+            assert_eq!(v.sort, k);
+        }
+        v.cycle_sort();
+        assert!(v.is_empty());
+        let ls = lanes(&table());
+        assert_eq!(ls, ["deliver", "maintain"]);
+        v.cycle_lane(&ls);
+        v.cycle_lane(&ls);
+        assert_eq!(v.lane, "maintain");
+        v.cycle_lane(&ls);
+        assert_eq!(v.lane, "");
     }
 
     fn names(t: &Tonight) -> Vec<(&str, Option<&str>)> {

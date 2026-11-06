@@ -23,17 +23,17 @@ Take any already-recommended option/default unless I've contradicted it. Prefer 
 patterns and utilities over net-new code — grep and reuse first. Don't gold-plate.
 
 **Hard-stop boundary (the ONLY thing that pauses you)** — irreversible or outward-facing
-actions only: destructive/data-loss ops, force-push/history rewrite, release tags &
+actions only: destructive/data-loss ops, release tags &
 `deploy.sh`, widening rollouts, rollbacks, any human approval gate (the release-coordinator
 **Hard constraints** apply verbatim — `~/.claude/skills/release-coordinator/SKILL.md`),
 money, auth/secrets/tokens, external sends. Such a gate pauses that one action, never the run:
 build everything up to it with the switch off, open the PR, post one `agent-ask` with the exact
 commands I would run, then carry on with every step and phase that does not need it. Before
-calling a secret mine to provide, look on the box (`rbw list`, `sops -d` on the repo's secrets,
-`~/.ansible-vault-pass`); writing a sops secret whose value you have is yours. Everything
+calling a secret mine to provide, look on the box (`rbw list`, `sops -d` on the repo's secrets); writing a sops secret whose value you have is yours. Everything
 reversible is yours to decide. "Human approval gate" means those release constraints and
 any gate I named myself. Approving your own plan, or splitting my ask into phases, is not one:
 what I asked for already authorizes every phase of it.
+Never force push, on any branch: if pushed history is wrong, use a new branch and a new PR.
 
 **Named-risk stop** - the only other reason to pause. Stop and ask (with your recommendation)
 when you can STATE a concrete risk: it conflicts with another session's open work, it changes

@@ -14,6 +14,7 @@ fn kind(k: Kind) -> &'static str {
         Kind::Ask => "ask",
         Kind::Session => "session",
         Kind::Queue => "queue",
+        Kind::Sheet => "sheet",
         Kind::Nightly => "nightly",
         Kind::Red => "red",
     }
@@ -303,8 +304,14 @@ mod tests {
         assert!(out.contains("HOLDS"), "{out}");
         assert!(out.contains("session, 3 phases"), "{out}");
         let line = out.lines().find(|l| l.contains("Keep the alias?")).unwrap();
-        assert!(line.trim_start().starts_with("~ask") && line.contains(" - "), "{out}");
+        assert!(
+            line.trim_start().starts_with("~ask") && line.contains(" - "),
+            "{out}"
+        );
         // The server's order is kept: the human's row first.
-        assert!(out.find("Which lobby?") < out.find("Keep the alias?"), "{out}");
+        assert!(
+            out.find("Which lobby?") < out.find("Keep the alias?"),
+            "{out}"
+        );
     }
 }
