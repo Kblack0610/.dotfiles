@@ -71,12 +71,72 @@ function workerDetail(w) {
   return `<tr class="wdet"><td colspan="10">${h}</td></tr>`;
 }
 
+// The Workers filter lives in the URL so a view can be linked: `#fleet?lane=deliver&s=failed`.
+// What keeps and orders a row mirrors hub_core::fleet (Worker::shown, hits, sort_value) as
+// askShown does; the two lists are hub-core's, checked by assets.rs.
+const W_FILTERS = ["all", "failed", "running", "idle", "off"];
+const W_SORTS = ["runs", "failed", "cost", "last"];
+const W_CHIP = { all: "All", failed: "Failed 24h", running: "Running", idle: "Idle", off: "Off" };
+const workerShown = (w, s) => s === "all" || (s === "failed" ? w.failed_24h > 0 : w.state === s);
+const W_VALUE = {
+  runs: (w) => w.runs_24h,
+  failed: (w) => w.failed_24h,
+  cost: (w) => w.cost_24h,
+  last: (w) => w.running_since ?? w.last?.at,
+};
+
+function fleetView() {
+  const p = new URLSearchParams(st.views.fleet);
+  const s = p.get("s"), sort = p.get("sort");
+  return { q: p.get("q") || "", lane: p.get("lane") || "", s: W_FILTERS.includes(s) ? s : "all", sort: W_SORTS.includes(sort) ? sort : "", asc: p.get("dir") === "asc" };
+}
+
+// Writes only what differs from the plain view, so the plain view is a bare `#fleet`.
+function setFleetView(patch) {
+  const v = { ...fleetView(), ...patch };
+  const p = new URLSearchParams();
+  if (v.q) p.set("q", v.q);
+  if (v.lane) p.set("lane", v.lane);
+  if (v.s !== "all") p.set("s", v.s);
+  if (v.sort) p.set("sort", v.sort);
+  if (v.sort && v.asc) p.set("dir", "asc");
+  setQuery(p.toString());
+}
+
+// The search and lane, which the chips' counts follow; the chip itself is left out of them.
+function workerMatch(w, v) {
+  const q = v.q.trim().toLowerCase();
+  const hay = [w.name, w.description, w.why ? `${w.why.word} ${w.why.text}` : ""];
+  return (!v.lane || w.lane === v.lane) && (!q || hay.some((t) => t.toLowerCase().includes(q)));
+}
+const workerKept = (w, v) => workerMatch(w, v) && workerShown(w, v.s);
+
+// The kept rows in the sort, or in hub-core's order, exceptions first, with none. A runner with
+// no value goes last in either direction.
+function workersShown(ws, v) {
+  const out = ws.filter((w) => workerKept(w, v));
+  if (!v.sort) return out;
+  const val = W_VALUE[v.sort];
+  return out.sort((a, b) => {
+    const x = val(a) ?? null, y = val(b) ?? null;
+    if (x === null || y === null) return (x === null) - (y === null);
+    return v.asc ? x - y : y - x;
+  });
+}
+
 // slots, when given, prefixes each name with its Tonight slot: a time, "always", or a call's
-// indent under its caller.
-function workersTable(ws, slots) {
-  if (!ws.length) return `<div class="empty">${slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
-  return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th><th>score 7d</th></tr>${ws.map((w, i) => {
-    const last = w.running_since ? `<td class="muted">running since ${when(w.running_since)}</td><td class="n">-</td>`
+// indent under its caller, and the headers do not sort. v is the filter in force.
+function workersTable(ws, slots, v) {
+  const filtered = v.q || v.lane || v.s !== "all";
+  if (!ws.length) return `<div class="empty">${filtered ? "No runner matches this filter." : slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
+  // A click on a sortable header goes biggest first, smallest first, back to the default order.
+  const th = (key, label, cls) => {
+    const on = !slots && v.sort === key;
+    return `<th${cls ? ` class="${cls}"` : ""}${on ? ` aria-sort="${v.asc ? "ascending" : "descending"}"` : ""}>${slots ? label : `<button class="thsort" data-fsort="${key}" title="sort by ${label}">${label}${on ? (v.asc ? " ^" : " v") : ""}</button>`}</th>`;
+  };
+  return `<table class="tbl"><tr><th>runner</th><th>lane</th>${th("last", "last")}<th class="n">when</th>${th("runs", "runs 24h", "n")}${th("failed", "failed", "n")}<th>why</th><th class="n">next</th>${th("cost", "$ 24h", "n")}<th>score 7d</th></tr>${ws.map((w, i) => {
+    const over = w.overdue ? `, over its usual ${secs(w.usual_s)}` : "";
+    const last = w.running_since ? `<td class="${w.overdue ? "warn" : "muted"}">running since ${when(w.running_since)}${over}</td><td class="n">-</td>`
       : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
       : `<td class="muted">no run this week</td><td class="n">-</td>`;
     const why = w.why ? `${esc(w.why.word)} ${cut(w.why.text || "")}` : "";
@@ -91,13 +151,33 @@ function workersTable(ws, slots) {
 
 // The Tonight order: hub-core's slots joined to their workers, and the other timers as a count
 // whose rows are Infra's Jobs.
-function tonightWorkers(d) {
-  const by = new Map(d.workers.map((w) => [w.name, w]));
+function tonightWorkers(d, v) {
+  const by = new Map(d.workers.filter((w) => workerKept(w, v)).map((w) => [w.name, w]));
   const rows = d.tonight.slots.filter((s) => by.has(s.name));
   const slot = (s) => (s.under ? `<span class="muted" title="called by ${esc(s.under)}">\`- </span>` : s.at ? clock(s.at * 1e3) : "always");
   const n = d.tonight.other_timers;
-  return workersTable(rows.map((s) => by.get(s.name)), rows.map(slot)) +
+  return workersTable(rows.map((s) => by.get(s.name)), rows.map(slot), v) +
     (n ? `<div class="muted more">+ ${n} other timers before ${clock(d.tonight.until * 1e3)}: <a href="#jobs">Infra Jobs</a></div>` : "");
+}
+
+const workersBody = (d, v) => (fst.tonight ? tonightWorkers(d, v) : workersTable(workersShown(d.workers, v), null, v));
+const workersChips = (d, v) => {
+  const ws = d.workers.filter((w) => workerMatch(w, v));
+  return W_FILTERS.map((f) => chipBtn(f === v.s, "data-fstate", f, W_CHIP[f], ws.filter((w) => workerShown(w, f)).length)).join("");
+};
+
+function workersFilter(d, v) {
+  const lanes = [...new Set([...d.workers.map((w) => w.lane), v.lane].filter(Boolean))].sort();
+  return `<div class="card bfilter qcfilter"><div class="opts"><input id="fw-q" placeholder="search name, description, why" value="${esc(v.q)}">` +
+    `<select id="fw-lane"><option value="">every lane</option>${bOpt(lanes, v.lane)}</select></div></div>` +
+    `<div class="seg fseg" id="fw-chips">${workersChips(d, v)}</div>`;
+}
+
+// Repaints what a filter changes and nothing around it, so the search box keeps its focus.
+function paintWorkers() {
+  const v = fleetView();
+  paint($("fw-chips"), workersChips(fst.data, v));
+  paint($("fw-body"), workersBody(fst.data, v));
 }
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
@@ -151,16 +231,24 @@ function renderFleet() {
   const el = $("fleet");
   const d = fst.data;
   if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
+  const v = fleetView();
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  let html = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
-  if (errs.length) html += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  html += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
+  let head = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
+  if (errs.length) head += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  head += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
   const order = `<button class="btn sm" data-tonight>${fst.tonight ? "Default order" : "Tonight"}</button>`;
-  html += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>` +
-    `<div class="panel scroll">${fst.tonight ? tonightWorkers(d) : workersTable(d.workers)}</div>`;
-  html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
-  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
-  paint(el, html);
+  head += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>`;
+  const tail = `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}` +
+    `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
+  // A refresh must not take the search box or an open lane list from under the human, so
+  // everything around them repaints and they stay.
+  if (["fw-q", "fw-lane"].includes(document.activeElement?.id)) {
+    paint($("fleet-head"), head);
+    paintWorkers();
+    paint($("fleet-tail"), tail);
+    return;
+  }
+  paint(el, `<div id="fleet-head">${head}</div>${workersFilter(d, v)}<div class="panel scroll" id="fw-body">${workersBody(d, v)}</div><div id="fleet-tail">${tail}</div>`);
 }
 
 // Log's Judges' verdicts section: the dispatch judge's newest verdicts and everything the answer
@@ -182,11 +270,31 @@ $("log-verdicts").addEventListener("click", (e) => {
 $("fleet").addEventListener("click", (e) => {
   if (e.target.closest("a[target]")) return;
   if (e.target.closest("[data-tonight]")) { fst.tonight = !fst.tonight; renderFleet(); return; }
+  const chip = e.target.closest("[data-fstate]");
+  if (chip) { setFleetView({ s: chip.dataset.fstate }); renderFleet(); return; }
+  const sort = e.target.closest("[data-fsort]");
+  if (sort) {
+    const k = sort.dataset.fsort, v = fleetView();
+    setFleetView(v.sort !== k ? { sort: k, asc: false } : v.asc ? { sort: "", asc: false } : { asc: true });
+    renderFleet();
+    return;
+  }
   const row = e.target.closest("tr.wr");
   if (!row) return;
   const k = row.dataset.key;
   if (!fst.open.delete(k)) fst.open.add(k);
   renderFleet();
+});
+
+$("fleet").addEventListener("input", (e) => {
+  if (e.target.id !== "fw-q") return;
+  setFleetView({ q: e.target.value });
+  paintWorkers();
+});
+$("fleet").addEventListener("change", (e) => {
+  if (e.target.id !== "fw-lane") return;
+  setFleetView({ lane: e.target.value });
+  paintWorkers();
 });
 
 const logFleetFeed = pushed("log", ["fleet", "asks"], refreshFleet);
