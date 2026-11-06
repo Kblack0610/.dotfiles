@@ -123,11 +123,11 @@ EOF
 }
 
 @test "Prefix+A toggles: closes inside the scratch, opens the popup anywhere else" {
-  run grep -E "^bind A if -F '#\{==:#\{session_name\},scratch\}' detach-client 'display-popup .*scratch.sh open" "$REPO_ROOT/.tmux.conf"
+  run grep -E "^bind (-N \"[^\"]*\" )?A if -F '#\{==:#\{session_name\},scratch\}' detach-client 'display-popup .*scratch.sh open" "$REPO_ROOT/.tmux.conf"
   assert_success
 }
 
 @test "Prefix+F sends from inside the scratch and still cuts a worktree everywhere else" {
-  run grep -E "^bind F if -F '#\{==:#\{session_name\},scratch\}' 'run-shell -b .*scratch.sh send.*' 'run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
+  run grep -E "^bind (-N \"[^\"]*\" )?F if -F '#\{==:#\{session_name\},scratch\}' 'run-shell -b .*scratch.sh send.*' 'run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
   assert_success
 }
