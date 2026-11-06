@@ -4386,7 +4386,8 @@ _(nothing yet)_
         // widened the trap: a section that says "type a want" and is read by nothing is
         // worse than no section. Points at the board instead.
         assert!(!t.contains("For the agents"));
-        assert!(t.contains("#ai"));
+        assert!(t.contains("ptask my-app --agent add"));
+        assert!(!t.contains("#ai"));
     }
 
     #[test]

@@ -24,7 +24,6 @@
       "NotebookEdit",
       "mcp__context7",
       "mcp__playwright",
-      "mcp__serena",
       "mcp__claude_ai_Gmail",
       "mcp__claude_ai_Google_Calendar",
       "mcp__claude_ai_Google_Drive",
@@ -124,10 +123,6 @@
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/board-observe.sh"
-          },
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/ai-comment-guard.sh"

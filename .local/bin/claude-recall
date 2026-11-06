@@ -246,7 +246,7 @@ def session_meta(path):
 
 CARD_FIELDS = [
     "id", "project", "updated", "mtime", "cwd", "branch",
-    "title", "titles_all", "first_prompt", "last_prompt", "files", "prs",
+    "title", "titles_all", "first_prompt", "last_prompt", "files", "prs", "kind",
 ]
 
 
@@ -270,7 +270,7 @@ def session_card(path):
     titles, files, prs = [], [], []
     proj = cwd = branch = None
     first_prompt = last_prompt = None
-    last_ts = None
+    last_ts = entry = raw_prompt = None
     try:
         for line in path.read_text(errors="replace").splitlines():
             rec = parse_line(line)
@@ -305,6 +305,8 @@ def session_card(path):
             if first_prompt is None and rtype == "user":
                 msg = rec.get("message") or {}
                 txt = blocks_to_text(msg.get("content", ""))
+                if raw_prompt is None and not rec.get("isMeta"):
+                    entry, raw_prompt = rec.get("entrypoint"), user_text(rec)
                 if txt and not txt.lstrip().startswith("<"):
                     first_prompt = txt
     except OSError:
@@ -328,6 +330,7 @@ def session_card(path):
         "last_prompt": _flatten(last_prompt, 300),
         "files": " ".join(files[:40]),
         "prs": " ".join(prs[:10]),
+        "kind": session_kind(path, entry, raw_prompt),
     }
 
 
@@ -1076,6 +1079,7 @@ LOCATE_WINDOW = 8
 LOCATE_HEADS = {"grep", "rg", "ugrep", "ag"}
 SED_RANGE = re.compile(r"^(\d+)(?:,(\d+))?p$")
 REDIRECT = re.compile(r"^\d*[<>]")  # 2>/dev/null, 2>&1
+REDIRECT_OP = re.compile(r"\d*[<>]+&?")  # a bare 2> or >>, whose target is the next word
 VOLATILE = {"output", "data"}
 HOME = os.path.expanduser("~")
 
@@ -1113,8 +1117,11 @@ def read_spans(name, inp, cwd):
                 or any(x.startswith((">", "<<", "-i")) for x in w[1:]):
             continue
         head = os.path.basename(w[0])
-        paths = [x for x in w[1:] if not x.startswith("-") and ("." in x or "/" in x)
-                 and not SED_RANGE.match(x) and not REDIRECT.match(x)]
+        args = [x for i, x in enumerate(w[1:]) if not REDIRECT.match(x) and not REDIRECT_OP.fullmatch(w[i])]
+        if head == "sed" and not any(x in ("-e", "-f") or x.startswith("--expr") for x in args):
+            args = [x for x in args if x.startswith("-")] + [x for x in args if not x.startswith("-")][1:]
+        paths = [x for x in args if not x.startswith("-") and ("." in x or "/" in x)
+                 and not SED_RANGE.match(x) and not x.startswith(("/dev/", "/proc/"))]
         if not paths:
             continue
         lo, hi = 1, None

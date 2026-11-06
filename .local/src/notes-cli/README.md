@@ -277,7 +277,7 @@ Everything that reads or writes the vault on its own, and what sets it off. Chan
 | You save a note in nvim | `markdown.lua` save hooks | Stamps new tasks with a date and regroups the Focus lanes, with no moves; on a daily note, `notes clickup push` sends the status of ClickUp-linked rows |
 | You save `outbox.md`, a project `README.md` or its `agent/README.md` | `agentctl@inbox-triage` (`--watch`, always on), once 30s pass with no other save | Moves outbox lines to their project, files inbox lines as rows (one Opus call for the untyped ones), republishes `status/inbox.md`, and starts the planner when a `#plan` row waits |
 | The triage sweep, when a `#plan` row waits | `agentctl@inbox-plan` | Adds `goal:`, `approach:` and `check:` lines to the row, sets its size, splits it when it is more than one PR |
-| Any file under `~/.notes` changes | `notes-watch`, 3s after the last change, then `notes-sync`; `git-sync-notes.timer` runs the same sync every 30s | Commits, pulls and pushes the vault. `notes-mqtt` and `notes-ntfy` start a pull when another machine pushes |
+| Any file under `~/.notes` changes | `notes-watch`, 3s after the last change, then `notes-sync`; `git-sync-notes.timer` runs the same sync every 5 minutes | Commits, pulls and pushes the vault. `notes-mqtt` and `notes-ntfy` start a pull when another machine pushes |
 | :00 and :30 every hour | `agentctl@comms` | Mail triage; its surface file feeds `status/comms.md` |
 | 06:45 and 18:45 | `agentctl@briefing` | `journal/refs/<date>/briefing.md`, which Morning shows; the evening asks page |
 | 23:00 | `agentctl@nightly-sync` | Reads recent notes into mem0; writes nothing in the vault |

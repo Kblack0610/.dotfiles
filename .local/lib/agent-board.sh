@@ -7,9 +7,7 @@
 # The board at ~/.agent/plans/{project}/sprint-*.md is a markdown task table. Its
 # readers used to parse it each their own way (a header keyed by name, one keyed by
 # a literal `#` column, a bare regex over pipe rows), and each was blind to boards
-# the others could read. This file is the one parser. Today its runtime consumer is
-# the board-observe hook (.claude/hooks/board-observe.sh), which records stage
-# transitions.
+# the others could read. This file is the one parser.
 #
 # Divergence here is expensive in a specific way: a board a reader cannot see is
 # not an error, it is SILENCE, which reads exactly like "nothing to do".
@@ -64,8 +62,8 @@ board_newest() { # $1=project
 #
 # Resolving "which project am I" from a checkout fails silently: a board is named
 # for the project its BRANCH names, while the reference checkout sits on develop, so the
-# two names differ and the lookup matches nothing. Same rule board_project_of already
-# encodes for attribution - identity comes from the PATH - applied to discovery.
+# two names differ and the lookup matches nothing. Identity comes from the PATH
+# (`~/.agent/plans/<project>/sprint-*.md`), applied to discovery.
 #
 # `_`-prefixed dirs are skipped: `_archive` holds retired boards, and a reader that
 # resurrects them is the archive-convention trap board_list warns about.
@@ -311,51 +309,9 @@ board_rows_effective() { # $1=board file $2=project
   done < <(board_rows "$f")
 }
 
-# ── stage history ────────────────────────────────────────────────────────────
-# board_observe FILE — record every stage transition since the last look.
-#
-# WHY AN OBSERVER AND NOT A WRITER. A row's Status cell is edited by an LLM agent
-# (a dispatcher or coordinator) doing Edit on markdown, and
-# the edit OVERWRITES the previous value — so the board holds a current stage and no
-# history at all. The obvious fix is a `board_set_status` writer the dispatchers call
-# instead of editing. That fix is the one this file's header already warns about: it
-# puts the rule in a second place (the prompt) that has to agree with the first, and
-# the five parsers this library replaced all drifted exactly that way. A dispatcher
-# that forgets to call the writer does not error, it just silently records nothing.
-#
-# So nothing is asked of the agents. This diffs `board_rows` against what it saw last
-# time and writes down what changed. It is correct no matter who edited the board or
-# how — including a human with an editor, a sed one-liner, or a future dispatcher that
-# has never heard of it.
-#
-# IDEMPOTENT BY CONSTRUCTION, because it is called from more than one place (a
-# PostToolUse hook on the real edit, plus opportunistically from render paths and the
-# 12-minute timers as a safety net for edits made outside Claude Code). Calling it
-# twice in a row emits nothing the second time; two callers racing are serialised by
-# flock below. "No change" costs one board parse and no write at all.
-#
-# RESOLUTION IS BOUNDED BY OBSERVATION. If nothing looks between two transitions, the
-# net change is what gets recorded, not the intermediate. queued->working->review with
-# no look in between lands as a single queued->review event. This is a real limit and
-# is why the primary caller is an edit hook rather than a timer.
-#
-# Emits nothing and returns 0 for a missing/unparseable board: a project with no board
-# is the normal quiet case, and this runs on hook and timer paths where a non-zero
-# status is noise.
-# board_project_of FILE -> the project a board belongs to, from its PATH.
-#
-# From the path and never from $PWD or resolve_project_name: `.claude/worktrees/agent-*`
-# checkouts exist, and an agent editing a board from a worktree would otherwise file the
-# event under the worktree's name. `~/.agent/plans/<project>/sprint-*.md` already encodes
-# the answer unambiguously.
-board_project_of() { # $1=board file
-  local d; d="$(dirname "${1:-}")"
-  printf '%s' "${d##*/}"
-}
-
 # board_repo_of FILE -> the checkout a board's work happens in, from its `## Meta`.
 #
-# The project half comes from the path (above); the board carries the repo half itself as
+# The project comes from the board's path; the board carries the repo half itself as
 # `- Repo: <abs path>`. Nothing read it before, so three drivers resolved it three ways
 # and none asked the board.
 #
@@ -367,170 +323,6 @@ board_repo_of() { # $1=board file
   r="$(sed -n 's/^- *Repo: *//p' "${1:-/dev/null}" 2>/dev/null | head -1)"
   r="${r%"${r##*[![:space:]]}"}"
   printf '%s' "$r"
-}
-
-# Where the derived snapshot lives. NOT beside the board, deliberately.
-#
-# ~/.agent is `git add .`-committed every 15 minutes and synced between machines. An
-# append-only log is the best possible shape for that; a file REWRITTEN on every
-# observation is the worst — it conflicts on every divergence, and git-sync-agent.sh
-# resolves conflicts with `git checkout --theirs .`, which would silently pick one
-# machine's cache and drop the other. The snapshot is a pure derived cache (replaying
-# the event log rebuilds it), so it belongs in machine-local state, next to the other
-# agentctl runtime state, and is allowed to differ per machine.
-_board_state_dir() {
-  printf '%s' "${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/board"
-}
-
-# board_events_file PROJECT -> the append-only transition log for a project.
-#
-# PER-PROJECT, not per-board, for two reasons. A ticket outlives a board: row 639 appears
-# on both sprint-2026-07-28.md and sprint-v1.11.1.md ("absorbed", per the Run log), and
-# the factory view groups by work item, so a per-board log would split one item's history
-# in two. And the name deliberately does NOT start with `sprint-`: board_list's glob is
-# the one definition of "a board", and a sibling matching it is a trap for whoever widens
-# that glob next (see the archive-convention warning on board_list).
-board_events_file() { # $1=project
-  printf '%s/%s/board-events.jsonl' "${AGENT_PLANS_DIR:-$HOME/.agent/plans}" "${1:-}"
-}
-
-board_observe() { # $1=board file -> appends to board_events_file(project)
-  local f="${1:-}"
-  [ -f "$f" ] || return 0
-  command -v flock >/dev/null 2>&1 || return 0
-
-  # Separate `local` statements, not one. `local a=x b="$a"` expands the WHOLE command
-  # line before the builtin assigns anything, so `$b` sees the OLD (here unset) `a` —
-  # which under the `set -u` every consumer of this library sets is a hard error, not a
-  # quietly empty string.
-  local proj; proj="$(board_project_of "$f")"
-  [ -n "$proj" ] || return 0
-  local ev;   ev="$(board_events_file "$proj")"
-  local sdir; sdir="$(_board_state_dir)"
-  local snap; snap="$sdir/${proj}.snapshot"
-  local board; board="$(basename "$f")"
-
-  mkdir -p "$sdir" "$(dirname "$ev")" 2>/dev/null || return 0
-
-  # The whole read-modify-write is one critical section. Without it two callers both read
-  # the old snapshot, both decide the same transition is new, and both append it — and a
-  # duplicate event is indistinguishable from a row that genuinely bounced between two
-  # stages. Timers on the same `OnCalendar` with no RandomizedDelaySec fire on the same
-  # wall-clock second, and the hook can race a timer.
-  #
-  # NOTE: this is the first use of flock in this repo (only vendored bats had one), hence
-  # the availability check above rather than assuming it. The lock is a dedicated file, not
-  # the snapshot, because the snapshot is replaced by rename. Bounded wait because a hook
-  # sits on the Edit path: on timeout we return 0 and let the next timer catch it, since a
-  # late event beats a stalled editor.
-  local lock="$sdir/${proj}.lock"
-  exec {_bo_fd}>>"$lock" 2>/dev/null || return 0
-  flock -w 2 "$_bo_fd" 2>/dev/null || { exec {_bo_fd}>&-; return 0; }
-
-  local now epoch seeded=0 host src rc=0
-  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  epoch="$(date +%s)"
-  host="${HOSTNAME:-$(uname -n 2>/dev/null)}"
-  src="${BOARD_OBSERVE_SRC:-observe}"
-  [ -f "$snap" ] || seeded=1
-
-  # In the SNAPSHOT's directory so the mv below is an atomic same-filesystem rename: a
-  # concurrent reader must never see a half-written cache.
-  local tmp; tmp="$(mktemp "${snap}.XXXXXX" 2>/dev/null)" || { exec {_bo_fd}>&-; return 0; }
-
-  # The diff is one awk pass, so a board of any size costs one subprocess.
-  #
-  # Keyed on TICKET, never on row number. The queue is re-ordered in practice (the real
-  # v1.11.1 board runs 1,2,3,4,9,5,6,7,8) and a proposed row is keyed `~<rownum>` until the
-  # gate fills its ticket in, so a row-keyed differ would report a rename as delete+create.
-  # `row` rides along as metadata only.
-  #
-  # SEEDING. First sight of a project writes one row per ticket with an EMPTY `from`,
-  # marked `"src":"seed"`. A board that predates this code must not have a history
-  # invented for it: a seed row says "this is where it already was when I first looked",
-  # which is true. A synthesised queued->merged chain would be a fabrication, and would
-  # date a three-week-old merge to today. Renderers must never compute a dwell time from
-  # a seed row.
-  #
-  # LINE LENGTH IS A CORRECTNESS PROPERTY, not tidiness: an O_APPEND write under PIPE_BUF
-  # (4096) is atomic on Linux, which is what keeps a lost lock degrading to duplicate
-  # events rather than interleaved corrupt ones. Hence the truncated title and no raw
-  # status cell.
-  board_rows_effective "$f" "$proj" | awk -F'\037' \
-      -v snap="$snap" -v ev="$ev" -v now="$now" -v epoch="$epoch" -v seeded="$seeded" \
-      -v tmp="$tmp" -v host="$host" -v board="$board" -v src="$src" '
-    function jesc(s) { gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/[\t\r\n]/," ",s); return s }
-    BEGIN {
-      while ((getline line < snap) > 0) {
-        n = index(line, "\037")
-        if (n > 0) prev[substr(line, 1, n-1)] = substr(line, n+1)
-      }
-      close(snap)
-    }
-    { cur[$1]=$2; title[$1]=$3; prnum[$1]=$4 }
-    END {
-      for (tk in cur) {
-        from = (tk in prev) ? prev[tk] : ""
-        # Never emit from == to. board_stage() reads `blocked` and `error|failed` against
-        # the WHOLE status cell (deliberately), so a watchdog appending prose like
-        # "confirmed not blocked" re-classifies a row; suppressing the no-op is the only
-        # thing standing between that and a stream of phantom transitions.
-        if (from == cur[tk]) continue
-        printf "{\"ts\":\"%s\",\"epoch\":%s,\"ticket\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"pr\":\"%s\",\"title\":\"%.60s\",\"board\":\"%s\",\"host\":\"%s\",\"src\":\"%s\"}\n", \
-          now, epoch, jesc(tk), jesc(from), jesc(cur[tk]), jesc(prnum[tk]), \
-          jesc(title[tk]), jesc(board), jesc(host), (seeded == 1 ? "seed" : src) >> ev
-        changed = 1
-      }
-      # A row that VANISHED is not a transition. Boards get rows re-keyed, re-ordered and
-      # moved between waves ("moved OUT of the wave - not dropped", per a real Run log),
-      # and a board being archived would otherwise read as every row completing at once.
-      # It simply drops out of the snapshot; the view renders from the live board, so a
-      # vanished row disappears rather than parking in a stage forever.
-      for (tk in cur) printf "%s\037%s\n", tk, cur[tk] > tmp
-      close(tmp)
-      # Tell the shell whether anything moved, so an unchanged board does no write at all.
-      exit (changed ? 0 : 9)
-    }
-  ' || rc=$?
-  # `|| rc=$?` and NOT a bare `local rc=$?` on the next line. awk exits 9 to say "parsed
-  # fine, nothing moved", and a consumer running under `set -e` (bats does, and so would
-  # any hook that adopted -e) treats that non-zero pipeline as a fatal error and abandons
-  # the function right here — leaving the lock fd open and the snapshot unwritten. The
-  # `||` makes the non-zero status an expected value rather than a failure.
-
-  # rc 9 = parsed fine, nothing changed. Seed still needs its baseline written, but an
-  # unchanged board must never rewrite the cache.
-  if [ "$rc" = 0 ] || [ "$seeded" = 1 ]; then
-    [ -s "$tmp" ] && mv "$tmp" "$snap" 2>/dev/null
-  fi
-  rm -f "$tmp" 2>/dev/null
-  exec {_bo_fd}>&-
-  return 0
-}
-
-# board_events PROJECT [TICKET] -> recorded transitions, OLDEST FIRST, as JSONL.
-# Empty (status 0) when nothing has been observed yet.
-#
-# SORTED, never file order. The log is append-only per machine, but `merge=union` (see
-# git-sync-agent.sh) interleaves two machines' appends at the hunk level rather than by
-# time — verified: a divergence produced 1,3,2. File order is therefore per-machine
-# chronological and globally not, so anything computing a dwell time from adjacent lines
-# would get a negative one. `epoch` is on every event for exactly this; a stable sort keeps
-# same-second events in the order they were observed.
-board_events() { # $1=project [$2=ticket]
-  local ev; ev="$(board_events_file "${1:-}")"
-  [ -f "$ev" ] || return 0
-  local src
-  if [ -n "${2:-}" ]; then
-    src="$(grep -F "\"ticket\":\"$2\"" "$ev" 2>/dev/null || true)"
-  else
-    src="$(cat "$ev" 2>/dev/null || true)"
-  fi
-  [ -n "$src" ] || return 0
-  # Key on the numeric epoch field, wherever it sits in the object.
-  printf '%s\n' "$src" \
-    | awk '{ e=""; if (match($0, /"epoch":[0-9]+/)) e=substr($0, RSTART+8, RLENGTH-8); printf "%s\t%s\n", (e==""?0:e), $0 }' \
-    | sort -s -n -k1,1 | cut -f2-
 }
 
 # ── board-level predicates ───────────────────────────────────────────────────
@@ -562,31 +354,6 @@ board_drainable() { board_approved "${1:-}" && board_has_stage "${1:-}" open; }
 # Deliberately NOT approval-gated, and it includes ATTENTION - a board whose every row
 # is `blocked` is exactly when a watcher must not self-disarm.
 board_needs_eyes() { board_has_stage "${1:-}" eyes; }
-
-# How long a board may go without a recorded stage TRANSITION before a scheduled runner
-# stops paying for a pass on it. Humans are never filtered by this (see below).
-BOARD_EYES_MAX_AGE_DAYS="${BOARD_EYES_MAX_AGE_DAYS:-14}"
-
-# board_eyes_fresh FILE -> 0 when the board has moved recently, or when we cannot tell.
-#
-# TRANSITIONS, never the board's own mtime: a watcher that appends a run-log line every
-# pass refreshes the file it is watching, so mtime measures the watcher not the work. The
-# event log is written only on a real stage change, so looking at a board cannot refresh
-# it. A MISSING log reads as fresh - unknown must not silence the runner, because
-# "absence reported as fine" is the bug family this library exists to end.
-board_eyes_fresh() { # $1=board file
-  local _ev
-  _ev="$(board_events_file "$(board_project_of "${1:-}")")"
-  [ -f "$_ev" ] || return 0
-  find "$_ev" -mtime "-${BOARD_EYES_MAX_AGE_DAYS}" 2>/dev/null | grep -q .
-}
-
-# The scheduled runner's predicate: needs eyes AND has moved lately.
-#
-# Separate from board_needs_eyes on purpose. A human-facing reader uses the unbounded
-# one, because a human SHOULD still be nagged about a row blocked for 50
-# days. It is only the pass that spends tokens that should stop re-reading it.
-board_needs_eyes_fresh() { board_needs_eyes "${1:-}" && board_eyes_fresh "${1:-}"; }
 
 # ── checkpoint sentinel ──────────────────────────────────────────────────────
 # The dispatcher/overseer trust the SENTINEL, never an Agent "completed" event: a

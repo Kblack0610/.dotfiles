@@ -102,3 +102,19 @@ out() { "$RECALL" tool-calls --since 2026-10-01 --top 0 --json "$@"; }
   assert_success
   assert_output --partial '13 file reads: 30.8% read a file a grep found in the 8 calls before, 23.1% read lines already read with no write between'
 }
+
+@test "negative control: a redirect target and a piped sed script are no file read" {
+  rm "$D/projects/p/s1.jsonl" "$D/projects/p/s2.jsonl" "$D/projects/p/s3.jsonl"
+  {
+    echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-20T13:00:00Z\",\"message\":{\"content\":\"build\"}}"
+    A f1 10 01 "$(B w1 "make 2> /dev/null | sed 's/x1b/X/g'")"
+    R w1 'ok'
+    A f2 20 02 "$(B w2 'cat /dev/null')"
+    R w2 ''
+    A f3 30 03 "$(B w3 'sed -n 1,5p src/a.py 2> /dev/null')"
+    R w3 'code'
+    A f4 40 04 ''
+  } > "$D/projects/p/s4.jsonl"
+  run jq -c '[.buckets.all.reads, [.groups.hot_target[].key]]' <<<"$(out)"
+  assert_output '[1,["/home/u/proj/src/a.py"]]'
+}
