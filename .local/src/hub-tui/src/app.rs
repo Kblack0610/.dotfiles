@@ -1584,11 +1584,13 @@ impl App {
             }
             return self.history_key(k);
         }
-        if self.log_actions {
-            return self.actions_key(k);
+        if self.log_actions && self.actions_key(k) {
+            return true;
         }
         match k.code {
-            KeyCode::Enter | KeyCode::Char('/') if self.log_open.contains(&"actions") => {
+            KeyCode::Enter | KeyCode::Char('/')
+                if !self.log_actions && self.log_open.contains(&"actions") =>
+            {
                 self.log_actions = true;
                 self.seek = Some("actions");
                 return k.code == KeyCode::Enter || self.actions_key(k);
@@ -1603,6 +1605,7 @@ impl App {
                 };
                 if let Some(i) = self.log_open.iter().position(|n| *n == name) {
                     self.log_open.remove(i);
+                    self.log_actions &= name != "actions";
                 } else {
                     self.log_open.push(name);
                     self.read_log_folds();
@@ -1618,7 +1621,7 @@ impl App {
     }
 
     /// The Actions table's keys. Esc or Backspace with nothing to clear gives the keys back to
-    /// Log; any other key that is not the table's still scrolls the page.
+    /// Log; a key that is not the table's is Log's, so `n` still jumps and `a` still folds.
     fn actions_key(&mut self, k: KeyEvent) -> bool {
         let t = &mut self.actions_table;
         if t.is_default() && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {

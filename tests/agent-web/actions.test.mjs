@@ -102,6 +102,16 @@ test("a link keeps the window and drops the rest of the view", () => {
   assert.equal(run("st.views.log"), "hours=72&q=actor%3Adispatch");
 });
 
+test("a window that is not one of the buttons reads as the default", () => {
+  fresh();
+  for (const h of ["5", "-3", "100000", "x"]) {
+    run(`st.views.log = 'hours=${h}'`);
+    assert.equal(run("actionHours()"), 24);
+  }
+  run("st.views.log = 'hours=168'");
+  assert.equal(run("actionHours()"), 168);
+});
+
 test("the view already read does not reopen a section the human folded", async () => {
   fresh();
   run("st.views.log = 's=loud'");

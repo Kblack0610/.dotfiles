@@ -26,6 +26,9 @@ function tblSet(query, patch) {
 // One dropdown per facet, each option the whole query that picks its value.
 const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
   f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
+// One count chip, here and on the tabs that still filter their own lists.
+const chipBtn = (on, attr, val, label, n) =>
+  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 

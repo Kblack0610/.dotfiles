@@ -10,7 +10,11 @@ const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
 const ast = { data: null, err: null, read: null, all: false };
 
-const actionHours = () => Number(new URLSearchParams(st.views.log || "").get("hours")) || ACTION_HOURS;
+// The URL's window, when it is one of the buttons: the head says what the server was asked for.
+function actionHours() {
+  const h = Number(new URLSearchParams(st.views.log || "").get("hours"));
+  return ACTION_WINDOWS.some(([w]) => w === h) ? h : ACTION_HOURS;
+}
 
 const refreshActions = coalesce(async () => {
   const view = st.views.log || "", p = tblParams(view);
@@ -25,9 +29,6 @@ function showActions(actor, verb) {
   const q = [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ");
   setTab("log", undefined, tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
 }
-
-const chipBtn = (on, attr, val, label, n) =>
-  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 
 const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], prio: ["prio"], source: ["source"], text: ["text"] };
 

@@ -97,15 +97,18 @@ impl Cache {
         {
             return g.clone();
         }
-        let g = tokio::task::spawn_blocking(move || read(span))
-            .await
-            .unwrap_or_else(|e| Gathered {
+        *kept = None;
+        match tokio::task::spawn_blocking(move || read(span)).await {
+            Ok(g) => {
+                let g = Arc::new(g);
+                *kept = Some((Instant::now(), span, g.clone()));
+                g
+            }
+            Err(e) => Arc::new(Gathered {
                 errors: vec![e.to_string()],
                 ..Gathered::default()
-            });
-        let g = Arc::new(g);
-        *kept = Some((Instant::now(), span, g.clone()));
-        g
+            }),
+        }
     }
 }
 
@@ -151,6 +154,10 @@ mod tests {
         assert_eq!(n(), 2, "a ledger's event does");
         c.gathered(7200, count()).await;
         assert_eq!(n(), 3, "another window is another read");
+        let failed = c.gathered(3600, |_| panic!("read failed")).await;
+        assert_eq!(failed.errors.len(), 1);
+        c.gathered(3600, count()).await;
+        assert_eq!(n(), 4, "a failed read is not kept");
     }
 
     #[test]
