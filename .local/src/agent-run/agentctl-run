@@ -59,6 +59,19 @@ while [ $# -gt 0 ]; do
 done
 export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
 
+# `-p` with no input after it takes the input from stdin, as `claude -p` does. A prompt
+# passed as an argument is capped at 128 KiB by the kernel (E2BIG): inbox-triage's prompt
+# carries every open row of a project and outgrew it on 2026-11-05.
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -p|--print)
+      if [ $((i + 1)) -ge ${#args[@]} ] || [ "${args[i + 1]:0:1}" = - ]; then
+        [ -t 0 ] || args=("${args[@]:0:i+1}" "$(cat)" "${args[@]:i+1}")
+      fi
+      break ;;
+  esac
+done
+
 # --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE and
 # DATA_CLASS replace whatever a parent runner's conf left in the environment; only this
 # call's own flags (--role, --route, --data-class) still win over it.

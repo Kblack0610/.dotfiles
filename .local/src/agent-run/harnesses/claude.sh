@@ -56,8 +56,21 @@ harness_exec() {
   # the prompt agentctl-dream and agentctl-nightly-sync already use. A run with no
   # --print is a timer's pass in a tmux window (fleet-shepherd), which a human may
   # attach to and type into, so it answers them, but still never waits on one.
-  local print=0 a
+  local print=0 a i input="" args=("$@")
   for a in "$@"; do case "$a" in -p|--print) print=1 ;; esac; done
+  # The print call's input goes to claude on stdin, never as an argument: an argument is
+  # capped at 128 KiB (E2BIG), and an agent's PROMPT file is prepended to it.
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -p|--print)
+        if [ $((i + 1)) -lt ${#args[@]} ] && [ "${args[i + 1]:0:1}" != - ]; then
+          input="${args[i + 1]}"
+          args=("${args[@]:0:i+1}" "${args[@]:i+2}")
+        fi
+        break ;;
+    esac
+  done
+  set -- "${args[@]+"${args[@]}"}"
   if [ "$print" = 1 ]; then
     flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
   else
@@ -70,6 +83,7 @@ harness_exec() {
     printf '\n'
     return 0
   fi
+  [ -z "$input" ] || exec 0<<<"$input"
 
   # A registered agent's print call is recorded (lib/calls.sh): the JSON result carries the
   # session id, tokens and cost, and the caller still gets plain text. A caller that chose its
