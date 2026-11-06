@@ -359,10 +359,16 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 18 tab-separated fields per ask" {
+@test "list emits 21 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '18'
+  assert_output '21'
+}
+
+@test "the last three fields are option_notes, context and recommend_why, for agent-web's answer cards" {
+  "$AGENT_ASK" post --project demo --options 'a=prune it|b=grow it' --recommend a --why 'fixes the cause' --context 'disk is full' 'which fix?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | cut -f19-21'
+  assert_output "$(printf 'prune it|grow it\tdisk is full\tfixes the cause')"
 }
 
 @test "the last two fields are created and session, for fleet-bench's ask digest" {

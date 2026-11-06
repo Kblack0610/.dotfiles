@@ -1,7 +1,7 @@
 "use strict";
 // The rows under the Projects tab (projects.js opens them for one project or for all): every
 // project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
-// playtest; each profile's Focus is a count linking to the Focus tab. Add, start, done, drop, move (to a
+// playtest; each profile's Focus is a count linking to the Daily tab. Add, start, done, drop, move (to a
 // project or a version), a release sooner or later, edit and tags go through
 // `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
@@ -164,9 +164,9 @@ function drawBoardList() {
       `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
       list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
   }
-  // Focus rows are the Focus tab's (hub_core::tasks counts them): All says how many and links there.
+  // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = bst.filter.project ? [] : bst.feed.focus || [];
-  const fbadge = focus.length ? `<a class="btn sm" href="#focus">Focus: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
+  const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
   html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups ${fbadge}</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
   const y = $("projects").scrollTop;

@@ -34,9 +34,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub projects --json
        hub tabs
-  TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
-          (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
-          lands on its new tab; jobs, ci and machines open that section of Infra
+  TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
+          (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
+          machines) that lands on its new tab; jobs, ci and machines open that section of
+          Infra, outbox the outbox under Daily
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
@@ -244,13 +245,17 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
-    if tab == Some(Tab::Outbox) {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        a.outbox = Some(hub_core::outbox::read(
-            &hub_core::session_actions::System,
-            &today,
-        ));
-        a.tab = Tab::Outbox;
+    // Daily prints the note, or with `--tab outbox` the outbox under it.
+    if tab == Some(Tab::Daily) {
+        let sys = hub_core::session_actions::System;
+        if section.as_deref() == Some("outbox") {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            a.outbox = Some(hub_core::outbox::read(&sys, &today));
+            a.daily_outbox = true;
+        } else {
+            a.focus = Some(hub_core::focus::read(&sys, "daily"));
+        }
+        a.tab = Tab::Daily;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -397,6 +402,10 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Fleet {
         app.read_fleet();
+    }
+    // `--tab outbox` read the outbox in open_query above.
+    if app.tab == Tab::Daily && !app.daily_outbox {
+        app.read_focus();
     }
     let mut term = ratatui::init();
     let res = (|| {
