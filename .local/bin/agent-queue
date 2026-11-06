@@ -506,11 +506,13 @@ cmd_add() {
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
   # `type(area): title`, the board's row grammar, on the task's first line or its --title.
-  local ctype='' carea='' sid
+  local ctype='' carea='' sid=''
   if [[ "$(head -1 <<<"${title:-$text}")" =~ ^([a-z]+)\(([A-Za-z0-9_./-]+)\)!?:\  ]]; then
     ctype="${BASH_REMATCH[1]}" carea="${BASH_REMATCH[2]}"
   fi
-  sid="$(claude_sid)" || sid=
+  # Only a session taking the item works it. One queueing it for later did not, and outcomes
+  # would charge that session's cost and revert count to this item.
+  [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story=''
   case "$from" in board:*) ;; *) story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;; esac
   mkdir -p "$AQ_DIR/$state"
