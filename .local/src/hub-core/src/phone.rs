@@ -13,7 +13,7 @@ use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::Queue;
-use crate::text::cap;
+use crate::text::{age, cap};
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
 const ASK_MAX: usize = 44;
@@ -63,15 +63,6 @@ fn row(level: Level, head: &'static str, text: impl Into<String>) -> Row {
         level,
         head,
         text: text.into(),
-    }
-}
-
-/// An age as the widget shows it: minutes, then hours, then days.
-fn age(secs: i64) -> String {
-    match secs.max(0) {
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 172_800 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86400),
     }
 }
 
@@ -205,10 +196,8 @@ fn agents(i: &Inputs) -> Vec<Row> {
     };
     let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
     let mut head = format!("Agents: {} working", n("WORKING"));
-    let rest = counted(&[
-        (n("STALLED"), "stalled", "stalled"),
-        (n("UNCLEAR"), "unclear", "unclear"),
-    ]);
+    // CHAT (the human's own conversation) and PARKED are not attention, so the phone leaves them out.
+    let rest = counted(&[(n("STALLED"), "stalled", "stalled")]);
     if !rest.is_empty() {
         head += &format!(", {rest}");
     }
@@ -523,7 +512,7 @@ mod tests {
     fn state() -> Value {
         json!({
             "generated_epoch": NOW,
-            "counts": {"WORKING": 8, "STALLED": 1, "UNCLEAR": 3, "NEEDS": 2},
+            "counts": {"WORKING": 8, "STALLED": 1, "CHAT": 3, "NEEDS": 2},
             "asks": [
                 {"id": "aB1", "project": "unity-core-playground", "question": "Which title?",
                  "created": "2027-01-14T10:00:00-0800", "session": "s1"},
@@ -607,7 +596,7 @@ mod tests {
         assert_eq!(
             agents,
             [
-                "Agents: 8 working, 1 stalled, 3 unclear".to_string(),
+                "Agents: 8 working, 1 stalled".to_string(),
                 "agents waited 193h on you in 24h".to_string(),
                 format!("2 past ETA, worst 2h, next done {next}"),
                 "2 over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
@@ -686,7 +675,7 @@ mod tests {
         assert_eq!(texts(&p, "error"), ["Prometheus: cannot read https://p"]);
         assert!(texts(&p, "ci").is_empty());
         let agents = texts(&p, "agents");
-        assert_eq!(agents[0], "Agents: 8 working, 1 stalled, 3 unclear");
+        assert_eq!(agents[0], "Agents: 8 working, 1 stalled");
         assert_eq!(agents.last().unwrap(), "85 merged today");
     }
 

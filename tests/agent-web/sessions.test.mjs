@@ -57,6 +57,15 @@ test("the list is the pass line, then the shepherd pinned, then one row per sess
   assert.ok(html.indexOf('data-t="hub/c:1"') > html.indexOf(">PARKED "));
 });
 
+test("PARKED and CHAT get a tile and a colour of their own; a retired bucket takes CHAT's grey", () => {
+  const html = ctx.tiles([state("a", "PARKED"), state("b", "PARKED"), state("c", "CHAT")], {});
+  assert.match(html, /data-bucket="PARKED" style="--c:var\(--b-parked\)">\s*<span class="tl">PARKED<\/span><span class="tv">2</);
+  assert.match(html, /data-bucket="CHAT" style="--c:var\(--b-chat\)">\s*<span class="tl">CHAT<\/span><span class="tv">1</);
+  assert.equal(run(`bucketColor("UNCLEAR")`), "var(--b-chat)");
+  const css = readFileSync(new URL("app.css", dir), "utf8");
+  for (const t of ["--b-parked", "--b-chat"]) assert.equal(css.split(t + ":").length, 3, `${t} in both themes`);
+});
+
 test("a bucket tile filters the list to that bucket", () => {
   setup();
   run(`wst.filter = "NEEDS"`);

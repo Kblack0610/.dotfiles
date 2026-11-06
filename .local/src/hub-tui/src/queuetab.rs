@@ -5,6 +5,7 @@
 //! suggest`): `f` opens it, j/k carry on into its rows, and `p` starts the selected one through
 //! the Projects tab's Start (`fleet-dispatch promote`). Every write goes through hub-core.
 
+use hub_core::pipeline::{self, Pipeline};
 use hub_core::queue::{Candidate, Candidates, Item, Queue, State, SECTIONS};
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -209,15 +210,50 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
     ]
 }
 
+/// The pipeline summary at the top of the page (hub_core::pipeline, the agent_chain_* gauges):
+/// the counts, a bottleneck line when a step is past its bound, `o graph` when Grafana is known.
+/// While the read runs it says so; with the gauges absent or the read failed it says `pipeline -`
+/// and never a zero.
+pub fn pipeline_lines(
+    pipe: Option<&Result<Option<Pipeline>, String>>,
+    graph: bool,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let hint = if graph { "   o graph" } else { "" };
+    match pipe {
+        None => vec![clip_line(
+            Line::styled("pipeline  reading Prometheus", p.dim()),
+            w,
+        )],
+        Some(Err(e)) => vec![clip_line(
+            Line::styled(format!("{}  {e}", pipeline::NONE), p.warn()),
+            w,
+        )],
+        Some(Ok(None)) => vec![clip_line(
+            Line::styled(format!("{}{hint}", pipeline::NONE), p.dim()),
+            w,
+        )],
+        Some(Ok(Some(pl))) => {
+            let mut out = vec![clip_line(Line::raw(format!("{}{hint}", pl.line())), w)];
+            if let Some(b) = pl.bottleneck_line() {
+                out.push(clip_line(Line::styled(b, p.warn()), w));
+            }
+            out
+        }
+    }
+}
+
 pub fn page(
     q: &Queue,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
+    pipe: (Option<&Result<Option<Pipeline>, String>>, bool),
     p: Palette,
     now: i64,
     w: usize,
 ) -> Vec<Line<'static>> {
-    let mut out = vec![];
+    let mut out = pipeline_lines(pipe.0, pipe.1, p, w);
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -443,7 +479,7 @@ pub(crate) mod tests {
         c: Option<&Result<Candidates, String>>,
         w: usize,
     ) -> String {
-        page(q, v, c, Palette { no_color: true }, 0, w)
+        page(q, v, c, (None, false), Palette { no_color: true }, 0, w)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -693,5 +729,69 @@ pub(crate) mod tests {
             Ask::Done,
             "no second action while one runs"
         );
+    }
+
+    fn series(step: &str, v: f64) -> hub_core::prom::Series {
+        hub_core::prom::Series {
+            labels: [("step".to_string(), step.to_string())].into(),
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    fn pipe(ratio: f64) -> Result<Option<Pipeline>, String> {
+        let wip: Vec<_> = [
+            ("inbox", 4.0),
+            ("backlog", 312.0),
+            ("queued", 3.0),
+            ("running", 5.0),
+            ("waiting", 2.0),
+        ]
+        .iter()
+        .map(|(s, v)| series(s, *v))
+        .collect();
+        Ok(pipeline::from_series(
+            &wip,
+            &[series("waiting", 540.0)],
+            &[series("waiting", ratio)],
+        ))
+    }
+
+    fn lines_of(p: Option<&Result<Option<Pipeline>, String>>, graph: bool) -> Vec<String> {
+        pipeline_lines(p, graph, Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .map(|s| s.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_pipeline_line_is_the_mockup_with_a_bottleneck() {
+        assert_eq!(
+            lines_of(Some(&pipe(2.25)), true),
+            vec![
+                "pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2   o graph",
+                "          ! bottleneck: waiting, age p90 9h (bound 4h)",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_step_past_its_bound_is_one_line_and_no_grafana_is_no_hint() {
+        assert_eq!(
+            lines_of(Some(&pipe(0.8)), false),
+            vec!["pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2"]
+        );
+    }
+
+    #[test]
+    fn negative_control_no_gauges_read_pipeline_dash_never_zeros() {
+        let none: Result<Option<Pipeline>, String> = Ok(None);
+        assert_eq!(lines_of(Some(&none), true), vec!["pipeline -   o graph"]);
+        let err: Result<Option<Pipeline>, String> = Err("CC_PROM_URL is not set".into());
+        let l = lines_of(Some(&err), true);
+        assert_eq!(l, vec!["pipeline -  CC_PROM_URL is not set"]);
+        assert_eq!(lines_of(None, true), vec!["pipeline  reading Prometheus"]);
+        assert!(l.iter().all(|s| !s.contains(" 0")));
     }
 }

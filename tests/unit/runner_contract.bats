@@ -104,8 +104,10 @@ EOF
 headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
+  # The one exception, with its row in PIPELINES.md: a `fleet-dispatch start --harness opencode`.
   run headless_launches "$REPO_ROOT/.local"
-  assert_output ''
+  assert_equal "${#lines[@]}" 1
+  assert_output --partial '/.local/bin/fleet-dispatch:'
   run headless_launches "$REPO_ROOT/.config"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"

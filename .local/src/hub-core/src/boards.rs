@@ -74,6 +74,7 @@ fn asks(tsv: &str) -> Vec<Value> {
             json!({
                 "id": col(0), "project": col(1), "kind": col(4), "question": col(5),
                 "task": some(col(7)), "created": col(11), "session": some(col(12)),
+                "recommend": some(col(10)), "judge": some(col(16)),
             })
         })
         .collect()
@@ -897,7 +898,7 @@ mod tests {
         )
         .unwrap();
         let tsv = "new\tdotfiles\t\tpending\tquestion\tWhich one?\ta|b\t\t\t\ta\t\
-                   2026-11-05T14:00:00-0800\tdotfiles-agent-1\n";
+                   2026-11-05T14:00:00-0800\tdotfiles-agent-1\t\t\t\ttake-recommend\n";
         let s = state(&f, &Fixed(Ok(tsv.into())));
         assert_eq!(s["asks"].as_array().unwrap().len(), 1);
         assert_eq!(s["asks"][0]["id"], "new");
@@ -905,6 +906,8 @@ mod tests {
         assert_eq!(s["asks"][0]["created"], "2026-11-05T14:00:00-0800");
         assert_eq!(s["asks"][0]["session"], "dotfiles-agent-1");
         assert_eq!(s["asks"][0]["task"], Value::Null);
+        assert_eq!(s["asks"][0]["recommend"], "a");
+        assert_eq!(s["asks"][0]["judge"], "take-recommend");
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));

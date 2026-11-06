@@ -25,9 +25,9 @@ Each rule has its why. A rule a test checks names the test.
 
 - Tile: a label, one big number or word, and its colour by rule 5. Clicking it opens the section that explains it.
 - Progress bar: counted done over total, with the raw counts beside the percent and the unit named ("17/25 rows, weighted by size"). An ETA is shown only when its rate is above zero, and it says which window it used.
-- Needs-you list: one list, newest first. Each row is a kind (ask, plan, dialog, red), its owner, what to do, and the key or button that does it in place.
+- Needs-you list: one list, ranked by what each row holds and how long it waited (`hub_core::home::needs`), with what it holds shown on the row; every surface keeps that order. Each row is a kind (ask, plan, dialog, red), its owner, what to do, and the key or button that does it in place.
 - Folded section: `<details data-k>` on the web, with its open state kept by `static/ui.js`. In the TUI, a section head with a `+`/`-` marker. A folded head shows its count.
-- Long list: capped, with a "+N older" control. It is never unbounded at top level.
+- Long list: capped, with a "+N older" control ("+N more" when the list is not ordered by time). It is never unbounded at top level.
 
 ## Phone widget
 
@@ -41,12 +41,12 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 |---|---|---|---|
 | 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the TUI's front page; the landing page on both surfaces |
 | 2 | Daily | What is my day? | landed: `hub_core::focus` over `notes show --json`, the daily note read clean on a phone (the Focus tab renamed and moved after Home, 2026-11-05). Web: the head has the date, open and done counts, prev and next day, Refresh, Edit and Rendered or Raw; then the note's own links as one row of buttons, Outbox first with its waiting count; then each `## Focus` lane a card (Urgent, High, Low open; Done folded) whose tasks are rows with their tags as chips; the note's other sections fold below. `[[wikilinks]]` open the linked note in the same view at `#daily/<target>` (Back returns); `#p:<name>` opens `#projects/<name>`. Edit and Save rewrite the note through `notes put --base` (a stale hash writes nothing and shows both versions; the draft stays on the device). `#daily/outbox` is the outbox (`hub_core::outbox`): the whole outbox as a textarea saved through `notes outbox put --base` (compare-and-swap; a 409 is merged line by line, the line under the cursor held back until Enter), then Handled today, with Back to Daily and Inbox. Project rows stay on Projects; the Projects board lists no Focus rows, only a count linking here. TUI: read-only, `[` `]` step a day, `t` today, `o` shows the outbox in place of the note (Enter edits it in `$EDITOR`, `o` or Esc back); key 2, `hub --tab daily` or `hub --tab outbox` |
-| 3 | Queue | What will agents do next? Add work. | landed (#920 cards) |
+| 3 | Queue | What will agents do next? Add work. | landed (#920 cards); a pipeline line leads both surfaces (`hub_core::pipeline`, the `agent_chain_*` gauges; TUI `o` and the web link open Grafana Agents / Overview) |
 | 4 | Projects | Where is each project, and its tasks? | landed: `hub_core::projects`, one card per lab project with its open version's progress by size, pace, ETA and what is in flight; Enter (TUI) or Open rows (web) shows that project's rows, All shows every project's. |
 | 5 | Sessions | What is each agent doing? Act on it. | landed (#961): one row per session, grouped by bucket on the web and ranked by bucket in the TUI, with task, PR and CI, phases, ETA, idle and account. TUI: Enter opens the detail pane with the session's forecast timeline, i p u m x c a act. Web: the shepherd's pass is the list's first line and its session is pinned first; with no session open the detail pane is the overview (bucket tiles that filter the list, then the last 24h and Shepherd, folded); an open session shows its fleet-state card folded above the transcript, which loads only then. |
 | 6 | Infra | Is the machinery healthy? | landed (#971): `hub_core::infra` on both surfaces, sections health, red now, machines (one table in place of POOLS, CI by machine and the Machines tab), CI (running, queued, failed 24h; green is one line), jobs (TUI: 8 rows, Enter opens the table; web: the table), cloud runners, governor. |
 | 7 | Log | What happened? | landed (#1077): the day from `day-log`, its history (TUI `h` lists the days; web the per-day bars), then folded sections, each read when it opens and capped at `FOLD_ROWS` (50) with a `+N older` line: Actions, Changes, Rundowns, Judges' verdicts, Forecast (TUI only: the web never had one) and Ranked sessions (a row opens the session's full card). TUI keys a c s v f w |
-| 8 | Fleet | Can I afford more agents; are the judges right? | landed (#1077): Claude accounts, workers (one row per agentctl runner, each opening to its registry: role, model, prompt, trigger, 24h calls with Langfuse links, a judge's per-rule table) and the judges' counts; their verdict lists are Log's |
+| 8 | Fleet | Can I afford more agents; are the judges right? | landed (#1077): Claude accounts, workers (one row per agentctl runner, each opening to its registry: role, model, prompt, trigger, 24h calls with Langfuse links, a judge's per-rule table; a score column, judge-eval's 7d score with what it counted in its title, `-` for a lane with none; a Tonight order lists every pass until 07:00, calls under their caller) and the judges' counts; their verdict lists are Log's |
 
 ### What moves, and why
 
@@ -81,6 +81,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `today`, `history` (TUI `hub --tab today`, `hub --tab history`, keys 7 and 8; agent-web `#today`, `#history`) | Log; `history` opens the TUI day list | #1077 |
 | `actions` (agent-web `#actions`, the tab) | Log, its Actions section | #1077 |
 | `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
+| `UNCLEAR` (the bucket, on every surface) | CHAT for the human's own conversation, DONE when its queue item moved on, STALLED when its item still runs here with nothing on the branch | #1137 |
 | `jobs`, `ci`, `machines` (TUI `hub --tab jobs`, `hub --tab ci`, `hub --tab machines`, keys 4 and 5; agent-web `#jobs`) | Infra, scrolled to that section; `jobs` opens the TUI jobs table | #971 |
 | `outbox` (agent-web `#outbox`, `hub --tab outbox`) | Daily, showing the outbox (`#daily/outbox`) | #1075 |
 | `focus` (agent-web `#focus`, `#focus/<note>`; `hub --tab focus`) | Daily (`#daily`, `#daily/<note>`) | #1075 |

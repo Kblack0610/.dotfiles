@@ -4,8 +4,9 @@
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// open: the runners whose registry row is expanded, kept across refreshes.
-const fst = { data: null, err: null, open: new Set(), said: "all" };
+// open: the runners whose registry row is expanded; tonight: Workers in hub-core's Tonight
+// order, not the default. Both kept across refreshes.
+const fst = { data: null, err: null, open: new Set(), said: "all", tonight: false };
 
 const refreshFleet = coalesce(async () => {
   try { fst.data = await api("/api/fleet"); fst.err = null; } catch (e) { fst.err = e.message; }
@@ -67,24 +68,39 @@ function workerDetail(w) {
       `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
   }
   if (r.eval) h += evalTable(r.eval);
-  return `<tr class="wdet"><td colspan="9">${h}</td></tr>`;
+  return `<tr class="wdet"><td colspan="10">${h}</td></tr>`;
 }
 
-function workersTable(ws) {
-  if (!ws.length) return `<div class="empty">No runners configured in ~/.config/agentctl/agents.</div>`;
-  return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th></tr>${ws.map((w) => {
+// slots, when given, prefixes each name with its Tonight slot: a time, "always", or a call's
+// indent under its caller.
+function workersTable(ws, slots) {
+  if (!ws.length) return `<div class="empty">${slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
+  return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th><th>score 7d</th></tr>${ws.map((w, i) => {
     const last = w.running_since ? `<td class="muted">running since ${when(w.running_since)}</td><td class="n">-</td>`
       : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
       : `<td class="muted">no run this week</td><td class="n">-</td>`;
     const why = w.why ? `${esc(w.why.word)} ${cut(w.why.text || "")}` : "";
     const open = fst.open.has(w.name);
-    return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${esc(w.name)}${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
+    // hub-core's score cell: judge-eval's counted 7d score, its title what it counted.
+    const score = w.score ? `<td title="${esc(w.score.title)}">${esc(w.score.text)}</td>` : `<td class="muted">-</td>`;
+    return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${slots ? `${slots[i]} ` : ""}${esc(w.name)}${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
       `<td class="n">${w.runs_24h}</td><td class="n${w.failed_24h ? " bad" : ""}">${w.failed_24h}</td><td class="wrap muted">${why}</td>` +
-      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td></tr>` + (open ? workerDetail(w) : "");
+      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td>${score}</tr>` + (open ? workerDetail(w) : "");
   }).join("")}</table>`;
 }
 
-const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--b-unclear)", failed: "var(--b-needs)", error: "var(--b-needs)" };
+// The Tonight order: hub-core's slots joined to their workers, and the other timers as a count
+// whose rows are Infra's Jobs.
+function tonightWorkers(d) {
+  const by = new Map(d.workers.map((w) => [w.name, w]));
+  const rows = d.tonight.slots.filter((s) => by.has(s.name));
+  const slot = (s) => (s.under ? `<span class="muted" title="called by ${esc(s.under)}">\`- </span>` : s.at ? clock(s.at * 1e3) : "always");
+  const n = d.tonight.other_timers;
+  return workersTable(rows.map((s) => by.get(s.name)), rows.map(slot)) +
+    (n ? `<div class="muted more">+ ${n} other timers before ${clock(d.tonight.until * 1e3)}: <a href="#jobs">Infra Jobs</a></div>` : "");
+}
+
+const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
 
 function dispatchTiles(d) {
@@ -107,7 +123,7 @@ function dispatchList(d) {
 function judgeTiles(j) {
   const tiles = tile("AGREE", j.agree, "var(--b-done)", j.precision == null ? "none scored" : `${j.precision}% precision`) +
     tile("DISAGREE", j.disagree, "var(--b-needs)", j.kappa == null ? "" : `kappa ${j.kappa}`) +
-    tile("DEFERRED", j.deferred, "var(--b-unclear)", "judge said: ask you") +
+    tile("DEFERRED", j.deferred, "var(--c-other)", "judge said: ask you") +
     tile("FALSE-DEFER", j.false_defer, "var(--b-needs)", "you took the recommendation") +
     tile("PENDING", j.pending, "var(--b-stalled)", "judged, unanswered") +
     tile("UNSCORED", j.unscored, "var(--c3)", "free text, no option named");
@@ -139,8 +155,9 @@ function renderFleet() {
   let html = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
   if (errs.length) html += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   html += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
-  html += `<h2 class="sec" id="sec-workers">Workers <span class="muted">${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run; click a runner for its role, prompt, calls and judge table</span></h2>` +
-    `<div class="panel scroll">${workersTable(d.workers)}</div>`;
+  const order = `<button class="btn sm" data-tonight>${fst.tonight ? "Default order" : "Tonight"}</button>`;
+  html += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>` +
+    `<div class="panel scroll">${fst.tonight ? tonightWorkers(d) : workersTable(d.workers)}</div>`;
   html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
   html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; every verdict is on Log</span></h2>${judgeTiles(d.judge)}`;
   paint(el, html);
@@ -164,6 +181,7 @@ $("log-verdicts").addEventListener("click", (e) => {
 
 $("fleet").addEventListener("click", (e) => {
   if (e.target.closest("a[target]")) return;
+  if (e.target.closest("[data-tonight]")) { fst.tonight = !fst.tonight; renderFleet(); return; }
   const row = e.target.closest("tr.wr");
   if (!row) return;
   const k = row.dataset.key;

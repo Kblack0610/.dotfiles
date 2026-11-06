@@ -180,13 +180,13 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'WORKING PR #9 CI running'
 }
 
-@test "no PR: dirty or ahead is STALLED, clean is UNCLEAR, a closed PR is STALLED unless one of its own merged" {
+@test "no PR: dirty or ahead is STALLED, clean is CHAT, a closed PR is STALLED unless one of its own merged" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
   run b idle 0 0 0 30 1 0 2 - - - 1
   assert_output 'STALLED 2 file(s) not on the default branch, no PR'
   run b idle 0 0 0 30 1 0 0 - - - 1
-  assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
   run b idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
   assert_output 'STALLED PR #7 closed without merging'
   run work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
@@ -198,7 +198,21 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'LANDED PR #7 closed, its PRs #8 merged, next phase: Phase 2'
   [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1 - - - - - - '#8')" ]
   run b idle 0 0 0 30 0 0 0 - - - 1
-  assert_output 'UNCLEAR not in a git repo'
+  assert_output 'CHAT not in a git repo'
+}
+
+@test "a clean session with no plan file, no merged PR and no queue item is CHAT, and so is one outside git" {
+  # 2026-11-05: hub/dotfiles:3 and :17, the human's own Q&A, read UNCLEAR and were escalated once
+  # and never acted on. CHAT names whose they are; the shepherd waits FLEET_CHAT_CLOSE_H.
+  run b idle 0 0 0 30 1 0 0 - - - 1
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
+  run b idle 0 0 0 30 0 0 0 - - - 1
+  assert_output 'CHAT not in a git repo'
+  # not finished, so a self-initiated /wind-down auto refuses it; only the shepherd's CHAT nudge closes it
+  ! session_finished idle 0 0 0 30 1 0 0 - - - 1
+  # under FLEET_IDLE_MIN it is still WORKING: the human may be mid-thought
+  run b idle 0 0 0 5 1 0 0 - - - 1
+  assert_output 'WORKING idle 5m'
 }
 
 @test "a session's queue item decides a clean branch with no plan: moved on is DONE, still running here is STALLED" {
@@ -261,9 +275,9 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'DONE clean, nothing on the branch, its PRs #975 merged, no plan file, its PR landed'
   run b idle 0 0 0 30 1 0 0 - - - 1 - 1/2 'Phase 2' - - - '#975,#976'
   assert_output 'LANDED clean, nothing on the branch, its PRs #975,#976 merged, next phase: Phase 2'
-  # no PRs of its own (a conversation) stays the human's call
+  # no PRs of its own (a conversation) is the human's CHAT
   run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - -
-  assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
   # dirty still wins
   run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - '#975'
   assert_output 'STALLED 3 dirty file(s), no PR'
@@ -561,6 +575,31 @@ landed_fixture() {
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
 }
 
+@test "end to end: a heavy child counts only for its own pane, not every window of its tmux session (ar-290)" {
+  local since=$(( $(date +%s) - 3600 ))
+  row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
+  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$(row 1 7)" "$(row 2 8)" > "$SANDBOX/bin/agent-panel"
+  # fleet-assess as it prints: rows under the PID header, PANE last, then a blank line and the
+  # blocked table, whose columns differ and must not be read as rows.
+  cat > "$SANDBOX/bin/fleet-assess" <<'SH'
+#!/usr/bin/env bash
+echo 'verdict: OK load 1.0x cores'
+echo
+echo 'PID        CPU  NI  CLASS    SESSION                      WORKTREE                           COMM       PANE'
+echo '4242       300   0  claude   s1                           dotfiles-agent-2                   cargo      lab/%8'
+echo
+echo 'PID      THR   AGE  COMM         CLASS    SESSION                      WORKTREE                           WCHAN                OPEN'
+echo '4343       1   10m  rg           claude   s1                           dotfiles-agent-1                   -                    lab/%7'
+SH
+  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/gh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.target == "lab/s1:2") | .reason' <<<"$output")" = 'heavy child process' ]
+  [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
+}
+
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
   landed_fixture
 
@@ -708,7 +747,7 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
-# clean_fixture: landed_fixture with no PR on the branch and no plan file: what read UNCLEAR.
+# clean_fixture: landed_fixture with no PR on the branch and no plan file: CHAT until an item names it.
 clean_fixture() {
   landed_fixture
   panel "$SANDBOX/wt"
@@ -720,7 +759,7 @@ clean_fixture() {
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
   clean_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = UNCLEAR ]
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
   # requeued: the item keeps naming this tmux session
   queue_item queued lab:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -900,7 +939,7 @@ clean_fixture() {
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file: done or never started' ]
+  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
 
   # gh unreachable: the symref decides, stale or not
   printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
@@ -1196,6 +1235,76 @@ SH
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
 }
 
+@test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
+  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/gh.log"
+[ -n "${VIEW_FAIL:-}" ] && exit 1
+echo '{"headRefOid":"abc123","statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"PENDING"}]}'
+SH
+  chmod +x "$SANDBOX/bin/gh"; export SANDBOX FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  local prs='[{"repo":"o/one","number":5,"state":"OPEN"},{"repo":"o/three","number":3,"state":"OPEN"},{"repo":"o/two","number":9,"state":"MERGED"}]'
+  # o/one is this clone's own repo (GitHub names are case-blind), and o/two's PR is not open.
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_success
+  assert_output "$(printf 'o/three\t3\tPENDING\tabc123')"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
+  assert_output ''
+  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  export VIEW_FAIL=1 FLEET_MAIN_TTL=0
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output ''
+  run sibling_pr "$SANDBOX/one" "$prs"
+  [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
+  grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+}
+
+@test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  # The cwd's repo has no PR for feat/x; o/other's #42 is open with the CI in $SANDBOX/ci.
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  api*) echo "[]" ;;
+  *"pr list --repo o/other"*) echo '[{"number":42,"state":"OPEN","mergedAt":null}]' ;;
+  *"pr view 42 --repo o/other"*) printf '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"%s"}]}\n' "$(cat "$SANDBOX/ci")" ;;
+esac
+SH
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  echo FAILURE > "$SANDBOX/ci"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .reason, .pr, .pr_state, .ci, .conflicts]' <<<"$output")" = '["STALLED","PR o/other#42 CI red","42","OPEN","FAIL",null]' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED PR o/other#42 CI red @feat/x@feedface0000' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI FAIL","no plan file and nothing merged"]' ]
+
+  echo IN_PROGRESS > "$SANDBOX/ci"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["WORKING","PR o/other#42 CI running"]' ]
+
+  # Without its PR in the transcript the same clean branch is the human's conversation, as before.
+  : > "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
 @test "json_rows: the newer fields, with a row that predates them still parsing" {
   run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x' 70 80)
   assert_success
@@ -1325,7 +1434,8 @@ SH
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
   landed_fixture
   PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 \
+    --options 'a=ship|b=hold' --recommend a 'ship it?' >/dev/null
   local doc="$XDG_STATE_HOME/fleet/state.json"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
@@ -1343,6 +1453,9 @@ SH
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
+  [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
+  [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
   # no temp file left beside it
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
@@ -1400,7 +1513,7 @@ SH
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
- "counts":{"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"UNCLEAR":0,"WORKING":1},"sessions":[
+ "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
   "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
@@ -1445,12 +1558,12 @@ agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucke
 agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
 # HELP agent_sessions Live sessions per fleet-sessions bucket.
 # TYPE agent_sessions gauge
+agent_sessions{bucket="CHAT"} 0
 agent_sessions{bucket="DONE"} 0
 agent_sessions{bucket="LANDED"} 0
 agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
-agent_sessions{bucket="UNCLEAR"} 0
 agent_sessions{bucket="WORKING"} 1
 # HELP agent_asks_open Pending asks waiting on the human.
 # TYPE agent_asks_open gauge

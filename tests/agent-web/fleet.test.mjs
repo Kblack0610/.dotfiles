@@ -29,7 +29,7 @@ for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, running_since: null, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null,
+  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null,
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -48,6 +48,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
   ] };
 const data = {
   at: 1793942659, errors: [], accounts: [], cost_24h: 1, judge,
+  tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [] },
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
     worker("ask-judge", {
@@ -113,4 +114,70 @@ test("a runner with no calls and no judge table shows only its registry lines", 
   assert.match(det, /trigger \*-\*-\* 03:00:00 \| 24h: 0 calls, <span class="">0 errors<\/span>, -, 0 tokens, p95 -/);
   assert.doesNotMatch(det, /<th>rule<\/th>|<th>trace<\/th>/);
   open("dream");
+});
+
+test("Tonight lists the slots in hub-core's order, a call under its caller, and the other timers as a count", () => {
+  const night = {
+    ...data,
+    workers: [...data.workers, worker("sentinel", { kind: "persistent" })],
+    tonight: {
+      until: 1793942659 + 6 * 3600, other_timers: 12,
+      slots: [
+        { name: "sentinel", at: null, under: null },
+        { name: "dream", at: 1793942659 + 3600, under: null },
+        { name: "ask-judge", at: null, under: "dream" },
+        { name: "gone", at: 1793942659 + 7200, under: null },
+      ],
+    },
+  };
+  const f = vm.runInContext("fst", ctx);
+  f.data = night;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<button class="btn sm" data-tonight>Tonight<\/button>/);
+  const rows = () => [...box.innerHTML.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"], "the default order is untouched");
+  click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
+  const h = box.innerHTML;
+  assert.deepEqual(rows(), ["sentinel", "dream", "ask-judge"], "a slot with no worker is skipped");
+  const clock = vm.runInContext("clock", ctx);
+  assert.match(h, /<td title="">always sentinel<\/td>/);
+  assert.match(h, new RegExp(`<td title="">${clock((1793942659 + 3600) * 1e3)} dream</td>`));
+  assert.match(h, /<td title=""><span class="muted" title="called by dream">`- <\/span> ask-judge<\/td>/);
+  assert.match(h, new RegExp(`\\+ 12 other timers before ${clock((1793942659 + 6 * 3600) * 1e3)}: <a href="#jobs">Infra Jobs</a>`));
+  assert.match(h, /data-tonight>Default order<\/button>/);
+  click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
+  assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"]);
+  assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.data = data;
+});
+
+test("the score cell ends each row in both orders, its title what it counted, and no score is a dash", () => {
+  const score = { value: 93.2, right: 41, n: 44, window: "7d", source: "triage-untouched", text: "93% untouched", title: "7d, 41 of 44 right, 3 pending, triage-untouched" };
+  const scored = {
+    ...data,
+    workers: [{ ...data.workers[0], score }, data.workers[1]],
+    tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [{ name: "ask-judge", at: null, under: null }, { name: "dream", at: 1793942659 + 3600, under: null }] },
+  };
+  const f = vm.runInContext("fst", ctx);
+  f.data = scored;
+  for (const tonight of [false, true]) {
+    f.tonight = tonight;
+    ctx.renderFleet();
+    const h = box.innerHTML;
+    assert.match(h, /<th class="n">\$ 24h<\/th><th>score 7d<\/th><\/tr>/);
+    assert.match(h, /<td title="7d, 41 of 44 right, 3 pending, triage-untouched">93% untouched<\/td><\/tr>/, `tonight=${tonight}`);
+    assert.match(h, /data-key="dream">.*?<td class="muted">-<\/td><\/tr>/, `tonight=${tonight}`);
+  }
+  f.tonight = false;
+  f.data = data;
+});
+
+test("an empty night says so and draws no count", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.data = data;
+  f.tonight = true;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /No runner runs before morning\./);
+  assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.tonight = false;
 });

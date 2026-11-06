@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # agentctl-inbox-plan: plan each open board row tagged #plan, before anyone starts it.
 #
-#   agentctl-inbox-plan [--dry-run] [--project <name>] [--waiting]
+#   agentctl-inbox-plan [--dry-run] [--project <name>] [--kick]
 #
 # Triage tags a row #plan when it is more than one small change; a person can tag one by hand.
 # Per row (INBOX_PLAN_MAX a pass, oldest first) one model call (the conf's MODEL) reads the row,
 # its details, its project's open rows and, read-only, the project's code, and proposes a goal,
 # an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
 # #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
-# the ingest record, so later passes skip the row until its words change. The inbox sweep
-# starts this runner when `--waiting` (exit 0: a row waits) says so. How it all fits: notes-cli
-# README, "Intake".
+# the ingest record, so later passes skip the row until its words change. `--kick` starts this
+# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's plan_skips
+# call it after they tag rows. How it all fits: notes-cli README, "Intake".
 
 set -uo pipefail
 
@@ -24,10 +24,12 @@ LIB="$HERE/../lib"
 . "$LIB/agent-proof.sh"
 # shellcheck source=/dev/null
 . "$LIB/md-render.sh"
+# shellcheck source=/dev/null
+. "$LIB/inbox-epics.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
-DRY=0; ONLY=""; WAITING=0; PLANNED=0; SPLIT=0; FAILED=0; RECORD=""
+DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; RECORD=""
 say() { printf 'inbox-plan: %s\n' "$*" >&2; }
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
@@ -46,19 +48,20 @@ seen() {
 
 refused() {
   say "$1: $3 ($2)"
+  proof_why "$1: $2"
   FAILED=$((FAILED + 1))
   [ "$DRY" = 1 ] || notes ingest record --action refused --from "$1" --why "$2" -- "$3" >/dev/null 2>&1
 }
 
 # plan_row <row json> <board json>: one model call and its writes.
 plan_row() {
-  local row="$1" board="$2" p id lane text raw sheet line details open repo sub prompt out rc wd ans
+  local row="$1" board="$2" p id lane text raw details open epics epic repo sub prompt out rc wd err ans first
   p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
   text="$(jq -r .text <<<"$row")"; raw="$(jq -r .raw <<<"$row")"
-  sheet="$(jq -r .sheet <<<"$row")"; line="$(jq -r .line <<<"$row")"
-  details="$(sed -n "$((line + 1)),\$p" "$sheet" 2>/dev/null | awk '/^  /{print; next} {exit}')"
+  details="$(jq -r '.details[]?' <<<"$row")"
   open="$(jq -r --arg p "$p" --arg l "$lane" --arg id "$id" '.rows[]
     | select(.project == $p and .lane == $l and .state != "done" and .id != $id) | "\(.id)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  epics="$(epics_open "$board")"
   repo="$(project_repo_path "$p")"; sub="$(project_field "$p" path)"
   [ -n "$repo" ] && [ -d "$repo" ] || repo=""
   local -a lanes=() add=()
@@ -69,20 +72,28 @@ The row: $text
 ${details:+Its detail lines:
 $details
 }
-Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci run decide check, title under 80 characters. Do not split into a row the open rows below already hold.
+Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci research design market legal run decide check, title under 80 characters. Do not split into a row the open rows below already hold. epic is the id of the one epic below this row plainly belongs to, else empty.
 
 Answer with one JSON object between a line INBOX-PLAN-START and a line INBOX-PLAN-END, nothing else between them:
-{\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": []}
+{\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": [], \"epic\": \"\"}
 
+## Open epics of this project (id, project, title)
+$(epics_of "$p" "$epics")
 ## Open rows on this board (id, text)
 $open"
   [ -n "$repo" ] && add=(--add-dir "$repo")
-  wd="$(mktemp -d)"
+  wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
   # An empty directory, so no repo's Stop hook answers in place of the model.
-  out="$(cd "$wd" && $INBOX_PLAN_CMD -p "$prompt" "${add[@]}" 2>/dev/null)"; rc=$?
-  rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "$p $id: model call failed"; FAILED=$((FAILED + 1)); return 1; }
+  out="$(cd "$wd" && $INBOX_PLAN_CMD -p "$prompt" "${add[@]}" 2>"$err")"; rc=$?
+  [ -s "$err" ] && head -n 20 "$err" >&2
+  first="$(cat - "$err" <<<"$out" | grep -m1 '[^[:space:]]' | clean 120)"
+  rm -rf -- "$wd" "$err"
+  if [ "$rc" != 0 ]; then
+    say "$p $id: model call failed: ${first:-no output}"
+    proof_why "$p $id: model call failed: ${first:-no output}"
+    FAILED=$((FAILED + 1)); return 1
+  fi
   ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c 'select(type == "object")' 2>/dev/null | head -n 1)"
   [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 1; }
 
@@ -104,6 +115,8 @@ $open"
   if [[ "$size" =~ ^[sml]$ ]]; then
     new="$(sed -E 's/(^| )#size\/[a-z]+( |$)/ /g; s/  +/ /g; s/ $//' <<<"$new") #size/$size"
   fi
+  epic="$(jq -r '.epic // "" | tostring' <<<"$ans")"
+  if [[ " $new " != *" #of/"* ]] && epic_known "$epic" "$p" "$epics"; then new="$new #of/$epic"; fi
   if [ "$DRY" = 1 ]; then
     printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
   fi
@@ -134,7 +147,7 @@ main() {
     case "$1" in
       --dry-run) DRY=1; shift ;;
       --project) ONLY="${2:-}"; shift 2 ;;
-      --waiting) WAITING=1; shift ;;
+      --kick) KICK=1; shift ;;
       -h|--help) sed -n '2,4p' "$0"; return 0 ;;
       *) say "unknown argument: $1"; return 2 ;;
     esac
@@ -142,9 +155,18 @@ main() {
   local dir board rows rc=0 row summary verdict
   dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
   [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  if ! board="$(notes board --json 2>/dev/null)"; then
+    say "notes board --json failed"
+    [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || { proof_why "notes board --json failed"; proof_report "$NAME" FAILED; }
+    return 1
+  fi
   rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board" | head -n "$INBOX_PLAN_MAX")"
-  [ "$WAITING" = 1 ] && { [ -n "$rows" ]; return; }
+  # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own.
+  if [ "$KICK" = 1 ]; then
+    [ -n "$rows" ] || return 0
+    systemctl --user start --no-block agentctl@inbox-plan.service || { say "could not start inbox-plan"; return 1; }
+    return 0
+  fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true

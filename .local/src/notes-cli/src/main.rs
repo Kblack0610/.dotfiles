@@ -33,10 +33,12 @@ mod playtest;
 mod project_sweep;
 mod project_tasks;
 mod projects;
+mod propose;
 mod registry;
 mod sheet;
 mod show;
 mod status;
+mod steps;
 mod summarize;
 mod sweep;
 mod tags;
@@ -375,6 +377,10 @@ enum Cmd {
         /// `<profile>/<project>: <finding>` line each
         #[arg(long)]
         projects: bool,
+        /// With --projects: list instead each open agent-board row with no type and the row
+        /// proposed for it, `<profile>/<project><TAB><id><TAB><row>`. Writes nothing
+        #[arg(long, requires = "projects")]
+        untyped: bool,
     },
     /// What was written to which row, and by whom: today, or `--day` / `--days`
     Log {
@@ -399,7 +405,11 @@ enum Cmd {
         /// Only events of this agent-queue item, like fix-menu
         #[arg(long)]
         item: Option<String>,
-        /// One JSON event per line
+        /// The whole record replayed into the chain's steps, inbox to done: per step what it
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
+        steps: bool,
+        /// One JSON event per line (one object per step with --steps)
         #[arg(long)]
         json: bool,
     },
@@ -622,6 +632,13 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// Print the `type(area): title` row proposed for this text, tags off and the title cut to
+    /// the limit. Writes nothing
+    Propose {
+        /// The row's words
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        text: Vec<String>,
+    },
     /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
     Inbox {
         /// One JSON array of `{line, raw, text, details}` instead
@@ -701,7 +718,7 @@ enum IngestCmd {
     /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
     /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
-    /// agent-land's `merged`). An empty flag value is no value.
+    /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
@@ -713,6 +730,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
+        "parked", "unparked",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
@@ -1019,7 +1037,10 @@ fn main() -> Result<()> {
             // Every verb that writes holds the ptask lock across its read-modify-write and id
             // minting, so two writers never lose a row or mint one id twice.
             let _lock = match &sub {
-                None | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. }) => None,
+                None
+                | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. } | PtaskCmd::Propose { .. }) => {
+                    None
+                }
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
@@ -1089,6 +1110,10 @@ fn main() -> Result<()> {
                     project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::Propose { text }) => {
+                    println!("{}", propose::proposed_row(&text.join(" "), &name));
+                    0
+                }
                 Some(PtaskCmd::File {
                     rows,
                     dup,
@@ -1197,6 +1222,9 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Log {
+            steps: true, json, ..
+        } => steps::print(&prof, json)?,
+        Cmd::Log {
             day,
             days,
             project,
@@ -1205,6 +1233,7 @@ fn main() -> Result<()> {
             by,
             item,
             json,
+            ..
         } => {
             let filter = ingest::Filter {
                 project: project.map(|n| registry::canonical(&n)),
@@ -1462,8 +1491,11 @@ fn main() -> Result<()> {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
-        Cmd::Doctor { projects: true } => doctor::projects()?,
-        Cmd::Doctor { projects: false } => doctor::run(&prof, &log)?,
+        Cmd::Doctor { untyped: true, .. } => doctor::untyped()?,
+        Cmd::Doctor { projects: true, .. } => doctor::projects()?,
+        Cmd::Doctor {
+            projects: false, ..
+        } => doctor::run(&prof, &log)?,
         Cmd::Config { profiles } => {
             if profiles {
                 for name in config::all_profile_names()? {

@@ -144,9 +144,9 @@ $("log-changes").addEventListener("change", (e) => {
   if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
 });
 
-// The order of the list's groups: the shepherd first, then the buckets, then sessions fleet-state
-// has no row for, which read as PARKED as they do on the hub's Sessions tab.
-const LIST_ORDER = ["SHEPHERD", ...BUCKETS, "PARKED"];
+// The order of the list's groups: the shepherd first, then the buckets, PARKED last, where sessions
+// fleet-state has no row for also go, as they do on the hub's Sessions tab.
+const LIST_ORDER = ["SHEPHERD", ...BUCKETS];
 
 // One row per session: every live or parked session here with its fleet-state row (matched by
 // session id, then target), then the fleet-state rows with no session on this machine. Grouped
@@ -160,7 +160,7 @@ function sessionRows() {
     return { a, s, group: shep && a.target === shep ? "SHEPHERD" : s ? s.bucket : "PARKED" };
   });
   for (const s of states) if (!used.has(s)) rows.push({ a: null, s, group: s.bucket });
-  const rank = (g) => { const i = LIST_ORDER.indexOf(g); return i < 0 ? LIST_ORDER.indexOf("UNCLEAR") : i; };
+  const rank = (g) => { const i = LIST_ORDER.indexOf(g); return i < 0 ? LIST_ORDER.indexOf("CHAT") : i; };
   return rows.sort((x, y) => rank(x.group) - rank(y.group));
 }
 

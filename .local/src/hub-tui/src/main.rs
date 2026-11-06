@@ -33,6 +33,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab projects [NAME]
        hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub needs --json | --page
        hub projects --json
        hub tabs
   TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
@@ -48,6 +49,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           no card has opens every project's rows searched for it, as `/` would)
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
+  needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
+          (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
+          bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
@@ -95,6 +99,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("needs") {
+        it.next();
+        std::process::exit(needs(it.cloned().collect()));
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -160,20 +168,63 @@ fn actions(args: Vec<String>) -> i32 {
     i32::from(!g.errors.is_empty())
 }
 
+/// What Home joins: the fleet state with its asks read live, the queue and, unless
+/// `with_infra` is false, infra (a Prometheus round trip).
+fn gather(
+    with_infra: bool,
+) -> (
+    serde_json::Value,
+    hub_core::queue::Queue,
+    Option<hub_core::infra::Infra>,
+) {
+    let state = hub_core::boards::state(
+        &hub_core::boards::fleet_state(),
+        &hub_core::session_actions::System,
+    );
+    std::thread::scope(|s| {
+        let infra = with_infra.then(|| s.spawn(hub_core::infra::gather));
+        let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
+        (state, queue, infra.map(|i| i.join().unwrap_or_default()))
+    })
+}
+
+/// `hub needs --json`: NEEDS YOU as Home ranks it. `--page`: the pager over it, with no
+/// Prometheus read (red-now rows never page). Exits 1 when the page could not be decided or sent.
+fn needs(args: Vec<String>) -> i32 {
+    let page = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["--json"] => false,
+        ["--page"] => true,
+        _ => die(USAGE),
+    };
+    let (state, queue, infra) = gather(!page);
+    let home = hub_core::home::build(&state, Some(&queue), infra.as_ref());
+    if !page {
+        let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
+        println!("{out}");
+        return 0;
+    }
+    let paths = hub_core::pager::Paths::from_env();
+    let now = chrono::Utc::now().timestamp();
+    match hub_core::pager::run(&home.needs, now, &paths, &hub_core::session_actions::System) {
+        Ok(Some(p)) => {
+            println!("paged ({}): {}", p.priority, p.text);
+            0
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            eprintln!("hub needs --page: {e}");
+            1
+        }
+    }
+}
+
 /// `hub phone --json`: the same join Home draws, reduced to the phone's rows.
 fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let state = hub_core::boards::state(
-        &hub_core::boards::fleet_state(),
-        &hub_core::session_actions::System,
-    );
-    let (queue, infra) = std::thread::scope(|s| {
-        let infra = s.spawn(hub_core::infra::gather);
-        let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
-        (queue, infra.join().unwrap_or_default())
-    });
+    let (state, queue, infra) = gather(true);
+    let infra = infra.unwrap_or_default();
     let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
     let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
@@ -267,6 +318,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     if tab == Some(Tab::Queue) {
         a.tab = Tab::Queue;
+        a.pipeline = Some(hub_core::pipeline::read());
+        // Only the link is needed here: the page's `o graph` hint reads the Grafana base.
+        a.infra = Some(hub_core::infra::Infra {
+            grafana: hub_core::infra::grafana(),
+            ..Default::default()
+        });
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

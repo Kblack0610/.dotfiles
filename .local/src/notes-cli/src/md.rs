@@ -1468,6 +1468,15 @@ pub fn row_block_end(lines: &[&str], i: usize) -> usize {
     end
 }
 
+/// The lines of the block under the row at index `i` (its details and children), trimmed: the
+/// one reader of a row's details, what `notes board --json` and the inbox both report.
+pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
+    lines[i + 1..row_block_end(lines, i)]
+        .iter()
+        .map(|d| d.trim().to_string())
+        .collect()
+}
+
 /// The detail lines for a row at `indent`: each of `details` two spaces deeper, blanks
 /// skipped. A detail is one line; a newline inside one splits it.
 pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {

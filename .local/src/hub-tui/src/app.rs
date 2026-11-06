@@ -100,7 +100,8 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Daily | Tab::Queue | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
+            Tab::Queue => Some("kb-agents-overview"),
+            Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
         }
     }
 }
@@ -200,6 +201,8 @@ pub enum Msg {
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
+    /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
+    Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
     /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
     Actions(Box<hub_core::actions::Gathered>),
     /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
@@ -264,8 +267,12 @@ pub struct App {
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
+    /// The Queue tab's pipeline line: None until the first read.
+    pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
     /// The Fleet tab shows each runner's registry lines (`d`) under its row.
     pub fleet_details: bool,
+    /// Fleet's Workers in hub-core's Tonight order (`t`), not the default.
+    pub fleet_tonight: bool,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -327,6 +334,7 @@ pub struct App {
     ranked_read: Read,
     actions_read: Read,
     fleet_read: Read,
+    pipeline_read: Read,
     focus_read: Read,
     outbox_read: Read,
     sessions_read: Read,
@@ -358,9 +366,11 @@ impl App {
             forecast: None,
             ranked: None,
             fleet: None,
+            pipeline: None,
             focus: None,
             daily_outbox: false,
             fleet_details: false,
+            fleet_tonight: false,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -395,6 +405,7 @@ impl App {
             ranked_read: Read::default(),
             actions_read: Read::default(),
             fleet_read: Read::default(),
+            pipeline_read: Read::default(),
             focus_read: Read::default(),
             outbox_read: Read::default(),
             sessions_read: Read::default(),
@@ -494,6 +505,17 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
+            });
+        }
+    }
+
+    /// The Queue tab's pipeline line is Prometheus (no push): read on entering, on `r` and on the
+    /// tick while shown.
+    pub fn read_pipeline(&mut self) {
+        if self.pipeline_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Pipeline(hub_core::pipeline::read()));
             });
         }
     }
@@ -761,6 +783,9 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
                 }
+                if self.tab == Tab::Queue {
+                    self.read_pipeline();
+                }
                 if self.tab == Tab::Log {
                     self.read_log_folds();
                 }
@@ -809,6 +834,12 @@ impl App {
                 self.fleet = Some(*f);
                 if self.fleet_read.done() {
                     self.read_fleet();
+                }
+            }
+            Msg::Pipeline(r) => {
+                self.pipeline = Some(r);
+                if self.pipeline_read.done() {
+                    self.read_pipeline();
                 }
             }
             Msg::Actions(g) => {
@@ -956,6 +987,10 @@ impl App {
             self.fleet_details = !self.fleet_details;
             return;
         }
+        if self.tab == Tab::Fleet && k.code == KeyCode::Char('t') {
+            self.fleet_tonight = !self.fleet_tonight;
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -977,6 +1012,7 @@ impl App {
                 self.read_queue();
                 if self.tab == Tab::Queue {
                     self.read_candidates();
+                    self.read_pipeline();
                 }
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
@@ -1077,6 +1113,7 @@ impl App {
         if t == Tab::Queue {
             self.read_queue();
             self.read_candidates();
+            self.read_pipeline();
         }
         if t == Tab::Projects {
             self.read_projects();
@@ -1648,7 +1685,8 @@ impl App {
             ),
             Tab::Fleet => {
                 let d = if self.fleet_details { "hide" } else { "show" };
-                format!("d {d} runner details  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                let t = if self.fleet_tonight { "default order" } else { "tonight" };
+                format!("d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
@@ -1668,7 +1706,7 @@ impl App {
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
-                "j/k pick  c cancel  +/- priority  f candidates  p promote  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  c cancel  +/- priority  f candidates  p promote  o Grafana  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -1768,7 +1806,18 @@ impl App {
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => (
-                    queuetab::page(q, &self.qv, self.candidates.as_ref(), self.p, now, w),
+                    queuetab::page(
+                        q,
+                        &self.qv,
+                        self.candidates.as_ref(),
+                        (
+                            self.pipeline.as_ref(),
+                            self.infra.as_ref().is_some_and(|i| i.grafana.is_some()),
+                        ),
+                        self.p,
+                        now,
+                        w,
+                    ),
                     vec![],
                 ),
             },
@@ -1790,7 +1839,7 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (
-                    fleettab::page(f, self.p, now, w, self.fleet_details),
+                    fleettab::page(f, self.p, now, w, self.fleet_details, self.fleet_tonight),
                     vec![],
                 ),
             },
@@ -2099,6 +2148,41 @@ mod tests {
         crate::controls::tests::fixture()
     }
 
+    #[test]
+    fn o_on_the_queue_tab_opens_the_agents_overview_through_the_shared_grafana_path() {
+        // `o` is not a Queue key (queuetab::key passes it), so the app-wide `o` handles it;
+        // Queue was the only tab with trends in Grafana and no dashboard named.
+        assert_eq!(Tab::Queue.dashboard(), Some("kb-agents-overview"));
+        let mut a = app(Tab::Queue);
+        assert_eq!(
+            queuetab::QueueView::default().key(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+                Some(&queuetab::tests::fixture()),
+                &[]
+            ),
+            queuetab::Ask::Pass
+        );
+        // With no Grafana known nothing opens and nothing is spawned.
+        a.handle(key('o'));
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn the_queue_tab_shows_the_pipeline_line_first() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        let top = |a: &mut App| {
+            a.page_lines(80)
+                .iter()
+                .take(2)
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(top(&mut a)[0].starts_with("pipeline  reading"));
+        a.handle(Msg::Pipeline(Ok(None)));
+        assert_eq!(top(&mut a)[0], "pipeline -");
+    }
+
     fn app(tab: Tab) -> App {
         let (tx, _rx) = std::sync::mpsc::channel();
         with_tx(tab, tx)
@@ -2110,6 +2194,8 @@ mod tests {
         a.hosts = vec!["workstation".into()];
         a.runner = Arc::new(Fake::default());
         a.gather = no_sessions;
+        // No test reaches Prometheus: a read in flight is never started again.
+        a.pipeline_read.busy = true;
         a
     }
 
@@ -2950,6 +3036,30 @@ mod tests {
         let s = screen(&mut a, 160, 40);
         assert!(s.contains("trigger *-*-* 03:00:00"), "{s}");
         assert!(s.contains("d hide runner details"), "{s}");
+    }
+
+    #[test]
+    fn t_on_the_fleet_tab_switches_the_workers_to_tonight_and_back() {
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::tonight_fixture())));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("t tonight") && !s.contains("always idle-one"),
+            "{s}"
+        );
+        a.handle(key('t'));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("always idle-one") && s.contains("  `-   ask-sweep"),
+            "{s}"
+        );
+        assert!(s.contains("t default order"), "{s}");
+        a.handle(key('t'));
+        assert!(!screen(&mut a, 160, 40).contains("always idle-one"));
+        // Another tab's t is its own (Log's today), not this toggle.
+        a.handle(Msg::Tab(Tab::Log, None));
+        a.handle(key('t'));
+        assert!(!a.fleet_tonight);
     }
 
     #[test]

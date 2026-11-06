@@ -66,9 +66,48 @@ EOF
   echo '[]' > "$GHD/merged"; echo '[]' > "$GHD/open"
   echo '{"sessions":[],"main":[],"asks":[]}' > "$DAYLOG_STATE"
   : > "$DAYLOG_WATCH_LOG"
+  # The runner rollup's sources: runs.jsonl, calls.jsonl, the confs and judge-stub (judge-eval
+  # --all --json serves $SANDBOX/judge, and fails while it is missing).
+  export DAYLOG_RUNS="$SANDBOX/runs.jsonl" DAYLOG_CALLS="$SANDBOX/calls.jsonl" DAYLOG_AGENTS_DIR="$SANDBOX/agents"
+  export DAYLOG_JUDGE_CMD=judge-stub
+  printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/judge" > "$SANDBOX/bin/judge-stub"
+  chmod +x "$SANDBOX/bin/judge-stub"
   SUBJECT="$REPO_ROOT/.local/bin/day-log"
   # 2026-10-28 16:00 PDT
   export DAYLOG_NOW=1793228400
+}
+
+# run_row <local time on 2026-10-27/28> <name> <outcome> [minutes long] [result]: one runs.jsonl line
+run_row() {
+  local s; s=$(date -d "$1" +%s)
+  jq -cn --arg n "$2" --arg o "$3" --argjson s "$s" --argjson f "$((s + ${4:-5} * 60))" --arg r "${5:-success}" \
+    '{name: $n, invocation: "i", started: $s, finished: $f, result: $r, exit: "0", outcome: $o, out: [0, 0], err: [0, 0]}' >> "$DAYLOG_RUNS"
+}
+# call_row <local time> <agent> <cost>: one calls.jsonl line
+call_row() {
+  jq -cn --arg at "$(date -d "$1" -Iseconds)" --arg a "$2" --argjson c "$3" '{id: "c", agent: $a, at: $at, exit: 0, cost_usd: $c}' >> "$DAYLOG_CALLS"
+}
+# night: the night before 2026-10-28, 20:00 to 07:00, with a pass a minute either side of it
+night() {
+  mkdir -p "$DAYLOG_AGENTS_DIR"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/dream.conf"
+  printf 'CALLER=dream\nEFFECT="acts"\n' > "$DAYLOG_AGENTS_DIR/ask-sweep.conf"
+  printf "EFFECT='none'\n" > "$DAYLOG_AGENTS_DIR/token-usage.conf"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/fleet-dispatch.conf"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/inbox-triage.conf"
+  run_row '2026-10-27 19:59' dream WORKED
+  run_row '2026-10-28 06:30' fleet-dispatch BLOCKED
+  run_row '2026-10-28 03:04' dream WORKED 36
+  run_row '2026-10-27 22:00' inbox-triage NOOP
+  run_row '2026-10-28 03:42' token-usage '' 1 exit-code
+  run_row '2026-10-28 05:00' fleet-dispatch WORKED
+  run_row '2026-10-28 06:59' fleet-dispatch BLOCKED
+  run_row '2026-10-28 07:00' session-outcomes WORKED
+  # dream's own call and its ask-sweep call price its pass; one after the pass ended does not
+  call_row '2026-10-28 03:10' dream 8.2
+  call_row '2026-10-28 03:20' ask-sweep 0.02
+  call_row '2026-10-28 04:00' dream 5
+  echo '{"agents":[{"agent":"inbox-triage","score_7d":{"text":"93% untouched"}},{"agent":"ask-sweep","score_7d":{"text":"-"}}]}' > "$SANDBOX/judge"
 }
 
 # pr <repo> <number> <title> <merged-at-utc>
@@ -296,6 +335,7 @@ status_day() {
 
 @test "show passes comms-lint --channel status" {
   status_day
+  night
   export COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$SANDBOX/check.py"
   printf 'import sys\nsys.stdin.read()\n' > "$COMMS_PROSE_CHECK"
   "$SUBJECT" show > "$SANDBOX/show.md"
@@ -614,4 +654,44 @@ EOF
   AGENTCTL_STATE_DIR="$SANDBOX/astate" run env -u AGENTCTL_NAME "$SUBJECT" nightly
   assert_success
   [ ! -e "$SANDBOX/astate" ]
+}
+
+@test "agents.runners: every pass from 20:00 to 07:00 in time order, 19:59 and 07:00 left out, priced, its EFFECT and score" {
+  night
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c .unreadable 2026-10-28
+  assert_output '[]'
+  run rec -r '.agents.runners | .from, .to' 2026-10-28
+  assert_output "$(date -d '2026-10-27 20:00' +%s)
+$(date -d '2026-10-28 07:00' +%s)"
+  run rec -c '[.agents.runners.passes[] | [(.at | strflocaltime("%H:%M")), .name, .verdict, .cost_usd, .effect, .score]]' 2026-10-28
+  assert_output '[["22:00","inbox-triage","NOOP",null,"acts","93% untouched"],["03:04","dream","WORKED",8.22,"acts","-"],["03:42","token-usage","FAILED",null,"none","-"],["05:00","fleet-dispatch","WORKED",null,"acts","-"],["06:30","fleet-dispatch","BLOCKED",null,"acts","-"],["06:59","fleet-dispatch","BLOCKED",null,"acts","-"]]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line '- Asks: 0 open, oldest - h'
+  assert_line '- Last night (20:00-07:00): 6 passes, 1 failed, 2 blocked, $8.22 in calls'
+  assert_line '  - 22:00 inbox-triage           NOOP      -      acts   93% untouched'
+  assert_line '  - 03:04 dream                  WORKED    $8.22  acts   -'
+  assert_line '  - 03:42 token-usage            FAILED    -      none   -'
+  assert_line '  - 05:00 fleet-dispatch x3      2 BLOCKED, 1 WORKED -      acts   -'
+  # Under the Sessions and Asks lines, in the Flow section.
+  local asks night
+  asks=$(grep -n '^- Asks:' <<<"$output" | cut -d: -f1); night=$(grep -n '^- Last night' <<<"$output" | cut -d: -f1)
+  [ "$night" -eq $((asks + 1)) ]
+}
+
+@test "agents.runners negative controls: no runs.jsonl is no passes, an unreadable judge-eval is ?, a broken log keeps the last rollup" {
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[.unreadable, .agents.runners.passes]' 2026-10-28
+  assert_output '[[],[]]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line '- Last night: no runner passes'
+  night
+  rm "$SANDBOX/judge"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[.agents.runners.passes[].score] | unique' 2026-10-28
+  assert_output '["?"]'
+  echo 'not json' >> "$DAYLOG_RUNS"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[(.unreadable[] | select(startswith("runners:")) | .[0:8]), (.agents.runners.passes | length)]' 2026-10-28
+  assert_output '["runners:",6]'
 }

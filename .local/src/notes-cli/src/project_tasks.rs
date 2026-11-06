@@ -114,9 +114,16 @@ fn ensure_task_sheet(dir: &Path, name: &str) -> Result<PathBuf> {
 pub(crate) struct OpenRows {
     pub sheet: PathBuf,
     pub version: String,
-    pub rows: Vec<(usize, String)>,
+    pub rows: Vec<OpenRow>,
     /// Lines waiting in the sheet's `## Inbox`.
     pub inbox: usize,
+}
+
+/// One open row: its 1-based line, the line itself, and the lines indented under it.
+pub(crate) struct OpenRow {
+    pub line: usize,
+    pub text: String,
+    pub details: Vec<String>,
 }
 
 /// A directory's open version, `None` when it has no task sheet at all. The one reader the
@@ -130,9 +137,14 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
     let path = task_sheet(dir)?;
     let content = fs::read_to_string(&path).ok()?;
     let cur = version_in(dir, &content);
+    let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
         .into_iter()
-        .map(|(n, l)| (n, l.trim_end().to_string()))
+        .map(|(n, l)| OpenRow {
+            line: n,
+            text: l.trim_end().to_string(),
+            details: md::row_details(&lines, n - 1),
+        })
         .collect();
     Some(OpenRows {
         version: projects::version_or_default(cur),
@@ -1973,7 +1985,7 @@ Version: v1.13.0
         fs::write(dir.join("README.md"), ROADMAP).unwrap();
 
         let w = current_rows_for_dir(&dir).unwrap();
-        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|r| r.text).collect());
         assert_eq!(ver, "v1.13.0");
         assert_eq!(
             open,
@@ -1997,7 +2009,7 @@ Version: v1.13.0
         .unwrap();
 
         let w = current_rows_for_dir(&dir.join("agent")).unwrap();
-        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|(_, l)| l).collect());
+        let (ver, open): (_, Vec<_>) = (w.version, w.rows.into_iter().map(|r| r.text).collect());
         assert_eq!(ver, "v1.13.0");
         assert_eq!(open, vec!["- [ ] now"]);
         let _ = fs::remove_dir_all(&dir);

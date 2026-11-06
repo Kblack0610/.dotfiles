@@ -184,6 +184,58 @@ fn the_agent_board_refuses_untyped_sizeless_and_near_duplicate_rows() {
 }
 
 #[test]
+fn propose_types_what_add_would_refuse_and_writes_nothing() {
+    let h = Home::new("propose");
+    let before = h.board();
+    let out = agent(&h, &["propose", "--", "the menu fails on resume #high"]);
+    ok(&out);
+    let row = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(row, "fix(demo): the menu fails on resume");
+    assert_eq!(h.board(), before, "propose writes nothing");
+    assert!(h.events().is_empty(), "propose records nothing");
+
+    ok(&agent(&h, &["add", &format!("{row} #size/s")]));
+    assert_eq!(ids(&h.board()), ["dm-1"]);
+}
+
+#[test]
+fn doctor_lists_each_untyped_row_with_the_edit_that_types_it() {
+    let h = Home::new("untyped");
+    let path = h.board_path();
+    let board = h.board();
+    fs::write(
+        &path,
+        format!("{board}\n- [ ] the menu fails on resume <!-- id:dm-7 -->\n"),
+    )
+    .unwrap();
+    let out = h.run(&["doctor", "--projects", "--untyped"]);
+    ok(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("personal/demo\tdm-7\tfix(demo): the menu fails on resume"),
+        "{text}"
+    );
+    assert!(text.contains("1 untyped row(s)"), "{text}");
+    assert!(fs::read_to_string(&path)
+        .unwrap()
+        .contains("- [ ] the menu fails"));
+
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "--was",
+            "--text",
+            "fix(demo): the menu fails on resume",
+            "--",
+            "dm-7",
+        ],
+    ));
+    let out = h.run(&["doctor", "--projects", "--untyped"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("0 untyped row(s)"));
+}
+
+#[test]
 fn ambiguous_words_write_nothing() {
     let h = Home::new("ambig");
     ok(&agent(&h, &["add", "fix(ui): menu flickers #size/s"]));

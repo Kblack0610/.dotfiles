@@ -39,7 +39,7 @@ re-run `/wind-down` when that work is finished.
 
 ### 0. Who asked decides the mode
 
-**The human asked** (they typed `/wind-down`, or said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
+**The human asked** (they typed `/wind-down`, the shepherd's CHAT message passed on their standing order to close a chat quiet 24 hours, or they said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
 
 **You are winding yourself down** (`/wind-down auto`: the shepherd's DONE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
 
@@ -121,7 +121,7 @@ that file. When the session leaves a real follow-up that should come back up on 
 put it on the project board, picking the lane by who has to do it:
 
 ```bash
-notes ptask <project> --agent add "<the next action>"   # an agent can do it: the default
+notes ptask <project> --agent add "<type(area): the next action> #size/s"   # an agent can do it: the default
 notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 

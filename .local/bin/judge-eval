@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # judge-eval - every judge lane scored against its ground truth, per rule, under its current prompt.
 #
-#   judge-eval [agent|--all] [--any-prompt] [--days N] [--json]
-#       ask-judge, dispatch-judge, ask-sweep, or all three (the default): per agent and rule the
+#   judge-eval [lane|--all] [--any-prompt] [--days N] [--json]
+#       one scored lane (a runner conf with SCORE=) or all of them (the default): per lane and rule the
 #       verdicts, errors, coverage, scored, precision with its 95% interval, false-defer %, kappa,
 #       p95 and cost per verdict, the live rules and each shadow rule's distance to the bar.
 #       --any-prompt counts verdicts under every prompt; --days keeps the last N days.
@@ -29,12 +29,16 @@ set -uo pipefail
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
+# The notes ingest record: what became of each row a runner wrote (its 30 days are all it keeps).
+: "${JUDGE_EVAL_INGEST_CMD:=notes log --json --days 30}"
 # replay's judge, and what it must not see of an ask: every field the human's answer left on it.
 : "${JUDGE_EVAL_REPLAY_CMD:=agentctl-run --agent ask-judge-replay}"
 : "${JUDGE_EVAL_REPLAY_JOBS:=4}"
 : "${JUDGE_EVAL_BLIND_FIELDS:=answer answered_at answered_by answer_note resume resumed_at closed_at closed_reason}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
-AGENTS="ask-judge dispatch-judge ask-sweep"
+# How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
+# not started by hand.
+SETTLE_H=48
 # judge_precision counts only rules with this many scored answers: below it one miss swings 10+ points.
 KPI_LABELS=10
 MISSES=10
@@ -51,24 +55,36 @@ prompt_sha() {
   [ -n "$p" ] && [ -r "$p" ] && git hash-object "$(readlink -f "$p")" 2>/dev/null
 }
 
+# The scored lanes, the registry: every runner conf that names a SCORE.
+# SCORES is {lane: its conf's SCORE, the truth source it is scored by (judges.md)}.
+SCORES="$(for c in "$CONF_DIR"/*.conf; do s="$( . "$c" 2>/dev/null; printf '%s' "${SCORE:-}")"
+  [ -n "$s" ] && printf '%s\t%s\n' "$(basename "$c" .conf)" "$s"; done |
+  jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}')"
+AGENTS="$(jq -r 'keys | join(" ")' <<<"$SCORES")"
+
 # eval_json <agents> <any-prompt 0|1> <days or empty> -> the whole report as one JSON object
 eval_json() {
-  local want="$1" any="$2" days="$3" shas="{}" a sha tmp rc=0
+  local want="$1" any="$2" days="$3" shas="{}" src a sha tmp rc=0
   tmp="$(mktemp -d)" || return 1
   judge_ask_docs "$ASKS_ROOT" | jq -sc 'map(select((.judge // "") != ""))' > "$tmp/asks"
   zcat -f -- "$AGENTCTL_CALLS"* 2>/dev/null | jq -sc --arg a "$AGENTS" \
     '[.[] | objects | select(.agent as $x | $a | split(" ") | index($x))]' > "$tmp/calls" 2>/dev/null
   jq -sc '[.[] | objects]' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$tmp/verdicts" 2>/dev/null
-  $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select((.from // "") | startswith("board:"))]' > "$tmp/queue" 2>/dev/null
-  for a in asks calls verdicts queue; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
+  $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
+  $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
+    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/"))))
+    | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
+  for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
   in_session_picks "$(cat "$tmp/asklines")" > "$tmp/picks"
+  src="$(jq -c --arg a "$AGENTS" '. as $m | $a | split(" ") | map({(.): ($m[.] // "")}) | add // {}' <<<"$SCORES")"
   for a in $AGENTS; do
     sha="$(prompt_sha "$a")"
     shas="$(jq -c --arg a "$a" --arg s "${sha:-}" '. + {($a): $s}' <<<"$shas")"
   done
   jq -n --slurpfile A "$tmp/asks" --slurpfile C "$tmp/calls" --slurpfile V "$tmp/verdicts" \
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
+    --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
@@ -86,12 +102,16 @@ JQ_EVAL="$JQ_EPOCH"'
   def wilson($k; $n): if $n == 0 then [null, null] else
     ($k / $n) as $p | 3.8416 as $z2 | (1 + $z2 / $n) as $d
     | (($p + $z2 / (2 * $n)) / $d) as $c | (((($p * (1 - $p) / $n) + $z2 / (4 * $n * $n)) | sqrt) * 1.96 / $d) as $h
-    | [(($c - $h) * 1000 | round) / 10 | if . < 0 then 0 else . end, (($c + $h) * 1000 | round) / 10 | if . > 100 then 100 else . end] end;
+    | [(($c - $h) * 1000 | round) / 10 | if . <= 0 then 0 else . end, (($c + $h) * 1000 | round) / 10 | if . > 100 then 100 else . end] end;
+  def bykey(f): group_by(f) | map({((.[0] | f)): .}) | add // {};
   def kappa: (.tp + .fp + .fn + .tn) as $n | if $n == 0 then null else
     ((.tp + .tn) / $n) as $po | (((.tp + .fp) * (.tp + .fn) + (.fn + .tn) * (.fp + .tn)) / ($n * $n)) as $pe
     | if $pe >= 1 then null else ((($po - $pe) / (1 - $pe)) * 100 | round) / 100 end end;
 
-  ($calls | map({(.id): .}) | add // {}) as $call
+  $I[0] as $ingest
+  # Each truth source scores the lane whose conf names it in SCORE=.
+  | ($src | to_entries | map({(.value): .key}) | reverse | add // {}) as $by
+  | ($calls | map({(.id): .}) | add // {}) as $call
   | (if $days == "" then null else $now - ($days | tonumber) * 86400 end) as $since
   | def inscope($agent): (.at | epoch) as $e
       | ($since == null or ($e != null and $e >= $since))
@@ -103,7 +123,7 @@ JQ_EVAL="$JQ_EPOCH"'
     | . as $a | ($a.judge | if . == "human" then "defer" elif . == "error" then "error" else "answer" end) as $kind
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want
     | ($picks[$a.id] // (if ($a.answer // "") | startswith("in session:") then null else $a.answer end)) as $human
-    | {agent: "ask-judge", id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
+    | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
        type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"), want: $want,
        human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
        reason: ($a.judge_reason // ""), evidence: ($a.judge_evidence // ""),
@@ -123,21 +143,61 @@ JQ_EVAL="$JQ_EPOCH"'
    # `failed` line did not.
    | ($verdicts | map(select(.verdict == "failed")) | map({key: "\(.project)\u0000\(.key)", value: (.at | epoch)})
       | group_by(.key) | map({(.[0].key): (map(.value) | max)}) | add // {}) as $failed
-   | ($queue | map({key: (.from | ltrimstr("board:")), value: (.state + "/" + (.status // ""))}) | from_entries) as $item
+   | ($queue | map(select((.from // "") | startswith("board:")))
+      | map({key: (.from | ltrimstr("board:")), value: (.state + "/" + (.status // ""))}) | from_entries) as $item
+   # Every start of a queue item, keyed by its board row; run is fleet-dispatch, resume a restore.
+   | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), origin})) as $starts
+   | ($starts | bykey(.key)) as $startsby | ($starts | bykey(.key | split(":") | last)) as $startsbyid
+   # The ingest record, each event with its epoch. The planner writes in the minute up to its
+   # `planned` record on the row, and those writes touch nothing.
+   | ($ingest | map(. + {e: (.ts | epoch)}) | map(select(.e != null))) as $ev
+   | ($ev | map(select(.action == "planned")) | bykey(.id)) as $plans
+   | def planner($id; $e): any(($plans[$id] // [])[].e; (. - 60) <= $e and $e <= .);
+   # Split rows, by the row they were split from (#of/<id> on an added or re-tagged row).
+   ($ev | map(select(.action == "added" or .action == "tagged")
+        | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
+      | bykey(.p)) as $kids
+   | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
+   # Triage: each row the triager filed (no session or queue item behind the write), right when
+   # nothing edits, drops, moves or re-tags it for the settle window.
+   | [$ev[] | select(.action == "filed" and ((.by // "human") | . == "" or . == "human")) | . as $f
+      | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
+      | {agent: $by["triage-untouched"], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
+         question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",
+         human: (if $t == null then "" else $t.action + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end), reason: "", at: $f.ts,
+         answered_at: (if $t == null then null else $t.ts end), judge_call: "",
+         outcome: (if $t != null then "fp" elif ($now - $f.e) >= $settle then "tp" else "pending" end)}] as $triagerows
+   # Plan: each row the planner planned, right when it (or a row split from it in the same run)
+   # starts before any re-split: a later plan, or a row split from it by someone else.
+   | [$plans[] | min_by(.e) as $p
+      | ([$p.id] + [($kids[$p.id] // [])[] | select(planner($p.id; .e)) | .id]) as $ids
+      | ([$ids[] as $i | ($startsbyid[$i] // [])[] | select(.e != null and .e >= $p.e) | .e] | min) as $go
+      | ([($plans[$p.id] // [])[].e | select(. > $p.e)] + [($kids[$p.id] // [])[] | select(planner($p.id; .e) | not) | .e] | min) as $resplit
+      | ($resplit != null and ($go == null or $resplit < $go)) as $wrong
+      | {agent: $by["plan-dispatched"], id: $p.id, project: ($p.from // ""), question: ($p.text // ""), rule: "",
+         kind: "answer", want: "started whole", human: (if $wrong then "re-split" elif $go != null then "started" else "" end),
+         reason: ($p.why // ""), at: $p.ts, answered_at: null, judge_call: "",
+         outcome: (if $wrong then "fp" elif $go != null then "tp" else "pending" end)}] as $planrows
    | ($askrows + [($verdicts | map(select(.verdict == "error"))[]
-           | {agent: "dispatch-judge", id: .key, project, question: .key, rule: (.rule // ""), kind: "error",
+           | {agent: $by["dispatch-queue"], id: .key, project, question: .key, rule: (.rule // ""), kind: "error",
               want: "", human: "", reason: (.reason // ""), at, judge_call: (.judge_call // ""), outcome: null}),
+          # A skip is a false defer when the row is started by hand after its run of skips began.
           ($verdicts | map(select(.verdict == "dispatch" or .verdict == "skip"))
-           | group_by([.project, .key]) | map(max_by(.at | epoch // 0))[]
-           | . as $v | ($item["\($v.project):\($v.key)"] // "") as $st
+           | group_by([.project, .key]) | map(sort_by(.at | epoch // 0))[]
+           | . as $r | last as $v | "\($v.project):\($v.key)" as $row | ($item[$row] // "") as $st
            | (($failed["\($v.project)\u0000\($v.key)"] // -1) >= ($v.at | epoch // 0)) as $fail
-           | {agent: "dispatch-judge", id: $v.key, project: $v.project, question: $v.key, rule: ($v.rule // ""),
+           | ((([$r | to_entries[] | select(.value.verdict != "skip") | .key] | max) // -1) + 1) as $i
+           | ($r[$i].at | epoch // 0) as $skip0
+           | ([($startsby[$row] // [])[] | select((.origin | IN("run", "resume") | not) and .e != null and .e >= $skip0) | .e] | min) as $hand
+           | {agent: $by["dispatch-queue"], id: $v.key, project: $v.project, question: $v.key, rule: ($v.rule // ""),
               kind: (if $v.verdict == "dispatch" then "answer" else "defer" end), want: "start",
-              human: (if $fail then "failed" else $st end), reason: ($v.reason // ""), at: $v.at, answered_at: null, judge_call: ($v.judge_call // ""),
-              outcome: (if $v.verdict == "skip" then "unscorable"
+              human: (if $fail then "failed" elif $v.verdict == "skip" and $hand != null then "started by hand" else $st end),
+              reason: ($v.reason // ""), at: $v.at, answered_at: null, judge_call: ($v.judge_call // ""),
+              outcome: (if $v.verdict == "skip" then
+                  (if $hand != null then "fn" elif ($now - $skip0) >= $settle then "tn" else "pending" end)
                 elif $fail or ($st | test("^done/(failed|cancelled)")) then "fp"
-                elif $st == "done/ok" then "tp" else "pending" end)})])
-  as $all
+                elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows)
+  | map(select(.agent != null)) as $all
 
   | ($all | map(select(.judge_call != "")) | group_by(.judge_call) | map({(.[0].judge_call): length}) | add // {}) as $share
   | def stats: . as $r
@@ -173,11 +233,18 @@ JQ_EVAL="$JQ_EPOCH"'
      | ($all | map(select(.agent == $ag and inscope($ag)))) as $mine
      | ($calls | map(select(.agent == $ag and ((.at | epoch) as $e | $since == null or ($e != null and $e >= $since))
                             and ($any == 1 or (.prompt_sha // "") == ($shas[$ag] // "-"))))) as $cl
-     | (if $ag == "ask-judge" then $live elif $ag == "dispatch-judge" then ["*"] else [] end) as $lv
-     | {agent: $ag, prompt_sha: ($shas[$ag] // ""),
-        truth: ({"ask-judge": "the human answer to the ask, and the review of a live answer (override or none)",
-                 "dispatch-judge": "the queue item a dispatched row became: done ok landed, failed or cancelled did not",
-                 "ask-sweep": "not recorded: ask-sweep keeps only a signature of each quote it filed"}[$ag]),
+     | ($src[$ag] // "") as $sc
+     | (if $sc == "ask-answers" then $live elif $sc == "dispatch-queue" then ["*"] else [] end) as $lv
+     # The word a score cell puts after its percent; a lane with no counted outcome has none.
+     | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
+         "plan-dispatched": "dispatched"}[$sc]) as $lb
+     | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
+        truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (override or none)",
+                 "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
+                 "triage-untouched": "the ingest record: a filed row is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
+                 "plan-dispatched": "the ingest record and the queue: a planned row is right when it starts before anyone re-splits it",
+                 "unrecorded": "not recorded: the lane leaves no counted outcome, so only its calls show"}[$sc]
+               // "unknown SCORE \($sc | tojson): judges.md lists the truth sources"),
         live: $lv,
         calls: {n: ($cl | length), errors: ($cl | map(select((.exit // 0) != 0 or .is_error == true)) | length),
                 p50_ms: ([$cl[].duration_ms | numbers] | quantile(0.5)), p95_ms: ([$cl[].duration_ms | numbers] | quantile(0.95)),
@@ -192,11 +259,23 @@ JQ_EVAL="$JQ_EPOCH"'
                  | map({id, project, question, judge: .want, reason, answer: .human, rule,
                         answered_at: (.answered_at // .at | epoch)}))}
        # What the human reads rather than a score, so every prompt counts: a policy change must
-       # not empty the list or reset the week.
-       + (if $ag != "ask-judge" then {} else ($all | map(select(.agent == $ag))) as $every
-          | {week: ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats),
-             verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
-               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end)]}'
+       # not empty the list or reset the week. score_7d is the week as the Workers score cell and
+       # the day-log rollup show it, a percent only past the bar; the runner_score KPI counts the
+       # current prompt only.
+       + (($all | map(select(.agent == $ag))) as $every
+          | ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats) as $wk
+          | ($wk.tp + $wk.fp) as $n
+          | {week: $wk,
+             score_7d: {window: "7d", right: $wk.tp, n: $n, pending: $wk.pending,
+                        value: (if $lb != null and $n >= $bar then $wk.precision else null end),
+                        text: (if $lb == null then "-" elif $n < $bar then "n<\($bar)"
+                               else "\($wk.precision | round)% \($lb)" end),
+                        title: (if $lb == null then "\($sc): no counted outcome"
+                                else "7d, \($wk.tp) of \($n) right, \($wk.pending) pending, \($sc)"
+                                     + (if $n < $bar then "; a percent at \($bar) rows" else "" end) end)}}
+          + (if $src[$ag] != "ask-answers" then {} else
+             {verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
+               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end))]}'
 
 # report <json>: the table, one block per agent.
 report() {
@@ -231,13 +310,20 @@ kpi_json() {
   local w7 w28
   w7="$(VERDICTS=0 eval_json "$AGENTS" 1 7)" && w28="$(VERDICTS=0 eval_json "$AGENTS" 1 28)" || return 1
   jq -cn --argjson a "$w7" --argjson b "$w28" --argjson min "$KPI_LABELS" '
-    def k: {judge_errors: ([.agents[] | if .agent == "ask-sweep" then .calls.errors else .total.errors end] | add),
-            judge_precision: ([.agents[].rules[] | select(.tp + .fp >= $min) | .precision] | min),
-            ask_answered_pct: (.agents[] | select(.agent == "ask-judge") | .total.live_pct),
-            ask_false_defer_pct: (.agents[] | select(.agent == "ask-judge") | .total.false_defer_pct),
-            ask_unclear_pct: (.agents[] | select(.agent == "ask-judge") | .total as $t
+    def k: .bar.labels as $need
+           | {judge_errors: ([.agents[] | if .score == "unrecorded" then .calls.errors else .total.errors end] | add),
+            judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
+              | select(.tp + .fp >= $min) | .precision] | min),
+            ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
+            ask_false_defer_pct: (.agents[] | select(.score == "ask-answers") | .total.false_defer_pct),
+            ask_unclear_pct: (.agents[] | select(.score == "ask-answers") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
-              | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end)};
+              | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
+            dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total.false_defer_pct] | .[0])}
+         # A runner lane scores from the one bar: below it a single miss swings the number.
+         + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched"))
+             | {("runner_score_" + (.agent | gsub("-"; "_"))): (if (.total.tp + .total.fp) >= $need then .total.precision else null end)}]
+            | add // {});
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
 }
 
@@ -345,7 +431,7 @@ main() {
       -h|--help) sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; return 0 ;;
       -*) say "unknown option $1"; return 2 ;;
       *) for a in $AGENTS; do [ "$1" = "$a" ] && want="$want $a"; done
-         [[ " $want " == *" $1 "* ]] || { say "no judge lane '$1' (lanes: $AGENTS)"; return 2; }; shift ;;
+         [[ " $want " == *" $1 "* ]] || { say "no scored lane '$1' (lanes: $AGENTS)"; return 2; }; shift ;;
     esac
   done
   local out

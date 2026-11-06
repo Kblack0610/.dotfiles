@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
 done
 case "${args[0]}" in
   projects) cat "$F/projects" 2>/dev/null ;;
+  board) if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"; else echo '{"rows": []}'; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in
@@ -116,6 +117,15 @@ project() {
 }
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
+
+# board_row <project> <lane> <id> <tags json> <details json> -- that fixture row as `notes board
+# --json` gives it (its raw line from rows.<project>.<lane>), with tags and details
+board_row() {
+  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" \
+    --arg raw "$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2")" \
+    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw}' \
+    >> "$NOTES_FIXTURE/board.rows"
+}
 
 # A tagged row the fleet worker may take.
 T='#worker/fleet #tier/1'
@@ -250,6 +260,102 @@ verdict() {
   run cmd_candidates
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
+}
+
+@test "candidates: the judge reads a row's details, and an edit to them re-judges only a verdict that recorded them" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] fix the jump $T <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] old verdict $T <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] no details $T <!-- id:ga-3 -->"
+  board_row game agent ga-1 '[]' '["the jump clips on ledges", "repro: level 2"]'
+  board_row game agent ga-2 '[]' '["first words"]'
+  verdict game agent ga-2 skip   # from before details were read: no dsig
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"; cat "$NOTES_FIXTURE/judge.out"'
+  echo '{"verdicts":[{"project":"game","lane":"agent","key":"ga-1","tier":1,"size":"S","clear":true,"agent_only":true,"area":"jump","verdict":"dispatch","rule":"fits","reason":"small"},{"project":"game","lane":"agent","key":"ga-3","tier":1,"size":"S","clear":false,"agent_only":true,"area":"x","verdict":"skip","rule":"unclear","reason":"vague"}]}' > "$NOTES_FIXTURE/judge.out"
+  run judge "$(cmd_candidates)"
+  assert_success
+  grep -qF '"key":"ga-1","text":"- [ ] fix the jump' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  grep -qF '"details":"the jump clips on ledges\nrepro: level 2"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  # negative control: a row with no details sends none
+  run grep -F '"key":"ga-3"' "$NOTES_FIXTURE/prompt"
+  refute_output --partial '"details"'
+  run cmd_candidates
+  assert_output ''
+  # Details change under all three: ga-1's verdict recorded them and is judged again; ga-2's is
+  # older than dsig and holds on its text; ga-3 recorded "none", so new details re-judge it too.
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent ga-1 '[]' '["the jump clips on ledges", "repro: level 3"]'
+  board_row game agent ga-2 '[]' '["other words"]'
+  board_row game agent ga-3 '[]' '["now it has some"]'
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-1,ga-3'
+}
+
+@test "candidates: a #plan row waits for inbox-plan and suggest says so" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] define me $T #plan <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] ready $T <!-- id:ga-2 -->"
+  board_row game agent ga-1 '["plan"]' '[]'
+  board_row game agent ga-2 '[]' '[]'
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-2'
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on a plan'
+  assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | length' <<<"$output")" 0
+}
+
+# plan_fixture -- agent rows skipped by each kind of rule, one already planned, one edited since,
+# a human row, and one row already waiting on its plan
+plan_fixture() {
+  printf '%s\n' '- (design) needs a product call' '- (bundle) several tasks' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in ga-1 ga-2 ga-3 ga-4 ga-5 ga-7; do row game agent "$k" "- [ ] row $k $T <!-- id:$k -->"; done
+  row game agent ga-6 "- [ ] row ga-6 #plan $T <!-- id:ga-6 -->"
+  row game human gh-1 "- [ ] row gh-1 $T <!-- id:gh-1 -->"
+  for k in ga-1 ga-2 ga-4 ga-5 ga-7; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent ga-3 '[]' '["goal: already planned"]'
+  board_row game agent ga-6 '["plan"]' '[]'
+  board_row game human gh-1 '[]' '[]'
+  rule() { verdict game "$1" "$2" skip; jq -c --arg r "$3" 'if .key == "'"$2"'" then .rule = $r else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  rule agent ga-1 unclear; rule agent ga-2 design; rule agent ga-3 unclear; rule agent ga-5 unclear
+  rule agent ga-7 bundle; rule human gh-1 unclear
+  verdict game agent ga-4 dispatch
+  # ga-5 was edited after its verdict
+  sed -i 's/row ga-5/row ga-5 now longer/' "$NOTES_FIXTURE/rows.game.agent"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in ga-1 ga-2 ga-4 ga-5 ga-7; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent ga-3 '[]' '["goal: already planned"]'
+  board_row game agent ga-6 '["plan"]' '[]'
+  board_row game human gh-1 '[]' '[]'
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+}
+
+@test "plan_skips: tags agent rows skipped as undefined and never planned, then kicks inbox-plan" {
+  plan_fixture
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 2
+  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-1
+ptask game --agent tag --add plan ga-7'
+  # negative controls: a design skip, a planned row, a dispatch, an edited row and a human row
+  run grep -E 'tag --add plan (ga-2|ga-3|ga-4|ga-5|ga-6|gh-1)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # ga-6 already waits, so inbox-plan's unit is started
+  grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
+}
+
+@test "plan_skips: stops at DISPATCH_PLAN_BACKLOG open #plan rows, and 0 turns it off" {
+  plan_fixture
+  DISPATCH_PLAN_BACKLOG=2 plan_skips
+  assert_equal "$PLAN_TAGGED" 1
+  : > "$NOTES_FIXTURE/calls.log"
+  DISPATCH_PLAN_BACKLOG=0 plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  run grep -c 'board --json' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "candidates: a live dispatched session does not hold its project" {
@@ -818,6 +924,20 @@ game_ready() {
   grep -qF -- '- [/] the row #low' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
 }
 
+@test "fleet-dispatch promote --tags puts the tags on the item; without it the item has none" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
+  row game human 'fix two' '- [ ] fix two #low <!-- id:gm-6 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --tags night --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_success
+  assert_equal "$(qfield "$(qitem queued gm-5)" tags)" night
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --raw '- [ ] fix two #low <!-- id:gm-6 -->'
+  assert_success
+  assert_equal "$(qfield "$(qitem queued gm-6)" tags)" ""
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --tags
+  assert_failure 2
+}
+
 @test "fill --dry-run keys a row by its id and shows the priority it would queue at" {
   project game beta "$SANDBOX/repos/game"
   row game human gm-5 "- [ ] fix crash on load #low $T <!-- id:gm-5 -->"
@@ -864,6 +984,60 @@ refuses() {
   game_ready
   stub claude-acct 'exit 1'
   refuses 'no account has room under its weekly pace'
+}
+
+# room_on_floor: claude-acct room finds room only with the pace line lifted, as the real one would
+# for an account over its pace but outside its reserve.
+room_on_floor() {
+  stub claude-acct '[ "$1" = room ] || exit 0
+[ "${CLAUDE_ACCT_PACE_SLACK_PCT:-}" = 100 ] && { echo /home/u/.claude-personal; exit 0; }
+echo "claude-acct: no account has room; main is the closest, 1 point over its weekly pace" >&2; exit 1'
+  stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
+}
+
+@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
+  game_ready
+  room_on_floor
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  export DISPATCH_RUN_FLOOR=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on the run floor (DISPATCH_RUN_FLOOR=2)'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "the run floor counts this pass's starts: past it the pace holds again; 0 is no floor" {
+  two_items
+  room_on_floor
+  export DISPATCH_PER_PASS=3 DISPATCH_RUN_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game on the run floor'
+  assert_output --partial 'over its weekly pace; real idle 10.0% is under 30%, the pass stops after 1 started'
+  refute_output --partial 'started queue item fix-app'
+  # the negative control: no floor, the same room and idle start nothing
+  export DISPATCH_RUN_FLOOR=0
+  rm -f "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+}
+
+@test "the run floor never lifts the load pace or a room refusal it cannot lift" {
+  game_ready
+  room_on_floor
+  export DISPATCH_RUN_FLOOR=2
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over the'
+  assert_not_called 'wt new'
+  # an account in its reserve: room refuses whatever the slack
+  echo "0.10 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 90% of its week used, inside the last 15% kept for the human" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'inside the last 15% kept for the human'
+  assert_not_called 'wt new'
 }
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
@@ -1223,7 +1397,7 @@ held_game_app_row() {
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1)'
+  assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
 }
 
@@ -1267,6 +1441,21 @@ held_game_app_row() {
   assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
   DISPATCH_MAX_LIVE=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .max_live <<<"$output")" 2
+}
+
+@test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  two_items
+  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
+  mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
+  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t2.1\t24'
+  # Night items too, and into names of their own: the exported DISPATCH_* a child reads stay the conf's.
+  export DISPATCH_PER_PASS=3 DISPATCH_NIGHT_MAX=6
+  source "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_equal "$PER_PASS $NIGHT_MAX $DISPATCH_PER_PASS $DISPATCH_NIGHT_MAX" "6 12 3 6"
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {
@@ -1380,6 +1569,8 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure
   assert_equal "$(outcome)" FAILED
+  grep -q 'outcome=FAILED why: could not judge the new rows (the reply had no verdicts)' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
 }
 
 @test "a dry run publishes nothing, past a gate or at one" {
@@ -2714,4 +2905,153 @@ restore_setup() {
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+# --- gateway harnesses: `start --harness` ---------------------------------------------------
+
+# A harness map, a key file and a gateway that says $1 of $150 is spent (default 1).
+harness_ready() {
+  game_ready
+  printf 'sk-test\n' > "$SANDBOX/eval.key"
+  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" '{
+    gateway: {url: "https://gw.test", key_file: $k},
+    harnesses: {
+      "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
+      opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}}}}' > "$SANDBOX/harnesses.json"
+  export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  stub tmux 'exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+}
+
+@test "--harness opencode launches a standalone run on the overlay, claims its session and logs under eval" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model qwen
+  assert_success
+  assert_called 'env -u LITELLM_MASTER_KEY timeout 180m opencode run --standalone --auto --session ses_eval'
+  assert_called '--title fix-menu --model litellm/code\ \(qwen-3-coder\) --agent build'
+  assert_called 'OPENCODE_CONFIG='
+  assert_called '</dev/null'
+  assert_not_called 'claude --model'
+  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness opencode --picked qwen --ran qwen'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen gateway run-9'
+  grep -q 'ses_eval' <<<"$(qfield "$f" sessions)" || fail "the run's session id is not on the item"
+  grep -qF "$(qfield "$f" sessions | tr -d '[] ' | cut -d, -f1)" "$NOTES_FIXTURE/calls.log" || fail "claimed id is not the launched one"
+}
+
+@test "the key goes to the gateway on stdin, never on the command line" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_success
+  assert_called 'https://gw.test/key/info'
+  assert_not_called 'sk-test'
+  grep -q 'Bearer sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "curl was not handed the key"
+}
+
+@test "an opencode brief reads the skill and carries its own closing rules, not the ones for a watched pane" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_success
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
+  assert_called 'pr=<owner/repo#N>'
+  assert_called 'Run agent-land in the foreground'
+  assert_not_called '/one-shot Fix'
+  assert_not_called 'agent-ask post'
+}
+
+@test "--harness claude-lazer runs the wrapper on the eval key with the queue tag, off the account" {
+  harness_ready
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness claude-lazer --model sonnet
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY='
+  assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --permission-mode bypassPermissions'
+  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
+  assert_not_called 'claude-acct pick'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer gateway'
+}
+
+@test "an item queued with --agent and a model starts on them with no flags" {
+  harness_ready
+  agent-queue add --project game --slug by-field --agent opencode --priority high "Fix it" >/dev/null
+  agent-queue set by-field model=sonnet >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item by-field
+  assert_success
+  assert_called 'opencode run --standalone'
+}
+
+@test "a claude start is unchanged: no eval log, no gateway read, no claim" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_success
+  assert_called "claude --model opus --permission-mode bypassPermissions \$'/one-shot Fix"
+  assert_not_called 'curl'
+  assert_not_called 'lane eval'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" sessions)" 'claude main '
+}
+
+@test "gateway starts refuse what would mislabel or overspend, and the item stays queued" {
+  harness_ready
+  refuses() { local want="$1"; shift; run "$REPO_ROOT/.local/bin/fleet-dispatch" start "$@"; assert_failure; assert_output --partial "$want"; }
+  refuses 'unknown harness: nope' --item fix-menu --harness nope --model sonnet
+  refuses 'has no model opus' --item fix-menu --harness claude-lazer --model opus
+  refuses 'needs --model' --item fix-menu --harness opencode
+  refuses '--harness needs --item' --project game --harness opencode --model sonnet
+  refuses 'a resume stays on what it ran' --resume abc --harness opencode --model sonnet
+  agent-queue add --project game --slug planned --mode plan --priority high "Think" >/dev/null
+  refuses 'cannot wait on a plan' --item planned --harness opencode --model sonnet
+  rm "$DISPATCH_HARNESSES"
+  refuses 'no harness map' --item fix-menu --harness opencode --model sonnet
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
+}
+
+@test "a spent key and a gateway that cannot answer both refuse the start" {
+  harness_ready 150
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_failure
+  assert_output --partial 'the eval key is spent'
+  stub curl 'exit 22'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_failure
+  assert_output --partial "cannot read the eval key's budget"
+  assert_not_called 'wt new'
+}
+
+@test "resume refuses an item that ran on a gateway harness" {
+  harness_ready
+  started_item gw-run lab:game-agent-1
+  sed -i 's/^agent: claude/agent: opencode/' "$(qitem running gw-run)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item gw-run --resume abc
+  assert_failure
+  assert_output --partial '--resume is for claude'
+}
+
+@test "a pass never starts a gateway item: it goes on to the claude item behind it" {
+  harness_ready
+  agent-queue add --project game --slug gw-first --agent opencode --priority urgent "Eval" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem queued gw-first)" ] || fail "a pass started a gateway item"
+  [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
+}
+
+@test "reap settles a claude-lazer item whose claude exited, like claude's; an opencode one waits for its session to end" {
+  project game beta "$SANDBOX/repos/game"
+  started_item lazer lab:game-agent-1
+  sed -i 's/^agent: claude/agent: claude-lazer/' "$AGENT_QUEUE_DIR"/running/*-lazer.md
+  started_item oc lab:game-agent-2
+  sed -i 's/^agent: claude/agent: opencode/' "$AGENT_QUEUE_DIR"/running/*-oc.md
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
+  stub agent-ask 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lazer.md 2>/dev/null)" ] || fail "a claude-lazer item whose claude exited stayed active"
+  [ -n "$(qitem running oc)" ] || fail "an opencode run was settled while its session lives"
 }
