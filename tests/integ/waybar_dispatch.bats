@@ -184,12 +184,12 @@ bar() { printf "<span color='#7f7f7f'>Q</span> %s  <span color='#7f7f7f'>B</span
   run "$MODULE"
   assert_equal "$(class)" warn
   run tip
-  assert_line --index 1 "<span color='$Y'>dispatch stopped 2h03m: no account has room under its weekly pace</span>"
+  assert_line --index 2 "<span color='$Y'>dispatch stopped 2h03m: no account has room under its weekly pace</span>"
   refute_output --partial "(BLOCKED)"
   feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=600
   run "$MODULE"
   run tip
-  assert_line --index 1 "<span color='$Y'>dispatch stopped 10m: the last pass left ready work waiting</span>"
+  assert_line --index 2 "<span color='$Y'>dispatch stopped 10m: the last pass left ready work waiting</span>"
 }
 
 @test "a flapping item is amber, in the why and the self-heal line" {
