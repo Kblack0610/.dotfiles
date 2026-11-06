@@ -2462,6 +2462,16 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(night_keys)" 'add a panel,bump jq'
 }
 
+@test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
+  night_ready
+  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
+  row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
+  night_verdict 'drop the dead timer' timer
+  run t3_cleanup_picks "$(night_rows '')"
+  assert_success
+  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
+}
+
 @test "item_tier: an untiered item on a harness project is tier 3, whoever queued it; a tier tag, the text, or another project says otherwise" {
   t() { jq -cn --arg p "$1" --arg tags "$2" --arg title "$3" '{slug: "s", mode: "oneshot", project: $p, tags: $tags, title: $title, task: $title}'; }
   assert_equal "$(item_tier "$(t agent-runtime '' 'chore(hooks): prune them')")" 3

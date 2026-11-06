@@ -2566,11 +2566,11 @@ night_rows() {
         --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
-        --arg profile "$DISPATCH_NIGHT_PROFILE" --arg rsize "$(row_size "$text")" \
+        --arg profile "$DISPATCH_NIGHT_PROFILE" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
         --argjson cleanup "$(cleanup_row "$name" "$text")" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, row_size: $rsize,
-          cleanup: $cleanup,
+          cleanup: $cleanup, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'
     done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
@@ -2594,7 +2594,7 @@ t3_ready() {
 
 # night_picks <rows> -> up to DISPATCH_NIGHT_MAX t3_ready rows that are not cleanup: a cleanup row
 # merges at any hour instead (t3_cleanup_picks). One row an area, so a night's PRs do not collide.
-# Human asks first, then subtract or fix, then observer rows, then most urgent, then oldest.
+# Human asks first (#requested), then observer rows, then most urgent, then oldest (night_rows' rank).
 night_picks() {
   t3_ready "$1" | jq -sc --argjson max "$NIGHT_MAX" 'map(select(.cleanup != 0))
     | sort_by(.rank, .prio, -.order) | unique_by([.project, .area]) | sort_by(.rank, .prio, -.order)
@@ -2602,13 +2602,14 @@ night_picks() {
 }
 
 # t3_cleanup_picks <rows> -> the t3_ready rows that are cleanup, each a merging item behind the red-fix
-# gate (policy.md "Tier"), in RANK_JQ order. One tier-3 item in flight an area: an area an active
+# gate (policy.md "Tier"), in RANK_JQ order with the project's #prio (night_rows' project_prio), as
+# picks ranks the day rows they merge with. One tier-3 item in flight an area: an area an active
 # queue item holds (queue_areas, the lock picks reads) is skipped.
 t3_cleanup_picks() {
   t3_ready "$1" | jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ"'
     map(select(.cleanup == 0 and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
-      | . + {worker: "tier3-cleanup"} | rank_fields($today; ""))
+      | . + {worker: "tier3-cleanup"} | rank_fields($today; .project_prio // ""))
     | rank | unique_by([.project, .area]) | rank | .[]'
 }
 
