@@ -1778,8 +1778,11 @@ start_item() {
     [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
     no=$(spill_cached "$slug")
     if [ -z "$no" ]; then
+      # A red spills whatever its tier: it merges behind the red-fix gate on any harness, and a red
+      # left waiting for account room keeps the fleet broken. Every other tier-3 item waits, an
+      # untiered one on a harness project included (item_tier).
       no=$(item_tier "$it")
-      if [ "$no" -gt "$UNATTENDED_TIER_CEILING" ]; then no="tier $no is past the unattended ceiling"; else no=''; fi
+      if [ "$no" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then no="tier $no is past the unattended ceiling"; else no=''; fi
       if [ -z "$no" ]; then
         verdict=$(lane_pick "$slug" claude)
         case "$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)" in

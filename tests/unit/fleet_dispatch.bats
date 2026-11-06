@@ -3822,6 +3822,19 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not spill"
 }
 
+@test "spill: an untiered item on a harness project is tier 3 and waits; a red one there still spills" {
+  spill_ready
+  export DISPATCH_CLEANUP_PROJECTS=game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item fix-menu may not spill to Lazer: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued fix-menu)" ] || fail "an untiered harness item spilled"
+  agent-queue add --project game --slug red-sweep --priority urgent --tags 'red cause:ab12' "fix the dead sweep" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item red-sweep on Lazer'
+  [ -n "$(qitem running red-sweep)" ] || fail "a red on a harness project did not spill"
+}
+
 @test "spill holds when the pool is at its line, the key is spent, or the gateway cannot answer" {
   spill_ready 200
   refuses 'no account has room; alt is the closest, 4 points over its weekly pace (spill to Lazer shut: the Lazer pool is at 80%, the line is DISPATCH_SPILL_POOL_PCT=80%)'
