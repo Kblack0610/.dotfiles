@@ -32,6 +32,8 @@ case "$1 $2" in
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
+# pr edit --body-file -: the new body becomes the body
+'pr edit') cat >"$NOTES_FIXTURE/body" ;;
 'run list')
   # runs.queued: one count per poll, popped as read; 0 once empty
   q="$NOTES_FIXTURE/runs.queued"
@@ -159,6 +161,7 @@ item() {
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land"
   assert_success
   assert_output - <<'EOF'
+item-line: added "Item: ship" to the body
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
@@ -172,6 +175,8 @@ EOF
   run cat "$LOG"
   assert_output - <<'EOF'
 gh pr view 42 --json state,baseRefName,url -q .state + " " + .baseRefName + " " + .url
+gh pr view 42 --json body -q .body
+gh pr edit 42 --body-file -
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 gh pr checks 42 --watch --fail-fast
@@ -201,7 +206,47 @@ EOF
   assert_line 'body: 1 finding(s) for channel pr-body. First: lead-too-long: 170 chars before the first sentence ends, budget 140'
   assert_line 'landed #42'
   run cat "$NOTES_FIXTURE/linted.txt"
-  assert_output 'The change and why.'
+  assert_output - <<'EOF'
+The change and why.
+
+Item: ship
+EOF
+}
+
+@test "item-line: a body that names the item is not edited" {
+  printf 'The change.\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line --index 0 'item-line: present'
+  run grep -c 'pr edit' "$LOG"
+  assert_output 0
+}
+
+@test "item-line: a stale Item line is rewritten in place, not added twice" {
+  printf 'The change.\nItem: old-slug\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  run cat "$NOTES_FIXTURE/body"
+  assert_output - <<'EOF'
+The change.
+Item: ship
+Task: ar-1
+EOF
+}
+
+@test "item-line: a body that cannot be edited stops before the checks and the merge" {
+  mv "$SANDBOX/bin/gh" "$NOTES_FIXTURE/gh.real"
+  cat >"$SANDBOX/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[ "$1 $2" != 'pr edit' ] || { printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"; echo 'HTTP 403' >&2; exit 1; }
+exec "$NOTES_FIXTURE/gh.real" "$@"
+EOF
+  chmod +x "$SANDBOX/bin/gh"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'item-line failed: gh pr edit: HTTP 403'
+  run grep -c 'pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
 }
 
 @test "a body that cannot be scored says why and does not fail the landing" {
@@ -238,7 +283,7 @@ EOF
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 0 'checks: none reported'
+  assert_line --index 1 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
 }
@@ -278,14 +323,15 @@ EOF
 @test "--dry-run prints every step and runs nothing" {
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land" --dry-run
   assert_success
-  assert_line --index 0 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 1 --partial 'fetch: git fetch origin'
-  assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 3 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 4 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 5 'item: agent-queue set ship pr=42 merged=<sha> && agent-queue move ship done --status ok'
-  assert_line --index 6 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 7 --partial 'plan: tick'
+  assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
+  assert_line --index 1 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 2 --partial 'fetch: git fetch origin'
+  assert_line --index 3 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 4 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 5 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 6 'item: agent-queue set ship pr=42 merged=<sha> && agent-queue move ship done --status ok'
+  assert_line --index 7 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 8 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -296,7 +342,7 @@ EOF
   printf 'MERGED\n' >"$NOTES_FIXTURE/state"
   run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 0 'merge: #42 already MERGED, recording it'
+  assert_line --index 1 'merge: #42 already MERGED, recording it'
   run grep -c 'pr merge\|pr checks\|rev-list\|^git merge \|^git push' "$LOG"
   assert_output 0
 }
@@ -305,8 +351,8 @@ EOF
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 5 'item: tidy-loader done with pr:o/r#42'
-  assert_line --index 6 'landed #42'
+  assert_line --index 6 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 7 'landed #42'
   run grep -c '^notes' "$LOG"
   assert_output 0
   run agent-queue show tidy-loader --json
@@ -320,7 +366,7 @@ EOF
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 5 'item: by-hand done with pr:o/r#42'
+  assert_line --index 6 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
@@ -344,7 +390,7 @@ EOF
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 6 'board: closed "fix crash: on load" with pr:42 commit:fedcba987654'
+  assert_line --index 7 'board: closed "fix crash: on load" with pr:42 commit:fedcba987654'
   run grep '^notes' "$LOG"
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42 commit:fedcba987654'
 }
@@ -353,8 +399,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 5 'item: agent-queue set tidy pr=42 merged=<sha> && agent-queue move tidy done --status ok'
-  assert_line --index 6 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 6 'item: agent-queue set tidy pr=42 merged=<sha> && agent-queue move tidy done --status ok'
+  assert_line --index 7 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -383,8 +429,8 @@ EOF
   mv "$SANDBOX/notes.ok" "$SANDBOX/bin/notes"
   run "$LAND" 42 --item fix
   assert_success
-  assert_line --index 0 'merge: #42 already MERGED, recording it'
-  assert_line --index 4 'board: closed "fix it" with pr:42 commit:fedcba987654'
+  assert_line --index 1 'merge: #42 already MERGED, recording it'
+  assert_line --index 5 'board: closed "fix it" with pr:42 commit:fedcba987654'
   run "$LAND" 43 --item fix
   assert_failure 2
   assert_output --partial 'queue item fix is done ok, not open'
