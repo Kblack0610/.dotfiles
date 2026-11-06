@@ -116,6 +116,7 @@
         "modules": [
             "custom/timebox",
             "custom/health",
+            "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
             "custom/fleet",
@@ -194,8 +195,8 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // System health: a pulse and one dot per system, worst first; the hover says what is down
-    // and what is up (health.sh). Click opens the hub board on Home.
+    // System health: the heart in the overall colour; the hover leads with one dot per system,
+    // worst first, then says what is down and what is up (health.sh). Click opens the hub board on Home.
     "custom/health": {
         "format": "{}",
         "return-type": "json",
@@ -204,6 +205,19 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
+        "tooltip": true
+    },
+    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
+    // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // board on Projects.
+    "custom/projects": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/projects $HOME/.config/waybar/projects.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab projects",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section

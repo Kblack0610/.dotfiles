@@ -8,6 +8,12 @@ without leaving whatever is fullscreen.
 It is separate from the main bar (which runs as the `waybar.service` systemd user
 unit). The pin is toggle-on-demand and never autostarts.
 
+The pin covers the window under it. To see the full main bar over a fullscreen window
+without covering anything, press `Ctrl+Alt+Shift+B` (`hypr/scripts/fullscreen-bar.sh`):
+the window drops to fullscreen under the bar (Hyprland maximizes it, so it ends below
+waybar, while the app still thinks it is fullscreen); press again for true fullscreen.
+It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
+
 ## Use
 
 - `Super+Shift+M`  - toggle the pin on/off (restores the last size)

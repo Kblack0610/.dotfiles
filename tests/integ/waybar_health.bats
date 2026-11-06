@@ -46,13 +46,13 @@ class() { jq -r .class <<< "$output"; }
 dot() { printf "<span color='%s'>%s</span>" "$1" "$DOT"; }
 pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
 
-@test "all up: a green pulse, a green dot per system, no reasons" {
+@test "all up: a green heart alone on the bar, a green dot per system on the hover" {
   feed o=0 d:k3s=0 d:prod=0 c:k3s:nodes=0
   run "$MODULE"
-  assert_equal "$(text)" "$(pulse "$G") $(dot "$G")$(dot "$G")"
+  assert_equal "$(text)" "$(pulse "$G")"
   assert_equal "$(class)" ok
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 0 "<b>System</b>  2 up"
+  assert_line --index 0 "<b>System</b>  $(dot "$G")$(dot "$G")  2 up"
   assert_line --index 1 "<tt>k3s   <span color='$G'>up</span>"
   assert_line --index 2 "prod  <span color='$G'>up</span></tt>"
 }
@@ -61,10 +61,10 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   feed o=2 d:agents=0 d:spend=1 d:ci=2 d:queue=1 \
     w:ci:playground_nightly=2 w:spend:claude_spend_daily=1 w:spend:claude_account_pace=1 w:queue:heal_flapping=1
   run "$MODULE"
-  assert_equal "$(text)" "$(pulse "$R") $(dot "$R")$(dot "$Y")$(dot "$Y")$(dot "$G")"
+  assert_equal "$(text)" "$(pulse "$R")"
   assert_equal "$(class)" critical
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 0 "<b>System</b>  1 down, 2 warn, 1 up"
+  assert_line --index 0 "<b>System</b>  $(dot "$R")$(dot "$Y")$(dot "$Y")$(dot "$G")  1 down, 2 warn, 1 up"
   assert_line --index 1 "<tt>ci      <span color='$R'>DOWN</span>  playground nightly"
   assert_line --index 2 "queue   <span color='$Y'>warn</span>  heal flapping"
   assert_line --index 3 "spend   <span color='$Y'>warn</span>  claude account pace, claude spend daily"
