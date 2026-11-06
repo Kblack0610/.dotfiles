@@ -292,6 +292,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
 .tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
@@ -352,6 +353,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
+  .thsort { display: inline-block; padding: 10px 2px; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }

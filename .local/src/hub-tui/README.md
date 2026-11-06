@@ -59,6 +59,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `o`, Esc, Enter | Daily: show the outbox, `o` or Esc back to the note; on the outbox, Enter opens it in `$EDITOR` in a new tmux window |
 | `d` | Fleet: show or hide each runner's registry lines under its row |
 | `t` | Fleet: Workers in Tonight order (always-on, then each timer start until 07:00, each call under its caller, other timers as a count), or back to the default |
+| `/`, `f`, `l`, `s`, Esc | Fleet: search name, description and why (Enter keeps it, Esc clears it); step the state (all, failed 24h, running, idle, off), the lane, the sort (runs, failed, cost, last, biggest first); Esc clears them all. A sort does not apply to Tonight order |
 | `n` / `N` | Log: the next / previous section |
 | `h`, `j`/`k`, Enter, Esc | Log: list the recorded days, pick one, open it, close the list |
 | `a` `c` `s` `v` `f` `w` | Log: open or fold Actions, Changes, Rundowns, Judges' verdicts, Forecast, Ranked sessions (an open fold is read and scrolled to) |

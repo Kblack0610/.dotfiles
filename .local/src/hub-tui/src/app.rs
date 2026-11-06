@@ -273,6 +273,10 @@ pub struct App {
     pub fleet_details: bool,
     /// Fleet's Workers in hub-core's Tonight order (`t`), not the default.
     pub fleet_tonight: bool,
+    /// Fleet's Workers filter and sort: `/` search, `f` state, `l` lane, `s` sort.
+    pub fleet_view: hub_core::fleet::WorkerView,
+    /// Typing the Workers search (`/`): it filters as it is typed.
+    pub fleet_typing: bool,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -371,6 +375,8 @@ impl App {
             daily_outbox: false,
             fleet_details: false,
             fleet_tonight: false,
+            fleet_view: Default::default(),
+            fleet_typing: false,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -983,12 +989,7 @@ impl App {
         if self.tab == Tab::Projects && self.projects_key(k) {
             return;
         }
-        if self.tab == Tab::Fleet && k.code == KeyCode::Char('d') {
-            self.fleet_details = !self.fleet_details;
-            return;
-        }
-        if self.tab == Tab::Fleet && k.code == KeyCode::Char('t') {
-            self.fleet_tonight = !self.fleet_tonight;
+        if self.tab == Tab::Fleet && self.fleet_key(k) {
             return;
         }
         let n = self.page.max(1);
@@ -1045,6 +1046,43 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
             _ => {}
         }
+    }
+
+    /// The Fleet tab's own keys; false leaves the key to the page's defaults.
+    fn fleet_key(&mut self, k: KeyEvent) -> bool {
+        let v = &mut self.fleet_view;
+        if self.fleet_typing {
+            match k.code {
+                KeyCode::Enter => self.fleet_typing = false,
+                KeyCode::Esc => {
+                    self.fleet_typing = false;
+                    v.q.clear();
+                }
+                KeyCode::Backspace => {
+                    v.q.pop();
+                }
+                KeyCode::Char(c) => v.q.push(c),
+                _ => {}
+            }
+            return true;
+        }
+        match k.code {
+            KeyCode::Char('d') => self.fleet_details = !self.fleet_details,
+            KeyCode::Char('t') => self.fleet_tonight = !self.fleet_tonight,
+            KeyCode::Char('/') => self.fleet_typing = true,
+            KeyCode::Char('f') => v.cycle_state(),
+            KeyCode::Char('s') => v.cycle_sort(),
+            KeyCode::Char('l') => {
+                let lanes = self
+                    .fleet
+                    .as_ref()
+                    .map_or(vec![], |f| hub_core::fleet::lanes(&f.workers));
+                v.cycle_lane(&lanes);
+            }
+            KeyCode::Esc if !v.is_empty() => *v = Default::default(),
+            _ => return false,
+        }
+        true
     }
 
     /// A request's query: the outbox on Daily, a section on Infra and Log, else a project name.
@@ -1683,10 +1721,11 @@ impl App {
             Tab::Sessions => format!(
                 "j/k pick  Enter detail  i p u m x c a act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Fleet if self.fleet_typing => "type to search, Enter keeps it, Esc clears".into(),
             Tab::Fleet => {
                 let d = if self.fleet_details { "hide" } else { "show" };
                 let t = if self.fleet_tonight { "default order" } else { "tonight" };
-                format!("d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                format!("/ search  f state  l lane  s sort  Esc clear  d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
@@ -1839,7 +1878,15 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (
-                    fleettab::page(f, self.p, now, w, self.fleet_details, self.fleet_tonight),
+                    fleettab::page(
+                        f,
+                        self.p,
+                        now,
+                        w,
+                        self.fleet_details,
+                        self.fleet_tonight,
+                        &self.fleet_view,
+                    ),
                     vec![],
                 ),
             },
@@ -3013,6 +3060,62 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         answer(&mut a);
         assert!(a.tab == Tab::Daily && !a.daily_outbox);
+    }
+
+    #[test]
+    fn the_fleet_keys_filter_the_workers_and_esc_clears_them() {
+        let key = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let ch = |c| key(KeyCode::Char(c));
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("[all 2]") && s.contains("/ search  f state"),
+            "{s}"
+        );
+
+        // f steps the state: all, then failed.
+        a.handle(ch('f'));
+        a.handle(ch('f'));
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("[failed 24h 1]") && s.contains("dream"), "{s}");
+        assert!(!s.contains("idle-one"), "{s}");
+
+        // Typing keeps its letters, even the page's own keys, and filters as it goes.
+        a.handle(ch('f'));
+        a.handle(ch('f'));
+        a.handle(ch('f'));
+        a.handle(ch('f'));
+        assert_eq!(a.fleet_view.state, "");
+        a.handle(ch('/'));
+        assert!(screen(&mut a, 160, 40).contains("type to search"));
+        for c in "idle".chars() {
+            a.handle(ch(c));
+        }
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("/idle") && s.contains("idle-one") && !s.contains("dream"),
+            "{s}"
+        );
+        a.handle(key(KeyCode::Enter));
+        assert!(!a.fleet_typing);
+        assert_eq!(a.tab, Tab::Fleet);
+
+        // A search that hits nothing says so, and Esc brings every runner back.
+        a.handle(ch('/'));
+        a.handle(ch('z'));
+        a.handle(key(KeyCode::Enter));
+        assert!(screen(&mut a, 160, 40).contains("No runner matches"));
+        a.handle(key(KeyCode::Esc));
+        assert_eq!(a.fleet_view, Default::default());
+        assert!(screen(&mut a, 160, 40).contains("dream"));
+
+        // l steps the lanes the data has, s the sorts.
+        a.handle(ch('l'));
+        assert_eq!(a.fleet_view.lane, "memory");
+        a.handle(ch('s'));
+        assert_eq!(a.fleet_view.sort, "runs");
+        assert!(screen(&mut a, 160, 40).contains("lane memory  sort runs"));
     }
 
     #[test]

@@ -108,6 +108,14 @@ pub struct Worker {
     pub enabled: bool,
     /// Set while its unit runs.
     pub running_since: Option<i64>,
+    /// "running", "idle" or "off", one each; a failure in the last 24h is `failed_24h`, which
+    /// can sit on any of them.
+    pub state: String,
+    /// How long a run usually takes: the 90th percentile of the week's finished runs, seconds.
+    /// None under `USUAL_RUNS` of them.
+    pub usual_s: Option<i64>,
+    /// It is running, and has been for longer than `usual_s` and `OVERDUE_FLOOR_S`.
+    pub overdue: bool,
     /// Its newest finished run in the week, else its newest activity line.
     pub last: Option<Outcome>,
     pub runs_24h: u32,
@@ -123,6 +131,131 @@ pub struct Worker {
     pub registry: Registry,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
+}
+
+/// The Workers state chips, in order; `Worker::shown` says what each keeps. agent-web's
+/// `W_FILTERS` lists them too.
+pub const WORKER_FILTERS: [&str; 5] = ["all", "failed", "running", "idle", "off"];
+/// What the Workers table sorts by, biggest or newest first; a runner with no value sorts last.
+pub const WORKER_SORTS: [&str; 4] = ["runs", "failed", "cost", "last"];
+/// Fewer finished runs than this in the week say nothing about a usual length.
+const USUAL_RUNS: usize = 3;
+/// One run in ten passes `usual_s` by definition, so a run this short is never overdue: a
+/// three-second runner would otherwise jump the table for a moment at every slow start.
+const OVERDUE_FLOOR_S: i64 = 60;
+
+impl Worker {
+    /// Whether this runner is under one of `WORKER_FILTERS`.
+    pub fn shown(&self, filter: &str) -> bool {
+        match filter {
+            "all" => true,
+            "failed" => self.failed_24h > 0,
+            state => self.state == state,
+        }
+    }
+
+    /// Whether `q`, in lower case, is in its name, description or why.
+    fn hits(&self, q: &str) -> bool {
+        let why = self
+            .why
+            .as_ref()
+            .map_or(String::new(), |o| format!("{} {}", o.word, o.text));
+        [self.name.as_str(), &self.description, &why]
+            .iter()
+            .any(|t| t.to_lowercase().contains(q))
+    }
+
+    /// What `WORKER_SORTS`' key orders on; a time for "last", where a run in progress counts
+    /// from its start.
+    fn sort_value(&self, key: &str) -> Option<f64> {
+        match key {
+            "runs" => Some(f64::from(self.runs_24h)),
+            "failed" => Some(f64::from(self.failed_24h)),
+            "cost" => self.cost_24h,
+            "last" => self
+                .running_since
+                .or(self.last.as_ref().and_then(|o| o.at))
+                .map(|t| t as f64),
+            _ => None,
+        }
+    }
+}
+
+/// Every lane in `ws`, sorted, for the lane filter.
+pub fn lanes(ws: &[Worker]) -> Vec<String> {
+    let set: std::collections::BTreeSet<&String> = ws
+        .iter()
+        .map(|w| &w.lane)
+        .filter(|l| !l.is_empty())
+        .collect();
+    set.into_iter().cloned().collect()
+}
+
+/// A filtered and sorted view of the Workers table. Empty fields keep everything in hub-core's
+/// exceptions-first order; `state` is one of `WORKER_FILTERS`, `sort` one of `WORKER_SORTS`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct WorkerView {
+    pub q: String,
+    pub lane: String,
+    pub state: String,
+    pub sort: String,
+}
+
+impl WorkerView {
+    fn matches(&self, w: &Worker) -> bool {
+        let q = self.q.trim().to_lowercase();
+        (self.lane.is_empty() || w.lane == self.lane) && (q.is_empty() || w.hits(&q))
+    }
+
+    /// Whether the search, lane and state all keep `w`.
+    pub fn keeps(&self, w: &Worker) -> bool {
+        self.matches(w) && (self.state.is_empty() || w.shown(&self.state))
+    }
+
+    /// The rows it keeps, in its sort or else in `ws`'s own order.
+    pub fn apply<'a>(&self, ws: &'a [Worker]) -> Vec<&'a Worker> {
+        let mut out: Vec<&Worker> = ws.iter().filter(|w| self.keeps(w)).collect();
+        if WORKER_SORTS.contains(&self.sort.as_str()) {
+            out.sort_by(
+                |a, b| match (a.sort_value(&self.sort), b.sort_value(&self.sort)) {
+                    (Some(x), Some(y)) => y.total_cmp(&x),
+                    (x, y) => y.is_some().cmp(&x.is_some()),
+                },
+            );
+        }
+        out
+    }
+
+    /// How many runners each of `WORKER_FILTERS` would show under the search and lane.
+    pub fn counts(&self, ws: &[Worker]) -> [(&'static str, usize); 5] {
+        WORKER_FILTERS.map(|f| {
+            let n = ws.iter().filter(|w| self.matches(w) && w.shown(f)).count();
+            (f, n)
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn cycle_state(&mut self) {
+        self.state = next_of(&WORKER_FILTERS, &self.state);
+    }
+
+    pub fn cycle_sort(&mut self) {
+        self.sort = next_of(&WORKER_SORTS, &self.sort);
+    }
+
+    pub fn cycle_lane(&mut self, lanes: &[String]) {
+        let lanes: Vec<&str> = lanes.iter().map(String::as_str).collect();
+        self.lane = next_of(&lanes, &self.lane);
+    }
+}
+
+/// The value after `cur` in `list`, then back to blank, which keeps everything.
+fn next_of(list: &[&str], cur: &str) -> String {
+    let after = list.iter().position(|v| *v == cur).map_or(0, |i| i + 1);
+    list.get(after).map_or(String::new(), |v| v.to_string())
 }
 
 /// A lane's score over a window as judge-eval counts and words it (its `score_7d`), never
@@ -800,7 +933,8 @@ fn word_ok(word: &str) -> Option<bool> {
 
 /// One row per configured runner, from its runs in the ledger (the week before `at`), its
 /// newest activity line, and its timer. A ledger name with no conf is a retired runner and
-/// gets no row. Enabled runners first, then by name.
+/// gets no row. Exceptions first: a failure in 24h, then a run past its usual length; then
+/// enabled runners, then by name.
 pub fn workers(
     confs: Vec<Conf>,
     runs: &[Job],
@@ -827,6 +961,7 @@ pub fn workers(
                 ..Default::default()
             };
             let mut newest: Option<&Job> = None;
+            let mut lengths: Vec<i64> = vec![];
             for j in mine {
                 if j.state == State::Running {
                     w.running_since = j.started.or(Some(at));
@@ -836,10 +971,21 @@ pub fn workers(
                     w.runs_24h += 1;
                     w.failed_24h += u32::from(j.ok == Some(false));
                 }
+                lengths.extend(j.secs);
                 if newest.is_none_or(|n| j.finished > n.finished) {
                     newest = Some(j);
                 }
             }
+            w.usual_s = usual(lengths);
+            w.overdue = w
+                .running_since
+                .is_some_and(|t| w.usual_s.is_some_and(|u| at - t > u.max(OVERDUE_FLOOR_S)));
+            w.state = match (w.running_since, w.enabled) {
+                (Some(_), _) => "running",
+                (None, true) => "idle",
+                (None, false) => "off",
+            }
+            .into();
             w.last = newest
                 .map(|j| Outcome {
                     word: j.result.clone(),
@@ -856,8 +1002,27 @@ pub fn workers(
             w
         })
         .collect();
-    out.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.cmp(&b.name)));
+    let rank = |w: &Worker| match (w.failed_24h > 0, w.overdue) {
+        (true, _) => 0,
+        (false, true) => 1,
+        (false, false) => 2,
+    };
+    out.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then(b.enabled.cmp(&a.enabled))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
+}
+
+/// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
+fn usual(mut lengths: Vec<i64>) -> Option<i64> {
+    if lengths.len() < USUAL_RUNS {
+        return None;
+    }
+    lengths.sort_unstable();
+    lengths.get((lengths.len() * 9).div_ceil(10) - 1).copied()
 }
 
 /// The workers (their registry read) in the order they run from `at` to the next 07:00 local:
@@ -1110,6 +1275,7 @@ fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobs::Source;
 
     const T: i64 = 1_762_200_000; // 2025-11-03T12:00:00-08:00
 
@@ -1214,8 +1380,8 @@ mod tests {
         let names: Vec<_> = w.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(
             names,
-            ["dream", "idle", "sentinel", "off"],
-            "no row for a retired runner"
+            ["dream", "sentinel", "idle", "off"],
+            "no row for a retired runner; a failure in 24h comes first"
         );
 
         let dream = &w[0];
@@ -1232,12 +1398,12 @@ mod tests {
         assert_eq!(dream.next, Some(T + 900));
         assert_eq!(dream.running_since, None);
 
-        let s = &w[2];
+        let s = &w[1];
         assert_eq!((s.runs_24h, s.failed_24h), (1, 1), "STALLED is a failure");
         assert_eq!(s.running_since, Some(T - 5));
         assert_eq!(s.last.as_ref().unwrap().word, "STALLED");
 
-        let idle = &w[1];
+        let idle = &w[2];
         assert_eq!(idle.runs_24h, 0);
         assert_eq!(
             idle.last.as_ref().unwrap().word,
@@ -1591,6 +1757,234 @@ mod tests {
             next: Some(next),
             ..Default::default()
         }
+    }
+
+    fn run(name: &str, start: i64, secs: i64, ok: bool) -> Job {
+        let mut j = Job::new(Source::Agentctl, name, State::Done);
+        j.ok = Some(ok);
+        j.started = Some(start);
+        j.finished = Some(start + secs);
+        j.secs = Some(secs);
+        j
+    }
+
+    fn running(name: &str, start: i64) -> Job {
+        let mut j = Job::new(Source::Agentctl, name, State::Running);
+        j.started = Some(start);
+        j
+    }
+
+    fn read(confs: Vec<Conf>, runs: &[Job], at: i64) -> Vec<Worker> {
+        workers(confs, runs, &HashMap::new(), &HashMap::new(), at)
+    }
+
+    #[test]
+    fn exceptions_come_first_failed_then_past_their_usual_length() {
+        let at = 1_000_000;
+        let usual = |n: &'static str| (1..=4).map(move |i| run(n, at - i * 1000, 100, true));
+        let mut runs: Vec<Job> = usual("late").chain(usual("on-time")).collect();
+        runs.push(running("late", at - 500));
+        runs.push(running("on-time", at - 90));
+        runs.push(run("bad", at - 2000, 100, false));
+        let ws = read(
+            ["a-quiet", "bad", "late", "on-time", "z-quiet"]
+                .map(|n| conf(n, n != "a-quiet"))
+                .to_vec(),
+            &runs,
+            at,
+        );
+        let order: Vec<&str> = ws.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(order, ["bad", "late", "on-time", "z-quiet", "a-quiet"]);
+        assert!(ws[1].overdue, "500s against a usual 100s");
+        assert!(!ws[2].overdue, "90s against a usual 100s is on time");
+        assert_eq!(ws[1].usual_s, Some(100));
+        assert_eq!(
+            ws.iter().map(|w| w.state.as_str()).collect::<Vec<_>>(),
+            ["idle", "running", "running", "idle", "off"]
+        );
+    }
+
+    #[test]
+    fn a_usual_length_needs_three_runs_and_short_ones_are_never_overdue() {
+        let at = 1_000_000;
+        // Two runs say nothing, however long this one has gone on.
+        let mut runs = vec![
+            run("few", at - 9000, 10, true),
+            run("few", at - 8000, 10, true),
+        ];
+        runs.push(running("few", at - 5000));
+        // Twice its usual 5s, and still under the floor.
+        runs.extend((1..=4).map(|i| run("quick", at - i * 1000, 5, true)));
+        runs.push(running("quick", at - 10));
+        let ws = read(vec![conf("few", true), conf("quick", true)], &runs, at);
+        assert_eq!(ws[0].usual_s, None);
+        assert!(!ws[0].overdue);
+        assert_eq!(ws[1].usual_s, Some(5));
+        assert!(!ws[1].overdue);
+    }
+
+    #[test]
+    fn the_usual_length_is_the_ninetieth_percentile() {
+        assert_eq!(usual(vec![1, 2]), None);
+        assert_eq!(usual(vec![3, 1, 2]), Some(3));
+        assert_eq!(usual((1..=10).collect()), Some(9));
+        assert_eq!(usual((1..=20).collect()), Some(18));
+    }
+
+    fn row(name: &str, lane: &str, state: &str) -> Worker {
+        Worker {
+            name: name.into(),
+            lane: lane.into(),
+            state: state.into(),
+            enabled: state != "off",
+            ..Default::default()
+        }
+    }
+
+    fn table() -> Vec<Worker> {
+        let at = |t| Outcome {
+            at: Some(t),
+            ..Default::default()
+        };
+        vec![
+            Worker {
+                failed_24h: 2,
+                runs_24h: 3,
+                cost_24h: Some(1.5),
+                last: Some(at(100)),
+                why: Some(Outcome {
+                    word: "FAILED".into(),
+                    text: "sweep hit a rate limit".into(),
+                    ..Default::default()
+                }),
+                ..row("triage", "maintain", "idle")
+            },
+            Worker {
+                failed_24h: 1,
+                runs_24h: 9,
+                running_since: Some(300),
+                description: "Reads the Inbox".into(),
+                ..row("dispatch", "deliver", "running")
+            },
+            Worker {
+                runs_24h: 1,
+                cost_24h: Some(4.0),
+                last: Some(at(200)),
+                ..row("dream", "deliver", "idle")
+            },
+            row("retired", "", "off"),
+        ]
+    }
+
+    fn shown(v: &WorkerView, ws: &[Worker]) -> Vec<String> {
+        v.apply(ws).iter().map(|w| w.name.clone()).collect()
+    }
+
+    #[test]
+    fn the_filters_keep_by_state_lane_and_search() {
+        let ws = table();
+        let view = |q: &str, lane: &str, state: &str| WorkerView {
+            q: q.into(),
+            lane: lane.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        assert_eq!(shown(&view("", "", ""), &ws).len(), 4, "blank keeps all");
+        assert_eq!(shown(&view("", "", "failed"), &ws), ["triage", "dispatch"]);
+        assert_eq!(shown(&view("", "", "running"), &ws), ["dispatch"]);
+        assert_eq!(shown(&view("", "", "idle"), &ws), ["triage", "dream"]);
+        assert_eq!(shown(&view("", "", "off"), &ws), ["retired"]);
+        assert_eq!(shown(&view("", "deliver", ""), &ws), ["dispatch", "dream"]);
+        assert_eq!(shown(&view("", "deliver", "failed"), &ws), ["dispatch"]);
+        assert_eq!(shown(&view("DREAM", "", ""), &ws), ["dream"], "the name");
+        assert_eq!(
+            shown(&view("inbox", "", ""), &ws),
+            ["dispatch"],
+            "the description"
+        );
+        assert_eq!(
+            shown(&view("rate limit", "", ""), &ws),
+            ["triage"],
+            "the why"
+        );
+        assert!(shown(&view("nothing like it", "", ""), &ws).is_empty());
+    }
+
+    #[test]
+    fn each_chips_count_follows_the_search_and_lane_but_not_the_chip() {
+        let ws = table();
+        let mut v = WorkerView {
+            state: "off".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            v.counts(&ws),
+            [
+                ("all", 4),
+                ("failed", 2),
+                ("running", 1),
+                ("idle", 2),
+                ("off", 1)
+            ]
+        );
+        v.lane = "deliver".into();
+        assert_eq!(
+            v.counts(&ws),
+            [
+                ("all", 2),
+                ("failed", 1),
+                ("running", 1),
+                ("idle", 1),
+                ("off", 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sort_puts_the_biggest_first_and_a_runner_with_no_value_last() {
+        let ws = table();
+        let by = |k: &str| {
+            shown(
+                &WorkerView {
+                    sort: k.into(),
+                    ..Default::default()
+                },
+                &ws,
+            )
+        };
+        assert_eq!(by("runs"), ["dispatch", "triage", "dream", "retired"]);
+        assert_eq!(by("failed"), ["triage", "dispatch", "dream", "retired"]);
+        assert_eq!(by("cost"), ["dream", "triage", "dispatch", "retired"]);
+        assert_eq!(
+            by("last"),
+            ["dispatch", "dream", "triage", "retired"],
+            "a run in progress is newest"
+        );
+        assert_eq!(by("nonsense"), ["triage", "dispatch", "dream", "retired"]);
+    }
+
+    #[test]
+    fn each_filter_cycles_through_its_list_and_back_to_blank() {
+        let mut v = WorkerView::default();
+        for f in WORKER_FILTERS {
+            v.cycle_state();
+            assert_eq!(v.state, f);
+        }
+        v.cycle_state();
+        assert_eq!(v.state, "");
+        for k in WORKER_SORTS {
+            v.cycle_sort();
+            assert_eq!(v.sort, k);
+        }
+        v.cycle_sort();
+        assert!(v.is_empty());
+        let ls = lanes(&table());
+        assert_eq!(ls, ["deliver", "maintain"]);
+        v.cycle_lane(&ls);
+        v.cycle_lane(&ls);
+        assert_eq!(v.lane, "maintain");
+        v.cycle_lane(&ls);
+        assert_eq!(v.lane, "");
     }
 
     fn names(t: &Tonight) -> Vec<(&str, Option<&str>)> {
