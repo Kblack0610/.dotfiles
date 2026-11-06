@@ -1174,7 +1174,7 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
-  [[ "$tags" == *" night "* || "$tags" == *" red "* ]] && pr_only=' --pr-only'
+  [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   if [ "$harness" = opencode ]; then
     printf 'Read ~/.claude/skills/one-shot/SKILL.md and follow it%s for this task:\n' "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
