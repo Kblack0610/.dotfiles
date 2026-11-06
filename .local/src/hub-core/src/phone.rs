@@ -13,7 +13,7 @@ use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::Queue;
-use crate::text::cap;
+use crate::text::{age, cap};
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
 const ASK_MAX: usize = 44;
@@ -63,15 +63,6 @@ fn row(level: Level, head: &'static str, text: impl Into<String>) -> Row {
         level,
         head,
         text: text.into(),
-    }
-}
-
-/// An age as the widget shows it: minutes, then hours, then days.
-fn age(secs: i64) -> String {
-    match secs.max(0) {
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 172_800 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86400),
     }
 }
 

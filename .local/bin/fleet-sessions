@@ -1024,7 +1024,9 @@ write_state() {
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
-                   session: (if (.[12] // "") == "" then null else .[12] end)}]}
+                   session: (if (.[12] // "") == "" then null else .[12] end),
+                   recommend: (if (.[10] // "") == "" then null else .[10] end),
+                   judge: (if (.[16] // "") == "" then null else .[16] end)}]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
       # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.

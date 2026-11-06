@@ -18,6 +18,7 @@ setup() {
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
@@ -148,6 +149,8 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
   doc "[$(row a NEEDS false true)]"
+  # Home's list: one row only the human can answer; a machine-answerable ask and a red nightly are not counted
+  export STUB_NEEDS='{"needs":[{"kind":"session","score":{"human":true}},{"kind":"ask","score":{"human":false}},{"kind":"nightly"}],"errors":[]}'
   "$SH" run
   "$SH" run
   run cat "$HOME/pages"
