@@ -14,6 +14,7 @@ fn kind(k: Kind) -> &'static str {
         Kind::Ask => "ask",
         Kind::Session => "session",
         Kind::Queue => "queue",
+        Kind::Sheet => "sheet",
         Kind::Nightly => "nightly",
         Kind::Red => "red",
     }

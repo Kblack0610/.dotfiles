@@ -1,6 +1,7 @@
 //! The phone widget's rows: `hub phone --json`, published by `agent-mqtt-publish` and laid out by
 //! home-config's `phone_widget.jinja`. Plain text and a level, no markup, so the layout lives in
-//! one place. Needs come from `home::Home`, so the phone and the hub count the same rows.
+//! one place. Needs come from `home::Home`, so the phone and the hub count the same rows; the
+//! phone counts the live waits among them (asks, sessions, queue items), not the sheet rows.
 //!
 //! The System block is not here: it is read in the cluster, so it still shows with this machine off.
 
@@ -546,7 +547,7 @@ mod tests {
     }
 
     fn phone(state: &Value, q: Option<&Queue>, inf: Option<&Infra>) -> Phone {
-        let h = home::build(state, q, inf);
+        let h = home::build(state, q, None, inf);
         build(
             &h,
             &Inputs {
@@ -573,7 +574,7 @@ mod tests {
         let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
         let inf = infra(vec![]);
         let p = phone(&s, Some(&q), Some(&inf));
-        let shown = home::build(&s, Some(&q), Some(&inf))
+        let shown = home::build(&s, Some(&q), None, Some(&inf))
             .needs
             .iter()
             .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
@@ -745,7 +746,7 @@ mod tests {
     #[test]
     fn build_carries_the_projects_rows_last() {
         let s = state();
-        let h = home::build(&s, None, None);
+        let h = home::build(&s, None, None, None);
         let p = Projects {
             cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
             ..Projects::default()
