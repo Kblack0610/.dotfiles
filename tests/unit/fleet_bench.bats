@@ -20,6 +20,7 @@ setup() {
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
+  export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -156,6 +157,21 @@ agent_bench_kpi_limit{kpi="runners_bad"} 2
 # TYPE agent_bench_kpi_past gauge
 agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
+# HELP agent_chain_wip Items at each step of the work chain now, from the state files.
+# TYPE agent_chain_wip gauge
+agent_chain_wip{step="queued"} 0
+agent_chain_wip{step="running"} 0
+agent_chain_wip{step="waiting"} 0
+# HELP agent_chain_age_minutes Minutes the items at each step have sat there, p50 and p90.
+# TYPE agent_chain_age_minutes gauge
+# HELP agent_chain_age_ratio Each step's age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.
+# TYPE agent_chain_age_ratio gauge
+# HELP agent_chain_moves Items each step took in and let out over the last hour, from the record.
+# TYPE agent_chain_moves gauge
+# HELP agent_chain_dwell_minutes Minutes in the step of the items that left it in the last 24h, p50 and p90.
+# TYPE agent_chain_dwell_minutes gauge
+# HELP agent_chain_drift Queue items the record and the queue folders place at different steps.
+# TYPE agent_chain_drift gauge
 PROM
 )"
 }
@@ -711,7 +727,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -790,6 +806,25 @@ ask_row() {
   run grep -c 'check(kpi): human_answered_per_day past threshold' "$BOARD"
   assert_output 1
   run grep -c 'check(kpi): ask_wait_p90_min' "$BOARD"
+  assert_output 0
+}
+
+@test "kpi: a runner_score_ KPI shows from judge-eval or its threshold alone, and retro files it past the threshold" {
+  kpi_setup
+  printf '%s\n' runner_score_inbox_plan_min=70 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  # judge-eval could not score: the KPI the thresholds name still shows, as -
+  assert_line '| runner_score_inbox_plan | - | - | min 70 | - |'
+  echo '{"runner_score_inbox_triage":{"7d":0,"28d":12.5},"runner_score_inbox_plan":{"7d":80,"28d":null}}' > "$JUDGEKPI"
+  run "$SUBJECT" kpi
+  assert_line '| runner_score_inbox_triage | 0 | 12.5 | - | - |'
+  assert_line '| runner_score_inbox_plan | 80 | - | min 70 | ok |'
+  printf '%s\n' runner_score_inbox_triage_min=70 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'check(kpi): runner_score_inbox_triage past threshold' "$BOARD"
+  assert_output 1
+  run grep -c 'check(kpi): runner_score_inbox_plan' "$BOARD"
   assert_output 0
 }
 
@@ -1131,11 +1166,11 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
-  # done before its PR merged counts
+  # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
-  assert_output "--since $(date -d "@$((T0 - 8 * 86400))" +%F)"
+  assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
@@ -1190,6 +1225,113 @@ chain_fixture() {
   assert_line '| ledger_coverage (now) | 1 | - | min 0.95 | ok |'
   run "$SUBJECT" ledger
   assert_line 'doctor_fail=?'
+}
+
+# pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
+# started, three inbox lines, two items finished (one inside 24h), and a record that holds each
+# item where the queue folders do. Ages: queued 2h, running 1h, waiting 10m, the row 3 days and 4h.
+pipeline_fixture() {
+  kpi_setup
+  at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  printf '%s\n' chain_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
+  export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_STEPS_CMD=steps-stub
+  export BENCH_INBOX_CMD="echo 3"
+  Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\"}")
+  R=$(item r1 running high human "{\"queued\":\"$(at 10000)\",\"started\":\"$(at 3600)\"}")
+  W=$(item w1 waiting high human "{\"queued\":\"$(at 20000)\",\"started\":\"$(at 9000)\",\"waiting\":\"$(at 600)\"}")
+  items_stub "$Q" "$R" "$W"
+  DONE="$SANDBOX/done.jsonl" BJSON="$SANDBOX/board.json" RJSON="$SANDBOX/steps.json"
+  { item d1 done high human "{\"finished\":\"$(at 1800)\"}"; item d0 done high human "{\"finished\":\"$(at 90000)\"}"; } > "$DONE"
+  jq -cn --arg d "$(date -u -d "@$((T0 - 3 * 86400))" +%F)" '{rows: [
+    {project: "game", lane: "agent", state: "open", id: "g-1", since: $d},
+    {project: "game", lane: "agent", state: "open", id: "g-2", since: $d},
+    {project: "game", lane: "agent", state: "doing", id: "g-3", since: $d},
+    {project: "game", lane: "human", state: "open", id: "g-4", since: $d}]}' > "$BJSON"
+  jq -cn --arg s "$(at 172800)" --arg i "$(at 86400)" '{since: $s, items_since: $i, steps: [
+    {step: "inbox", in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
+    {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
+    {step: "queued", in_1h: 1, out_1h: 0, in_24h: 2, out_24h: 1, dwell_p50_min: 16, dwell_p90_min: 20, items: ["q1"]},
+    {step: "running", in_1h: 1, out_1h: 1, in_24h: 2, out_24h: 1, items: ["r1"]},
+    {step: "waiting", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: ["w1"]},
+    {step: "done", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: []}]}' > "$RJSON"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$DONE" > "$SANDBOX/bin/done-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$BJSON" > "$SANDBOX/bin/board-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$RJSON" > "$SANDBOX/bin/steps-stub"
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/board-stub" "$SANDBOX/bin/steps-stub"
+}
+
+@test "pipeline: WIP and age per step from the state files, flows from the record, no bottleneck inside the bounds" {
+  pipeline_fixture
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '[.steps[] | [.step, .wip, .age_p90_min, .in_1h, .out_24h, .ratio]], .drift, .bottleneck' <<<"$output"
+  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
+  run "$SUBJECT" pipeline
+  assert_success
+  assert_line 'queued       1        2h    2h      2h         1/0         2/1        16m   20m      3h'
+  assert_line 'bottleneck: none, every step with a bound is inside it'
+  assert_line 'growing over 24h: inbox +1, backlog +2, queued +1, running +1, waiting +1'
+  assert_line "drift: 0 queue items the record and the queue folders place apart (it sees queue items from $(at 86400))"
+  run "$SUBJECT" chain --check
+  assert_success
+}
+
+@test "pipeline: the step furthest past its bound is the bottleneck, and chain --check names it" {
+  pipeline_fixture
+  echo step_age_p90_queued_max=60 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" pipeline
+  assert_line 'bottleneck: queued, age p90 2h against a bound of 1h (2x)'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'step_age_p90_queued 120 (max 60)'
+}
+
+@test "pipeline: a move the record missed is drift, and chain --check trips on it" {
+  # NEGATIVE CONTROL: r1 finished, but its move to done never reached the record
+  pipeline_fixture
+  items_stub "$Q" "$W"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  [ "$(jq '.drift' <<<"$output")" = 1 ]
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'chain_drift 1 (max 0)'
+  # an item queued after the record began to see queue items, with no event of it, is drift too;
+  # one queued before that is older than the record, not missed
+  items_stub "$Q" "$W" "$(item new queued high human "{\"queued\":\"$(at 60)\"}")" "$(item old queued high human "{\"queued\":\"$(at 100000)\"}")"
+  run "$SUBJECT" pipeline --json
+  [ "$(jq '.drift' <<<"$output")" = 2 ]
+}
+
+@test "pipeline: an unreadable record leaves flows and drift null and trips nothing, and WIP still reads" {
+  pipeline_fixture
+  export BENCH_STEPS_CMD=false
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
+  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  run "$SUBJECT" chain --check
+  assert_success
+  # the line-per-step shape notes printed before items_since is not a record either
+  printf '{"step":"inbox"}\n{"step":"queued"}\n' > "$RJSON"
+  export BENCH_STEPS_CMD=steps-stub
+  run "$SUBJECT" pipeline --json
+  [ "$(jq '.drift' <<<"$output")" = null ]
+}
+
+@test "pipeline: the gauges carry WIP, age, moves, dwell and drift per step" {
+  pipeline_fixture
+  source "$SUBJECT"
+  run bench_prom "$T0"
+  assert_success
+  assert_line 'agent_chain_wip{step="backlog"} 1'
+  assert_line 'agent_chain_age_minutes{step="queued",quantile="p90"} 120'
+  assert_line 'agent_chain_age_ratio{step="running"} 0.5'
+  assert_line 'agent_chain_moves{step="inbox",dir="in"} 2'
+  assert_line 'agent_chain_dwell_minutes{step="queued",quantile="p50"} 16'
+  assert_line 'agent_chain_drift 0'
+  assert_line 'agent_bench_kpi{kpi="step_age_p90_queued",window="7d"} 120'
+  assert_line 'agent_bench_kpi_limit{kpi="chain_drift"} 0'
 }
 
 @test "retro adds exactly one row per KPI past its threshold, #high when more than 2x past" {

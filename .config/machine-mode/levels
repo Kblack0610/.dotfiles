@@ -1,0 +1,12 @@
+# What each level multiplies, read by .local/lib/machine-mode.sh (level_scale).
+# The first row names the conf key each column scales; a key not named here is never scaled.
+# A factor of 1 leaves the conf's value as it is, so mid is today's numbers. An integer stays an
+# integer, and no factor takes a nonzero limit to 0, so no level turns a gate off.
+#   DISPATCH_PER_PASS, DISPATCH_NIGHT_MAX, DISPATCH_MAX_LOAD   fleet-dispatch's start limits
+#   CLAUDE_ACCT_PACE_SLACK_PCT, CLAUDE_ACCT_RESERVE_PCT         claude-acct room, automatic starts only
+# Reserve falls as the level rises: high keeps less of each account back.
+
+level|DISPATCH_PER_PASS|DISPATCH_NIGHT_MAX|DISPATCH_MAX_LOAD|CLAUDE_ACCT_PACE_SLACK_PCT|CLAUDE_ACCT_RESERVE_PCT
+low|0.34|0.5|0.6|0.2|1.33
+mid|1|1|1|1|1
+high|2|2|1.4|2|0.67

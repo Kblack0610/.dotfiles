@@ -53,6 +53,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   run "$MM"
   assert_success
   assert_line "mode: open"
+  assert_line "level: mid"
   assert_line "runners: 2 of 2 taking new jobs"
   assert_line "local Unity runs: 2, plus 1 when there is room"
   assert_line "new agent sessions: as today"
@@ -89,7 +90,26 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_equal "$(state UNITY_BURST_SLOTS)" 1
 }
 
+@test "full is open's numbers at the high level, and one click from it is reserved" {
+  run "$MM" full
+  assert_success
+  assert_line "mode: full"
+  assert_line "level: high"
+  assert_line "new agent sessions: as today"
+  assert_equal "$(pin)" '{"slots":2}'
+  assert_equal "$(state UNITY_SLOTS)" 2
+  assert_equal "$(state UNITY_BURST_SLOTS)" 1
+  # The level is the mode row's, never a second copy in the state file.
+  run grep -c LEVEL "$STATE"
+  assert_output 0
+  run "$MM" next
+  assert_line "mode: reserved"
+  assert_line "level: low"
+}
+
 @test "next walks the file order and wraps" {
+  run "$MM" next
+  assert_line "mode: full"
   run "$MM" next
   assert_line "mode: reserved"
   run "$MM" next
@@ -177,7 +197,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 @test "an unknown mode changes nothing, and a regex is not a mode" {
   run "$MM" turbo
   assert_failure
-  assert_output --partial "no mode 'turbo' (modes: reserved shared open)"
+  assert_output --partial "no mode 'turbo' (modes: full reserved shared open)"
   run "$MM" '.*'
   assert_failure
   [ ! -e "$STATE" ]
