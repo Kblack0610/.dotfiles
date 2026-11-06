@@ -854,6 +854,7 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
     }
 
+    let tree = crate::epics::Index::of(dir, open_version(dir));
     for (label, path) in [("sheet", dir.join("README.md")), ("agent board", board)] {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
@@ -864,8 +865,19 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
         }
+        let unlinked = if label == "agent board" {
+            tree.stories_without_feature(&content)
+        } else {
+            Vec::new()
+        };
+        if let Some(first) = unlinked.first() {
+            out.push(format!(
+                "agent board: {} open stories with no feature, file each under an epic with #of/<epic> (first: {first})",
+                unlinked.len()
+            ));
+        }
     }
-    out.extend(crate::epics::Index::of(dir, open_version(dir)).findings());
+    out.extend(tree.findings());
     out
 }
 
