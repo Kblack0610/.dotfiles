@@ -143,6 +143,7 @@ setup() {
   run "$AGENTCTL_BIN" reload
   assert_success
   grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -qx 'SuccessExitStatus=75' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
 }
 
