@@ -17,8 +17,6 @@
 # What survives the split, verified:
 #   - Inside a `-L foo` session $TMUX is set, so a bare `tmux ls` reports foo's
 #     sessions, not the default server's.
-#   - `sesh` shells out to plain `tmux`, so it follows the enclosing server with no
-#     config change. Its session list is generated from that world's manifest.
 #
 # What does NOT survive: tmux cannot move a live session between servers. There is no
 # `move-session -L`. Switching a session to another server means recreating it.
@@ -36,10 +34,11 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> [<session>] · ls · pick · pick-all · rows · hop <name>
-#        · root <name> [<session>] · goto <name> <session> · open <name> <file> [line]
-#        · land <name> <last|root|root.<session>|session[:window]>
-#        · pick-session · back · reload
+# Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
+#        · popup <cmd> [arg...]
+#        · root <name> · goto <name> <session> · open <name> <file> [line]
+#        · land <name> <last|root|session[:window]> · back · mark
+#        · reload
 
 set -uo pipefail
 
@@ -47,11 +46,6 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
 
-# One slot: where the last hop LEFT from, so `back` can walk it in reverse. tmux cannot
-# hold this itself - switch-client -l is per-client AND per-server, and a cross-server hop
-# is a detach followed by a fresh attach, which leaves no trace on either side. The hop
-# has to write it down as it goes.
-BACK_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/back"
 # The servers we always offer, even when not yet running. DISCOVERED from
 # $MANIFEST_DIR/*.conf rather than hardcoded, so dropping in a manifest creates a
 # world with no code change — that is what makes a per-client world a one-line
@@ -205,39 +199,8 @@ cmd_ensure() {
     "$srv" "$made" "$kept" "$skipped" "$deferred"
 }
 
-# pick-session -- the Prefix+S dispatch. Scoped to this world: its live sessions plus what its
-# manifest declares, so it can only open something that belongs here. sesh reads a TOML file, so
-# the list is generated from the manifest at each pick, and -z stays off because the zoxide
-# database is global and would put other worlds' directories in the list.
-#
-# The unnamed default server is nobody's world, so a pick there goes to the sessionizer, whose
-# route decides where it lands. sesh would create the session on the default socket.
-cmd_pick_session() {
-  local srv cfg
-  srv="$(tmux display-message -p '#{socket_path}' 2>/dev/null)"
-  srv="${srv##*/}"
-  [ -n "$srv" ] && [ "$srv" != default ] || exec "${SELF%/*}/sessionizer.sh"
-  command -v sesh >/dev/null 2>&1 || die "sesh not installed"
-  cfg="$(dirname "$BACK_FILE")/sesh-$srv.toml"
-  mkdir -p "${cfg%/*}"
-  _sesh_config "$srv" > "$cfg"
-  sesh -C "$cfg" picker -i -d -c -t
-}
-
-# _sesh_config <world> -- that world's declared sessions as a sesh config. Only directories this
-# machine has: a manifest stays identical everywhere, and sesh cannot open what is missing.
-_sesh_config() {
-  local world name dir
-  printf '[default_session]\npreview_command = "eza --all --git --icons --color=always {}"\n'
-  while read -r world name dir; do
-    [ "$world" = "$1" ] && [ -d "$dir" ] || continue
-    printf '\n[[session]]\nname = "%s"\npath = "%s"\n' "$name" "$dir"
-  done <<< "$(world_rows)"
-}
-
-# The world's root page: the FIRST booted entry in its manifest. Three callers read this
-# and they must agree - `root` attaches to it, resume EXCLUDES it, and _record_back compares
-# against it - so it is derived in one place. An on-demand `?name` is never a landing page,
+# The world's root page: the FIRST booted entry in its manifest. `root` attaches to it and
+# resume EXCLUDES it, so they must agree, and it is derived in one place. An on-demand `?name` is never a landing page,
 # so a world whose manifest opens with one (lab, since the notes moved to hub) has none and
 # its root resumes instead.
 _landing() {
@@ -248,7 +211,7 @@ _landing() {
 # (hub:board) is a window of the landing session too, and a session remembers its
 # last-selected window, so after Prefix+i a bare attach to hub opened the board, not the
 # daily. Identity is the one ensure finds declared windows by: @tmx_window,
-# else the name. One list-windows rather than _is_board per window.
+# else the name. One list-windows for the whole session.
 _landing_window() {
   local srv="$1" sess="$2"
   tmux -L "$srv" list-windows -t "=$sess" \
@@ -259,7 +222,7 @@ _landing_window() {
     ' "$MANIFEST_DIR/$srv.conf" -
 }
 
-# The manifest's startup command for one session, e.g. `nvim ~/.notes/lab/projects/index.md`.
+# The manifest's startup command for one session, e.g. `nvim "$(notes path)"`.
 _startup_cmd() {
   awk -v s="$2" \
     '!/^[[:space:]]*#/ && $1 == s { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' \
@@ -356,69 +319,78 @@ cmd_open() {
   _enter "$srv" "$t"
 }
 
-# ── The back-stack ───────────────────────────────────────────────────────────
-#
-# Prefix+L ("last session") used to walk a hop backwards for free, because N was a
-# switch-client and tmux remembers the previous session per client. The server split made
-# N a cross-SERVER hop - a detach plus an attach on another socket - and that is invisible
-# to both the client (new one) and switch-client (server-scoped). So the hop records where
-# it left from, and `back` reads it.
-#
-# One slot, deliberately. What was lost is the two-way flip between two pieces of work; a
-# history ring is a different feature and a worse key to hit by reflex.
-
-# Where this client is now, as "<server>\t<session>\t<window>". Non-zero outside tmux, or
-# when tmux cannot resolve a current client - `back` treats both as "nothing to record".
+# Where this client is now, as "<server>\t<session>\t<window>\t<client tty>". Non-zero
+# outside tmux, or when tmux cannot resolve a current client.
 _current_loc() {
   [ -n "${TMUX:-}" ] || return 1
-  local loc sock sess win
-  # One display-message, not three: the fields have to describe the SAME moment.
-  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}" 2>/dev/null)" || return 1
-  IFS=$'\t' read -r sock sess win <<<"$loc"
+  local loc sock sess win tty
+  # One display-message, not four: the fields have to describe the SAME moment.
+  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}"$'\t'"#{client_tty}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r sock sess win tty <<<"$loc"
   [ -n "$sock" ] && [ -n "$sess" ] || return 1
-  printf '%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win"   # socket path -> server name
+  printf '%s\t%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win" "$tty"   # socket path -> server name
 }
 
-# Where a hop is HEADED, when that is knowable before attaching: an explicit
-# "<session>[:<window>]" says so outright, and `root` is the manifest's first entry.
-# `last` is only resolved on the far side by land, so it comes back empty.
-_dest_session() {
-  case "$2" in
-    last) ;;
-    root)   _landing "$1" ;;
-    root.*) printf '%s\n' "${2#root.}" ;;
-    *)    printf '%s\n' "${2%%:*}" ;;
-  esac
+# Prefix+L: the last PLACE this terminal was, a session and window on any world. tmux's own
+# switch-client -l cannot answer that: it is per server, so a cross-world hop (a fresh client)
+# has nothing, and per session, so a window jump inside one session (the agent panel, muxpoon)
+# is skipped. The hooks in .tmux.conf call `mark` on every arrival; `back` goes to the place
+# before. Keyed by tty, which survives a hop while the client does not.
+PLACES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/places"
+
+_places_file() { printf '%s/%s\n' "$PLACES_DIR" "${1//\//_}"; }
+
+# _mark_one <tty> <server> <session> <window_id> -- the file holds "now" then "before".
+_mark_one() {
+  local f here now
+  f="$(_places_file "$1")" here="$2"$'\t'"$3"$'\t'"$4"
+  now="$(head -1 "$f" 2>/dev/null)"
+  [ "$now" = "$here" ] && return 0
+  printf '%s\n%s\n' "$here" "$now" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
 }
 
-# Remember where we are leaving from. Called from _enter, which every hop goes through -
-# the keys, `tmx <server>`, `pick` and `pick-all` - so a jump made from the Prefix+A list
-# is just as reversible as one made from a key.
-#
-# LOAD-BEARING: a key must bind `tmx hop|root`, never `detach-client -E "tmx land ..."`.
-# land is the FAR side of the hop; it runs after the client is gone, so there is nothing
-# left for it to read. Binding land directly is how Prefix+L shipped dead - the recorder
-# sat on a path the keys did not take, and every test drove the path they did not take
-# either. tmx_back.bats now runs whatever .tmux.conf actually binds, so this cannot recur
-# silently.
-_record_back() {
-  local dest_srv="${1:-}" dest_sess="${2:-}" dest_win="${3:-}" loc srv sess win
-  loc="$(_current_loc)" || return 0
-  IFS=$'\t' read -r srv sess win <<<"$loc"
-  [ -n "$srv" ] && [ -n "$sess" ] || return 0
-
-  # A hop that does not leave the session is not somewhere to come back FROM. Without
-  # this, hitting N twice out of habit overwrites the real back-target with the page you
-  # are already looking at, and L goes dead - the exact complaint this feature exists for.
-  # A hop to ANOTHER window of the session does leave: the note and hub:board share a
-  # session, and every hop is a fresh attach, so this crumb is the only way back to the note.
-  if [ "$srv" = "$dest_srv" ] && [ "$sess" = "$dest_sess" ]; then
-    [ -n "$dest_win" ] || return 0
-    [ "$(tmux display-message -p -t "=$sess:$dest_win" '#{window_index}' 2>/dev/null)" != "$win" ] || return 0
+# mark <socket_path> <session> <window_id> [<tty>] -- this terminal is now here. With no tty
+# (session-window-changed has no client), every terminal attached to that session.
+cmd_mark() {
+  local sock="${1:-}" sess="${2:-}" win="${3:-}" tty="${4:-}" srv
+  [ -n "$sock" ] && [ -n "$sess" ] && [ -n "$win" ] || return 0
+  srv="${sock##*/}"
+  mkdir -p "$PLACES_DIR" 2>/dev/null || return 0
+  if [ -n "$tty" ]; then
+    _mark_one "$tty" "$srv" "$sess" "$win"
+    return 0
   fi
+  while IFS= read -r tty; do
+    [ -n "$tty" ] && _mark_one "$tty" "$srv" "$sess" "$win"
+  done < <(tmux -L "$srv" list-clients -t "=$sess" -F '#{client_tty}' 2>/dev/null)
+  return 0
+}
 
-  mkdir -p "${BACK_FILE%/*}" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\n' "$srv" "$sess" "$win" > "$BACK_FILE" 2>/dev/null || return 0
+# back -- Prefix+L: go to the place before this one. A window that has closed since means its
+# session, on whatever window it shows now.
+cmd_back() {
+  local loc tty="" srv="" sess="" win=""
+  loc="$(_current_loc)" && IFS=$'\t' read -r _ _ _ tty <<<"$loc"
+  [ -n "$tty" ] && { read -r _ && IFS=$'\t' read -r srv sess win; } 2>/dev/null < "$(_places_file "$tty")"
+  if [ -z "$srv" ] || [ -z "$sess" ] || ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null; then
+    # A message, not a failure: run-shell shows a non-zero exit as a broken-key popup.
+    tmux display-message "tmx: no last place"
+    return 0
+  fi
+  tmux -L "$srv" list-windows -t "=$sess" -F '#{window_id}' 2>/dev/null | grep -qxF -- "$win" || win=""
+  _enter "$srv" "$sess${win:+:$win}"
+}
+
+# _arrive <server> [<session>] -- the last step of land: attach this terminal, or, when the
+# client is already on <server> (TMX_ARRIVE=switch), switch it there rather than replace it. TMX_CLIENT names the client to switch; empty means tmux's current one.
+_arrive() {
+  local srv="$1" sess="${2:-}"
+  if [ "${TMX_ARRIVE:-}" = switch ]; then
+    exec tmux -L "$srv" switch-client ${TMX_CLIENT:+-c "$TMX_CLIENT"} ${sess:+-t "=$sess"}
+  fi
+  # $TMUX is still set after a detach -E (see _enter); attach refuses to nest while it is.
+  unset TMUX
+  exec tmux -L "$srv" attach ${sess:+-t "=$sess"}
 }
 
 # Two ways to arrive in a world, on purpose:
@@ -440,12 +412,14 @@ _enter() {
   fi
 
   if [ -n "${TMUX:-}" ]; then
-    # Before the detach, because this is the last moment the place we are leaving is
-    # still readable. Every hop passes through here, so every hop is reversible.
-    local dest_win=""
-    case "$mode" in *:*) dest_win="${mode#*:}" ;; esac
-    _record_back "$target" "$(_dest_session "$target" "$mode")" "$dest_win"
-
+    local loc srv=""
+    loc="$(_current_loc)" && srv="${loc%%$'\t'*}"
+    # Already on that server: no socket to cross, so switch the client instead of replacing it
+    # with a fresh attach, which blanks the terminal for nothing.
+    if [ "$srv" = "$target" ]; then
+      ( TMX_ARRIVE=switch cmd_land "$target" "$mode" )
+      return 0
+    fi
     # -E runs after this client detaches, so the two halves read as one motion.
     #
     # It MUST dispatch to `land`, not back to hop/root. tmux does NOT clear $TMUX
@@ -453,14 +427,89 @@ _enter() {
     # hop/root on the far side would see $TMUX, take this same branch, and recurse
     # instead of attaching: you end up detached, and the next `ensure` leaves a
     # stray session behind. `land` never looks at $TMUX.
-    # $mode is quoted too: pick-all passes "<session>" or "<session>:<window>",
+    # $mode is quoted too: pick passes "<session>" or "<session>:<window>",
     # and a session name is free to contain spaces.
     tmux detach-client -E \
       "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")"
     return 0
   fi
 
+  # Outside tmux with no terminal of our own (a Hyprland key, a waybar click, the pin): the
+  # hop belongs in the terminal you were typing in, not in a new window. Same move as above,
+  # aimed at that client by name.
+  if [ ! -t 0 ]; then
+    _drive_newest "$target" "$mode" && return 0
+  fi
   cmd_land "$target" "$mode"
+}
+
+# _newest_client -- "<server> <client> <pid>" of the client typed in most recently, across
+# every live world. Empty when no terminal is attached anywhere.
+_newest_client() {
+  local s
+  while IFS= read -r s; do
+    [ -n "$s" ] && tmux -L "$s" list-clients \
+      -F "#{client_activity} $s #{client_name} #{client_pid}" 2>/dev/null
+  done < <(panel_live_servers) | sort -rn | head -1 | cut -d' ' -f2-
+}
+
+# _drive_newest <server> <mode> -- hop the newest client to <server> and focus its terminal.
+# With no client anywhere, a new terminal is the only place left to land.
+_drive_newest() {
+  local target="$1" mode="$2" srv client pid
+  read -r srv client pid < <(_newest_client)
+  if [ -z "${client:-}" ]; then
+    command -v kitty >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || return 1
+    setsid -f kitty -e "$SELF" land "$target" "$mode" >/dev/null 2>&1
+    return 0
+  fi
+  if [ "$srv" = "$target" ]; then
+    ( TMX_ARRIVE=switch TMX_CLIENT="$client" cmd_land "$target" "$mode" ) || return 1
+    _focus_terminal "$pid"
+    return 0
+  fi
+  tmux -L "$srv" detach-client -t "$client" -E \
+    "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")" || return 1
+  _focus_terminal "$pid"
+  return 0
+}
+
+# _focus_terminal <pid> -- on Hyprland, focus the window whose process is an ancestor of
+# <pid> (the tmux client runs under the terminal's shell). Nothing elsewhere, or over ssh.
+_focus_terminal() {
+  local pid="$1" wins
+  [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1 || return 0
+  wins=" $(hyprctl clients -j 2>/dev/null | jq -r '.[].pid' 2>/dev/null | tr '\n' ' ')"
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+    case "$wins" in *" $pid "*) hyprctl dispatch focuswindow "pid:$pid" >/dev/null 2>&1; return 0 ;; esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  done
+  return 0
+}
+
+# popup <cmd> [arg...] -- run <cmd> in a popup on the terminal you typed in last and focus it,
+# so a desktop key (Super+A) shows a tool where you work. No terminal attached: one floating kitty.
+cmd_popup() {
+  [ $# -gt 0 ] || die "popup needs a command"
+  local srv client pid
+  read -r srv client pid < <(_newest_client)
+  if [ -z "${client:-}" ]; then
+    command -v kitty >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] ||
+      die "no tmux client is attached and no display to open a terminal on"
+    setsid -f kitty --class floating-term -e "$@" >/dev/null 2>&1
+    return 0
+  fi
+  tmux -L "$srv" display-popup -c "$client" -E -w 95% -h 95% "$(printf '%q ' "$@")" || return 1
+  _focus_terminal "$pid"
+}
+
+# client -- "<server> <client>" of the terminal you typed in last, so another script can
+# aim display-popup -c or switch-client -c at it (scratch.sh popup).
+cmd_client() {
+  local srv client pid
+  read -r srv client pid < <(_newest_client)
+  [ -n "${client:-}" ] || die "no tmux client is attached to any world"
+  printf '%s %s\n' "$srv" "$client"
 }
 
 # land <server> [last|root|<session>|<session>:<window>] -- the far side of a hop.
@@ -473,7 +522,6 @@ cmd_land() {
   # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
   case "$mode" in
     last|root) ;;
-    root.*)    want="${mode#root.}" ;;
     *)         want="${mode%%:*}" ;;
   esac
   cmd_ensure "$target" "$want" >/dev/null
@@ -486,10 +534,10 @@ cmd_land() {
     die "$target has no sessions running (nothing it boots exists on this machine, and nothing else is open there)"
   fi
 
-  # An explicit target from pick-all. Anything that is not one of the two keywords
+  # An explicit target from pick. Anything that is not one of the two keywords
   # is a session name, optionally with a window after a colon.
   case "$mode" in
-    last|root|root.*) ;;
+    last|root) ;;
     *)
       local want_sess="${mode%%:*}" want_win=""
       case "$mode" in *:*) want_win="${mode#*:}" ;; esac
@@ -499,8 +547,7 @@ cmd_land() {
         # session was left.
         [ -n "$want_win" ] &&
           tmux -L "$target" select-window -t "$want_sess:$want_win" 2>/dev/null
-        unset TMUX
-        exec tmux -L "$target" attach -t "=$want_sess"
+        _arrive "$target" "$want_sess"
       fi
       # Picked a session that died between listing and landing — fall through to
       # resume rather than dumping the user on an error.
@@ -508,12 +555,9 @@ cmd_land() {
       ;;
   esac
 
-  # `root.<session>` is the same move for a page that is not the world's landing session
-  # (Prefix+H: hub's `lab`, the projects index). A dot cannot appear in a tmux session name,
-  # so the split is unambiguous.
-  if [ "$mode" = "root" ] || [ "${mode#root.}" != "$mode" ]; then
+  if [ "$mode" = "root" ]; then
     local landing
-    if [ "$mode" = "root" ]; then landing="$(_landing "$target")"; else landing="${mode#root.}"; fi
+    landing="$(_landing "$target")"
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
       # Select the page's window FIRST: _refresh_landing types into the current window,
       # which would otherwise be whichever board was last open.
@@ -521,10 +565,7 @@ cmd_land() {
       lwin="$(_landing_window "$target" "$landing")"
       [ -n "$lwin" ] && tmux -L "$target" select-window -t "$landing:$lwin" 2>/dev/null
       _refresh_landing "$target" "$landing"
-      # $TMUX is still set here (see _enter); attach refuses to nest while it is,
-      # so drop it. -L already selects the server, so nothing else needs it.
-      unset TMUX
-      exec tmux -L "$target" attach -t "=$landing"
+      _arrive "$target" "$landing"
     fi
   fi
 
@@ -550,17 +591,15 @@ cmd_land() {
   # Nothing but the root in this world — go there rather than nowhere.
   [ -n "$last" ] || last="$landing_name"
 
-  unset TMUX
   if [ -n "$last" ] && tmux -L "$target" has-session -t "=$last" 2>/dev/null; then
-    exec tmux -L "$target" attach -t "=$last"
+    _arrive "$target" "$last"
   fi
-  exec tmux -L "$target" attach
+  _arrive "$target"
 }
 
 # _recent_session <server> [exclude] -- the session you were last working on in a world:
 # most recent last_attached, never the landing page, never <exclude>. Empty when the world
-# holds nothing else. One definition shared by resume (cmd_land) and Prefix+L (cmd_back),
-# so "what I was working on" cannot mean two things.
+# holds nothing else.
 _recent_session() {
   local srv="$1" exclude="${2:-}"
   tmux -L "$srv" list-sessions \
@@ -569,32 +608,43 @@ _recent_session() {
     | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | head -1
 }
 
-# _is_board <server> <session>[:<window>] -- is that window (the session's current one when
-# none is given) a declared window of the manifest, like hub:board? Identity is the one
-# ensure finds declared windows by: @tmx_window, else the name for windows made before it.
-_is_board() {
-  local srv="$1" sess="${2%%:*}" win="" id
-  case "$2" in *:*) win="${2#*:}" ;; esac
-  id="$(tmux -L "$srv" display-message -p -t "=$sess:$win" \
-          '#{?@tmx_window,#{@tmx_window},#{window_name}}' 2>/dev/null)"
-  [ -n "$id" ] || return 1
-  awk -v k="$sess:$id" '!/^[[:space:]]*#/ { n = $1; sub(/^\?/, "", n); if (n == k) f = 1 }
-                        END { exit !f }' "$MANIFEST_DIR/$srv.conf" 2>/dev/null
+# A world is a known name or a running server, hidden ones included: _enter explains those.
+# grep without -q: an early exit would SIGPIPE the writer, which pipefail reads as no match.
+_is_world() {
+  world_hidden "$1" && return 0
+  known_servers | grep -Fx -- "$1" >/dev/null && return 0
+  panel_live_servers | grep -Fx -- "$1" >/dev/null
 }
 
-cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
-# root <server> [<session>] -- with a session, that declared session's page instead of the
-# world's landing one, restored the same way. The session's own world wins, as in goto.
+# Anything else is a typo or a key still bound to a removed verb. It stops here: _enter
+# would detach the client and boot an empty server of that name, which kicks you out.
+cmd_hop() {
+  local target="${1:?hop needs a server name}"
+  if ! _is_world "$target"; then
+    [ -n "${TMUX:-}" ] || die "no world or command '$target' (tmx ls lists the worlds)"
+    tmux display-message "tmx: no world or command '$target'"
+    return 0
+  fi
+  _enter "$target" last
+}
+
+# toggle -- Prefix+C-h. On hub, resume lab; anywhere else (lab, another world, outside tmux),
+# resume hub. The two worlds every manifest and README names, so there is no knob to swap.
+cmd_toggle() {
+  local cur_srv
+  cur_srv="$(_current_loc | cut -f1)" || cur_srv=""
+  if [ "$cur_srv" = hub ]; then cmd_hop lab; else cmd_hop hub; fi
+}
+
+# root <server> -- the world's landing page (Prefix+N: hub's daily), put back if you wandered off it.
 cmd_root() {
-  local srv="${1:?root needs a server name}" sess="${2:-}"
-  [ -n "$sess" ] || { _enter "$srv" root; return; }
-  _enter "$(_declared_world "$srv" "$sess")" "root.$sess"
+  _enter "${1:?root needs a server name}" root
 }
 
 # goto <server> <session> -- hop to a world and land on a NAMED session.
 #
 # The third way to arrive, beside hop (resume) and root (landing page): "take me to THIS
-# session, wherever it lives". `pick-all` has always done it by calling _enter with an
+# session, wherever it lives". `pick` has always done it by calling _enter with an
 # explicit session; this only gives that a name so another surface can ask for it.
 # sessionizer.sh is the caller: a directory belongs in the world worlds.sh routes it to, and
 # creating it here instead would be a second session on one dir. A session some manifest
@@ -607,89 +657,7 @@ cmd_goto() {
   _enter "$(_declared_world "${1:?goto needs a server name}" "$sess")" "$sess"
 }
 
-# back -- Prefix+L. tmux's own last-session FIRST; the crumb only when tmux has none.
-#
-# The crumb is written by hops only, so it goes stale the moment you switch sessions any
-# other way (sesh, Prefix+w, choose-tree). Consulting it first made L jump to wherever the
-# last hop started, hours ago, instead of the session you were just in. tmux knows the real
-# answer whenever it has one; it only has none on a fresh attach, which is exactly the state
-# a cross-server hop leaves you in - and that is the one case the crumb exists for.
-#
-# A board is never a place to go BACK to. The board (Prefix i -> hub:board) is
-# a declared window of the landing session, and tmux keeps one last-session
-# slot, so a glance at one took it: A, o, L, L landed on the board instead of the session
-# before A. When tmux's answer (or the crumb) is a board, L goes to the session you were
-# last working on instead, and to the board only when there is nowhere else.
-cmd_back() {
-  local rec srv sess win cur cur_srv cur_sess cur_win last pick
-
-  cur="$(_current_loc)" || cur=""
-  IFS=$'\t' read -r cur_srv cur_sess cur_win <<<"${cur:-}"
-
-  if [ -n "${TMUX:-}" ]; then
-    last="$(tmux display-message -p '#{client_last_session}' 2>/dev/null)"
-    if [ -n "${cur_srv:-}" ] && [ -n "$last" ] && _is_board "$cur_srv" "$last"; then
-      pick="$(_recent_session "$cur_srv" "$cur_sess")"
-      [ -n "$pick" ] && exec tmux switch-client -t "=$pick"
-    fi
-    tmux switch-client -l 2>/dev/null && return 0
-  fi
-
-  rec="$(head -1 "$BACK_FILE" 2>/dev/null)"
-  IFS=$'\t' read -r srv sess win <<<"${rec:-}"
-
-  # The crumb `back` itself leaves after returning from a board in another world.
-  if [ -n "${srv:-}" ] && [ -n "${sess:-}" ] && [ -n "${cur_srv:-}" ] &&
-     _is_board "$srv" "$sess${win:+:$win}"; then
-    pick="$(_recent_session "$cur_srv" "$cur_sess")"
-    [ -n "$pick" ] && exec tmux switch-client -t "=$pick"
-  fi
-
-  # Nothing recorded, the world it named is gone, or it names where we already are.
-  if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] ||
-     ! tmux -L "$srv" has-session 2>/dev/null ||
-     { [ "$srv" = "${cur_srv:-}" ] && [ "$sess" = "${cur_sess:-}" ] &&
-       { [ -z "${win:-}" ] || [ "$win" = "${cur_win:-}" ]; }; }; then
-    # Nowhere to go. Exit 0 anyway: run-shell surfaces a non-zero child as the popup
-    # `'tmx back' returned 1`, which reads as a broken key rather than "nowhere to go".
-    return 0
-  fi
-
-  # The session died while we were away. Go to that world's last session rather than
-  # erroring out - same call cmd_land makes when a picked session dies under it.
-  if ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null; then
-    _enter "$srv" last
-    return 0
-  fi
-
-  # Same world: an ordinary session switch. No detach - there is no socket to cross, and
-  # detaching would blank the terminal for no reason.
-  if [ "$srv" = "${cur_srv:-}" ]; then
-    _record_back "$srv" "$sess"
-    [ -n "${win:-}" ] && tmux select-window -t "$sess:$win" 2>/dev/null
-    exec tmux switch-client -t "=$sess"
-  fi
-
-  # Another world: the ordinary hop, which records this spot itself.
-  _enter "$srv" "$sess${win:+:$win}"
-}
-
-# pick -- fzf over the SERVERS, sessions in the preview. The compact view: two rows,
-# one per world, and you drill in only when you want to. Kept alongside pick-all
-# because they answer different questions -- "which world" vs "where is that window".
-cmd_pick() {
-  command -v fzf >/dev/null 2>&1 || die "fzf not installed"
-  local choice
-  panel_fzf_layout
-  choice="$(cmd_ls | fzf --reverse --border "${PANEL_FZF_LAYOUT[@]}" \
-    --prompt='server > ' \
-    --header='Enter: hop to server · Esc: cancel' \
-    --preview='tmux -L {1} list-sessions 2>/dev/null || echo "(not running - Enter starts it)"')" || return 0
-  [ -n "$choice" ] || return 0
-  cmd_hop "${choice%% *}"
-}
-
-# How old the fleet state may be before Prefix+A stops trusting it. fleet-state.service
+# How old the fleet state may be before Prefix+H stops trusting it. fleet-state.service
 # writes it every minute, so five minutes means the writer has stopped.
 FLEET_STATE_MAX_AGE=300
 # The widest a row may be: the hub runs in an 80-column tmux pane (dashboards rule 11).
@@ -719,41 +687,46 @@ _fleet_load() {
     "$file" 2>/dev/null)
 }
 
-# _idle_text <minutes> -> 45m, 8h, 2d.
+# The row helpers set a variable (_IDLE, _COL, _MID, _ROW) instead of printing it: a $(...)
+# is a fork, _all_rows formats every window, and on a loaded machine a fork costs
+# milliseconds, so Prefix+H took seconds to open with thirty agent sessions on lab.
+
+# _idle_text <minutes> -> _IDLE: 45m, 8h, 2d.
 _idle_text() {
-  if [ "$1" -lt 60 ]; then printf '%sm' "$1"
-  elif [ "$1" -lt 1440 ]; then printf '%sh' "$(( $1 / 60 ))"
-  else printf '%sd' "$(( $1 / 1440 ))"
+  if [ "$1" -lt 60 ]; then _IDLE="${1}m"
+  elif [ "$1" -lt 1440 ]; then _IDLE="$(( $1 / 60 ))h"
+  else _IDLE="$(( $1 / 1440 ))d"
   fi
 }
 
-# _fleet_col <target> -> "NEEDS    8h", or nothing for a window with no agent.
+# _fleet_col <target> -> _COL: "NEEDS    8h", or empty for a window with no agent.
 _fleet_col() {
   local v="${FLEET["$1"]:-}"
+  _COL=""
   [ -n "$v" ] || return 0
-  printf '%-7s %3s' "${v%%$'\t'*}" "$(_idle_text "${v##*$'\t'}")"
+  _idle_text "${v##*$'\t'}"
+  printf -v _COL '%-7s %3s' "${v%%$'\t'*}" "$_IDLE"
 }
 
-# _mid <text> <width> -- cut from the middle: the tail of an agent session name is the
+# _mid <text> <width> -> _MID, cut from the middle: the tail of an agent session name is the
 # -agent-N that tells it from its siblings.
 _mid() {
-  if [ "${#1}" -le "$2" ]; then printf '%s' "$1"
-  else printf '%s~%s' "${1:0:$2-11}" "${1: -10}"
+  if [ "${#1}" -le "$2" ]; then _MID="$1"
+  else _MID="${1:0:$2-11}~${1: -10}"
   fi
 }
 
-# _row <server> <session> <window> <display> -- one list row, cut to ROW_WIDTH.
+# _row <server> <session> <window> <display> -> _ROW, one list row cut to ROW_WIDTH, no newline.
 _row() {
   local d="$4"
   [ "${#d}" -le "$ROW_WIDTH" ] || d="${d:0:ROW_WIDTH-1}~"
-  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$d"
+  printf -v _ROW '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$d"
 }
 
 # _all_rows -- every world, session and window, in one list, what needs a look first.
 #
 # This is the one view no other tool here can give you. choose-tree (Prefix+w) is
-# server-scoped by construction, and sesh shells out to plain `tmux` so it follows
-# $TMUX into whichever single server you are already in. Seeing hub and lab at once
+# server-scoped by construction. Seeing hub and lab at once
 # has to be assembled from outside both, which is what this does.
 #
 # There is no preview pane. Everything worth knowing is ON the row, because a preview
@@ -772,82 +745,102 @@ _row() {
 # only field 4 (--with-nth=4) and the first three are the machine target. A heading has
 # all three empty, and Enter on one does nothing. Kept separate from the fzf call so it
 # can be tested without a terminal.
+#
+# Three tmux calls per world, whatever it holds: list-sessions, list-panes -a and
+# list-windows -a, read into per-session maps before the session loop. Nothing in the loops
+# forks (tests/integ/tmx_rows_cost.bats pins it).
 _all_rows() {
-  local s n sess wins att spath created activity idx wname wact pcmd ptitle
-  local disp mark what col title need body="" rows wrows word known now fleet_ok=0
-  local -a stranded=()
+  local s n sess wins att spath created activity idx wname wact pcmd ptitle line m1
+  local disp mark what col title need body="" rows word known now fleet_ok=0 name f
+  local -a stranded=() sessions=()
+  local -A declared=() what_of=() wrows_of=() col_of=() title_of=() need_of=()
 
-  now="$(date +%s)"
+  printf -v now '%(%s)T' -1
   known=" $(known_servers | tr '\n' ' ') "
-  _fleet_load && fleet_ok=1
+  if _fleet_load; then
+    fleet_ok=1
+    # A session some manifest declares is never stranded, hidden worlds included: the
+    # same list `tmux-close protected` reads, loaded once instead of asked per session.
+    while read -r name f; do declared["$name"]=1; done <<< "$(world_declared)"
+  fi
 
   while IFS= read -r s; do
     [ -n "$s" ] || continue
 
-    n="$(session_count "$s")"
+    mapfile -t sessions < <(tmux -L "$s" list-sessions -F \
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+    n="${#sessions[@]}"
     if [ "$n" -eq 0 ]; then
-      body+="$(_row "$s" '' '' "$s  not running")"$'\n'
+      _row "$s" '' '' "$s  not running"; body+="$_ROW"$'\n'
       continue
     fi
 
-    rows=""; need=0
-    while IFS=$'\t' read -r sess wins att spath created activity; do
-      [ -n "$sess" ] || continue
+    # The simple explanation of a session: WHERE it is and WHAT is running in it. Both are
+    # derived, so an ad-hoc session gets described as well as a declared one and no manifest
+    # has to be kept in sync with this. WHAT is its panes' commands, most common first.
+    what_of=()
+    while IFS=$'\t' read -r sess what; do
+      [ -n "$sess" ] && what_of["$sess"]="$what"
+    done < <(tmux -L "$s" list-panes -a -F "#{session_name}"$'\t'"#{pane_current_command}" 2>/dev/null \
+      | awk -F'\t' -v OFS='\t' '{ n[$1 FS $2]++ } END { for (k in n) { split(k, f, FS); print f[1], n[k], f[2] } }' \
+      | sort -t$'\t' -k1,1 -k2,2nr -k3,3r \
+      | awk -F'\t' '
+          $1 != s { if (NR > 1) { sub(/, $/, "", w); print s "\t" w }; s = $1; w = "" }
+          { c = $3; sub(/[ \t].*/, "", c); w = w c ($2 > 1 ? " x" $2 : "") ", " }
+          END { if (NR) { sub(/, $/, "", w); print s "\t" w } }')
 
-      # The simple explanation of a session: WHERE it is and WHAT is running in it.
-      # Both are derived, so an ad-hoc session gets described as well as a declared
-      # one and no manifest has to be kept in sync with this.
+    # One row per window. pane_current_command and pane_title resolve against the window's
+    # ACTIVE pane, which is what makes these rows worth reading: the command says what is
+    # running, the title is where a program puts its context (claude puts the task there,
+    # nvim the filename). A session's last window also gives its one-row agent state.
+    wrows_of=(); col_of=(); title_of=(); need_of=()
+    while IFS=$'\t' read -r sess idx wname wact pcmd ptitle; do
+      [ -n "$idx" ] || continue
+      mark=' '; [ "$wact" = "1" ] && mark='*'
+      # Window names here are usually git branches, which run long enough to shove every
+      # later column off screen. Truncate rather than let the row wrap.
+      [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
+      ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
+      ptitle="${ptitle#[!a-zA-Z0-9~/]* }" # claude leads with a status glyph
+      _fleet_col "$s/$sess:$idx"
+      col_of["$sess"]="$_COL"; title_of["$sess"]="$ptitle"
+      case "$_COL" in NEEDS*) need_of["$sess"]=$(( ${need_of["$sess"]:-0} + 1 )) ;; esac
+      printf -v disp '      %2s%s %-16s %-11s %s' "$idx" "$mark" "$wname" "${_COL:-$pcmd}" "$ptitle"
+      _row "$s" "$sess" "$idx" "$disp"; wrows_of["$sess"]+="$_ROW"$'\n'
+    # An empty window name would collapse under read, shifting every field after it.
+    done < <(tmux -L "$s" list-windows -a -F \
+      "#{session_name}"$'\t'"#{window_index}"$'\t'"#{?#{==:#{window_name},},-,#{window_name}}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
+      2>/dev/null)
+
+    rows=""; need=0
+    for line in "${sessions[@]}"; do
+      IFS=$'\t' read -r sess wins att spath created activity <<< "$line"
+      [ -n "$sess" ] || continue
       spath="${spath/#$HOME/\~}"
-      what="$(tmux -L "$s" list-panes -s -t "=$sess" -F '#{pane_current_command}' 2>/dev/null \
-        | sort | uniq -c | sort -rn \
-        | awk '{ printf "%s%s, ", $2, ($1 > 1 ? " x" $1 : "") }' | sed 's/, $//')"
+      what="${what_of["$sess"]:-}"
 
       # A session newer than the document cannot be in it yet, so it is not stranded.
       if [ "$fleet_ok" = 1 ] && [ -z "${FLEET_SESSIONS["$s/$sess"]:-}" ] \
-        && [ "$created" -le "$FLEET_EPOCH" ] \
-        && ! "${SELF%/*}/close.sh" protected "$sess" >/dev/null 2>&1; then
-        stranded+=("$(_row "$s" "$sess" '' "$(printf '  %s  %-*s %s  idle %s  stranded' "$s" \
-          "$SESSION_NAME_WIDTH" "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$what" \
-          "$(_idle_text "$(( (now - activity) / 60 ))")")")")
+        && [ "$created" -le "$FLEET_EPOCH" ] && [ -z "${declared["$sess"]:-}" ]; then
+        _mid "$sess" "$SESSION_NAME_WIDTH"; _idle_text "$(( (now - activity) / 60 ))"
+        printf -v disp '  %s  %-*s %s  idle %s  stranded' "$s" "$SESSION_NAME_WIDTH" "$_MID" "$what" "$_IDLE"
+        _row "$s" "$sess" '' "$disp"; stranded+=("$_ROW")
         continue
       fi
 
-      # One row per window. pane_current_command and pane_title resolve against the
-      # window's ACTIVE pane, which is what makes these rows worth reading: the
-      # command says what is running, the title is where a program puts its context
-      # (claude puts the task there, nvim the filename).
-      wrows=""; col=""; title=""
-      while IFS=$'\t' read -r idx wname wact pcmd ptitle; do
-        [ -n "$idx" ] || continue
-        mark=' '; [ "$wact" = "1" ] && mark='*'
-        # Window names here are usually git branches, which run long enough to shove
-        # every later column off screen. Truncate rather than let the row wrap.
-        [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
-        ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
-        ptitle="${ptitle#[!a-zA-Z0-9~/]* }" # claude leads with a status glyph
-        col="$(_fleet_col "$s/$sess:$idx")"
-        title="$ptitle"
-        case "$col" in NEEDS*) need=$((need + 1)) ;; esac
-        wrows+="$(_row "$s" "$sess" "$idx" "$(printf '      %2s%s %-16s %-11s %s' \
-          "$idx" "$mark" "$wname" "${col:-$pcmd}" "$ptitle")")"$'\n'
-      # An empty window name would collapse under read, shifting every field after it.
-      done < <(tmux -L "$s" list-windows -t "=$sess" -F \
-        "#{window_index}"$'\t'"#{?#{==:#{window_name},},-,#{window_name}}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
-        2>/dev/null)
-
+      col="${col_of["$sess"]:-}"; title="${title_of["$sess"]:-}"
+      need=$(( need + ${need_of["$sess"]:-0} ))
+      _mid "$sess" "$SESSION_NAME_WIDTH"
       if [ "$wins" = "1" ] && [ -n "$col" ]; then
-        disp="$(printf '  %-*s %s  %s' "$SESSION_NAME_WIDTH" \
-          "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$col" "$title")"
+        printf -v disp '  %-*s %s  %s' "$SESSION_NAME_WIDTH" "$_MID" "$col" "$title"
       else
-        disp="$(printf '  %-13s %-22s %2s win  %s' "$(_mid "$sess" "$SESSION_NAME_WIDTH")" \
-          "$(_mid "$spath" "$SESSION_NAME_WIDTH")" "$wins" "$what")"
+        m1="$_MID"; _mid "$spath" "$SESSION_NAME_WIDTH"
+        printf -v disp '  %-13s %-22s %2s win  %s' "$m1" "$_MID" "$wins" "$what"
       fi
       [ "$att" = "1" ] && disp="$disp  (attached)"
-      rows+="$(_row "$s" "$sess" '' "$disp")"$'\n'
-      [ "$wins" = "1" ] || rows+="$wrows"
-
-    done < <(tmux -L "$s" list-sessions -F \
-      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+      _row "$s" "$sess" '' "$disp"; rows+="$_ROW"$'\n'
+      [ "$wins" = "1" ] || rows+="${wrows_of["$sess"]:-}"
+    done
 
     # The server itself, so one list replaces both this and the old server picker.
     word=sessions; [ "$n" = "1" ] && word=session
@@ -856,46 +849,106 @@ _all_rows() {
     case "$known" in
       *" $s "*) ;;
       *) disp="$disp  (no manifest)"
-         [ "$fleet_ok" = 1 ] && stranded+=("$(_row "$s" '' '' "  $s  (no manifest)  stranded")") ;;
+         [ "$fleet_ok" = 1 ] && { _row "$s" '' '' "  $s  (no manifest)  stranded"; stranded+=("$_ROW"); } ;;
     esac
-    body+="$(_row "$s" '' '' "$disp")"$'\n'"$rows"
+    _row "$s" '' '' "$disp"; body+="$_ROW"$'\n'"$rows"
   done < <(_all_servers)
 
-  [ "$fleet_ok" = 1 ] || _row '' '' '' 'fleet state is old: no agent state, no stranded marks'
+  if [ "$fleet_ok" != 1 ]; then
+    _row '' '' '' 'fleet state is old: no agent state, no stranded marks'; printf '%s\n' "$_ROW"
+  fi
   if [ "${#stranded[@]}" -gt 0 ]; then
-    _row '' '' '' "STRANDED  ${#stranded[@]}  no agent, no manifest"
+    _row '' '' '' "STRANDED  ${#stranded[@]}  no agent, no manifest"; printf '%s\n' "$_ROW"
     printf '%s\n' "${stranded[@]}"
   fi
   printf '%s' "$body"
 }
 
-# pick-all -- fzf over every session and window everywhere. Enter goes there.
-cmd_pick_all() {
+# pick -- Prefix+H, and a bare `tmx`. The one place to find a world, session or window.
+#
+# A tree over `_all_rows`: it opens collapsed to one row per world (the compact view), Enter
+# or a click on a world opens its sessions and windows beneath it, and Enter or a click on a
+# session or window goes there. Typing searches every row, open or not. The stranded block is
+# one collapsed STRANDED row after the worlds. The rows are read once per open into a scratch
+# dir, so opening and closing a world is instant and the next open starts collapsed again.
+cmd_pick() {
   command -v fzf >/dev/null 2>&1 || die "fzf not installed"
-  local rows choice srv sess win
-  rows="$(_all_rows)"
-  [ -n "$rows" ] || die "no tmux servers are running"
+  local dir q choice srv sess win
+  dir="$(mktemp -d)" || die "no temp dir"
+  _all_rows > "$dir/rows"
+  [ -s "$dir/rows" ] || { rm -rf "$dir"; die "no tmux servers are running"; }
+  : > "$dir/open"
+  q="$(printf '%q' "$SELF")"
+  export TMX_PICK_DIR="$dir"
 
-  # No --preview on purpose: the rows already say where each session is and what is
-  # running in it, and a preview only describes the one row under the cursor.
-  choice="$(printf '%s\n' "$rows" | fzf --reverse --border \
+  # No --preview on purpose: the rows say where each session is and what runs in it.
+  choice="$(_tree_rows | fzf --reverse --border --no-sort \
     --delimiter=$'\t' --with-nth=4 \
-    --prompt='everywhere > ' \
-    --header='Enter: go there · Esc: cancel')" || return 0
+    --prompt='worlds > ' \
+    --header='Enter/click: go there . Tab/right-click: fold or unfold a world . Esc: cancel' \
+    --bind "enter:transform:$q tree-enter {5}" \
+    --bind "left-click:transform:$q tree-enter {5}" \
+    --bind "tab:transform:$q tree-fold {5}" \
+    --bind "right-click:transform:$q tree-fold {5}" \
+    --bind 'double-click:ignore' \
+    --bind "change:reload:$q tree-rows {q}")"
+  rm -rf "$dir"                    # before the hop: _enter may exec tmux
   [ -n "$choice" ] || return 0
 
-  srv="$(printf '%s' "$choice" | cut -f1)"
-  sess="$(printf '%s' "$choice" | cut -f2)"
-  win="$(printf '%s' "$choice" | cut -f3)"
-
+  IFS=$'\t' read -r srv sess win _ <<<"$choice"
   [ -n "$srv" ] || return 0
   if [ -z "$sess" ]; then
-    cmd_hop "$srv"                 # a server row: resume that world
+    cmd_hop "$srv"                 # a world row: resume where you were on it, starting it if down
   elif [ -n "$win" ]; then
     _enter "$srv" "$sess:$win"
   else
     _enter "$srv" "$sess"
   fi
+}
+
+# _tree_rows [query] -- the picker's rows: <server> <session> <window> <display> <key>.
+# <key> names what Tab on that row opens or closes (a world, or STRANDED); an empty key
+# means there is nothing to fold. Reads $TMX_PICK_DIR/rows and its `open` list; with a query, every
+# row is shown so fzf can search all of them.
+_tree_rows() {
+  local dir="${TMX_PICK_DIR:?tree-rows runs inside tmx pick}"
+  awk -F'\t' -v OFS='\t' -v all="${1:+1}" -v openf="$dir/open" '
+    BEGIN { while ((getline k < openf) > 0) open[k] = 1 }
+    function shown(k) { return all || (k in open) }
+    function mark(k)  { return shown(k) ? "- " : "+ " }
+    # A world row: a server, no session, display not indented. Ends any stranded block.
+    $1 != "" && $2 == "" && $4 !~ /^ / {
+      grp = $1
+      if ($4 ~ / not running$/) print $1, "", "", "  " $4, ""
+      else                      print $1, "", "", mark($1) $4, $1
+      next
+    }
+    $1 == "" && $4 ~ /^STRANDED/ { grp = "STRANDED"; tail[++nt] = "\t\t\t" mark(grp) $4 "\tSTRANDED"; next }
+    $1 == "" { note[++nn] = $0 "\t"; next }
+    grp == "STRANDED" { if (shown(grp)) tail[++nt] = $0 "\t"; next }
+    shown(grp) { print $0, "" }
+    END { for (i = 1; i <= nt; i++) print tail[i]; for (i = 1; i <= nn; i++) print note[i] }
+  ' "$dir/rows"
+}
+
+# tree-enter <key> -- the fzf action for Enter or a click: go there, a world included (it
+# resumes where you were on it). STRANDED is a group, not a place, so it folds instead.
+_tree_enter() {
+  [ "${1:-}" = STRANDED ] && { _tree_fold STRANDED; return; }
+  echo accept
+}
+
+# tree-fold <key> -- the fzf action for Tab or a right-click: open or close <key>, a world or
+# STRANDED. A row with no key (a session or window) has nothing to fold.
+_tree_fold() {
+  local dir="${TMX_PICK_DIR:?tree-fold runs inside tmx pick}" key="${1:-}"
+  [ -n "$key" ] || return 0
+  if grep -qxF -- "$key" "$dir/open"; then
+    grep -vxF -- "$key" "$dir/open" > "$dir/open.new"; mv "$dir/open.new" "$dir/open"
+  else
+    printf '%s\n' "$key" >> "$dir/open"
+  fi
+  printf 'reload:%q tree-rows\n' "$SELF"
 }
 
 # reload -- Prefix+r. Source the config into EVERY live server, not just this one. Each
@@ -917,16 +970,21 @@ main() {
   case "$verb" in
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
-    root)         shift; cmd_root "${1:-}" "${2:-}" ;;
+    toggle)       cmd_toggle ;;
+    client)       cmd_client ;;
+    popup)        shift; cmd_popup "$@" ;;
+    root)         shift; cmd_root "${1:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     back)         cmd_back ;;
+    mark)         shift; cmd_mark "$@" ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
-    pick-session) cmd_pick_session ;;
     pick)         cmd_pick ;;
-    pick-all)     cmd_pick_all ;;
     rows)         _all_rows ;;
+    tree-rows)    shift; _tree_rows "${1:-}" ;;
+    tree-enter)   shift; _tree_enter "${1:-}" ;;
+    tree-fold)    shift; _tree_fold "${1:-}" ;;
     reload)       cmd_reload ;;
     -h|--help)    sed -n '2,40p' "$SELF" ;;
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case

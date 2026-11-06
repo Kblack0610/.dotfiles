@@ -238,8 +238,8 @@ load_lib() {
   refute_output --partial 'preview-window'
 }
 
-# The ctrl-/ bind runs panel-layout.sh's transform for this panel and the layout it opened in.
-layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s %s)' "$REPO_ROOT/.local/src/tmux/panel-layout.sh" "$1" "$2"; }
+# The ctrl-/ bind runs panel-layout.sh's transform for this panel.
+layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s)' "$REPO_ROOT/.local/src/tmux/panel-layout.sh" "$1"; }
 
 @test "panel_fzf_layout opens stacked by default, and ctrl-/ is the saving transform" {
   load_lib
@@ -247,14 +247,14 @@ layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s %s)' "$REPO_ROOT/.
   panel_fzf_layout
   [[ "$(declare -p PANEL_FZF_LAYOUT)" == "declare -a"* ]]
   assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=down,60%,border-top,wrap'
-  assert_equal "${PANEL_FZF_LAYOUT[1]}" "$(layout_bind _skeleton stacked)"
+  assert_equal "${PANEL_FZF_LAYOUT[1]}" "$(layout_bind _skeleton)"
 }
 
 @test "panel_fzf_layout opens in the saved layout, then PANEL_LAYOUT, then the caller's default" {
   load_lib
   PANEL_LAYOUT=side panel_fzf_layout stacked
   assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=right,65%,border-left,wrap'
-  assert_equal "${PANEL_FZF_LAYOUT[1]}" "$(layout_bind _skeleton side)"
+  assert_equal "${PANEL_FZF_LAYOUT[1]}" "$(layout_bind _skeleton)"
   unset PANEL_LAYOUT
   panel_fzf_layout side
   assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=right,65%,border-left,wrap'
@@ -280,25 +280,34 @@ layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s %s)' "$REPO_ROOT/.
   assert_output --partial "_skeleton.layout"
 }
 
-@test "panel_layout_next cycles first, other, hidden, first, and saves only a shown layout" {
+@test "panel_layout_next cycles stacked, side, hidden, stacked, and saves every step" {
   load_lib
   local f="$XDG_STATE_HOME/panels/questions.layout"
   # stacked is on screen: a preview at full width.
-  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=98 run panel_layout_next questions stacked
+  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=98 run panel_layout_next questions
   assert_output 'change-preview-window(right,65%,border-left,wrap)'
   assert_equal "$(cat "$f")" side
-  # side is on screen: a preview at about half width. hidden is next and is not saved.
-  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=54 run panel_layout_next questions stacked
-  assert_output 'change-preview-window(hidden)'
-  assert_equal "$(cat "$f")" side
-  # hidden: fzf exports no preview geometry. Back to the opening layout, saved.
-  run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" next questions stacked
+  # side is on screen: a preview at about half width. hidden is next, and saved.
+  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=54 run panel_layout_next questions
+  assert_output 'change-preview-window(down,60%,border-top,wrap,hidden)'
+  assert_equal "$(cat "$f")" hidden
+  # hidden: fzf exports no preview geometry. stacked again.
+  # A stray third argument from an fzf opened before the fixed cycle is ignored.
+  run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" next questions side
   assert_output 'change-preview-window(down,60%,border-top,wrap)'
   assert_equal "$(cat "$f")" stacked
-  # A panel that opened side cycles side -> stacked first.
-  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=54 run panel_layout_next questions side
-  assert_output 'change-preview-window(down,60%,border-top,wrap)'
-  assert_equal "$(cat "$f")" stacked
+}
+
+@test "a panel left hidden reopens hidden" {
+  load_lib
+  mkdir -p "$XDG_STATE_HOME/panels"
+  echo hidden > "$XDG_STATE_HOME/panels/_skeleton.layout"
+  panel_fzf_layout side
+  assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=down,60%,border-top,wrap,hidden'
+  # Negative control: a shown layout opens without the hidden flag.
+  echo side > "$XDG_STATE_HOME/panels/_skeleton.layout"
+  panel_fzf_layout
+  assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=right,65%,border-left,wrap'
 }
 
 @test "panel-layout.sh args prints the two arguments panel_fzf_layout sets, for the named panel" {
@@ -307,7 +316,7 @@ layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s %s)' "$REPO_ROOT/.
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args agent-panel
   assert_success
   assert_line --index 0 '--preview-window=right,65%,border-left,wrap'
-  assert_line --index 1 "$(layout_bind agent-panel side)"
+  assert_line --index 1 "$(layout_bind agent-panel)"
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args
   assert_failure
 }

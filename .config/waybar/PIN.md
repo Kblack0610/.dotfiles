@@ -28,9 +28,12 @@ It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
 `Super+A` opens a which-key popup; single keys fire actions; submaps nest 3 deep.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
+The agents leaves act in the terminal you typed in last, never a new window: a popup on it (`tmx popup`), or a hop of it (`o` and `h` land through `tmx goto`). With no tmux client attached anywhere, one floating kitty opens instead.
+
 ```
-Super+A                L1 pinbar          space control menu | t toggle | a agents | n pages | o open newest page | h triage newest page | u utils> | s settings> | esc/q exit
-  u utils              L2 pinbar-utils    a agents | h ssh | r reload | t timebox> | y sync> | g git> | esc back
+Super+A                L1 pinbar          space control menu | a agents> | k keys | t toggle | u utils> | s settings> | esc/q exit
+  a agents             L2 pinbar-agents   a agent panel | w all sessions | c scratch claude | n pick a page | o open newest page | h triage newest page | esc back
+  u utils              L2 pinbar-utils    h ssh | r reload | t timebox> | y sync> | g git> | esc back
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
@@ -40,7 +43,7 @@ Super+A                L1 pinbar          space control menu | t toggle | a agen
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
-**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "hub" row per hub tab (`hub tabs`, from hub-core's layout): the preview is that tab's `hub --once` page and Enter opens it as a hub popup. Then one "window" row per described exec bind (`bindd`/`bindpd` in `keybindings.conf` and `leader.conf`) with the chord that reaches it (`Super+D`, `Super+A u t s`); Enter runs it through `hyprctl dispatch exec`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
+**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A click that opens a terminal (`kitty --class C -e CMD`, which is every dropdown) runs CMD in the menu's own window, and its Esc or q comes back to the list; any other click (a GUI app, a URL, a toggle) launches and closes the menu. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "hub" row per hub tab (`hub tabs`, from hub-core's layout): the preview is that tab's `hub --once` page and Enter opens that hub page in place. Then one "window" row per described exec bind (`bindd`/`bindpd` in `keybindings.conf` and `leader.conf`) with the chord that reaches it (`Super+D`, `Super+A u t s`); Enter runs it through `hyprctl dispatch exec`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;

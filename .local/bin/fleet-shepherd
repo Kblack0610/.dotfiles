@@ -22,9 +22,10 @@
 #                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
-#                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
-#                          and ends the turn on 1, so a quiet tick costs one call, not a pass
+#                          page), re-page the human on escalated rows left unchanged (remind_sample),
+#                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
+#                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
+#                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -109,7 +110,16 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # the smaller of its idle and age (an epoch-0 idle on a new session cannot fire it early), and
 # then it gets one wind-down nudge. The human set 24h when approving the CHAT bucket, 2026-11-05.
 : "${FLEET_CHAT_CLOSE_H:=24}"
+# A row nudged and escalated that still sits unchanged this long pages the human again, in plain
+# words naming the one decision that closes it, once per fact per day (remind_sample).
+# trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
+: "${FLEET_SHEPHERD_REMIND_H:=4}"
+REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
+SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns each shared red episode
+# The project a shared red's item is filed on: the test failures fleet-sessions reads are the
+# playground's local gate (UNITY_TEST_FAILURES), so that repo owns the quarantine and the fix.
+: "${FLEET_SHARED_RED_PROJECT:=unity-core-playground}"
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -186,12 +196,22 @@ tag_pane() {
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
 # nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
-# survived, is escalated once. PARKED is fleet-pace's, below.
+# survived, is escalated once. A test red on several branches (shared) is owned by the queue item
+# shared_sample filed, and its sessions are told once; only one with no item escalates.
+# PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" '
+  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
+    --argjson items "$(shared_items)" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
+  , ( (.shared // [])[] | select(.escalated | not) | . as $r
+      | ($items[$r.fact] // null) as $item
+      | if $item == null then
+          "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\""
+        elif (.nudged | not) and ((.owners // []) | length) > 0 then
+          "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
+        else empty end )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
@@ -230,6 +250,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(overdue_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(improve_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
   b="$(findings_due)"
   [ -z "$b" ] || out="$b${out:+$'\n'}$out"
@@ -258,6 +280,20 @@ findings_due() {
     | [("finding-\(.rule)-\(.scope)" | gsub("/"; "-")), "\(.fact) \(.decision_class)",
        "\(.decision_class): \(.rule) \(.scope): \(.conclusion)" + (if (.cost // "") != "" then " (\(.cost))" else "" end)]
     | @tsv' <<<"$rows")
+}
+
+# improve_due -> one line for the KPI furthest past its threshold that no live row owns
+# (`fleet-bench improve`), so a pass files a defined row with a check, or claims the row or plan
+# that already owns it. The line carries no measured value, so its due_key holds still while the
+# number moves. Silent when fleet-bench fails: findings_due already names it unreadable.
+improve_due() {
+  local pick
+  pick="$(fleet-bench improve --json 2>/dev/null)" || return 0
+  [ -n "$pick" ] || return 0
+  jq -r '"improve: \(.kpi) past \(.bound) \(.threshold), no live row"
+    + (if .last then ", last \(.last.subject) \(.last.verdict)" else "" end)
+    + "; then: fleet-bench improve file \(.kpi) \"<defined fix>\", or claim \(.kpi) <id> when a row or plan already owns it"' \
+    <<<"$pick" 2>/dev/null || true
 }
 
 # overdue_due -> a line per WORKING session, or NEEDS one carrying on past its question, not
@@ -425,11 +461,17 @@ cmd_infra() {
 
 # infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears (high and
 # urgent, `watch-companion-loop tripped`). On 2026-11-04 queue-starved was high, so the shepherd
-# never heard that dispatch had started nothing for 7.5h.
+# never heard that dispatch had started nothing for 7.5h. A watch with a live `red` item has an
+# owner (fleet-bench triage), so it raises no line.
 infra_sample() {
+  local owned
+  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red "))) | .task' \
+    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
   {
     infra_now
-    watch-companion-loop tripped 2>/dev/null | awk -F'\t' 'NF { printf "watch: %s tripped (%s)\n", $1, $2 }'
+    watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
+      BEGIN { n = split(owned, o, "\n"); for (i = 1; i <= n; i++) has[o[i]] = 1 }
+      NF && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
 }
 
@@ -490,6 +532,89 @@ budget_mark() {
 }
 budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev/null 2>&1 || true; }
 
+# remind_sample: a DONE, LANDED, STALLED or CHAT row the shepherd nudged and escalated, idle and
+# unchanged FLEET_SHEPHERD_REMIND_H since that escalation, pages the human again with the one
+# decision that closes it. Once per fact per day: $REMINDED keeps only today's lines. NEEDS is left
+# out: its ask already waits in the human's NEEDS YOU list.
+remind_sample() {
+  local today now min sid target bucket fact reason pr next plan at when decision
+  today="$(date +%F)" now="$(date +%s)" min=$((FLEET_SHEPHERD_REMIND_H * 60))
+  touch "$REMINDED" 2>/dev/null || return 0
+  awk -F'\t' -v d="$today" '$1 == d' "$REMINDED" > "$REMINDED.tmp" && mv "$REMINDED.tmp" "$REMINDED"
+  while IFS=$'\t' read -r sid target bucket fact reason pr next plan; do
+    case "$sid" in ''|*/*|.|..) continue ;; esac
+    awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
+    at="$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null | head -1)"
+    when="$(date -d "$at" +%s 2>/dev/null)" || continue
+    [ $((now - when)) -ge $((min * 60)) ] || continue
+    decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
+    # A page agent-notify refused is not recorded, so the next check tries it again. An undelivered
+    # one it queues (ntfy down) exits 0 and is flushed by Sentinel.
+    agent-notify -p high -t "$target: one decision closes it" -r "tmux:$target" \
+      "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
+    printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
+    cmd_log "remind: $target ($reason): $decision" >/dev/null
+  done < <(jq -r --argjson min "$min" '(.sessions // [])[]
+    | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
+        and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
+    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-"), (.next_phase // "-"),
+       (.plan_file // "-" | sub(".*/"; ""))]
+    | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
+# remind_decision <bucket> <reason> <pr> <next phase> <plan> -> the one decision, in plain words.
+remind_decision() {
+  local pr="#$3"
+  case "$1:$2" in
+    DONE:*) echo "nothing is left; close its window" ;;
+    LANDED:*) echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan" ;;
+    CHAT:*) echo "close the chat, or label it manual to keep it" ;;
+    *"green, not merged"*) echo "merge PR $pr or close it" ;;
+    *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
+    *"CI red"*) echo "have PR $pr fixed, or close it" ;;
+    *"closed without merging"*) echo "reopen PR $pr or discard the branch" ;;
+    *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
+    *"dirty file"*) echo "land the dirty files or discard them" ;;
+    *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
+    *) echo "act on: $2" ;;
+  esac
+}
+
+# shared_items -> {fact: item slug} from $SHARED_ITEMS, as JSON for cmd_due.
+shared_items() {
+  [ -s "$SHARED_ITEMS" ] || { echo '{}'; return; }
+  jq -Rn '[inputs | split("\t") | select(length == 2) | {(.[0]): .[1]}] | add // {}' "$SHARED_ITEMS"
+}
+
+# shared_sample: one queue item owns each shared red episode (ar-623). A test red on several
+# branches at once is a shared cause, and before this every branch's session gated again into it
+# alone: 2026-10-30..11-06, 55% of playground test reds sat on 3+ branches and red gates burned 57%
+# of gate pool hours, while the page these rows sent was answered twice. A live item that already
+# names the test's class owns it (a nightly-fix item, say); otherwise one is filed to quarantine the
+# test with an owner and expiry (playground docs/operations/ci.md rule 5) and fix it. A failed add
+# files nothing, so the row stays a `shared red:` line the pass escalates.
+shared_sample() {
+  local fact test reason cls active slug out
+  touch "$SHARED_ITEMS" 2>/dev/null || return 0
+  active="$(agent-queue list --json --state active 2>/dev/null)"
+  while IFS=$'\t' read -r fact test reason; do
+    awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
+    cls="${test%%(*}"; cls="${cls%.*}"; cls="${cls##*.}"
+    slug="$(jq -r --arg t "${test%%(*}" --arg c "$cls" '
+      select(((.task // "") + " " + (.title // "")) as $x | ($x | contains($t)) or ($c != "" and ($x | test("\\b" + $c + "\\b"))))
+      | .slug' <<<"$active" 2>/dev/null | head -1)"
+    if [ -z "$slug" ]; then
+      out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
+        --slug "shared-red-$cls" --title "fix(test): $cls red on several branches at once" \
+        "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
+      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p; s/.*already in the queue: //p' <<<"$out" | head -1)"
+    fi
+    [ -n "$slug" ] || { cmd_log "shared red: could not file an owner for $test: ${out##*: }" >/dev/null; continue; }
+    printf '%s\t%s\n' "$fact" "$slug" >> "$SHARED_ITEMS"
+    cmd_log "shared red: $reason; owned by queue item $slug" >/dev/null
+  done < <(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
 # guesses it: on 2026-10-28 entries stamped 00:55 and 01:00 UTC 10-29 were written at 23:44 UTC.
 cmd_log() {
@@ -548,7 +673,7 @@ settle() {
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
-# check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
+# check: the refresh and gate a pass starts with, shared by the runner and a fleet-lead pass.
 # Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
 # a quiet fleet.
 cmd_check() {
@@ -558,6 +683,10 @@ cmd_check() {
   infra_sample
   # Parks act on sessions, so only the runner or the lease holder takes the checkpoint.
   cmd_holds 2>/dev/null && budget_sample
+  # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
+  cmd_holds 2>/dev/null && shared_sample
+  # And so is a reminder: one writer of $REMINDED.
+  cmd_holds 2>/dev/null && remind_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
@@ -637,11 +766,11 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
-# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding and
-# infra lines are fleet-lead's own.
+# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding, infra
+# and improve lines are fleet-lead's own.
 line_role() {
   case "${1#unhandled: }" in
-    nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
+    nudge*|escalate*|overdue*|"nightly red"*|"shared red"*) echo shepherd ;;
     pace:*|blocked:*|limit:*) echo fleet-pace ;;
     "watch: queue-starved "*) echo fleet-dispatch ;;   # its "Starved queue" self-heal
     *) echo fleet-lead ;;

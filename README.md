@@ -17,7 +17,7 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.config/shared-hooks/` | `project-map.json`, session preflight, stale-plan archiver — used by all AI tools |
 | `.config/{agentctl,playwright,profile}/` | Local agent/orchestration runtime config |
 | `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, settings (see below) |
-| `.opencode/`, `.cursor/`, `.codeium/`, `.serena/` | Per-tool runtime state |
+| `.opencode/`, `.cursor/`, `.codeium/` | Per-tool runtime state |
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
 | `.local/src/{adb-controller,android-suite,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
@@ -26,6 +26,24 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `Media/` | Wallpapers / lock screen assets |
 | `AGENTS.md` | Codex root agent instructions (kept at repo root because Codex auto-loads it) |
 | `.ai-rc`, `.k8s-rc` | Sourced by `.commonrc` for AI/k8s shell helpers |
+
+## Cockpit (tmux)
+
+The tmux cockpit (`.tmux.conf`, `.local/src/tmux/`, `.config/tmux-servers/`) has its own docs: [overview](docs/overview.md), [architecture](docs/architecture.md), [deploy](docs/operations/deploy.md), and the key table in `.local/src/tmux/README.md`.
+
+- Build: nothing for the scripts. The Rust parts (`agent-panel`, `hub`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
+- Run: `stow --no-folding .`, then `tmx ensure hub` and `tmx hop hub`. `Prefix+r` re-reads the config.
+- Test: `make -C tests bootstrap` once, then `make -C tests test-fast` (unit + integ, host-safe). The tmux ui tier runs only in the container: `make -C tests test-ui`.
+- Standards: `.local/src/tmux/CONVENTIONS.md` (panel rules, each with the test that enforces it).
+
+## Agent runtime
+
+The agent fleet (`agentctl` runners, `agentctl-run`, `agent-queue`, `fleet-dispatch`, `fleet-sessions`, `agent-land`, `agent-ask`) has its own docs: [overview](docs/overview.md#agent-runtime), [architecture](docs/architecture.md#agent-runtime), [deploy](docs/operations/deploy.md#deploying-agent-runtime). Runner confs and runbooks are in the private overlay, at `~/.config/agentctl/`.
+
+- Build: nothing for the scripts. The views (`agent-web`, `hub`, `agent-panel`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
+- Run: `stow --no-folding .` in both repos, then `agentctl reload` and `agentctl list`. `agentctl pause` stops every oneshot runner, `agentctl resume` lifts it.
+- Test: `make -C tests bootstrap` once, then `make -C tests test-fast`, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
+- Standards: `.local/src/docs/standards.md` (each invariant with the test that holds it).
 
 ## Submodules
 

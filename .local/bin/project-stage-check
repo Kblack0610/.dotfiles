@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
 # project-stage-check - does a project meet its stage, and its systems' criteria?
 #
-#   project-stage-check <name> [--stage <stage>]
+#   project-stage-check <name> [--stage <stage>] [--json]
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
+#   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file
 #
 # Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
 # declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
 # TODO line per row, then a `gate:` line. Exit 0 when nothing blocks, 1 when a FAIL blocks (from
 # stages.md's `Enforced from:` date; before it the gate only reports), 2 on usage or an unknown
-# project. Callers: `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
+# project. --json prints the counts, the gate and each row instead, with the same exit. Callers:
+# `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
 # Systems mode runs the Criteria rows of systems.md for every system the project's type has (or
 # one, with --system): the same lines, then met/total per system; --json prints those counts and
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
+# --file turns each FAIL row into a story on the project's agent board, under the open epic for
+# its target: `epic(stage): <stage> ...` for a stage (with no --stage, that epic's stage is the
+# target), `epic(<system>): ...` for a system. It never files the epic: only the human, the
+# session whose plan they just approved, or an answered ask does. A row already on either sheet
+# under the same title, open or closed or dropped, is never filed again. With no epic it prints
+# what it would file and writes nothing. Exit 0, 1 when a write failed, 2 as above.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
-NAME="" TARGET="" SYSTEMS="" ONLY="" JSON=""
+NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -25,6 +33,7 @@ while [ $# -gt 0 ]; do
     --systems) SYSTEMS=1; shift ;;
     --system) ONLY="${2:-}"; SYSTEMS=1; shift 2 || usage ;;
     --json) JSON=1; shift ;;
+    --file) FILE=1; shift ;;
     -h|--help) usage 0 ;;
     -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
     *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
@@ -32,7 +41,106 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$NAME" ] || usage
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
-[ -n "$SYSTEMS" ] || [ -z "$JSON" ] || { echo "project-stage-check: --json needs --systems" >&2; usage; }
+[ -z "$FILE" ] || [ -z "$JSON" ] || { echo "project-stage-check: --file and --json do not mix" >&2; usage; }
+
+# sheet_rows: one `state<TAB>title` line per task row on both lanes' sheets and their frozen
+# version notes, the title as `projects::row_title` reads it (marker, `#` words and the
+# `type(area): ` prefix dropped, spaces collapsed). State is `open`, or `closed` for a ticked
+# row, done or dropped. The roadmap leaves dropped rows out, so it cannot be this reader.
+sheet_rows() {
+  local f files=()
+  for f in "$LAB/README.md" "$LAB/agent/README.md" "$LAB"/versions/*.md "$LAB"/agent/versions/*.md; do
+    [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  awk '
+    /^[ \t]*- \[.\] / {
+      st = ($0 ~ /^[ \t]*- \[[xX]\] /) ? "closed" : "open"
+      t = $0; sub(/^[ \t]*- \[.\] /, "", t); gsub(/<!--.*-->/, "", t)
+      n = split(t, w, /[ \t]+/); out = ""
+      for (i = 1; i <= n; i++) if (w[i] != "" && w[i] !~ /^#/) out = out (out == "" ? "" : " ") w[i]
+      sub(/^[a-z]+\([a-z0-9-]+\)!?: /, "", out)
+      print st "\t" out
+    }' "${files[@]}"
+}
+
+# file_gaps: the --file mode. It reads this script's own --json, the open epics from `notes
+# projects --stats --json` (the roadmap lists only epics with work in a version, so never a
+# fresh one) and the rows already on the sheets, and writes only through `notes ptask --agent
+# add`, whose twin check holds a concurrent run off an open row.
+file_gaps() {
+  local epics ladder check rc gaps have n=0 filed=0 had=0 closed=0 waiting=0 failed=0
+  local target area text full chk epic title row state
+  [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
+  epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
+    '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
+    || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
+  have="$(sheet_rows)"
+  if [ -n "$SYSTEMS" ]; then
+    check="$("$0" "$NAME" --systems ${ONLY:+--system "$ONLY"} --json)"; rc=$?
+    [ "$rc" -le 1 ] || exit "$rc"
+    gaps="$(jq -r '.systems[] | .id as $id | .criteria[] | select(.result == "FAIL")
+      | [$id, $id, .criterion, .check] | @tsv' <<<"$check")"
+  else
+    ladder="$(notes projects --stages 2>/dev/null)"
+    # With no --stage, the target is the stage the open `epic(stage):` row names first.
+    [ -n "$TARGET" ] || TARGET="$(jq -r --arg ladder "$ladder" '[.[] | select(.system == "stage")
+      | (.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":")) as $s
+      | select($ladder | split(" ") | index($s)) | $s][0] // empty' <<<"$epics")"
+    check="$("$0" "$NAME" ${TARGET:+--stage "$TARGET"} --json)"; rc=$?
+    [ "$rc" -le 1 ] || exit "$rc"
+    TARGET="$(jq -r .stage <<<"$check")"
+    gaps="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "FAIL")
+      | [$t, .stage, .requirement, .check] | @tsv' <<<"$check")"
+  fi
+
+  while IFS=$'\t' read -r target area full chk; do
+    [ -n "$target" ] || continue
+    n=$((n + 1))
+    # The title as the sheet stores it (`projects::row_title`): words that start with `#`
+    # dropped, spaces collapsed, cut at a word to 80 characters (`propose`'s cut).
+    title="$(jq -rn --arg t "$full" '[$t | splits(" +") | select(length > 0 and (startswith("#") | not))] | join(" ")
+      | if length <= 80 then . else .[:80] | (if test(" ") then sub(" [^ ]*$"; "") else . end) end')"
+    # A closed twin wins over an open one: a gap the human dropped stays dropped.
+    state="$(awk -F'\t' -v t="$title" '$2 == t { s = (s == "closed" || $1 == "closed") ? "closed" : "open" } END { print s }' <<<"$have")"
+    if [ -n "$SYSTEMS" ]; then
+      epic="$(jq -r --arg s "$target" '[.[] | select(.system == $s) | .id][0] // empty' <<<"$epics")"
+    else
+      epic="$(jq -r --arg s "$target" '[.[] | select(.system == "stage")
+        | select(.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":") == $s) | .id][0] // empty' <<<"$epics")"
+    fi
+    case "$state" in
+      closed) closed=$((closed + 1)); printf 'closed  %-10s  %s\n' "$area" "$title"; continue ;;
+      ?*) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title"; continue ;;
+    esac
+    if [ -z "$epic" ]; then
+      waiting=$((waiting + 1)); printf 'no epic %-10s  %s\n' "$area" "$title"; continue
+    fi
+    row="chore($area): $title #of/$epic #size/s"
+    text="from project-stage-check $NAME --file, $( [ -n "$SYSTEMS" ] && echo "systems.md $target" || echo "stages.md #$area" ), check: $chk"
+    # A cut title keeps the whole requirement on a detail line.
+    if [ "$title" = "$full" ]; then
+      notes ptask "$NAME" --agent add "$row" --detail "$text" >/dev/null
+    else
+      notes ptask "$NAME" --agent add "$row" --detail "$full" --detail "$text" >/dev/null
+    fi
+    rc=$?
+    case "$rc" in
+      0) filed=$((filed + 1)); printf 'filed   %-10s  %s\n' "$area" "$title" ;;
+      3) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title" ;;
+      *) failed=$((failed + 1)); printf 'error   %-10s  %s (ptask add exit %s)\n' "$area" "$title" "$rc" ;;
+    esac
+  done <<<"$gaps"
+
+  local what="#$TARGET"; [ -z "$SYSTEMS" ] && [ -n "$TARGET" ] || what="systems${ONLY:+ $ONLY}"
+  printf 'file: %s %s: %s failing, %s filed, %s already open, %s closed or dropped' "$NAME" "$what" "$n" "$filed" "$had" "$closed"
+  [ "$waiting" -eq 0 ] || printf ', %s with no open epic (%s)' "$waiting" \
+    "$( [ -n "$SYSTEMS" ] && echo 'file `epic(<system>): ...` on the human sheet' || echo "file \`epic(stage): $TARGET ...\` on the human sheet")"
+  [ "$failed" -eq 0 ] || printf ', %s failed' "$failed"
+  printf '\n'
+  [ "$failed" -eq 0 ]
+  exit $?
+}
 
 STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
 SYSTEMS_DOC="${SYSTEMS_DOC:-$HOME/.local/src/docs/systems.md}"
@@ -62,6 +170,7 @@ sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
 [ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
+[ -z "$FILE" ] || file_gaps
 
 # rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
 # A row starts with a lowercase id, so the header and the `---` line never match. `\|` is a
@@ -173,20 +282,36 @@ lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check:
 enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
-fails=0
+fails=0 res=""
 while IFS=$'\t' read -r stage app req check; do
   lab_stage_at_least "$TARGET" "$stage" || continue
   applies "$app" || continue
   r="$(judge "$check")"
-  line "$r" "$stage" "$req" "$check"
+  res+="$stage"$'\t'"$r"$'\t'"$req"$'\t'"$check"$'\n'
+  [ -n "$JSON" ] || line "$r" "$stage" "$req" "$check"
   [ "$r" != FAIL ] || fails=$((fails + 1))
 done < <(rows "$STAGES_DOC" Requirements)
 
-if [ "$fails" -eq 0 ]; then
+blocks=""
+[ "$fails" -gt 0 ] && [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]] && blocks=1
+
+if [ -n "$JSON" ]; then
+  printf '%s' "$res" | jq -R -s --arg name "$NAME" --arg type "$TYPE" --arg stage "$TARGET" \
+      --arg from "$enforced_from" --arg blocks "$blocks" '
+    [split("\n")[] | select(length > 0) | split("\t") | {stage: .[0], result: .[1], requirement: .[2], check: .[3]}] as $r
+    | {project: $name, type: (if $type == "" then null else $type end), stage: $stage,
+       met: ($r | map(select(.result == "PASS")) | length), total: ($r | length),
+       fail: ($r | map(select(.result == "FAIL")) | length),
+       human: ($r | map(select(.result == "HUMAN")) | length),
+       todo: ($r | map(select(.result == "TODO")) | length),
+       enforced_from: (if $from == "" then null else $from end), blocks: ($blocks != ""),
+       requirements: $r}'
+elif [ "$fails" -eq 0 ]; then
   echo "gate: $NAME meets #$TARGET"
-elif [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]]; then
-  echo "gate: $NAME fails $fails row(s) for #$TARGET"; exit 1
+elif [ -n "$blocks" ]; then
+  echo "gate: $NAME fails $fails row(s) for #$TARGET"
 else
   echo "gate: $NAME fails $fails row(s) for #$TARGET (report-only until ${enforced_from:-an Enforced from: date is set})"
 fi
+[ -z "$blocks" ] || exit 1
 exit 0

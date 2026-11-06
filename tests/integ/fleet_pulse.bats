@@ -138,11 +138,20 @@ EOF
 # coming back when one goes amber would push it off exactly when the bar matters, so
 # only the unhappy token draws.
 
-@test "a fully healthy fleet is the green icon and nothing else" {
+# custom/health already says "all is well", so a healthy fleet prints empty text and
+# hide-empty-text drops the chip; it comes back beside the heart only when something is off.
+@test "a fully healthy fleet prints no chip at all" {
   FLEET_ROSTER="linux-cachyos gp-mac pi5-master" FLEET_DISPLAY="linux-cachyos=main gp-mac=gp" run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#a6e34a'>"$'\U000F0430'"</span>"
+  assert_equal "$(jq -r .text <<< "$output")" ""
   assert_equal "$(jq -r .class <<< "$output")" healthy
+  assert_output --partial "linux-cachyos: up"
+}
+
+@test "a healthy roster with a ghost token still shows the chip" {
+  FLEET_ROSTER="linux-cachyos gp-mac pi5-master" FLEET_DISPLAY="linux-cachyos=main retired-box=rb" run "$MODULE"
+  assert_success
+  assert_output --partial "rb<span color='#ffcc2f'>?</span>"
 }
 
 @test "one host down draws that token and not its healthy sibling" {

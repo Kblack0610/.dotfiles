@@ -86,11 +86,16 @@ test("an ask's options say what each does, the recommended one why, and its cont
 
 test("the judge's line says what it did or would do, a deferral included, with its rule and reason", () => {
   assert.match(askHtml(ask({ judge: "human", rule: "taste", reason: "only you know" })), /<div class="cline">Judge: deferred \(taste\) - only you know<\/div>/);
-  assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">Judge: would take the recommendation<\/div>/);
-  assert.match(askHtml(ask({ judge: "take-recommend", answered_by: "judge", rule: "restates-rule", reason: "rules say fix failing CI yourself" })),
-    /Judge: answered \(restates-rule\) - rules say fix failing CI yourself<\/div>/);
-  assert.match(askHtml(ask({ judge: "answer:yes" })), /Judge: would answer &quot;yes&quot;<\/div>/);
+  assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">Judge: would take the recommendation, type not proven<\/div>/);
+  assert.match(askHtml(ask({ judge: "take-recommend", answered_by: "judge", rule: "ship_deploy", reason: "rules say fix failing CI yourself" })),
+    /Judge: answered \(ship_deploy\) - rules say fix failing CI yourself<\/div>/);
+  assert.match(askHtml(ask({ judge: "answer:yes" })), /Judge: would answer &quot;yes&quot;, type not proven<\/div>/);
   assert.doesNotMatch(askHtml(ask()), /Judge:/, "an ask never judged has no line");
+  const at = "2026-11-06T14:30:00-0800";
+  assert.match(askHtml(ask({ judge: "take-recommend", assume_at: at, rule: "ship_deploy", reason: "rules say so" })),
+    /Judge: assumes &quot;no&quot; at 14:30 unless you reply \(ship_deploy\) - rules say so<\/div>/);
+  assert.match(askHtml(ask({ judge: "answer:yes", assume_at: at })), /Judge: assumes &quot;yes&quot; at 14:30 unless you reply<\/div>/);
+  assert.match(askHtml(ask({ judge: "human", assume_at: at })), /Judge: deferred<\/div>/, "a verdict that moved shows no deadline");
 });
 
 test("an ask's Details fold carries the judge's fields and a Full log fold that reads the trace when opened", () => {

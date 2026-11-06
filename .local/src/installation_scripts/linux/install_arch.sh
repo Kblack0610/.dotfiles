@@ -178,7 +178,6 @@ install_tmux_patched() {
 install_tmux() {
     log_section "Installing tmux"
     install_tmux_patched
-    install_aur_package "sesh-bin"  # session picker (Go binary); tmx pick-session generates its config
 }
 
 # Override: Install Kitty
@@ -807,7 +806,6 @@ install_all() {
     step shell       install_fonts
     step dotfiles    setup_git
     step dev         install_npm_packages
-    step dev         install_rtk
     step dotfiles    apply_dotfiles
 
     # Must come after apply_dotfiles

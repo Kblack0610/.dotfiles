@@ -15,25 +15,31 @@ const refreshHome = coalesce(async () => {
 });
 
 // The Needs you kind of a row hub_core::home sent (waiting.js NEED_KINDS): an ask is a
-// question, a session its open dialog's kind, a waiting queue item blocked, a red main failing.
+// question, a session its open dialog's kind, a waiting queue item blocked, a human-sheet row
+// to do, a red main failing, and a stopped dispatch stopped.
 function needKind(n) {
+  if (n.kind === "stopped") return "stopped";
   if (n.kind === "ask") return "ask";
   if (n.kind === "session") {
     const a = st.agents.find((x) => x.target === n.target && x.question);
     return a ? dialog(a.question) : "turn";
   }
   if (n.kind === "queue") return "blocked";
+  if (n.kind === "sheet") return "todo";
   return "red";
 }
 
-// What a ranked row holds (hub_core::home::Score::holds), the reason it sits where it does.
-const holds = (n) => (n.score && n.score.holds ? `holds ${esc(n.score.holds)}` : "");
+// What a ranked row holds (hub_core::home::Score::holds), or a sheet row's priority: the
+// reason it sits where it does.
+const holds = (n) => (n.score && n.score.holds ? `holds ${esc(n.score.holds)}`
+  : n.score && n.score.priority ? `#${esc(n.score.priority)}` : "");
 
 // A row with no answer card: what it is, how long it has waited, and a way to it.
+const CARD_WHAT = { nightly: "nightly failed", red: "red now", queue: "queue item", sheet: "your sheet", stopped: "dispatch" };
 function needCard(n) {
   const k = n.need;
-  const what = n.kind === "nightly" ? "nightly failed" : n.kind === "red" ? "red now" : n.kind === "queue" ? "queue item" : "";
-  const id = [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
+  const what = CARD_WHAT[n.kind] || "";
+  const id = n.kind === "stopped" || [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
   const band = needBand(k, [esc(n.project), what, id, n.since ? ago(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`

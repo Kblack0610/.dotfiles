@@ -10,9 +10,11 @@ use crate::fmt::{clock, dur, Palette};
 
 fn kind(k: Kind) -> &'static str {
     match k {
+        Kind::Stopped => "stopped",
         Kind::Ask => "ask",
         Kind::Session => "session",
         Kind::Queue => "queue",
+        Kind::Sheet => "sheet",
         Kind::Nightly => "nightly",
         Kind::Red => "red",
     }
@@ -74,7 +76,7 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     // below every row only the human can act on).
                     let machine = n.score.as_ref().is_some_and(|s| !s.human);
                     let (mark, style) = match n.kind {
-                        Kind::Nightly | Kind::Red => ("", p.bad()),
+                        Kind::Stopped | Kind::Nightly | Kind::Red => ("", p.bad()),
                         _ if machine => ("~", p.dim()),
                         _ => ("", ratatui::style::Style::new()),
                     };
@@ -302,8 +304,14 @@ mod tests {
         assert!(out.contains("HOLDS"), "{out}");
         assert!(out.contains("session, 3 phases"), "{out}");
         let line = out.lines().find(|l| l.contains("Keep the alias?")).unwrap();
-        assert!(line.trim_start().starts_with("~ask") && line.contains(" - "), "{out}");
+        assert!(
+            line.trim_start().starts_with("~ask") && line.contains(" - "),
+            "{out}"
+        );
         // The server's order is kept: the human's row first.
-        assert!(out.find("Which lobby?") < out.find("Keep the alias?"), "{out}");
+        assert!(
+            out.find("Which lobby?") < out.find("Keep the alias?"),
+            "{out}"
+        );
     }
 }

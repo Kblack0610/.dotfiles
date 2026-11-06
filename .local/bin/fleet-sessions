@@ -24,7 +24,8 @@
 #                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
 # Buckets: PARKED, NEEDS, STALLED, WORKING, LANDED, DONE and CHAT, one per session, plus one NIGHTLY
-# row per repo whose default branch is red. Each is defined once, with its entry facts, exit,
+# row per repo whose default branch is red and one SHARED row per test red on several branches at
+# once. Each is defined once, with its entry facts, exit,
 # actor, action and pinning test, in the bucket table of .local/src/docs/fleet-states.md, and
 # tests/unit/fleet_states_doc.bats fails when the words emitted here differ from that table.
 # The --json `finished` field is DONE without the idle and status checks, so a session can check
@@ -55,10 +56,20 @@ set -uo pipefail
                            # ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on
                            # 2026-10-29 the fleet spent GitHub's 5,000/hr REST limit; a nightly's red
                            # is no less true five minutes later
+# One test failing on this many branches within this many minutes is a SHARED row: a shared cause
+# (the base, a runner, a flaky test), not any one branch's work. 3 in 2h hit about 4 tests a day in
+# the week to 2026-11-06.
+: "${FLEET_SHARED_RED_BRANCHES:=3}"
+: "${FLEET_SHARED_RED_MIN:=120}"
 MAIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/fleet"
+# The local gate's per-test failures, one line each: epoch, worktree, branch (- when detached), test.
+TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+# The kind registry fleet-dispatch routes by: a kind whose `exit` is doc+ask finishes on a doc and an
+# ask, not a PR (handoff_of).
+KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
 # A session working a queue item is named by that item's `session:` (<server>:<tmux session>, a
 # bare name on this server); its "<project>: <slug>" is shown so the shepherd knows what it works.
 # claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
@@ -83,7 +94,7 @@ LABELS="$LEDGER/labels"
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug> while it runs here, moved:<slug> (<where>) once it is done,
-#                 requeued or running in another session, or ->
+#                 requeued or running in another session, here:<slug> waiting here, or ->
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -425,6 +436,34 @@ prs_for() {
   cat "$key"
 }
 
+# origin_repo <dir> -> "owner/repo" of its origin remote, or nothing.
+origin_repo() {
+  git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#'
+}
+
+# pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> -> true when this
+# session made PR #N of <dir>'s repo: it opened or merged it (session_prs), its plan's Phases name
+# #N (bare, not <repo>#N), its transcript holds the PR's URL, or it pushed <branch> (the command,
+# or git's `-> <branch>` line for a bare `git push`). Worktrees are shared and recycled,
+# so a PR found by branch name alone may be another session's: trader-real-money-plan read LANDED
+# on #42 of another plan that had used the same branch (2026-11-06).
+pr_made_here() {
+  local repo n="$2" br="$3" t="$5" plan="$6" re
+  repo="$(origin_repo "$1")"
+  jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase) == $r and .number == $n)' \
+    <<<"$4" >/dev/null 2>&1 && return 0
+  [ "$plan" != - ] && [ -f "$plan" ] \
+    && sed -n '/^## Phases/,/^## /p' "$plan" | grep -qE "(^|[^A-Za-z0-9_./-])#$n([^0-9]|$)" && return 0
+  [ -f "$t" ] || return 1
+  [ -n "$repo" ] && grep -qiE "github\.com/$(re_quote "$repo")/pull/$n([^0-9]|$)" "$t" && return 0
+  [ "$br" != - ] || return 1
+  re="$(re_quote "$br")"
+  grep -qE "(git push[^\"]*( |:|refs/heads/)| -> )$re([^A-Za-z0-9._/-]|$)" "$t"
+}
+
+# re_quote <text> -> <text> with ERE metacharacters escaped.
+re_quote() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
+
 # sibling_pr <dir> <session_prs JSON> -> "repo \t number \t ci \t head_oid" for the last OPEN PR
 # this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
 # can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). Its CI is one
@@ -432,7 +471,7 @@ prs_for() {
 # (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
 sibling_pr() {
   local own repo n file failed view
-  own="$(git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#')"
+  own="$(origin_repo "$1")"
   IFS=$'\t' read -r repo n < <(jq -r --arg own "${own,,}" \
     'map(select(.state == "OPEN" and (.repo | ascii_downcase) != $own)) | last // empty | [.repo, .number] | @tsv' <<<"$2")
   [ -n "${n:-}" ] || return 0
@@ -699,14 +738,20 @@ parked_lines() {
 # (<where>) once it is done, requeued or running elsewhere, or -. sessions: (Claude session ids)
 # is the strong match. session: (the tmux session) counts only when one claude lives there, and a
 # done item by it only when it finished after this claude started: worktree names are recycled.
-# An item still running or waiting here wins over one that moved on.
+# An item still running or waiting here wins over one that moved on; an item that recorded no
+# session: (added by hand, `add --running`) is here when it names this Claude session, and
+# here:<slug> is one waiting here, which decides no bucket but names the item on the row.
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
     {
       bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me)
       if (!bysid && !bysess) next
-      if (($1 == "running" || $1 == "waiting") && $2 == me) { if ($1 == "running" && own == "") own = $4; here = 1; next }
+      if (($1 == "running" || $1 == "waiting") && ($2 == me || ($2 == "-" && bysid))) {
+        if ($1 == "running" && own == "") own = $4
+        if (hereslug == "") hereslug = $4
+        here = 1; next
+      }
       if ($1 == "done" && !bysid && !(start ~ /^[0-9]+$/ && $5 + 0 >= start + 0)) next
       if (moved != "") next
       where = ($1 == "done" || $1 == "queued") ? $1 : $1 " in " $2
@@ -714,10 +759,27 @@ item_of() {
     }
     END {
       if (own != "") print "own:" own
-      else if (here) print "-"
+      else if (here) print "here:" hereslug
       else if (moved != "") print "moved:" moved
       else print "-"
     }' <<<"$1"
+}
+
+# handoff_of <qall> <item_of's answer> -> "<ask id>\t<doc>" when the item is of a doc+ask kind
+# (kinds.json `exit`, by the item's type or its title's `type(area):` prefix) and has handed its work
+# over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
+# session's open question, and the item has moved on. Else nothing.
+handoff_of() {
+  local slug="${2#*:}" ask doc
+  case "$2" in own:* | moved:*) ;; *) return 0 ;; esac
+  [ -r "$KINDS" ] || return 0
+  IFS=$'\t' read -r ask doc < <(jq -r --arg s "${slug%% *}" --slurpfile k "$KINDS" '
+    select(.slug == $s)
+    | (.type // ((.title // .task // "") | capture("^(?<t>[a-z]+)(\\([A-Za-z0-9_./-]+\\))?:").t // "")) as $t
+    | select($t != "" and $k[0][$t].exit == "doc+ask" and (.report // "") != "" and (.ask // "") != "")
+    | [.ask, .report] | @tsv' <<<"$1" 2>/dev/null)
+  [ -n "${ask:-}" ] && [ -f "${doc/#\~/$HOME}" ] && compgen -G "$ASK_ROOT/*/$ask.md" >/dev/null && printf '%s\t%s\n' "$ask" "$doc"
+  return 0
 }
 
 collect() {
@@ -768,7 +830,31 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
+    local hask hdoc
+    IFS=$'\t' read -r hask hdoc < <(handoff_of "$qall" "$item")
+    if [ -n "${hask:-}" ]; then
+      askids="$(tr ',' '\n' <<<"$askids" | grep -vxF "$hask" | paste -sd, -)"
+      asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
+      item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
+    fi
+    # The row's queue item (item_of's one join), with the board row it came from and its origin.
+    local islug=- irel=- irow=- iorigin=-
+    case "$item" in
+      own:* | moved:* | here:*)
+        irel="${item%%:*}"; islug="${item#*:}"; islug="${islug%% *}"
+        IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
+          | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
+              | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
+        irow="${irow:--}"; iorigin="${iorigin:--}" ;;
+    esac
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
+    # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
+    if [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
+       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf"; then
+      [ "$inpr" = 1 ] && ahead=0
+      pr=- state=- ci=- oid=-
+    fi
     # No PR for this branch here: an open PR of its own in another repo is the row's PR. Its
     # conflict is not this clone's to measure, so it is unknown (-).
     local xr=- xpr xci xoid
@@ -799,6 +885,7 @@ collect() {
         printf '%s\t%s\n' "$(repo_slug "$cwd")" "$sid" >> "$CACHE/owners"
       fi
     fi
+    printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -817,14 +904,15 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin"
   done
   main_rows
+  shared_rows
 }
 
 # One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
@@ -843,6 +931,42 @@ main_rows() {
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "NIGHTLY $reason" && e=1
     printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+  done
+}
+
+# One SHARED row per test that failed on FLEET_SHARED_RED_BRANCHES branches (a detached checkout
+# counts by its worktree) within the last FLEET_SHARED_RED_MIN minutes of $TEST_FAILURES. No session
+# owns it: fleet-shepherd check files one queue item that does (shared_sample), the pass tells
+# the owners once (nudged), and only a red no item could be filed for escalates (ar-185, ar-623).
+# Its fact is the episode's first failure, an episode ending at a quiet gap longer than the window, so one more branch is not a new page and the
+# same test red again tomorrow is. Owners are the live sessions in the failing worktrees.
+shared_rows() {
+  [ -n "$(find "$TEST_FAILURES" -mmin -"$FLEET_SHARED_RED_MIN" 2>/dev/null)" ] || return 0   # nothing new in the window
+  local test start n keys owners sid reason fact nu e win="${FLEET_SHARED_RED_MIN}m"
+  [ $(( FLEET_SHARED_RED_MIN % 60 )) = 0 ] && win="$(( FLEET_SHARED_RED_MIN / 60 ))h"
+  : >> "$CACHE/cwds"
+  sort -t$'\t' -k1,1n "$TEST_FAILURES" | awk -F'\t' -v OFS='\t' -v now="$(date +%s)" -v cw="$CACHE/cwds" \
+      -v w="$(( FLEET_SHARED_RED_MIN * 60 ))" -v min="$FLEET_SHARED_RED_BRANCHES" '
+    FILENAME == cw { sids[$1] = sids[$1] " " $2; next }
+    $1 !~ /^[0-9]+$/ || $1 > now || $4 == "" { next }
+    {
+      t = $4; k = ($3 == "-" || $3 == "") ? $2 : $3
+      if (!(t in last) || $1 - last[t] > w) start[t] = $1
+      last[t] = $1
+      if ($1 < now - w) next
+      if (!((t, k) in seen)) { seen[t, k] = 1; n[t]++; keys[t] = keys[t] (n[t] > 1 ? ", " : "") k }
+      if (!((t, $2) in wt)) {
+        wt[t, $2] = 1; m = split(sids[$2], s, " ")
+        for (i = 1; i <= m; i++) if (!((t, s[i]) in own)) { own[t, s[i]] = 1; o[t] = o[t] (o[t] == "" ? "" : ",") s[i] }
+      }
+    }
+    END { for (t in n) if (n[t] >= min) print t, start[t], n[t], keys[t], (o[t] == "" ? "-" : o[t]) }' "$CACHE/cwds" - | sort |
+  while IFS=$'\t' read -r test start n keys owners; do
+    sid="shared-$(printf '%s' "$test" | tr -c 'A-Za-z0-9' _)"
+    reason="$test red on $n branches in $win: $keys"
+    fact="SHARED $test @$start"
+    nu=0; nudged "$sid" "$fact" && nu=1; e=0; escalated "$sid" "$fact" && e=1
+    printf 'SHARED\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$test" "$sid" "$nu" "$reason" "$e" "$owners" "$fact"
   done
 }
 
@@ -866,8 +990,8 @@ eta_cells() {
 # Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
 # changing, and reason rides along to explain a stage change. Newer cells come last so a
 # watch.state written before them still lines up. now is what WHY shows: on a WORKING row, the
-# session's last action (its reason only says busy or shell), else the reason. NIGHTLY rows are
-# rendered separately.
+# session's last action (its reason only says busy or shell), else the reason. NIGHTLY and SHARED
+# rows are rendered separately.
 board_cells() {
   awk -F'\t' -v OFS='\t' -v etaf="${1:-}" '
     # minutes -> 45m, 3h12m, 2d4h; "-" when the session start is unknown
@@ -893,7 +1017,7 @@ board_cells() {
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
-    $1 == "NIGHTLY" { next }
+    $1 == "NIGHTLY" || $1 == "SHARED" { next }
     {
       t = $2; sub(/^[^\/]*\//, "", t)
       git = ($5 != "-")
@@ -1021,7 +1145,10 @@ json_rows() {
       said: (if (.[40] // "-") == "-" then null else .[40] end),
       main_red: (if (.[43] // "-") == "RED" then true elif (.[43] // "-") == "OK" then false else null end),
       phases: ((.[44] // "[]") | fromjson),
-      account: (if (.[45] // "-") == "-" then null else .[45] end)}'
+      account: (if (.[45] // "-") == "-" then null else .[45] end),
+      item: (if (.[46] // "-") == "-" then null else
+        {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
+         origin: (if .[49] == "-" then null else .[49] end)} end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
@@ -1029,31 +1156,36 @@ json_rows() {
 # reader never sees half of one, and a pass that started before the one already written
 # (a slow 10-minute pass finishing after an ask-event pass) leaves the newer document alone.
 write_state() {
-  local t="$1" rows="$2" json dir tmp asks prev
+  local t="$1" rows="$2" json dir tmp asks prev stopped
   [ -f "$CACHE/eta" ] || eta_cells > "$CACHE/eta"
   json="$( [ -n "$rows" ] && json_rows <<<"$rows")"
   [ -n "$json" ] && printf '%s\n' "$json"
   dir="$(dirname "$STATE_FILE")"
   mkdir -p "$dir" || return 1
   asks="$(agent-ask list --all --pending 2>/dev/null)" || echo agent-ask >> "$CACHE/unreadable"
+  # A hold that has stopped every dispatch pass (hub Home's Stopped row); rc 1 is "stopped", not a failure.
+  stopped="$(fleet-dispatch stopped --json 2>/dev/null)"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
-       --arg asks "$asks" --arg rows "$json" --rawfile eta "$CACHE/eta" '
+       --arg asks "$asks" --arg rows "$json" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
-         sessions: ($r | map(select(.bucket != "NIGHTLY")
+         sessions: ($r | map(select(.bucket | IN("NIGHTLY", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
+         shared: ($r | map(select(.bucket == "SHARED")
+                     | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
                    session: (if (.[12] // "") == "" then null else .[12] end),
                    recommend: (if (.[10] // "") == "" then null else .[10] end),
-                   judge: (if (.[16] // "") == "" then null else .[16] end)}]}
+                   judge: (if (.[16] // "") == "" then null else .[16] end)}],
+         stopped: [$stopped | split("\n")[] | fromjson? | objects]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
       # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.
@@ -1100,6 +1232,9 @@ sessions_prom() {
       | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
       .counts | to_entries[] | [{bucket: .key}, .value]),
+    gauge("agent_sessions_unlinked"; "Live sessions with no agent-queue item, by the item_of join.";
+      [{}, ([.sessions[] | select((.labels // []) | index("shepherd") | not)
+             | select(.bucket != "NIGHTLY" and .bucket != "SHARED" and .item == null)] | length)]),
     gauge("agent_asks_open"; "Pending asks waiting on the human.";
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }
@@ -1127,7 +1262,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in NIGHTLY NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
+  for b in NIGHTLY SHARED NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do

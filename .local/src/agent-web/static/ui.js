@@ -21,6 +21,15 @@ async function api(path, opts) {
   return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
 }
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+// One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
+// or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
+async function putBase(path, body, what, then = "") {
+  const r = await fetch(path, { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
+  if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
+  const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
+  throw new Error(`Could not save ${what} (HTTP ${r.status})${said ? ": " + said : ""}.${then}`);
+}
 
 // Run fn, and if it is asked for again while running, run it once more after.
 // An event storm becomes at most one trailing refetch, with no timer involved.
@@ -77,7 +86,11 @@ const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
 const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
 const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" : dur(s / 60));
 // A headline number with its label, coloured by --c.
-const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
+// A tile with an href is a link to that page.
+const tile = (l, v, c, sub, href) => {
+  const [open, close] = href ? [`<a class="tile" href="${href}"`, "</a>"] : ['<div class="tile"', "</div>"];
+  return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
+};
 
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already

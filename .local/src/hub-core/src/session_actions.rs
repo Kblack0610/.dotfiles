@@ -96,6 +96,8 @@ pub struct Session {
     pub parked: bool,
     pub attached: bool,
     pub account: String,
+    /// The Claude session id, when agent-panel knows it.
+    pub session_id: String,
     /// The slugs of the agent-queue items in this pane, in queue order: those that record its
     /// window, and those that record only its tmux session, which can share it with others.
     pub items: Vec<String>,
@@ -115,6 +117,7 @@ impl From<&chooser::Agent> for Session {
             parked: a.parked,
             attached: a.attached,
             account: a.account.clone(),
+            session_id: a.session_id.clone(),
             items: Vec::new(),
             approve_key: None,
         }
@@ -308,6 +311,12 @@ pub fn plan(
 /// Runs one argv: its stdout, or its stderr (else its exit status) when it fails.
 pub trait Runner {
     fn run(&self, argv: &[String]) -> Result<String, String>;
+
+    /// The exit code and stdout, for a command whose non-zero exit still prints its answer
+    /// (`project-stage-check --json` exits 1 on a failing row). Err only when it could not run.
+    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+        self.run(argv).map(|o| (0, o))
+    }
 }
 
 /// The real runner: the command with no shell and no stdin.
@@ -332,6 +341,20 @@ impl Runner for System {
             })
         }
     }
+
+    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+        let (cmd, args) = argv.split_first().ok_or("empty command")?;
+        let out = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("{cmd}: {e}"))?;
+        let code = out
+            .status
+            .code()
+            .ok_or_else(|| format!("{cmd}: {}", out.status))?;
+        Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
 }
 
 /// Run the steps in order; the output of the ones that printed, or the first checked failure.
@@ -348,23 +371,36 @@ pub fn execute(steps: &[Step], runner: &dyn Runner) -> Result<String, String> {
     Ok(said.join("\n"))
 }
 
-/// Name each session's queue items: those whose `session` names that tmux session, once they
-/// have started. `session` is `<server>:<tmux-session>`; agent-queue writes nothing else.
+/// Name each session's queue items once they have started, by fleet-sessions' `item_of` rule:
+/// an item whose `sessions` (Claude session ids) holds this session's id is its own, and so is one
+/// whose `session` (`<server>:<tmux-session>`) names this tmux session, narrowed to the `window`
+/// it recorded. An item added by hand records only `sessions`.
 pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
     for i in items {
-        let Some(sess) = i.session.as_deref().filter(|s| !s.is_empty()) else {
-            continue;
-        };
         if i.slug.is_empty() || i.state == queue::State::Queued {
             continue;
         }
-        let Some((srv, sess)) = sess.split_once(':') else {
-            continue;
-        };
+        let ids: Vec<&str> = i
+            .extra
+            .get("sessions")
+            .and_then(|v| v.as_str())
+            .map(|v| v.split_whitespace().collect())
+            .unwrap_or_default();
+        let tmux = i
+            .session
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.split_once(':'));
         let window = i.window.as_deref().filter(|w| !w.is_empty());
         for s in sessions.iter_mut() {
-            let here = s.server == srv && s.tmux_session == sess && !s.parked;
-            if here && window.is_none_or(|w| w == s.window_id) {
+            if s.parked {
+                continue;
+            }
+            let by_id = !s.session_id.is_empty() && ids.contains(&s.session_id.as_str());
+            let by_tmux = tmux.is_some_and(|(srv, sess)| {
+                s.server == srv && s.tmux_session == sess && window.is_none_or(|w| w == s.window_id)
+            });
+            if by_id || by_tmux {
                 s.items.push(i.slug.clone());
             }
         }
@@ -645,6 +681,28 @@ mod tests {
             "no window recorded: every pane of the session"
         );
         assert_eq!(s[1].items, ["a", "b"]);
+    }
+
+    #[test]
+    fn an_item_added_by_hand_joins_the_session_it_names_by_id() {
+        let mut mine = live();
+        mine.session_id = "sid-9".into();
+        let mut other = live();
+        other.window_id = "@8".into();
+        other.session_id = "sid-8".into();
+        let mut s = vec![mine, other];
+        with_items(
+            &mut s,
+            &queue::parse(
+                "{\"slug\":\"h\",\"sessions\":\"sid-1 sid-9\",\"state\":\"running\"}\n\
+                 {\"slug\":\"q\",\"sessions\":\"sid-9\",\"state\":\"queued\"}\n",
+            ),
+        );
+        assert_eq!(s[0].items, ["h"], "its id among the item's sessions");
+        assert!(
+            s[1].items.is_empty(),
+            "another Claude session in the same tmux session"
+        );
     }
 
     #[test]

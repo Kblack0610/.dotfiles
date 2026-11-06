@@ -117,6 +117,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "unknown project: notes"
 }
 
+@test "list puts a red item first, then priority, then a cleanup item within its priority" {
+  "$AQ" add --project game --slug a-high "a"
+  "$AQ" add --project game --slug b-cleanup --tags "cleanup tier3" "b"
+  "$AQ" add --project game --slug c-urgent --priority urgent "c"
+  "$AQ" add --project game --slug d-red-low --priority low --tags "red cause:x" "d"
+  "$AQ" add --project game --slug e-reddish --tags "reddish" "e"
+  "$AQ" add --project game --slug f-cleanup-low --priority low --tags cleanup "f"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # red beats urgent; cleanup beats an older item of its priority, never a higher priority; tags match whole words.
+  assert_output $'d-red-low\nc-urgent\nb-cleanup\na-high\ne-reddish\nf-cleanup-low'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = d-red-low ]
+}
+
 @test "list orders by priority, then queued time, and next is the head" {
   "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"
@@ -176,6 +191,40 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "at:YYYY-MM-DDTHH:MM"
 }
 
+@test "an ask: tag holds an item until that agent-ask is answered, with that option when one is named (ar-455)" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  # add refuses a malformed tag and an id no ask file has, so the gate is never silently open or shut.
+  for t in "ask:" "ask:../x" "ask:a1=" "ask:a1"; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure
+  done
+  ask a1 pending
+  "$AQ" add --project game --slug money --tags "ask:a1=a" "go live"
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'b. stay on paper'
+  run "$AQ" next --json
+  assert_failure
+  ask a1 cancelled
+  run "$AQ" next --json
+  assert_failure
+  # A machine answer is not the human's decision.
+  ask a1 answered 'a' judge
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'A, go live' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = money ]
+  ask a2 pending
+  "$AQ" add --project game --slug any --priority urgent --tags "ask:a2" "any answer"
+  ask a2 answered 'whatever'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = any ]
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
@@ -206,6 +255,49 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#9 not merged"
+}
+
+@test "a nightly: tag holds while today's scheduled runs go, and releases when they finish" {
+  # The desk is in Los Angeles: Tests fires 02:00 and Multi 04:30 on 2026-11-06 (PST).
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
+  # state <synced_at> <multi.yml status>: Tests finished, Multi's run in the given status.
+  state() {
+    jq -n --arg s "$1" --arg m "$2" '{repos: [{repo: "Org/game", synced_at: $s, workflows: [
+      {path: ".github/workflows/multi.yml", crons: ["30 12 * * *"], timeout_min: 300,
+       runs: [{id: 2, created_at: "2026-11-06T12:41:00Z", status: $m}]},
+      {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
+       runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
+  }
+  "$AQ" add --project game --slug triage --priority urgent --tags "nightly:game" "a"
+  "$AQ" add --project game --slug other "b"
+  # No state file yet: held, never released on a guess.
+  AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
+  assert_output "nightly:game (no schedules state)"
+  state 2026-11-06T12:55:00Z in_progress
+  AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
+  assert_output "nightly:game (multi.yml running)"
+  [ "$(AGENT_QUEUE_NOW=2026-11-06T05:00 "$AQ" next --json | jq -r .slug)" = other ]
+  state 2026-11-06T14:05:00Z completed
+  [ "$(AGENT_QUEUE_NOW=2026-11-06T06:10 "$AQ" next --json | jq -r .slug)" = triage ]
+  # The same finished file read 40 minutes later is stale, and holds.
+  AGENT_QUEUE_NOW=2026-11-06T06:50 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
+  assert_output --partial "nightly:game (schedules state for game stale"
+  AGENT_QUEUE_NOW=2026-11-06T06:50 run bash -c "'$AQ' stats --json | jq -c .sitting.held_by"
+  assert_output '{"nightly":1}'
+  run "$AQ" add --project game --tags "nightly:Org/game" "x"
+  assert_failure; assert_output --partial "nightly:<repo>"
+}
+
+@test "a dated at: tag with a nightly: tag waits for the next night's runs, not today's" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
+  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-07T09:05:00Z", workflows: [
+    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
+     runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
+  "$AQ" add --project game --slug validate --tags "at:2026-11-07T00:00 nightly:game" "a"
+  AGENT_QUEUE_NOW=2026-11-06T09:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "at:2026-11-07T00:00"
+  AGENT_QUEUE_NOW=2026-11-07T01:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "nightly:game (test.yml due 02:00)"
 }
 
 @test "bump changes priority and with it the order" {
@@ -811,6 +903,21 @@ EOF
   assert_equal "$(jq -c '.recent | [.failed_1h, .failed_6h, .failed_24h, .started_1h, .started_6h, .started_24h]' <<<"$output")" '[0,1,1,1,2,3]'
 }
 
+@test "stats done_today counts ok items since local midnight, never the UTC day or a failed item" {
+  export TZ=Etc/GMT+8 # west of UTC: last night's 23:59 local is already today in UTC
+  today="$(date +%F)"
+  at() { date -u -d "@$(date -d "$1" +%s)" +%FT%TZ; } # -u alone would read $1 as UTC
+  for spec in "a|$today 00:00:01|ok" "b|$(date -d yesterday +%F) 23:59:59|ok" "c|$today 00:00:02|failed"; do
+    IFS='|' read -r slug when status <<<"$spec"
+    "$AQ" add --project game --slug "$slug" "$slug"
+    "$AQ" move "$slug" done --status "$status"
+    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")"
+  done
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c .recent.done_today <<<"$output")" 1
+}
+
 @test "a slug is matched exactly, never as the tail of a longer one" {
   "$AQ" add --project game --slug x-first "x"
   "$AQ" add --project game --slug second --after first-missing "y" 2>/dev/null || true
@@ -904,6 +1011,16 @@ EOF
   assert_failure; assert_output --partial "no item: nope"
 }
 
+@test "credit-of prints what attribute would record and writes nothing" {
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Arena/B.cs\nAssets/Level/L.cs'
+  assert_success; assert_output $'arena\tarena level'
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Level/L.cs'
+  assert_output $'\tarena level'
+  run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
+  assert_success; assert_output ''
+  [ ! -e "$AGENT_QUEUE_DIR" ]
+}
+
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture
@@ -951,6 +1068,19 @@ case " $* " in
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
+}
+
+@test "a canary item files no story row, and --from takes only the known origins" {
+  story_notes
+  run "$AQ" add --project level --from canary --tags 'night canary' --slug c1 "check(canary): greet 2026w45"
+  assert_success
+  refute_output --partial 'story'
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ "$(field "$(item queued c1)" from)" = canary ]
+  run "$AQ" add --project game --from robot --slug c2 "x"
+  assert_failure
+  assert_output --partial 'human, shepherd, canary or board'
 }
 
 @test "add files a started story row under the item's epic and links it as row:" {

@@ -605,7 +605,7 @@ judge_fixture() {
   export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
   mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
   printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
-    'judge_rule: restates-rule' 'judge_reason: landing is standing authorization' \
+    'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' \
     'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
   # a gate: never sent to the model, so no call and no score
   printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
@@ -628,7 +628,7 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   assert_equal "$(judge_posted | wc -l)" 2
   run judge_posted
   assert_line --partial '"id":"jv:c1:ask-1","sessionId":"js-1","name":"ask-judge","value":"take-recommend"'
-  assert_line --partial '"comment":"restates-rule: landing is standing authorization"'
+  assert_line --partial '"comment":"ship_deploy: landing is standing authorization"'
   assert_line --partial '"id":"jv:c2:p/agent/k1","sessionId":"js-2","name":"dispatch-judge","value":"skip"'
   assert_line --partial '"comment":"tier3: tier 3"'
   # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
@@ -715,6 +715,18 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
 }
 
+@test "a row names every work item whose sessions list it, in ledger order, and none with no item" {
+  queue_stub
+  {
+    jq -cn '{slug: "first", sessions: "sess-a"}'
+    jq -cn '{slug: "second", sessions: "sess-old sess-a"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.items | join(" ")')" 'first second'
+  assert_equal "$(field b '.items | length')" 0
+}
+
 @test "a reshaped opencode DB costs its own rows only: Claude sessions still write, and the report says so" {
   oc_db
   sqlite3 "$SO_OPENCODE_DB" 'ALTER TABLE session_v2 DROP COLUMN cost'
@@ -723,6 +735,65 @@ EOF
   assert_output --partial 'opencode rows unread'
   assert_equal "$(outcome)" WORKED
   assert_equal "$(lines | wc -l)" 3
+}
+
+# cx_rollouts -- Codex rollout files as 0.164 writes them: a root exec session in /w/proj that ran
+# 600s to $STOP, a `gh pr create` that printed #12 beside a `gh pr view` of #99, and a subagent rollout.
+cx_rollouts() {
+  export SO_CODEX_SESSIONS="$SANDBOX/codex" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
+  echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
+  mkdir -p "$SO_CODEX_SESSIONS/2026/10/19"
+  local t0 t1 d="$SO_CODEX_SESSIONS/2026/10/19"
+  t0=$(date -u -d "@$((STOP - 600))" +%Y-%m-%dT%H:%M:%S.000Z); t1=$(date -u -d "@$STOP" +%Y-%m-%dT%H:%M:%S.500Z)
+  jq -cn --arg t0 "$t0" --arg t1 "$t1" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-root", cwd: "/w/proj", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6.1-sol"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "fix the menu\nmore"}},
+    {timestamp: $t0, type: "response_item", payload: {type: "custom_tool_call", name: "apply_patch", call_id: "p1", input: "x"}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call", name: "exec_command", call_id: "c1", arguments: ({cmd: "gh pr create --fill"} | tojson)}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call_output", call_id: "c1", output: "https://github.com/o/r/pull/12\n"}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call", name: "exec_command", call_id: "c2", arguments: ({cmd: "gh pr view 99"} | tojson)}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call_output", call_id: "c2", output: "https://github.com/o/r/pull/99"}},
+    {timestamp: $t1, type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 100, cached_input_tokens: 60, output_tokens: 20}}}}
+  ' > "$d/rollout-2026-10-19T00-00-00-cx-root.jsonl"
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-sub", cwd: "/w/proj", source: {subagent: {thread_spawn: {parent_thread_id: "cx-root"}}}}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6-luna"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 10, cached_input_tokens: 0, output_tokens: 5}}}}
+  ' > "$d/rollout-2026-10-19T00-01-00-cx-sub.jsonl"
+}
+
+@test "a codex session gets one line from its rollout: uncached input, its subagent rolled in, its own PR and the queue's" {
+  cx_rollouts
+  queue_stub
+  jq -cn '{slug: "cx", agent: "codex", sessions: "cx-root", pr: "o/r#13"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("cx-"))] | join(" ")')" cx-root
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"cx-root\")) | last | $1"; }
+  assert_equal "$(r '[.harness, .project, .title, .updated_epoch, .duration_s, .tokens_total, .edits] | join(" ")')" "codex proj fix the menu $STOP 600 135 1"
+  assert_equal "$(r '.cost_usd')" null
+  assert_equal "$(r '[.prs[].number] | join(" ")')" '12 13'
+  assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
+}
+
+@test "two sessions with no transcript side by side still let every PR get its state" {
+  cx_rollouts
+  jq -cn --arg t0 "$(date -u -d "@$STOP" +%Y-%m-%dT%H:%M:%S.000Z)" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-two", cwd: "/w/proj", source: "exec"}}
+  ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-03-00-cx-two.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  refute_output --partial 'parse error'
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "cx-root")) | last | .prs[0] | "\(.number) \(.state)"')" '12 MERGED'
+}
+
+@test "an unreadable codex rollout costs its own line only, and the rest still write" {
+  cx_rollouts
+  printf '{not json\n' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-bad.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("cx-"))] | join(" ")')" cx-root
 }
 
 # gw_ready -- a harness map, a reader key and a gateway serving $SANDBOX/gw.json for any tag.

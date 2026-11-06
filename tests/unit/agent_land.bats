@@ -99,11 +99,11 @@ EOF
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
 board_calls() { grep '^notes' "$LOG" | grep -v '^notes ingest record ' || true; }
 
-# item <slug> [from] [lane] [profile] -> a running queue item
+# item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
   mkdir -p "$AGENT_QUEUE_DIR/running"
   {
-    printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: %s\nagent: claude\n' "$1" "${2:-human}"
+    printf 'slug: %s\nproject: %s\nmode: oneshot\npriority: high\nfrom: %s\nagent: claude\n' "$1" "${ITEM_PROJECT:-dotfiles}" "${2:-human}"
     printf 'queued: 2026-11-03T10:00:00Z\nstarted: 2026-11-03T10:00:00Z\n'
     [ -z "${3:-}" ] || printf 'lane: %s\n' "$3"
     [ -z "${4:-}" ] || printf 'profile: %s\n' "$4"
@@ -275,9 +275,9 @@ git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{co
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
-notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --ticket  --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 -- ship
+notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
-notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --ticket  --to done --why running -> done (ok) -- ship
+notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
 EOF
 }
@@ -372,6 +372,70 @@ EOF
   assert_output 3
 }
 
+# The tier-3 gate rides on the item, not on how it was queued: a session's `agent-queue add` on a
+# harness project skips the judge, so its untiered item still needs review and checks that ran.
+@test "tier 3: a hand-added cleanup item on agent-runtime needs a Review: line and green checks to merge" {
+  ITEM_PROJECT=agent-runtime item prune 'human'
+  run "$LAND" 42 --item prune
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item prune: no "Review: /code-review <level>, <what it found and what you did>" line in the PR body'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+
+  # A Review: line that names no /code-review pass, or says n/a, is no review.
+  for line in 'Review: n/a' 'Review: /code-review high, n/a' 'Review: /code-review high,' 'Review: looked at it'; do
+    printf 'The change.\n\n%s\n' "$line" >"$NOTES_FIXTURE/body"
+    run "$LAND" 42 --item prune
+    assert_failure 1
+    assert_output --partial "review failed: tier-3 item prune: no \"Review: /code-review <level>"
+    assert_output --partial "(found: $line)"
+  done
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+
+  # A Review: line, but no checks ever ran: the local gate is not enough for tier 3.
+  printf 'The change.\n\nReview: /code-review high, 2 findings fixed\n' >"$NOTES_FIXTURE/body"
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  : >"$LOG"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item prune
+  assert_failure 1
+  assert_output --partial 'review: present (tier 3)'
+  assert_output --partial 'checks failed: none reported, and a tier-3 item lands only on checks that ran green'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+
+  # Review plus green checks: it lands.
+  rm "$NOTES_FIXTURE/checks.out"
+  run "$LAND" 42 --item prune
+  assert_success
+  assert_output --partial 'checks: green'
+  assert_output --partial 'merge: #42 MERGED'
+}
+
+@test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {
+  ITEM_PROJECT=agent-runtime item small 'human'
+  agent-queue set small tags=tier1 >/dev/null
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item small
+  assert_success
+  refute_output --partial 'review:'
+  assert_output --partial 'checks: none reported'
+}
+
+@test "tier 3: item-tier reads the dispatcher's conf, so a DISPATCH_CLEANUP_PROJECTS override there moves the gate" {
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf 'DISPATCH_CLEANUP_PROJECTS="dotfiles"\n' >"$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  item mine 'human'
+  run "$LAND" 42 --item mine
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item mine'
+  ITEM_PROJECT=agent-runtime item theirs 'human'
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item theirs
+  assert_success
+  refute_output --partial 'review:'
+}
+
 @test "no checks reported while an Actions run is queued: it keeps waiting past the bound" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   printf '1\n1\n1\n' >"$NOTES_FIXTURE/runs.queued"
@@ -408,14 +472,15 @@ EOF
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land" --dry-run
   assert_success
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
-  assert_line --index 1 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 2 --partial 'fetch: git fetch origin'
-  assert_line --index 3 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 4 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 5 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 6 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 7 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 8 --partial 'plan: tick'
+  assert_line --index 1 --partial 'review: fleet-dispatch item-tier ship'
+  assert_line --index 2 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 3 --partial 'fetch: git fetch origin'
+  assert_line --index 4 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 5 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 6 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 7 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 8 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 9 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -494,8 +559,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 6 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 7 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 7 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 8 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }

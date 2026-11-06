@@ -57,4 +57,4 @@ Tell the user: the project swept, counts per store (lessons, memory, mem0 queued
 
 - `nightly-sync` (23:00): raw notes -> mem0.
 - `dream` (03:00, or `/dream`): the agent's own corpus -> lessons, memory/, a staged mem0 queue.
-- `/remember` (on demand): notes and git -> mem0 and Serena.
+- `/remember` (on demand): notes and git -> mem0.

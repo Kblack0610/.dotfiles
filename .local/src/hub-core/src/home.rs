@@ -9,7 +9,8 @@
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, fleet-bench's asks
 //! digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
-//! from facts (who can act, what it holds, how long it waited), never a model's number.
+//! from facts (who can act, what it holds, how long it waited, the row's own priority), never a
+//! model's number.
 
 use std::collections::HashSet;
 
@@ -20,11 +21,17 @@ use crate::boards;
 use crate::fleet::ts;
 use crate::infra::Infra;
 use crate::queue::{Item, Queue, State};
+use crate::tasks::{Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
 pub const DOMAINS: [&str; 11] = [
     "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
 ];
+/// The row types only the human can do (notes-cli README, "The task row": `run decide check`).
+/// A human-sheet row of another type is work an agent can take, so it never needs the human.
+pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
+/// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
+pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
 /// The domains shown even when Prometheus has no status for them, so a missing one reads as no data.
 pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
 /// How much of a question or reason a row keeps.
@@ -33,16 +40,24 @@ pub const TEXT_MAX: usize = 160;
 /// long list is capped, never unbounded at top level).
 pub const SHOWN: usize = 8;
 
-/// What a row is. Conditions (Nightly, Red) list after every scored row, in this order.
+/// What a row is. A Stopped row leads the list; conditions (Nightly, Red) list after every
+/// scored row, in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
+    /// A hold that has stopped every dispatch pass (`fleet-dispatch stopped`): how long, why and
+    /// what clears it, in one line. A condition with no score, so the needs pager leaves it to
+    /// the queue-starved watch.
+    Stopped,
     /// A pending `agent-ask`, answered by its id.
     Ask,
     /// A session fleet-sessions buckets NEEDS with no ask: a dialog, a permission or a stop.
     Session,
     /// A queue item waiting with no session or ask shown for it.
     Queue,
+    /// An open `#urgent` or `#high` row of a project's human sheet that only the human can do
+    /// (`HUMAN_TYPES`), with no ask, session or queue item shown for it.
+    Sheet,
     /// A repo whose nightly on main is red.
     Nightly,
     /// An item of `cc:red_now`.
@@ -55,8 +70,8 @@ pub struct Need {
     pub kind: Kind,
     pub project: String,
     pub text: String,
-    /// What the row acts on: the ask id, the session's tmux target, the queue slug, the repo or
-    /// the red item.
+    /// What the row acts on: the ask id, the session's tmux target, the queue slug, the sheet
+    /// row's id (its text when it has none), the repo or the red item.
     pub id: String,
     /// The tmux target (`server/session:window`) of the session behind the row, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,6 +106,10 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
+    /// A sheet row's priority (`urgent` or `high`). A `high` row ranks after every live wait
+    /// and `urgent` row with the same `human`; a live wait has none and ranks as `urgent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }
 
 impl Score {
@@ -100,7 +119,10 @@ impl Score {
             words.push("session".to_string());
         }
         if phases > 0 {
-            words.push(format!("{phases} phase{}", if phases == 1 { "" } else { "s" }));
+            words.push(format!(
+                "{phases} phase{}",
+                if phases == 1 { "" } else { "s" }
+            ));
         }
         if dependents > 0 {
             words.push(format!("{dependents} queued"));
@@ -112,9 +134,17 @@ impl Score {
             phases,
             dependents,
             age_min,
-            value: i64::try_from(holds).unwrap_or(i64::MAX).saturating_mul(age_min),
+            value: i64::try_from(holds)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(age_min),
             holds: words.join(", "),
+            priority: None,
         }
+    }
+
+    /// A `high` sheet row, which ranks after the rows that block running work or are urgent.
+    fn later(&self) -> bool {
+        self.priority.as_deref() == Some("high")
     }
 }
 
@@ -202,6 +232,34 @@ fn tmux_name(s: &str) -> &str {
     s.split_once(':').map_or(s, |(_, n)| n)
 }
 
+/// The board row a queue item works, `<project>:<id>`: its ledger `row`, else its `from:
+/// board:<project>:<id>`.
+fn item_row(i: &Item) -> Option<&str> {
+    i.row
+        .as_deref()
+        .or_else(|| i.from.as_deref().and_then(|f| f.strip_prefix("board:")))
+}
+
+/// Unix seconds at the local start of a `YYYY-MM-DD` day, a sheet row's `since`.
+fn day_start(day: &str) -> Option<i64> {
+    use chrono::TimeZone;
+    let d = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    chrono::Local
+        .from_local_datetime(&d.and_hms_opt(0, 0, 0)?)
+        .earliest()
+        .map(|t| t.timestamp())
+}
+
+/// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
+fn needs_the_human(r: &Row) -> bool {
+    r.lane == "human"
+        && r.state == "open"
+        && SHEET_PRIORITIES.contains(&r.priority.as_str())
+        && r.r#type
+            .as_deref()
+            .is_some_and(|t| HUMAN_TYPES.contains(&t))
+}
+
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
@@ -263,16 +321,20 @@ pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
         .collect()
 }
 
-/// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue and infra (None
-/// until read), ranked: the asks, sessions and queue items only the human can act on by what
-/// their wait costs (`Score::value`), then those the judge said a machine could answer, then
-/// nightly reds and red-now items. Ages are by the state's own clock, so the order is pure.
-pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec<Need> {
+/// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
+/// infra (None until read), ranked: the asks, sessions, queue items and `#urgent` sheet rows only
+/// the human can act on by what their wait costs (`Score::value`), then the `#high` sheet rows
+/// by the same value, then those the judge said a machine could answer, then nightly reds and
+/// red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
+/// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
+pub fn needs(
+    state: &Value,
+    queue: Option<&Queue>,
+    board: Option<&Feed>,
+    infra: Option<&Infra>,
+) -> Vec<Need> {
     let now = state["generated_epoch"].as_i64();
-    let age_min = |since: Option<i64>| {
-        now.zip(since)
-            .map_or(0, |(n, s)| (n - s).max(0) / 60)
-    };
+    let age_min = |since: Option<i64>| now.zip(since).map_or(0, |(n, s)| (n - s).max(0) / 60);
     let sessions: Vec<&Value> = state["sessions"]
         .as_array()
         .map(|a| a.iter().collect())
@@ -302,6 +364,24 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
     };
     let mut out = Vec::new();
     let mut shown: HashSet<String> = HashSet::new();
+    // The board rows (`<project>:<id>`) an ask, session or queue row above already stands for.
+    let mut worked: HashSet<String> = HashSet::new();
+    fn work(worked: &mut HashSet<String>, i: Option<&Item>) {
+        worked.extend(i.and_then(item_row).map(String::from));
+    }
+
+    for st in state["stopped"].as_array().into_iter().flatten() {
+        out.push(Need {
+            kind: Kind::Stopped,
+            project: String::new(),
+            text: short(str_of(st, "line")),
+            id: format!("stopped:{}", str_of(st, "runner")),
+            target: None,
+            since: st["since"].as_i64(),
+            recommend: None,
+            score: None,
+        });
+    }
 
     for a in state["asks"].as_array().into_iter().flatten() {
         let session = str_of(a, "session");
@@ -311,6 +391,20 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
         let target = (!session.is_empty()).then(|| target_of(session)).flatten();
         let since = ts(str_of(a, "created"));
         let recommend = str_of(a, "recommend");
+        // An ask's `task` is its queue item's slug, which for an item promoted from the board
+        // is the row's id.
+        let task = str_of(a, "task");
+        if !task.is_empty() {
+            worked.insert(format!("{}:{task}", str_of(a, "project")));
+        }
+        work(
+            &mut worked,
+            items
+                .iter()
+                .copied()
+                .find(|i| !task.is_empty() && i.slug == task),
+        );
+        work(&mut worked, item_of(session));
         out.push(Need {
             kind: Kind::Ask,
             project: str_of(a, "project").into(),
@@ -336,9 +430,8 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
         }
         shown.insert(name.to_string());
         let item = item_of(name);
-        let since = now
-            .zip(s["idle_min"].as_i64())
-            .map(|(g, m)| g - m * 60);
+        work(&mut worked, item);
+        let since = now.zip(s["idle_min"].as_i64()).map(|(g, m)| g - m * 60);
         out.push(Need {
             kind: Kind::Session,
             project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
@@ -363,6 +456,7 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
         {
             continue;
         }
+        work(&mut worked, Some(i));
         let waited = i.extra.get("waiting").and_then(Value::as_str);
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
         let since = waited.or(i.started.as_deref()).and_then(ts);
@@ -381,6 +475,29 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
             target,
             since,
             recommend: None,
+        });
+    }
+    let rows = board.map_or(&[][..], |f| f.rows.as_slice());
+    for r in rows.iter().filter(|r| needs_the_human(r)) {
+        let project = r.project.clone().unwrap_or_default();
+        if r.id
+            .as_ref()
+            .is_some_and(|id| worked.contains(&format!("{project}:{id}")))
+        {
+            continue;
+        }
+        let since = r.since.as_deref().and_then(day_start);
+        let mut score = Score::new(true, false, 0, 0, age_min(since));
+        score.priority = Some(r.priority.clone());
+        out.push(Need {
+            kind: Kind::Sheet,
+            project,
+            text: short(&r.text),
+            id: r.id.clone().unwrap_or_else(|| short(&r.text)),
+            target: None,
+            since,
+            recommend: None,
+            score: Some(score),
         });
     }
     for m in state["main"].as_array().into_iter().flatten() {
@@ -417,19 +534,29 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
             });
         }
     }
-    // Stable: equal waits keep their read order (asks, sessions, queue items); conditions last.
+    // Stable: equal waits keep their read order (asks, sessions, queue items, sheet rows);
+    // conditions last, but a Stopped row first.
     out.sort_by_key(|n| {
         (
+            n.kind != Kind::Stopped,
             n.score.is_none(),
-            n.score.as_ref().map(|s| (!s.human, std::cmp::Reverse(s.value))),
+            n.score
+                .as_ref()
+                .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
         )
     });
     out
 }
 
-/// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
-/// read): NEEDS YOU in `needs` order, the running items, the headline numbers and the chips.
-pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Home {
+/// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
+/// infra (None until read): NEEDS YOU in `needs` order, the running items, the headline numbers
+/// and the chips.
+pub fn build(
+    state: &Value,
+    queue: Option<&Queue>,
+    board: Option<&Result<Feed, String>>,
+    infra: Option<&Infra>,
+) -> Home {
     let mut h = Home {
         shown: SHOWN,
         ..Home::default()
@@ -443,7 +570,11 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         h.errors
             .push("agent-ask could not be read, so no asks are shown".into());
     }
-    h.needs = needs(state, queue, infra);
+    if let Some(Err(e)) = board {
+        h.errors
+            .push(format!("{e}, so no human-sheet rows are shown"));
+    }
+    h.needs = needs(state, queue, board.and_then(|b| b.as_ref().ok()), infra);
 
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
@@ -570,7 +701,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = build(&state(), Some(&q), None);
+        let h = build(&state(), Some(&q), None, None);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         assert_eq!(
             rows,
@@ -599,15 +730,22 @@ mod tests {
         let mut st = state();
         st["asks"] = json!([]);
         st["unreadable"] = json!(["agent-ask"]);
-        let h = build(&st, None, None);
+        let h = build(&st, None, None, None);
         assert!(h.errors.iter().any(|e| e.contains("agent-ask")));
-        let ok = build(&state(), None, None);
+        let ok = build(&state(), None, None, None);
         assert!(!ok.errors.iter().any(|e| e.contains("agent-ask")));
     }
 
     fn score(n: &Need) -> (bool, bool, u64, u64, i64, i64) {
         let s = n.score.as_ref().unwrap();
-        (s.human, s.session, s.phases, s.dependents, s.age_min, s.value)
+        (
+            s.human,
+            s.session,
+            s.phases,
+            s.dependents,
+            s.age_min,
+            s.value,
+        )
     }
 
     #[test]
@@ -639,15 +777,25 @@ mod tests {
             items: vec![parent, kid("k1"), kid("k2")],
             ..Default::default()
         };
-        let h = build(&st, Some(&q), None);
+        let h = build(&st, Some(&q), None, None);
         let ids: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["lab/big-agent-1:1", "old", "parent", "gate", "undated", "auto"]
+            [
+                "lab/big-agent-1:1",
+                "old",
+                "parent",
+                "gate",
+                "undated",
+                "auto"
+            ]
         );
         // (1 + session + 3 phases left) * 30 min.
         assert_eq!(score(&h.needs[0]), (true, true, 3, 0, 30, 150));
-        assert_eq!(h.needs[0].score.as_ref().unwrap().holds, "session, 3 phases");
+        assert_eq!(
+            h.needs[0].score.as_ref().unwrap().holds,
+            "session, 3 phases"
+        );
         assert_eq!(score(&h.needs[1]), (true, false, 0, 0, 60, 60));
         // (1 + 2 queued after it) * 20 min.
         assert_eq!(score(&h.needs[2]), (true, false, 0, 2, 20, 60));
@@ -663,17 +811,138 @@ mod tests {
     #[test]
     fn conditions_follow_every_scored_row_and_carry_no_score() {
         let i = infra(vec![], &["watch:a"]);
-        let h = build(&state(), None, Some(&i));
+        let h = build(&state(), None, None, Some(&i));
         let kinds: Vec<Kind> = h.needs.iter().map(|n| n.kind).collect();
-        assert_eq!(
-            kinds,
-            [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]
-        );
+        assert_eq!(kinds, [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]);
         assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
         // An ask from the future (a skewed clock) waits zero minutes, never negative.
         let mut st = state();
         st["asks"][0]["created"] = json!("2026-11-06T09:00:00-0800");
-        assert_eq!(score(&build(&st, None, None).needs[1]).4, 0);
+        assert_eq!(score(&build(&st, None, None, None).needs[1]).4, 0);
+    }
+
+    #[test]
+    fn a_stopped_dispatch_leads_needs_you_as_one_unscored_line() {
+        let mut st = state();
+        st["stopped"] = json!([{"runner": "fleet-dispatch", "since": NOW - 13 * 3600,
+            "why": "no account has room",
+            "line": "Dispatch stopped 13h: no account has room. Clears when an account is back under its pace."}]);
+        let h = build(&st, None, None, None);
+        let top = &h.needs[0];
+        assert_eq!(top.kind, Kind::Stopped);
+        assert_eq!(top.id, "stopped:fleet-dispatch");
+        assert!(top.text.starts_with("Dispatch stopped 13h: "));
+        assert_eq!(top.since, Some(NOW - 13 * 3600));
+        assert!(top.score.is_none());
+        assert_eq!(serde_json::to_value(top).unwrap()["kind"], "stopped");
+        // The rest keep their order; with no hold there is no Stopped row.
+        assert_eq!(h.needs[1].kind, Kind::Ask);
+        assert!(build(&state(), None, None, None)
+            .needs
+            .iter()
+            .all(|n| n.kind != Kind::Stopped));
+    }
+
+    fn sheet(id: &str, lane: &str, ty: &str, priority: &str, since: &str) -> Row {
+        Row {
+            project: Some("trader".into()),
+            lane: lane.into(),
+            r#type: Some(ty.into()),
+            state: "open".into(),
+            priority: priority.into(),
+            id: Some(id.into()),
+            text: format!("{ty}(markets): do {id} #{priority}"),
+            since: Some(since.into()),
+            ..Row::default()
+        }
+    }
+
+    fn board() -> Result<Feed, String> {
+        let mut doing = sheet("tr-9", "human", "run", "urgent", "2026-11-01");
+        doing.state = "doing".into();
+        Ok(Feed {
+            rows: vec![
+                sheet("tr-117", "human", "run", "high", "2026-11-01"),
+                sheet("tr-50", "human", "run", "urgent", "2026-11-04"),
+                // Worked by the queue item behind ask a1, so the ask stands for it.
+                sheet("tr-51", "human", "decide", "urgent", "2026-11-04"),
+                // None of these needs the human: a #low row, work an agent can take, a row on
+                // the agent board and a row the human already started.
+                sheet("tr-119", "human", "decide", "low", "2026-11-01"),
+                sheet("tr-38", "human", "feat", "high", "2026-11-01"),
+                sheet("ar-1", "agent", "run", "urgent", "2026-11-01"),
+                doing,
+            ],
+            ..Feed::default()
+        })
+    }
+
+    #[test]
+    fn human_sheet_rows_that_need_the_human_rank_by_priority_then_their_wait() {
+        let mut asked = item("asked", State::Waiting, Some("lab:repo-agent-1"));
+        asked.row = Some("trader:tr-51".into());
+        let q = Queue {
+            items: vec![asked],
+            ..Default::default()
+        };
+        let h = build(&state(), Some(&q), Some(&board()), None);
+        let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
+        // The #urgent row has waited longer than the ask, so it leads; the #high row, older
+        // still, follows every live wait; conditions stay last.
+        assert_eq!(
+            rows,
+            [
+                (Kind::Sheet, "tr-50"),
+                (Kind::Ask, "a1"),
+                (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Sheet, "tr-117"),
+                (Kind::Nightly, "repo"),
+            ]
+        );
+        let top = &h.needs[0];
+        let age = (NOW - day_start("2026-11-04").unwrap()) / 60;
+        assert!(age > 60 * 24, "a day-old row waits more than a day: {age}");
+        assert_eq!(score(top), (true, false, 0, 0, age, age));
+        assert_eq!(top.project, "trader");
+        assert_eq!(top.text, "run(markets): do tr-50 #urgent");
+        let json = serde_json::to_value(top).unwrap();
+        assert_eq!(json["kind"], "sheet");
+        assert_eq!(json["score"]["priority"], "urgent");
+        assert!(serde_json::to_value(&h.needs[1]).unwrap()["score"]
+            .get("priority")
+            .is_none());
+        // With no board read there are no sheet rows, and nothing else moves.
+        let without: Vec<Kind> = build(&state(), Some(&q), None, None)
+            .needs
+            .iter()
+            .map(|n| n.kind)
+            .collect();
+        assert_eq!(without, [Kind::Ask, Kind::Session, Kind::Nightly]);
+    }
+
+    #[test]
+    fn an_ask_whose_task_is_the_row_stands_for_it_and_a_failed_board_read_is_said() {
+        let mut st = state();
+        st["asks"][0]["project"] = json!("trader");
+        st["asks"][0]["task"] = json!("tr-50");
+        let ids: Vec<String> = build(&st, None, Some(&board()), None)
+            .needs
+            .into_iter()
+            .filter(|n| n.kind == Kind::Sheet)
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, ["tr-51", "tr-117"]);
+        let h = build(
+            &state(),
+            None,
+            Some(&Err("notes board --json: boom".into())),
+            None,
+        );
+        assert!(h
+            .errors
+            .iter()
+            .any(|e| e.starts_with("notes board --json: boom")));
+        assert!(h.needs.iter().all(|n| n.kind != Kind::Sheet));
     }
 
     #[test]
@@ -682,7 +951,7 @@ mod tests {
             vec![domain("ci", "1"), domain("prod", "0")],
             &["watch:b", "watch:a"],
         );
-        let h = build(&Value::Null, None, Some(&i));
+        let h = build(&Value::Null, None, None, Some(&i));
         let chips: Vec<(&str, Level)> = h
             .health
             .iter()
@@ -709,7 +978,7 @@ mod tests {
             error: Some("timeout".into()),
             ..Default::default()
         };
-        let h = build(&state(), None, Some(&i));
+        let h = build(&state(), None, None, Some(&i));
         assert!(h.health.is_empty());
         assert_eq!(h.errors, ["Prometheus: timeout"]);
     }

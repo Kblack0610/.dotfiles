@@ -16,7 +16,7 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 
 ## One key up
 
-Every artifact points at its epic: a plan's lowercase `epic: <id>` line, a brief's `Epic: <id>` head line, a row's `#of/<id>`, a queue item through its row. The reverse links are derived, never written down.
+Every artifact points at its epic: a plan's lowercase `epic: <id>` line, a brief's `Epic: <id>` head line, a row's `#of/<id>`, a queue item through its row. The reverse links are derived, never written down. `fleet-bench epics --json` is the one reader that derives them, with each epic's step, its ETA and how that ETA ran. `hub_core::epics` types it, and `hub_core::page` joins it with the stage check and the shipped versions into the opened card, read for one project only when its card is opened: `hub projects --page NAME`, agent-web `/api/projects/{name}/page`.
 
 ## Merged is not done
 

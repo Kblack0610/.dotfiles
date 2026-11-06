@@ -42,7 +42,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   echo "# first paint with the card: $((($(date +%s%N) - t0) / 1000000)) ms" >&3
-  screen_has '3 waiting'
+  screen_has '3 questions waiting'
   screen_has '1-9 pick . enter send'
   side_by_side
   keep_screen side_80x24
@@ -128,25 +128,34 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 # close_panel: esc, and wait for the panel (the server's only pane) to exit.
 close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tmux_stop; }
 
-@test "the panel reopens in the layout ctrl-/ left it in, and hidden is never kept" {
+@test "the panel reopens in the layout ctrl-/ left it in, hidden included" {
+  local f="$XDG_STATE_HOME/panels/questions.layout"
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
+  # side -> hidden: closed with no card, it reopens with no card.
+  tmux_keys C-/
+  wait_until 'screen_lacks "list on top, card below"'
+  close_panel
+  [ "$(cat "$f")" = hidden ]
+  TM_WIDTH=200 TM_HEIGHT=50 open_panel
+  wait_until 'screen_has "3 questions waiting"'
+  run screen_has "list on top, card below"
+  assert_failure
+  keep_screen reopened_hidden_200x50
+  # hidden -> stacked, even though fzf opened hidden; it reopens stacked.
   tmux_keys C-/
   wait_until 'screen_has "list on top, card below" && ! side_by_side'
   close_panel
-  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = stacked ]
+  [ "$(cat "$f")" = stacked ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'screen_has "list on top, card below"'
   run side_by_side
   assert_failure
-  keep_screen reopened_stacked_200x50
-  # stacked -> side -> hidden: closed while hidden, it reopens side, the last one shown.
+  # stacked -> side, and it reopens side.
   tmux_keys C-/
   wait_until 'side_by_side'
-  tmux_keys C-/
-  wait_until 'screen_lacks "list on top, card below"'
   close_panel
-  [ "$(cat "$XDG_STATE_HOME/panels/questions.layout")" = side ]
+  [ "$(cat "$f")" = side ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
 }
@@ -159,7 +168,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen armed_80x24
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
   screen_has 'sent "stacked" to'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
@@ -172,7 +181,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'screen_has "send 1"'
   tmux_keys Escape
   wait_until 'screen_has "1-9 pick . enter send"'
-  screen_has '3 waiting'
+  screen_has '3 questions waiting'
   [ "$(status_of "$OLD")" = pending ]
 }
 
@@ -185,7 +194,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen typing_80x24
   tmux_type 'both, stacked first'
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting"'
+  wait_until 'screen_has "2 questions waiting"'
   grep -qx 'answer: both, stacked first' "$(ask_file "$OLD")"
 }
 
@@ -196,20 +205,20 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until "screen_has 'answering alpha:1'"
   tmux_type 'stacked'
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
   tmux_keys t
   wait_until "screen_has 'answering beta:2:'"
   screen_matches '^│ answer> +│'
   screen_lacks 'stacked'
   tmux_type 'keep'
   tmux_keys Enter
-  wait_until 'screen_has "1 waiting" && screen_lacks "Keep the merge queue?"'
+  wait_until 'screen_has "1 question waiting" && screen_lacks "Keep the merge queue?"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
   # esc from typing puts the count back in the header.
   tmux_keys t
   wait_until "screen_has 'answering gamma:3'"
   tmux_keys Escape
-  wait_until 'screen_has "1 waiting" && screen_lacks "answering"'
+  wait_until 'screen_has "1 question waiting" && screen_lacks "answering"'
 }
 
 @test "g goes to the asking session and closes the panel" {

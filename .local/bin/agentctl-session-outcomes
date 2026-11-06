@@ -23,11 +23,12 @@
 # counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
 # escalations, merged PRs with their lines and CI reds), read once per run. The account is the
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
-# An opencode session has no registry row, so its line comes from opencode's DB (so_opencode_rows).
+# An opencode or Codex session has no registry row, so its line comes from opencode's DB
+# (so_opencode_rows) or Codex's rollout files (so_codex_rows).
 # `harness` on a line is claude, or what the queue item it worked says. A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
 # Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
-# SO_OPENCODE_DB SO_PROJECT_LIB SO_HARNESSES.
+# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES.
 
 set -uo pipefail
 
@@ -42,6 +43,7 @@ CURL="${SO_CURL:-curl}"
 BENCH="${SO_BENCH:-fleet-bench}"
 QUEUE="${SO_QUEUE:-agent-queue}"
 OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
+CX_DIR="${SO_CODEX_SESSIONS:-$HOME/.codex/sessions}"
 HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
 # Money as `worst` and `card` print it.
 FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
@@ -87,12 +89,14 @@ cmd_run() {
   local oc_note=""
   so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
     { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
+  so_codex_rows "$CX_DIR" "$work" > "$work/codex.jsonl" 2>"$work/cx.err" ||
+    { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
 
   # Registry rows due for an observation. A session id can sit in two project files
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | cat - "$work/opencode.jsonl" | jq -cnR --slurpfile seen "$work/seen.jsonl" \
+  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" | jq -cnR --slurpfile seen "$work/seen.jsonl" \
         --argjson now "$NOW" --argjson days "$FINAL_DAYS" --argjson all "$all" '
       ($seen | map({key: .session_id, value: .}) | from_entries) as $s
       | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
@@ -110,14 +114,18 @@ cmd_run() {
     return 0
   fi
 
-  # What the queue knows of a session: the harness it ran on and, for opencode, the PR the brief set.
+  # What the queue knows of a session: the work items whose `sessions:` list it (the ledger join
+  # every reader of a row uses; a session can work several), the harness it ran on and, for
+  # a headless harness (opencode, codex), the PR the brief set.
   local queue_note=""
-  "$QUEUE" list --json --state all 2>/dev/null | jq -cn '[inputs | select(.sessions) | . as $i
-      | (.sessions | split(" "))[] | {key: ., value: {agent: $i.agent, pr: $i.pr}}] | from_entries' > "$work/queue.json" ||
-    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude"; }
+  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
+      | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
+        .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug])})' > "$work/queue.json" ||
+    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude, items unknown"; }
   jq -c --slurpfile q "$work/queue.json" '($q[0][.session_id] // {}) as $i
+      | .items = ($i.items // [])
       | .harness = (.harness // $i.agent // "claude")
-      | if .harness == "opencode" then
+      | if .harness == "opencode" or .harness == "codex" then
           .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
@@ -132,11 +140,12 @@ cmd_run() {
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
-      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
-      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null' > "$work/t.$sid.json"
+      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
+      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
     else
-      printf 'null' > "$work/m.$sid.json"
-      printf 'null' > "$work/t.$sid.json"
+      # Newline-ended: the repo list below cats every m file into one jq stream, and nullnull is not JSON.
+      printf 'null\n' > "$work/m.$sid.json"
+      printf 'null\n' > "$work/t.$sid.json"
     fi
     n=$((n + 1))
   done < "$work/due.jsonl"
@@ -193,6 +202,7 @@ cmd_run() {
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
           harness: $row.harness,
+          items: ($row.items // []),
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),

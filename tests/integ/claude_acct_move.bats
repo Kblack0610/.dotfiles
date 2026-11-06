@@ -462,6 +462,20 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
 }
 
+@test "park and move refuse a claude on the Lazer gateway: it is on no account, a resume would put it on one" {
+  session lab spill-1 %7 70 71 idle ""
+  printf 'ANTHROPIC_BASE_URL=https://llm.example\0' > "$CLAUDE_ACCT_PROC/71/environ"
+  for verb in park move; do
+    run "$ACCT" "$verb" spill-1 --server lab
+    assert_failure
+    assert_output --partial "claude-acct: $verb spill-1: it runs on the Lazer gateway, not an account"
+  done
+  [ -d "$CLAUDE_ACCT_PROC/71" ]
+  [ ! -e "$(PARKED_LEDGER spill-1)" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
 @test "park never refuses over accounts: already on the best one, or no usage data at all" {
   session lab onalt %3 30 31 idle "$ALT"
   rm "$XDG_CACHE_HOME"/claude-acct/*.json

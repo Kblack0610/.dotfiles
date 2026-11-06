@@ -186,6 +186,61 @@ so_opencode_rows() {
         prs: ($prs[.session_id] // []) }'
 }
 
+# so_codex_rows DIR WORK - one registry-shaped line per root Codex session, read-only from its rollout
+# files (DIR/YYYY/MM/DD/rollout-*.jsonl): Codex has no Stop hook either. Tokens are the last
+# token_count total; OpenAI's input counts the cached part, so input here is what was not cached,
+# as claude's rows read. A subagent's rollout (session_meta source.subagent) adds to its parent and
+# gets no line. A ChatGPT plan bills no dollars, so cost_usd is null. PRs follow the rule at the top
+# of this file, from a `gh pr create|merge` shell call paired with its own output.
+so_codex_rows() {
+  local dir="$1" work="$2" f
+  [ -d "$dir" ] || return 0
+  find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
+    jq -cs 'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+      def prs: [scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)") | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}];
+      def pr_cmd: test("\\bgh pr (create|merge)\\b");
+      (map(select(.type == "session_meta")) | first | .payload) as $m
+      | select($m.id)
+      | (map(select(.type == "response_item") | .payload)) as $r
+      | ($r | map(select(.type == "function_call_output" or .type == "custom_tool_call_output")
+                  | {key: .call_id, value: (.output | tostring)}) | from_entries) as $out
+      | (map(select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage // empty) | last) as $u
+      | (map(.timestamp // empty | ts)) as $t
+      | { session_id: $m.id, harness: "codex", cwd: $m.cwd,
+          parent: ($m.source | if type == "object" then .subagent.thread_spawn.parent_thread_id else null end),
+          title: (map(select(.type == "event_msg" and .payload.type == "user_message") | .payload.message) | first // "" | split("\n")[0] | .[0:120]),
+          updated: ($t | max | floor), duration_s: ((($t | max) - ($t | min)) | floor),
+          edits: ($r | map(select(.name == "apply_patch")) | length),
+          cost_usd: null,
+          models: (map(select(.type == "turn_context") | .payload.model // empty) | unique),
+          tokens: (if $u == null then null else
+                     {input: ($u.input_tokens - ($u.cached_input_tokens // 0)), output: $u.output_tokens,
+                      cacheCreation: ($u.cache_write_input_tokens // 0), cacheRead: ($u.cached_input_tokens // 0),
+                      total: ($u.input_tokens + $u.output_tokens)} end),
+          prs: ([ ($r[] | select(.type == "function_call" and .name == "exec_command")
+                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | prs[]),
+                  ($r[] | select(.type == "custom_tool_call" and .name == "exec")
+                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | prs[]),
+                  (.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "CommandExecution")
+                   | .payload.item | select(.command | if type == "array" then join(" ") else tostring end | pr_cmd)
+                   | .aggregated_output // "" | prs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
+  done > "$work/cx.rows.jsonl"
+  # shellcheck source=/dev/null
+  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
+  jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
+    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+  done | jq -cs from_entries > "$work/cx.projects.json" || return 1
+  jq -cs --slurpfile p "$work/cx.projects.json" '
+    def add_tok(a; b): if a == null then b elif b == null then a else
+      reduce (b | keys[]) as $k (a; .[$k] = ((.[$k] // 0) + b[$k])) end;
+    (map(select(.parent == null) | {key: .session_id, value: .}) | from_entries) as $roots
+    | reduce (.[] | select(.parent != null and $roots[.parent] != null)) as $c ($roots;
+        .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
+                         | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
+                         | .updated = ([.updated, $c.updated] | max)))
+    | .[] | .project = $p[0][.cwd] | del(.cwd, .parent)' "$work/cx.rows.jsonl"
+}
+
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,
 # file}. A lesson opts in by ending with `<!-- sig:YYYY-MM-DD <regex> -->`: the regex (jq) matches
 # the mistake as a Bash command, anchored so a grep for its words does not count, and the date is

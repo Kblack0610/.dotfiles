@@ -7,7 +7,7 @@
 # `hyprctl binds -j`, so a key added there with a description shows here with no edit. Keys
 # that share a description share a line entry (esc/q exit).
 #
-# Usage: pin-hint.sh {main|utils|settings|sync|git|timebox|close}
+# Usage: pin-hint.sh {main|agents|utils|settings|sync|git|timebox|close}
 set -u
 
 ID=990011
@@ -38,9 +38,9 @@ legend() {
 
 case "${1:-main}" in
     main) title=" pin leader" submap=pinbar ;;
-    utils | settings | sync | git | timebox) title=" pin / $1" submap="pinbar-$1" ;;
+    agents | utils | settings | sync | git | timebox) title=" pin / $1" submap="pinbar-$1" ;;
     close) close; exit 0 ;;
-    *) echo "usage: pin-hint.sh {main|utils|settings|sync|git|timebox|close}" >&2; exit 2 ;;
+    *) echo "usage: pin-hint.sh {main|agents|utils|settings|sync|git|timebox|close}" >&2; exit 2 ;;
 esac
 body="$(legend "$submap")"
 show "$title" "${body:-no described binds in submap $submap (hyprctl binds -j)}"

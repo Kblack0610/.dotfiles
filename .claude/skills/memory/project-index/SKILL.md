@@ -60,7 +60,6 @@ The AUTO block it writes:
   is missing or over 14 days old is flagged STALE. A key with exactly one lab project also
   gets its STATUS text.
 - **Active plans** - newest 5 in `~/.agent/plans/{project}/` (excludes `active/archive/_archive/tasks`).
-- **Recent lessons (digest)** - last 5 bullet lessons, each truncated to keep the inject lean.
 
 ## After running - curate the part the script can't
 

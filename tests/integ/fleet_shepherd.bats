@@ -20,7 +20,7 @@ setup() {
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
   *new-window*) echo %9 ;;
@@ -109,6 +109,74 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
+@test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
+  # no item could be filed (the add fails), so the red is the human's, as before ar-623
+  stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'
+  jq -n '{schema: 1, sessions: [], main: [], shared: [
+      {test: "T.A", id: "shared-T_A", reason: "T.A red on 3 branches in 2h: a, b, c", fact: "SHARED T.A @100", escalated: false},
+      {test: "T.B", id: "shared-T_B", reason: "T.B red on 3 branches in 2h: a, b, c", fact: "SHARED T.B @100", escalated: true}]}' > "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  assert_line 'shared red: T.A red on 3 branches in 2h: a, b, c; then: fleet-sessions escalate shared-T_A "SHARED T.A @100"'
+  refute_output --partial T.B
+  # the shepherd role answers it, keyed without the call, as every `; then:` line is
+  "$SH" check >/dev/null
+  run awk -F'\t' '$4 ~ /^shared red/ { print $2 "|" $1 }' "$FLEET_SHEPHERD_DIR/.due"
+  assert_output 'shepherd|shared red: T.A red on 3 branches in 2h: a, b, c'
+}
+
+# shared_doc <owners-json> [nudged]: one shared red on three branches, test P.Tests.FooTests.Bar("x")
+shared_doc() {
+  jq -n --argjson o "$1" --argjson n "${2:-false}" '{schema: 1, sessions: [], main: [], shared: [
+    {test: "P.Tests.FooTests.Bar(\"x\")", id: "shared-P_Tests", reason: "P.Tests.FooTests.Bar(\"x\") red on 3 branches in 2h: a, b, c",
+     fact: "SHARED P.Tests.FooTests.Bar(\"x\") @100", nudged: $n, escalated: false, owners: $o}]}' > "$FLEET_STATE_FILE"
+}
+
+@test "check files one owner item per shared red episode, and the pass tells its sessions once instead of paging" {
+  # ar-623: before, every branch's session gated again into a shared red alone and the human was paged
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "${STUB_ACTIVE:-}" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  shared_doc '["sid-1","sid-2"]'
+  run "$SH" check
+  assert_success
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item shared-red-footests; tell sid-1,sid-2: do not gate again on it, merge main once shared-red-footests lands; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  refute_output --partial 'shared red:'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run grep '^add ' "$HOME/aq.calls"
+  assert_output --partial '--project unity-core-playground'
+  assert_output --partial '--slug shared-red-FooTests'
+  assert_output --partial 'scripts/test/quarantine.txt'
+  grep -q 'owned by queue item shared-red-footests' "$FLEET_SHEPHERD_DIR/log.md"
+  # the same episode on the next check files nothing more
+  "$SH" check >/dev/null
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  # once the pass marks it (nudged), nothing is due; nothing was paged at any point
+  shared_doc '["sid-1","sid-2"]' true
+  run "$SH" due
+  refute_output --partial FooTests
+  [ ! -s "$HOME/pages" ] || ! grep -q FooTests "$HOME/pages"
+}
+
+@test "a shared red a live item already names is owned by that item, and one with no sessions in it is not due" {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+[ "$1" = list ] && printf "%s\n" "{\"slug\":\"other\",\"task\":\"fix the BarTests class\"}" "{\"slug\":\"nightly-fix-foo-ucp-9\",\"task\":\"fix FooTests on the nightly\"}"
+exit 0'
+  shared_doc '["sid-1"]'
+  run "$SH" check
+  assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-9; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative control: no live session in the failing worktrees, so there is no one to tell
+  shared_doc '[]'
+  run "$SH" due
+  refute_output --partial FooTests
+}
+
 @test "a manual row is never due, and an all-quiet document exits 1" {
   doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
   run "$SH" due
@@ -148,6 +216,45 @@ chat() { row "$1" CHAT "$2" "$3" | jq -c --argjson i "$4" --argjson a "${5:-5000
 
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
+
+@test "check re-pages an escalated row left unchanged for hours, once per fact per day, naming the decision (ar-455)" {
+  ago() { date -Iseconds -d "@$(( $(date +%s) - $1 * 3600 ))"; }
+  row() { jq -n --arg sid "$1" --arg b "$2" --arg r "$3" --argjson n "$4" --argjson e "$5" --argjson i "$6" --argjson l "${7:-[]}" \
+    '{session_id: $sid, target: "lab/\($sid):1", bucket: $b, reason: $r, fact: "\($b) \($r)", nudged: $n, escalated: $e,
+      idle_min: $i, labels: $l, pr: "12", next_phase: "Phase 4: live money", plan_file: "/p/calm-lagoon.md"}'; }
+  doc "[$(row s-landed LANDED 'PR #12 merged, tree clean, next phase: Phase 4: live money' true true 400),
+        $(row s-green STALLED 'PR #12 green, not merged' true true 400),
+        $(row s-young STALLED 'PR #12 CI red' true true 400),
+        $(row s-manual DONE 'clean, nothing on the branch' true true 400 '["manual"]'),
+        $(row s-open DONE 'clean, nothing on the branch' true false 400),
+        $(row s-busy DONE 'clean, nothing on the branch' true true 30)]"
+  for s in s-landed s-green s-manual s-open s-busy; do printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 5)" > "$FLEET_SHEPHERD_DIR/$s"; done
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 1)" > "$FLEET_SHEPHERD_DIR/s-young"
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 2
+  run grep 'lab/s-landed:1: one decision' "$HOME/pages"
+  assert_output --partial "decide phase 'Phase 4: live money' of calm-lagoon.md: queue it, hold it on an ask, or defer it"
+  assert_output --partial 'tmux:lab/s-landed:1'
+  run grep 'lab/s-green:1: one decision' "$HOME/pages"
+  assert_output --partial 'merge PR #12 or close it'
+  grep -q 'remind: lab/s-green:1' "$FLEET_SHEPHERD_DIR/log.md"
+  # The same facts the same day page nothing more.
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 2
+  # The next day they page again, once.
+  sed -i "s/^$(date +%F)/2000-01-01/" "$FLEET_SHEPHERD_DIR/.remind"
+  "$SH" check >/dev/null || true
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 4
+  # A page agent-notify refused is not recorded as sent: the next check tries again.
+  : > "$FLEET_SHEPHERD_DIR/.remind"
+  stub agent-notify 'exit 1'
+  "$SH" check >/dev/null || true
+  [ ! -s "$FLEET_SHEPHERD_DIR/.remind" ]
+}
 
 @test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {
   doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
@@ -734,6 +841,15 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output 'infra: no k3s status series'
 }
 
+@test "a watch with a live red item raises no line; a tag that only contains red still does" {
+  doc "[$(row a DONE false false)]"
+  stub agent-queue 'printf "%s\n" "{\"tags\":\"red cause:ab\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}" "{\"tags\":\"reddish\",\"task\":\"check(watch): queue-starved tripped since x\"}"'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[]'
+  run "$SH" run
+  refute_output --partial 'watch: home-k3s-node-disk'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
@@ -837,9 +953,37 @@ finding() {
 
 @test "findings that cannot be read say so, instead of reading as none" {
   doc "[]"
-  STUB_BENCH_FAIL=1 run "$SH" due
+  STUB_BENCH_FAIL=1 STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
   assert_success
   assert_output --partial 'fleet-bench findings unreadable'
+  refute_output --partial 'improve:'
+}
+
+@test "the KPI improve picks is one line after the sessions, with no value in it, so its key holds while the number moves" {
+  doc "[$(row a DONE false false)]"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
+  assert_success
+  assert_line --index 0 'nudge DONE: a f-a'
+  assert_line --index 1 'improve: revert_rate past max 0.1, no live row; then: fleet-bench improve file revert_rate "<defined fix>", or claim revert_rate <id> when a row or plan already owns it'
+  local first="$output"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.4,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
+  assert_equal "$output" "$first"
+  # the row that did not move it is named
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":{"subject":"ar-139","verdict":"flat"}}' run "$SH" due
+  assert_line --index 1 --partial 'improve: revert_rate past max 0.1, no live row, last ar-139 flat; then:'
+  # Negative control: nothing due from improve (exit 1) is no line.
+  doc "[]"
+  run "$SH" due
+  assert_failure
+  refute_output --partial 'improve:'
+}
+
+@test "an improve line is fleet-lead's own: it loads no role skill" {
+  doc "[]"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" run
+  run prompt
+  assert_line 'Roles due: none'
+  assert_output --partial 'improve: revert_rate past max 0.1'
 }
 
 # phase <sid> <reason> <phase_min> <age_min> [done/total] [bucket] [activity]: a state row (WORKING,

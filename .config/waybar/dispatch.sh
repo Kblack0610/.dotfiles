@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is the
-# ready queue items, how long the oldest has waited, and the run units in use against the cap,
-# and a colour:
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
+# totals, "Q27 B1522 D280": the items ready to start next (running work is the agents chip beside
+# it), the open agent board rows, and the items done today. Letters are dim and sit on
+# their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
-#   amber  the last pass left ready work waiting (BLOCKED), an item is flapping, more could
+#   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
 #          start than the limits let the last pass (could_start), or a shepherd due line went
 #          unhandled
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
@@ -25,8 +26,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 
-# nf-fa-inbox, written as an escape so an editor cannot strip the glyph from this file.
-ICON=$'\uf01c'
 # fleet-dispatch runs every 15 minutes; three missed passes is a stopped timer, not a slow one.
 PASS_LATE_SECS=2700
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
@@ -38,7 +37,7 @@ title="<b>Queue</b>"
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 
 if ! raw="$(prom_q "$q")"; then
-  emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
+  emit "$(paint "$C_YEL" 'Q?')" "$title"$'\n'"cannot read $PROM_URL" warn
   exit 0
 fi
 
@@ -52,20 +51,13 @@ get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
 
-# short <seconds> -> 45m, 14h, 2d: the bar's width, where prom_dur's 14h35m is too long.
-short() {
-  [[ "${1:-}" =~ ^[0-9]+$ ]] || { printf -- '-'; return; }
-  if (($1 < 3600)); then printf '%dm' $(($1 / 60)); elif (($1 < 86400)); then printf '%dh' $(($1 / 3600))
-  else printf '%dd' $(($1 / 86400)); fi
-}
-
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
 flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
 
 # --- Queue and Dispatch: summary/dispatch ---
 ready="$(get dispatch.runnable)"
-qhead="$title" queue='' disp='' bar_units=''
+qhead="$title" queue='' disp=''
 if [ -z "$ready" ]; then
   flag 1 "no dispatch numbers on the feed: agent-mqtt-publish publishes fleet-dispatch stats as summary/dispatch"
 else
@@ -74,7 +66,25 @@ else
   oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)"
   pass_age=$((now - ${pass:-0})) start_age=-
   [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
-  [ "$(get runner.blocked)" = 1 ] && flag 1 "the last pass left ready work waiting (BLOCKED)"
+  # paused by: the one gate that stopped the last pass, if any, by name.
+  paused=''
+  for k in slots load idle account assess other; do
+    [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
+    case $k in
+      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
+      load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
+      idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
+      assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
+      account) paused="no account has room under its weekly pace" ;;
+      other) paused="a gate (fleet-dispatch headroom says which)" ;;
+    esac
+  done
+
+  # A hold that has stopped every pass leads with how long (held_s, the Stopped line's clock);
+  # a single BLOCKED pass is said as one.
+  held="$(get dispatch.held_s)"
+  if ((${held:-0} > 0)); then flag 1 "dispatch stopped $(prom_dur "$held"): ${paused:-the last pass left ready work waiting}"
+  elif [ "$(get runner.blocked)" = 1 ]; then flag 1 "the last pass left ready work waiting (BLOCKED)"; fi
   ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping between running and waiting"
   ((${could:-0} > 0)) && flag 1 "$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)"
   [ "$(get watch.tripped)" = 1 ] && flag 2 "queue-starved is tripped"
@@ -124,20 +134,7 @@ else
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-
-  # paused by: the one gate that stopped the last pass, if any, by name.
-  paused=''
-  for k in slots load idle account assess other; do
-    [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
-    case $k in
-      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
-      load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
-      idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
-      assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
-      account) paused="no account has room under its weekly pace" ;;
-      other) paused="a gate (fleet-dispatch headroom says which)" ;;
-    esac
-  done
+  queue+=$'\n'"board: $(d board_agent) agent rows, $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -148,8 +145,7 @@ else
     ul=0; [ "$units" -ge "$cap" ] && ul=1
     ll=0; [ $((load * 100)) -ge $((lcap * 80)) ] && ll=1; [ "$load" -gt "$lcap" ] && ll=2
     il=0; [ "$idle" -lt $((floor + 10)) ] && il=1; [ "$idle" -lt "$floor" ] && il=2
-    bar_units="$(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
-    cl="capacity: run units $bar_units"
+    cl="capacity: run units $(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
     [ -n "$(get dispatch.room_live_hand)" ] && cl+=", +$(d room_live_hand) by hand"
     cl+="; load $(paint "${LEVEL_COLOUR[$ll]}" "$load of $lcap"); idle $(paint "${LEVEL_COLOUR[$il]}" "$idle% (floor $floor%)")"
   else
@@ -175,17 +171,13 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: ready (over the low water, when the feed has it), the oldest wait, the units against the
-# cap; the chip's level colours the first two.
-if [ -z "$ready" ]; then
-  text="$ICON $(paint "${LEVEL_COLOUR[$level]}" -)"
-else
-  text="$ICON $ready${low:+/$low} $(short "$oldest")"
-  ((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
-  [ -n "$bar_units" ] && text+=" $bar_units"
-fi
+# The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
+# feed lacks reads -.
+board="$(get dispatch.board_agent)" qn="${ready:--}"
+((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
+text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(d done_today)"
 
-tip="$qhead"
+tip="Q ready to start next, B on the board, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
