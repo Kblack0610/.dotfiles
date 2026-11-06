@@ -115,6 +115,45 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
   assert_output ''
 }
 
+# A human start runs on the account `claude-acct run` picks, the choice `cl` makes; an unattended
+# one picks through agentctl-run. A bare `exec claude` anywhere else runs on whatever account
+# its caller inherited. These files are the launchers themselves.
+session_launches() {
+  (cd "$1" && git grep --no-index --exclude-standard -nIE \
+    '\b(exec|command)[[:space:]]+"?claude"?([[:space:]]|$)|"claude -r' \
+    -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//|echo )' \
+    | grep -vE '^(\.ai-rc|\.local/bin/(claude-acct|claude-lazer)|\.local/src/agent-run/harnesses/claude\.sh):'
+}
+
+@test "every claude session start goes through claude-acct run or agentctl-run" {
+  run session_launches "$REPO_ROOT"
+  assert_output ''
+}
+
+@test "the session launcher scan catches a bare exec claude (negative control)" {
+  local d="$BATS_TEST_TMPDIR/launch"
+  mkdir -p "$d/.local/bin" "$d/kdl"
+  printf '#!/bin/sh
+# exec claude in a comment is fine
+exec claude -r "$id"
+exec claude-acct run -r "$id"
+' > "$d/.local/bin/resume"
+  printf 'pane {
+    command "claude"
+}
+' > "$d/kdl/hub.kdl"
+  printf '#!/bin/sh
+exec claude "$@"
+' > "$d/.local/bin/claude-acct"
+  run session_launches "$d"
+  assert_line --partial 'resume:3:'
+  assert_line --partial 'hub.kdl:2:'
+  refute_output --partial 'resume:2:'
+  refute_output --partial 'resume:4:'
+  refute_output --partial 'claude-acct:'
+}
+
 @test "the launcher scan catches a direct claude -p (negative control)" {
   local d="$BATS_TEST_TMPDIR/fixture"
   mkdir -p "$d"

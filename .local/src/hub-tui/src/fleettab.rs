@@ -9,7 +9,8 @@ use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, older, Palette};
+use hub_core::layout::FOLD_ROWS;
 
 fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
@@ -44,9 +45,19 @@ pub fn page(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     ));
     out.extend(workers(&f.workers, p, now, w));
     out.push(Line::raw(""));
-    out.extend(dispatch(&f.dispatch, p, now, w));
+    out.push(dispatch_head(&f.dispatch, p, w));
+    out.push(judge_head(&f.judge, p, w));
+    out.push(Line::styled("  verdict lists: 7 Log, v", p.dim()));
+    out
+}
+
+/// Log's Judges' verdicts section: both judges' counts and their lists, each at most `FOLD_ROWS`.
+pub fn verdicts(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![dispatch_head(&f.dispatch, p, w)];
+    out.extend(dispatch_list(&f.dispatch, p, now, w));
     out.push(Line::raw(""));
-    out.extend(judge(&f.judge, p, now, w));
+    out.push(judge_head(&f.judge, p, w));
+    out.extend(judge_list(&f.judge, p, now, w));
     out
 }
 
@@ -186,7 +197,7 @@ fn workers(ws: &[Worker], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
     .fit(w, p.head())
 }
 
-fn dispatch(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+fn dispatch_head(d: &Dispatch, p: Palette, w: usize) -> Line<'static> {
     let floor = if d.partial { "+" } else { "" };
     let mut kinds: Vec<&String> = d.counts_7d.keys().chain(d.counts_24h.keys()).collect();
     kinds.sort();
@@ -204,17 +215,21 @@ fn dispatch(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
     for verb in ["started", "reaped"] {
         counts.push(format!("{verb} {}", d.log_24h.get(verb).unwrap_or(&0)));
     }
-    let mut out = vec![clip_line(
+    clip_line(
         heading("DISPATCH JUDGE", format!("  24h: {}", counts.join("  ")), p),
         w,
-    )];
+    )
+}
+
+fn dispatch_list(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if d.recent.is_empty() {
-        out.push(Line::styled("No verdicts yet.", p.dim()));
-        return out;
+        return vec![Line::styled("No verdicts yet.", p.dim())];
     }
+    let mut out = vec![];
     let rows = d
         .recent
         .iter()
+        .take(FOLD_ROWS)
         .map(|v| {
             let style = match v.verdict.as_str() {
                 "dispatch" => p.good(),
@@ -252,17 +267,18 @@ fn dispatch(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
         }
         .fit(w, p.head()),
     );
+    out.extend(older(d.recent.len(), FOLD_ROWS, p));
     out
 }
 
-fn judge(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     let scored = j.agree + j.disagree;
     let share = if scored > 0 {
         format!(" ({}% of scored)", (100 * j.agree + scored / 2) / scored)
     } else {
         String::new()
     };
-    let mut out = vec![clip_line(
+    clip_line(
         heading(
             "ANSWER JUDGE",
             format!(
@@ -272,14 +288,18 @@ fn judge(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             p,
         ),
         w,
-    )];
+    )
+}
+
+fn judge_list(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if j.disagreements.is_empty() {
-        out.push(Line::styled("No disagreements.", p.dim()));
-        return out;
+        return vec![Line::styled("No disagreements.", p.dim())];
     }
+    let mut out = vec![];
     let rows = j
         .disagreements
         .iter()
+        .take(FOLD_ROWS)
         .map(|x| {
             vec![
                 x.answered_at.map_or("-".into(), |t| clock(t, now)).into(),
@@ -302,6 +322,7 @@ fn judge(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
         .fit(w, p.head()),
     );
+    out.extend(older(j.disagreements.len(), FOLD_ROWS, p));
     out
 }
 
@@ -401,9 +422,12 @@ pub mod tests {
         }
     }
 
+    /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
-        page(f, Palette { no_color: true }, NOW, w)
+        let p = Palette { no_color: true };
+        page(f, p, NOW, w)
             .iter()
+            .chain(verdicts(f, p, NOW, w).iter())
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n")
@@ -426,6 +450,7 @@ pub mod tests {
             "fix the flaky bats test",
             "agree 3 (75% of scored)  disagree 1  deferred 2  pending 1  unscored 5",
             "land the fleet tab now?",
+            "verdict lists: 7 Log, v",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }

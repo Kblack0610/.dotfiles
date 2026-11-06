@@ -790,3 +790,29 @@ STUB
   assert_failure
   [[ "$stderr" == *"no account 'nope'"*"have: main alt"* ]]
 }
+
+# run: the one launcher for a human start (cl, sessions resume, the fzf picker, the hub).
+seen_claude() {
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "${CLAUDE_CONFIG_DIR:-<main>}" "$*"\n' > "$SANDBOX/bin/claude"
+}
+
+@test "run execs claude on the picked account with its arguments" {
+  seen_claude
+  usage main 10 80
+  usage alt 50 50
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" run --separate-stderr "$ACCT" run -r sid-1
+  assert_success
+  assert_output "$ALT|-r sid-1"
+}
+
+@test "run on main drops an inherited alt account; --acct forces one" {
+  seen_claude
+  usage main 20 10
+  usage alt 60 30
+  CLAUDE_CONFIG_DIR="$ALT" run --separate-stderr "$ACCT" run --dangerously-skip-permissions
+  assert_output "<main>|--dangerously-skip-permissions"
+  run --separate-stderr "$ACCT" run --acct alt -c
+  assert_output "$ALT|-c"
+  run --separate-stderr "$ACCT" run --acct nope
+  assert_failure
+}

@@ -255,7 +255,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
-        // agent-notify's ledger, for the Actions tab.
+        // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
             .parent()
@@ -332,7 +332,7 @@ fn classify(p: &Path) -> Option<String> {
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
-    // The Actions tab's own ledgers: the shepherd's log and agent-notify's (which has no
+    // Log's Actions section's own ledgers: the shepherd's log and agent-notify's (which has no
     // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
     if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
         return Some(r#"{"kind":"actions"}"#.to_string());

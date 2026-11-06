@@ -34,10 +34,10 @@ calls_record() {
   mkdir -p "$(dirname "$AGENTCTL_CALLS")"
   jq -cn --argjson r "$out" --arg id "$id" --arg agent "${AGENTCTL_AGENT:-}" \
     --arg role "${ROLE_NAME:-}" --arg model "${ANTHROPIC_MODEL:-}" --arg harness "$harness" \
-    --arg at "$(date -Iseconds)" --argjson ms "$((t1 - t0))" --argjson exit "$rc" \
+    --arg account "${ROUTE_ACCOUNT:-}" --arg at "$(date -Iseconds)" --argjson ms "$((t1 - t0))" --argjson exit "$rc" \
     --arg prompt "${AGENT_PROMPT:-}" --arg sha "${AGENT_PROMPT_SHA:-}" --arg text "$text" \
     --argjson max "$CALLS_RAW_MAX" '
-    {id: $id, agent: $agent, role: $role, harness: $harness, at: $at, duration_ms: $ms, exit: $exit,
+    {id: $id, agent: $agent, role: $role, harness: $harness, account: $account, at: $at, duration_ms: $ms, exit: $exit,
      "gen_ai.request.model": $model,
      "gen_ai.response.model": (($r.modelUsage // {}) | keys | first),
      prompt: $prompt, prompt_sha: $sha,

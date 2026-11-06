@@ -10,11 +10,11 @@ metadata:
 
 # day-log
 
-Answers "what did the day produce" from one record per day, so a chat answer, the hub Today tab, the notes ref and an Artifact page all say the same thing. The producer is `day-log` (`~/.local/bin/day-log`); this skill only reads it.
+Answers "what did the day produce" from one record per day, so a chat answer, the hub Log tab, the notes ref and an Artifact page all say the same thing. The producer is `day-log` (`~/.local/bin/day-log`); this skill only reads it.
 
 ## Scope and triggers
 
-What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub board's Today tab (Prefix i, then its digit) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
+What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub's Log tab (Prefix i, then 7) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
 
 ## When to Use
 
@@ -46,7 +46,7 @@ The data feed for pipeline evaluation (queue item session-pipeline-eval): read t
 
 ETA accuracy stays in fleet-bench; the record copies its headline.
 
-The board is the hub's Today tab (Prefix i, then its digit; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; the History tab (7) lists every recorded day. `hub --once --tab today` prints it as text. `day-log show` prints the same record as markdown.
+The board is the hub's Log tab (Prefix i, then 7; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; `h` lists every recorded day. `hub --once --tab log` prints it as text. `day-log show` prints the same record as markdown.
 
 ## Do NOT
 

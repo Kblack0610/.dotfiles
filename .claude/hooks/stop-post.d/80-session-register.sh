@@ -118,7 +118,7 @@ jq -nc \
   --arg sid "$SID" \
   --arg project "$PROJECT_NAME" \
   --arg transcript "$TRANSCRIPT" \
-  --arg resume "claude -r $SID" \
+  --arg resume "cl -r $SID" \
   --arg first_prompt "$FIRST_PROMPT" \
   --argjson edits "${EDITS:-0}" \
   --arg head_commit "$HEAD_COMMIT" \

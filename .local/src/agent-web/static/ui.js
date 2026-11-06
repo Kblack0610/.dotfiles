@@ -151,6 +151,10 @@ function poll(tab, refresh, ms) {
 // A tab whose source pushes file events re-reads on them (`kinds`, plus resync) only while it
 // is open; one that changed while closed is read once, the next time it is shown. show(force)
 // also reads when the tab has nothing yet, so a failed first read is retried on the next visit.
+// A folded Log section lists at most this many rows, then says how many older ones it left out.
+const LOG_ROWS = 50;
+const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
+
 function pushed(tab, kinds, refresh) {
   let stale = true;
   return {

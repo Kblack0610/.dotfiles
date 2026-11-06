@@ -1,4 +1,4 @@
-//! Everything the fleet's machinery did, as one newest-first list, for agent-web's Actions tab
+//! Everything the fleet's machinery did, as one newest-first list, for Log's Actions section on both hub surfaces
 //! and `hub actions` (the briefing's digest). It only reads the ledgers their own tools write,
 //! and keeps no copy of any:
 //!
@@ -123,6 +123,24 @@ pub struct Gathered {
     /// Lines in a readable ledger that its parser could not read, newest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejects: Vec<Reject>,
+}
+
+/// Every queue item, live from `agent-queue`, for joining the ledgers to; an unread queue is an
+/// error line beside an empty list, so the ledgers still show.
+pub fn queue_items() -> (Vec<Item>, Option<String>) {
+    match crate::queue::list(&crate::session_actions::System, "all") {
+        Ok(items) => (items, None),
+        Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
+    }
+}
+
+/// `gather` over this host's ledgers and live queue: what Log's Actions section shows on both
+/// surfaces.
+pub fn read(since: i64) -> Gathered {
+    let (items, err) = queue_items();
+    let mut g = gather(&Paths::from_env(), since, &items);
+    g.errors.extend(err);
+    g
 }
 
 /// Every action at or after `since` (epoch seconds), with the dispatch log's times read as this
