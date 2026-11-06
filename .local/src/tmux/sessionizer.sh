@@ -59,7 +59,7 @@ declared_dirs() {
 
 # current_world -- the socket this client is on (`hub`), or nothing outside tmux.
 #
-# The socket basename, which is how servers.sh:cmd_pick_session already asks. `default` is
+# The socket basename, from $TMUX. `default` is
 # the unnamed server and is nobody's world, so it is reported as such: a directory declared
 # in hub.conf, picked from the default socket, should still go to hub.
 current_world() {

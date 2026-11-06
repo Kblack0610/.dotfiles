@@ -16,7 +16,6 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
 | `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
-| `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Its list is the world's manifest rows plus live sessions |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
 | `muxpoon` (submodule, `../muxpoon/`) | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Window slots, its own public repo: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. `.tmux.conf` keeps the list in `~/.local/state/tmx/harpoon`, and it survives a kill-server. Also on PATH as `muxpoon`. |
@@ -92,7 +91,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 
 **Resume vs root.** `C-h` resumes: it attaches to the most recently used session of the other world that is *not* its landing page, and a session restores its own active window, so flipping between two pieces of work is one key. `N` roots: it puts hub's landing page, today's note, back on screen. `tmx root <world>` is the world's first booted entry; `tmx root <world> <session>` is that session's page.
 
-**`Prefix+H` is the only view that crosses the server boundary.** `Prefix+w` is server-scoped by construction, and `Prefix+S` (sesh) shells out to plain `tmux` so it follows `$TMUX` into whichever single world you are in. Seeing hub and lab *together* has to be assembled from outside both, which is what `tmx pick` does. It opens collapsed, one row per world and one row for the stranded sessions after them:
+**`Prefix+H` is the only view that crosses the server boundary.** `Prefix+w` is server-scoped by construction. Seeing hub and lab *together* has to be assembled from outside both, which is what `tmx pick` does. It opens collapsed, one row per world and one row for the stranded sessions after them:
 
 ```
 + hub  2 sessions  2 need you
@@ -143,8 +142,7 @@ rather than a bare shell.
 
 A name written `?name` is **on demand**: `ensure` does not boot it, so closing it sticks
 instead of coming back on the next hop in. It is still declared, so `Prefix+f` on its
-directory still routes to this world, and `Prefix+f`, `tmx goto <world> <name>` or the
-world's `Prefix+S` list start it. `ensure` reports it as
+directory still routes to this world, and `Prefix+f` or `tmx goto <world> <name>` start it. `ensure` reports it as
 `N on demand`. Never mark the landing entry.
 
 Worlds are **discovered** from that directory rather than hardcoded, so dropping in a
@@ -206,15 +204,6 @@ renames, moves or kills - so it is both the boot path and the repair path.
 by construction and can only ever list the sessions of the server its client is
 attached to. That is the entire mechanism behind "completely different lists".
 
-`Prefix+S` needs help, though, because sesh's zoxide source is **one shared database**.
-So `tmx pick-session` derives the server from `#{socket_path}`, writes that world's manifest
-rows into a generated sesh config, and runs `sesh -C <generated> picker -i -d -c -t`: the
-world's own entries plus its live sessions, and **no `-z`**. Dropping zoxide is what stops
-every server's list looking identical; `-d` collapses the config/live duplicate of the same
-name. No sesh config is committed, so the list cannot disagree with the manifest. Note `-C`
-must precede the subcommand (`sesh -C f list` works, `sesh list -C f` errors). On the default
-socket there is no world to list, so `Prefix+S` opens `sessionizer.sh`, which routes.
-
 Reaching outside the current world is not lost, it just moves keys: `Prefix+f`
 (`sessionizer.sh`) sees every repo and worktree on the machine, whatever world
 they belong to - and it **routes by manifest**, hopping servers if that is where the
@@ -223,9 +212,8 @@ directory lives. See "Which world a directory belongs to".
 Two things verified, both load-bearing:
 
 - Inside a `-L foo` session `$TMUX` is set, so a bare `tmux ls` reports **foo's**
-  sessions. `sesh` shells out to plain `tmux`, so it follows the enclosing server
-  automatically - one sesh is correct inside every server, no
-  `tmux_command` needed.
+  sessions. A script that shells out to plain `tmux` follows the enclosing server
+  with no `-L` of its own.
 - tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
   `detach-client -E`, which runs a command after the client detaches so the
   detach+attach reads as one motion. `new-session -A` makes each binding double as
@@ -293,7 +281,7 @@ that list beside `node_modules`: they hold real checkouts (`tests/vendor/bats-co
 hash-named worktrees under `platform/.claude/worktrees/`) that no one opens a session on.
 
 A directory with **no** `.git` is still not a row, whatever it holds - `~/dev/adb-mcp` has to
-be `git init`-ed, declared in a manifest, or reached with `Prefix+S`.
+be `git init`-ed or declared in a manifest.
 
 ## Worktrees (`Prefix+F`, `Prefix+X`, `wt`)
 
@@ -327,7 +315,7 @@ had to learn a new concept for this, because the layout keeps the basename as th
            -> label   N:<win>   agent-panel row label   render.rs:short_target
 ```
 
-So `Prefix+g`, `Prefix+w` and `sesh` all show live worktrees the moment they exist. Nesting
+So `Prefix+g` and `Prefix+w` both show live worktrees the moment they exist. Nesting
 them under `~/.worktrees/<repo>/` would make the basename `agent-N`, losing the repo and
 breaking all three at once.
 
@@ -426,20 +414,6 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 > (`~/.local/src/tmux -> ../../.dotfiles/.local/src/tmux`), so edits made in a *dotfiles*
 > worktree are **not deployed**. You are exercising the repo copy, not the live one. Run
 > scripts by their path inside the worktree; `wt` on `PATH` is not the one you just edited.
-
-## Sessions (`Prefix+S`)
-
-`sesh` merges two sources into one picker: **live tmux sessions** and the current world's
-manifest rows, generated at pick time. Picking a live session switches to it; picking a row
-starts it. This is what `Prefix+w`/`Prefix+C-w` are for windows.
-
-Additive to `Prefix+f` (`sessionizer.sh`), which only ever saw *directories* and
-had no preview.
-
-**Do not** try to drive a layout tool from `startup_command`: sesh creates the
-session first, so a tool that skips an existing session exits 0 and builds
-nothing. sesh's own `[[window]]` has no panes; its native layout hooks are the
-`tmuxinator` / `tmuxp` session fields.
 
 ## Scratch (`Prefix+A`)
 
