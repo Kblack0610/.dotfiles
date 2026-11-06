@@ -946,10 +946,69 @@ watch() {
   watch drift OK -90000 normal
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial 'no runner, unit or watch at fault'
+  assert_output --partial 'no runner, unit, watch or log error at fault'
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+# errlog <runner> <finished offset> <line>...: one run's stderr appended to <runner>.stderr.log with
+# its runs.jsonl err byte range, as agentctl writes them
+errlog() {
+  local n=$1 off=$2 f="$AGENTCTL_STATE_DIR/$1.stderr.log" a b; shift 2
+  a=$(stat -c %s "$f" 2>/dev/null || echo 0); printf '%s\n' "$@" >> "$f"; b=$(stat -c %s "$f")
+  jq -cn --arg n "$n" --argjson f $((T0 + off)) --argjson a "$a" --argjson b "$b" \
+    '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
+# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty causes table
+log_triage_setup() {
+  triage_setup
+  mkdir -p "$AGENTCTL_STATE_DIR"; PLOG="$SANDBOX/promote.log"
+  export TRIAGE_CAUSES="$SANDBOX/triage-causes" TRIAGE_PROMOTE_CMD=promote-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
+  chmod +x "$SANDBOX/bin/promote-stub"
+  # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
+  # outside the window, and a range the log rotation took away
+  errlog alpha -7200 '[2026-11-05T01:00:00-08:00] error: lock /run/a/1.lock held by pid 4411' 'just noise'
+  errlog alpha -3600 '[2026-11-05T02:00:00-08:00] error: lock /run/b/2.lock held by pid 98' 'fatal: only once'
+  errlog alpha -200000 'error: lock /run/c.lock held by pid 7'
+  jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
+@test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
+  log_triage_setup
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+  assert_equal "$(grep -c . <<<"$output")" 1
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  [ ! -s "$PLOG" ]
+}
+
+@test "triage: a row a known cause explains is queued once as a night fix; no match queues nothing" {
+  log_triage_setup
+  printf '# comment\nnot in any row\tnever used\n' > "$TRIAGE_CAUSES"
+  printf 'lock .* held by pid\tclear the stale lock #2 in alpha\n' >> "$TRIAGE_CAUSES"
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; known cause: clear the stale lock no\.2 in alpha #low \(queued as a night fix\)$'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as night fixes'
+  run cat "$PLOG"
+  assert_output --regexp '^--agent --project agent-runtime --tags night --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*known cause'
+  # started on the board: never queued twice
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  printf 'nothing matches\tx\n' > "$TRIAGE_CAUSES"
+  rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
+  run "$SUBJECT" triage
+  [ ! -s "$PLOG" ]
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
@@ -1947,6 +2006,42 @@ qstats_fixture() {
     done_by_tag: {}}' > "$QSTATS"
 }
 
+@test "models: one model on two harnesses is two rows, gateway cost beats the sessions' sum per item, a row with both reads mixed, an unpriced PR does not cheapen Per PR, a chained session counts once" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":9,"reverted_7d":0}'
+    echo '{"session_id":"s2","cost_usd":40,"reverted_7d":1}'
+    echo '{"session_id":"s3","cost_usd":2,"reverted_7d":0}'
+    echo '{"session_id":"s4","cost_usd":7,"reverted_7d":0}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}'
+    echo '{"slug":"unpriced","model":"sonnet","status":"ok","pr":"o/r#9"}'
+    echo '{"slug":"chained","model":"sonnet","status":"ok","pr":"o/r#8","sessions":"s1"}'
+    echo '{"slug":"b","model":"sonnet","agent":"claude-lazer","status":"ok","pr":"o/r#2","sessions":"s2","gateway_cost_usd":"4.5"}'
+    echo '{"slug":"c","model":"sonnet","agent":"opencode","status":"ok","pr":"o/r#3","sessions":"s3","gateway_cost_usd":"1.25"}'
+    echo '{"slug":"d","model":"sonnet","agent":"opencode","status":"failed","sessions":"s4"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"eval\",\"harness\":\"opencode\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"eval\",\"harness\":\"opencode\",\"ran\":\"sonnet\",\"outcome\":\"ok\"}"
+  } > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.harness, .done, .cost_usd, .cost_per_pr, .redo, .rated, .reverts, .source]]' <<<"$output")" \
+    '[["claude",3,9,4.5,1,1,0,"list"],["claude-lazer",1,4.5,4.5,0,0,1,"gateway"],["opencode",2,8.25,8.25,1,2,0,"mixed"]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" models
+  assert_success
+  assert_line '| sonnet | opencode | 2 | 1 | 0.5 | 1 | 1 | 0 | $8.25 | $8.25 | mixed |'
+  assert_line '| sonnet | claude-lazer | 1 | 1 | 1 | 0 | 0 | 1 | $4.5 | $4.5 | gateway |'
+}
+
 @test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub
@@ -1976,13 +2071,14 @@ qstats_fixture() {
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
-  assert_equal "$(jq -c .models.sonnet <<<"$output")" '{"done":2,"landed":1,"landed_rate":0.5,"failed":1,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"cost_per_pr":8}'
-  assert_equal "$(jq -c '.models.opus | [.landed_rate, .cost_per_pr, .redo_rate]' <<<"$output")" '[1,3,null]'
-  assert_equal "$(jq -c '.models.unrecorded.done' <<<"$output")" 1
+  row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list"}'
+  assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
+  assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | 2 | 1 | 0.5 | 1 | 2 | 1 | 0.5 | 1 | $8 | $8 |'
-  assert_line '| opus | 1 | 1 | 1 | 0 | 0 | 0 | - | 0 | $3 | $3 |'
+  assert_line '| sonnet | claude | 2 | 1 | 0.5 | 1 | 1 | 1 | $8 | $8 | list |'
+  assert_line '| opus | claude | 1 | 1 | 1 | 0 | 0 | 0 | $3 | $3 | list |'
   run "$SUBJECT" models --bogus
   assert_failure 2
 }
