@@ -1447,14 +1447,13 @@ impl App {
         }
     }
 
-    /// The Projects tab's keys: the card list's (projtab.rs), or with the rows open theirs
+    /// The Projects tab's keys: the list's (projtab.rs), or with the rows open theirs
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         if !self.pv.open {
             let cards = self.cards().cards;
-            if k.code == KeyCode::Char('P') {
-                // Card 0 is All, so card i is cards[i - 1].
-                if let Some(c) = self.pv.card.checked_sub(1).and_then(|i| cards.get(i)) {
+            if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() {
+                if let Some(c) = self.pv.selected(&cards) {
                     self.prio_act(
                         c.profile.clone(),
                         c.name.clone(),
@@ -2044,7 +2043,7 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn g/G ^d/^u pick  c cancel  +/- priority  f candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects if self.tv.typing() => {
+            Tab::Projects if self.tv.typing() || self.pv.table.typing.is_some() => {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
@@ -2052,7 +2051,7 @@ impl App {
                 if self.tv.project.is_some() { "F page sections  " } else { "" }
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter open  a all rows  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
@@ -3122,7 +3121,7 @@ mod tests {
     }
 
     #[test]
-    fn p_on_a_card_steps_its_priority_through_the_cli_and_all_writes_nothing() {
+    fn p_on_a_row_steps_its_priority_through_the_cli_and_an_empty_view_writes_nothing() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
@@ -3136,13 +3135,18 @@ mod tests {
         }
         a.handle(Msg::Projects(Box::new(l)));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains("DEMO  bnb, alpha, prio focus"), "{s}");
-        assert!(!s.contains("GARDEN  personal, alpha, prio"), "{s}");
+        assert!(s.contains("v0.1.0   focus"), "{s}");
         assert!(s.lines().last().unwrap().contains("P priority"), "{s}");
         fake.0.lock().unwrap().clear();
+        // Typed, P is a letter of the search; with no row kept it has nothing to step.
+        for c in "/P".chars() {
+            a.handle(key(c));
+        }
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.pv.table.view.q, "P");
         a.handle(key('P'));
-        assert!(fake.0.lock().unwrap().is_empty(), "All is not a project");
-        a.handle(key('j'));
+        assert!(fake.0.lock().unwrap().is_empty(), "no row, no write");
+        a.handle(key('x'));
         a.handle(key('P'));
         assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
         loop {
@@ -3183,19 +3187,15 @@ mod tests {
         a.handle(Msg::Projects(Box::new(loaded())));
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
+        assert!(at("ALL ROWS  4 open rows") < at("PROJECT "), "{s}");
         assert!(
-            at("ALL PROJECTS  4 open rows") < at("DEMO  bnb, alpha"),
-            "{s}"
-        );
-        assert!(
-            at("DEMO  bnb, alpha") < at("GARDEN  personal, alpha"),
+            at("demo  ") < at("garden  "),
             "by name when none is in flight"
         );
-        assert!(s.contains("v0.1.0 25% (1 of 4 by size)"), "{s}");
-        assert!(s.lines().last().unwrap().contains("Enter open rows"), "{s}");
+        assert!(s.contains("25%"), "{s}");
+        assert!(s.lines().last().unwrap().contains("a all rows"), "{s}");
 
         // The card's numbers stay on top of its rows.
-        a.handle(key('j'));
         let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
         assert!(
             !ran(&fake).contains("fleet-bench"),
@@ -3275,11 +3275,10 @@ mod tests {
         assert!(a.pv.open && a.tv.said.is_none());
         a.handle(esc());
         assert!(!a.pv.open);
-        assert_eq!(a.pv.card, 1);
+        assert_eq!(a.pv.card, 0);
 
         // All keeps the cross-project board, the last row scrolled into view.
-        a.handle(key('g'));
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(key('a'));
         assert_eq!(a.tv.project, None);
         for _ in 0..4 {
             a.handle(key('j'));
