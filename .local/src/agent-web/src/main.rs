@@ -1048,10 +1048,10 @@ async fn pipeline_line(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn fleet_board(State(s): State<Shared>) -> Response {
+async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.fleet.get().await,
+        s.fleet.get(q).await,
     )
         .into_response()
 }
