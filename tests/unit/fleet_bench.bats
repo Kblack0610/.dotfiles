@@ -968,6 +968,19 @@ watch() {
   printf 'name: %s\nwhat: >-\n  %s is healthy. More words.\n  A second line.\nseverity: %s\n' "$1" "$1" "$4" > "$TRIAGE_WATCHES/$1.yaml"
 }
 
+@test "triage: a watch row carries its evidence, and a new pid in it does not change the row" {
+  triage_setup
+  watch nightly TRIP -25200 urgent
+  printf 'TRIP exit 1 (want 0)\nnoise\n\n[2026-10-30T03:00:00] pod web-1234 failed #7 at /var/run/x\n' > "$TRIAGE_WATCH_STATE/nightly.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'why: pod web-N failed N at P, evidence: watch-companion-loop list --long nightly #high'
+  first=$output
+  sed -i 's/1234/5678/; s/#7/#9/' "$TRIAGE_WATCH_STATE/nightly.out"
+  run "$SUBJECT" triage --dry-run
+  assert_equal "$output" "$first"
+}
+
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
