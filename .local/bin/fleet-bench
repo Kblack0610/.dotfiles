@@ -29,7 +29,8 @@
 #                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--json]
 #                                each windowed KPI over N days before a change landed against N after
-#   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold
+#   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold,
+#                                and per lesson that recurred in BENCH_GUARD_RECUR sessions (a guard row)
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -98,6 +99,8 @@ set -uo pipefail
 : "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
 : "${BENCH_EFFECT_DAYS:=14}"        # effect: the window on each side of a change
 : "${BENCH_EFFECT_FLAT:=0.1}"       # effect: a relative move inside this is flat
+: "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
+: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
@@ -1553,34 +1556,59 @@ retro_rows() {
 
 # One open row per KPI, folded by its title prefix: the numbers are refreshed in place, and
 # rows for a KPI back inside its threshold are left for whoever owns them.
+# retro_guard_rows -> one "guard <hash>:<TAB>text<TAB>priority" line per lesson whose sig
+# (so_lesson_sigs) hit in BENCH_GUARD_RECUR or more sessions after it was written: a lesson the
+# fleet keeps relearning wants a hook, test or lint, and the lesson goes once that lands.
+retro_guard_rows() {
+  local sigs sig claim since file n h
+  # shellcheck source=/dev/null
+  . "$BENCH_SO_LIB" || return 1
+  sigs=$(so_lesson_sigs) || return 1
+  jq -r --argjson min "$BENCH_GUARD_RECUR" --slurpfile o <(outcomes_newest) '
+    .[] as $s | ([$o[] | select(((.lesson_hits // {})[$s.sig] // 0) > 0)] | length) as $n
+    | select($n >= $min) | [$s.sig, $s.claim, $s.since, $s.file, $n] | @tsv' <<<"$sigs" |
+  while IFS=$'\t' read -r sig claim since file n; do
+    h=$(printf '%s' "$sig" | sha1sum | cut -c1-8)
+    printf 'guard %s:\tguard %s: lesson "%s" (%s, %s) recurred in %s sessions; make it a hook, test or lint, then delete the lesson\t%s\n' \
+      "$h" "$h" "$claim" "$file" "$since" "$n" "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
+  done
+}
+
+# retro keeps exactly one open agent-board row per finding, keyed by its prefix: a KPI past its
+# threshold (`kpi: <k> past threshold`) or a lesson that keeps recurring (`guard <hash>:`). A row
+# whose numbers moved is edited in place; one that matches writes nothing.
 cmd_retro() {
-  local json rows board k text pri have added=0 edited=0
-  if [ ! -r "$KPI_THRESHOLDS" ]; then
-    say "no KPI thresholds at $KPI_THRESHOLDS; retro checks nothing"
-    report_outcome NOOP "no KPI thresholds file"
-    return 0
+  local json rows='' grows board p text pri have added=0 edited=0 why=()
+  if [ -r "$KPI_THRESHOLDS" ]; then
+    json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
+    rows=$(retro_rows "$json" | awk -F'\t' -v OFS='\t' '{ $1 = "kpi: " $1 " past threshold"; print }')
+    [ -n "$rows" ] || why+=("every KPI inside its threshold")
+  else
+    say "no KPI thresholds at $KPI_THRESHOLDS; retro checks no KPI"
+    why+=("no KPI thresholds file")
   fi
-  json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
-  rows=$(retro_rows "$json")
+  grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs unreadable"; return 1; }
+  [ -n "$grows" ] || why+=("no lesson recurred")
+  rows=$(printf '%s\n%s\n' "$rows" "$grows" | grep .)
   if [ -z "$rows" ]; then
-    say "every KPI is inside its threshold"
-    report_outcome NOOP "every KPI inside its threshold"
+    say "${why[*]}"
+    report_outcome NOOP "$(IFS=';'; echo "${why[*]}")"
     return 0
   fi
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
-  while IFS=$'\t' read -r k text pri; do
-    have=$(awk -F'\t' -v p="kpi: $k past threshold" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
+  while IFS=$'\t' read -r p text pri; do
+    have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null \
-        || { report_outcome FAILED "add failed for $k"; return 1; }
+        || { report_outcome FAILED "add failed for $p"; return 1; }
       added=$((added + 1))
     elif [ "$have" != "${text,,}" ]; then
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "kpi: $k past threshold" --text "$text" >/dev/null \
-        || { report_outcome FAILED "edit failed for $k"; return 1; }
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null \
+        || { report_outcome FAILED "edit failed for $p"; return 1; }
       edited=$((edited + 1))
     fi
   done <<<"$rows"
-  say "$(grep -c . <<<"$rows") KPIs past threshold: $added added, $edited refreshed"
+  say "$(grep -c . <<<"$rows") rows due: $added added, $edited refreshed"
   if [ $((added + edited)) -eq 0 ]; then
     report_outcome NOOP "every row already current"
   else

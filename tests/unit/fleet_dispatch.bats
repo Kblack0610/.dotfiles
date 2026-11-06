@@ -1730,9 +1730,9 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
 }
 
-@test "night: only rows tier 3 alone holds back; requested rows, decisions, devices, the human's machine and lower tiers stay out" {
+@test "night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out" {
   night_ready
-  row agent-runtime agent 'ask row' '- [ ] fix the ask row #requested #tier/3'
+  row agent-runtime agent 'requested row' '- [ ] fix the requested row #requested #tier/3'
   row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
   row agent-runtime agent 'typed decide' '- [ ] decide(board): fold it #tier/3'
   row agent-runtime agent 'pad run' '- [ ] fix the pad controller switch #tier/3'
@@ -1741,14 +1741,14 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   row agent-runtime agent 'unclear' '- [ ] fix something somewhere #tier/3'
   row agent-runtime agent 'started' '- [/] fix the started row #tier/3'
   row agent-runtime agent 'untagged' '- [ ] fix the untagged row'
-  for k in 'ask row' 'decide: fold it' 'typed decide' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
+  for k in 'requested row' 'decide: fold it' 'typed decide' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
   night_verdict unclear unclear false
 
   run night_rows ''
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'unclear,untagged'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'requested row,unclear,untagged'
   fill
   assert_success
-  assert_equal "$(night_keys)" 'untagged'
+  assert_equal "$(night_keys)" 'requested row,untagged'
 }
 
 @test "night: at most 3 active, one an area: subtract or fix first, then observer rows, then oldest #high" {

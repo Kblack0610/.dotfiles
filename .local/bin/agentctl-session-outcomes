@@ -23,7 +23,7 @@
 # counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
 # escalations, merged PRs with their lines and CI reds), read once per run. The account is the
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR.
 
 set -uo pipefail
 
@@ -100,12 +100,15 @@ cmd_run() {
 
   # Transcript metrics, one file per due session. A pruned transcript yields null
   # metrics rather than a skipped session: the registry row (cost, edits) still counts.
-  local row sid tr n=0
+  # Lessons that carry a sig, read once: each transcript counts its hits (lesson_hits), and
+  # fleet-bench retro turns a lesson recurring in two sessions into a guard row.
+  local row sid tr n=0 sigs
+  sigs=$(so_lesson_sigs | jq -c 'map({sig, since})') || sigs='[]'
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
-      so_transcript_metrics "$tr" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
+      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null' > "$work/t.$sid.json"
     else
       printf 'null' > "$work/m.$sid.json"
@@ -182,6 +185,7 @@ cmd_run() {
           hard_errors: ($mm.hard_errors // null),
           plan_gate: ($mm.plan_gate // null),
           guards: ($mm.guards // null),
+          lesson_hits: (if ($mm.lesson_hits // {}) == {} then null else $mm.lesson_hits end),
           activity: ($mm.activity // null),
           uses: ($mm.uses // null),
           time_use: $time_use[0],
