@@ -146,6 +146,8 @@ agent_bench_kpi{kpi="sessions",window="7d"} 0
 agent_bench_kpi{kpi="sessions",window="28d"} 0
 agent_bench_kpi{kpi="ci_red_per_pr",window="7d"} 4.5
 agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
+agent_bench_kpi{kpi="canary_runs",window="7d"} 0
+agent_bench_kpi{kpi="canary_runs",window="28d"} 0
 agent_bench_kpi{kpi="human_answered_per_day",window="7d"} 0
 agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
@@ -759,7 +761,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -901,7 +903,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate |'
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -916,7 +918,7 @@ ask_row() {
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
   assert_success
   run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
-  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"]]'
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"]]'
   run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
   assert_success
   run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
@@ -3064,4 +3066,118 @@ epics_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   assert_equal "$(jq -r '.plans_unqueued["7d"]' <<<"$output")" null
+}
+
+# --- canary: a fixed eval set. canary_fixture makes a repo where greet.sh says "hi" at base and
+# "hello" at merge, the merge adding tests/check.sh as the oracle, and one task naming the two.
+canary_fixture() {
+  CREPO="$SANDBOX/crepo"; export BENCH_CANARY_DIR="$SANDBOX/canary" BENCH_PROJECT_MAP="$SANDBOX/cmap.json"
+  export BENCH_CANARY_CONFIG_REPOS="$CREPO" BENCH_NOW=$T0
+  mkdir -p "$CREPO" "$BENCH_CANARY_DIR"
+  git -C "$CREPO" init -q -b main
+  git -C "$CREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m root
+  echo 'echo hi' > "$CREPO/greet.sh"
+  git -C "$CREPO" add greet.sh; git -C "$CREPO" -c user.email=t@t -c user.name=t commit -q -m base
+  CBASE=$(git -C "$CREPO" rev-parse HEAD)
+  mkdir -p "$CREPO/tests"; echo 'echo hello' > "$CREPO/greet.sh"
+  printf '[ "$(sh greet.sh)" = hello ]\n' > "$CREPO/tests/check.sh"
+  git -C "$CREPO" add -A; git -C "$CREPO" -c user.email=t@t -c user.name=t commit -q -m 'merge (#7)'
+  CMERGE=$(git -C "$CREPO" rev-parse HEAD)
+  jq -n --arg r "$CREPO" '{paths: {($r): "game"}}' > "$BENCH_PROJECT_MAP"
+  jq -n --arg b "$CBASE" --arg m "$CMERGE" '{id: "greet", project: "game", pr: "o/r#7", base: $b, merge: $m,
+    task: "fix(greet): say hello", accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
+    > "$BENCH_CANARY_DIR/greet.json"
+}
+
+@test "canary verify: an oracle that fails at base and passes at merge is ok; one that already passes at base is BAD" {
+  canary_fixture
+  run "$SUBJECT" canary verify
+  assert_success
+  assert_output 'ok greet: base exit 1, merge passes'
+  jq --arg m "$CMERGE" '.id = "lazy" | .base = $m' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/lazy.json"
+  run "$SUBJECT" canary verify lazy
+  assert_failure 1
+  assert_output --partial 'BAD lazy: base exit 0, merge exit 0'
+  run git -C "$CREPO" worktree list
+  assert_equal "$(grep -c . <<<"$output")" 1
+  run "$SUBJECT" canary verify nosuch
+  assert_failure 2
+}
+
+@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, and a session's own edit to the oracle does not count" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
+  cd "$SANDBOX/wt1"
+  echo dirt > dirt.txt
+  run "$SUBJECT" canary start greet
+  assert_failure 2
+  assert_output --partial 'uncommitted changes'
+  rm dirt.txt
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_line --index 1 'fix(greet): say hello'
+  assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  # The session games its own copy of the oracle and leaves greet.sh alone: the merge copy scores it.
+  mkdir -p tests; echo 'exit 0' > tests/check.sh
+  CLAUDE_CODE_SESSION_ID=c1 AGENT_QUEUE_ITEM=canary-greet-w1 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: fail (exit 1)'
+  # A second session does the work and passes.
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt2" "$CBASE"
+  cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh
+  CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: pass (exit 0)'
+  CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
+  assert_failure 3
+  run jq -c '[.run, .id, .session_id, .pass, .rc, .pr, (.config.crepo | length)]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'["canary-greet-w1","greet","c1",false,1,"o/r#7",12]\n["canary-greet-w2","greet","c2",true,0,"o/r#7",12]'
+  run "$SUBJECT" canary list
+  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass'
+}
+
+@test "canary queue: one night canary item per task a week, from canary with its own brief; a second pass queues nothing" {
+  canary_fixture
+  QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
+  printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
+  cat >> "$SANDBOX/bin/aq-stub" <<'STUB'
+case "$1" in
+  show) grep -qx "slug $2" "$L.slugs" 2>/dev/null ;;
+  add) printf '%s\n' "$@" >> "$L"; while [ $# -gt 0 ]; do [ "$1" = --slug ] && echo "slug $2" >> "$L.slugs"; shift; done ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/aq-stub"
+  week=$(date -d "@$T0" +%Gw%V)
+  run "$SUBJECT" canary queue
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week"
+  run cat "$QLOG"
+  assert_line 'canary'
+  assert_line 'night canary'
+  assert_line "canary-greet-$week"
+  assert_line --partial 'Run `fleet-bench canary start greet` here'
+  assert_line --partial "agent-queue move canary-greet-$week done --status ok"
+  refute_output --partial '/one-shot'
+  run "$SUBJECT" canary queue
+  assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week"
+  # No task set: a retro pass says nothing about canaries.
+  rm "$BENCH_CANARY_DIR"/*.json
+  run "$SUBJECT" canary queue
+  assert_success
+  assert_output ''
+}
+
+@test "kpi: canary runs score pass rate, cost, minutes and turns from their outcome rows, and canary sessions leave the human KPIs" {
+  kpi_setup; kpi_fixture
+  out_row game '{session_id: "c1", project: "game", updated_epoch: ($t - 86400), prs_merged: 0, cost_usd: 3, duration_s: 600, activity: {api_messages: 40}}'
+  out_row game '{session_id: "c2", project: "game", updated_epoch: ($t - 864000), prs_merged: 0, cost_usd: 5, duration_s: 1200, activity: {api_messages: 60}}'
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "a", id: "greet", session_id: "c1", pass: true}, {epoch: ($t - 863000), run: "b", id: "greet", session_id: "c2", pass: false}' \
+    > "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.sessions, .prs_per_session, .canary_runs, .canary_pass_rate, .canary_cost_per_task, .canary_min_per_task, .canary_turns_per_task] | map([.["7d"], .["28d"]])' <<<"$output"
+  assert_output '[[1,2],[4,2.5],[1,2],[1,0.5],[3,4],[10,15],[40,50]]'
+  run "$SUBJECT" kpi --trend 2 --json
+  run jq -sc 'map(.canary_runs)' <<<"$output"
+  assert_output '[0,1]'
 }

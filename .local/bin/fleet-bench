@@ -40,7 +40,14 @@
 #                                check and claims it, claim records a row or item that owns it
 #   fleet-bench retro            a verdict on each claim whose PR landed BENCH_EFFECT_DAYS ago (a
 #                                regression files a revert row), and one agent-board row per lesson
-#                                that recurred in BENCH_GUARD_RECUR sessions (a guard row)
+#                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
+#                                queues the week's canary run
+#   fleet-bench canary list [--json] | verify [id...] | queue | start <id> | score <id>
+#                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
+#                                the PR's own tests as the oracle. queue adds one night item per task
+#                                a week (retro runs it), start puts the session's worktree at the
+#                                task's base, score lays the oracle over it and records pass or fail
+#                                once per run; verify proves each oracle fails at base, passes at merge
 #   fleet-bench room             whether the agent boards take a row nobody asked for: exit 1 while
 #                                board_open is past board_open_max (retro, triage and research-pick hold)
 #   fleet-bench triage [--dry-run]
@@ -148,6 +155,10 @@ set -uo pipefail
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
+: "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
+: "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
+: "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
+: "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
@@ -178,6 +189,7 @@ ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
+CANARY="$DIR/canary.jsonl"   # canary: one score row per run; append-only, fleet-bench score the one writer
 EFFECT="$DIR/effect.jsonl"   # improve: claims (each with its baseline) and verdicts; append-only, fleet-bench the one writer
 RESPONSES="$DIR/responses.jsonl"   # fleet-bench respond: what answered each finding
 FORECASTS="$DIR/forecasts.jsonl"
@@ -1488,28 +1500,39 @@ ask_kpi() {
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
-# rows and $c the CI rows (slurped). Older lines have no runner field; _runner is where headless
-# runs are filed.
+# rows, $c the CI rows and $k the canary score rows (slurped). Older lines have no runner field;
+# _runner is where headless runs are filed. A canary session is an eval, not work: it leaves the
+# human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 KPI_DEFS="$JQ_LIB"'
   def total(f): map(f // 0) | add // 0;
-  def bots: $o | map(select(.runner == true or .project == "_runner") | .session_id) | INDEX(.);
+  def bots: ($o | map(select(.runner == true or .project == "_runner") | .session_id))
+    + ($k | map(.session_id // empty)) | INDEX(.);
   def win($t; $d): bots as $bot | ($t - $d * 86400) as $since
     | ($o | map(select(($bot[.session_id] | not) and .updated_epoch != null
                        and .updated_epoch > $since and .updated_epoch <= $t))) as $s
     | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id // ""] | not)))) as $ci
+    | ($k | map(select(.epoch > $since and .epoch <= $t))) as $kw
+    | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
     | {sessions: ($s | length), prs_per_session: ratio($prs; $s | length),
        revert_rate: ratio(($s | total(.reverted_7d)); $prs),
        interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
        cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
        ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
-       plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits))};
+       plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits)),
+       canary_runs: ($kw | length), canary_pass_rate: ratio(($kw | map(select(.pass == true)) | length); $kw | length),
+       canary_cost_per_task: ratio(($ks | total(.cost_usd)); $ks | length),
+       canary_min_per_task: ratio(($ks | total(.duration_s)) / 60; $ks | length),
+       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length)};
   # which way is better: -1 lower, 1 higher, 0 neither (sessions is volume, not quality)
   def better: {sessions: 0, prs_per_session: 1, revert_rate: -1, interrupts_per_session: -1,
-               cost_per_pr: -1, ci_red_per_pr: -1, plan_gate_deny_rate: -1};'
+               cost_per_pr: -1, ci_red_per_pr: -1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
+               canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1};'
 
 # kpi_ci -> the CI rows file, or /dev/null when there are none
 kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
+# kpi_canary -> the canary score rows file, or /dev/null when there are none
+kpi_canary() { [ -s "$CANARY" ] && printf '%s' "$CANARY" || printf /dev/null; }
 
 # kpi_json <now> <ledger counts> [historic] -> one object keyed by KPI, in table order. historic=1
 # (kpi --at) leaves the comms and the counted-now KPIs null: nothing records them as of a past time.
@@ -1517,7 +1540,7 @@ kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
-  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" \
+  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
      --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
@@ -1540,7 +1563,7 @@ kpi_json() {
 # kpi_trend <now> <days> -> one object a day, oldest first: {date, <kpi>: its 7d value as of that
 # day's end}. The outcome rows are the history, so a trend needs no store of its own.
 kpi_trend() {
-  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" "$KPI_DEFS"'
+  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
     range($n - 1; -1; -1) as $i | ($t - $i * 86400) as $at
     | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7)'
 }
@@ -1872,7 +1895,7 @@ cmd_effect() {
   fi
   local out
   out=$(jq -n --argjson t "$t" --argjson d "$days" --argjson now "$(now)" --argjson flat "$BENCH_EFFECT_FLAT" \
-        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" "$KPI_DEFS"'
+        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
     win($t; $d) as $b | win($t + $d * 86400; $d) as $a | ($now >= $t + $d * 86400) as $done
     | {ref: $ref, at: ($t | todate), days: $d, kpis: [$b | keys_unsorted[] as $k | better[$k] as $dir
         | {kpi: $k, before: $b[$k], after: (if $done then $a[$k] else null end),
@@ -2081,13 +2104,16 @@ retro_guard_rows() {
   done
 }
 
-# retro reads each live improvement claim (improve_check) and keeps exactly one open agent-board
-# row per lesson that keeps recurring (`check(lesson): guard <hash>:`). A KPI past its threshold gets
+# retro reads each live improvement claim (improve_check), queues the week's canary run
+# (canary_queue) and keeps exactly one open agent-board row per lesson that keeps recurring
+# (`check(lesson): guard <hash>:`). A KPI past its threshold gets
 # no row here: `fleet-bench improve` names one at a time, and its row carries the check.
 cmd_retro() {
   local grows why=()
   improve_check || { report_outcome FAILED "$IMPROVE_FAIL"; return 1; }
   if [ -n "$IMPROVE_LINE" ]; then say "$IMPROVE_LINE"; else why+=("$IMPROVE_WHY"); fi
+  # The week's canary run rides this weekly pass; a failure to queue it is said, never fatal here.
+  canary_queue || say "canary: could not queue this week's run"
   grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs unreadable"; return 1; }
   if [ -z "$grows" ]; then
     why+=("no lesson recurred")
@@ -3009,6 +3035,168 @@ cmd_flow() {
   ' "$PROGRESS"
 }
 
+# --- canary: a fixed eval set run weekly, so "the agents got better" reads apart from "the task
+# mix changed". A task is one merged PR as data in BENCH_CANARY_DIR/<id>.json: {id, project, pr,
+# base (the commit before it), merge, task (its row text), accept (the oracle's test names),
+# oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
+# merge, so a session can neither see nor edit what scores it. A score row in canary.jsonl is
+# {epoch, run, id, project, pr, session_id, pass, rc, config}; cost, minutes and turns come from
+# the session's outcome row in the KPI join, never copied here.
+
+# canary_tasks [id...] -> one compact task a line, by id; every listed id must exist
+canary_tasks() {
+  local f id
+  if [ $# -eq 0 ]; then
+    compgen -G "$BENCH_CANARY_DIR/*.json" >/dev/null || return 0
+    set -- "$BENCH_CANARY_DIR"/*.json
+  else
+    for id in "$@"; do
+      [ -f "$BENCH_CANARY_DIR/$id.json" ] || { say "canary: no task $id in $BENCH_CANARY_DIR"; return 2; }
+    done
+    set -- "${@/#/$BENCH_CANARY_DIR/}"; set -- "${@/%/.json}"
+  fi
+  for f in "$@"; do
+    jq -ce 'select((.id | strings) and (.project | strings) and (.base | strings) and (.merge | strings)
+                   and (.task | strings) and (.oracle.paths | arrays) and (.oracle.cmd | arrays))' "$f" 2>/dev/null ||
+      { say "canary: $f is not a task (id, project, base, merge, task, oracle.paths, oracle.cmd)"; return 2; }
+  done
+}
+
+canary_task() { canary_tasks "$1"; }
+canary_week() { date -d "@$(now)" +%Gw%V; }
+
+# canary_repo <project> -> the project's checkout from the project map, else the caller's repo
+canary_repo() {
+  local dir
+  dir=$(jq -r --arg p "$1" 'first(.paths // {} | to_entries[] | select(.value == $p) | .key) // empty' "$BENCH_PROJECT_MAP" 2>/dev/null)
+  [ -n "$dir" ] && [ -d "$dir" ] || dir=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  printf '%s' "$dir"
+}
+
+# canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree, runs its
+# command there under BENCH_CANARY_TIMEOUT and returns its exit (98 when the overlay fails: a broken
+# task, not a failed session)
+canary_oracle() {
+  local merge paths=() cmd=()
+  merge=$(jq -r .merge <<<"$1")
+  mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
+  mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
+  git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${cmd[@]}") >>"$3" 2>&1
+}
+
+# canary_brief <task> <slug> -> the night item's whole task: no /one-shot, no PR (fleet-dispatch
+# starts a `canary` item on this text as it is)
+canary_brief() {
+  jq -r --arg slug "$2" '
+    "Canary eval \(.id): a fixed task from \(.pr // "a merged PR"), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, touch no board or sheet row, and read nothing later than that PR (not git log past HEAD, not origin/main, not the PR).",
+    "1. Run `fleet-bench canary start \(.id)` here: it puts this worktree at the commit before that PR.",
+    "2. Do this task there, as you would on main: \(.task)",
+    (if (.accept // []) | length > 0 then "   Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
+    "3. Run `fleet-bench canary score \(.id)` once: it lays that PR'"'"'s own tests over your tree, runs them and records the score. Its result is final.",
+    "4. agent-queue move \($slug) done --status ok, then invoke the wind-down skill."' <<<"$1"
+}
+
+# canary queue: one night item per task for this ISO week, none for a task whose item exists in
+# any state, so a second retro the same week queues nothing. `from: canary` files no story row.
+canary_queue() {
+  local tasks t id slug week added=0 had=0
+  tasks=$(canary_tasks) || return 1
+  [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
+  week=$(canary_week)
+  while IFS= read -r t; do
+    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week"
+    if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
+    $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
+      --priority low --weight light --slug "$slug" --title "check(canary): $id $week" -- "$(canary_brief "$t" "$slug")" >/dev/null ||
+      { say "canary: could not queue $slug"; return 1; }
+    added=$((added + 1))
+  done <<<"$tasks"
+  say "canary: $added queued, $had already queued for $week"
+}
+
+# canary start <id>: the session's own worktree, clean, moved to the task's base (detached)
+canary_start() {
+  local t top base
+  t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary start: not in a git worktree"; return 2; }
+  base=$(jq -r .base <<<"$t")
+  git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
+  [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
+  git -C "$top" checkout -q --detach "$base" || return 1
+  printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
+}
+
+# canary score <id>: run the oracle over the session's tree and append one score row. A run is the
+# queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
+canary_score() {
+  local t top run log rc=0 cfg r repos
+  t=$(canary_task "${1:?usage: fleet-bench canary score <id>}") || return 2
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
+  run=${AGENT_QUEUE_ITEM:-canary-$1-$(canary_week)}
+  if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r)' "$CANARY" >/dev/null 2>&1; then
+    say "canary score: $run is already scored"; return 3
+  fi
+  mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
+  canary_oracle "$t" "$top" "$log" || rc=$?
+  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top (log $log)"; return 1; }
+  IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
+  cfg=$(for r in "${repos[@]}"; do
+          printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
+        done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
+  jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --arg sid "${CLAUDE_CODE_SESSION_ID:-}" \
+    --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
+      session_id: (if $sid == "" then null else $sid end), pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
+  printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
+}
+
+# canary verify [id...]: each oracle must fail at base and pass at merge, in a throwaway worktree
+# of the project's checkout; exit 1 when any does not (a task that cannot score anything)
+canary_verify() {
+  local tasks t id repo tmp log b m bad=0 root
+  tasks=$(canary_tasks "$@") || return 2
+  [ -n "$tasks" ] || { say "canary: no tasks in $BENCH_CANARY_DIR"; return 2; }
+  root="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-bench/canary-verify"; mkdir -p "$root"
+  while IFS= read -r t; do
+    id=$(jq -r .id <<<"$t")
+    repo=$(canary_repo "$(jq -r .project <<<"$t")") || { echo "BAD $id: no checkout of $(jq -r .project <<<"$t")"; bad=1; continue; }
+    tmp="$root/$id"; log="$root/$id.log"; : >"$log"
+    git -C "$repo" worktree remove --force "$tmp" 2>/dev/null; rm -rf "$tmp"
+    git -C "$repo" worktree add -q --detach "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: no worktree at base"; bad=1; continue; }
+    b=0; canary_oracle "$t" "$tmp" "$log" || b=$?
+    git -C "$tmp" checkout -q -f --detach "$(jq -r .merge <<<"$t")" 2>>"$log" && git -C "$tmp" clean -qfd
+    m=0; canary_oracle "$t" "$tmp" "$log" || m=$?
+    git -C "$repo" worktree remove --force "$tmp"
+    if [ "$b" -ne 0 ] && [ "$b" -ne 98 ] && [ "$m" -eq 0 ]; then echo "ok $id: base exit $b, merge passes"
+    else echo "BAD $id: base exit $b, merge exit $m (log $log)"; bad=1; fi
+  done <<<"$tasks"
+  return "$bad"
+}
+
+# canary list [--json]: each task with its newest score
+canary_list() {
+  local tasks
+  tasks=$(canary_tasks) || return 2
+  jq -nc --slurpfile k "$(kpi_canary)" --rawfile ts <(printf '%s' "$tasks") '
+    $ts | split("\n") | map(select(length > 0) | fromjson) | map(. as $x
+      | [$k[] | select(.id == $x.id)] as $rs | ($rs | max_by(.epoch)) as $l
+      | {id, project, pr, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
+    if [ "${1:-}" = --json ]; then cat; else
+      jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)"'
+    fi
+}
+
+cmd_canary() {
+  case "${1:-}" in
+    list) shift; canary_list "$@" ;;
+    verify) shift; canary_verify "$@" ;;
+    queue) canary_queue ;;
+    start) shift; canary_start "$@" ;;
+    score) shift; canary_score "$@" ;;
+    *) say "usage: fleet-bench canary list [--json] | verify [id...] | queue | start <id> | score <id>"; return 2 ;;
+  esac
+}
+
 # usage: the verb list at the top of this file, through the line before its State note
 usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
 
@@ -3244,6 +3432,7 @@ main() {
     effect) shift; cmd_effect "$@" ;;
     improve) shift; cmd_improve "$@" ;;
     retro) cmd_retro ;;
+    canary) shift; cmd_canary "$@" ;;
     room) intake_room ;;
     triage) shift; cmd_triage "$@" ;;
     reds) shift; cmd_reds "$@" ;;
