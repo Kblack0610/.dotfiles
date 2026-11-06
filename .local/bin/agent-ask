@@ -458,7 +458,7 @@ cmd_list() {
 
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
-  #      judge, answered_by  (append new columns at the end only)
+  #      judge, answered_by, option_notes, context, recommend_why  (append new columns at the end only)
   # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
   # 368 asks. A key's first `key: ` line wins, as in `field`.
   local files=()
@@ -466,7 +466,7 @@ cmd_list() {
   [ "${#files[@]}" -gt 0 ] || return 0
   awk -v want="$want" -v cutoff="$cutoff" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why", K, " ")
     }
     function flush(   i, d, p, row) {
       if (cur == "") return
