@@ -27,41 +27,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 ## Keys
 
-Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc.bats` fails when a bind has no row here or a row names a key that is unbound. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
-
-| Key | What it does |
-|-----|--------------|
-| `Prefix+p` | Projects finder: every project with its stage and open count, the selected one's card and rows beside it. Enter, `o` or a digit opens it on the hub Projects tab, `e` opens its sheet in the hub notes editor |
-| `Prefix+i` | The hub (`hub:board`), on its Home tab. Digits 1-8 inside reach the other tabs |
-| `Prefix+o` | The shepherd pass running now, window `hub:shepherd`. Never starts one |
-| `Prefix+P` | Open PRs from the configured repos, with their status |
-| `Prefix+Space` | This session's editor (window 1); again goes back where you were |
-| `Prefix+f` | Find a repo or a worktree and open it as a session |
-| `Prefix+F` | Cut a fresh worktree off this repo, in its own session; inside the scratch, send it to lab |
-| `Prefix+X` | Kill this session and reap its worktree, from inside it |
-| `Prefix+S` | Sessions of the current world |
-| `Prefix+H` | Every world as a tree, collapsed to the worlds: Enter or a click opens a world, Enter or a click on a session or window goes there, typing searches all (bare `tmx` too) |
-| `Prefix+C-h` | The other world: hub -> lab, anywhere else -> hub, back where you left off |
-| `Prefix+N` | Today's daily on hub, put back if you wandered off it |
-| `Prefix+A` | The scratch Claude, full screen; again inside it closes the popup and the scratch keeps running |
-| `Prefix+g` | Agent windows (`agent-panel`) |
-| `Prefix+G` | Jump to the next agent that needs you |
-| `Prefix+y` | The question card of the session you are on; with none asked here, every pending ask |
-| `Prefix+C-g` | Fleet: runners, watches, asks, agents in other sessions |
-| `Prefix+R` | Search every Claude session ever run; Enter resumes it |
-| `Prefix+C-y` | Copy the latest Claude compact summary to the clipboard |
-| `Prefix+C-r` | Today's refs in nvim |
-| `Prefix+w` / `Prefix+C-w` | Window chooser with a tag column / tagged windows only |
-| `Prefix+W` | fzf over every window, tag the row under the cursor |
-| `Prefix+t` / `Prefix+C-t` | Tag this window: then `i` important, `p` pinned, `a` agent, `g` group, `x` clear, `l` list, `Escape` cancel |
-| muxpoon `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` | Pin this window to the next slot (again unpins) / edit the list / jump to slot 1-4, on any server. Bound by the plugin, not by a `bind` line |
-| `Prefix+m` | Move this window to another session |
-| `Prefix+u` / `Prefix+U` | Images in yazi: `~/Media/Pictures` / this pane's directory |
-| `Prefix+r` | Reload the config on every world |
-| `Prefix+C-b` | Send a literal `C-b` to the pane |
-| `M-h` `M-j` `M-k` `M-l` | Move between panes, no prefix |
-| `M-H` `M-J` `M-K` `M-L` | Resize the pane by 5, no prefix |
-| copy mode `v` / `y` / `Y` | Start a selection / copy it / copy it and leave copy mode |
+`keys` (`Prefix+K`, or `Super+A k`) lists every key that is live: tmux's stock keys and ours, Hyprland and nvim, searchable. Each row is the bind's own `-N` note, so a new bind in `.tmux.conf` gets one (`tests/unit/tmux_keys_doc.bats` fails without it). muxpoon's `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` come from its plugin. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
 
 ## Window Tags
 
