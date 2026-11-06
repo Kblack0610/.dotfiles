@@ -11,6 +11,9 @@ conclusion, start, end, failed jobs). It writes them to one file, SCHEDULES_STAT
 and the hub Schedules tab read instead of asking gh themselves.
 
   schedules-sync          sync every repo, write the state file, print its path
+  schedules-sync pending <repo>
+                          what an agent-queue `nightly:<repo>` hold still waits for, one line;
+                          exit 0 and no output when nothing is (repo: owner/name or name)
 
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
@@ -25,6 +28,13 @@ not `gh run list`, which looks workflows up under actions/workflows, the bucket 
 A repo gh cannot read keeps its last good entry, with `error` set and `synced_at` left at
 the last success, so a reader can tell stale from fresh per repo; the exit status is 1.
 A repo with no scheduled workflow is an empty list, not an error.
+
+`pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
+today's local date must each have a finished run, or be past the slot (or the run's start)
+plus the workflow's timeout, which a triage reads as red. A slot still to come today holds.
+A missing file, a repo not in it, or one not synced in 30 minutes holds (fails
+closed, like the `pr:` hold when gh cannot answer). A frequent cron holds all day, so tag
+only repos whose schedules run nightly.
 """
 
 import base64
@@ -50,6 +60,10 @@ GH_JOB_TIMEOUT_MIN = 360  # GitHub's default timeout-minutes for a job that sets
 OVERLAP = timedelta(hours=1)  # re-read this far behind the last sync
 FAILED = ("failure", "timed_out")
 GH_CALL_TIMEOUT_S = 60  # a guard: one hung call must not eat the whole pass
+STALE = timedelta(minutes=30)  # three missed 10-minute passes
+CRON_NAMES = {n: i for i, n in enumerate(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])}
+CRON_NAMES.update({n: i + 1 for i, n in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])})
 
 
 class GhError(Exception):
@@ -263,12 +277,93 @@ def sync_repo(repo, base, prev, t):
             "workflows": workflows, "unscheduled": unscheduled}
 
 
+def cron_field(spec, lo, hi):
+    vals = set()
+    for part in spec.upper().split(","):
+        part, _, step = part.partition("/")
+        step = int(step) if step else 1
+        if part == "*":
+            a, b = lo, hi
+        else:
+            a, _, b = part.partition("-")
+            a = CRON_NAMES[a] if a in CRON_NAMES else int(a)
+            b = (CRON_NAMES[b] if b in CRON_NAMES else int(b)) if b else (hi if step > 1 else a)
+        vals.update(range(a, b + 1, step))
+    return vals
+
+
+def cron_slots(cron, start, end):
+    """The UTC minutes in [start, end) that a 5-field cron fires on, as GitHub reads it (UTC,
+    and a day matches on day-of-month OR day-of-week when both are restricted)."""
+    f = cron.split()
+    if len(f) != 5:
+        raise ValueError(cron)
+    mins, hours, doms, months = cron_field(f[0], 0, 59), cron_field(f[1], 0, 23), cron_field(f[2], 1, 31), cron_field(f[3], 1, 12)
+    dows = {d % 7 for d in cron_field(f[4], 0, 7)}
+    either = f[2] != "*" and f[4] != "*"
+    out, t = [], start
+    while t < end:
+        dom, dow = t.day in doms, t.isoweekday() % 7 in dows
+        if (t.month in months and t.hour in hours and t.minute in mins
+                and ((dom or dow) if either else (dom and dow))):
+            out.append(t)
+        t += timedelta(minutes=1)
+    return out
+
+
+def pending(name, t):
+    """-> what a nightly:<name> hold still waits for; empty when it releases."""
+    try:
+        with open(STATE) as f:
+            repos = json.load(f).get("repos", [])
+    except (OSError, ValueError, AttributeError):
+        return ["no schedules state"]
+    entry = next((r for r in repos if name in (r.get("repo"), r.get("repo", "").split("/")[-1])), None)
+    if not entry:
+        return [f"{name} not in the schedules state"]
+    if not entry.get("synced_at") or t - parse_iso(entry["synced_at"]) > STALE:
+        return [f"schedules state for {name} stale since {entry.get('synced_at')}"]
+    day = t.astimezone().date()  # today, local time; naive datetimes below are local too
+    start = datetime(day.year, day.month, day.day).astimezone(timezone.utc)
+    end = (datetime(day.year, day.month, day.day) + timedelta(days=1)).astimezone(timezone.utc)
+    out = []
+    for w in entry.get("workflows", []):
+        wf = os.path.basename(w["path"])
+        try:
+            slots = sorted({s for c in w.get("crons", []) for s in cron_slots(c, start, end)})
+        except (ValueError, KeyError):
+            out.append(f"{wf} cron unreadable")
+            continue
+        timeout = timedelta(minutes=w.get("timeout_min") or 0)
+        for i, slot in enumerate(slots):
+            if slot > t:
+                out.append(f"{wf} due {slot.astimezone():%H:%M}")
+                break
+            upto = slots[i + 1] if i + 1 < len(slots) else end
+            run = next((r for r in w.get("runs", []) if r.get("created_at")
+                        and slot <= parse_iso(r["created_at"]) < upto), None)
+            if run and run.get("status") == "completed":
+                continue
+            if t < (parse_iso(run["created_at"]) if run else slot) + timeout:
+                out.append(f"{wf} {'running' if run else 'not started'}")
+                break
+    return out
+
+
 def main(argv):
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
+    if argv and argv[0] == "pending":
+        if len(argv) != 2:
+            print("schedules-sync: pending <repo>", file=sys.stderr)
+            return 2
+        left = pending(argv[1], now())
+        if left:
+            print(", ".join(left))
+        return 1 if left else 0
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, --help)", file=sys.stderr)
         return 2
     try:
         repos = read_repos()
