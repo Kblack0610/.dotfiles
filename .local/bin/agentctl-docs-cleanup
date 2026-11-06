@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# agentctl-docs-cleanup - the nightly docs cleanup pass: count the drift, then queue one session to fix it.
+#
+#   agentctl-docs-cleanup [--dry-run]     agentctl: docs-cleanup.conf; --dry-run counts and prints the task, queues nothing
+#
+# Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
+# skills, skill-drift --docs over the global docs, the size of every lessons file), and when there is
+# drift and no docs-cleanup item is already open it adds ONE agent-queue item that runs the
+# docs-cleanup skill on that baseline. fleet-dispatch starts the item, so an unattended pass starts
+# only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
+#
+# It replaced the weekly propose-only skill-refine runner: six reports (2026-09-28 to 11-02) while
+# skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
+#
+# Verdict: WORKED when it queued a pass, NOOP when there was no drift or a pass is still open,
+# FAILED when a count could not be taken.
+set -uo pipefail
+# The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
+PATH="$HOME/.local/bin:$PATH"
+# shellcheck source=/dev/null
+. "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-docs-cleanup: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
+NAME="${AGENTCTL_NAME:-docs-cleanup}"
+SLUG=docs-cleanup-pass
+DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
+# A dry run publishes no outcome: it is a look, not a run.
+report() { [ "$DRY" = 1 ] || proof_report "$NAME" "$@"; }
+fail() { report FAILED "$1"; echo "$1" >&2; exit 1; }
+INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/docs-cleanup}"
+LESSONS="${DOCS_CLEANUP_LESSONS:-$HOME/.agent/lessons}"
+# skill-drift by path beside this script, so a worktree run counts with the worktree's copy.
+DRIFT="$(dirname "$(readlink -f "$0")")/skill-drift"
+stamp="$(date +%Y%m%d)"
+dir="$INBOX/$stamp"
+mkdir -p "$dir"
+
+# skill-drift exits 1 whenever it finds anything; only output that is not valid JSON is a failure.
+snap() {
+    local name=$1; shift
+    "$DRIFT" "$@" > "$dir/$name.json" 2>"$dir/$name.err"
+    jq -e . "$dir/$name.json" >/dev/null 2>&1 || fail "skill-drift $* gave no JSON ($dir/$name.err)"
+}
+snap skills --json
+snap docs --docs --json
+for f in "$LESSONS"/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$(wc -c < "$f")" "$(basename "$f")"; done \
+    | sort -rn > "$dir/lessons.tsv"
+
+# UNUSED and STALE are signals for a human, not drift a session can fix, so they do not count here.
+skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE")] | length' "$dir/skills.json")"
+docs_n="$(jq '.drift' "$dir/docs.json")"
+lessons_kb="$(awk '{s += $1} END {printf "%d", s / 1024}' "$dir/lessons.tsv")"
+summary="skills $skills_n, global docs $docs_n, lessons ${lessons_kb} KB"
+printf '%s\n' "$summary" > "$dir/summary.txt"
+
+if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ]; then
+    report NOOP "no drift ($summary)"
+    echo "docs-cleanup: no drift ($summary)"
+    exit 0
+fi
+
+# One pass at a time under one slug: agent-queue refuses a second active item with it, and a
+# finished one sits in done/ where `show` still finds it, so only an active state means "open".
+state="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty')"
+case "$state" in
+    queued|running|waiting)
+        report NOOP "pass $SLUG still $state ($summary)"
+        echo "docs-cleanup: pass $SLUG still $state, not queuing another ($summary)"
+        exit 0 ;;
+esac
+
+task="Run the docs-cleanup skill (~/.claude/skills/docs-cleanup/SKILL.md) on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
+if [ "$DRY" = 1 ]; then
+    echo "docs-cleanup: would queue: $task"
+    exit 0
+fi
+agent-queue add --project dotfiles --slug "$SLUG" --priority low "$task" \
+    || fail "could not queue the pass ($summary)"
+report WORKED "queued $SLUG ($summary)"
