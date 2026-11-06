@@ -29,14 +29,15 @@ setup() {
   stub watch-companion-loop ':'
   stub fleet-bench ':'
   stub claude-acct 'case "$1" in
-  room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM:-}" ;;
+  room) [ -z "${STUB_NO_ROOM:-}" ] || { echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace" >&2; exit 1; }
+        printf "%s\n" "${STUB_ROOM:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
 esac'
   stub agentctl ':'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   # With $HOME/hold there, the pass stays in its pane the way a claude does, until the server goes.
   stub agentctl-run "pwd >> \"\$HOME/pass.cwd\"
-echo \"\${CLAUDE_CONFIG_DIR:-}\" >> \"\$HOME/pass.config\"
+echo \"\${AGENTCTL_ACCOUNT:-}\" >> \"\$HOME/pass.config\"
 printf '%s' \"\${@: -1}\" > \"\$HOME/last-prompt\"
 \"$REAL_TMUX\" -L $SRV wait-for -S pass
 [ ! -e \"\$HOME/hold\" ] || exec \"$REAL_TMUX\" -L $SRV wait-for hold"
@@ -169,7 +170,7 @@ said() {
   assert_success
   ended
   assert_equal "$(tail -n 1 "$HOME/pass.config")" "$HOME/.claude-best"
-  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 1
+  assert_equal "$(grep -c 'alt is the closest, 1 point over its weekly pace' "$HOME/pages")" 1
 }
 
 @test "killing session dotfiles leaves the pass running" {

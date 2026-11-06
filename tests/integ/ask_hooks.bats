@@ -23,6 +23,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_success
   [ "$(jq -r .decision <<<"$output")" = block ]
   [[ "$(jq -r .reason <<<"$output")" == *"agent-ask post"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == "ask-filed: "* ]]
 }
 
 @test "the check passes once the session owns a pending ask, and never loops" {
@@ -103,14 +104,14 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: answered'
 }
 
-@test "an answer no live session takes and nothing resumes becomes one plain board row" {
+@test "an answer no live session takes and nothing resumes becomes one typed board row" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"
   run "$AGENT_ASK" answer "$a" now
   assert_success
-  assert_called "ptask demo --agent add ship it? -> answered: now (ask $a)"
+  assert_called "ptask demo --agent add chore(ask): ship it? -> answered: now (ask $a) #size/s"
   [ "$(calls | grep -c 'ptask demo --agent add')" -eq 1 ]
-  assert_not_called '#'
+  assert_not_called '#it'
 }
 
 @test "an answer a live session takes or a resume consumes files no row, and neither does a cancel" {

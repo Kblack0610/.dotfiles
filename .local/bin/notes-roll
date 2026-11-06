@@ -154,7 +154,7 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX
   if [ -n "$frozen" ] && command -v notes-version-summary >/dev/null 2>&1; then
     echo "summarizing $(basename "$frozen") ..."
     notes-version-summary "$profile" "$name" "$frozen" \
-      || echo "(summary skipped - see ~/.config/notes-cockpit/llm.env)"
+      || echo "(summary skipped - see calls.jsonl, agent version-summary)"
   fi
 }
 

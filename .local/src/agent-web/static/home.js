@@ -14,17 +14,28 @@ const refreshHome = coalesce(async () => {
   if (st.tab === "home") renderHome();
 });
 
-const NEED_KIND = { ask: "question", session: "waiting on you", queue: "waiting", nightly: "nightly failed", red: "failing" };
+// The Needs you kind of a row hub_core::home sent (waiting.js NEED_KINDS): an ask is a
+// question, a session its open dialog's kind, a waiting queue item blocked, a red main failing.
+function needKind(n) {
+  if (n.kind === "ask") return "ask";
+  if (n.kind === "session") {
+    const a = st.agents.find((x) => x.target === n.target && x.question);
+    return a ? dialog(a.question) : "turn";
+  }
+  if (n.kind === "queue") return "blocked";
+  return "red";
+}
 
 // A row with no answer card: what it is, how long it has waited, and a way to it.
 function needCard(n) {
-  const age = n.since ? ` ${ago(n.since)}` : "";
-  const cls = n.kind === "nightly" || n.kind === "red" ? "bad" : "waiting";
-  const head = cardHead(n.text, [cchip(cls, `${esc(NEED_KIND[n.kind] || n.kind)}${age}`)], n.target || n.id);
+  const k = n.need;
+  const what = n.kind === "nightly" ? "nightly failed" : n.kind === "red" ? "red now" : n.kind === "queue" ? "queue item" : "";
+  const id = [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
+  const band = needBand(k, [esc(n.project), what, id, n.since ? ago(n.since) : ""]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
     : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
-  return `<div class="card">${head}${cardLine([esc(n.project), [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id)])}${btn}</div>`;
+  return `<div class="card need k-${k}" title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
 }
 
 // An ask or a session dialog the page can answer gets its answer card; the rest a plain card.
@@ -38,6 +49,19 @@ function needHtml(n) {
     if (a) return sessionCard(a);
   }
   return needCard(n);
+}
+
+// Needs you in NEED_ORDER (plans first: each one holds a session), the server's order kept
+// within a kind, each row carrying its kind as `need`; and one chip per kind with its count,
+// so the list reads at a glance.
+function needsSorted(needs) {
+  const at = (n) => NEED_ORDER.indexOf(n.need);
+  return needs.map((n, i) => [{ ...n, need: needKind(n) }, i]).sort((x, y) => at(x[0]) - at(y[0]) || x[1] - y[1]).map(([n]) => n);
+}
+function needsTally(needs) {
+  const c = {};
+  for (const n of needs) c[n.need] = (c[n.need] || 0) + 1;
+  return NEED_ORDER.filter((k) => c[k]).map((k) => `<span class="nchip k-${k}">${esc(NEED_KINDS[k])} <b>${c[k]}</b></span>`).join("");
 }
 
 function runningCard(r) {
@@ -66,7 +90,9 @@ function drawHome() {
   const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
     rows.slice(0, h.shown).map(card).join("") +
     (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  const needs = capped("home-needs", h.needs, needHtml, "older", "Nothing waits on you.");
+  const sorted = needsSorted(h.needs);
+  const needs = (sorted.length ? `<div class="ntally">${needsTally(sorted)}</div>` : "") +
+    capped("home-needs", sorted, needHtml, "more", "Nothing waits on you.");
   const running = capped("home-running", h.running, runningCard, "more", "Nothing running from the queue.");
   const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
   // The two summary lines lead, so a long Needs list never buries them.
@@ -91,6 +117,7 @@ $("home").addEventListener("click", (e) => {
 });
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {
+  askTrace(e, renderHome);
   if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;
 }, true);
 

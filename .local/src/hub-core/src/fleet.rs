@@ -6,10 +6,11 @@
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers, and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
+//! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
-//! | answer judge | `~/.agent/asks/<project>/*.md`, counted as `agent-ask judge-report` does  |
+//! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
 //!
-//! The file parts are cheap and read fresh; the Prometheus part (`prom`) is the slow one, so a
+//! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
 //! server can cache it apart and `apply` it to a fresh file read.
 
 use std::collections::{BTreeMap, HashMap};
@@ -33,6 +34,11 @@ const RECENT_DISAGREE: usize = 10;
 const VERDICT_TAIL: u64 = 1 << 20;
 const LOG_TAIL: u64 = 256 << 10;
 const ACTIVITY_TAIL: u64 = 16 << 10;
+/// calls.jsonl holds up to 4 KB of raw reply a line; the busiest lane (dispatch-judge, about 100
+/// calls a day) writes well under 1 MiB a day.
+const CALLS_TAIL: u64 = 2 << 20;
+/// Calls listed under a runner's row, newest first; the rest are `agentctl-run` lines on disk.
+const RECENT_CALLS: usize = 5;
 
 /// Each runner's dollars in the last day, by the OTel resource attribute agentctl sets.
 const COST_BY_RUNNER: &str = r#"sum by (agentctl_runner) (increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
@@ -48,17 +54,28 @@ pub struct Paths {
     pub agents: PathBuf,
     pub jobs: jobs::Paths,
     pub dispatch: PathBuf,
-    pub asks: PathBuf,
+    /// agentctl's role files, `<role>.role` each.
+    pub roles: PathBuf,
+    /// agentctl-run's one line per model call (`AGENTCTL_CALLS` overrides it, as agentctl-run's).
+    pub calls: PathBuf,
+    /// The judge scorer; `JUDGE_EVAL` overrides it (tests, a checkout).
+    pub judge_eval: String,
 }
 
 impl Paths {
     pub fn from_env() -> Paths {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let jobs = jobs::Paths::from_env();
         Paths {
             agents: home.join(".config/agentctl/agents"),
-            jobs: jobs::Paths::from_env(),
+            roles: home.join(".config/agentctl/roles"),
+            calls: std::env::var_os("AGENTCTL_CALLS")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| jobs.agentctl.join("calls.jsonl")),
+            jobs,
             dispatch: crate::boards::dispatch_dir(),
-            asks: agent_panel::asks::root(),
+            judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
         }
     }
 }
@@ -96,6 +113,97 @@ pub struct Worker {
     pub next: Option<i64>,
     /// None until its cost series carries the runner label.
     pub cost_24h: Option<f64>,
+    /// What the row opens to: how the runner is defined and what its calls did.
+    pub registry: Registry,
+}
+
+/// One runner as its conf defines it (`~/.config/agentctl/README.md`, "What an agent is"), and
+/// its model calls from agentctl-run's ledger.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Registry {
+    /// call, oneshot or persistent.
+    pub kind: String,
+    /// The words `agentctl list --md` uses: its schedule, "called by its caller", ...
+    pub trigger: String,
+    pub role: String,
+    /// The role's ROLE_DESC and its capabilities ("write no, task no, bash no, mcp none").
+    pub role_desc: String,
+    pub caps: String,
+    /// MODEL as pinned; empty when the conf pins none.
+    pub model: String,
+    pub effect: String,
+    /// PROMPT, the git-tracked prompt file; empty for a runner whose prompt is in its script.
+    pub prompt: String,
+    pub calls: Calls,
+    /// judge-eval's block, for a judge lane.
+    pub eval: Option<Eval>,
+}
+
+/// A runner's model calls in calls.jsonl: the last day's counts, and the newest few.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Calls {
+    pub n_24h: u32,
+    /// Exit not 0, or the json result said is_error.
+    pub errors_24h: u32,
+    /// Summed from each call's own json result, so it covers the short calls whose OTel export
+    /// never lands (judges plan, phase 1). None with no call in the day.
+    pub cost_24h: Option<f64>,
+    /// Input, output and cache tokens together.
+    pub tokens_24h: u64,
+    pub p95_ms: Option<u64>,
+    /// The prompt the newest call ran under (its git blob, short).
+    pub prompt_sha: String,
+    pub recent: Vec<Call>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Call {
+    pub id: String,
+    pub at: i64,
+    pub ms: u64,
+    pub ok: bool,
+    pub model: String,
+    pub cost: Option<f64>,
+    pub tokens: u64,
+    /// Its Langfuse session, when session-outcomes.conf names the project; else empty.
+    pub link: String,
+}
+
+/// One judge lane from judge-eval, under its current prompt.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Eval {
+    pub prompt_sha: String,
+    #[serde(default)]
+    pub live: Vec<String>,
+    pub total: Score,
+    #[serde(default)]
+    pub rules: Vec<Score>,
+}
+
+/// judge-eval's numbers for one rule (or the lane's total), as it gives them.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Score {
+    #[serde(default)]
+    pub rule: String,
+    #[serde(default)]
+    pub verdicts: u32,
+    #[serde(default)]
+    pub errors: u32,
+    #[serde(default)]
+    pub scored: u32,
+    pub precision: Option<f64>,
+    pub false_defer_pct: Option<f64>,
+    #[serde(default)]
+    pub live: bool,
+    pub bar: Option<Bar>,
+}
+
+/// How far a shadow rule is from going live: scored answers against the bar's count.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Bar {
+    pub labels: u32,
+    pub need: u32,
+    pub met: bool,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -141,14 +249,22 @@ pub struct Dispatch {
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Judge {
+    /// Answered, and the human's answer (or the review of a live answer) matched.
     pub agree: u32,
     pub disagree: u32,
     /// The judge said this one is the human's ("asks-you").
     pub deferred: u32,
+    /// Deferred, and the human took the recommendation anyway.
+    pub false_defer: u32,
     /// Judged, still waiting on the human.
     pub pending: u32,
-    /// Answered in the session as free text, which no call can match.
+    /// Answered in the session as free text naming no option, which no call can match.
     pub unscored: u32,
+    /// agree / (agree + disagree) in percent, and Cohen's kappa; null with nothing scored.
+    pub precision: Option<f64>,
+    pub kappa: Option<f64>,
+    /// The judge prompt the counts are under (its git blob, short).
+    pub prompt: String,
     pub disagreements: Vec<Disagreement>,
 }
 
@@ -199,7 +315,30 @@ pub fn files(paths: &Paths) -> Fleet {
             Some((c.name.clone(), text.lines().rev().find_map(parse_activity)?))
         })
         .collect();
-    let workers = workers(confs, &runs, &activity, &timers, at);
+    let roles = read_roles(&paths.roles, &confs);
+    let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
+    let calls = match tail(&paths.calls, CALLS_TAIL) {
+        Ok((text, _)) => calls(&text, &lf, at),
+        Err(e) => {
+            errors.push(format!("calls: {e}"));
+            HashMap::new()
+        }
+    };
+    let (judge, evals) = match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
+        Ok(x) => x,
+        Err(e) => {
+            errors.push(format!("judges: {e}"));
+            (Judge::default(), HashMap::new())
+        }
+    };
+    let regs: HashMap<String, Registry> = confs
+        .iter()
+        .map(|c| (c.name.clone(), registry(c, &roles, &calls, &evals)))
+        .collect();
+    let mut workers = workers(confs, &runs, &activity, &timers, at);
+    for w in &mut workers {
+        w.registry = regs.get(&w.name).cloned().unwrap_or_default();
+    }
 
     let mut dispatch = match tail(&paths.dispatch.join("verdicts.jsonl"), VERDICT_TAIL) {
         Ok((text, cut)) => verdicts(&text, cut, at),
@@ -217,7 +356,7 @@ pub fn files(paths: &Paths) -> Fleet {
         errors,
         workers,
         dispatch,
-        judge: judge(&read_asks(&paths.asks)),
+        judge,
         ..Default::default()
     }
 }
@@ -291,19 +430,24 @@ pub struct Conf {
     pub schedule: String,
     pub enabled: bool,
     pub inbox: PathBuf,
+    pub kind: String,
+    pub role: String,
+    pub model: String,
+    pub prompt: String,
+    pub effect: String,
 }
 
-/// A conf's `KEY=value` lines as agentctl sources them, for the keys read here. Quotes are
-/// stripped and `$HOME` expanded; nothing fancier is.
-pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
-    let mut kv: HashMap<&str, String> = HashMap::new();
+/// A conf's (or a role's) `KEY=value` lines as agentctl sources them, for the keys asked for.
+/// Quotes are stripped and `$HOME` expanded; nothing fancier is.
+fn kv(text: &str, keys: &[&str], home: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
     for l in text.lines() {
         let l = l.trim();
         let l = l.strip_prefix("export ").unwrap_or(l);
         let Some((k, v)) = l.split_once('=') else {
             continue;
         };
-        if !matches!(k, "LANE" | "DESCRIPTION" | "SCHEDULE" | "ENABLED" | "INBOX") {
+        if !keys.contains(&k) {
             continue;
         }
         let v = v.trim();
@@ -312,8 +456,32 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             .and_then(|x| x.strip_suffix('"'))
             .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
             .unwrap_or(v);
-        kv.insert(k, v.replace("${HOME}", home).replace("$HOME", home));
+        out.insert(
+            k.to_string(),
+            v.replace("${HOME}", home).replace("$HOME", home),
+        );
     }
+    out
+}
+
+/// One runner's conf, for the keys the tab shows.
+pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
+    let kv = kv(
+        text,
+        &[
+            "LANE",
+            "DESCRIPTION",
+            "SCHEDULE",
+            "ENABLED",
+            "INBOX",
+            "KIND",
+            "ROLE",
+            "MODEL",
+            "PROMPT",
+            "EFFECT",
+        ],
+        home,
+    );
     let get = |k: &str| kv.get(k).cloned().unwrap_or_default();
     Conf {
         name: name.to_string(),
@@ -326,7 +494,174 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| state.join(name)),
+        kind: get("KIND"),
+        role: get("ROLE"),
+        model: get("MODEL"),
+        prompt: get("PROMPT"),
+        effect: get("EFFECT"),
     }
+}
+
+/// Each role the confs name: (ROLE_DESC, its capabilities in a few words). A role with no file
+/// says so in place of its capabilities.
+fn read_roles(dir: &Path, confs: &[Conf]) -> HashMap<String, (String, String)> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut out = HashMap::new();
+    for c in confs.iter().filter(|c| !c.role.is_empty()) {
+        if out.contains_key(&c.role) {
+            continue;
+        }
+        let r = match std::fs::read_to_string(dir.join(format!("{}.role", c.role))) {
+            Ok(t) => parse_role(&t, &home),
+            Err(_) => (String::new(), "no role file".into()),
+        };
+        out.insert(c.role.clone(), r);
+    }
+    out
+}
+
+/// A role file's ROLE_DESC and its ROLE_WRITE, ROLE_TASK, ROLE_BASH and ROLE_MCP, which are
+/// what the role takes away (`--disallowedTools`).
+pub fn parse_role(text: &str, home: &str) -> (String, String) {
+    let kv = kv(
+        text,
+        &[
+            "ROLE_DESC",
+            "ROLE_WRITE",
+            "ROLE_TASK",
+            "ROLE_BASH",
+            "ROLE_MCP",
+        ],
+        home,
+    );
+    let get = |k: &str| kv.get(k).map_or("-", |v| v.as_str());
+    let caps = format!(
+        "write {}, task {}, bash {}, mcp {}",
+        get("ROLE_WRITE"),
+        get("ROLE_TASK"),
+        get("ROLE_BASH"),
+        get("ROLE_MCP")
+    );
+    (kv.get("ROLE_DESC").cloned().unwrap_or_default(), caps)
+}
+
+/// `agentctl list --md`'s trigger words for a conf.
+fn trigger(c: &Conf) -> String {
+    let t = match c.kind.as_str() {
+        "call" => "called by its caller".to_string(),
+        "persistent" => "always on".to_string(),
+        _ if !c.schedule.is_empty() => c.schedule.clone(),
+        _ => "started by another runner".to_string(),
+    };
+    if c.enabled {
+        t
+    } else {
+        format!("{t} (disabled)")
+    }
+}
+
+fn registry(
+    c: &Conf,
+    roles: &HashMap<String, (String, String)>,
+    calls: &HashMap<String, Calls>,
+    evals: &HashMap<String, Eval>,
+) -> Registry {
+    let (role_desc, caps) = roles.get(&c.role).cloned().unwrap_or_default();
+    Registry {
+        kind: c.kind.clone(),
+        trigger: trigger(c),
+        role: c.role.clone(),
+        role_desc,
+        caps,
+        model: c.model.clone(),
+        effect: c.effect.clone(),
+        prompt: c.prompt.clone(),
+        calls: calls.get(&c.name).cloned().unwrap_or_default(),
+        eval: evals.get(&c.name).cloned(),
+    }
+}
+
+/// `<SO_LF_URL>/project/<SO_LF_PROJECT>/sessions/` from session-outcomes.conf, as agent-ask's
+/// trace builds it; empty when either is unset.
+fn langfuse_sessions(conf: &Path) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let text = std::fs::read_to_string(conf).unwrap_or_default();
+    let kv = kv(&text, &["SO_LF_URL", "SO_LF_PROJECT"], &home);
+    match (kv.get("SO_LF_URL"), kv.get("SO_LF_PROJECT")) {
+        (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => {
+            format!("{}/project/{p}/sessions/", u.trim_end_matches('/'))
+        }
+        _ => String::new(),
+    }
+}
+
+/// Each runner's calls from calls.jsonl: the day before `at` counted, and the newest
+/// `RECENT_CALLS` in the tail listed. `lf` is the Langfuse sessions URL a call's session_id
+/// joins; empty leaves the links empty.
+pub fn calls(text: &str, lf: &str, at: i64) -> HashMap<String, Calls> {
+    let mut by: HashMap<String, (Calls, Vec<u64>)> = HashMap::new();
+    let n = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    for l in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
+            continue;
+        };
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let agent = s("agent");
+        let Some(t) = ts(&s("at")) else { continue };
+        if agent.is_empty() {
+            continue;
+        }
+        let ok = n(&v, "exit") == 0 && v.get("is_error").and_then(|x| x.as_bool()) != Some(true);
+        let tokens = n(&v, "gen_ai.usage.input_tokens")
+            + n(&v, "gen_ai.usage.output_tokens")
+            + n(&v, "cache_read_tokens")
+            + n(&v, "cache_write_tokens");
+        let cost = v.get("cost_usd").and_then(|x| x.as_f64());
+        let ms = n(&v, "duration_ms");
+        let sid = s("session_id");
+        let model = Some(s("gen_ai.response.model"))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| s("gen_ai.request.model"));
+        let (c, durs) = by.entry(agent).or_default();
+        if t >= at - DAY {
+            c.n_24h += 1;
+            c.errors_24h += u32::from(!ok);
+            if let Some(x) = cost {
+                *c.cost_24h.get_or_insert(0.0) += x;
+            }
+            c.tokens_24h += tokens;
+            durs.push(ms);
+        }
+        // The file is in write order, so the last line seen is the newest.
+        c.prompt_sha = s("prompt_sha").chars().take(7).collect();
+        c.recent.push(Call {
+            id: s("id"),
+            at: t,
+            ms,
+            ok,
+            model,
+            cost,
+            tokens,
+            link: if lf.is_empty() || sid.is_empty() {
+                String::new()
+            } else {
+                format!("{lf}{sid}")
+            },
+        });
+        if c.recent.len() > RECENT_CALLS {
+            c.recent.remove(0);
+        }
+    }
+    by.into_iter()
+        .map(|(k, (mut c, mut durs))| {
+            c.recent.reverse();
+            durs.sort_unstable();
+            // Nearest rank, as judge-eval's p95.
+            c.p95_ms = (!durs.is_empty())
+                .then(|| durs[((durs.len() * 95).div_ceil(100)).saturating_sub(1)]);
+            (k, c)
+        })
+        .collect()
 }
 
 fn read_confs(dir: &Path, state: &Path) -> (Vec<Conf>, Vec<String>) {
@@ -493,103 +828,108 @@ fn local_minute(t: i64) -> String {
         .unwrap_or_default()
 }
 
-/// The ask fields the judge count reads, each as agent-ask's `field` gives it: the value after
-/// the first `<key>: ` line.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Ask {
-    pub id: String,
-    pub project: String,
-    pub status: String,
-    pub question: String,
-    pub recommend: String,
-    pub answer: String,
-    pub answered_at: String,
-    pub answered_by: String,
-    pub judge: String,
-    pub judge_reason: String,
-}
-
-pub fn parse_ask(text: &str) -> Ask {
-    let field = |k: &str| {
-        let p = format!("{k}: ");
-        text.lines()
-            .find_map(|l| l.strip_prefix(p.as_str()))
-            .unwrap_or("")
-            .to_string()
-    };
-    Ask {
-        id: field("id"),
-        project: field("project"),
-        status: field("status"),
-        question: field("question"),
-        recommend: field("recommend"),
-        answer: field("answer"),
-        answered_at: field("answered_at"),
-        answered_by: field("answered_by"),
-        judge: field("judge"),
-        judge_reason: field("judge_reason"),
+fn run_judge_eval(cmd: &str) -> Result<String, String> {
+    let out = std::process::Command::new(cmd)
+        .args(["--all", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{cmd} exited {}", out.status));
     }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn read_asks(root: &Path) -> Vec<Ask> {
-    let Ok(projects) = std::fs::read_dir(root) else {
-        return vec![];
-    };
-    projects
-        .flatten()
-        .filter_map(|p| std::fs::read_dir(p.path()).ok())
-        .flat_map(|d| d.flatten())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md"))
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .map(|t| parse_ask(&t))
-        .collect()
-}
-
-/// The answer judge against the human, as `agent-ask judge-report` scores it: only asks the
-/// judge called and a human answered count; `human` is a deferral, `take-recommend` wants the
-/// recommended option, `answer:<x>` wants x, compared without case; an answer typed in the
-/// session is free text and unscored.
-pub fn judge(asks: &[Ask]) -> Judge {
-    let mut j = Judge::default();
-    let mut differ = vec![];
-    for a in asks.iter().filter(|a| !a.judge.is_empty()) {
-        if a.status == "pending" {
-            j.pending += 1;
-            continue;
-        }
-        if a.status != "answered" || !matches!(a.answered_by.as_str(), "" | "human") {
-            continue;
-        }
-        let want = match a.judge.as_str() {
-            "human" => {
-                j.deferred += 1;
-                continue;
-            }
-            "take-recommend" => a.recommend.as_str(),
-            call => call.strip_prefix("answer:").unwrap_or(call),
-        };
-        if a.answer.starts_with("in session:") {
-            j.unscored += 1;
-        } else if a.answer.to_lowercase() == want.to_lowercase() {
-            j.agree += 1;
-        } else {
-            j.disagree += 1;
-            differ.push(Disagreement {
-                id: a.id.clone(),
-                project: a.project.clone(),
-                question: a.question.clone(),
-                judge: want.to_string(),
-                reason: a.judge_reason.clone(),
-                answer: a.answer.clone(),
-                answered_at: ts(&a.answered_at),
-            });
+/// From one `judge-eval --all --json`, under each judge's current prompt: the answer judge's
+/// tiles, and each lane's per-rule table by agent name. No count is made here: judge-eval is the
+/// one scorer.
+pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
+    #[derive(Deserialize)]
+    struct All {
+        agents: Vec<Agent>,
+    }
+    #[derive(Deserialize)]
+    struct Agent {
+        agent: String,
+        prompt_sha: String,
+        total: Total,
+        #[serde(default)]
+        misses: Vec<Miss>,
+        #[serde(default)]
+        live: Vec<String>,
+        #[serde(default)]
+        rules: Vec<Score>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Total {
+        // precision is read through `score`: a field named here would hide it from the flatten.
+        #[serde(flatten)]
+        score: Score,
+        tp: u32,
+        fp: u32,
+        #[serde(rename = "fn")]
+        false_defer: u32,
+        deferred: u32,
+        pending: u32,
+        unscorable: u32,
+        kappa: Option<f64>,
+    }
+    #[derive(Deserialize)]
+    struct Miss {
+        id: String,
+        project: String,
+        question: Option<String>,
+        judge: Option<String>,
+        reason: Option<String>,
+        answer: Option<String>,
+        answered_at: Option<i64>,
+    }
+    let all: All = serde_json::from_str(json).map_err(|e| format!("judge-eval: {e}"))?;
+    let mut evals = HashMap::new();
+    let mut ask = None;
+    for a in all.agents {
+        evals.insert(
+            a.agent.clone(),
+            Eval {
+                prompt_sha: a.prompt_sha.chars().take(7).collect(),
+                live: a.live.clone(),
+                total: a.total.score.clone(),
+                rules: a.rules.clone(),
+            },
+        );
+        if a.agent == "ask-judge" {
+            ask = Some(a);
         }
     }
-    differ.sort_by_key(|d| std::cmp::Reverse(d.answered_at));
-    differ.truncate(RECENT_DISAGREE);
-    j.disagreements = differ;
-    j
+    let a = ask.ok_or("judge-eval: no ask-judge block")?;
+    let t = a.total;
+    let judge = Judge {
+        agree: t.tp,
+        disagree: t.fp,
+        deferred: t.deferred,
+        false_defer: t.false_defer,
+        pending: t.pending,
+        unscored: t.unscorable,
+        precision: t.score.precision,
+        kappa: t.kappa,
+        prompt: a.prompt_sha.chars().take(7).collect(),
+        disagreements: a
+            .misses
+            .into_iter()
+            .take(RECENT_DISAGREE)
+            .map(|m| Disagreement {
+                id: m.id,
+                project: m.project,
+                question: m.question.unwrap_or_default(),
+                judge: m.judge.unwrap_or_default(),
+                reason: m.reason.unwrap_or_default(),
+                answer: m.answer.unwrap_or_default(),
+                answered_at: m.answered_at,
+            })
+            .collect(),
+    };
+    Ok((judge, evals))
 }
 
 /// Unix seconds from RFC 3339 (`date -Is`) or agent-ask's `%Y-%m-%dT%H:%M:%S%z` (no colon).
@@ -830,90 +1170,166 @@ mod tests {
         );
     }
 
-    fn ask(status: &str, by: &str, judge: &str, recommend: &str, answer: &str, at: &str) -> Ask {
-        parse_ask(&format!(
-            "id: {judge}{answer}\nproject: p\nstatus: {status}\nquestion: q?\nrecommend: {recommend}\nanswer: {answer}\nanswered_at: {at}\nanswered_by: {by}\njudge: {judge}\njudge_reason: because\n"
-        ))
+    #[test]
+    fn the_answer_judge_tiles_are_judge_evals_numbers() {
+        let json = r#"{"at":1,"agents":[
+          {"agent":"ask-judge","prompt_sha":"60c840b1234","total":{"verdicts":9,"tp":2,"fp":1,"fn":3,"tn":1,
+            "deferred":4,"pending":1,"unscorable":2,"precision":66.7,"kappa":0.12},
+           "misses":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
+             "answer":"no","rule":"r","answered_at":1700000000}]}]}"#;
+        let (j, evals) = judges(json).unwrap();
+        assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
+        assert_eq!(
+            (
+                j.agree,
+                j.disagree,
+                j.deferred,
+                j.false_defer,
+                j.pending,
+                j.unscored
+            ),
+            (2, 1, 4, 3, 1, 2)
+        );
+        assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
+        assert_eq!(j.prompt, "60c840b");
+        assert_eq!(j.disagreements[0].judge, "yes");
+        assert_eq!(j.disagreements[0].answered_at, Some(1_700_000_000));
     }
 
     #[test]
-    fn the_answer_judge_is_scored_as_judge_report_does() {
-        let asks = [
-            ask(
-                "answered",
-                "",
-                "take-recommend",
-                "a",
-                "A",
-                "2026-11-03T09:00:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:b",
-                "a",
-                "b",
-                "2026-11-03T09:01:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "take-recommend",
-                "a",
-                "b",
-                "2026-11-03T09:02:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:yes",
-                "",
-                "no",
-                "2026-11-03T10:00:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "human",
-                "a",
-                "a",
-                "2026-11-03T09:03:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:a",
-                "a",
-                "in session: do a then b",
-                "",
-            ),
-            ask("answered", "shepherd", "answer:a", "a", "b", ""),
-            ask("pending", "", "take-recommend", "a", "", ""),
-            ask("cancelled", "", "take-recommend", "a", "", ""),
-            ask("answered", "human", "", "a", "b", ""),
-        ];
-        let j = judge(&asks);
-        assert_eq!(
-            (j.agree, j.disagree, j.deferred, j.pending, j.unscored),
-            (2, 2, 1, 1, 1)
-        );
-        assert_eq!(
-            j.disagreements[0].judge, "yes",
-            "newest first, the call without its prefix"
-        );
-        assert_eq!(j.disagreements[0].answer, "no");
-        assert_eq!(
-            j.disagreements[1].judge, "a",
-            "take-recommend wants the recommendation"
-        );
-        assert_eq!(j.disagreements[1].reason, "because");
+    fn a_judge_eval_answer_with_no_ask_judge_block_is_an_error_not_zeros() {
+        assert!(judges(r#"{"agents":[]}"#).is_err());
+        assert!(judges("not json").is_err());
     }
 
     #[test]
-    fn an_ask_field_is_the_first_match_after_key_colon_space() {
-        let a = parse_ask("id: x\nanswer: first\nanswer: second\nanswered_at: t\n");
-        assert_eq!(a.answer, "first");
-        assert_eq!(a.answered_at, "t");
+    fn each_judge_gets_its_per_rule_table_from_the_one_judge_eval_read() {
+        let json = r#"{"agents":[
+          {"agent":"ask-judge","prompt_sha":"aaaaaaaaa","total":{"verdicts":40,"tp":6,"fp":0,"fn":0,"tn":0},
+           "live":["restates-rule"],
+           "rules":[{"rule":"restates-rule","verdicts":9,"errors":0,"scored":6,"precision":100.0,
+                     "false_defer_pct":null,"live":true,"bar":{"labels":6,"need":30,"met":false}},
+                    {"rule":"taste","verdicts":31,"scored":28,"precision":null,"false_defer_pct":18.0,
+                     "live":false}],
+           "misses":[]},
+          {"agent":"dispatch-judge","prompt_sha":"bbbbbbbbb","total":{"verdicts":16,"errors":2,"tp":0,"fp":0,"fn":0,"tn":0}}]}"#;
+        let (_, evals) = judges(json).unwrap();
+        let a = &evals["ask-judge"];
+        assert_eq!(a.live, vec!["restates-rule".to_string()]);
+        assert_eq!(a.total.verdicts, 40);
+        assert_eq!(
+            (
+                a.rules[0].rule.as_str(),
+                a.rules[0].scored,
+                a.rules[0].precision,
+                a.rules[0].live
+            ),
+            ("restates-rule", 6, Some(100.0), true)
+        );
+        assert_eq!(
+            a.rules[0].bar,
+            Some(Bar {
+                labels: 6,
+                need: 30,
+                met: false
+            })
+        );
+        assert_eq!(
+            (a.rules[1].false_defer_pct, a.rules[1].bar.is_none()),
+            (Some(18.0), true)
+        );
+        let d = &evals["dispatch-judge"];
+        assert_eq!(
+            (d.prompt_sha.as_str(), d.total.errors, d.rules.len()),
+            ("bbbbbbb", 2, 0)
+        );
+    }
+
+    #[test]
+    fn a_conf_names_its_registry_and_its_role_names_what_it_takes_away() {
+        let c = parse_conf(
+            "ask-judge",
+            "KIND=call\nROLE=observe\nMODEL=sonnet-5-5\nPROMPT=\"$HOME/p/policy.md\"\nEFFECT='writes a verdict'\n",
+            "/home/k",
+            Path::new("/st"),
+        );
+        assert_eq!(
+            (
+                c.kind.as_str(),
+                c.role.as_str(),
+                c.model.as_str(),
+                c.prompt.as_str(),
+                c.effect.as_str()
+            ),
+            (
+                "call",
+                "observe",
+                "sonnet-5-5",
+                "/home/k/p/policy.md",
+                "writes a verdict"
+            )
+        );
+        assert_eq!(trigger(&c), "called by its caller");
+        let sched = Conf {
+            schedule: "daily".into(),
+            enabled: false,
+            ..c.clone()
+        };
+        assert_eq!(
+            trigger(&Conf {
+                kind: "oneshot".into(),
+                ..sched.clone()
+            }),
+            "daily (disabled)"
+        );
+        assert_eq!(
+            trigger(&Conf {
+                kind: "oneshot".into(),
+                schedule: String::new(),
+                enabled: true,
+                ..c
+            }),
+            "started by another runner"
+        );
+        let (desc, caps) = parse_role(
+            "ROLE_DESC=\"read only\"\nROLE_WRITE=no\nROLE_TASK=no\nROLE_BASH=yes\nROLE_MCP=none\n",
+            "/home/k",
+        );
+        assert_eq!(desc, "read only");
+        assert_eq!(caps, "write no, task no, bash yes, mcp none");
+    }
+
+    #[test]
+    fn calls_count_the_day_and_list_the_newest_with_a_langfuse_link() {
+        let line = |at: &str, exit: u8, err: bool, ms: u64, sid: &str| {
+            format!(
+                r#"{{"id":"c{ms}","agent":"ask-judge","at":"{at}","duration_ms":{ms},"exit":{exit},"is_error":{err},"gen_ai.request.model":"sonnet","gen_ai.response.model":"claude-sonnet-5-5","prompt_sha":"3fa1c2deadbeef","session_id":"{sid}","gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":5,"cache_read_tokens":100,"cache_write_tokens":1,"cost_usd":0.01}}"#
+            )
+        };
+        // T is 2025-11-03T20:00:00Z; the first call is two days old.
+        let text = [
+            line("2025-11-01T12:00:00Z", 0, false, 100, "s0"),
+            line("2025-11-03T10:00:00Z", 0, false, 200, "s1"),
+            line("2025-11-03T11:00:00Z", 1, false, 300, ""),
+            line("2025-11-03T12:00:00Z", 0, true, 400, "s3"),
+            "not json".into(),
+            line("2025-11-03T13:00:00Z", 0, false, 500, "s4"),
+        ]
+        .join("\n");
+        let c = &calls(&text, "https://lf/project/P/sessions/", T)["ask-judge"];
+        assert_eq!((c.n_24h, c.errors_24h, c.tokens_24h), (4, 2, 4 * 116));
+        assert!((c.cost_24h.unwrap() - 0.04).abs() < 1e-9);
+        assert_eq!(c.p95_ms, Some(500));
+        assert_eq!(c.prompt_sha, "3fa1c2d");
+        assert_eq!(c.recent.len(), RECENT_CALLS);
+        assert_eq!(c.recent[0].id, "c500", "newest first");
+        assert_eq!(c.recent[0].link, "https://lf/project/P/sessions/s4");
+        assert_eq!(c.recent[0].model, "claude-sonnet-5-5");
+        assert_eq!(
+            (c.recent[1].ok, c.recent[2].ok, c.recent[2].link.as_str()),
+            (false, false, "")
+        );
+        assert!(calls(&text, "", T)["ask-judge"].recent[0].link.is_empty());
     }
 
     #[test]

@@ -96,6 +96,28 @@ seed_anchor() {
   refute_output --partial 'evals'
 }
 
+@test "regen-anchor: links plans, lessons and outcomes only when they exist" {
+  # A link to a path that is not there reads as a fact; it was 60 of 338 docs findings.
+  seed_anchor
+  rmdir "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   _(none yet)_'
+  assert_output --partial '- Lessons: _(none yet)_'
+  assert_output --partial '- Outcomes: _(none yet)_'
+  refute_output --partial '~/.agent/plans/proj/'
+  refute_output --partial '~/.agent/lessons/proj.md'
+  # negative control: once they exist, the links come back
+  mkdir -p "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  echo "- a lesson" > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   `~/.agent/plans/proj/`'
+  assert_output --partial '- Lessons: `~/.agent/lessons/proj.md`'
+  assert_output --partial '- Outcomes: `~/.agent/outcomes/proj/`'
+}
+
 @test "regen-anchor: preserves the hand-curated sections byte-for-byte" {
   seed_anchor
   local before
@@ -184,6 +206,24 @@ lab_row() {
   assert_output --partial '  - Status: boss fight in review'
   refute_output --partial 'STALE'
   refute_output --partial '**other**'
+}
+
+@test "regen-anchor: the Lab section names the type and the standards to meet" {
+  echo "[$(lab_row proj beta "$(date +%F)" '')]" > "$NOTES_FIXTURE/stats.json"
+  mkdir -p "$HOME/.local/src/docs"
+  : > "$HOME/.local/src/docs/stages.md"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  # NEGATIVE CONTROL: a link is written only when its target exists.
+  refute_output --partial 'Standards:'
+  : > "$HOME/.local/src/docs/lifecycle.md"
+  jq '.trackers.proj.type = "game"' "$PROJECT_MAP_FILE" > "$BATS_TEST_TMPDIR/map" && cp "$BATS_TEST_TMPDIR/map" "$PROJECT_MAP_FILE"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- **proj** (bnb, game, beta) v1.2.0'
+  assert_output --partial '- Standards: `~/.local/src/docs/lifecycle.md` (each step), `~/.local/src/docs/stages.md` (each stage, by type)'
 }
 
 @test "regen-anchor: a prod project with an old status is flagged STALE" {
@@ -292,4 +332,15 @@ EOF
   seed_anchor
   CLAUDE_PROJECT_DIR="$HOME/proj" run bash "$HOOK" </dev/null
   assert_success
+}
+
+@test "regen-anchor: a long lesson is cut on a word boundary, in ASCII" {
+  # Cut mid-word, `~/.dotfiles-private` became `~/.d` plus an ellipsis: a dead path.
+  seed_anchor
+  { printf -- '- **2026-11-05** '; for i in $(seq 1 40); do printf 'word%02d ' "$i"; done; printf '%s\n' '~/.dotfiles-private/x'; } > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  assert_success
+  run grep -E '^- \*\*2026-11-05' "$ANCHOR"
+  assert_output --regexp 'word[0-9]+\.\.\.$'
+  refute_output --partial '…'
 }

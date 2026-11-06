@@ -1,5 +1,5 @@
-//! The Outbox tab: the outbox's waiting lines and what intake did today, from
-//! `hub_core::outbox`, the reader agent-web's Outbox tab uses. The terminal does not edit in
+//! The Daily tab's outbox view (`o`): the outbox's waiting lines and what intake did today,
+//! from `hub_core::outbox`, the reader agent-web's Daily outbox uses. The terminal does not edit in
 //! place: Enter opens the file in `$EDITOR` in a new tmux window, and the sweep files what is
 //! saved there 30s after the last save.
 

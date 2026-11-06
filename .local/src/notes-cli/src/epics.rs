@@ -49,6 +49,26 @@ pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
 }
 
+/// Does a close stamp prove an epic's outcome: something beyond the PRs that landed it, and
+/// not `--unverified`. A merged PR says the work landed, never that the goal was reached.
+pub(crate) fn proves_outcome(stamp: &str) -> bool {
+    !stamp.starts_with("unverified:")
+        && stamp
+            .split_whitespace()
+            .any(|t| !t.starts_with("pr:") && !t.contains("/pull/"))
+}
+
+/// What closed a row: its marker without the stamps every row carries.
+fn proof_of(line: &str) -> String {
+    let marker = md::marker_of(line).unwrap_or_default();
+    let stamps = ["id:", "filed:", "done:", "carried", "ask:"];
+    marker
+        .split_whitespace()
+        .filter(|t| !stamps.iter().any(|s| t.starts_with(s)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Does a row belong to any release: every row does but an untagged epic, which is scope not
 /// yet aimed at one. The one rule release gating and every version total read.
 pub(crate) fn in_some_version(line: &str) -> bool {
@@ -70,6 +90,8 @@ struct Node {
     version: Option<V>,
     /// An epic's title; `None` marks a row that is not an epic.
     title: Option<String>,
+    /// What closed the row, empty while open.
+    proof: String,
     /// Where the row is, for a doctor line: `sheet line 12`.
     at: String,
 }
@@ -89,6 +111,10 @@ pub(crate) struct EpicProgress {
     pub unsized_open: usize,
     /// No story yet: the epic is its own one leaf, weighed at its own size.
     pub childless: bool,
+    /// What closed it, empty on an open epic.
+    pub proof: String,
+    /// Closed on proof of the outcome ([`proves_outcome`]), not on landed work alone.
+    pub verified: bool,
 }
 
 /// The tree of one project: every row with an id or a parent, and each parent's children.
@@ -193,6 +219,7 @@ impl Index {
             target: sheet::target(line),
             version,
             title: is_epic(line).then(|| projects::row_title(line)),
+            proof: proof_of(line),
             at,
         });
     }
@@ -259,6 +286,12 @@ impl Index {
             title: e.title.clone().unwrap_or_default(),
             version: e.target.map(fmt_version).unwrap_or_default(),
             childless: !e.id.as_deref().is_some_and(|id| self.is_parent(id)),
+            proof: if e.open {
+                String::new()
+            } else {
+                e.proof.clone()
+            },
+            verified: !e.open && proves_outcome(&e.proof),
             ..EpicProgress::default()
         };
         for j in self.leaves(i) {
@@ -286,6 +319,19 @@ impl Index {
         self.open_epics().map(|i| self.rollup(i)).collect()
     }
 
+    /// The epics closed in version `v`, whose open version is `cur`: a closed untagged epic
+    /// belongs to no release, so it reads under the open one until the sheet freezes it into
+    /// a note. A dropped epic was never delivered, so it is not listed.
+    pub(crate) fn closed_epics_in(&self, v: V, cur: V) -> Vec<EpicProgress> {
+        (0..self.nodes.len())
+            .filter(|&i| {
+                let n = &self.nodes[i];
+                n.title.is_some() && !n.open && !n.dropped && n.version.unwrap_or(cur) == v
+            })
+            .map(|i| self.rollup(i))
+            .collect()
+    }
+
     /// The open epics with work in version `v`: a leaf of theirs in it, or, for an epic with
     /// no story yet, its own tag naming it.
     pub(crate) fn epics_in(&self, v: Option<V>) -> Vec<EpicProgress> {
@@ -296,6 +342,21 @@ impl Index {
                     .any(|j| self.nodes[j].version.is_some() && self.nodes[j].version == v)
             })
             .map(|i| self.rollup(i))
+            .collect()
+    }
+
+    /// The open rows of an agent board that sit under no feature: no epic, no `#of/`. Every
+    /// agent row is a story (`agent-queue add` files one per work item), so once the project has
+    /// an open epic, a row outside every epic is work no feature bar counts. Each row's id, else
+    /// its line. None while the project has no open epic: there is no feature to file it under.
+    pub(crate) fn stories_without_feature(&self, board: &str) -> Vec<String> {
+        if self.open_epics().next().is_none() {
+            return Vec::new();
+        }
+        md::section_numbered(board, sheet::TASKS)
+            .into_iter()
+            .filter(|(_, l)| md::is_open_task(l) && !is_epic(l) && parent_of(l).is_none())
+            .map(|(n, l)| md::row_id(l).unwrap_or_else(|| format!("line {n}")))
             .collect()
     }
 
@@ -554,6 +615,33 @@ Version: v1.4.0 #alpha
     }
 
     #[test]
+    fn doctor_names_the_board_stories_under_no_feature() {
+        let board = "## Tasks\n\
+                     - [/] feat(a): filed by an item #of/dm-1 <!-- id:dm-2 -->\n\
+                     - [/] feat(a): filed with no epic <!-- id:dm-3 -->\n\
+                     - [ ] chore(b): no id either\n\
+                     - [x] feat(a): done, never named <!-- id:dm-4 pr:7 -->\n\
+                     - [ ] feat(c): a subtask #of/dm-3 <!-- id:dm-5 -->\n";
+        let with_epic = project(
+            "unlinked",
+            &[
+                (
+                    "README.md",
+                    "# demo\nVersion: v1.4.0\n\n## Tasks\n- [ ] epic(a): menus <!-- id:dm-1 -->\n",
+                ),
+                ("agent/README.md", board),
+            ],
+        );
+        let ix = Index::of(&with_epic, V14);
+        assert_eq!(ix.stories_without_feature(board), vec!["dm-3", "line 4"]);
+        // NEGATIVE CONTROL: with no open epic there is no feature to name, so nothing is listed.
+        let none = project("unlinked-none", &[("agent/README.md", board)]);
+        assert!(Index::of(&none, V14)
+            .stories_without_feature(board)
+            .is_empty());
+    }
+
+    #[test]
     fn row_grammar_keeps_epics_on_the_sheet_and_xl_on_epics() {
         let board = "## Tasks\n\
                      - [ ] epic(a): on the board <!-- id:dm-1 -->\n\
@@ -596,6 +684,17 @@ Version: v1.4.0 #alpha
         let out = md::retext_task(l, "feat(a): do it better");
         assert_eq!(parent_of(&out).as_deref(), Some("dm-1"), "{out}");
         assert!(out.ends_with("<!-- id:dm-3 -->"), "{out}");
+    }
+
+    #[test]
+    fn only_something_beyond_a_pr_proves_an_outcome() {
+        assert!(!proves_outcome("pr:12"));
+        assert!(!proves_outcome("https://github.com/a/b/pull/12"));
+        assert!(!proves_outcome("unverified: no target yet"));
+        assert!(proves_outcome("https://agents.example/p"));
+        assert!(proves_outcome("pr:12 seen live"));
+        let row = "- [x] epic(ui): a <!-- id:d-1 filed:2026-11-01 done:2026-11-04 pr:1 https://a.example -->";
+        assert_eq!(proof_of(row), "pr:1 https://a.example");
     }
 
     #[test]

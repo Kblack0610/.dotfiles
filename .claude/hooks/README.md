@@ -46,6 +46,7 @@ Current post-checks, in order:
 - `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), a board write, or a Focus item in progress.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `88-ask-filed.sh`: when an attended session ends its turn asking the human something and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.
+- `90-session-spend.sh`: when an attended session that is not a queue session passes `CLAUDE_SESSION_ALERT_USD` ($60) of OTel cost in Prometheus, pages once at 1x, 2x, 4x and so on. Alert only: always exits 0 and prints nothing.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<proj>__<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. A fired request stays as `.fired`, which `fleet-dispatch restore` reads to leave that conversation closed, and the next prompt in that session clears it. It also deletes any request or `.fired` older than a day.
 
 ## Session evaluation (not Stop-time)
@@ -63,13 +64,15 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Matcher | File | Job |
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
-| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, and a foreground `until`/`while`/`for` loop that sleeps (a wait): it points at `run_in_background` and the completion notice. A background loop, a script file and quoted text are allowed |
+| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, a foreground `until`/`while`/`for` loop that sleeps (a wait), and a foreground read of a background task's `tasks/<id>.output` while a process still holds it open (the run is live): it points at `run_in_background`, Monitor and the completion notice. A background loop, a script file, quoted text and a read after the run exits are allowed |
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
 | Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
 | ExitPlanMode | `~/.claude/hooks/plan-standard.sh` | Deny a plan that misses the sections `~/.local/src/docs/planning.md` requires for this project's type, naming each gap. The same hook on UserPromptSubmit injects those sections in plan mode. Fails open when the doc is missing |
 | Bash | `~/.claude/hooks/token-filter.sh` | Rewrite a command through the method in `~/.agent/token-filter/mode` so less output reaches the model. Never denies; see "Token filter" |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
+
+A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-outcomes counts each denial under that name in the outcome row's `guards`, which is how a guard's effect is counted; a reason with no name lead is invisible to it (`tests/unit/session_outcomes.bats` "guards").
 
 ## PostToolUse hooks (user-global)
 

@@ -11,6 +11,12 @@
 # Here they read the same LLM_* names they already read, and the ROUTE decides
 # what those names contain.
 #
+# `-p [input]` is the third shape and the one a registered agent uses: one chat call
+# to the route's model, the conf's PROMPT file as the system message and the input as
+# the user message, MODEL (else the route's), MAX_TOKENS and TEMPERATURE from the conf. It prints the reply text
+# and, for a named call, writes the calls.jsonl line (lib/calls.sh), so an HTTP model
+# call gets the same record, budget and prompt_sha as a claude one.
+#
 # WHY harness_supports IS UNCONDITIONALLY TRUE, which looks wrong and is not:
 # contract rule 3 says a harness that cannot ENFORCE a role's denials must refuse
 # rather than degrade. `raw` grants no tools whatsoever -- no Write, no Bash, no
@@ -48,9 +54,50 @@ harness_exec() {
     return 0
   fi
 
+  case "${1:-}" in -p|--print) shift; raw_print "${1-}"; return ;; esac
+
   [ "$#" -gt 0 ] || {
     printf 'agentctl-run: raw: nothing to run. Pass a command, or --print-env.\n' >&2
     exit 64
   }
   exec "$@"
+}
+
+# raw_print <input>: the -p call. A failed call (no reply, an error object, empty content)
+# exits non-zero, so a caller can fail instead of writing nothing.
+raw_print() {
+  RAW_INPUT="$1"
+  # The conf's MODEL pins the model, as it does for claude; the route's model is the default.
+  [ -n "${AGENTCTL_MODEL:-}" ] && LLM_MODEL="$AGENTCTL_MODEL"
+  if [ -n "$(calls_name)" ]; then calls_record raw raw_chat; exit $?; fi
+  local resp rc=0
+  resp="$(raw_chat)" || rc=$?
+  jq -r '.choices[0].message.content // empty' <<<"$resp" 2>/dev/null
+  exit "$rc"
+}
+
+# raw_chat -> the response JSON on stdout. The input goes through a file, never argv: a
+# version's whole changelog outgrew ARG_MAX once (notes-version-summary, #264).
+raw_chat() {
+  local tmp resp rc=0 auth=()
+  [ -n "${LLM_BASE_URL:-}" ] || { echo "agentctl-run: raw: route '${ROUTE_NAME:-}' set no LLM_BASE_URL" >&2; return 69; }
+  [ -n "${LLM_API_KEY:-}" ] && auth=(-H "Authorization: Bearer $LLM_API_KEY")
+  tmp="$(mktemp)" || return 1
+  printf '%s' "$RAW_INPUT" >"$tmp"
+  resp="$(jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$tmp" \
+      --argjson mt "${AGENT_MAX_TOKENS:-1024}" --argjson t "${AGENT_TEMPERATURE:-0}" \
+      '{model: $m, temperature: $t, max_tokens: $mt, stream: false,
+        messages: ((if $s == "" then [] else [{role: "system", content: $s}] end)
+                   + [{role: "user", content: $u}])}' \
+    | curl -sS --max-time "${RAW_TIMEOUT_S:-240}" "${LLM_BASE_URL%/}/chat/completions" \
+        "${auth[@]}" -H 'Content-Type: application/json' --data-binary @-)" || rc=$?
+  rm -f "$tmp"
+  printf '%s\n' "$resp"
+  [ "$rc" = 0 ] || return "$rc"
+  if jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
+    printf 'agentctl-run: raw: %s\n' "$(jq -r '.error.message // .error' <<<"$resp")" >&2
+    return 1
+  fi
+  jq -e '(.choices[0].message.content // "") != ""' <<<"$resp" >/dev/null 2>&1 || {
+    echo "agentctl-run: raw: the reply has no content (${LLM_MODEL:-})" >&2; return 1; }
 }

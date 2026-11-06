@@ -107,6 +107,7 @@ async fn main() -> Result<()> {
         .route("/api/session-options", get(session_options))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/asks/{id}/trace", get(ask_trace))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
@@ -119,6 +120,7 @@ async fn main() -> Result<()> {
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/focus", get(focus::get).put(focus::save))
+        .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
@@ -253,7 +255,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
-        // agent-notify's ledger, for the Actions tab.
+        // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
             .parent()
@@ -271,7 +273,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let rundowns = boards::shepherd_dir().join("rundowns");
     std::fs::create_dir_all(&rundowns)?;
     targets.push((rundowns, flat));
-    // The Outbox tab: the outbox's directory, from the CLI that owns its path, and the notes
+    // Daily's outbox: the outbox's directory, from the CLI that owns its path, and the notes
     // state directory that holds ingest.jsonl. Both files are replaced by a rename.
     if let Some(dir) = hub_core::outbox::doc(&hub_core::session_actions::System)
         .ok()
@@ -330,12 +332,12 @@ fn classify(p: &Path) -> Option<String> {
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
-    // The Actions tab's own ledgers: the shepherd's log and agent-notify's (which has no
+    // Log's Actions section's own ledgers: the shepherd's log and agent-notify's (which has no
     // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
     if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
         return Some(r#"{"kind":"actions"}"#.to_string());
     }
-    // The Outbox tab: the doc and the ingest record of what intake did with its lines. Before
+    // Daily's outbox: the doc and the ingest record of what intake did with its lines. Before
     // `ext`, which reads any other `.jsonl` as a transcript.
     if name == "outbox.md" || (parent == "notes" && name == "ingest.jsonl") {
         return Some(r#"{"kind":"outbox"}"#.to_string());
@@ -818,20 +820,38 @@ struct Ask {
     /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
     agent: String,
     /// The question's first sentence, and the question after it (hub-core `text::headline`).
+    /// A first sentence too long for headline's cap makes the whole question the title (a TSV row
+    /// is one line): a card wraps, so it never shows a cut title over the same question again.
     title: String,
     body: String,
+    /// What each option does, in `options` order ("" for a bare option), from `--options a=...`.
+    notes: Vec<String>,
+    /// The background the asker gave (`--context`), and why it recommends its option (`--why`).
+    context: String,
+    why: String,
+    /// The judge's policy rule and its reason, who answered (human, judge, shepherd) and the
+    /// message an in-session answer came from: the card's Details fold.
+    rule: String,
+    reason: String,
+    answered_by: String,
+    answer_note: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
-/// claude_session, judge, answered_by.
+/// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
+/// judge_reason, answer_note.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
             let col = |i: usize| f.get(i).copied().unwrap_or("");
             (f.len() >= 7 && !f[0].is_empty()).then(|| {
-                let (title, body) = hub_core::text::headline(f[5]);
+                let q = f[5].trim();
+                let (title, body) = match hub_core::text::headline(q) {
+                    (_, rest) if rest == q => (rest, String::new()),
+                    split => split,
+                };
                 Ask {
                     id: f[0].into(),
                     project: f[1].into(),
@@ -849,6 +869,13 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     agent: col(12).into(),
                     title,
                     body,
+                    notes: col(18).split('|').map(String::from).collect(),
+                    context: col(19).into(),
+                    why: col(20).into(),
+                    answered_by: col(17).into(),
+                    rule: col(21).into(),
+                    reason: col(22).into(),
+                    answer_note: col(23).into(),
                 }
             })
         })
@@ -870,13 +897,28 @@ struct AnswerBody {
     answer: String,
 }
 
-async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
-    if b.id.is_empty()
-        || !b
-            .id
+/// An ask id as agent-ask makes them (mktemp's letters and digits), so nothing else reaches argv.
+fn ask_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+}
+
+/// One ask's Full log, `agent-ask trace <id> --json`: its timeline, the judge's call line and
+/// the Langfuse link. Read only when the card's Full log fold is opened.
+async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::Value>> {
+    if !ask_id_ok(&id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let out = run_cmd("agent-ask", &["trace", &id, "--json"], None).await?;
+    serde_json::from_str(&out)
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+}
+
+async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
+    if !ask_id_ok(&b.id) {
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
     if b.answer.trim().is_empty() {
@@ -1199,6 +1241,39 @@ mod tests {
             (Some(1_793_886_690), "shepherd")
         );
         assert_eq!(asks[0].created, None);
+        let q = format!("{}fix? More after it.", "which ".repeat(30));
+        let a = &parse_asks(&format!("L1\tbnb\t\tpending\tquestion\t{q}\ta|b\n"))[0];
+        assert_eq!((a.title.as_str(), a.body.as_str()), (q.as_str(), ""));
+        // option_notes, context and recommend_why trail the row (agent-ask list appends only).
+        let noted = "N1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\t\t\tdo a|do b\tthe background\tit is cheaper\n";
+        let a = &parse_asks(noted)[0];
+        assert_eq!(a.notes, vec!["do a", "do b"]);
+        assert_eq!(
+            (a.context.as_str(), a.why.as_str()),
+            ("the background", "it is cheaper")
+        );
+        // judge_rule, judge_reason and answer_note after them, for the Details fold.
+        let ruled = "R1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\thuman\tjudge\t\t\t\ttaste\tonly you know\tin session: b\n";
+        let a = &parse_asks(ruled)[0];
+        assert_eq!(
+            (
+                a.judge.as_str(),
+                a.answered_by.as_str(),
+                a.rule.as_str(),
+                a.reason.as_str(),
+                a.answer_note.as_str()
+            ),
+            ("human", "judge", "taste", "only you know", "in session: b")
+        );
+        assert_eq!(parse_asks(noted)[0].rule, "");
+    }
+
+    #[test]
+    fn ask_ids_are_mktemp_shaped() {
+        assert!(ask_id_ok("JSVBgC"));
+        assert!(!ask_id_ok(""));
+        assert!(!ask_id_ok("../x"));
+        assert!(!ask_id_ok("a b"));
     }
 
     #[test]

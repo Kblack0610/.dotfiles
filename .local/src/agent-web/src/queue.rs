@@ -67,17 +67,27 @@ pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
 
 /// The counts and the rows hub-core keeps, each with the title and start label it words.
 fn candidates_view(c: &Candidates) -> serde_json::Value {
-    let rows: Vec<serde_json::Value> = c
-        .rows
+    let view = |rows: &[hub_queue::Candidate]| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|r| {
+                let mut v = serde_json::to_value(r).unwrap_or_default();
+                v["title"] = r.title().into();
+                v["start_label"] = r.start_label().into();
+                v["reasons"] = r.reasons().into();
+                v
+            })
+            .collect()
+    };
+    let reasons: Vec<serde_json::Value> = c
+        .reasons
         .iter()
-        .map(|r| {
-            let mut v = serde_json::to_value(r).unwrap_or_default();
-            v["title"] = r.title().into();
-            v["start_label"] = r.start_label().into();
-            v
-        })
+        .map(|(r, n)| serde_json::json!({ "reason": r, "rows": n }))
         .collect();
-    serde_json::json!({ "total": c.total, "auto": c.auto, "rows": rows })
+    serde_json::json!({
+        "total": c.total, "auto": c.auto, "rows": view(&c.rows),
+        "blocked_rows": view(&c.blocked_rows), "reasons": reasons,
+        "urgent_blocked": c.urgent_blocked, "uncovered": c.uncovered, "clear": c.clear,
+    })
 }
 
 /// The ranked board rows `fleet-dispatch suggest` prints, read through hub-core. Slow (every
@@ -257,6 +267,20 @@ mod tests {
         assert_eq!(rows[0]["title"], "row 0");
         assert_eq!(rows[0]["start_label"], "auto dispatch");
         assert_eq!(rows[1]["start_label"], "man held");
+        assert_eq!(v["blocked_rows"].as_array().unwrap().len(), 0);
+        let b = candidates_view(&hub_queue::parse_candidates(
+            r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
+        ));
+        assert_eq!(b["rows"][0]["reasons"][0], "judge: skip");
+        assert_eq!(b["reasons"][0]["reason"], "judge: skip");
+        assert_eq!(b["reasons"][0]["rows"], 1);
+        assert_eq!(b["urgent_blocked"], 1);
+        assert_eq!(b["clear"], 0);
+        assert_eq!(
+            b["uncovered"].as_array().unwrap().len(),
+            0,
+            "a skip is not a gap in cover"
+        );
         let none = candidates_view(&Candidates::default());
         assert_eq!(none["rows"].as_array().unwrap().len(), 0);
     }

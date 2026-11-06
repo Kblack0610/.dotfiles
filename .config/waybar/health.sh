@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Waybar module: the health chip (custom/health), every system at a glance. The bar is a pulse in
-# the overall colour and one dot per system, worst first; the hover is one row per system, what
-# is down or warning named on it. The hover's reasons are cc:watch_state items, or the failing
+# Waybar module: the health chip (custom/health), every system at a glance. The bar is the heart
+# alone, in the overall colour; the hover's first row is one dot per system, worst first, beside
+# the counts, then one row per system with what is down or warning named on it. The hover's reasons are cc:watch_state items, or the failing
 # cc:component_status rows for a system no watch explains.
 #
 # It computes nothing and lists no system: rows and levels come from the cc:* rules (home-config
@@ -55,4 +55,4 @@ head=''
 for l in 2 1 0; do
   ((count[l] == 0)) || head+="${head:+, }${count[l]} ${WORD[$l],,}"
 done
-emit "$(paint "${LEVEL_COLOUR[$overall]}" "$ICON") $dots" "$title  $head"$'\n\n'"<tt>${body%$'\n'}</tt>" "${LEVEL_CLASS[$overall]}"
+emit "$(paint "${LEVEL_COLOUR[$overall]}" "$ICON")" "$title  $dots  $head"$'\n\n'"<tt>${body%$'\n'}</tt>" "${LEVEL_CLASS[$overall]}"

@@ -144,6 +144,19 @@ EOF
   assert_equal "$(field d .runner)" true
   assert_equal "$(field d .corrections)" null
   assert_equal "$(field c .runner)" false
+  # no calls.jsonl line names it, so its agent is unknown rather than guessed
+  assert_equal "$(field d .agent)" null
+}
+
+@test "a runner session carries the agent calls.jsonl names for it; a human session never does" {
+  mkdir -p "$AGENTCTL_STATE_DIR"
+  # sess-c is interactive: a stray call line on its id must not make it a runner
+  printf '%s\n' '{"id":"c1","agent":"dream","session_id":"sess-d"}' '{"id":"c2","agent":"ask-judge","session_id":"sess-c"}' \
+    '{"id":"c3","agent":"dream"}' > "$AGENTCTL_STATE_DIR/calls.jsonl"
+  AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl" "$SUBJECT" run
+  assert_equal "$(field d .agent)" dream
+  assert_equal "$(field c .agent)" null
+  assert_equal "$(field a .agent)" null
 }
 
 @test "revert in a body: #241 Reverts #240" {
@@ -237,6 +250,52 @@ EOF
 EOF
   run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/gate.jsonl' | jq -c .plan_gate"
   assert_output '{"exits":2,"denied":1}'
+}
+
+@test "guards: each hook denial counted by the name its reason leads with, PreToolUse and Stop alike" {
+  cat > "$TR/guards.jsonl" <<'EOF'
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","is_error":true,"content":"PreToolUse:Bash hook error: block-poll: This foreground loop polls"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"PreToolUse:Bash hook error: block-poll: `gh run watch` polls"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c","is_error":true,"content":"PreToolUse:ExitPlanMode hook error: plan-standard: 1 gap(s)"}]}}
+{"type":"user","message":{"content":"Stop hook feedback:\nfocus-gate: this session edited files"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"d","is_error":true,"content":"PreToolUse:Bash hook error: Use uv add instead of bare pip."}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e","is_error":false,"content":"PreToolUse:Bash hook error: block-poll: quoted in output"}]}}
+{"type":"user","message":{"content":"please mention Stop hook feedback:\nfocus-gate: in the doc"}}
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/guards.jsonl' | jq -c '[.guards, .plan_gate.denied]'"
+  assert_output '[{"block-poll":2,"plan-standard":1,"focus-gate":1},1]'
+}
+
+@test "lesson_hits: a sig counts Bash commands only on days after its date; an anchored sig skips a grep for it; a bad regex never crashes" {
+  cat > "$TR/sig.jsonl" <<'EOF'
+{"type":"assistant","timestamp":"2026-10-02T09:00:00Z","message":{"id":"m1","content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"killall node"}}]}}
+{"type":"assistant","timestamp":"2026-10-03T09:00:00Z","message":{"id":"m2","content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"cd x && killall node"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T09:00:00Z","message":{"id":"m3","content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"killall vite"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T10:00:00Z","message":{"id":"m4","content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"grep -rn 'killall node' ~/.agent/lessons"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T11:00:00Z","message":{"id":"m5","content":[{"type":"tool_use","id":"e","name":"Read","input":{"file_path":"killall"}}]}}
+EOF
+  sigs='[{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02"},{"sig":"([","since":"2026-01-01"}]'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/sig.jsonl' '$sigs' | jq -c .lesson_hits"
+  assert_success
+  assert_output '{"(^|[;&|]\\s*)killall\\s":2}'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/sig.jsonl' | jq -c .lesson_hits"
+  assert_output '{}'
+}
+
+@test "so_lesson_sigs: one entry per sig with its earliest date, file and bolded claim; lessons without a sig are left out" {
+  L="$BATS_TEST_TMPDIR/lessons"; mkdir -p "$L"
+  cat > "$L/a.md" <<'EOF'
+- **2026-10-02** **Never killall node; name the pid.** It took the shared dev server down. <!-- sig:2026-10-02 (^|[;&|]\s*)killall\s -->
+- **2026-10-03** a lesson with no sig
+EOF
+  cat > "$L/b.md" <<'EOF'
+- killall again, written later in another project <!-- sig:2026-10-09 (^|[;&|]\s*)killall\s -->
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$L' | jq -c '.[]'"
+  assert_success
+  assert_output '{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02","file":"a.md","claim":"Never killall node; name the pid."}'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$BATS_TEST_TMPDIR/none' | jq -c ."
+  assert_output '[]'
 }
 
 @test "activity: a commit ends the edit count, for edits made through Bash" {
@@ -444,6 +503,7 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-c" and .body.name == "friction") | .body.value')" 5
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-a" and .body.name == "prs_merged") | .body.id')" so:sess-a:prs_merged
   assert_equal "$(posted | jq -r 'select(.body.name == "nudges")' | wc -l)" 0   # no bench row, no score
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-d" and .body.name == "friction") | .body.metadata | has("agent")')" true
   assert_equal "$(mark)" 2026-10-20T00:00:00Z
 }
 
@@ -536,4 +596,66 @@ queue_stub() {
   assert_success
   assert_equal "$(outcome)" WORKED
   assert_equal "$(lines | wc -l)" 3
+}
+
+# Judge verdicts: an ask file's judge_* fields and dispatch's verdicts.jsonl, each linked by
+# judge_call to its line in calls.jsonl, whose session_id is the trace the score lands on.
+judge_fixture() {
+  export SO_ASKS="$HOME/.agent/asks" SO_VERDICTS="$HOME/.agent/dispatch/verdicts.jsonl"
+  export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
+  mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
+  printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
+    'judge_rule: restates-rule' 'judge_reason: landing is standing authorization' \
+    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
+  # a gate: never sent to the model, so no call and no score
+  printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
+    'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-2.md"
+  printf '%s\n' \
+    '{"project":"p","lane":"agent","key":"k1","verdict":"skip","rule":"tier3","reason":"tier 3","judge_call":"c2","at":"2026-10-19T11:00:00-07:00"}' \
+    '{"project":"p","lane":"agent","key":"k2","verdict":"error","reason":"call failed (exit 7): x","judge_call":"c3","at":"2026-10-19T11:00:00-07:00"}' \
+    '{"project":"p","lane":"agent","key":"k3","verdict":"dispatch","reason":"old, no call","at":"2026-10-19T11:00:00-07:00"}' \
+    > "$SO_VERDICTS"
+  # c3 failed before it had a session: nothing to hang a score on
+  printf '%s\n' '{"id":"c1","session_id":"js-1"}' '{"id":"c2","session_id":"js-2"}' '{"id":"c3"}' > "$AGENTCTL_CALLS"
+}
+judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
+
+@test "langfuse: each judge verdict with a call session is one CATEGORICAL score, named for its agent, valued with its call" {
+  lf_setup; judge_fixture
+  run "$SUBJECT" run
+  assert_success
+  report | grep -q 'langfuse: 38 score(s) for 4 session(s); judge: 2 score(s)'
+  assert_equal "$(judge_posted | wc -l)" 2
+  run judge_posted
+  assert_line --partial '"id":"jv:c1:ask-1","sessionId":"js-1","name":"ask-judge","value":"take-recommend"'
+  assert_line --partial '"comment":"restates-rule: landing is standing authorization"'
+  assert_line --partial '"id":"jv:c2:p/agent/k1","sessionId":"js-2","name":"dispatch-judge","value":"skip"'
+  assert_line --partial '"comment":"tier3: tier 3"'
+  # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$(date -d 2026-10-19T18:00:00Z +%s)"
+}
+
+@test "langfuse: a second run sends no judge score again, a new verdict goes alone, and no verdicts add nothing to the report" {
+  lf_setup; judge_fixture
+  "$SUBJECT" run
+  : > "$BATS_TEST_TMPDIR/lf.posted"
+  "$SUBJECT" run
+  report | grep -q 'langfuse: nothing new$'
+  [ ! -s "$BATS_TEST_TMPDIR/lf.posted" ]
+  printf '%s\n' '{"project":"p","lane":"agent","key":"k4","verdict":"dispatch","rule":"fits","reason":"small","judge_call":"c4","at":"2026-10-19T12:00:00-07:00"}' >> "$SO_VERDICTS"
+  printf '%s\n' '{"id":"c4","session_id":"js-4"}' >> "$AGENTCTL_CALLS"
+  "$SUBJECT" run
+  report | grep -q 'langfuse: nothing new; judge: 1 score(s)'
+  assert_equal "$(judge_posted | jq -r .body.id)" jv:c4:p/agent/k4
+}
+
+@test "langfuse: a failed judge push keeps its mark and says FAILED" {
+  lf_setup; judge_fixture
+  "$SUBJECT" run
+  printf '%s\n' '{"project":"p","lane":"agent","key":"k4","verdict":"dispatch","rule":"fits","reason":"small","judge_call":"c4","at":"2026-10-19T12:00:00-07:00"}' >> "$SO_VERDICTS"
+  printf '%s\n' '{"id":"c4","session_id":"js-4"}' >> "$AGENTCTL_CALLS"
+  local before; before="$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")"
+  LF_CODE=500 "$SUBJECT" run
+  report | grep -q '; judge: FAILED (HTTP 500) after 0 score(s), retried next run'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$before"
 }

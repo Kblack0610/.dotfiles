@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # day-log - what a day shipped, in the status shape (Done, Doing, Next, Needs you): every PR you merged in any repo, what is still open, what
-# waits on you, and the fleet's telemetry, kept as one record per day. The hub Today and
-# History tabs (`hub`, Prefix i) render the records; day-log.timer snapshots today every 5 min.
+# waits on you, and the fleet's telemetry, kept as one record per day. The hub Log tab
+# (`hub`, Prefix i, then 7) renders the records; day-log.timer snapshots today every 5 min.
 #
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
 #                                 today is also published as day_log.prom
@@ -41,7 +41,7 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
-                              # (the hub Today tab keeps its own OPEN_DAYS = 7)
+                              # (the hub Log tab keeps its own OPEN_DAYS = 7)
 : "${DAYLOG_QUEUE_CMD:=agent-queue}"
 : "${DAYLOG_FLEET_CMD:=fleet-sessions}"
 : "${DAYLOG_NOTES_DIR:=$HOME/.notes}"

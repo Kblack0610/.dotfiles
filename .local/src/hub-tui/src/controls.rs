@@ -66,10 +66,6 @@ pub struct Controls {
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
     pub open: bool,
-    /// The forecast band, burn-up and baseline are shown at the bottom (f).
-    pub forecast: bool,
-    /// The week's sessions ranked by friction are shown under the forecast (w).
-    pub ranked: bool,
 }
 
 /// One table row: a session the snapshot, the state document or both know.
@@ -191,14 +187,6 @@ impl Controls {
             }
             KeyCode::Esc if self.open => {
                 self.open = false;
-                Ask::Done
-            }
-            KeyCode::Char('f') => {
-                self.forecast = !self.forecast;
-                Ask::Done
-            }
-            KeyCode::Char('w') => {
-                self.ranked = !self.ranked;
                 Ask::Done
             }
             KeyCode::Char(ch) => match KEYS.iter().find(|(c, _)| *c == ch) {

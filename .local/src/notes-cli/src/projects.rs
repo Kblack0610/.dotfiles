@@ -620,13 +620,13 @@ fn summary_template(name: &str) -> String {
 ///
 /// - `README.md`: the human's sheet (what only the human can do), `summary.md`: STATUS + AUTO.
 /// - `agent/README.md`: the agents' working board.
-/// - `ideas.md`: unshaped ideas, where `notes focus sweep` puts an `#idea:<project>` row.
+/// - `ideas.md`: unshaped ideas, kept by hand.
 ///
 /// Every other note doc (pitch, briefs, research) lives in `docs/`. A project's registry
 /// type adds root files on top of this core: [`Overlays`].
 pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
-/// A fresh `ideas.md`. Also the header `notes focus sweep` gives one it creates.
+/// A fresh `ideas.md`.
 pub(crate) fn ideas_template(name: &str) -> String {
     include_str!("../templates/ideas.md").replace("{name}", name)
 }
@@ -854,6 +854,7 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
     }
 
+    let tree = crate::epics::Index::of(dir, open_version(dir));
     for (label, path) in [("sheet", dir.join("README.md")), ("agent board", board)] {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
@@ -864,8 +865,19 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
         }
+        let unlinked = if label == "agent board" {
+            tree.stories_without_feature(&content)
+        } else {
+            Vec::new()
+        };
+        if let Some(first) = unlinked.first() {
+            out.push(format!(
+                "agent board: {} open stories with no feature, file each under an epic with #of/<epic> (first: {first})",
+                unlinked.len()
+            ));
+        }
     }
-    out.extend(crate::epics::Index::of(dir, open_version(dir)).findings());
+    out.extend(tree.findings());
     out
 }
 
@@ -922,11 +934,16 @@ const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"
 /// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
 const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
 
-/// The work and human-only types a row title starts with (README "The task row").
+/// The work and human-only types a row title starts with (README "The task row"), and
+/// THE list of row kinds: `--stats --json` counts by it and `fleet-dispatch`'s kinds.json is
+/// checked against it. A bug is a `fix` row; its severity is the row's priority tag.
 pub(crate) const ROW_TYPES: &[&str] = &[
-    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "run", "decide", "check",
-    "epic",
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "research", "design",
+    "market", "legal", "run", "decide", "check", "epic",
 ];
+
+/// The `by_kind` key of a row with no well-formed `type(area):` prefix.
+pub(crate) const UNTYPED: &str = "untyped";
 
 /// A title longer than this belongs on a detail line under the row.
 pub(crate) const TITLE_MAX: usize = 80;
@@ -2536,16 +2553,44 @@ pub fn show_version(p: &Profile, name: &str) -> Result<()> {
 #[derive(Debug, serde::Serialize)]
 struct Release {
     version: String,
-    /// `current` for the open version, `planned` for one some open row is aimed at.
+    /// `current` for the open version, `planned` for one the human aims a row at, `board` for
+    /// one only the agent board names, `shipped` for one frozen in a version note.
     state: &'static str,
+    /// The `Goal:` line of the sheet, or of a shipped version's note; empty for a later one.
+    goal: String,
     /// Both lanes' leaf rows of this version, weighed.
     progress: Progress,
+    /// Those rows, one each.
+    rows: Vec<LeafRow>,
     /// The open epics with work in this version, each with its rollup over every version.
     epics: Vec<crate::epics::EpicProgress>,
+    /// The epics closed in this version, with their proof.
+    closed_epics: Vec<crate::epics::EpicProgress>,
 }
 
-/// A project's releases, the open version first, then every later version an open row on
-/// either lane is aimed at.
+impl Release {
+    fn new(
+        version: V,
+        state: &'static str,
+        goal: String,
+        mut progress: Progress,
+        ix: &crate::epics::Index,
+        cur: V,
+    ) -> Release {
+        Release {
+            version: fmt_version(version),
+            state,
+            goal,
+            rows: std::mem::take(&mut progress.rows),
+            progress,
+            epics: ix.epics_in(Some(version)),
+            closed_epics: ix.closed_epics_in(version, cur),
+        }
+    }
+}
+
+/// A project's releases: the open version, every later version an open row on either lane is
+/// aimed at, then the shipped ones, newest first.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
     let human = read_or_empty(sheet_path(dir));
     let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
@@ -2562,13 +2607,49 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
         }
     }
     later.sort_unstable();
+    let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
+        .into_iter()
+        .chain(version_notes(&agent_dir(dir).join("versions")))
+        .map(|(v, _)| v)
+        .filter(|&v| v < c)
+        .collect();
+    shipped.sort_unstable_by(|a, b| b.cmp(a));
+    shipped.dedup();
     std::iter::once((c, "current"))
         .chain(later)
-        .map(|(v, state)| Release {
-            version: fmt_version(v),
-            state,
-            progress: progress_of(dir, cur, Some(v), &ix, today),
-            epics: ix.epics_in(Some(v)),
+        .map(|(v, state)| {
+            let goal = if state == "current" {
+                goal_line(&human)
+            } else {
+                String::new()
+            };
+            let progress = progress_of(dir, cur, Some(v), &ix, today);
+            Release::new(v, state, goal, progress, &ix, c)
+        })
+        .chain(shipped.into_iter().map(|v| {
+            let name = format!("{}.md", fmt_version(v));
+            let notes = [
+                read_or_empty(Some(dir.join("versions").join(&name))),
+                read_or_empty(Some(agent_dir(dir).join("versions").join(&name))),
+            ];
+            let progress = shipped_progress(&notes, &ix, today);
+            Release::new(v, "shipped", goal_line(&notes[0]), progress, &ix, c)
+        }))
+        .collect()
+}
+
+/// The TSV `--roadmap` prints: what is still ahead, so `agentctl-wave-roll` never reads a
+/// shipped version.
+fn roadmap_tsv(releases: &[Release]) -> String {
+    releases
+        .iter()
+        .filter(|r| r.state != "shipped")
+        .map(|r| {
+            let g = &r.progress;
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                r.version, r.state, g.open, g.done, g.open_weight, g.done_weight, g.unsized_open
+            )
         })
         .collect()
 }
@@ -2577,8 +2658,8 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
 /// first, as TSV `version<TAB>state<TAB>open<TAB>done<TAB>open_weight<TAB>done_weight<TAB>
 /// unsized_open`, counted over both lanes' leaf rows. `state` is `current` or `planned`; a planned
 /// line is a release some open row is aimed at. The first two columns are what
-/// `agentctl-wave-roll` reads. With `json`, one array of [`Release`], adding the closes,
-/// scope growth and the epics with work in each release.
+/// `agentctl-wave-roll` reads. With `json`, one array of [`Release`], adding the shipped
+/// versions and, per release, its goal, closes, scope growth, leaf rows and epics.
 pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
     let dir = project_dir(p, name)?;
     let releases = roadmap(&dir, chrono::Local::now().date_naive());
@@ -2586,13 +2667,7 @@ pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&releases)?);
         return Ok(());
     }
-    for r in releases {
-        let g = &r.progress;
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            r.version, r.state, g.open, g.done, g.open_weight, g.done_weight, g.unsized_open
-        );
-    }
+    print!("{}", roadmap_tsv(&releases));
     Ok(())
 }
 
@@ -2718,6 +2793,70 @@ pub(crate) struct Progress {
     /// The weight of this version's rows filed in the last 28 days (`filed:` or `#cMMDD`):
     /// scope growth, read beside `closed_weight_28d` before trusting an ETA.
     pub filed_weight_28d: u32,
+    /// The same rows split by row type ([`ROW_TYPES`], or [`UNTYPED`]). Bugs are `fix`.
+    pub by_kind: std::collections::BTreeMap<String, KindCount>,
+    /// The rows counted above, one each; only `--roadmap --json` prints them, per release.
+    #[serde(skip)]
+    pub rows: Vec<LeafRow>,
+}
+
+/// One leaf row of a release, as `--roadmap --json` prints it.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub(crate) struct LeafRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    /// The id its `#of/` names, empty for a row under no parent.
+    pub parent: String,
+    /// The `#size/` word, empty when unsized.
+    pub size: String,
+    pub weight: u32,
+    /// `open`, `started` or `done`.
+    pub state: &'static str,
+    /// The PRs its marker names.
+    pub prs: Vec<String>,
+}
+
+impl LeafRow {
+    fn of(line: &str) -> LeafRow {
+        LeafRow {
+            id: md::row_id(line).unwrap_or_default(),
+            kind: row_kind(line),
+            title: row_title(line),
+            parent: crate::epics::parent_of(line).unwrap_or_default(),
+            size: project_tasks::size_tag(line)
+                .and_then(|t| t.strip_prefix("#size/").map(str::to_string))
+                .unwrap_or_default(),
+            weight: size_weight(line),
+            state: match line.trim_start() {
+                l if l.starts_with("- [/]") => "started",
+                _ if md::is_checked(line) => "done",
+                _ => "open",
+            },
+            prs: md::pr_refs(line),
+        }
+    }
+}
+
+/// One row kind's share of a [`Progress`].
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct KindCount {
+    pub open: usize,
+    pub open_weight: u32,
+    /// Open rows per priority tag; a row with none counts in no bucket.
+    pub urgent: usize,
+    pub high: usize,
+    pub low: usize,
+    pub done: usize,
+    pub closed_28d: usize,
+    pub closed_weight_28d: u32,
+    /// Rows of this kind filed in the last 28 days, open or closed.
+    pub filed_28d: usize,
+}
+
+/// A row's `by_kind` key: its type, or [`UNTYPED`].
+fn row_kind(line: &str) -> String {
+    row_type_area(line).map_or_else(|| UNTYPED.to_string(), |(ty, _)| ty)
 }
 
 /// A row's weight from its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); `None` when it has
@@ -2751,7 +2890,17 @@ fn in_version(line: &str, cur: Option<V>, ver: Option<V>) -> bool {
 }
 
 impl Progress {
-    fn close(&mut self, on: Option<chrono::NaiveDate>, weight: u32, today: chrono::NaiveDate) {
+    fn kind(&mut self, kind: &str) -> &mut KindCount {
+        self.by_kind.entry(kind.to_string()).or_default()
+    }
+
+    fn close(
+        &mut self,
+        kind: &str,
+        on: Option<chrono::NaiveDate>,
+        weight: u32,
+        today: chrono::NaiveDate,
+    ) {
         let Some(age) = on.map(|d| (today - d).num_days()) else {
             return;
         };
@@ -2762,6 +2911,9 @@ impl Progress {
         if (0..28).contains(&age) {
             self.closed_28d += 1;
             self.closed_weight_28d += weight;
+            let k = self.kind(kind);
+            k.closed_28d += 1;
+            k.closed_weight_28d += weight;
         }
     }
 
@@ -2772,6 +2924,7 @@ impl Progress {
             .or_else(|| md::find_since(line, today));
         if on.is_some_and(|d| (0..28).contains(&(today - d).num_days())) {
             self.filed_weight_28d += weight;
+            self.kind(&row_kind(line)).filed_28d += 1;
         }
     }
 
@@ -2791,12 +2944,23 @@ impl Progress {
             if !l.starts_with("- [") || !in_version(l, cur, ver) || !ix.counts(l) {
                 continue;
             }
+            self.rows.push(LeafRow::of(l));
             let size = size_of(l);
             let w = size.unwrap_or(1);
             self.open += 1;
             self.open_weight += w;
             if size.is_none() {
                 self.unsized_open += 1;
+            }
+            let prio = md::task_priority(l);
+            let k = self.kind(&row_kind(l));
+            k.open += 1;
+            k.open_weight += w;
+            match prio {
+                Some("#urgent") => k.urgent += 1,
+                Some("#high") => k.high += 1,
+                Some("#low") => k.low += 1,
+                _ => {}
             }
             self.filed(l, w, today);
         }
@@ -2817,6 +2981,7 @@ impl Progress {
         today: chrono::NaiveDate,
     ) {
         for l in rows.filter(|l| !md::is_dropped(l) && ix.counts(l)) {
+            self.rows.push(LeafRow::of(l));
             let size = size_of(l);
             let w = size.unwrap_or(1);
             self.done += 1;
@@ -2824,7 +2989,9 @@ impl Progress {
             if size.is_none() {
                 self.unsized_done += 1;
             }
-            self.close(project_tasks::done_on(l), w, today);
+            let kind = row_kind(l);
+            self.kind(&kind).done += 1;
+            self.close(&kind, project_tasks::done_on(l), w, today);
             self.filed(l, w, today);
         }
     }
@@ -2862,7 +3029,7 @@ impl Progress {
                 continue;
             }
             if let Ok(d) = chrono::NaiveDate::parse_from_str(when, "%Y-%m-%d") {
-                self.close(Some(d), size_weight(task), today);
+                self.close(&row_kind(task), Some(d), size_weight(task), today);
             }
         }
     }
@@ -2899,6 +3066,26 @@ pub(crate) fn progress_of(
             today,
         );
     }
+    pr
+}
+
+/// The closed rows of a shipped version, from its frozen notes. A row in both counts once.
+fn shipped_progress(
+    notes: &[String],
+    ix: &crate::epics::Index,
+    today: chrono::NaiveDate,
+) -> Progress {
+    let mut seen = std::collections::HashSet::new();
+    let mut pr = Progress::default();
+    pr.closed(
+        notes
+            .iter()
+            .flat_map(|n| n.lines())
+            .filter(|l| l.starts_with("- [") && md::is_checked(l))
+            .filter(|l| seen.insert(md::task_key(l))),
+        ix,
+        today,
+    );
     pr
 }
 
@@ -3781,6 +3968,12 @@ Goal: the board reads itself
         let ix = crate::epics::Index::default();
         p.sheet(PROGRESS_SHEET, cur, cur, &ix, today);
         p.note(PROGRESS_NOTE, &ix, today);
+        let by_kind = std::mem::take(&mut p.by_kind);
+        p.rows.clear();
+        assert_eq!(by_kind.keys().collect::<Vec<_>>(), ["fix", UNTYPED]);
+        // the Proof table's fix row closed inside 28 days; the older one is out
+        assert_eq!(by_kind["fix"].closed_weight_28d, 8);
+        assert_eq!(by_kind[UNTYPED].open, 3);
         assert_eq!(
             p,
             Progress {
@@ -3799,6 +3992,8 @@ Goal: the board reads itself
                 unsized_open: 1,
                 unsized_done: 1,
                 filed_weight_28d: 0,
+                by_kind: Default::default(),
+                rows: Default::default(),
             }
         );
         assert_eq!(goal_line(PROGRESS_SHEET), "the board reads itself");
@@ -3878,15 +4073,204 @@ Goal: the board reads itself
         assert_eq!(r[1].progress.unsized_open, 1);
     }
 
+    /// A project with an open version, one shipped version and an epic in each state.
+    fn journey_project(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("notes-journey-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.4.0\nGoal: the page reads itself\n\n## Tasks\n\
+             - [ ] epic(ui): open one <!-- id:ar-1 -->\n\
+             - [x] epic(ui): proven <!-- id:ar-2 done:2026-11-04 https://demo.example/p -->\n\
+             - [x] epic(ui): waved through <!-- id:ar-3 done:2026-11-04 unverified: no target -->\n\
+             - [x] epic(ui): abandoned <!-- id:ar-4 dropped: not wanted -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo\n\n## Tasks\n\
+             - [/] feat(ui): the card #size/m #of/ar-1 <!-- id:ar-5 -->\n\
+             - [x] fix(ui): a bug #of/ar-1 <!-- id:ar-6 done:2026-11-03 pr:9 -->\n\
+             - [x] fix(ui): not wanted #of/ar-1 <!-- id:ar-7 dropped: stale -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("versions/v1.3.0.md"),
+            "# demo\nVersion: v1.3.0\nGoal: it boots\n\n## Tasks\n\
+             - [x] feat(a): frozen <!-- id:ar-8 pr:3 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/versions/v1.3.0.md"),
+            "## Done rows\n- [x] feat(a): frozen <!-- id:ar-8 pr:3 -->\n- [x] fix(a): board only <!-- id:ar-9 pr:4 -->\n",
+        )
+        .unwrap();
+        // The open version's own note is not a shipped version.
+        fs::write(dir.join("agent/versions/v1.4.0.md"), "## Notes\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_roadmap_json_carries_the_rows_the_join_needs() {
+        // NEGATIVE CONTROL: before this the JSON held counts only, so a reader could not say
+        // which rows sit under which epic.
+        let dir = journey_project("rows");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let r = roadmap(&dir, today);
+        assert_eq!(r[0].goal, "the page reads itself");
+        let rows: Vec<(&str, &str, &str, &str, &str)> = r[0]
+            .rows
+            .iter()
+            .map(|x| {
+                (
+                    x.id.as_str(),
+                    x.kind.as_str(),
+                    x.parent.as_str(),
+                    x.size.as_str(),
+                    x.state,
+                )
+            })
+            .collect();
+        // The parent row is no leaf, and a dropped row was never delivered.
+        assert_eq!(
+            rows,
+            vec![
+                ("ar-5", "feat", "ar-1", "m", "started"),
+                ("ar-6", "fix", "ar-1", "", "done")
+            ]
+        );
+        assert_eq!(r[0].rows[1].prs, ["9"]);
+        assert_eq!(r[0].rows[1].title, "a bug");
+        let json = serde_json::to_value(&r[0]).unwrap();
+        assert_eq!(json["rows"][0]["id"], "ar-5");
+        assert!(
+            json["progress"].get("rows").is_none(),
+            "--stats stays counts"
+        );
+    }
+
+    #[test]
+    fn a_closed_epic_stays_listed_with_what_closed_it() {
+        // NEGATIVE CONTROL: before this a closed epic left every reader, so nothing could
+        // tell verified from landed.
+        let dir = journey_project("closed");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let r = roadmap(&dir, today);
+        let closed: Vec<(&str, &str, bool)> = r[0]
+            .closed_epics
+            .iter()
+            .map(|e| (e.id.as_str(), e.proof.as_str(), e.verified))
+            .collect();
+        assert_eq!(
+            closed,
+            vec![
+                ("ar-2", "https://demo.example/p", true),
+                ("ar-3", "unverified: no target", false)
+            ]
+        );
+        assert_eq!(
+            r[0].epics.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["ar-1"]
+        );
+    }
+
+    #[test]
+    fn a_shipped_version_reads_from_its_notes_and_stays_out_of_the_tsv() {
+        // NEGATIVE CONTROL: before this the roadmap stopped at the open version.
+        let dir = journey_project("shipped");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let r = roadmap(&dir, today);
+        assert_eq!(
+            r.iter()
+                .map(|x| (x.version.as_str(), x.state))
+                .collect::<Vec<_>>(),
+            vec![("v1.4.0", "current"), ("v1.3.0", "shipped")]
+        );
+        let s = &r[1];
+        assert_eq!(s.goal, "it boots");
+        // One row in both notes counts once.
+        assert_eq!(s.progress.done, 2);
+        assert_eq!(s.progress.by_kind["fix"].done, 1);
+        assert_eq!(
+            s.rows.iter().map(|x| x.prs[0].as_str()).collect::<Vec<_>>(),
+            ["3", "4"]
+        );
+        // `agentctl-wave-roll` reads this byte for byte.
+        assert_eq!(roadmap_tsv(&r), "v1.4.0\tcurrent\t1\t1\t3\t1\t0\n");
+    }
+
+    const KIND_SHEET: &str = "\
+# demo
+Version: v0.2.0
+
+## Tasks
+- [ ] fix(audio): a bug #urgent #size/m #c1101
+- [ ] fix(audio): another #low #c0901
+- [ ] feat(ui): a feature #size/l
+- [ ] research(market): who buys this #c1104
+- [ ] a row with no type
+- [ ] fix(audio): next release #v0.3.0
+- [x] fix(net): closed this week #c1030 <!-- done:2026-11-03 pr:1 -->
+- [x] fix(net): dropped <!-- done:2026-11-04 dropped: stale -->
+";
+
+    #[test]
+    fn by_kind_counts_bugs_as_fix_rows_and_splits_them_by_priority() {
+        // NEGATIVE CONTROL: before by_kind, a fix row and a feat row were one undivided count.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let cur = Some((0, 2, 0));
+        let mut p = Progress::default();
+        p.sheet(KIND_SHEET, cur, cur, &crate::epics::Index::default(), today);
+        assert_eq!(
+            p.by_kind["fix"],
+            KindCount {
+                // the later-version row and the dropped row are out
+                open: 2,
+                open_weight: 4,
+                urgent: 1,
+                high: 0,
+                low: 1,
+                done: 1,
+                closed_28d: 1,
+                closed_weight_28d: 1,
+                // #c1101 and #c1030; #c0901 is older than 28 days
+                filed_28d: 2,
+            }
+        );
+        assert_eq!(
+            (p.by_kind["feat"].open, p.by_kind["feat"].open_weight),
+            (1, 8)
+        );
+        assert_eq!(p.by_kind["research"].filed_28d, 1);
+        assert_eq!(p.by_kind[UNTYPED].open, 1);
+        assert_eq!(p.by_kind.len(), 4);
+    }
+
+    #[test]
+    fn the_new_kinds_parse_as_row_types() {
+        for ty in ["research", "design", "market", "legal"] {
+            let row = format!("- [ ] {ty}(store): a title");
+            assert_eq!(
+                row_type_area(&row).map(|(t, _)| t),
+                Some(ty.to_string()),
+                "{ty}"
+            );
+        }
+        // a bug is a fix row, not a type of its own
+        assert_eq!(row_type_area("- [ ] bug(store): a title"), None);
+    }
+
     #[test]
     fn a_close_window_counts_today_and_stops_at_its_edge() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
         let mut p = Progress::default();
         for ago in [0, 6, 7, 27, 28] {
-            p.close(Some(today - chrono::Days::new(ago)), 1, today);
+            p.close("fix", Some(today - chrono::Days::new(ago)), 1, today);
         }
-        p.close(Some(today + chrono::Days::new(1)), 1, today);
-        p.close(None, 1, today);
+        p.close("fix", Some(today + chrono::Days::new(1)), 1, today);
+        p.close("fix", None, 1, today);
         assert_eq!((p.closed_7d, p.closed_28d), (2, 4));
     }
 

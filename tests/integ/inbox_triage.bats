@@ -25,7 +25,7 @@ setup() {
   unset NOTES_PROFILE
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot"}}}' >"$PROJECT_MAP_FILE"
   export INBOX_TRIAGE_CMD=model-stub
-  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nprintf "%%s\\n" "$2" > "$NOTES_FIXTURE/prompt.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\ncat > "$NOTES_FIXTURE/prompt.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
   # The planner's start, recorded: no unit ever starts from a test.
   printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
@@ -56,6 +56,19 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
+}
+
+@test "a failed model call keeps its stderr in the log and its own reason in the outcome" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  printf '#!/usr/bin/env bash\necho "You have hit your weekly limit - resets 7pm"\necho "harness: claude exited 1" >&2\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'harness: claude exited 1'
+  assert_output --partial 'model call failed: You have hit your weekly limit - resets 7pm'
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx FAILED "$st/last-outcome"
+  grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
+  inbox | grep -q 'the gun sound is off'
 }
 
 @test "end to end: a typed line is filed word for word, a typed row is left alone, and no model runs" {
@@ -108,6 +121,29 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run inbox
   refute_output --partial 'flickers'
   refute_output --partial 'logo'
+}
+
+@test "a duplicate of another project's row joins it on that project's board" {
+  sheet '- the logo is blurry on retina\n' ''
+  printf '%s\n' '# other' '' 'Version: v0.1.0' '' '## Inbox' '' '## Tasks' '- [ ] fix(brand): the logo blurs on hi-dpi screens <!-- id:ot-3 -->' >"$PROJ/other/README.md"
+  answer '{"n": 1, "action": "dup", "id": "ot-3"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx '  was: the logo is blurry on retina' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  run inbox
+  refute_output --partial 'blurry'
+}
+
+@test "a duplicate of an agent-board row joins it there" {
+  sheet '- which lane should a game take\n' ''
+  mkdir -p "$PROJ/scratch/agent"
+  printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-7 -->\n' >"$PROJ/scratch/agent/README.md"
+  answer '{"n": 1, "action": "dup", "id": "sc-7"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx '  was: which lane should a game take' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run inbox
+  refute_output --partial 'which lane'
 }
 
 @test "--dry-run writes nothing" {
@@ -190,12 +226,46 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed sc-1 in \[\[[^]]*\|scratch\]\] \(human\): chore\(build\): drop the old cache'
-  assert_output --partial '  - from: outbox'
+  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
+  refute_output --partial '  - from: outbox'
   assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
+}
+
+@test "outbox: an <id>: line answers its open row with no model, closing a decide row; an id with no open row is left" {
+  sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
+  mkdir -p "$PROJ/scratch/agent"
+  printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-3 -->\n' >"$PROJ/scratch/agent/README.md"
+  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 3 from the outbox, filed 3, left 2, refused 0'
+  # Only the line that is no answer reaches the model.
+  grep -qx '1. \[outbox\] stays for the model' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run grep -c '^[0-9]*\. \[' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 1
+  run tasks
+  assert_output --regexp '\[x\] decide\(squad\): followers that fight with you .*ingest:[0-9-]{10}'
+  assert_output --partial 'sc-1: yes, build it after the bully fix'
+  assert_output --regexp '\[ \] feat\(ui\): a colour for the squad'
+  assert_output --partial 'sc-2: the blue one'
+  run cat "$PROJ/scratch/agent/README.md"
+  assert_output --regexp '\[x\] decide\(lanes\): which lane a game takes .*ingest:'
+  assert_output --partial 'sc-3: the agent lane'
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'sc-1:'
+  refute_output --partial 'sc-2:'
+  assert_output --partial '- [ ] zz-9: yes'
+  assert_output --partial '- [ ] stays for the model'
+  run "$NOTES_BIN" ingest page
+  page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
+  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/inbox"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
+  run cat "$page"
+  assert_output --partial 'left (outbox): zz-9: yes'
+  assert_output --partial 'why: no open row zz-9'
 }
 
 @test "outbox: the model routes a line to its project, flags it for a plan, and a dup joins the open row's project" {
@@ -249,4 +319,56 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx "$HOME/.notes" "$NOTES_FIXTURE/watch.args" || fail "$(cat "$NOTES_FIXTURE/watch.args")"
   grep -qx "$PROJ/scratch" "$NOTES_FIXTURE/watch.args" || fail "$(cat "$NOTES_FIXTURE/watch.args")"
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "an empty sweep called the model"
+}
+
+@test "--watch: a failed sweep runs again on the backoff with no save, and a clean one waits for a save" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  outbox ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off #high #size/s"]}'
+  mkfifo "$NOTES_FIXTURE/events"
+  # The watch has no saves to report: it holds until the second model call closes the fifo.
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/events"\n' >"$SANDBOX/bin/inotifywait"
+  chmod +x "$SANDBOX/bin/inotifywait"
+  # The first call hits a usage limit; the second answers and then ends the watch.
+  printf '%s\n' '#!/usr/bin/env bash' 'echo called >> "$NOTES_FIXTURE/model.log"' 'cat > "$NOTES_FIXTURE/prompt.txt"' \
+    'if [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ]; then echo "You have hit your weekly limit" >&2; exit 1; fi' \
+    'cat "$NOTES_FIXTURE/model.out"' ': > "$NOTES_FIXTURE/events"' >"$SANDBOX/bin/model-stub"
+  INBOX_SWEEP_QUIET=1 INBOX_RETRY_S=1 run "$TRIAGE" --watch
+  assert_failure 1
+  assert_output --partial 'model call failed: You have hit your weekly limit'
+  assert_output --partial 'the sweep failed; it runs again in 1s'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  # The negative control: after the clean sweep the watch waited for a save, so no third call.
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 2 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  run tasks
+  assert_output --partial 'fix(audio): the gun sound plays off'
+}
+
+@test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
+  sheet '' ''
+  outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
+  run "$TRIAGE"
+  assert_success
+  mkdir -p "$HOME/.notes/lab/inbox"
+  "$NOTES_BIN" ingest page
+  page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
+  [ -n "$page" ] || fail "no inbox page"
+  key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
+  [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
+  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] ' "$page" || fail "$(cat "$page")"
+  run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
+  assert_failure
+  assert_output --partial 'no ingest event'
+  [ ! -e "$HOME/.local/state/notes/inbox-ack.jsonl" ] || fail "a bad key wrote a mark"
+  run "$NOTES_BIN" inbox ack -- "$key"
+  assert_success
+  run cat "$page"
+  assert_output --partial '- +1 reviewed'
+  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
+  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
+  run "$NOTES_BIN" inbox ack --undo -- "$key"
+  assert_success
+  run cat "$page"
+  refute_output --partial '- +1 reviewed'
+  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }

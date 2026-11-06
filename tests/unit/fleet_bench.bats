@@ -17,6 +17,8 @@ setup() {
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
+  # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
+  export BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -43,6 +45,10 @@ setup() {
   printf '#!/usr/bin/env bash\ncase "$*" in line) cat "%s" ;; "kpi --json") cat "%s" ;; *) exit 9 ;; esac 2>/dev/null\n' \
     "$COMMSLINE" "$COMMSKPI" > "$SANDBOX/bin/comms-stub"
   chmod +x "$SANDBOX/bin/comms-stub"
+  # judge-eval kpi --json, canned: serves $JUDGEKPI when it exists, else fails like no judge data
+  export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
+  printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
+  chmod +x "$SANDBOX/bin/judge-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -135,6 +141,7 @@ agent_bench_kpi{kpi="runners_bad",window="7d"} 0
 agent_bench_kpi{kpi="asks_stale",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
+agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
 # HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
 # TYPE agent_bench_kpi_limit gauge
 agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
@@ -672,6 +679,7 @@ kpi_setup() {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src" LEDGER_BOARDS="$SANDBOX/none.md"
   export BENCH_ASKS_CMD=true BENCH_NOW=$T0
+  export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_LESSONS_DIR="$SANDBOX/lessons"
   mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
   printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
   BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
@@ -682,7 +690,8 @@ echo "$*" >> "$L"
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
 case "$4" in
   list) cat "$B" ;;
-  add) k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
+  add) [ -z "$ADD_RC" ] || exit "$ADD_RC"
+       k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
        printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
@@ -713,7 +722,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -733,9 +742,28 @@ kpi_fixture() {
   assert_line '| rows_pass_pct | - | - | - | - |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #high' "$BOARD"
+  run grep -c 'check(kpi): buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #size/s #high' "$BOARD"
   assert_output 1
-  run grep -c 'kpi: comms_pass_pct' "$BOARD"
+  run grep -c 'check(kpi): comms_pass_pct' "$BOARD"
+  assert_output 0
+}
+
+@test "kpi: the judge KPIs come from judge-eval kpi, and retro files the one past its threshold" {
+  kpi_setup
+  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| judge_errors | - | - | max 0 | - |'
+  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
+  run "$SUBJECT" kpi
+  assert_line '| judge_errors | 0 | 2 | max 0 | ok |'
+  assert_line '| judge_precision | 75 | 80 | min 90 | past |'
+  assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
+  assert_line '| ask_unclear_pct | - | - | - | - |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'check(kpi): judge_precision past threshold' "$BOARD"
+  assert_output 1
+  run grep -c 'check(kpi): judge_errors\|check(kpi): ask_false_defer_pct' "$BOARD"
   assert_output 0
 }
 
@@ -751,6 +779,65 @@ kpi_fixture() {
   assert_success
   assert_line '| sessions | 0 | 0 | - | - |'
   assert_line '| revert_rate | - | - | max 0.1 | - |'
+}
+
+@test "kpi --at reads both windows as of T with the comms and counted-now KPIs null; --trend is one 7d row a day" {
+  kpi_setup; kpi_fixture
+  echo '{"buzzes_per_day":{"7d":63.1,"28d":28.5},"comms_pass_pct":{"7d":61,"28d":40}}' > "$COMMSKPI"
+  run "$SUBJECT" kpi --json --at $((T0 - 864000))
+  assert_success
+  run jq -c '[.sessions["7d"], .sessions["28d"], .prs_per_session["7d"], .buzzes_per_day["7d"], .board_open["7d"]]' <<<"$output"
+  assert_output '[1,1,1,null,null]'
+  run "$SUBJECT" kpi --json
+  run jq -c '[.sessions["7d"], .buzzes_per_day["7d"]]' <<<"$output"
+  assert_output '[1,63.1]'
+  run "$SUBJECT" kpi --trend 3 --json
+  assert_success
+  run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
+  assert_output '[[0,1,1],3]'
+  run "$SUBJECT" kpi --trend 3
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate |'
+  run "$SUBJECT" kpi --trend 0
+  assert_failure 2
+  run "$SUBJECT" kpi --at 'not a time'
+  assert_failure 2
+}
+
+@test "effect: N days before a change against N after, a verdict by which way is better, pending until the after window ends" {
+  kpi_setup
+  out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, reverted_7d: 0, cost_usd: 10, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, reverted_7d: 1, cost_usd: 2, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "r1", project: "game", runner: true, updated_epoch: ($t - 1296000), prs_merged: 50, reverted_7d: 0, cost_usd: 0}'
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
+  assert_success
+  run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"]]'
+  run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
+  assert_success
+  run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
+  assert_output $'["pending"]\n[null]'
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10
+  assert_line '| cost_per_pr | 5 | 1 | improved |'
+}
+
+@test "effect: a PR is read as its merge time; an unmerged PR or a bare number is refused" {
+  kpi_setup
+  out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, cost_usd: 10}'
+  out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, cost_usd: 2}'
+  GHLOG="$SANDBOX/gh.log"; MERGED=$(date -u -d @$((T0 - 1728000)) +%FT%TZ)
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0\n' "$GHLOG" "$MERGED" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  run "$SUBJECT" effect 'o/r#7' --days 10 --json
+  assert_success
+  run jq -c '[.ref, (.kpis[] | select(.kpi == "cost_per_pr") | .verdict)]' <<<"$output"
+  assert_output '["o/r#7","improved"]'
+  run grep -c 'pr view 7 -R o/r' "$GHLOG"
+  assert_output 1
+  run "$SUBJECT" effect 'x/y#7'
+  assert_failure 1
+  assert_output --partial 'not merged'
+  run "$SUBJECT" effect 7
+  assert_failure 2
+  assert_output --partial 'owner/repo#7'
 }
 
 @test "kpi: runners_bad counts FAILED or STALLED scheduled runners, not off, hand-fired or retired ones" {
@@ -843,7 +930,7 @@ loop_fixture() {
   assert_line '| loop_dark (now) | 1 | - | max 0 | past |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: loop_dark past threshold' "$BOARD"
+  run grep -c 'check(kpi): loop_dark past threshold' "$BOARD"
   assert_output 1
 }
 
@@ -855,14 +942,111 @@ loop_fixture() {
   assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
 }
 
+# chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
+# item (one repo-qualified, one bare); every started agent row has an active item; the one done
+# item's row is closed; the running item has a session; the one agent row in a project with an
+# open epic is filed under it, and that epic still has an open leaf; the doctor passed.
+chain_fixture() {
+  kpi_setup
+  mkdir -p "$FLEET_BENCH_DIR"
+  printf '%s\n' ledger_coverage_min=0.95 untracked_merged_prs_max=0 board_orphan_started_max=0 merged_open_rows_max=0 \
+    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 doctor_fail_max=0 >> "$KPI_THRESHOLDS"
+  ci_row '{repo: "O/R", number: 7, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/other", number: 9, session_id: "h2", merged_epoch: ($t - 172800), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 1, session_id: "h3", merged_epoch: ($t - 864000), ci_red: 0}'
+  export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_PROJECTS_CMD=projects-stub
+  items_stub "$(item run running high board:game:g-1 '{"session":"lab:game-agent-1","pr":"o/r#7"}')"
+  DONE="$SANDBOX/done.jsonl"
+  item fin done high board:game:g-2 '{"pr":"9","merged":"abc123"}' > "$DONE"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
+  BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
+  jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
+                   {project: "game", lane: "human", state: "open", id: "g-0", type: "epic", tags: []},
+                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: []}]}' > "$BJSON"
+  jq -cn '[{name: "game", epics: [{id: "g-0", open: 1, done: 2}]}, {name: "tools", epics: []}]' > "$PJSON"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$BJSON" > "$SANDBOX/bin/board-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$PJSON" > "$SANDBOX/bin/projects-stub"
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/board-stub" "$SANDBOX/bin/projects-stub"
+  printf 'PASS  map is valid JSON\nWARN  one stale anchor\n' > "$BENCH_DOCTOR_LAST"
+}
+
+@test "chain: a clean work chain has every link at its bound, and --check passes" {
+  chain_fixture
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
+  run "$SUBJECT" chain --json
+  assert_success
+  run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"]}'
+  # the done items are read back a day past the window (8 days before T0, a local date), so an item
+  # done before its PR merged counts
+  run sort -u "$DONE.calls"
+  assert_output "--since $(date -d "@$((T0 - 8 * 86400))" +%F)"
+}
+
+@test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
+  chain_fixture
+  cp "$SANDBOX/items.jsonl" "$SANDBOX/items.ok"; cp "$DONE" "$DONE.ok"; cp "$BJSON" "$BJSON.ok"; cp "$PJSON" "$PJSON.ok"
+  restore() { cp "$SANDBOX/items.ok" "$SANDBOX/items.jsonl"; cp "$DONE.ok" "$DONE"; cp "$BJSON.ok" "$BJSON"; cp "$PJSON.ok" "$PJSON"
+              printf 'PASS  map is valid JSON\n' > "$BENCH_DOCTOR_LAST"; }
+  check() { run "$SUBJECT" chain --check; assert_failure 1; assert_output "$1"; restore; }
+  # a merged PR no item names: coverage drops and it counts as untracked
+  ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
+  check "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
+  sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # a started row no active item names
+  jq -c '.rows += [{project: "game", lane: "agent", state: "doing", id: "g-5", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  check 'board_orphan_started 1 (max 0)'
+  # a merged item whose row is still open
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-2", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  check 'merged_open_rows 1 (max 0)'
+  # a running item no session owns
+  item lost running high human '{"pr":"o/r#7"}' >> "$SANDBOX/items.jsonl"
+  check 'ownerless_running 1 (max 0)'
+  # an agent row in a project with an open epic, filed under no epic
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-6", type: "fix", tags: []},
+                   {project: "game", lane: "agent", state: "open", id: "g-7", type: "fix", tags: []}]' "$BJSON.ok" > "$BJSON"
+  check 'epic_linked_share 0.333 (min 0.5)'
+  # an open epic whose every leaf is done, waiting on proof of its outcome
+  jq -c '.[0].epics[0].open = 0' "$PJSON.ok" > "$PJSON"
+  check 'landed_unverified 1 (max 0)'
+  # the doctor failed a check
+  printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
+  check 'doctor_fail 1 (max 0)'
+}
+
+@test "chain: a CI row with no repo is a PR no item names, and the other KPIs still count" {
+  # NEGATIVE CONTROL: `.repo | ascii_downcase` on a repo-less row failed the whole jq program, and every chain KPI read ?
+  chain_fixture
+  ci_row '{session_id: "h4", merged_epoch: ($t - 3600), ci_red: 0}'
+  run "$SUBJECT" chain --json
+  assert_success
+  run jq -c '[.ledger_coverage["7d"], .untracked_merged_prs["7d"], .ownerless_running["7d"]]' <<<"$output"
+  assert_output '[0.667,1,0]'
+}
+
+@test "chain: an unreadable source reads ? and never trips a bound; the KPIs ride the kpi table and its gauges" {
+  chain_fixture
+  export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/none"
+  run "$SUBJECT" chain --check
+  assert_success
+  run "$SUBJECT" kpi
+  assert_line '| board_orphan_started (now) | - | - | max 0 | - |'
+  assert_line '| ownerless_running (now) | 0 | - | max 0 | ok |'
+  assert_line '| ledger_coverage (now) | 1 | - | min 0.95 | ok |'
+  run "$SUBJECT" ledger
+  assert_line 'doctor_fail=?'
+}
+
 @test "retro adds exactly one row per KPI past its threshold, #high when more than 2x past" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" retro
   assert_success
   run cut -f4 "$BOARD"
   assert_output "$(printf '%s\n' '- [ ] other task #low' \
-    '- [ ] kpi: revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #high' \
-    '- [ ] kpi: interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #low')"
+    '- [ ] check(kpi): revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #size/s #high' \
+    '- [ ] check(kpi): interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #size/s #low')"
   run grep -c ' add ' "$NLOG"
   assert_output 2
   run grep -c -e '--to' "$NLOG"
@@ -879,12 +1063,12 @@ loop_fixture() {
   run "$SUBJECT" retro
   assert_success
   [ "$(wc -l < "$BOARD")" -eq 3 ]
-  run grep -c 'kpi: revert_rate past threshold' "$BOARD"
+  run grep -c 'check(kpi): revert_rate past threshold' "$BOARD"
   assert_output 1
   run grep 'revert_rate' "$BOARD"
   assert_output --partial '7d 0.5 (28d 0.4, max 0.1)'
   run cat "$NLOG"
-  assert_line 'ptask agent-runtime --agent edit kpi: revert_rate past threshold --text kpi: revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1)'
+  assert_line 'ptask agent-runtime --agent edit check(kpi): revert_rate past threshold --text check(kpi): revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1) #size/s'
   refute_output --partial ' add '
   refute_output --partial 'interrupts_per_session'
   run head -1 "$BOARD"
@@ -898,6 +1082,45 @@ loop_fixture() {
   assert_output --partial NOOP
 }
 
+@test "retro reads an add that exits 3 (an open near-dup) as filed, and any other failure as FAILED" {
+  kpi_setup; kpi_fixture
+  ADD_RC=3 run "$SUBJECT" retro
+  assert_success
+  run outcome
+  assert_output --partial NOOP
+  ADD_RC=1 run "$SUBJECT" retro
+  assert_failure
+  run outcome
+  assert_output --partial FAILED
+}
+
+@test "retro keeps one guard row per lesson whose sig recurred in 2+ sessions, refreshed in place; one session is not enough" {
+  kpi_setup; rm "$KPI_THRESHOLDS"
+  mkdir -p "$SO_LESSONS_DIR"
+  printf -- '- **2026-10-02** **Never killall node.** why <!-- sig:2026-10-02 (^|\\s)killall\\s -->\n' > "$SO_LESSONS_DIR/dotfiles.md"
+  printf -- '- **2026-10-05** **Other.** why <!-- sig:2026-10-05 other-cmd -->\n' >> "$SO_LESSONS_DIR/dotfiles.md"
+  out_row game '{session_id: "s1", project: "game", lesson_hits: {"(^|\\s)killall\\s": 1, "other-cmd": 3}}'
+  out_row game '{session_id: "s2", project: "game", lesson_hits: {"(^|\\s)killall\\s": 2}}'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'lesson "never killall node." (dotfiles.md, 2026-10-02) recurred in 2 sessions'
+  assert_output --partial '#low'
+  out_row game '{session_id: "s3", project: "game", lesson_hits: {"(^|\\s)killall\\s": 1}}'
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'recurred in 3 sessions'
+  run grep -c ' edit check(lesson): guard ' "$NLOG"
+  assert_output 1
+  refute grep -q ' add ' "$NLOG"
+}
+
 @test "retro with no thresholds file is NOOP and never calls notes" {
   kpi_setup; kpi_fixture
   rm "$KPI_THRESHOLDS"
@@ -909,7 +1132,7 @@ loop_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the models and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -921,9 +1144,10 @@ loop_fixture() {
   assert_line --index 3 '## Bottlenecks'
   assert_line --index 4 '## Where the time went'
   assert_line --index 5 '## Queue'
-  assert_line --index 6 '## Sessions'
-  assert_line --index 7 '## Agent depth'
-  assert_line --index 8 '## Session time'
+  assert_line --index 6 '## Models'
+  assert_line --index 7 '## Sessions'
+  assert_line --index 8 '## Agent depth'
+  assert_line --index 9 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1627,6 +1851,46 @@ qstats_fixture() {
     by_source: {human: {done: 4, ok: 3, failed: 1, cancelled: 0, prs: 2, wait_minutes_median: 12, to_pr_minutes_median: 95},
                 shepherd: {done: 1, ok: 0, failed: 0, cancelled: 1, prs: 0, wait_minutes_median: null, to_pr_minutes_median: null}},
     done_by_tag: {}}' > "$QSTATS"
+}
+
+@test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":3,"reverted_7d":0}'
+    echo '{"session_id":"s2","cost_usd":1,"reverted_7d":1}'
+    echo '{"session_id":"s3","cost_usd":2,"reverted_7d":0}'
+    echo '{"session_id":"s4","cost_usd":5,"reverted_7d":0}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","sessions":"s1"}'
+    echo '{"slug":"b","model":"sonnet","status":"ok","pr":"o/r#2","sessions":"s2 s3"}'
+    echo '{"slug":"c","model":"sonnet","status":"failed","sessions":"s4"}'
+    echo '{"slug":"d","model":"sonnet","status":"cancelled"}'
+    echo '{"slug":"e","status":"ok","pr":"o/r#3"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00); old_iso=$(date -u -d "@$((T0 - 8 * 86400))" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":null}"
+    echo "{\"id\":\"r4\",\"ts\":\"$old_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+  } > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
+  assert_equal "$(jq -c .models.sonnet <<<"$output")" '{"done":2,"landed":1,"landed_rate":0.5,"failed":1,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"cost_per_pr":8}'
+  assert_equal "$(jq -c '.models.opus | [.landed_rate, .cost_per_pr, .redo_rate]' <<<"$output")" '[1,3,null]'
+  assert_equal "$(jq -c '.models.unrecorded.done' <<<"$output")" 1
+  run env BENCH_NOW=$T0 "$SUBJECT" models
+  assert_success
+  assert_line '| sonnet | 2 | 1 | 0.5 | 1 | 2 | 1 | 0.5 | 1 | $8 | $8 |'
+  assert_line '| opus | 1 | 1 | 1 | 0 | 0 | 0 | - | 0 | $3 | $3 |'
+  run "$SUBJECT" models --bogus
+  assert_failure 2
 }
 
 @test "queue prints the week from agent-queue stats since BENCH_QUEUE_DAYS ago, --json passes it through" {

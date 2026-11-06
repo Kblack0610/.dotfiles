@@ -46,7 +46,7 @@ SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
         "prose", "items_under", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
-        "max_title", "refs", "group"}
+        "max_title", "refs", "group", "option_meanings"}
 
 
 def die(msg, code=2):
@@ -136,8 +136,9 @@ def prose_findings(text):
 HEADING = re.compile(r"\s*#+(\s|$)")
 
 
-def lint(text, ch, ids, priority=None, title=None):
-    """Findings for one message, as (code, detail) pairs."""
+def lint(text, ch, ids, priority=None, title=None, record=None):
+    """Findings for one message, as (code, detail) pairs. record: the message's `key: value`
+    fields, for the checks that read more than its text (option_meanings)."""
     ids, refs = ids
     f = []
     item_re = re.compile(ch["item"])
@@ -198,9 +199,21 @@ def lint(text, ch, ids, priority=None, title=None):
         f.append(("title-too-long", f"{len(title)} chars, budget {ch['max_title']}"))
     if ch.get("refs") and not any(p.search(scoped) for p in refs):
         f.append(("no-ref", "cites no reference (a PR, an id, a sha or a URL)"))
+    if ch.get("option_meanings") and record and (bare := bare_options(record)):
+        f.append(("bare-options", f"option(s) with no meaning: {', '.join(bare)}"))
     if ch["prose"]:
         f.extend(prose_findings(scoped))
     return f
+
+
+def bare_options(record):
+    """The options of an ask that carry no meaning. A gate's defaulted approve|hold needs none:
+    agent-ask post adds it, and post refuses every other option without one."""
+    opts = [o for o in record.get("options", "").split("|") if o]
+    if record.get("kind") in ("gate", "approval") and opts == ["approve", "hold"]:
+        return []
+    notes = record.get("option_notes", "").split("|")
+    return [o for i, o in enumerate(opts) if i >= len(notes) or not notes[i].strip()]
 
 
 def parse_since(s):
@@ -277,11 +290,16 @@ def read_source(src, since):
             text = section(text, src["heading"])
             if text is None:
                 continue
+        meta = {"path": path}
         if src.get("fields"):
-            text = "\n".join(v for k, v in key_values(text) if k in src["fields"] and v)
+            kv = list(key_values(text))
+            meta["record"] = {}
+            for k, v in kv:
+                meta["record"].setdefault(k, v)
+            text = "\n".join(v for k, v in kv if k in src["fields"] and v)
             if not text:
                 continue
-        yield when, text, {"path": path}
+        yield when, text, meta
 
 
 def key_values(text):
@@ -382,10 +400,10 @@ def build_report(window, only, channels, ids, rcfg):
             pri = meta.get("priority")
             try:
                 f = ([("shape", meta["reject"])] if meta.get("reject")
-                     else lint(text, ch, ids, priority=pri))
+                     else lint(text, ch, ids, priority=pri, record=meta.get("record")))
             except FileNotFoundError:
                 prose_missing = True
-                f = lint(text, {**ch, "prose": False}, ids, priority=pri)
+                f = lint(text, {**ch, "prose": False}, ids, priority=pri, record=meta.get("record"))
             n += 1
             lengths.append(len(text))
             if not f:

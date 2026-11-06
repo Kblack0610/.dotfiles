@@ -35,7 +35,7 @@ EOF
 # post a gate whose resume is a headless command; returns the id
 gate() { # $1=project
   "$AGENT_ASK" post --project "${1:-alpha}" --kind gate \
-    --options 'approve|hold|cancel' --resume "/captain ${1:-alpha} go" \
+    --options 'approve=go ahead|hold=wait|cancel=drop it' --resume "/captain ${1:-alpha} go" \
     'Create the tickets and cut the branch?'
 }
 
@@ -116,7 +116,7 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   run "$AGENT_ASK" answer "$id" approve
   assert_success
   run calls
-  assert_output --partial 'agentctl-run --role build -p /captain alpha go'
+  assert_output --partial 'agentctl-run --agent ask-resume -p /captain alpha go'
   run "$AGENT_ASK" resumable alpha
   assert_output ''
   ask-resume --all
@@ -146,13 +146,13 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
 
 # -- running --
 
-@test "a resume runs headless through agentctl-run, build role, with a turn cap" {
+@test "a resume runs headless as the ask-resume agent, with a turn cap" {
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run ask-resume "$id"
   assert_success
   run calls
-  assert_output --partial 'agentctl-run --role build -p /captain alpha go --max-turns 60'
+  assert_output --partial 'agentctl-run --agent ask-resume -p /captain alpha go --max-turns 60'
 }
 
 # The single most important test in this file. Resuming twice means two scope-outs of the
@@ -202,7 +202,7 @@ EOF
   local id; id="$(gate alpha)"
   "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
   run ask-resume --dry-run --all
-  assert_output --partial "would run: agentctl-run --role build -p '/captain alpha go'"
+  assert_output --partial "would run: agentctl-run --agent ask-resume -p '/captain alpha go'"
   run calls
   refute_output --partial 'agentctl-run'
   # and it is still queued, because nothing consumed it

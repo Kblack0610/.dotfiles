@@ -1,8 +1,10 @@
 "use strict";
 // Markdown to HTML for what agents write: transcript text, plans, asks, rundowns. Everything is
 // escaped before any markup is added, so text can never become HTML; links are http(s) only,
-// plus, with md(text, { notes: true }) for a note on the Focus tab, `[[target|label]]` as an
-// in-app `#focus/<target>` link and `#p:<name>` as `#projects/<name>`, with HTML comments dropped.
+// plus, with md(text, { notes: true }) for a note on the Daily tab, `[[target|label]]` as an
+// in-app `#daily/<target>` link and `#p:<name>` as `#projects/<name>` and any other `#tag` as a tag chip, with HTML comments dropped.
+// With { notes: true, ack: true } (the inbox page only), a task item ending `<!-- ack:<key> -->`
+// gets a live checkbox carrying `data-ack="<key>"`; every other checkbox stays disabled.
 // Covers what Claude writes (headings, lists, task lists, code, tables, quotes, emphasis), not
 // all of CommonMark. Newlines inside a paragraph are kept as line breaks, as in a chat.
 // Unit tests: tests/agent-web/md.test.mjs.
@@ -20,10 +22,13 @@ const md = (() => {
   const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
   // Set for the length of one md(text, { notes: true }) call.
-  let notes = false;
+  let notes = false, acks = false;
+  // A tickable inbox row's key, kept through the comment strip: the ts of its ingest event.
+  const ACK_KEY = "<!-- ack:([0-9T:.+Z-]{1,40}) -->";
+  const ACK = new RegExp(`\\s*${ACK_KEY}\\s*$`), ACK_ONLY = new RegExp(`^${ACK_KEY}$`);
   // A vault-relative target as a URL fragment: each segment encoded, the slashes kept readable.
   const frag = (t) => t.trim().split("/").map(encodeURIComponent).join("/");
-  const wikilink = (target, label) => `<a href="#focus/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
+  const wikilink = (target, label) => `<a href="#daily/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
   const ptag = (name) => `<a href="#projects/${escape(encodeURIComponent(name))}" class="ptag">#p:${escape(name)}</a>`;
 
   const link = (url, label) => `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
@@ -40,7 +45,8 @@ const md = (() => {
       .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/g, (url) => hold(link(url, url)));
     if (notes) {
       s = s.replace(/\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/g, (m, t, label) => hold(wikilink(t, label)))
-        .replace(/(^|[\s(])#p:([\w.-]+)/g, (m, pre, name) => pre + hold(ptag(name)));
+        .replace(/(^|[\s(])#p:([\w.-]+)/g, (m, pre, name) => pre + hold(ptag(name)))
+        .replace(/(^|[\s(])#([A-Za-z][\w/-]*)(?![\w:])/g, (m, pre, tag) => pre + hold(`<span class="ntag">#${escape(tag)}</span>`));
     }
     s = escape(s)
       .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>")
@@ -65,7 +71,7 @@ const md = (() => {
     let html = "";
     const open = []; // [{ indent, tag }]
     const close = () => { html += `</li></${open.pop().tag}>`; };
-    for (const [indent, ordered, start, text] of items) {
+    for (const [indent, ordered, start, raw] of items) {
       while (open.length && indent < open[open.length - 1].indent) close();
       const top = open[open.length - 1];
       const tag = ordered ? "ol" : "ul";
@@ -75,10 +81,12 @@ const md = (() => {
         open.push({ indent, tag });
         html += `<${tag}${ordered && start !== 1 ? ` start="${start}"` : ""}>`;
       }
+      const key = ACK.exec(raw), text = key ? raw.slice(0, key.index) : raw;
       const task = /^\[([ xX/])\]\s+(.*)$/.exec(text);
+      const ack = acks && key && task && task[1] !== "/" ? key[1] : null;
       html += !task ? `<li>${inline(text)}`
         : task[1] === "/" ? `<li class="task doing"><input type="checkbox" disabled> <span class="cchip running">doing</span> ${inline(task[2])}`
-        : `<li class="task"><input type="checkbox" disabled${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
+        : `<li class="task${task[1] === " " ? "" : " done"}"><input type="checkbox"${ack ? ` data-ack="${escape(ack)}"` : " disabled"}${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
     }
     while (open.length) close();
     return html;
@@ -142,11 +150,12 @@ const md = (() => {
 
   return (text, opts) => {
     notes = !!(opts && opts.notes);
+    acks = notes && !!opts.ack;
     try {
       let t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
-      if (notes) t = t.replace(/<!--[\s\S]*?-->/g, "");
+      if (notes) t = t.replace(/<!--[\s\S]*?-->/g, (c) => (acks && ACK_ONLY.test(c) ? c : ""));
       return blocks(t.split("\n"));
-    } finally { notes = false; }
+    } finally { notes = false; acks = false; }
   };
 })();
 

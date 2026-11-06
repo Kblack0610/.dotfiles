@@ -29,10 +29,13 @@
 # calls, and typed /commands. Calls made inside a subagent live in its own transcript and
 # are not counted here; `claude-recall stats` folds those in. A compaction is a
 # compact_boundary record, split by what triggered it: auto (the context filled) or manual.
-# plan_gate counts ExitPlanMode calls and how many plan-standard.sh denied; the human rejecting
-# a plan is `denied` under hard_errors, not a gate denial.
+# guards counts each hook denial by the hook's name: a PreToolUse deny reaches the transcript as
+# `PreToolUse:<Tool> hook error: <name>: ...` and a Stop block as `Stop hook feedback:\n<name>: ...`,
+# so a hook whose reason starts with `<name>: ` is counted and one that does not is invisible.
+# plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
+# the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR '
+  jq -nR --argjson sigs "${2:-[]}" '
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
     def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
     def text_of: if type == "string" then .
@@ -43,7 +46,7 @@ so_transcript_metrics() {
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
-        plan_exits: 0, plan_denied: 0,
+        plan_exits: 0, plan_denied: 0, guards: {}, lesson_hits: {},
         compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
@@ -74,6 +77,9 @@ so_transcript_metrics() {
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | test("\\bgh\\s+pr\\s+(create|merge)\\b")) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
+              | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
+                        | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
+                  .lesson_hits[$s.sig] += 1)
               | (if ($c | test("\\bnotes\\s+ptask\\b.*\\sdone\\b")) then
                    (if ($c | test("--unverified")) then .done_ids[$u.id] = "unverified"
                     elif ($c | test("--proof")) then .done_ids[$u.id] = "proof"
@@ -91,6 +97,8 @@ so_transcript_metrics() {
           .uses.slash[$cmd] += 1)
         | if ($r.message.content | type) == "string" then
           (if ($r.message.content | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)
+          | ((($r.message.content | capture("^Stop hook feedback:\\n(?<g>[a-z][a-z0-9-]+): ") | .g) // null) as $g
+             | if $g then .guards[$g] += 1 else . end)
         else
           reduce ($r.message.content | if type == "array" then .[] else empty end) as $c (.;
             if $c.type == "tool_result" then
@@ -98,7 +106,12 @@ so_transcript_metrics() {
               | ($c.is_error == true) as $err
               | (if $err then .tool_errors += 1 else . end)
               | (if $err and ($t | startswith("The user doesn'"'"'t want to proceed")) then .denied += 1 else . end)
-              | (if $err and ($t | startswith("PreToolUse:ExitPlanMode hook error: plan-standard: ")) then .plan_denied += 1 else . end)
+              | (if $err then
+                   (($t | capture("^PreToolUse:(?<tool>[A-Za-z_]+) hook error: (?<g>[a-z][a-z0-9-]+): ")) // null) as $m
+                   | if $m then .guards[$m.g] += 1
+                       | (if $m == {tool: "ExitPlanMode", g: "plan-standard"} then .plan_denied += 1 else . end)
+                     else . end
+                 else . end)
               | (if ($err | not) and .pr_ids[$c.tool_use_id] then
                    .prs += ([ $t | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
                               | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ]
@@ -122,11 +135,28 @@ so_transcript_metrics() {
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
         plan_gate: { exits: .plan_exits, denied: .plan_denied },
+        guards, lesson_hits,
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
                     tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
                     compactions },
         uses }
   ' < "$1"
+}
+
+# so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,
+# file}. A lesson opts in by ending with `<!-- sig:YYYY-MM-DD <regex> -->`: the regex (jq) matches
+# the mistake as a Bash command, anchored so a grep for its words does not count, and the date is
+# when the lesson was written. so_transcript_metrics counts a hit only on a later day, so the
+# session that wrote it is not its first recurrence. The same sig in several files is one lesson,
+# dated by its first writing; a lesson's claim is its first bold span, without `#` (a tag on a row).
+so_lesson_sigs() {
+  local dir="${1:-${SO_LESSONS_DIR:-$HOME/.agent/lessons}}"
+  { grep -H -- '<!-- sig:' "$dir"/*.md 2>/dev/null || true; } | jq -nR '
+    [inputs | capture("^(?<file>[^:]+):(?<line>.*)<!-- sig:(?<since>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<sig>.+?) -->")
+     | {sig, since, file: (.file | split("/")[-1]),
+        claim: (.line | sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*\\s*"; "")
+                | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120])}]
+    | group_by(.sig) | map(min_by(.since))'
 }
 
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
@@ -231,5 +261,5 @@ so_langfuse_events() {
         timestamp: $r.observed,
         body: { id: "so:\($r.session_id):\(.[0])", sessionId: $r.session_id,
                 name: .[0], value: .[1], dataType: "NUMERIC",
-                metadata: { project: $r.project, runner: $r.runner, final: $r.final } } }'
+                metadata: { project: $r.project, runner: $r.runner, agent: $r.agent, final: $r.final } } }'
 }

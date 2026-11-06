@@ -1,7 +1,7 @@
 //! The fleet and day-log boards' files. Their own tools write them (`fleet-sessions tick`, run
 //! every minute by fleet-state.timer, and `day-log snapshot`, by day-log.timer); this module
-//! only parses them, for agent-web's Watch and Log tabs and the hub TUI's Sessions, Today and
-//! History tabs, so the surfaces can never disagree about what happened.
+//! only parses them, for agent-web's Watch and Log tabs and the hub TUI's Sessions and Log
+//! tabs, so the surfaces can never disagree about what happened.
 
 use std::path::{Path, PathBuf};
 
@@ -506,8 +506,8 @@ pub fn parse_rundown(file: &str, text: &str) -> Rundown {
     }
 }
 
-/// The newest `limit` rundowns in `dir`, newest first.
-pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
+/// Every rundown file name in `dir`, newest first.
+pub fn rundown_files(dir: &Path) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
@@ -518,6 +518,11 @@ pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
         .unwrap_or_default();
     files.sort_by_key(|f| std::cmp::Reverse(rundown_key(f)));
     files
+}
+
+/// The newest `limit` rundowns in `dir`, newest first.
+pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
+    rundown_files(dir)
         .into_iter()
         .take(limit)
         .filter_map(|f| {

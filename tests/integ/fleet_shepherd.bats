@@ -31,7 +31,9 @@ esac'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
-  room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
+  room) [ -z "${STUB_NO_ROOM:-}" ] || { [ -n "${STUB_ROOM_QUIET:-}" ] || echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
+        echo "claude-acct: room on alt (2% of its week, 9% gone)" >&2
+        printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
   status) printf "%b" "${STUB_ACCTS:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
   trust) echo "$*" >> "$HOME/trust.calls" ;;
@@ -46,7 +48,7 @@ prom_q() {
 STUB
   # What a pass's launcher execs: it records its arguments and environment, not a model run.
   stub agentctl-run 'printf "%s\n" "$@" > "$HOME/run.args"; printf "%s" "${@: -1}" > "$HOME/last-prompt"
-echo "holder=$FLEET_SHEPHERD_HOLDER config=${CLAUDE_CONFIG_DIR:-}" >> "$HOME/run.env"'
+echo "holder=$FLEET_SHEPHERD_HOLDER account=${AGENTCTL_ACCOUNT:-}" >> "$HOME/run.env"'
 }
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 # The real fleet-sessions, by path: the one on PATH is a stub here.
@@ -187,7 +189,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line --index 2 --session-id
   assert_line --index 3 "$id"
   refute_output --partial --max-turns
-  assert_equal "$(cat "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct2"
+  assert_equal "$(cat "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct2"
 }
 
 @test "no world declares the session: run stops and says so, and touches no tmux" {
@@ -481,29 +483,41 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_output --partial 'nobody is talking to it: no new pass'
 }
 
-@test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once" {
+@test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
   doc "[$(row a WORKING false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct3"
+  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct3"
   # the main account: room says so with an empty line, and no config dir is set
   STUB_ROOM='' run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" 'holder=runner config='
+  assert_equal "$(tail -n 1 "$HOME/run.env")" 'holder=runner account=default'
   [ ! -e "$HOME/pages" ]
   # no room anywhere is not a skip: the pass runs, and the human hears about it once
   STUB_NO_ROOM=1 run "$SH" run
   assert_success
   assert_equal "$(starts)" 3
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner config=$HOME/.claude-best"
+  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-best"
   STUB_NO_ROOM=1 run "$SH" run
   assert_equal "$(starts)" 4
-  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 1
+  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1
+  # the pass carries on as before, so it is normal, not high, and it says which account and how far
+  local page='Passes keep running on the closest account and dispatch starts nothing new. No account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate.'
+  assert_equal "$(cat "$HOME/pages")" "-p normal -t No account has room for new starts $page"
+  # the page channel's budgets from this repo; the prose checker is the private de-ai-writing one
+  echo 'raise SystemExit(0)' > "$HOME/prose-check"
+  COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$HOME/prose-check" \
+    run "$REPO_ROOT/.local/bin/comms-lint" --channel page --priority normal --title 'No account has room for new starts' - <<<"$page"
+  assert_success
+  # a room with nothing to say still pages a whole sentence
+  rm -f "$HOME/pages" "$FLEET_SHEPHERD_DIR/.noroom"
+  STUB_NO_ROOM=1 STUB_ROOM_QUIET=1 run "$SH" run
+  assert_equal "$(cat "$HOME/pages")" '-p normal -t No account has room for new starts Passes keep running on the closest account and dispatch starts nothing new.'
   # room came back: the next time none has any is news again
   run "$SH" run
   STUB_NO_ROOM=1 run "$SH" run
-  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 2
+  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1
 }
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind; the next run starts one" {
@@ -1137,4 +1151,78 @@ STUB
   run "$SH" sweep-cancel 'host-overload host:a @1700000000'
   assert_failure 2
   [ ! -e "$HOME/gh.calls" ]
+}
+
+# --- session budgets: checkpoints, not walls ---------------------------------------------------
+# budget_setup: claude-acct answers cost from STUB_COST and records parks (STUB_PARK_BUSY refuses
+# one as mid-turn); agent-queue shows item q1 with STUB_TASK and two earlier sessions.
+budget_setup() {
+  stub claude-acct 'case "$1" in
+  cost) printf "%s" "${STUB_COST-}" ;;
+  park) echo "$2" >> "$HOME/park.calls"
+        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $2: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
+esac'
+  stub agent-queue '[ "$1 $2" = "show q1" ] || exit 1
+jq -n --arg t "${STUB_TASK:-a task}" "{slug: \"q1\", task: \$t, sessions: \"s-old1 s-old2\"}"'
+}
+# brow <bucket>: a queue session row for item q1
+brow() { jq -n --arg b "$1" '{target:"lab/w-agent-1:1", bucket:$b, nudged:false, escalated:true, labels:[], session_id:"s-now", dispatch:"dotfiles: q1"}'; }
+parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
+
+@test "budget: a WORKING session past its budget carries on, logged once per checkpoint, and is not parked" {
+  budget_setup
+  doc "[$(brow WORKING)]"
+  export STUB_COST='{"s-old1":10,"s-old2":8,"s-now":9,"other":500}'   # $27: 1x of the unsized $25
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(grep -c 'budget: lab/w-agent-1:1 (q1 spent \$27, 1x its \$25 unsized budget), still working: carries on to 2x' "$FLEET_SHEPHERD_DIR/log.md")" 1
+  assert_equal "$(parks)" 0
+  [ ! -s "$HOME/pages" ]
+  export STUB_COST='{"s-now":51}'   # the next checkpoint is news again
+  run "$SH" check
+  grep -q 'q1 spent \$51, 2x its \$25 unsized budget), still working: carries on to 3x' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "budget: a STALLED session at its size budget is parked and paged once; an unpark buys one more budget" {
+  budget_setup
+  doc "[$(brow STALLED)]"
+  export STUB_TASK='feat(x): y #size/s' STUB_COST='{"s-old1":7,"s-now":6}'   # $13 past the s $12
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(parks)" 1
+  grep -q 'budget: parked lab/w-agent-1:1 (q1 spent \$13, 1x its \$12 s budget, STALLED)' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(grep -c 'lab/w-agent-1:1 parked at its budget' "$HOME/pages")" 1
+  grep -q 'claude-acct unpark lab/w-agent-1:1' "$HOME/pages"
+  export STUB_COST='{"s-now":25}'   # resumed and spent a second budget: the next checkpoint parks again
+  run "$SH" check
+  assert_equal "$(parks)" 2
+}
+
+@test "budget: WORKING past the last extension parks once its turn ends: one page, retried until it takes" {
+  budget_setup
+  doc "[$(brow WORKING)]"
+  export STUB_COST='{"s-now":80}' STUB_PARK_BUSY=1   # 3x of $25
+  run "$SH" check
+  run "$SH" check
+  assert_equal "$(parks)" 2
+  grep -q 'budget: lab/w-agent-1:1 (q1 spent \$80, 3x its \$25 unsized budget, WORKING) parks once its turn ends' "$FLEET_SHEPHERD_DIR/log.md"
+  unset STUB_PARK_BUSY
+  run "$SH" check
+  assert_equal "$(parks)" 3
+  grep -q 'budget: parked lab/w-agent-1:1' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(grep -c . "$HOME/pages")" 1
+  run "$SH" check
+  assert_equal "$(parks)" 3
+}
+
+@test "budget: a session waiting on the human is only logged, and an unread cost takes no checkpoint" {
+  budget_setup
+  doc "[$(brow NEEDS)]"
+  export STUB_COST=''
+  run "$SH" check
+  [ ! -e "$FLEET_SHEPHERD_DIR/.budget" ] || [ ! -s "$FLEET_SHEPHERD_DIR/.budget" ]
+  export STUB_COST='{"s-now":30}'
+  run "$SH" check
+  assert_equal "$(parks)" 0
+  grep -q 'budget: lab/w-agent-1:1 (q1 spent \$30, 1x its \$25 unsized budget), NEEDS: not parked, it is not spending' "$FLEET_SHEPHERD_DIR/log.md"
 }

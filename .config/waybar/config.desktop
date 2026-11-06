@@ -6,7 +6,9 @@
     ],
     "modules-left": [
         "hyprland/workspaces",
-        "custom/passthrough"
+        "custom/passthrough",
+        "custom/gungan",
+        "custom/webcam"
     ],
     "modules-right": [
         "group/status",

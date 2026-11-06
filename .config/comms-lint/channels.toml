@@ -15,6 +15,7 @@ prose = false
 item = '^\s*(?:[-*]|\d+\.)\s+'
 max_items = 0
 max_item = 0
+option_meanings = false
 
 [ids]
 # Names for machines, not people. A message may carry them, after the point.
@@ -115,12 +116,13 @@ source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-weekly.
 # them out of the messages' pass rate (rows_pass_pct instead). A `command` source runs the
 # stream's own reader, so the row format stays in the reader; see references/channels.md.
 
-# Board rows an agent wrote: every add, edit and move through the notes CLI.
+# Board rows an agent wrote: every add, edit and move through the notes CLI. The chain stages
+# (queue, dispatch, land) are the same log's item and session events, not row text.
 [channel.board]
 group = "rows"
 lead_ids = false
 max_lead = 0
-source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"], text = "text", path = "id", skip = { by = "human" } }
+source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"], text = "text", path = "id", skip = { by = "human", stage = ["queue", "dispatch", "land"] } }
 
 # The proof on a board row an agent marked done: it cites a PR, a commit or a URL.
 [channel.proof]
@@ -134,6 +136,7 @@ source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"
 [channel.ask]
 group = "rows"
 max_lead = 0                    # agent-ask post caps the question itself
+option_meanings = true          # every option says what it does, as agent-ask post requires
 source = { kind = "files", glob = "~/.agent/asks/*/*.md", fields = ["question", "context"] }
 
 # A queue item the fleet filed for itself (the human's own words are left alone).

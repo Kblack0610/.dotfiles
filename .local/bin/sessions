@@ -4,7 +4,7 @@
 #
 #   sessions list [project] [--all] [-n N]   show registered sessions (newest first)
 #   sessions live                            only the sessions running right now
-#   sessions resume <id|prefix|--pick>       reopen a session (claude -r), cd'ing to its repo
+#   sessions resume <id|prefix|--pick>       reopen a session (claude-acct run -r), cd'ing to its repo
 #   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 #
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
@@ -613,10 +613,10 @@ session_window() {
   done
 }
 
-# open_window <id> <dir> -- a window running claude -r, in the world and session that directory
+# open_window <id> <dir> -- a window running claude-acct run -r, in the world and session that directory
 # belongs to, then go there. A directory no manifest claims opens in the current session.
 open_window() {
-  local id="$1" dir="$2" cmd="claude -r '$1'" world='' name='' here
+  local id="$1" dir="$2" cmd="claude-acct run -r '$1'" world='' name='' here
   [ -z "$dir" ] || read -r world name <<< "$(tmux-world route "$dir")"
   here="$(basename "${TMUX%%,*}")"
   if [ "${world:-here}" = here ]; then
@@ -655,7 +655,7 @@ cmd_resume() {
       return 0
     fi
     echo "sessions: $id is already open (${LIVE_STATUS[$id]}) but I can't find its pane." >&2
-    echo "          'claude -r $id --fork-session' branches a new session from it." >&2
+    echo "          'cl -r $id --fork-session' branches a new session from it." >&2
     return 1
   fi
 
@@ -671,7 +671,7 @@ cmd_resume() {
   if [ -n "$dir" ]; then
     cd "$dir" || echo "sessions: could not cd to $dir, resuming from $PWD" >&2
   fi
-  exec claude -r "$id"
+  exec claude-acct run -r "$id"
 }
 
 # ---------------------------------------------------------------- compact ---
@@ -700,7 +700,7 @@ cmd_compact() {
 Write a concise digest to $out with these markdown sections: \
 '# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
 Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
-  agentctl-run --role curate -p "$prompt" >/dev/null 2>&1 \
+  agentctl-run --agent session-compact -p "$prompt" >/dev/null 2>&1 \
     && echo "Digest written: $out" >&2 \
     || echo "sessions: compact run failed (see claude output)" >&2
 }

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stub for `claude-acct`, installed for every test by sandbox_init.
+#
+# agentctl-run asks `claude-acct pick` for the account of every subscription run. The real
+# one writes account symlinks and queries the usage endpoint and Prometheus, so a test that
+# reached it through the inherited PATH would hit the network and pass or fail on this
+# machine's accounts. `pick` prints $STUB_ACCT_PICK (empty is the main account); `pick <name>`
+# prints $HOME/.claude-<name>. A test that needs more writes its own over this one.
+set -uo pipefail
+
+FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
+printf 'claude-acct %s\n' "$*" >> "$FIX/calls.log"
+case "${1:-}" in
+  pick) if [ -n "${2:-}" ]; then printf '%s\n' "$HOME/.claude-$2"; else printf '%s\n' "${STUB_ACCT_PICK:-}"; fi ;;
+  room) printf '%s\n' "${STUB_ACCT_PICK:-}" ;;
+esac
+exit 0

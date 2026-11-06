@@ -50,8 +50,11 @@ jobs:
       - name: Bootstrap bats
         run: make -C tests bootstrap
       # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
-      - name: GNU parallel
-        run: command -v parallel || { sudo apt-get update -qq && sudo apt-get install -y -qq parallel; }
+      # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
+      - name: GNU parallel, inotify-tools
+        run: |
+          { command -v parallel && command -v inotifywait; } >/dev/null ||
+            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools; }
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
@@ -161,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       # The STATIC subset only. A runner has no ~/.claude/skills, no private
       # overlay and no CLAUDE.md, so DEADPATH/NOCMD/UNDEPLOYED/GHOST/UNLISTED
-      # cannot be attempted here - those stay with the weekly skill-refine pass. What CI can decide, CI should decide: a
+      # cannot be attempted here - those stay with the nightly docs-cleanup runner. What CI can decide, CI should decide: a
       # SKILL.md has no compiler, so before this job the only thing standing
       # between a broken skill and main was somebody reading the diff.
       #

@@ -12,8 +12,10 @@
 
 AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 
-# agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_PROMPT_SHA
-#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_LIVE_RULES, or exit 78
+# agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
+#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_LIVE_RULES AGENT_HARNESS, and for
+#                      the raw harness AGENT_MAX_TOKENS AGENT_TEMPERATURE, or exit 78; and the
+#                      conf's budget (lib/budget.sh), which replaces a parent runner's
 agent_load() {
   local name="$1" conf v=()
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || role_die "--agent '$name' is not an agent name"
@@ -23,11 +25,14 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   # A subshell, so the conf's keys never leak into this process except as read below.
   mapfile -t v < <(
     set +eu
-    unset NAME KIND ROLE MODEL PROMPT ROUTE DATA_CLASS LIVE_RULES
+    unset NAME KIND ROLE MODEL PROMPT SCHEMA ROUTE DATA_CLASS LIVE_RULES BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
+      HARNESS MAX_TOKENS TEMPERATURE
     # shellcheck disable=SC1090
     . "$conf" >/dev/null 2>&1
     printf '%s\n' "${NAME:-}" "${KIND:-}" "${ROLE:-}" "${MODEL:-}" "${PROMPT:-}" \
-      "${ROUTE:-}" "${DATA_CLASS:-}" "${LIVE_RULES:-}"
+      "${ROUTE:-}" "${DATA_CLASS:-}" "${LIVE_RULES:-}" \
+      "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}" "${SCHEMA:-}" \
+      "${HARNESS:-}" "${MAX_TOKENS:-}" "${TEMPERATURE:-}"
   )
   [ "${v[0]:-}" = "$name" ] || role_die "agent conf $conf has NAME='${v[0]:-}', not '$name'"
   AGENT_KIND="${v[1]:-}"
@@ -37,6 +42,12 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   AGENT_ROUTE="${v[5]:-}"
   AGENT_DATA_CLASS="${v[6]:-}"
   AGENT_LIVE_RULES="${v[7]:-}"
+  BUDGET_CALL_USD="${v[8]:-}" BUDGET_DAY_USD="${v[9]:-}" MAX_CALLS_HOUR="${v[10]:-}"
+  AGENT_SCHEMA="${v[11]:-}"
+  if [ -n "$AGENT_SCHEMA" ]; then
+    jq -e . "$AGENT_SCHEMA" >/dev/null 2>&1 || role_die "agent '$name' SCHEMA=$AGENT_SCHEMA is not a readable JSON file"
+  fi
+  AGENT_HARNESS="${v[12]:-}" AGENT_MAX_TOKENS="${v[13]:-}" AGENT_TEMPERATURE="${v[14]:-}"
   [ -n "$AGENT_ROLE" ] || role_die "agent '$name' declares no ROLE ($conf)"
   AGENT_PROMPT_SHA=""
   if [ -n "$AGENT_PROMPT" ]; then

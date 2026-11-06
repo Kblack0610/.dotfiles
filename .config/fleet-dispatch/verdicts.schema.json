@@ -1,0 +1,85 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdicts"
+  ],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project",
+          "lane",
+          "key",
+          "reason",
+          "tier",
+          "size",
+          "area",
+          "clear",
+          "agent_only",
+          "tier3_only",
+          "verdict",
+          "rule"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "lane": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "One short sentence, written before the fields that follow it"
+          },
+          "tier": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "S",
+              "M",
+              "L"
+            ]
+          },
+          "area": {
+            "type": "string",
+            "description": "One lowercase word"
+          },
+          "clear": {
+            "type": "boolean"
+          },
+          "agent_only": {
+            "type": "boolean"
+          },
+          "tier3_only": {
+            "type": "boolean"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "dispatch",
+              "skip"
+            ]
+          },
+          "rule": {
+            "type": "string",
+            "description": "The id of the rule that decided it"
+          }
+        }
+      }
+    }
+  }
+}

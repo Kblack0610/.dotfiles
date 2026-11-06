@@ -19,6 +19,7 @@ mod focus;
 mod focus_move;
 mod focus_sweep;
 mod inbox;
+mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -195,7 +196,8 @@ enum Cmd {
         #[arg(long = "project")]
         projects: Vec<String>,
     },
-    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
+    /// reviewed (ack). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -394,6 +396,9 @@ enum Cmd {
         /// Only this writer: `human`, a queue item or a session's first 8 characters
         #[arg(long)]
         by: Option<String>,
+        /// Only events of this agent-queue item, like fix-menu
+        #[arg(long)]
+        item: Option<String>,
         /// One JSON event per line
         #[arg(long)]
         json: bool,
@@ -474,7 +479,14 @@ enum FocusCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Reorganize today's `## Focus` by status (todo / in progress / done)
+    /// Hand the first open item whose text matches, with its indented lines, to the outbox
+    /// for the inbox sweep to file, and take it out of Focus. Nothing else ingests Focus.
+    Ingest {
+        /// A word (or two) from the task to ingest
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Reorganize today's `## Focus` by status (todo / in progress / done); moves nothing out
     Sweep,
 }
 
@@ -546,8 +558,13 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
+    /// Mark the matching task in progress (`[ ]` -> `[/]`); a started row is left as it is
     Start {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Put the matching in-progress task back to todo (`[/]` -> `[ ]`); a todo row is left as it is
+    Unstart {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -654,7 +671,7 @@ enum OutboxCmd {
         #[arg(long)]
         json: bool,
     },
-    /// The items as the Outbox tab edits them (`--json`: `{path, hash, text, waiting}`)
+    /// The items as agent-web's Daily outbox edits them (`--json`: `{path, hash, text, waiting}`)
     Show {
         #[arg(long)]
         json: bool,
@@ -681,24 +698,50 @@ enum OutboxCmd {
 
 #[derive(Subcommand)]
 enum IngestCmd {
-    /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
-    /// human, one whose write was `refused`, or a row the planner `planned`
-    Record {
-        #[arg(long, value_parser = ["left", "refused", "planned"])]
-        action: String,
-        /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
-        #[arg(long)]
-        from: String,
-        #[arg(long)]
-        why: Option<String>,
-        /// The row's id, for `planned`
-        #[arg(long)]
-        id: Option<String>,
-        #[arg(required = true, num_args = 1..)]
-        text: Vec<String>,
-    },
+    /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
+    /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
+    /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
+    /// agent-land's `merged`). An empty flag value is no value.
+    Record(Box<RecordArgs>),
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+}
+
+/// `notes ingest record`: boxed, so the enum stays small.
+#[derive(clap::Args)]
+struct RecordArgs {
+    #[arg(long, value_parser = [
+        "left", "refused", "planned", "item-added", "item-moved", "item-set",
+        "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
+    ])]
+    action: String,
+    /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
+    #[arg(long)]
+    from: String,
+    /// Where it went: the item's new state, the project a row moved to
+    #[arg(long)]
+    to: Option<String>,
+    #[arg(long, default_value = "intake", value_parser = ["intake", "queue", "dispatch", "land"])]
+    stage: String,
+    #[arg(long)]
+    why: Option<String>,
+    /// The row's id, for `planned` or the item's row
+    #[arg(long)]
+    id: Option<String>,
+    /// The queue item it is about, when not this session's own (`AGENT_QUEUE_ITEM`)
+    #[arg(long)]
+    item: Option<String>,
+    #[arg(long)]
+    ticket: Option<String>,
+    /// The writer, when it is a runner with no queue item or session of its own (fleet-dispatch)
+    #[arg(long)]
+    by: Option<String>,
+    #[arg(long)]
+    pr: Option<String>,
+    #[arg(long)]
+    sha: Option<String>,
+    #[arg(required = true, num_args = 1..)]
+    text: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -721,6 +764,14 @@ enum InboxCmd {
         /// Archive every dated capture before YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
+    },
+    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
+    /// take the mark back with --undo; republishes the page
+    Ack {
+        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
+        key: String,
+        #[arg(long)]
+        undo: bool,
     },
 }
 
@@ -907,6 +958,9 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
                     Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
                     Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Ingest { query }) => {
+                        focus::ingest(&prof, &log, &query.join(" "))?
+                    }
                     Some(FocusCmd::Mv {
                         query,
                         to,
@@ -936,6 +990,10 @@ fn main() -> Result<()> {
         } => {
             let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
+            let _lock = match op {
+                playtest::Op::List => None,
+                _ => Some(project_tasks::lock(&prof)?),
+            };
             if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
             }
@@ -953,10 +1011,16 @@ fn main() -> Result<()> {
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
                 let pick = Pick::new(&query.join(" "), exact)?;
-                if let Some(sheet) = &sheet {
-                    pick.sole_in(sheet)?;
+                match &sheet {
+                    Some(sheet) => pick.resolve_in(sheet),
+                    None => Ok(pick),
                 }
-                Ok(pick)
+            };
+            // Every verb that writes holds the ptask lock across its read-modify-write and id
+            // minting, so two writers never lose a row or mint one id twice.
+            let _lock = match &sub {
+                None | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. }) => None,
+                Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
@@ -1020,6 +1084,9 @@ fn main() -> Result<()> {
                 )?,
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
+                }
+                Some(PtaskCmd::Unstart { query }) => {
+                    project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
                 Some(PtaskCmd::File {
@@ -1136,6 +1203,7 @@ fn main() -> Result<()> {
             id,
             action,
             by,
+            item,
             json,
         } => {
             let filter = ingest::Filter {
@@ -1143,20 +1211,43 @@ fn main() -> Result<()> {
                 id,
                 action,
                 by,
+                item,
             };
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record {
-                action,
-                from,
-                why,
-                id,
-                text,
-            } => {
-                let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
-                ev.why = why;
-                ev.id = id;
+            IngestCmd::Record(r) => {
+                let RecordArgs {
+                    action,
+                    from,
+                    to,
+                    stage,
+                    why,
+                    id,
+                    item,
+                    ticket,
+                    by,
+                    pr,
+                    sha,
+                    text,
+                } = *r;
+                let set = |v: Option<String>| ingest::set(v.as_deref());
+                let mut ev = ingest::Event::new(
+                    &action,
+                    &from,
+                    to.as_deref().unwrap_or(""),
+                    &text.join(" "),
+                );
+                ev.stage = Some(stage);
+                ev.why = set(why);
+                ev.id = set(id);
+                ev.item = set(item).or(ev.item);
+                ev.ticket = set(ticket);
+                if let Some(b) = set(by) {
+                    ev.by = b;
+                }
+                ev.pr = set(pr);
+                ev.sha = set(sha);
                 ingest::record(&prof, &ev);
                 0
             }
@@ -1171,6 +1262,10 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
+                Some(InboxCmd::Ack { key, undo }) => {
+                    inbox_ack::mark(&prof, &key, !undo)?;
+                    daily::publish_inbox_page(&prof, &log)?;
+                }
             }
             0
         }

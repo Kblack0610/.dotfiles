@@ -14,6 +14,7 @@ mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod logtab;
 mod outboxtab;
 mod projtab;
 mod queuetab;
@@ -27,21 +28,28 @@ use app::{App, Msg, Tab, PROM_REFRESH};
 use fit::plain;
 use notify::{RecursiveMode, Watcher};
 
-const USAGE: &str = "usage: hub [--once] [--tab TAB]
+const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
        hub actions --since WHEN [--json | --records]
        hub phone --json
-  TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
-          (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
-          lands on its new tab; jobs, ci and machines open that section of Infra
+       hub projects --json
+       hub tabs
+  TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
+          (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
+          machines) that lands on its new tab; jobs, ci and machines open that section of
+          Infra, outbox the outbox under Daily
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
+  --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
           over its open rows)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would)
+  tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
+  projects every project's card as {cards, unlinked, errors}, each card with its summary line
+          and in_flight: what the waybar projects chip reads
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -49,6 +57,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut once = false;
+    let mut popup = false;
     let mut tab = None;
     let mut it = args.iter().peekable();
     if it.peek().map(|a| a.as_str()) == Some("tab") {
@@ -68,6 +77,21 @@ fn main() {
         it.next();
         std::process::exit(actions(it.cloned().collect()));
     }
+    if it.peek().map(|a| a.as_str()) == Some("tabs") {
+        for t in &hub_core::layout::TABS {
+            println!("{}\t{}\t{}", t.id, t.title, t.question);
+        }
+        return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("projects") {
+        it.next();
+        if it.cloned().collect::<Vec<_>>() != ["--json"] {
+            die(USAGE);
+        }
+        let p = hub_core::projects::gather();
+        println!("{}", hub_core::projects::to_json(&p));
+        return;
+    }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
@@ -75,6 +99,7 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--once" => once = true,
+            "--popup" => popup = true,
             "--tab" => {
                 tab = Some(
                     it.next()
@@ -93,12 +118,12 @@ fn main() {
     let start = tabreq::take(&tabreq::dir())
         .or(tab)
         .unwrap_or((Tab::Home, None));
-    if let Err(e) = run(start) {
+    if let Err(e) = run(start, popup) {
         die(&format!("hub: {e}"));
     }
 }
 
-/// `hub actions`: hub-core's actions reader, so the briefing's digest is the Actions tab's.
+/// `hub actions`: hub-core's actions reader, so the briefing's digest is Log's Actions section's.
 /// `--records` streams the whole window as JSONL, one action or reject per line, with none
 /// capped: comms-lint's `fleet-log` channel reads it.
 fn actions(args: Vec<String>) -> i32 {
@@ -113,10 +138,7 @@ fn actions(args: Vec<String>) -> i32 {
         }
     }
     let since = since.unwrap_or_else(|| die(USAGE));
-    let (items, err) = match hub_core::queue::list(&hub_core::session_actions::System, "all") {
-        Ok(items) => (items, None),
-        Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
-    };
+    let (items, err) = hub_core::actions::queue_items();
     let paths = hub_core::actions::Paths::from_env();
     let mut g = if records {
         hub_core::actions::window(&paths, since, &items)
@@ -153,12 +175,14 @@ fn phone(args: Vec<String>) -> i32 {
         (queue, infra.join().unwrap_or_default())
     });
     let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
         &hub_core::phone::Inputs {
             state: &state,
             queue: Some(&queue),
             infra: Some(&infra),
+            projects: Some(&projects),
             merged: hub_core::phone::merged_today(),
             now: chrono::Utc::now().timestamp(),
         },
@@ -198,7 +222,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Today | Tab::History)) = tab {
+    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Log)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");
@@ -219,13 +243,17 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
-    if tab == Some(Tab::Outbox) {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        a.outbox = Some(hub_core::outbox::read(
-            &hub_core::session_actions::System,
-            &today,
-        ));
-        a.tab = Tab::Outbox;
+    // Daily prints the note, or with `--tab outbox` the outbox under it.
+    if tab == Some(Tab::Daily) {
+        let sys = hub_core::session_actions::System;
+        if section.as_deref() == Some("outbox") {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            a.outbox = Some(hub_core::outbox::read(&sys, &today));
+            a.daily_outbox = true;
+        } else {
+            a.focus = Some(hub_core::focus::read(&sys, "daily"));
+        }
+        a.tab = Tab::Daily;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -290,10 +318,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     i32::from(failed)
 }
 
-fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
+fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tab, tx.clone());
-    app.open_project(query);
+    app.popup = popup;
+    // The same reader as `hub tab`: an Infra section on Infra, else a project.
+    app.open_query(query);
 
     let input = tx.clone();
     std::thread::spawn(move || {
@@ -370,6 +400,10 @@ fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     }
     if app.tab == Tab::Fleet {
         app.read_fleet();
+    }
+    // `--tab outbox` read the outbox in open_query above.
+    if app.tab == Tab::Daily && !app.daily_outbox {
+        app.read_focus();
     }
     let mut term = ratatui::init();
     let res = (|| {

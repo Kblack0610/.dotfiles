@@ -571,7 +571,7 @@ live() {
   live "" 12
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'after its live sessions'* ]]
+  [[ "$stderr" == *'live sessions use the rest of its week before the reset'* ]]
   # a hand start is told, never refused
   run --separate-stderr "$ACCT" pick
   assert_success
@@ -617,6 +617,27 @@ STUB
   run --separate-stderr "$ACCT" room
   assert_failure 1
   [[ "$stderr" == *'no account has room'* ]]
+}
+
+@test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
+  # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
+  # main) at 88%, inside its reserve. "no account has room" alone read as every account full.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 88 50
+  week alt 15 152
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_output ''
+  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
+  # the same row status prints
+  run "$ACCT" status
+  assert_line --regexp '^alt +- +15% +9% +over +Tue 02:40 '
+  # the reserve, when that is what refuses the closest one; it lasts to its reset
+  week main 88 2
+  week alt 90 100
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 88% of its week used, inside the last 15% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: the slack is the edge of the pace line" {
@@ -751,6 +772,22 @@ STUB
   assert_output --partial 'Prometheus is unreachable'
 }
 
+@test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" > "$HOME/curl.args"
+echo '{"data":{"result":[{"metric":{"session_id":"s1"},"value":[0,"12.345"]},{"metric":{},"value":[0,"9"]}]}}'
+STUB
+  export CC_PROM_URL=http://prom.test
+  run "$ACCT" cost
+  assert_success
+  assert_output '{"s1":12.35}'
+  grep -q 'USD_total\[7d\]' "$HOME/curl.args"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run "$ACCT" cost
+  assert_failure 2
+}
+
 @test "check: an unknown name is a usage error, not a pass" {
   run "$ACCT" check nonsense
   assert_failure 2
@@ -768,4 +805,30 @@ STUB
   run --separate-stderr "$ACCT" pick nope
   assert_failure
   [[ "$stderr" == *"no account 'nope'"*"have: main alt"* ]]
+}
+
+# run: the one launcher for a human start (cl, sessions resume, the fzf picker, the hub).
+seen_claude() {
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "${CLAUDE_CONFIG_DIR:-<main>}" "$*"\n' > "$SANDBOX/bin/claude"
+}
+
+@test "run execs claude on the picked account with its arguments" {
+  seen_claude
+  usage main 10 80
+  usage alt 50 50
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" run --separate-stderr "$ACCT" run -r sid-1
+  assert_success
+  assert_output "$ALT|-r sid-1"
+}
+
+@test "run on main drops an inherited alt account; --acct forces one" {
+  seen_claude
+  usage main 20 10
+  usage alt 60 30
+  CLAUDE_CONFIG_DIR="$ALT" run --separate-stderr "$ACCT" run --dangerously-skip-permissions
+  assert_output "<main>|--dangerously-skip-permissions"
+  run --separate-stderr "$ACCT" run --acct alt -c
+  assert_output "$ALT|-c"
+  run --separate-stderr "$ACCT" run --acct nope
+  assert_failure
 }

@@ -46,7 +46,7 @@ test("paragraph lines keep their breaks; a blank line splits paragraphs", () => 
 test("lists nest by indent, ordered lists keep their start, task boxes render", () => {
   assert.equal(md("- a\n  - b\n- c"), "<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>");
   assert.equal(md("3. x\n4. y"), '<ol start="3"><li>x</li><li>y</li></ol>');
-  assert.equal(md("- [x] done\n- [ ] todo"), '<ul><li class="task"><input type="checkbox" disabled checked> done</li><li class="task"><input type="checkbox" disabled> todo</li></ul>');
+  assert.equal(md("- [x] done\n- [ ] todo"), '<ul><li class="task done"><input type="checkbox" disabled checked> done</li><li class="task"><input type="checkbox" disabled> todo</li></ul>');
   assert.equal(md("- a\n  wrapped"), "<ul><li>a\nwrapped</li></ul>");
 });
 
@@ -63,17 +63,35 @@ test("empty and null input render nothing", () => {
 test("notes mode links a wikilink to its note and a #p: tag to its project, in-app", () => {
   const n = { notes: true };
   assert.equal(md("see [[status/inbox|Inbox]] and [[outbox]]", n),
-    '<p>see <a href="#focus/status/inbox" class="wl">Inbox</a> and <a href="#focus/outbox" class="wl">outbox</a></p>');
+    '<p>see <a href="#daily/status/inbox" class="wl">Inbox</a> and <a href="#daily/outbox" class="wl">outbox</a></p>');
   assert.equal(md("- [ ] fix it #p:notes-cockpit #urgent", n),
-    '<ul><li class="task"><input type="checkbox" disabled> fix it <a href="#projects/notes-cockpit" class="ptag">#p:notes-cockpit</a> #urgent</li></ul>');
+    '<ul><li class="task"><input type="checkbox" disabled> fix it <a href="#projects/notes-cockpit" class="ptag">#p:notes-cockpit</a> <span class="ntag">#urgent</span></li></ul>');
+  // A tag is a chip only in notes mode, never a heading's # or a #p: tag, and only from a letter.
+  assert.equal(md("x #urgent #3 a#b", n), '<p>x <span class="ntag">#urgent</span> #3 a#b</p>');
+  assert.equal(md("x #urgent"), "<p>x #urgent</p>");
   // A label or target cannot break out of the attribute or the text.
-  assert.equal(md('[[a"b|<i>]]', n), '<p><a href="#focus/a%22b" class="wl">&lt;i&gt;</a></p>');
+  assert.equal(md('[[a"b|<i>]]', n), '<p><a href="#daily/a%22b" class="wl">&lt;i&gt;</a></p>');
 });
 
 test("notes mode drops HTML comments and reads [/] as doing", () => {
   const h = md("- [/] wiring\n<!-- rollup:start -->\n- [x] done", { notes: true });
   assert.match(h, /<li class="task doing"><input type="checkbox" disabled> <span class="cchip running">doing<\/span> wiring<\/li>/);
   assert.doesNotMatch(h, /rollup:start/);
+});
+
+test("ack mode makes only a row with an ack key tickable, the key on the box and out of the text", () => {
+  const t = "- [ ] 07:20 filed ar-1: words <!-- ack:2026-11-05T07:20:01.5-08:00 -->\n- +1 reviewed\n  - [x] 08:00 joined nc-9 <!-- ack:2026-11-05T08:00:00-08:00 -->\n- [ ] a row <!-- id:ar-2 -->";
+  const h = md(t, { notes: true, ack: true });
+  assert.match(h, /<li class="task"><input type="checkbox" data-ack="2026-11-05T07:20:01.5-08:00"> 07:20 filed ar-1: words<\/li>/);
+  assert.match(h, /<input type="checkbox" data-ack="2026-11-05T08:00:00-08:00" checked> 08:00 joined nc-9<\/li>/);
+  assert.match(h, /<input type="checkbox" disabled> a row <\/li>/, "a row with no ack key stays read-only");
+  assert.doesNotMatch(h, /&lt;!--|id:ar-2/);
+  // Without ack mode (every other note) nothing is tickable and the key is dropped like any comment.
+  const plain = md(t, { notes: true });
+  assert.doesNotMatch(plain, /data-ack|ack:/);
+  assert.equal((plain.match(/disabled/g) || []).length, 3);
+  // A key that is no stamp is never put on a box.
+  assert.doesNotMatch(md('- [ ] x <!-- ack:"><b> -->', { notes: true, ack: true }), /data-ack/);
 });
 
 test("outside notes mode, and inside code, wikilinks and #p: stay text; web links still open a new tab", () => {

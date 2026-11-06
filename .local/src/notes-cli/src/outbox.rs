@@ -7,7 +7,7 @@
 //! The section has the inbox grammar (`sheet::lines_in`), so a line is any top-level line and
 //! its indented lines are its details. A `#p:<name>` word forces the project.
 //!
-//! The section is also a doc the human edits from agent-web's Outbox tab: `notes outbox show`
+//! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
 //! Every write here holds one lock (`.outbox.lock` beside the file).
@@ -51,28 +51,12 @@ pub(crate) fn ensure(p: &Profile) -> Result<()> {
 /// The outbox's write lock, released when dropped. `add`, `move` and `put` each read, change and
 /// write the whole file, so without it a page's `put` could land between a sweep's read and
 /// write and one of the two writes would be lost.
-struct Lock(#[allow(dead_code)] fs::File);
-
-fn lock(p: &Profile) -> Result<Lock> {
+fn lock(p: &Profile) -> Result<md::FileLock> {
     let dir = p
         .outbox
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(dir)?;
-    let f = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(".outbox.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: flock on a descriptor this function owns; the lock ends when `f` closes.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("locking the outbox: {}", std::io::Error::last_os_error());
-        }
-    }
-    Ok(Lock(f))
+    md::lock_file(&dir.join(".outbox.lock"))
 }
 
 /// The `## Outbox` body as the editor shows it: every line under the heading, blank lines at
@@ -193,26 +177,36 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     if text.is_empty() {
         bail!("nothing to add (provide the item's text)");
     }
-    let _lock = lock(p)?;
-    let content = read(p)?;
     let line = format!("- [ ] {text}");
-    if !sheet::lines_in(&content, HEADING)
-        .iter()
-        .any(|l| l.raw == line)
-    {
-        if let Some(dir) = p.outbox.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        md::write_atomic(
-            &p.outbox,
-            &sheet::put_in(&content, HEADING, std::slice::from_ref(&line)),
-        )?;
-        project_tasks::inbox_changed(p);
-        log.info("outbox", &format!("added to {}", p.outbox.display()));
+    if append(p, log, std::slice::from_ref(&line))? {
         ingest::record(p, &Event::row("added", "outbox", "", "", &line));
     }
     println!("outbox: {line}");
     Ok(0)
+}
+
+/// Append `block`, a top-level line and its indented details, to the outbox and wake the sweep,
+/// unless that line already waits there. True when it was written. `add` and
+/// `notes focus ingest` both write through here, so a line from either is swept the same way.
+pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool> {
+    let Some(line) = block.first() else {
+        return Ok(false);
+    };
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    if sheet::lines_in(&content, HEADING)
+        .iter()
+        .any(|l| &l.raw == line)
+    {
+        return Ok(false);
+    }
+    if let Some(dir) = p.outbox.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    md::write_atomic(&p.outbox, &sheet::put_in(&content, HEADING, block))?;
+    project_tasks::inbox_changed(p);
+    log.info("outbox", &format!("added to {}", p.outbox.display()));
+    Ok(true)
 }
 
 /// `notes outbox list [--json]`: TSV `line<TAB>text`, or one JSON array of
@@ -245,6 +239,9 @@ pub fn list(p: &Profile, json: bool) -> Result<i32> {
 /// the line where it is and exits 1.
 pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<i32> {
     let _lock = lock(p)?;
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
+    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    let _sheet = project_tasks::lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");

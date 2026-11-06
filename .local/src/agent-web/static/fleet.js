@@ -1,14 +1,16 @@
 "use strict";
-// The Fleet tab: who pays (Claude accounts), what each agentctl runner did, and how the two
-// judges call it, from /api/fleet (hub-core `fleet`, the same reader as the hub's Fleet tab).
+// The Fleet tab: who pays (Claude accounts), what each agentctl runner did, and how often the two
+// judges were right; their verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's Fleet tab).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-const fst = { data: null, err: null };
+// open: the runners whose registry row is expanded, kept across refreshes.
+const fst = { data: null, err: null, open: new Set() };
 
 const refreshFleet = coalesce(async () => {
   try { fst.data = await api("/api/fleet"); fst.err = null; } catch (e) { fst.err = e.message; }
   if (st.tab === "fleet") renderFleet();
+  if (st.tab === "log") renderLogVerdicts();
 });
 
 // The accounts and the dollars are Prometheus, which pushes nothing, so the open tab re-reads on
@@ -38,6 +40,36 @@ function accountsTable(inst) {
 
 const okClass = (ok) => (ok === false ? "bad" : ok == null ? "warn" : "");
 
+const kTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
+const base = (p) => p.split("/").pop();
+
+// A judge's per-rule table, judge-eval's numbers under its current prompt. A rule not yet live
+// shows how far its labels are from the bar.
+function evalTable(e) {
+  const pc = (x) => pct(x == null ? null : x / 100);
+  const live = (r) => (r.live ? "yes" : r.bar ? `no (${r.bar.labels}/${r.bar.need} to bar)` : "no");
+  const rows = e.rules.map((r) => `<tr><td>${esc(r.rule)}</td><td class="n">${r.verdicts}</td><td class="n">${r.scored}</td><td class="n">${pc(r.precision)}</td><td class="n">${pc(r.false_defer_pct)}</td><td>${live(r)}</td></tr>`).join("");
+  return `<table class="tbl"><tr><th>rule</th><th class="n">calls</th><th class="n">scored</th><th class="n">prec</th><th class="n">false-defer</th><th>live</th></tr>${rows ||
+    `<tr><td colspan="6" class="muted">no verdicts under prompt ${esc(e.prompt_sha)}</td></tr>`}</table>`;
+}
+
+// The expanded row: what the runner is allowed and runs on, what it cost in 24h, its newest calls
+// with their Langfuse trace, and for a judge its judge-eval table.
+function workerDetail(w) {
+  const r = w.registry, c = r.calls;
+  const prompt = r.prompt ? `<span title="${esc(r.prompt)}">${esc(base(r.prompt))}</span> ${esc(c.prompt_sha || (r.eval && r.eval.prompt_sha) || "")}` : "-";
+  let h = `<div><b>${esc(r.role || "no role")}</b> <span class="muted" title="${esc(r.role_desc)}">${esc(r.caps || "")}</span>` +
+    ` &nbsp; model ${esc(r.model || "-")} &nbsp; prompt ${prompt} &nbsp; effect ${esc(r.effect || "-")}</div>`;
+  h += `<div>trigger ${esc(r.trigger)} | 24h: ${c.n_24h} calls, <span class="${c.errors_24h ? "bad" : ""}">${c.errors_24h} errors</span>, ${usd(c.cost_24h)}, ${kTok(c.tokens_24h)} tokens, p95 ${secs(c.p95_ms && c.p95_ms / 1000)}</div>`;
+  if (c.recent.length) {
+    h += `<table class="tbl"><tr><th class="n">when</th><th class="n">took</th><th>model</th><th class="n">$</th><th class="n">tokens</th><th>ok</th><th>trace</th></tr>${c.recent.map((x) =>
+      `<tr><td class="n">${when(x.at)}</td><td class="n">${secs(x.ms / 1000)}</td><td class="muted">${esc(x.model)}</td><td class="n">${usd(x.cost)}</td><td class="n">${kTok(x.tokens)}</td>` +
+      `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
+  }
+  if (r.eval) h += evalTable(r.eval);
+  return `<tr class="wdet"><td colspan="9">${h}</td></tr>`;
+}
+
 function workersTable(ws) {
   if (!ws.length) return `<div class="empty">No runners configured in ~/.config/agentctl/agents.</div>`;
   return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th></tr>${ws.map((w) => {
@@ -45,39 +77,47 @@ function workersTable(ws) {
       : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
       : `<td class="muted">no run this week</td><td class="n">-</td>`;
     const why = w.why ? `${esc(w.why.word)} ${cut(w.why.text || "")}` : "";
-    return `<tr${w.enabled ? "" : ` class="muted"`}><td title="${esc(w.description)}">${esc(w.name)}${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
+    const open = fst.open.has(w.name);
+    return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${esc(w.name)}${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
       `<td class="n">${w.runs_24h}</td><td class="n${w.failed_24h ? " bad" : ""}">${w.failed_24h}</td><td class="wrap muted">${why}</td>` +
-      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td></tr>`;
+      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td></tr>` + (open ? workerDetail(w) : "");
   }).join("")}</table>`;
 }
 
-const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--b-unclear)", failed: "var(--b-needs)" };
+const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--b-unclear)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
 
-function dispatchPart(d) {
+function dispatchTiles(d) {
   const kinds = [...new Set([...Object.keys(d.counts_7d), ...Object.keys(d.counts_24h)])].sort();
   const floor = d.partial ? "+" : "";
   const tiles = kinds.map((k) => tile(k.toUpperCase(), d.counts_24h[k] || 0, verdictColor(k), `${d.counts_7d[k] || 0}${floor} in 7d`)).join("") +
     tile("STARTED", d.log_24h.started || 0, "var(--c1)", "sessions, 24h") +
     tile("REAPED", d.log_24h.reaped || 0, "var(--c3)", "sessions, 24h");
-  const rows = d.recent.map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
-    `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
-    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
-  return `<div class="tiles">${tiles}</div><div class="sp"></div>` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>row</th><th>verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>`;
+  return `<div class="tiles">${tiles}</div>`;
 }
 
-function judgePart(j) {
-  const scored = j.agree + j.disagree;
-  const tiles = tile("AGREE", j.agree, "var(--b-done)", scored ? `${Math.round((100 * j.agree) / scored)}% of scored` : "none scored") +
-    tile("DISAGREE", j.disagree, "var(--b-needs)") +
+function dispatchList(d) {
+  const rows = d.recent.slice(0, LOG_ROWS).map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
+    `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
+    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
+  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>row</th><th>verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
+}
+
+// judge-eval's numbers under the judge's current prompt; nothing is recounted here.
+function judgeTiles(j) {
+  const tiles = tile("AGREE", j.agree, "var(--b-done)", j.precision == null ? "none scored" : `${j.precision}% precision`) +
+    tile("DISAGREE", j.disagree, "var(--b-needs)", j.kappa == null ? "" : `kappa ${j.kappa}`) +
     tile("DEFERRED", j.deferred, "var(--b-unclear)", "judge said: ask you") +
+    tile("FALSE-DEFER", j.false_defer, "var(--b-needs)", "you took the recommendation") +
     tile("PENDING", j.pending, "var(--b-stalled)", "judged, unanswered") +
-    tile("UNSCORED", j.unscored, "var(--c3)", "answered in session");
-  const rows = j.disagreements.map((x) => `<tr><td class="n">${when(x.answered_at)}</td><td>${esc(x.project)}</td><td class="wrap">${cut(x.question)}</td>` +
+    tile("UNSCORED", j.unscored, "var(--c3)", "free text, no option named");
+  return `<div class="tiles">${tiles}</div>`;
+}
+
+function judgeList(j) {
+  const rows = j.disagreements.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.answered_at)}</td><td>${esc(x.project)}</td><td class="wrap">${cut(x.question)}</td>` +
     `<td>${cut(x.judge, 30)}</td><td>${cut(x.answer, 30)}</td><td class="wrap muted">${esc(x.reason)}</td></tr>`).join("");
-  return `<div class="tiles">${tiles}</div><div class="sp"></div>` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">answered</th><th>project</th><th>question</th><th>judge</th><th>you</th><th>judge's reason</th></tr>${rows}</table>` : `<div class="empty">No disagreements.</div>`}</div>`;
+  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">answered</th><th>project</th><th>question</th><th>judge</th><th>you</th><th>judge's reason</th></tr>${rows}</table>` : `<div class="empty">No disagreements.</div>`}</div>` + older(j.disagreements.length - LOG_ROWS);
 }
 
 function renderFleet() {
@@ -87,14 +127,34 @@ function renderFleet() {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
   let html = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
   if (errs.length) html += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  html += `<h2 class="sec">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
-  html += `<h2 class="sec">Workers <span class="muted">${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run</span></h2>` +
+  html += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
+  html += `<h2 class="sec" id="sec-workers">Workers <span class="muted">${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run; click a runner for its role, prompt, calls and judge table</span></h2>` +
     `<div class="panel scroll">${workersTable(d.workers)}</div>`;
-  html += `<h2 class="sec">Dispatch judge <span class="muted">24h, with the week below; newest ${d.dispatch.recent.length}</span></h2>${dispatchPart(d.dispatch)}`;
-  html += `<h2 class="sec">Answer judge <span class="muted">its call against your answer</span></h2>${judgePart(d.judge)}`;
+  html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
+  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; the disagreements are on Log</span></h2>${judgeTiles(d.judge)}`;
   paint(el, html);
 }
 
+// Log's Judges' verdicts section: the dispatch judge's newest verdicts and where the answer judge
+// called it differently from you.
+function renderLogVerdicts() {
+  const el = $("log-verdicts"), d = fst.data;
+  if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading."}</div>`; return; }
+  paint(el, `<h3 class="sub">Dispatch judge <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
+    `<h3 class="sub">Answer judge disagreements <span class="muted">${d.judge.disagreements.length}</span></h3>${judgeList(d.judge)}`);
+}
+
+$("fleet").addEventListener("click", (e) => {
+  if (e.target.closest("a[target]")) return;
+  const row = e.target.closest("tr.wr");
+  if (!row) return;
+  const k = row.dataset.key;
+  if (!fst.open.delete(k)) fst.open.add(k);
+  renderFleet();
+});
+
+const logFleetFeed = pushed("log", ["fleet", "asks"], refreshFleet);
+LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() { renderFleet(); pollFleet(); },
   onEvent(ev) {

@@ -57,6 +57,7 @@ set -uo pipefail
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
+: "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
 : "${FLEET_MAIN_TTL:=300}" # seconds a repo's main run list is reused across passes: every caller (the
@@ -84,8 +85,16 @@ LABELS="$LEDGER/labels"
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
 #                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)> \
-#                <dirty names: the first dirty paths, shown beside the count, or ->
+#                <dirty names: the first dirty paths, shown beside the count, or -> \
+#                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
+#                 none open and every state known (a closed one was replaced or dropped), or -;
+#                 a session in the main checkout lands from worktrees, so its branch never has
+#                 a PR of its own>
+#                <item: the queue item this session worked, by its sessions: or session:, as
+#                 own:<slug> while it runs here, moved:<slug> (<where>) once it is done,
+#                 requeued or running in another session, or ->
 #   -> "BUCKET reason"
+# <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
 # a PR that is otherwise ready but cannot merge wastes the wait, however busy the session is.
 # Ready is green checks, or no checks and the session idle. A conflict on a red or running PR
@@ -132,12 +141,15 @@ session_bucket() {
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm=""
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm="" \
+        landed="${19:--}" item="${20:--}"
   [ "${18:--}" = - ] || nm=" (${18})"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
   [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
   [ "$idle" -lt "$FLEET_IDLE_MIN" ] && { echo "WORKING idle ${idle}m"; return; }
+  # wt done reaps a worktree once its work landed; nothing is left here to land or lose.
+  [ "$git" = gone ] && { echo "DONE its worktree was removed"; return; }
   [ "$git" = 1 ] || { echo "UNCLEAR not in a git repo"; return; }
   case "$state" in
     MERGED)
@@ -152,11 +164,15 @@ bucket_facts() {
         PENDING) echo "WORKING PR #$pr CI running" ;;
         *)       echo "STALLED PR #$pr green, not merged" ;;
       esac ;;
-    CLOSED) echo "UNCLEAR PR #$pr closed without merging" ;;
+    CLOSED)
+      # Closed beside a merged PR of its own was replaced; alone it is the session's to explain.
+      if [ "$landed" != - ]; then plan_bucket "PR #$pr closed, its PRs $landed merged" "$phases" "$next" 1
+      else echo "STALLED PR #$pr closed without merging"; fi ;;
     *)
       if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s)$nm, no PR"
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
-      else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0; fi ;;
+      elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1
+      else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item"; fi ;;
   esac
 }
 
@@ -177,10 +193,12 @@ work_blockers() {
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
         red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm=""
   [ "${18:--}" = - ] || nm=" (${18})"
+  { [ "$state" = - ] || [ "$state" = CLOSED ]; } && [ "${19:--}" != - ] && merged=1
   if [ -n "$ids" ]; then
     for id in ${ids//,/ }; do b+=("open ask $id"); done
   elif [ "$asks" -gt 0 ]; then b+=("$asks open ask(s)"); fi
-  if [ "$git" != 1 ]; then b+=("not in a git repo")
+  if [ "$git" = gone ]; then :
+  elif [ "$git" != 1 ]; then b+=("not in a git repo")
   else
   case "$state" in
     MERGED)
@@ -189,13 +207,14 @@ work_blockers() {
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
-    CLOSED) b+=("PR #$pr closed without merging") ;;
+    CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
     *)
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
       [ "$ahead" -gt 0 ] && b+=("$ahead file(s) not on the default branch, no PR") ;;
   esac
   case "$phases" in
-    -) [ "$merged" = 1 ] || b+=("no plan file and nothing merged") ;;
+    # An item that moved on took the work with it: nothing here is left to finish.
+    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and nothing merged") ;;
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
     *) [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]] || b+=("next phase: $next") ;;
   esac
@@ -204,17 +223,24 @@ work_blockers() {
   printf '%s' "$out"
 }
 
-# plan_bucket <reason so far> <phases> <next> <merged 0|1>: nothing is unlanded, so the plan
-# decides. All phases ticked is DONE, and so is one whose unchecked phases are queue items
+# plan_bucket <reason so far> <phases> <next> <merged 0|1> [<item>]: nothing is unlanded, so the
+# plan decides. All phases ticked is DONE, and so is one whose unchecked phases are queue items
 # (next is queued:<slugs>); one left is LANDED naming it. A plan with no checklist,
 # or no plan file, is one phase of work: DONE once its PR merged. Without a merged PR, no
-# checklist is LANDED asking for one and no plan file is the human's call (usually a
-# conversation, which closing on idle would cut off).
+# checklist is LANDED asking for one. No plan file goes by the queue item: one that moved on
+# (done, requeued, or running in another session) is DONE, one still running here with nothing
+# on the branch is STALLED, and with no item it is the human's call (usually a conversation,
+# which closing on idle would cut off). 2026-11-05: agent-26 sat 22.5h and agent-21 a day
+# after their items were requeued, escalated once and never wound down.
 plan_bucket() {
-  local why="$1" phases="$2" next="$3" merged="${4:-0}"
+  local why="$1" phases="$2" next="$3" merged="${4:-0}" item="${5:--}"
   case "$phases" in
     -)    if [ "$merged" = 1 ]; then echo "DONE $why, no plan file, its PR landed"
-          else echo "UNCLEAR $why, no plan file: done or never started"; fi ;;
+          else case "$item" in
+            moved:*) echo "DONE $why, no plan file, its item ${item#moved:}" ;;
+            own:*)   echo "STALLED $why, no plan file, its item ${item#own:} is running here" ;;
+            *)       echo "UNCLEAR $why, no plan file: done or never started" ;;
+          esac; fi ;;
     none) if [ "$merged" = 1 ]; then echo "DONE $why, single-phase plan, its PR landed"
           else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
     *)
@@ -596,6 +622,7 @@ sync_facts() {
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names".
 git_facts() {
   local d="$1" edited="${2:-}" branch dirty=0 paths ahead base pr state ci oid inpr=1 head
+  [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -636,12 +663,45 @@ parked_lines() {
   done
 }
 
+# item_of <qitems> <session id> <server:tmux session> <claudes in that tmux session> <claude start epoch|->
+# -> the queue item this session worked: own:<slug> while it runs here, moved:<slug> moved on
+# (<where>) once it is done, requeued or running elsewhere, or -. sessions: (Claude session ids)
+# is the strong match. session: (the tmux session) counts only when one claude lives there, and a
+# done item by it only when it finished after this claude started: worktree names are recycled.
+# An item still running or waiting here wins over one that moved on.
+item_of() {
+  awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
+    function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
+    {
+      bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me)
+      if (!bysid && !bysess) next
+      if (($1 == "running" || $1 == "waiting") && $2 == me) { if ($1 == "running" && own == "") own = $4; here = 1; next }
+      if ($1 == "done" && !bysid && !(start ~ /^[0-9]+$/ && $5 + 0 >= start + 0)) next
+      if (moved != "") next
+      where = ($1 == "done" || $1 == "queued") ? $1 : $1 " in " $2
+      moved = $4 " moved on (" where ")"
+    }
+    END {
+      if (own != "") print "own:" own
+      else if (here) print "-"
+      else if (moved != "") print "moved:" moved
+      else print "-"
+    }' <<<"$1"
+}
+
 collect() {
   local now heavy line
   now="$(date +%s)"
   heavy="$(heavy_sessions)"
-  local panel items qjson
-  qjson="$(agent-queue list --json --state active 2>/dev/null)"
+  local panel items qjson qall qitems
+  # A week of done items too: a session whose item finished, was requeued or moved to another
+  # session has to see that, or it reads as never started (ar-343).
+  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
+  qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
+  # "<state>\t<session>\t<sessions>\t<slug>\t<finished epoch>" per item, for item_of.
+  qitems="$(jq -r '[.state, (.session // "" | if . == "" then "-" else . end),
+      (.sessions // "" | if . == "" then "-" else . end), .slug,
+      (.finished // "" | fromdateiso8601? // 0)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
   # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
   items="$(jq -r <<<"$qjson" '
     select(.state != "queued" and ((.session // "") | contains(":")))
@@ -653,7 +713,7 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -666,12 +726,17 @@ collect() {
        (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
+    landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
+      then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     askids="$(asks_for "$sid" | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
+    local solo item
+    solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
+    item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
@@ -697,11 +762,11 @@ collect() {
       fi
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and

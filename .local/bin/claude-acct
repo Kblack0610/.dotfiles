@@ -5,11 +5,16 @@
 # Usage:
 #   claude-acct pick [name]   # print the CLAUDE_CONFIG_DIR to use (empty = main account);
 #                             # with a name, that account's dir (`cl --acct <name>`)
+#   claude-acct run [--acct <name>] [claude args]
+#                             # exec claude on the account pick returns: the one launcher for a
+#                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
 #   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
 #   claude-acct check usage|burn  # one line, exit 1 when tripped (the Sentinel watch probes)
+#   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
+#                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
@@ -223,6 +228,18 @@ spend_24h() {
     echo "${out:-null}"
 }
 
+# cost -> {"<session id>": dollars} for every session with spend in the window. increase(), not
+# the counter's value, so a session resumed in a new process (its counter restarted) still sums
+# its whole spend. Exit 2 when Prometheus cannot be read: no answer is not "spent nothing".
+cmd_cost() {
+    local out
+    out=$(prom_q "sum by (session_id) (increase(claude_code_cost_usage_USD_total[${CLAUDE_ACCT_COST_WINDOW:-7d}]))" |
+        jq -ce '[.data.result[] | select(.metric.session_id != null)
+                 | {key: .metric.session_id, value: (.value[1] | tonumber * 100 | round / 100)}] | from_entries' 2>/dev/null) ||
+        { echo "claude-acct: cost: cannot read Prometheus" >&2; return 2; }
+    printf '%s\n' "$out"
+}
+
 # session_rate [nospend] -> points of an account's week one live session uses an hour: the fleet's
 # last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be read. A
 # reset inside the window reads low, never high. nospend reads the cache at any age and never asks
@@ -301,6 +318,29 @@ usage_json() {
 # day_time <epoch> -> "Thu 19:00", or - when there is none
 day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
 
+# cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
+# unset dir, so an alt account inherited from a parent session is dropped, not passed on. The
+# project label is added per launch, as claude-telemetry.sh asks. Unattended runs pick through
+# agentctl-run instead; runner_contract.bats fails on a claude started any other way.
+cmd_run() {
+    local dir
+    if [[ "${1:-}" == --acct ]]; then
+        dir=$(cmd_pick "${2:?claude-acct run: --acct needs an account name}") || return 1
+        shift 2
+    else
+        dir=$(cmd_pick)
+    fi
+    if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    set +u
+    # shellcheck source=/dev/null
+    . "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null
+    set -u
+    if declare -F claude_telemetry_project >/dev/null; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"; export OTEL_RESOURCE_ATTRIBUTES
+    fi
+    exec claude "$@"
+}
+
 cmd_status() {
     if [[ "${1:-}" == --json ]]; then
         usage_json | jq -s .
@@ -378,7 +418,30 @@ cmd_room() {
         echo "claude-acct: no account has room and one cannot be read" >&2
         return 2
     fi
-    echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
+    # Name the account a start would fall back to (pick's best) and why room refused it, from its
+    # own row: "no account has room" alone read as every account being full (2026-11-05).
+    local name why run_out resets t=""
+    IFS=$'\037' read -r name why run_out resets < <(jq -r --argjson slack "$PACE_SLACK_PCT" --argjson reserve "$RESERVE_PCT" '
+        def pts: ceil | "\(.) point\(if . == 1 then "" else "s" end)";
+        [.[] | select(.state != "unread")] | sort_by(.rank) | first // empty
+        | [.name,
+           (if .week_used == null then "its week cannot be read"
+            elif .week_used >= 100 then "out of its week"
+            elif .week_used >= 100 - $reserve then "\(.week_used | floor)% of its week used, inside the last \($reserve)% kept for the human"
+            elif .week_used > .week_gone + $slack then
+              "\(.week_used - .week_gone - $slack | pts) over its weekly pace (\(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, \($slack) points of slack)"
+            elif (.five_hour // 0) >= 100 - $reserve then "its 5h window at \(.five_hour | floor)%"
+            else "its \(.live) live sessions use the rest of its week before the reset" end),
+           (.run_out // "-"), (.resets // "-")] | map(tostring)
+        | join("\u001f")' <<< "$rows")
+    if [[ -z "$name" ]]; then
+        echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
+        return 1
+    fi
+    # The RUNS-OUT and RESETS columns of status, from the same row.
+    if [[ "$run_out" != - ]]; then t=", runs out $(day_time "$run_out") at this rate"
+    elif [[ "$resets" != - ]]; then t=", lasts to its reset $(day_time "$resets")"; fi
+    echo "claude-acct: no account has room; $name is the closest, $why$t" >&2
     return 1
 }
 
@@ -1040,10 +1103,12 @@ cmd_unpark() {
 
 case "${1:-}" in
     pick)   shift; cmd_pick "$@" ;;
+    run)    shift; cmd_run "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     room)   cmd_room ;;
     check)  shift; cmd_check "$@" ;;
+    cost)   cmd_cost ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;
     park)   shift; cmd_park "$@" ;;

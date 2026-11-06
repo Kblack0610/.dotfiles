@@ -20,8 +20,9 @@
 #   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
 #                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
 #                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
-#   fleet-shepherd check   refresh the state document and samples as `run` does, then print
-#                          what is due; exit 0 if anything, 1 if nothing (paging "settled"
+#   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
+#                          session's budget checkpoint (budget_sample: carry on, or park and
+#                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
 #                          and ends the turn on 1, so a quiet tick costs one call, not a pass
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
@@ -99,6 +100,12 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
 # Every 15-minute run starts a pass, so 60 is three runs missed and room for a late timer.
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
+# A queue session's budget, by its item's #size/ tag; unsized is most items. A budget is a
+# checkpoint, not a wall (Ken, 2026-11-05: development comes first): see budget_sample.
+: "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
+: "${FLEET_SHEPHERD_BUDGET_USD:=25}" # an item with no size tag
+: "${FLEET_SHEPHERD_BUDGET_EXTEND:=3}" # a session still WORKING is parked only at this many budgets
+BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
@@ -412,6 +419,57 @@ infra_due() {
   [ ! -s "$INFRA" ] || cat "$INFRA"
 }
 
+# budget_sample: hold each queue session to its item's budget, as checkpoints. Each whole budget
+# an item's sessions pass is one checkpoint, handled once: a WORKING session carries on (logged)
+# up to FLEET_SHEPHERD_BUDGET_EXTEND budgets; one STALLED or UNCLEAR at a checkpoint, or still
+# WORKING past the last, is parked (`claude-acct park`, resumable) and the human is paged once. A
+# park refused because the turn is running is pending and retried every sample until its turn
+# ends. A session waiting on the human, or finished, costs nothing more, so it is only logged.
+# An unpark buys one more budget before the next checkpoint. No cost read means no checkpoint.
+budget_sample() {
+  local costs target bucket slug sids item size cap usd n had st why out
+  costs="$(claude-acct cost 2>/dev/null)" && [ -n "$costs" ] || return 0
+  touch "$BUDGETS" 2>/dev/null || return 0
+  while IFS=$'\t' read -r target bucket slug sids; do
+    item="$(agent-queue show "$slug" --json 2>/dev/null)" || continue
+    size="$(jq -r '(.task // "" | capture("#size/(?<s>[sml])\\b") | .s) // ""' <<<"$item")"
+    case "$size" in s) cap=$FLEET_SHEPHERD_BUDGET_S ;; m) cap=$FLEET_SHEPHERD_BUDGET_M ;;
+                    l) cap=$FLEET_SHEPHERD_BUDGET_L ;; *) cap=$FLEET_SHEPHERD_BUDGET_USD; size=unsized ;; esac
+    read -r usd n < <(jq -r --argjson c "$costs" --arg sids "$sids" --argjson cap "$cap" '
+      ([(.sessions // "" | split(" ")[]), ($sids | split(" ")[])] | map(select(. != "")) | unique
+       | map($c[.] // 0) | add // 0) as $u | "\($u * 100 | round / 100) \($u / $cap | floor)"' <<<"$item")
+    read -r had st < <(awk -F'\t' -v k="$slug" '$1 == k { n = $2; s = $3 } END { print n + 0, (s == "" ? "-" : s) }' "$BUDGETS")
+    why="$slug spent \$$usd, ${n}x its \$$cap $size budget"
+    if [ "$st" != pending ]; then
+      [ "$n" -gt "$had" ] || continue
+      case "$bucket" in
+        WORKING) [ "$n" -ge "$FLEET_SHEPHERD_BUDGET_EXTEND" ] || {
+                   budget_mark "$slug" "$n" extended "budget: $target ($why), still working: carries on to $((n + 1))x"; continue; } ;;
+        STALLED|UNCLEAR) ;;
+        *) budget_mark "$slug" "$n" left "budget: $target ($why), $bucket: not parked, it is not spending"; continue ;;
+      esac
+    fi
+    if out="$(claude-acct park "$target" 2>&1)"; then
+      budget_mark "$slug" "$n" parked "budget: parked $target ($why, $bucket)"
+      [ "$st" = pending ] || budget_page "$target parked at its budget" "$why, $bucket. Resume it with claude-acct unpark $target; it runs one more budget before the next checkpoint."
+    elif [[ "$out" == *"busy mid-turn"* || "$out" == *"background shells"* ]]; then
+      [ "$st" = pending ] && continue
+      budget_mark "$slug" "$n" pending "budget: $target ($why, $bucket) parks once its turn ends"
+      budget_page "$target is past its budget" "$why, $bucket. It parks once its turn ends; claude-acct unpark $target resumes it."
+    else
+      budget_mark "$slug" "$n" left "budget: could not park $target ($why): ${out##*: }"
+    fi
+  done < <(jq -r '(.sessions // [])[] | select(.dispatch != null and ((.labels // []) | index("manual") | not))
+    | [.target, .bucket, (.dispatch | sub("^[^:]*: "; "")), (.session_id // "")] | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
+# budget_mark <item> <budgets> <state> <log line>: one checkpoint handled, in the ledger and log.md
+budget_mark() {
+  { grep -v "^$1"$'\t' "$BUDGETS"; printf '%s\t%s\t%s\n' "$1" "$2" "$3"; } > "$BUDGETS.tmp" && mv "$BUDGETS.tmp" "$BUDGETS"
+  cmd_log "$4" >/dev/null
+}
+budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev/null 2>&1 || true; }
+
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time
 # guesses it: on 2026-10-28 entries stamped 00:55 and 01:00 UTC 10-29 were written at 23:44 UTC.
 cmd_log() {
@@ -477,6 +535,8 @@ cmd_check() {
   fleet-sessions --write >/dev/null || { echo "$NAME: fleet-sessions --write failed" >&2; return 2; }
   blocked_sample
   infra_sample
+  # Parks act on sessions, so only the runner or the lease holder takes the checkpoint.
+  cmd_holds 2>/dev/null && budget_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
@@ -693,17 +753,21 @@ pass_prompt() {
 }
 
 # pass_account -> the config dir a pass starts on, empty for the main account: the one claude-acct
-# room names. With none it is the best there is, so the pass still runs, and the human hears once.
+# room names. With none it is the best there is, so the pass still runs, and the human hears once,
+# at normal: the pass carries on as before. The page is room's own line, which names that account
+# and how far past its pace it is; "no account has room" alone read as every account being full.
+# room's stdout (the dir) goes out as ours through fd 3, so one call gives both.
 pass_account() {
-  local acct
-  if acct="$(claude-acct room 2>/dev/null)"; then
+  local why
+  if { why="$(claude-acct room 2>&1 >&3 3>&-)"; } 3>&1; then
     rm -f "$NOROOM"
-    printf '%s' "$acct"
     return 0
   fi
   if [ ! -e "$NOROOM" ]; then
     : > "$NOROOM"
-    agent-notify -p high -t shepherd "no account has room: passes keep running on the best one (claude-acct status)" >/dev/null 2>&1 || true
+    why="$(tail -n 1 <<<"$why")"; why="${why#claude-acct: }"
+    agent-notify -p normal -t "No account has room for new starts" \
+      "Passes keep running on the closest account and dispatch starts nothing new.${why:+ ${why^}.}" >/dev/null 2>&1 || true
   fi
   claude-acct pick 2>/dev/null || true
 }
@@ -724,7 +788,8 @@ launch_pass() {
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
     done
     echo 'export FLEET_SHEPHERD_HOLDER=runner'
-    if [ -n "$acct" ]; then printf 'export CLAUDE_CONFIG_DIR=%q\n' "$acct"; else echo 'unset CLAUDE_CONFIG_DIR'; fi
+    # agentctl-run spends from AGENTCTL_ACCOUNT ("default" is main) and ignores CLAUDE_CONFIG_DIR.
+    printf 'export AGENTCTL_ACCOUNT=%q\n' "${acct:-default}"
     # shellcheck disable=SC2016
     echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
     printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$2" "${3:-}")"
