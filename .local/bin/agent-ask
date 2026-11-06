@@ -33,7 +33,7 @@
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
 #   agent-ask judge <id>                the answer judge: record what it would answer
-#                                       (judge, judge_reason, judged_at); post runs it
+#                                       (judge, judge_rule, judge_reason, judge_call); post runs it
 #   agent-ask judge-report [project|--all]
 #                                       the judge's call against the human's answer
 #
@@ -83,16 +83,22 @@
 #
 # THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one call to the
 # registered agent `ask-judge` (its conf sets role, model and the policy prompt) writes
-# `judge: human | take-recommend | answer:<text>` and `judge_reason` into the ask. It never
-# answers: the human still does, and `judge-report` scores its calls against their answers. A gate or approval is never sent to the model; it is
-# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it), and
-# AGENT_ASK_JUDGE_CMD replaces the call (tests).
+# `judge: human | take-recommend | answer:<text> | error`, the policy rule that decided it
+# (`judge_rule`), `judge_reason`, and `judge_call`, its line in calls.jsonl. It never answers:
+# the human still does, and `judge-report` scores its calls against their answers. A gate or
+# approval is never sent to the model; it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips
+# the call (the test sandbox sets it), and AGENT_ASK_JUDGE_CMD replaces the call (tests).
 
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_QUESTION_MAX:=150}"
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
+# The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the ask); read
+# here only for the rule ids a verdict may name (judge.sh judge_rules).
+: "${AGENT_ASK_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# shellcheck source=../lib/judge.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 
 # --- helpers ---------------------------------------------------------------
@@ -933,7 +939,10 @@ cmd_mark_resumed() {
 # --- judge -----------------------------------------------------------------
 
 # judge <id>: what the answer judge would do with this ask. Shadow only: it records its call
-# and never answers. Runs once per ask; a gate is the human's without a model call.
+# and never answers. Runs once per ask; a gate is the human's without a model call. Every
+# outcome is recorded: `judge` is human, take-recommend, answer:<text>, or error when the call
+# failed or its reply named no call or no rule of the policy; `judge_rule` is the rule id,
+# `judge_reason` the why, and `judge_call` the id of the call's calls.jsonl line.
 cmd_judge() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask judge <id>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
@@ -941,12 +950,11 @@ cmd_judge() {
   [ -z "$(field "$f" judge)" ] || return 0
   case "$(field "$f" kind)" in
     gate|approval)
-      set_field "$f" judge human
-      set_field "$f" judge_reason "a gate is the human's by rule; not sent to the judge"
-      set_field "$f" judged_at "$(now_iso)"
+      judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
       return 0 ;;
   esac
-  local prompt out wd rc verdict call
+  local prompt out wd rc verdict call rule rules cid
+  rules="$(judge_rules "$AGENT_ASK_POLICY")"
   # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
   prompt="## The ask
 
@@ -954,41 +962,67 @@ project: $(field "$f" project)
 agent: $(field "$f" agent)
 task: $(field "$f" task)
 question: $(field "$f" question)
+context: $(field "$f" context)
 options: $(field "$f" options)
+option_notes: $(field "$f" option_notes)
 recommend: $(field "$f" recommend)
 recommend_why: $(field "$f" recommend_why)
 
 ## Answer
 
 One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE-END, nothing else between them:
-{\"call\": \"human|take-recommend|answer\", \"answer\": \"<your answer when call is answer, else empty>\", \"reason\": \"<one short sentence>\"}"
+{\"call\": \"human|take-recommend|answer\", \"rule\": \"<the id of the rule that decided it>\", \"answer\": \"<your answer when call is answer, else empty>\", \"reason\": \"<one short sentence>\"}"
   # An empty directory: from inside a repo, that repo's Stop hook would answer instead (see
   # fleet-dispatch judge).
   wd=$(mktemp -d)
+  cid="$(judge_call_id)"
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && $AGENT_ASK_JUDGE_CMD -p "$prompt" 2>/dev/null)
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $AGENT_ASK_JUDGE_CMD -p "$prompt" 2>"$wd/err")
   rc=$?
+  if [ "$rc" != 0 ]; then
+    judge_record "$f" error "" "call failed (exit $rc): $(head -c 200 "$wd/err")" "$cid"
+    rm -rf -- "$wd"
+    echo "agent-ask: judge call failed for $id" >&2; return 1
+  fi
   rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { echo "agent-ask: judge call failed for $id" >&2; return 1; }
   verdict=$(sed -n '/^ASK-JUDGE-START$/,/^ASK-JUDGE-END$/p' <<<"$out" | sed '1d;$d' |
     jq -cR 'fromjson? | select(type == "object" and (.call == "human" or .call == "take-recommend" or .call == "answer"))' 2>/dev/null | head -1)
-  [ -n "$verdict" ] || { echo "agent-ask: no judge verdict for $id" >&2; return 1; }
-  call=$(jq -r .call <<<"$verdict")
+  if [ -z "$verdict" ]; then
+    judge_record "$f" error "" "the reply had no verdict: ${out:0:200}" "$cid"
+    echo "agent-ask: no judge verdict for $id" >&2; return 1
+  fi
+  call=$(jq -r .call <<<"$verdict"); rule=$(jq -r '.rule // ""' <<<"$verdict")
+  if [ -z "$rules" ]; then
+    judge_record "$f" error "$rule" "no rules in the policy ${AGENT_ASK_POLICY:-(no PROMPT in the ask-judge conf)}" "$cid"
+    echo "agent-ask: no policy rules for $id" >&2; return 1
+  fi
+  if ! grep -qxF -- "$rule" <<<"$rules"; then
+    judge_record "$f" error "" "rule '$rule' is not in the policy" "$cid"
+    echo "agent-ask: judge named no rule of the policy for $id" >&2; return 1
+  fi
   # A call the ask cannot carry out is the human's: no recommendation to take, or no answer text.
   if { [ "$call" = take-recommend ] && [ -z "$(field "$f" recommend)" ]; } ||
      { [ "$call" = answer ] && [ -z "$(jq -r '.answer // ""' <<<"$verdict")" ]; }; then
     call=human
   fi
   [ "$call" = answer ] && call="answer:$(oneline "$(jq -r .answer <<<"$verdict")")"
-  set_field "$f" judge "$call"
-  set_field "$f" judge_reason "$(oneline "$(jq -r '.reason // ""' <<<"$verdict")")"
-  set_field "$f" judged_at "$(now_iso)"
+  judge_record "$f" "$call" "$rule" "$(jq -r '.reason // ""' <<<"$verdict")" "$cid"
+}
+
+# judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.
+judge_record() {
+  set_field "$1" judge "$2"
+  [ -n "$3" ] && set_field "$1" judge_rule "$3"
+  set_field "$1" judge_reason "$(oneline "$4")"
+  [ -n "$5" ] && set_field "$1" judge_call "$5"
+  set_field "$1" judged_at "$(now_iso)"
   queue_changed
 }
 
 # judge-report [project|--all]: every judged ask a human answered, with the judge's call against
 # that answer. agree/differ only where the judge would have answered; an answer typed in the
 # session ("in session: ...") is free text and is not scored.
+# A call that failed (`error`) neither asks you nor answers.
 cmd_judge_report() {
   local key="${1:-}" f judge by ans want verdict n=0 would=0 scored=0 agree=0
   [ -n "$key" ] || key="$(resolve_project)"
@@ -999,7 +1033,8 @@ cmd_judge_report() {
     ans="$(field "$f" answer)"
     n=$((n + 1))
     case "$judge" in
-      human) verdict=asks-you ;;
+      human) verdict="asks-you" ;;
+      error) verdict=error ;;
       *)
         would=$((would + 1))
         if [ "$judge" = take-recommend ]; then want="$(field "$f" recommend)"; else want="${judge#answer:}"; fi
