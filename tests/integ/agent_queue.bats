@@ -241,6 +241,31 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" account)" = main ]
 }
 
+@test "a move reports the outcome of the item's model-lane run: ok, failed, redo on a requeue, nothing on a cancel" {
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  for s in ok fl rq cx; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
+  "$AQ" add --project game --running --slug none "none" >/dev/null
+  "$AQ" move ok done --status ok >/dev/null
+  "$AQ" move fl done --status failed >/dev/null
+  "$AQ" move rq queued >/dev/null
+  "$AQ" move cx done --status cancelled >/dev/null
+  "$AQ" move none done --status ok >/dev/null
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-ok ok\nmodel-lane outcome r-fl failed\nmodel-lane outcome r-rq redo'
+  # The requeued item's next start logs a run of its own.
+  [ -z "$(field "$(item queued rq)" lane_run)" ]
+}
+
+@test "a failing model-lane never fails the move" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/model-lane"; chmod +x "$SANDBOX/bin/model-lane"
+  "$AQ" add --project game --running --slug m "m" >/dev/null; "$AQ" set m lane_run=r1 >/dev/null
+  run "$AQ" move m done --status ok
+  assert_success
+  assert_output --partial 'model-lane outcome r1 ok failed'
+  [ -f "$(ls "$AGENT_QUEUE_DIR"/done/*/*-m.md)" ]
+}
+
 @test "move --if moves only while the item is still in the state the caller read" {
   "$AQ" add --project game --slug cas "cas" >/dev/null
   "$AQ" move cas running >/dev/null

@@ -1957,6 +1957,37 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   [ -n "$(qitem queued low-one)" ] || fail "only one start a pass"
 }
 
+@test "a run start logs its model-lane pick and stamps lane_run on the item, at the dispatch floor" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
+    case "$1" in classify) echo "{\"lane\":\"sonnet\",\"by\":\"rule\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\"}" ;; log) echo run-7 ;; esac'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-menu'
+  assert_called 'model-lane classify Fix the menu sides --floor sonnet'
+  assert_called 'claude --model sonnet'
+  assert_called 'model-lane log --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" model) $(qfield "$f" lane_run)" 'sonnet run-7'
+}
+
+@test "a failing model-lane still starts the item, on opus, with no lane_run" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-menu'
+  assert_called 'claude --model opus'
+  assert_not_called 'model-lane log'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" model)" opus
+  [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run that was never logged"
+}
+
 @test "a queue item runs /one-shot in bypass mode, a night item --pr-only, a plan item in plan mode" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
