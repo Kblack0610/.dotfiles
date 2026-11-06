@@ -135,9 +135,9 @@ log "pass done: $rolled rolled, $failed failed, $fetch_failed of $fetched tag fe
 . "${AGENT_PROOF_LIB:-$HOME/.local/lib/agent-proof.sh}" 2>/dev/null || true
 if command -v proof_report >/dev/null 2>&1; then
   if [ "$failed" -gt 0 ]; then
-    proof_report wave-roll STALLED "$failed roll(s) failed"
+    proof_outcome wave-roll STALLED "$failed roll(s) failed"
   elif [ "$fetched" -gt 0 ] && [ "$fetch_failed" = "$fetched" ]; then
-    proof_report wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
+    proof_outcome wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
   elif [ "$rolled" -gt 0 ]; then
     proof_report wave-roll WORKED "$rolled rolled"
   else

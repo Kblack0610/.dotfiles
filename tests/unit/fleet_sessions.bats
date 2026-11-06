@@ -180,13 +180,13 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'WORKING PR #9 CI running'
 }
 
-@test "no PR: dirty or ahead is STALLED, clean is UNCLEAR, a closed PR is STALLED unless one of its own merged" {
+@test "no PR: dirty or ahead is STALLED, clean is CHAT, a closed PR is STALLED unless one of its own merged" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
   run b idle 0 0 0 30 1 0 2 - - - 1
   assert_output 'STALLED 2 file(s) not on the default branch, no PR'
   run b idle 0 0 0 30 1 0 0 - - - 1
-  assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
   run b idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
   assert_output 'STALLED PR #7 closed without merging'
   run work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
@@ -198,7 +198,21 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'LANDED PR #7 closed, its PRs #8 merged, next phase: Phase 2'
   [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1 - - - - - - '#8')" ]
   run b idle 0 0 0 30 0 0 0 - - - 1
-  assert_output 'UNCLEAR not in a git repo'
+  assert_output 'CHAT not in a git repo'
+}
+
+@test "a clean session with no plan file, no merged PR and no queue item is CHAT, and so is one outside git" {
+  # 2026-11-05: hub/dotfiles:3 and :17, the human's own Q&A, read UNCLEAR and were escalated once
+  # and never acted on. CHAT names whose they are; the shepherd waits FLEET_CHAT_CLOSE_H.
+  run b idle 0 0 0 30 1 0 0 - - - 1
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
+  run b idle 0 0 0 30 0 0 0 - - - 1
+  assert_output 'CHAT not in a git repo'
+  # not finished, so a self-initiated /wind-down auto refuses it; only the shepherd's CHAT nudge closes it
+  ! session_finished idle 0 0 0 30 1 0 0 - - - 1
+  # under FLEET_IDLE_MIN it is still WORKING: the human may be mid-thought
+  run b idle 0 0 0 5 1 0 0 - - - 1
+  assert_output 'WORKING idle 5m'
 }
 
 @test "a session's queue item decides a clean branch with no plan: moved on is DONE, still running here is STALLED" {
@@ -261,9 +275,9 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'DONE clean, nothing on the branch, its PRs #975 merged, no plan file, its PR landed'
   run b idle 0 0 0 30 1 0 0 - - - 1 - 1/2 'Phase 2' - - - '#975,#976'
   assert_output 'LANDED clean, nothing on the branch, its PRs #975,#976 merged, next phase: Phase 2'
-  # no PRs of its own (a conversation) stays the human's call
+  # no PRs of its own (a conversation) is the human's CHAT
   run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - -
-  assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
+  assert_output "CHAT clean, nothing on the branch, no plan file, no queue item: the human's conversation"
   # dirty still wins
   run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - '#975'
   assert_output 'STALLED 3 dirty file(s), no PR'
@@ -733,7 +747,7 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
-# clean_fixture: landed_fixture with no PR on the branch and no plan file: what read UNCLEAR.
+# clean_fixture: landed_fixture with no PR on the branch and no plan file: CHAT until an item names it.
 clean_fixture() {
   landed_fixture
   panel "$SANDBOX/wt"
@@ -745,7 +759,7 @@ clean_fixture() {
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
   clean_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = UNCLEAR ]
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
   # requeued: the item keeps naming this tmux session
   queue_item queued lab:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -925,7 +939,7 @@ clean_fixture() {
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file: done or never started' ]
+  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
 
   # gh unreachable: the symref decides, stale or not
   printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
@@ -1429,7 +1443,7 @@ SH
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
- "counts":{"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"UNCLEAR":0,"WORKING":1},"sessions":[
+ "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
   "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
@@ -1474,12 +1488,12 @@ agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucke
 agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
 # HELP agent_sessions Live sessions per fleet-sessions bucket.
 # TYPE agent_sessions gauge
+agent_sessions{bucket="CHAT"} 0
 agent_sessions{bucket="DONE"} 0
 agent_sessions{bucket="LANDED"} 0
 agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
-agent_sessions{bucket="UNCLEAR"} 0
 agent_sessions{bucket="WORKING"} 1
 # HELP agent_asks_open Pending asks waiting on the human.
 # TYPE agent_asks_open gauge

@@ -146,10 +146,7 @@ pub(crate) fn lines_in(content: &str, heading: &str) -> Vec<InboxLine> {
             line: i + 1,
             raw: l.trim_end().to_string(),
             text,
-            details: lines[i + 1..end]
-                .iter()
-                .map(|d| d.trim().to_string())
-                .collect(),
+            details: md::row_details(&lines[..end], i),
         });
         i = end;
     }

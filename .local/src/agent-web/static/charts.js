@@ -2,9 +2,10 @@
 // Small charts for the board tabs: plain SVG and HTML, coloured from the page's CSS tokens so
 // both themes work. Each returns an HTML string; the tab puts it into the page.
 
-// fleet-sessions buckets, most urgent first (its `rank`).
-const BUCKETS = ["NEEDS", "STALLED", "LANDED", "UNCLEAR", "WORKING", "DONE"];
-const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "unclear"})`;
+// fleet-sessions buckets, most urgent first (its `rank`). CHAT and PARKED are grey: not attention.
+// A bucket no longer emitted (UNCLEAR in old watch.log lines) takes CHAT's grey.
+const BUCKETS = ["NEEDS", "STALLED", "LANDED", "CHAT", "WORKING", "DONE", "PARKED"];
+const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "chat"})`;
 
 // A horizontal meter: frac in [0, 1].
 function meter(frac, color) {

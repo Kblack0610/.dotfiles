@@ -22,7 +22,35 @@ EX_BUDGET=75
 
 # shellcheck source=../../../lib/agent-proof.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"
+# shellcheck source=calls.sh
+. "$(dirname "${BASH_SOURCE[0]}")/calls.sh"
 budget_state() { printf '%s/%s' "$(proof_state_dir)" "$1"; }
+
+# A runner that sends a model many items a call sizes the call to fit BUDGET_CALL_USD: halve
+# the batch when a call stops at the cap (CALLS_RC_CAPPED), grow it a quarter after a clean full
+# one, never past the caller's max. No cost model: the cap is the signal. State is the name's
+# `batch` file; no file is the max.
+# budget_batch <name> <max> -> how many items the next call carries, 1 to max
+budget_batch() {
+  local n
+  n="$(cat "$(budget_state "$1")/batch" 2>/dev/null)" || n=""
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || n="$2"
+  [ "$n" -le "$2" ] || n="$2"
+  printf '%s\n' "$n"
+}
+
+# budget_batch_note <name> capped|ok <n>: a call of <n> items stopped at the cap, or finished.
+budget_batch_note() {
+  local f cur
+  f="$(budget_state "$1")/batch"
+  cur="$(cat "$f" 2>/dev/null)" || cur=""
+  [[ "$cur" =~ ^[0-9]+$ ]] || cur=""
+  case "$2" in
+    capped) mkdir -p "$(dirname "$f")" && echo $(($3 > 1 ? $3 / 2 : 1)) > "$f" ;;
+    ok) [ -n "$cur" ] && [ "$3" -ge "$cur" ] && echo $((cur + (cur + 3) / 4)) > "$f" ;;
+  esac
+  return 0
+}
 
 # budget_raise <name> -> "<dollars> <calls>" raised for today, "0 0" when none
 budget_raise() {
@@ -58,6 +86,7 @@ budget_spent() {
 budget_stop() {
   local raise="agentctl budget $1 raise <usd>" seen
   echo "agentctl-run: $1 $2; not calling. To go on today: $raise" >&2
+  proof_why "at its budget cap"
   proof_report "$1" BLOCKED "budget: $2" || true
   seen="$(budget_state "$1")/budget-paged"
   if [ "$(cat "$seen" 2>/dev/null)" != "$(date +%F)" ] && command -v agent-notify >/dev/null 2>&1; then

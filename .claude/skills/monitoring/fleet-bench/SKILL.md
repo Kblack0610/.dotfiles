@@ -103,6 +103,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `human_answered_per_day` | asks answered by a human (`answered_by` human or empty) with `answered_at` in the window / its days, from `agent-ask list --all` |
 | `ask_wait_p90_min` | p90 minutes from `created` to answered or closed, still-open asks counted to now; cancelled asks left out. Replaced `asks_stale`, which stays a ledger count |
 | `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
+| `failed_unexplained` (now) | FAILED, STALLED or BLOCKED lines of the last 24h in any runner's `activity.log` that end `why: unrecorded`: a failure path with no `proof_why` (also in `ledger`) |
 | `board_open` (now) | the ledger's `board_open` |
 | `loop_dark` (now) | finding episodes of the last 7d still firing that reached class human with no response but a page (`loop`) |
 | `ledger_coverage` (now) | PRs merged in the last `CHAIN_DAYS` (7) in `pr-ci.jsonl` that an active or done item's `pr` names (`owner/repo#N` or a forge URL by repo, a bare `N` by number) / all of them |

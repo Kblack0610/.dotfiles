@@ -41,14 +41,38 @@ spent() {
 }
 
 @test "over the day budget, the call is not made: exit 75, the reason, BLOCKED" {
-  spent judge 6 "$(date -Iseconds -d '-3 hours')"
-  spent judge 5 "$(date -Iseconds -d '-2 hours')"
+  # Today's first seconds, not "-3 hours": that is yesterday from midnight to 03:00.
+  spent judge 6 "$(date -Iseconds -d 'today 00:00:01')"
+  spent judge 5 "$(date -Iseconds -d 'today 00:00:02')"
   spent other 50 "$(date -Iseconds)"
   run "$RUN" --agent judge -p x
   assert_failure 75
   assert_output --partial 'over its daily budget: $11 of $10'
   assert [ ! -e "$SANDBOX/claude.argv" ]
   assert_equal "$(cat "$HOME/.local/state/agentctl/judge/last-outcome")" BLOCKED
+}
+
+@test "a call stopped at its per-call cap exits CALLS_RC_CAPPED and records the subtype; a clean one keeps 0" {
+  sed -i 's/"result":"OK"/"subtype":"error_max_budget_usd","is_error":true,"result":""/' "$SANDBOX/bin/claude"
+  run "$RUN" --agent judge -p x
+  assert_failure 76
+  assert_equal "$(jq -r .subtype "$CALLS")" error_max_budget_usd
+  # The negative control: success is not a cap.
+  sed -i 's/"subtype":"error_max_budget_usd","is_error":true,"result":""/"subtype":"success","result":"OK"/' "$SANDBOX/bin/claude"
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert_equal "$(tail -n 1 "$CALLS" | jq -r .subtype)" success
+}
+
+@test "budget_batch halves on a cap to a floor of 1, grows a quarter after a clean full batch, and never passes max" {
+  . "$REPO_ROOT/.local/src/agent-run/lib/budget.sh"
+  assert_equal "$(budget_batch t 40)" 40
+  budget_batch_note t capped 40; assert_equal "$(budget_batch t 40)" 20
+  budget_batch_note t ok 7;      assert_equal "$(budget_batch t 40)" 20
+  budget_batch_note t ok 20;     assert_equal "$(budget_batch t 40)" 25
+  budget_batch_note t capped 1;  assert_equal "$(budget_batch t 40)" 1
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do budget_batch_note t ok "$(budget_batch t 40)"; done
+  assert_equal "$(budget_batch t 40)" 40
 }
 
 @test "yesterday's spend does not count against today" {
