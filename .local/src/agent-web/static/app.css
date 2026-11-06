@@ -326,6 +326,10 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
 .tbl tr.jr, .tbl tr.wr { cursor: pointer; }
+.tbl .btext { max-width: 56ch; overflow: hidden; text-overflow: ellipsis; }
+/* Projects: the opened row, under its line (board.js). The record stays in view when the table scrolls sideways. */
+.tbl tr.bopen > td { white-space: normal; padding: 0; }
+.bopen .card { position: sticky; left: 0; max-width: min(100%, calc(100vw - 32px)); box-sizing: border-box; }
 .tbl tr.jr:hover td, .tbl tr.wr:hover td { background: var(--bg); }
 .tbl tr.jr.sel td, .tbl tr.wr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* Fleet: a runner's expanded registry row (fleet.js workerDetail). */

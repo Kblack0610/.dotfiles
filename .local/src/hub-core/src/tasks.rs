@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::queue::PRIORITIES;
 use crate::session_actions::Runner;
+use crate::table::Val;
 
 /// The lanes a board can write. The feed's `focus` rows are counted into `Feed::focus` and
 /// left out of `rows`: a profile's Focus is the Daily tab's (`crate::focus`), and a board shows
@@ -56,9 +57,115 @@ pub struct Row {
     pub since: Option<String>,
     /// `YYYY-MM-DD` the triager filed it from an inbox (its `filed:` marker token).
     pub filed: Option<String>,
+    /// `filed` is the feed's `today`, which `feed` works out: a row alone cannot know the day.
+    pub filed_today: bool,
     pub sheet: String,
     pub line: usize,
     pub raw: String,
+}
+
+impl Row {
+    /// What it ships in: a playtest check's game, any other row's version.
+    pub fn release(&self) -> Option<&str> {
+        if self.lane == "playtest" {
+            self.game.as_deref()
+        } else {
+            self.version.as_deref()
+        }
+    }
+}
+
+/// The rows table on both surfaces: agent-web's Projects rows and the hub's. `profile` and `tag`
+/// are query keys, not drawn; `tag:` takes any of a row's tags.
+impl crate::table::Row for Row {
+    const COLUMNS: &'static [&'static str] = &[
+        "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "text",
+        "profile", "tag",
+    ];
+    const STATES: &'static [&'static str] =
+        &["all", "in progress", "filed today", "urgent", "requested"];
+    const FACETS: &'static [&'static str] = &["project", "lane", "priority"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| Val::Text(s.to_string());
+        let some = |s: Option<&str>| s.map_or(Val::None, text);
+        match col {
+            "priority" => text(&self.priority),
+            "project" => some(self.project.as_deref()),
+            "lane" => text(&self.lane),
+            "state" => text(&self.state),
+            "id" => some(self.id.as_deref()),
+            "version" => some(self.release()),
+            "size" => some(self.size.as_deref()),
+            "tier" => self.tier.map_or(Val::None, |t| Val::Num(f64::from(t))),
+            "since" => some(self.since.as_deref()),
+            "text" => text(&self.text),
+            "profile" => text(&self.profile),
+            "tag" if self.tags.is_empty() => Val::None,
+            "tag" => Val::Text(self.tags.join(" ")),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "in progress" => self.state == "doing",
+            "filed today" => self.filed_today,
+            "urgent" => self.priority == "urgent",
+            "requested" => self.requested,
+            _ => false,
+        }
+    }
+
+    /// A bare word searches where the row lives and its whole line, so `#tag` still finds it.
+    fn text(&self) -> String {
+        let project = self.project.as_deref().unwrap_or_default();
+        format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
+    }
+
+    fn vals(&self, col: &str) -> Vec<Val> {
+        if col == "tag" {
+            return self.tags.iter().cloned().map(Val::Text).collect();
+        }
+        vec![self.val(col)]
+    }
+
+    fn rank(&self, col: &str) -> Val {
+        let at = |list: &[&str], v: &str| {
+            list.iter()
+                .position(|x| *x == v)
+                .map_or(Val::None, |i| Val::Num(i as f64))
+        };
+        match col {
+            "priority" => at(&["low", "high", "urgent"], &self.priority),
+            "size" => self
+                .size
+                .as_deref()
+                .map_or(Val::None, |s| at(&["xs", "s", "m", "l", "xl"], s)),
+            "version" => self
+                .release()
+                .map_or(Val::None, |v| Val::Text(release_order(v))),
+            _ => self.val(col),
+        }
+    }
+}
+
+/// `v0.10.0` as text that sorts after `v0.9.0`; a playtest game's name stays itself. All text, so
+/// the two kinds still compare in one total order.
+fn release_order(v: &str) -> String {
+    let parts = v.strip_prefix('v').map(|n| {
+        n.split('.')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+    });
+    match parts {
+        Some(Ok(n)) => n
+            .iter()
+            .map(|x| format!("{x:010}"))
+            .collect::<Vec<_>>()
+            .join("."),
+        _ => v.to_string(),
+    }
 }
 
 /// A profile's open Focus rows, counted.
@@ -81,11 +188,38 @@ pub struct Feed {
     pub focus: Vec<FocusOpen>,
 }
 
+impl Feed {
+    /// The open rows of one project as (profile, project), or of every project: the rows table
+    /// before any view, most urgent first, the feed's order within a priority.
+    pub fn open_rows(&self, scope: Option<(&str, &str)>) -> Vec<&Row> {
+        let mut rows: Vec<&Row> = self
+            .rows
+            .iter()
+            .filter(|r| r.state != "done")
+            .filter(|r| {
+                scope.is_none_or(|(profile, project)| {
+                    r.profile == profile && r.project.as_deref() == Some(project)
+                })
+            })
+            .collect();
+        rows.sort_by_key(|r| {
+            PRIORITIES
+                .iter()
+                .position(|p| *p == r.priority)
+                .unwrap_or(PRIORITIES.len())
+        });
+        rows
+    }
+}
+
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
     let out = runner.run(&["notes".into(), "board".into(), "--json".into()])?;
     let mut f: Feed = serde_json::from_str(&out).map_err(|e| format!("notes board --json: {e}"))?;
     let (focus, rows): (Vec<Row>, Vec<Row>) = f.rows.drain(..).partition(|r| r.lane == "focus");
     f.rows = rows;
+    for r in &mut f.rows {
+        r.filed_today = r.filed.as_deref() == Some(f.today.as_str());
+    }
     for r in focus {
         match f.focus.iter_mut().find(|c| c.profile == r.profile) {
             Some(c) => c.open += 1,
@@ -382,6 +516,13 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    #[test]
+    fn the_version_column_sorts_by_release_number_with_games_after() {
+        assert!(release_order("v0.9.0") < release_order("v0.10.0"));
+        assert!(release_order("v1.0.0") < release_order("demo"));
+        assert_eq!(release_order("v1.x"), "v1.x");
+    }
+
     struct Fake {
         out: Result<&'static str, &'static str>,
         calls: RefCell<Vec<Vec<String>>>,
@@ -401,6 +542,106 @@ mod tests {
             lane: lane.into(),
             verb,
         }
+    }
+
+    fn rows() -> Feed {
+        let row = |project: &str, priority: &str, text: &str| Row {
+            profile: "bnb".into(),
+            project: Some(project.into()),
+            lane: "agent".into(),
+            state: "open".into(),
+            priority: priority.into(),
+            text: text.into(),
+            raw: format!("- [ ] {text}"),
+            ..Default::default()
+        };
+        let mut f = Feed {
+            rows: vec![
+                row("demo", "low", "tidy"),
+                row("demo", "high", "wire the bar #size/m"),
+                row("garden", "urgent", "water"),
+                row("demo", "high", "ship"),
+            ],
+            ..Default::default()
+        };
+        f.rows[1].tags = vec!["ai".into(), "size/m".into()];
+        f.rows[1].size = Some("m".into());
+        f.rows[1].state = "doing".into();
+        f.rows[2].size = Some("xl".into());
+        f.rows[3].size = Some("s".into());
+        f.rows[3].requested = true;
+        f.rows[3].filed_today = true;
+        f
+    }
+
+    fn texts<'a>(rows: &[&&'a Row]) -> Vec<&'a str> {
+        rows.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    #[test]
+    fn open_rows_are_scoped_most_urgent_first_and_leave_out_done() {
+        let mut f = rows();
+        let all: Vec<&str> = f.open_rows(None).iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(all, ["water", "wire the bar #size/m", "ship", "tidy"]);
+        assert_eq!(f.open_rows(Some(("bnb", "garden"))).len(), 1);
+        assert!(f.open_rows(Some(("personal", "garden"))).is_empty());
+        f.rows[0].state = "done".into();
+        assert_eq!(f.open_rows(None).len(), 3);
+    }
+
+    #[test]
+    fn the_rows_table_filters_on_any_tag_and_each_chip() {
+        use crate::table::View;
+        let f = rows();
+        let open = f.open_rows(None);
+        let shown = |q: &str, s: &str| View::new::<Row>(q, s, "", "").apply(&open).len();
+        assert_eq!(shown("tag:size/", ""), 1, "any tag, not only the first");
+        assert_eq!(shown("-tag:ai", ""), 3);
+        assert_eq!(shown("size:m project:demo", ""), 1);
+        assert_eq!(shown("#size/m", ""), 1, "a bare word reads the raw line");
+        assert_eq!(shown("bnb/garden", ""), 1, "and where the row lives");
+        assert_eq!(shown("", "in progress"), 1);
+        assert_eq!(shown("", "filed today"), 1);
+        assert_eq!(shown("", "urgent"), 1);
+        assert_eq!(shown("", "requested"), 1);
+    }
+
+    #[test]
+    fn priority_and_size_sort_by_rank_not_by_spelling() {
+        use crate::table::View;
+        let f = rows();
+        let open = f.open_rows(None);
+        let by = |col: &str, dir: &str| View::new::<Row>("", "", col, dir).apply(&open);
+        assert_eq!(texts(&by("priority", "desc"))[0], "water");
+        assert_eq!(texts(&by("priority", "asc"))[0], "tidy");
+        assert_eq!(
+            texts(&by("size", "desc")),
+            ["water", "wire the bar #size/m", "ship", "tidy"],
+            "xl over m over s, a row with no size last"
+        );
+    }
+
+    #[test]
+    fn a_playtest_rows_version_column_is_its_game() {
+        use crate::table::{Row as _, Val};
+        let r = Row {
+            lane: "playtest".into(),
+            game: Some("demo".into()),
+            version: Some("v0.1.0".into()),
+            ..Default::default()
+        };
+        assert_eq!(r.val("version"), Val::Text("demo".into()));
+    }
+
+    #[test]
+    fn the_feed_marks_what_was_filed_today() {
+        let fake = Fake {
+            out: Ok(r#"{"today":"2026-11-06","rows":[
+                {"lane":"agent","filed":"2026-11-06"},{"lane":"agent","filed":"2026-11-05"}]}"#),
+            calls: RefCell::default(),
+        };
+        let f = feed(&fake).unwrap();
+        assert!(f.rows[0].filed_today && !f.rows[1].filed_today);
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {
