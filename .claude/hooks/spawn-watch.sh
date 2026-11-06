@@ -3,7 +3,7 @@
 # far past normal. ALERT ONLY: it never denies, never prints anything the agent reads, and
 # every path (including its own bugs) exits 0, so it cannot stop a tool call.
 #
-# Usage guards on this fleet alert and never block (see SENTINEL.md "Spend alerts"). The
+# Human sessions are guarded by alerts; automated lanes stop at their conf budgets (see SENTINEL.md "Spend alerts"). The
 # fleet-wide cost alerts are Sentinel watches (claude-spend-hourly / -daily); this covers
 # the one thing they cannot attribute quickly: a single session spawning agents in a loop.
 #

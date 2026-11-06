@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # lib/calls.sh - one line per registered agent call in ~/.local/state/agentctl/calls.jsonl.
 #
-# Written only here, by agentctl-run, for a call made with --agent. runs.jsonl is per runner
+# Written only here, by agentctl-run, for a named print call: --agent, or a runner by its
+# unit's AGENTCTL_NAME (calls_name). lib/budget.sh sums these lines. runs.jsonl is per runner
 # pass and written by the unit's stop hook, so a call inside a script (a judge) never had a
 # record of its own: no model, no latency, no cost, no prompt version. Field names follow the
 # OTel GenAI conventions where one exists (gen_ai.*); full prompt and response text are in
@@ -11,6 +12,9 @@
 
 AGENTCTL_CALLS="${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}"
 CALLS_RAW_MAX=4096
+
+# calls_name -> the name a call is recorded (and budgeted) under, empty for a hand run
+calls_name() { printf '%s' "${AGENTCTL_AGENT:-${AGENTCTL_NAME:-}}"; }
 
 calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 
@@ -32,7 +36,7 @@ calls_record() {
     [ -n "$text" ] && printf '%s\n' "$text"
   fi
   mkdir -p "$(dirname "$AGENTCTL_CALLS")"
-  jq -cn --argjson r "$out" --arg id "$id" --arg agent "${AGENTCTL_AGENT:-}" \
+  jq -cn --argjson r "$out" --arg id "$id" --arg agent "$(calls_name)" \
     --arg role "${ROLE_NAME:-}" --arg model "${ANTHROPIC_MODEL:-}" --arg harness "$harness" \
     --arg account "${ROUTE_ACCOUNT:-}" --arg at "$(date -Iseconds)" --argjson ms "$((t1 - t0))" --argjson exit "$rc" \
     --arg prompt "${AGENT_PROMPT:-}" --arg sha "${AGENT_PROMPT_SHA:-}" --arg text "$text" \

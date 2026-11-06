@@ -71,6 +71,8 @@ harness_exec() {
     esac
   done
   set -- "${args[@]+"${args[@]}"}"
+  local cap; cap="$(budget_call_usd)"
+  if [ "$print" = 1 ] && [ -n "$cap" ]; then flags+=(--max-budget-usd "$cap"); fi
   if [ "$print" = 1 ]; then
     flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
   else
@@ -85,10 +87,11 @@ harness_exec() {
   fi
   [ -z "$input" ] || exec 0<<<"$input"
 
-  # A registered agent's print call is recorded (lib/calls.sh): the JSON result carries the
-  # session id, tokens and cost, and the caller still gets plain text. A caller that chose its
-  # own --output-format keeps it, unrecorded.
-  if [ -n "${AGENTCTL_AGENT:-}" ] && [ "$print" = 1 ]; then
+  # A named print call (an --agent, or a runner by its unit's AGENTCTL_NAME) is recorded
+  # (lib/calls.sh): the JSON result carries the session id, tokens and cost, which the day
+  # budget sums, and the caller still gets plain text. A caller that chose its own
+  # --output-format keeps it, unrecorded.
+  if [ -n "$(calls_name)" ] && [ "$print" = 1 ]; then
     local own=0
     for a in "$@"; do case "$a" in --output-format|--output-format=*) own=1 ;; esac; done
     if [ "$own" = 0 ]; then
