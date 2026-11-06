@@ -1,22 +1,23 @@
 "use strict";
 // Infra's Jobs section (agent-web's Jobs tab until phase 4): every job that runs on its own (agentctl runners, user timers, Unity gates,
-// CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log.
+// CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log. The table is the
+// shared one (table.js): the server filters and sorts by the view in Infra's URL query.
 
 // Most sources are files and journald, which push nothing to a browser, so the open tab
 // re-reads on the Infra board's cadence while Infra is open; the server folds reads inside 15s into one.
 const JOBS_REFRESH_MS = 60e3;
-const JOB_SOURCES = ["agentctl", "timer", "unity", "ci", "k8s"];
-const JOB_STATES = ["running", "queued", "done"];
 // Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
 const JOBS_OPEN = 200;
 // `hist` is the one job whose every run is listed instead of the folded list.
-const jst = { data: null, err: null, src: "", state: "", hist: null, sel: null, log: null, all: false };
+const jst = { data: null, err: null, hist: null, sel: null, log: null, all: false };
 
 const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? ""}|${j.state}`;
 
 const refreshJobs = coalesce(async () => {
-  const q = jst.hist ? `?name=${encodeURIComponent(jst.hist)}` : "";
-  try { jst.data = await api("/api/jobs" + q); jst.err = null; } catch (e) { jst.err = e.message; }
+  const p = tblParams(st.views.infra);
+  if (jst.hist) p.set("name", jst.hist);
+  const q = p.toString();
+  try { jst.data = await api("/api/jobs" + (q ? "?" + q : "")); jst.err = null; } catch (e) { jst.err = e.message; }
   if (st.tab === "infra") renderJobs();
 });
 
@@ -40,33 +41,59 @@ function jobRow(j) {
     `<td class="wrap muted">${esc(j.detail || "")}${next}</td></tr>`;
 }
 
-function chips(list, cur, attr) {
-  return ["", ...list].map((v) => `<button class="btn sm${v === cur ? " primary" : ""}" ${attr}="${v}">${v || "all"}</button>`).join(" ");
+const JOB_COLS = { state: ["state"], source: ["source"], name: ["name"], started: ["started", "n"], took: ["took", "n"], result: ["result"], detail: ["detail"] };
+
+function jobsBody(d) {
+  const t = d.table, shown = d.jobs || [];
+  const rows = jst.all ? shown : shown.slice(0, JOBS_OPEN);
+  const more = shown.length - rows.length;
+  return shown.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table>` +
+      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+    : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`;
 }
+
+function jobsHead(d) {
+  const hours = Math.round((d.window_secs || 86400) / 3600);
+  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
+    ` <span class="muted">${d.table.shown} of ${d.table.total} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
+  if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
+  if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  return html;
+}
+
+const jobsTail = () => `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>` +
+  (jst.log ? `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>` : "");
 
 function renderJobs() {
   const el = $("jobs");
   const d = jst.data;
-  if (!d) { el.innerHTML = `<div class="empty">${jst.err ? esc(jst.err) : "Loading..."}</div>`; return; }
-  const all = d.jobs || [];
-  const n = (f) => all.filter(f).length;
-  const shown = all.filter((j) => (!jst.src || j.source === jst.src) && (!jst.state || j.state === jst.state));
-  const hours = Math.round((d.window_secs || 86400) / 3600);
-  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
-    ` <span class="muted">running ${n((j) => j.state === "running")}, queued ${n((j) => j.state === "queued")}, failed ${n((j) => j.ok === false)} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
-  if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
-  if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  html += `<div class="fold">${chips(JOB_SOURCES, jst.src, "data-src")} &nbsp; ${chips(JOB_STATES, jst.state, "data-state")}</div>`;
-  const rows = jst.all ? shown : shown.slice(0, JOBS_OPEN);
-  const more = shown.length - rows.length;
-  html += shown.length
-    ? `<div class="panel scroll"><table class="tbl"><tr><th>state</th><th>source</th><th>name</th><th class="n">started</th><th class="n">took</th><th>result</th><th>detail</th></tr>${rows.map(jobRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
-    : `<div class="panel">No jobs match.</div>`;
-  html += `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>`;
-  if (jst.log) html += `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>`;
-  paint(el, html);
+  if (!d || !d.table) {
+    const why = jst.err || (d?.errors || [])[0];
+    el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
+    return;
+  }
+  // A refresh must not take the search box or an open dropdown from under the human, so
+  // everything around the control in use repaints and it stays.
+  const f = document.activeElement;
+  if (f?.id === "jobs-q" || f?.dataset?.tq !== undefined) {
+    paint($("jobs-head"), jobsHead(d));
+    if (f.id === "jobs-q") paint($("jobs-facets"), tblFacets(d.table));
+    paint($("jobs-chips"), tblChips(d.table));
+    paint($("jobs-body"), jobsBody(d));
+    paint($("jobs-tail"), jobsTail());
+    return;
+  }
+  paint(el, `<div id="jobs-head">${jobsHead(d)}</div>${tblBar("jobs", d.table, "search, or source:ci result:fail -name:dream")}` +
+    `<div id="jobs-body">${jobsBody(d)}</div><div id="jobs-tail">${jobsTail()}</div>`);
   seekSection();
+}
+
+// The view changed: the URL follows it and the server applies it.
+function jobsView(patch) {
+  setQuery(tblSet(st.views.infra, patch));
+  jst.all = false;
+  refreshJobs();
 }
 
 // A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
@@ -94,13 +121,15 @@ $("jobs").addEventListener("click", (e) => {
   const h = t.closest("[data-hist]");
   if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; renderJobs(); refreshJobs(); return; }
   if (t.dataset.all) { jst.all = true; renderJobs(); return; }
-  if (t.dataset.src != null) { jst.src = t.dataset.src; renderJobs(); return; }
-  if (t.dataset.state != null) { jst.state = t.dataset.state; renderJobs(); return; }
+  const v = tblPatch(e);
+  if (v) { jobsView(v); return; }
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
+for (const ev of ["input", "change"]) $("jobs").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); jobsView(v); });
 
 // Shown and refreshed by TABS.infra (infra.js).
 const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);

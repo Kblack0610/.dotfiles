@@ -369,6 +369,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         } else {
             let groups = hub_core::boards::by_project(&fresh, &order);
             let table = Table {
+                mark: None,
                 header: vec!["PR", "AGE", "CI", "BY", "TITLE"],
                 rows: shown_rows(&groups)
                     .map(|(proj, x)| {

@@ -35,6 +35,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
     ("infra.js", JS, include_bytes!("../static/infra.js")),
+    ("table.js", JS, include_bytes!("../static/table.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
@@ -192,6 +193,21 @@ mod tests {
             hub_core::fleet::WORKER_FILTERS
         );
         assert_eq!(js_list(FLEET_JS, "W_SORTS"), hub_core::fleet::WORKER_SORTS);
+    }
+
+    #[test]
+    fn the_jobs_headers_are_hub_cores_columns() {
+        // Rule 8: the web draws the columns hub_core::table sorts and filters, every one of them.
+        use hub_core::table::Row;
+        let js = include_str!("../static/jobs.js");
+        let at = js.find("const JOB_COLS = {").expect("no JOB_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
     }
 
     #[test]

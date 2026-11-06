@@ -765,6 +765,7 @@ impl<'a> Board<'a> {
                 .collect();
             out.extend(
                 Table {
+                    mark: None,
                     header: vec!["PASS", "RUNS", "FAIL", "CANCEL", "REPO", "WORKFLOW"],
                     rows,
                     keep: vec![0, 2, 5, 3, 1, 4],

@@ -44,6 +44,8 @@ pub struct Table {
     pub right: Vec<usize>,
     /// (column, max width)
     pub cap: Vec<(usize, usize)>,
+    /// A suffix on one header, the sort's direction mark (`datatable::DataTable::mark`).
+    pub mark: Option<(usize, &'static str)>,
 }
 
 /// Terminal columns, not chars: an emoji job name (CI's "🔨 Build") takes two.
@@ -100,10 +102,26 @@ pub fn clip_line(line: Line<'static>, w: usize) -> Line<'static> {
 }
 
 impl Table {
+    /// Each header's text, the marked one with its suffix.
+    fn heads(&self) -> Vec<String> {
+        self.header
+            .iter()
+            .enumerate()
+            .map(|(i, h)| match self.mark {
+                Some((c, m)) if c == i => format!("{h}{m}"),
+                _ => h.to_string(),
+            })
+            .collect()
+    }
+
+    fn head(&self, style: Style) -> Vec<Cell> {
+        self.heads().into_iter().map(|h| cell(h, style)).collect()
+    }
+
     /// The header line (in `head` style) and one line per row, fitted to `w` (0: no limit).
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
         let (on, wid) = self.layout(w);
-        let header: Vec<Cell> = self.header.iter().map(|h| cell(*h, head)).collect();
+        let header = self.head(head);
         std::iter::once(&header)
             .chain(&self.rows)
             .map(|r| clip_line(self.line(r, &on, &wid, None), w))
@@ -115,7 +133,7 @@ impl Table {
     /// starts on (the header is line 0).
     pub fn fit_wrapped(&self, w: usize, head: Style) -> (Vec<Line<'static>>, Vec<usize>) {
         let (on, wid) = self.layout(w);
-        let header: Vec<Cell> = self.header.iter().map(|h| cell(*h, head)).collect();
+        let header = self.head(head);
         let mut out = vec![clip_line(self.line(&header, &on, &wid, None), w)];
         let mut starts = vec![];
         let Some(f) = self.flex.filter(|f| on[*f] && w > 0) else {
@@ -151,7 +169,7 @@ impl Table {
     /// Which columns show, and each one's width.
     fn layout(&self, w: usize) -> (Vec<bool>, Vec<usize>) {
         let ncol = self.header.len();
-        let mut wid: Vec<usize> = self.header.iter().map(|h| len(h)).collect();
+        let mut wid: Vec<usize> = self.heads().iter().map(|h| len(h)).collect();
         for r in &self.rows {
             for (j, c) in r.iter().enumerate().take(ncol) {
                 wid[j] = wid[j].max(len(&c.text));
