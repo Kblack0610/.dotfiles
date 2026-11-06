@@ -304,8 +304,11 @@ ITEM_JQ='split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f
 # item_json <file> -> that item as one JSON object.
 item_json() { item_rec "$1" | jq -Rsc "$ITEM_JQ | .[]"; }
 
-# Queue order: priority, then queued time. `after` and tags do not reorder, they hold.
-ORDER='sort_by((({"urgent":0,"high":1,"low":2}[.priority] // 1)), .queued)'
+# Queue order: a `red` item first (something is broken), then priority, then a `cleanup` item within
+# its priority (the fleet fixes itself before it adds), then queued time. The one queue order: every
+# reader (next, list, fleet-dispatch next_items) takes it as is. `after` and other tags hold, not reorder.
+ORDER='def tagged($t): (" " + (.tags // "") + " ") | contains(" " + $t + " ") | not;
+  sort_by(tagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1), tagged("cleanup"), .queued)'
 
 # done_recs <day> -> item_rec for every done item from that day on.
 done_recs() {
