@@ -345,6 +345,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    if matches!(tab, None | Some(Tab::Home)) {
+        a.proposals = Some(hub_core::proposals::read(
+            &hub_core::session_actions::System,
+        ));
+    }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
         a.queue = Some(hub_core::queue::Queue::read(

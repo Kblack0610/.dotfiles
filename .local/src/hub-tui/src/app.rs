@@ -2242,8 +2242,9 @@ impl App {
                     self.tasks.as_ref(),
                     i.as_ref(),
                 );
-                if let Some(open) = &self.proposals {
-                    home.set_proposals(open);
+                match &self.proposals {
+                    Some(open) => home.set_proposals(open),
+                    None => home.proposals_unread = true,
                 }
                 (hometab::page(&home, self.p, now, w), vec![])
             }
@@ -3521,6 +3522,18 @@ mod tests {
             created: "2026-11-05T10:00:00Z".into(),
             ..Proposal::default()
         }
+    }
+
+    #[test]
+    fn home_says_nothing_about_proposals_before_the_read_answers() {
+        let mut a = app(Tab::Home);
+        let s = screen(&mut a, 120, 40);
+        assert!(
+            s.contains("PROPOSALS  reading") && !s.contains("nothing proposed"),
+            "{s}"
+        );
+        a.proposals = Some(Ok(vec![]));
+        assert!(screen(&mut a, 120, 40).contains("nothing proposed"));
     }
 
     #[test]
