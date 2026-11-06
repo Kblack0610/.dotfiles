@@ -2712,6 +2712,36 @@ qstats_fixture() {
   assert_line '| sonnet | claude-lazer | 1 | 1 | 1 | 0 | 0 | 1 | $4.5 | $4.5 | gateway |'
 }
 
+@test "models: an item with no model= takes the model its sessions spent most on, then the one their rows name; no row is unrecorded" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  : > "$BENCH_LANE_LOG"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":3,"cost_by_model":{"claude-haiku-5-5":0.1,"claude-sonnet-5-5":2.9}}'
+    echo '{"session_id":"s2","cost_usd":1,"cost_by_model":{"claude-opus-5-5":1}}'
+    echo '{"session_id":"s3","cost_usd":null,"models":["claude-opus-5-5"]}'
+    echo '{"session_id":"s4","cost_usd":0,"cost_by_model":{"<synthetic>":0,"claude-haiku-5-5":0},"models":["<synthetic>","claude-sonnet-5-5"]}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","status":"ok","pr":"o/r#1","sessions":"s1 s2"}'
+    echo '{"slug":"b","status":"ok","pr":"o/r#2","sessions":"s3"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"gone"}'
+    echo '{"slug":"d","status":"ok","pr":"o/r#4"}'
+    echo '{"slug":"e","model":"haiku","status":"ok","pr":"o/r#5","sessions":"s2"}'
+    echo '{"slug":"f","model":"claude-opus-5-5","status":"ok","pr":"o/r#6"}'
+    echo '{"slug":"g","status":"ok","pr":"o/r#7","sessions":"s4"}'
+  } > "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  # a: sonnet $2.9 beats opus $1 over its two sessions; b: no cost, its row names opus;
+  # c and d: no outcomes row, so unrecorded (negative control); e: a stamped model= wins;
+  # f: a stamped full id is the same opus row; g: zero costs and <synthetic> are skipped, so sonnet
+  assert_equal "$(jq -c '[.models[] | select(.done > 0) | [.model, .done]]' <<<"$output")" '[["haiku",1],["opus",2],["sonnet",2],["unrecorded",2]]'
+}
+
 @test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub
@@ -3183,6 +3213,19 @@ canary_fixture() {
   jq -n --arg b "$CBASE" --arg m "$CMERGE" '{id: "greet", project: "game", pr: "o/r#7", base: $b, merge: $m,
     task: "fix(greet): say hello", accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
     > "$BENCH_CANARY_DIR/greet.json"
+  # The queue: one JSON file per item, so show, add and set can be read back. No real queue.
+  export BENCH_CANARY_QUEUE_CMD=cq-stub CQ="$SANDBOX/cq"; mkdir -p "$CQ"; unset CODEX_THREAD_ID
+  cat > "$SANDBOX/bin/cq-stub" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
+  set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
+  add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
+       while [ $# -gt 0 ]; do case "$1" in --slug) slug=$2 ;; --agent) agent=$2 ;; esac; shift; done
+       jq -n --arg s "$slug" --arg a "$agent" '{slug: $s, agent: $a}' > "$CQ/$slug.json" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/cq-stub"
 }
 
 @test "canary verify: an oracle that fails at base and passes at merge is ok; one that already passes at base is BAD" {
@@ -3261,6 +3304,67 @@ STUB
   run "$SUBJECT" canary queue
   assert_success
   assert_output ''
+}
+
+@test "canary lanes: queue --harness makes a lane of its own beside the weekly claude one, carrying agent and model" {
+  canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  run "$SUBJECT" canary queue --harness codex --model sol
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
+  assert_equal "$(jq -c '[.slug, .agent, .model]' "$CQ/canary-greet-$week-codex-sol.json")" "[\"canary-greet-$week-codex-sol\",\"codex\",\"sol\"]"
+  run "$SUBJECT" canary queue --harness codex --model sol
+  assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week (codex/sol)"
+  # The claude lane is not held by the codex one, and keeps its slug and agent.
+  run "$SUBJECT" canary queue
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week"
+  assert_equal "$(jq -c '[.agent, .model]' "$CQ/canary-greet-$week.json")" '["claude",null]'
+  run grep -c -- --agent "$CQ/add.log"
+  assert_output 1
+  grep -q 'in any other harness, end the session' "$CQ/add.log"
+  run "$SUBJECT" canary queue --model sol
+  assert_failure 2
+  run "$SUBJECT" canary queue --bogus
+  assert_failure 2
+}
+
+@test "canary lanes: score takes harness, model and session from the queue item; one lane scores once, another lane on the same task and week is its own run" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
+  cd "$SANDBOX/wt"; echo 'echo hello' > greet.sh
+  jq -n '{slug: "cx", agent: "codex", model: "sol", sessions: "claude-claimer cx-thread"}' > "$CQ/cx.json"
+  # A Claude id leaking in from the launching shell is not the codex session's.
+  CLAUDE_CODE_SESSION_ID=leak AGENT_QUEUE_ITEM=cx run "$SUBJECT" canary score greet
+  assert_success
+  CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx run "$SUBJECT" canary score greet
+  assert_failure 3
+  jq -n '{slug: "cx2", agent: "codex", model: "sol"}' > "$CQ/cx2.json"
+  CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx2 run "$SUBJECT" canary score greet
+  assert_success
+  CLAUDE_CODE_SESSION_ID=cl1 AGENT_QUEUE_ITEM=cl run "$SUBJECT" canary score greet
+  assert_success
+  run jq -c '[.run, .session_id, .harness, .model, .pass]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'["cx","cx-thread","codex","sol",true]\n["cx2","cx-own","codex","sol",true]\n["cl","cl1","claude",null,true]'
+}
+
+@test "canary lanes: list --by harness,model compares lanes on outcome rows, and the canary_ KPIs read the claude lane alone" {
+  kpi_setup; kpi_fixture; canary_fixture
+  out_row game '{session_id: "c1", project: "game", updated_epoch: ($t - 86400), cost_usd: 3, duration_s: 600, activity: {api_messages: 40}}'
+  out_row game '{session_id: "x1", project: "game", updated_epoch: ($t - 86400), duration_s: 1200, tokens_total: 3000000, activity: {api_messages: 90}}'
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "a", id: "greet", session_id: "c1", pass: true},
+    {epoch: ($t - 86000), run: "b", id: "greet", session_id: "x1", harness: "codex", model: "sol", pass: false},
+    {epoch: ($t - 86000), run: "c", id: "greet", session_id: "x9", harness: "codex", model: "sol", pass: true}' > "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" canary list --by harness,model --json
+  assert_success
+  assert_output $'{"harness":"claude","model":null,"runs":1,"tasks":1,"pass_rate":1,"joined":1,"min_per_run":10,"turns_per_run":40,"cost_per_run":3,"tokens_per_run":null}\n{"harness":"codex","model":"sol","runs":2,"tasks":1,"pass_rate":0.5,"joined":1,"min_per_run":20,"turns_per_run":90,"cost_per_run":null,"tokens_per_run":3000000}'
+  run "$SUBJECT" canary list --by harness,model
+  assert_line --index 1 $'codex/sol\t2 runs\t1 tasks\tpass 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
+  run "$SUBJECT" canary list --by model
+  assert_failure 2
+  # Both codex sessions leave the human KPIs too (an eval is not work), but only claude scores canary_.
+  run "$SUBJECT" kpi --json
+  run jq -c '[.sessions["7d"], .canary_runs["7d"], .canary_pass_rate["7d"], .canary_cost_per_task["7d"]]' <<<"$output"
+  assert_output '[1,1,1,3]'
 }
 
 @test "kpi: canary runs score pass rate, cost, minutes and turns from their outcome rows, and canary sessions leave the human KPIs" {

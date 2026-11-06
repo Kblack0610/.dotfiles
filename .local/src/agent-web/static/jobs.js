@@ -73,14 +73,8 @@ function renderJobs() {
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
     return;
   }
-  // A refresh must not take the search box or an open dropdown from under the human, so
-  // everything around the control in use repaints and it stays.
-  const f = document.activeElement;
-  if (f?.id === "jobs-q" || f?.dataset?.tq !== undefined) {
+  if (tblRepaint("jobs", d.table, () => jobsBody(d))) {
     paint($("jobs-head"), jobsHead(d));
-    if (f.id === "jobs-q") paint($("jobs-facets"), tblFacets(d.table));
-    paint($("jobs-chips"), tblChips(d.table));
-    paint($("jobs-body"), jobsBody(d));
     paint($("jobs-tail"), jobsTail());
     return;
   }
@@ -128,8 +122,7 @@ $("jobs").addEventListener("click", (e) => {
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("jobs").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); jobsView(v); });
+tblListen($("jobs"), jobsView);
 
 // Shown and refreshed by TABS.infra (infra.js).
 const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);

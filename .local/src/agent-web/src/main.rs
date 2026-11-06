@@ -24,6 +24,7 @@ mod outbox;
 mod outcomes;
 mod pipeline;
 mod projects;
+mod proposals;
 mod queue;
 mod reds;
 mod schedules;
@@ -125,6 +126,8 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/proposals/accept", post(proposals::accept))
+        .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
@@ -265,6 +268,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let queue = session::home().join(".agent").join("queue");
     std::fs::create_dir_all(&queue)?;
     targets.push((queue, RecursiveMode::Recursive));
+    // agent-propose's store: Home's Proposals section.
+    let proposals = boards::proposals_dir();
+    std::fs::create_dir_all(&proposals)?;
+    targets.push((proposals, flat));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -368,6 +375,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     match ext {
         "json" if parent == "sessions" => Some(r#"{"kind":"sessions"}"#.to_string()),
+        "json" if boards::is_proposal_file(&boards::proposals_dir(), p) => {
+            Some(r#"{"kind":"proposals"}"#.to_string())
+        }
         "md" if p.ancestors().any(|a| a.ends_with(".agent/queue")) => {
             Some(r#"{"kind":"queue"}"#.to_string())
         }
@@ -1007,13 +1017,19 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
 
 /// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
 /// Prometheus answer, the same join the hub TUI's Home draws.
-async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+async fn home_board(
+    State(s): State<Shared>,
+    Query(q): Query<proposals::ViewQuery>,
+) -> ApiResult<Json<proposals::HomePage>> {
     let infra = s.infra.infra().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
         let board = hub_core::tasks::feed(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
+        let open = hub_core::proposals::read(&actions::System);
+        let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+        home.set_proposals(&open);
+        proposals::page(home, &q)
     })
     .await
     .map(Json)
@@ -1200,6 +1216,11 @@ mod tests {
             classify(Path::new("/h/.claude/projects/-h-x/abc.jsonl")).as_deref(),
             Some(r#"{"kind":"transcript","session":"abc"}"#)
         );
+        assert_eq!(
+            classify(&boards::proposals_dir().join("0a1b.json")).as_deref(),
+            Some(r#"{"kind":"proposals"}"#)
+        );
+        assert_eq!(classify(&boards::proposals_dir().join(".0a1b.tmp")), None);
         assert_eq!(
             classify(Path::new("/h/.agent/asks/bnb/Y3g.md")).as_deref(),
             Some(r#"{"kind":"asks"}"#)

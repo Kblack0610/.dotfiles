@@ -21,6 +21,7 @@ pub mod phone;
 pub mod pipeline;
 pub mod projects;
 pub mod prom;
+pub mod proposals;
 pub mod queue;
 pub mod reds;
 pub mod schedules;

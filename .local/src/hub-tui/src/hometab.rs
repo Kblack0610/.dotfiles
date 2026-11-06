@@ -1,4 +1,4 @@
-//! The Home tab: what needs you, what is running, the numbers and the health strip, from
+//! The Home tab: what needs you, what analysis proposes, what is running, the numbers and the health strip, from
 //! `hub_core::home` (the reader agent-web's Home uses too). The machines, pools and CI that sat
 //! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
@@ -20,7 +20,7 @@ fn kind(k: Kind) -> &'static str {
     }
 }
 
-fn age(since: Option<i64>, now: i64) -> String {
+pub(crate) fn age(since: Option<i64>, now: i64) -> String {
     since.map_or("-".into(), |t| dur((now - t).max(0) as f64))
 }
 
@@ -115,6 +115,53 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         };
         out.extend(t.fit(w, p.dim()));
         more(&mut out, h.needs.len(), h.shown, "more", p);
+    }
+
+    out.push(Line::raw(""));
+    if h.proposals.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("PROPOSALS  ", p.head()),
+            Span::styled(
+                if h.proposals_failed {
+                    "could not read them, see above"
+                } else if h.proposals_unread {
+                    "reading"
+                } else {
+                    "nothing proposed"
+                },
+                p.dim(),
+            ),
+        ]));
+    } else {
+        out.push(Line::styled(
+            format!("PROPOSALS ({})", h.proposals_head),
+            p.head(),
+        ));
+        let t = Table {
+            mark: None,
+            header: vec!["STREAM", "PROJECT", "AGE", "PROPOSAL"],
+            rows: h
+                .proposals
+                .iter()
+                .take(h.shown)
+                .map(|r| {
+                    vec![
+                        r.stream.clone().into(),
+                        r.project.clone().into(),
+                        age(r.at(), now).into(),
+                        r.title.clone().into(),
+                    ]
+                })
+                .collect(),
+            keep: vec![3, 2, 0, 1],
+            flex: Some(3),
+            flexmin: 20,
+            flexkeep: true,
+            right: vec![2],
+            cap: vec![(0, 18), (1, 18)],
+        };
+        out.extend(t.fit(w, p.dim()));
+        more(&mut out, h.proposals.len(), h.shown, "more", p);
     }
 
     out.push(Line::raw(""));
