@@ -1312,9 +1312,10 @@ impl App {
         true
     }
 
-    /// The header, status and table head sit above the first row.
+    /// The reader's errors, the heading, the status and the table head sit above the first row.
     fn keep_fleet_sel_visible(&mut self) {
-        let at = 3 + self.fleet_sel;
+        let errors = self.fleet.as_ref().map_or(0, |f| f.errors.len());
+        let at = 3 + errors + self.fleet_sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;

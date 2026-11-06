@@ -97,6 +97,8 @@ fn runner(w: &Worker, at: i64) -> Who {
         "failed"
     } else if w.overdue {
         "stalled"
+    } else if w.state == "running" {
+        "working"
     } else {
         &w.state
     };
@@ -353,6 +355,16 @@ mod tests {
         assert_eq!(st("ask-judge"), "failed");
         assert_eq!(st("ucp-agent-9"), "needs you");
         assert_eq!(st("dotfiles:2"), "chat");
+    }
+
+    #[test]
+    fn a_running_runner_is_working_so_the_working_chip_finds_it() {
+        let mut w = worker("dream", 2, "");
+        w.state = "running".into();
+        w.running_since = Some(100);
+        let r = build(&[w], &json!({}), 200);
+        assert_eq!(r[0].state, "working");
+        assert!(r[0].in_state("working"));
     }
 
     #[test]

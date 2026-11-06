@@ -76,6 +76,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let out = serde_json::to_value(&f).map(|mut v| {
         v["who"] = serde_json::json!(shown);
         v["table"] = serde_json::json!(table);
+        v["table"]["shown"] = shown.len().into();
         v["hidden"] = hidden.into();
         v
     });

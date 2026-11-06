@@ -323,7 +323,7 @@ $("fleet").addEventListener("click", (e) => {
 // A picked dropdown lets go of focus, so the answer redraws it with the new counts.
 for (const ev of ["input", "change"]) $("fleet").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); fleetView(v); });
 
-const logFleetFeed = pushed("log", ["fleet", "asks"], refreshFleet);
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], refreshFleet);
 LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
@@ -332,6 +332,6 @@ TABS.fleet = {
     pollFleet();
   },
   onEvent(ev) {
-    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
+    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
   },
 };
