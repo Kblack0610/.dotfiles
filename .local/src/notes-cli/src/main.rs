@@ -706,7 +706,7 @@ enum IngestCmd {
     /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
     /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
-    /// agent-land's `merged`). An empty flag value is no value.
+    /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
@@ -718,6 +718,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
+        "parked", "unparked",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
