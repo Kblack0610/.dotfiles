@@ -715,6 +715,18 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
 }
 
+@test "a row names every work item whose sessions list it, in ledger order, and none with no item" {
+  queue_stub
+  {
+    jq -cn '{slug: "first", sessions: "sess-a"}'
+    jq -cn '{slug: "second", sessions: "sess-old sess-a"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.items | join(" ")')" 'first second'
+  assert_equal "$(field b '.items | length')" 0
+}
+
 @test "a reshaped opencode DB costs its own rows only: Claude sessions still write, and the report says so" {
   oc_db
   sqlite3 "$SO_OPENCODE_DB" 'ALTER TABLE session_v2 DROP COLUMN cost'
