@@ -1885,7 +1885,7 @@ upsert_report() {
 # watch held at TRIP past TRIAGE_WATCH_AFTER. FAILED, a failed unit and a high or urgent watch
 # are #high. Sentinel stays observe-only: this reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what t
+  local c name sd v detail u res load f n since sev what why t
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -1915,13 +1915,16 @@ triage_rows() {
     since=$(cat "$TRIAGE_WATCH_STATE/$n.since" 2>/dev/null) || continue
     [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$TRIAGE_WATCH_AFTER" ] || continue
     sev=$(sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null | head -1)
-    # `what:` is one line or a folded block whose first sentence is the healthy state; Sentinel keeps
-    # no probe output, so the row says what was expected
+    # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
-    printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s\t%s\n' "$n" "$n" \
+    # The last line of the redacted evidence is usually the error. Normalized, so a new pid or
+    # timestamp in it does not edit the row every pass.
+    why=$(grep -v '^[[:space:]]*$' "$TRIAGE_WATCH_STATE/$n.out" 2>/dev/null | tail -n 1 | log_norm | tr -d '#' | cut -c1-100)
+    printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
+      "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
       "$(case "$sev" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)"
   done
 }
