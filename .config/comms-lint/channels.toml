@@ -15,6 +15,7 @@ prose = false
 item = '^\s*(?:[-*]|\d+\.)\s+'
 max_items = 0
 max_item = 0
+option_meanings = false
 
 [ids]
 # Names for machines, not people. A message may carry them, after the point.
@@ -134,6 +135,7 @@ source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"
 [channel.ask]
 group = "rows"
 max_lead = 0                    # agent-ask post caps the question itself
+option_meanings = true          # every option says what it does, as agent-ask post requires
 source = { kind = "files", glob = "~/.agent/asks/*/*.md", fields = ["question", "context"] }
 
 # A queue item the fleet filed for itself (the human's own words are left alone).
