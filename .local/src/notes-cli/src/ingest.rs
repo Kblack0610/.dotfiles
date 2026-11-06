@@ -52,9 +52,6 @@ pub struct Event {
     /// The agent-queue item the write belongs to or names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
-    /// The tracker ticket the item or row carries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ticket: Option<String>,
     /// The Claude session that wrote it, in full.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
