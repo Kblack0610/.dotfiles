@@ -5,7 +5,7 @@
 # their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
-#   amber  the last pass left ready work waiting (BLOCKED), an item is flapping, more could
+#   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
 #          start than the limits let the last pass (could_start), or a shepherd due line went
 #          unhandled
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
@@ -73,7 +73,25 @@ else
   oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)"
   pass_age=$((now - ${pass:-0})) start_age=-
   [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
-  [ "$(get runner.blocked)" = 1 ] && flag 1 "the last pass left ready work waiting (BLOCKED)"
+  # paused by: the one gate that stopped the last pass, if any, by name.
+  paused=''
+  for k in slots load idle account assess other; do
+    [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
+    case $k in
+      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
+      load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
+      idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
+      assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
+      account) paused="no account has room under its weekly pace" ;;
+      other) paused="a gate (fleet-dispatch headroom says which)" ;;
+    esac
+  done
+
+  # A hold that has stopped every pass leads with how long (held_s, the Stopped line's clock);
+  # a single BLOCKED pass is said as one.
+  held="$(get dispatch.held_s)"
+  if ((${held:-0} > 0)); then flag 1 "dispatch stopped $(prom_dur "$held"): ${paused:-the last pass left ready work waiting}"
+  elif [ "$(get runner.blocked)" = 1 ]; then flag 1 "the last pass left ready work waiting (BLOCKED)"; fi
   ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping between running and waiting"
   ((${could:-0} > 0)) && flag 1 "$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)"
   [ "$(get watch.tripped)" = 1 ] && flag 2 "queue-starved is tripped"
@@ -123,20 +141,6 @@ else
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
   queue+=$'\n'"board: $(d board_agent) agent rows, $(d board_human) yours, $(d board_playtest) playtest checks"
-
-  # paused by: the one gate that stopped the last pass, if any, by name.
-  paused=''
-  for k in slots load idle account assess other; do
-    [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
-    case $k in
-      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
-      load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
-      idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
-      assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
-      account) paused="no account has room under its weekly pace" ;;
-      other) paused="a gate (fleet-dispatch headroom says which)" ;;
-    esac
-  done
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
