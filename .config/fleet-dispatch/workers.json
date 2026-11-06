@@ -2,7 +2,9 @@
   "requested": {
     "what": "/one-shot on a #requested row the human already decided, game work only",
     "max_tier": 2,
-    "projects": ["unity-core-playground"],
+    "projects": [
+      "unity-core-playground"
+    ],
     "only_tag": "requested"
   },
   "fleet": {
@@ -10,9 +12,26 @@
     "max_tier": 1
   },
   "board": {
-    "what": "/one-shot on an agent-board row of the game, no tags needed, the judge reads the tier",
+    "what": "/one-shot on an agent-board row of a game, no tags needed, the judge reads the tier",
     "max_tier": 2,
-    "projects": ["unity-core-playground"],
+    "projects": [
+      "unity-core-playground",
+      "dodginballs",
+      "apociseum",
+      "shape-city"
+    ],
+    "lane": "agent",
+    "untagged": true
+  },
+  "personal": {
+    "what": "/one-shot on an agent-board row of a personal app, no tags needed; finance and the infra boards are left out (finance stays human-gated, infra runs as night items to a PR)",
+    "max_tier": 2,
+    "projects": [
+      "trader",
+      "black-dev",
+      "kenneth-black-portfolio",
+      "notes-cockpit"
+    ],
     "lane": "agent",
     "untagged": true
   }

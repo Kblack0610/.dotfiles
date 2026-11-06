@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# project-stage-check - does a project meet its stage? Runs the Requirements rows of stages.md.
+#
+#   project-stage-check <name> [--stage <stage>]
+#
+# Runs the rows for <stage> (default: the stage its sheet declares) and every stage below, for
+# `base` and the project's type. One PASS, FAIL, HUMAN or TODO line per row, then a `gate:` line.
+# Exit 0 when nothing blocks, 1 when a FAIL blocks (from stages.md's `Enforced from:` date; before
+# it the gate only reports), 2 on usage or an unknown project.
+# Callers: `notes projects --stage <name> --set <stage>` (refuses on 1) and project-map-doctor.
+# How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
+set -uo pipefail
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+NAME="" TARGET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --stage) TARGET="${2:-}"; shift 2 || usage ;;
+    -h|--help) usage 0 ;;
+    -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
+    *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
+  esac
+done
+[ -n "$NAME" ] || usage
+
+STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
+[ -r "$STAGES_DOC" ] || { echo "project-stage-check: $STAGES_DOC not found" >&2; exit 2; }
+
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+# shellcheck source=../lib/lab-feed.sh
+. "${LAB_FEED_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/lab-feed.sh}"
+# lab_roots lives in the private overlay; without it there is no lab dir and no declared stage.
+# shellcheck source=/dev/null
+[ -r "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}" ] && . "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}"
+
+LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
+[ -n "$LAB_STAGES" ] || { echo "project-stage-check: notes projects --stages printed nothing" >&2; exit 2; }
+
+LAB=""
+if declare -F lab_roots >/dev/null; then
+  while IFS= read -r root; do
+    [ -f "$root/$NAME/summary.md" ] && { LAB="$root/$NAME"; break; }
+  done < <(lab_roots)
+fi
+TYPE="$(project_inherited "$NAME" type)"
+REPO="$(project_repo_path "$NAME" 2>/dev/null || true)"
+REPO="${REPO/#\~/$HOME}"
+# A project inside a monorepo (`trackers.<name>.path`, as apps/<app>) keeps its own
+# README, docs and CHANGELOG there; the predicates run from that root.
+sub="$(project_field "$NAME" path)"
+ROOT="${REPO:+$REPO${sub:+/$sub}}"
+[ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
+[ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
+
+if [ -z "$TARGET" ]; then
+  # shellcheck disable=SC2086 # the ladder is a word list on purpose
+  [ -n "$LAB" ] && TARGET="$(lab_head_tag "$(lab_front_page "$LAB")" $LAB_STAGES)"
+  [ -n "$TARGET" ] || { echo "project-stage-check: \"$NAME\" declares no stage; pass --stage" >&2; exit 2; }
+fi
+lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check: unknown stage \"$TARGET\" (want: $LAB_STAGES)" >&2; exit 2; }
+
+# The Requirements table: `| stage | applies | requirement | check |` rows. `\|` is a literal pipe
+# inside a cell, as GitHub markdown spells it.
+rows() {
+  awk '
+    /^## / { inreq = ($0 == "## Requirements"); next }
+    inreq && /^\| *[a-z]+ *\|/ {
+      line = $0; gsub(/\\\|/, "\001", line)
+      n = split(line, c, "|")
+      if (n < 6) next
+      for (i = 2; i <= 5; i++) { gsub(/^ +| +$/, "", c[i]); gsub("\001", "|", c[i]) }
+      if (c[2] == "Stage") next
+      printf "%s\t%s\t%s\t%s\n", c[2], c[3], c[4], c[5]
+    }' "$STAGES_DOC"
+}
+
+# With no repo, predicates run from an empty dir: `[ -f README.md ]` must not match a lab file.
+EMPTY="$(mktemp -d)"; trap 'rmdir "$EMPTY"' EXIT
+
+enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
+today="${STAGE_GATE_TODAY:-$(date +%F)}"
+
+fails=0
+while IFS=$'\t' read -r stage applies req check; do
+  lab_stage_at_least "$TARGET" "$stage" || continue
+  case ", $applies, " in *", base, "*|*", ${TYPE:-none}, "*) ;; *) continue ;; esac
+  case "$check" in
+    human) printf 'HUMAN %-5s  %s\n' "$stage" "$req" ;;
+    \`*\`)
+      pred="${check#\`}"; pred="${pred%\`}"
+      # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
+      case "$pred" in *\`*) printf 'TODO  %-5s  %s (%s)\n' "$stage" "$req" "$check"; continue ;; esac
+      if (export NAME TYPE REPO ROOT LAB; cd "${ROOT:-$EMPTY}" || exit 1; eval "$pred") >/dev/null 2>&1; then
+        printf 'PASS  %-5s  %s\n' "$stage" "$req"
+      else
+        printf 'FAIL  %-5s  %s\n' "$stage" "$req"; fails=$((fails + 1))
+      fi ;;
+    *) printf 'TODO  %-5s  %s (%s)\n' "$stage" "$req" "$check" ;;
+  esac
+done < <(rows)
+
+if [ "$fails" -eq 0 ]; then
+  echo "gate: $NAME meets #$TARGET"
+elif [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]]; then
+  echo "gate: $NAME fails $fails row(s) for #$TARGET"; exit 1
+else
+  echo "gate: $NAME fails $fails row(s) for #$TARGET (report-only until ${enforced_from:-an Enforced from: date is set})"
+fi
+exit 0
