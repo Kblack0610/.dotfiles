@@ -133,7 +133,7 @@ EOF
   run pane_of "$in"
   assert_output 'lab/%8'
   run pane_of "$out"
-  assert_output -
+  [ "$output" = - ] # assert_output - would read the expected value from stdin
   kill "$in" "$out"
 }
 
