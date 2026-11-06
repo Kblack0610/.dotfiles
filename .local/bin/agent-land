@@ -81,12 +81,37 @@ current_with_base() {
   fi
 }
 
+# strict_checks: whether <base> refuses a head whose required checks have not run on it: a ruleset's
+# required_status_checks rule with strict_required_status_checks_policy, or branch protection's
+# required_status_checks.strict. Read once. A 404 from the protection call is "not protected"; any
+# other unreadable answer counts as strict, the side that waits instead of being refused.
+strict=''
+strict_checks() {
+  if [ -z "$strict" ]; then
+    local repo="${pr_ref%#*}" out
+    strict=yes
+    if [ "$repo" != "$pr_ref" ] &&
+      out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) &&
+      jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1; then
+      if out=$(gh api "repos/$repo/branches/$base/protection" 2>&1); then
+        jq -e '.required_status_checks.strict == true' <<<"$out" >/dev/null 2>&1 || strict=no
+      else
+        case "$out" in *'(HTTP 404)'*) strict=no ;; esac
+      fi
+    fi
+  fi
+  [ "$strict" = yes ]
+}
+
 # catch_up: after a green gate, a base that moved on during the checks is merged in and pushed, and
 # that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
-# current and 1 after a push: the caller then waits on the PR checks again, because a base with
-# strict required checks refuses a head whose checks have not run (2026-11-05: #1837 was refused
-# twice). Exiting 3 there instead sent the caller round its own gate again, which a busy base
-# outruns every time (#916). A conflict is aborted and exits 3.
+# current, or after a push to a base with no strict required checks (strict_checks), and 1 after a
+# push to a strict one: the caller then waits on the PR checks again, because that base refuses a
+# head whose checks have not run (2026-11-05: unity-core-playground #1837 was refused twice). A base
+# with no strict checks gets no second wait: one that merges faster than its checks run would loop
+# it forever (dotfiles #1059 went green 9 times in an hour). Exiting 3 there instead sent the caller
+# round its own gate again, which a busy base outruns every time (#916). A conflict is aborted and
+# exits 3.
 catch_up() {
   local out behind
   out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
@@ -110,11 +135,15 @@ catch_up() {
   for ((try = 1; try <= CHECKS_TRIES; try++)); do
     case "$(gh pr view "$pr" --json headRefOid,mergeable -q '.headRefOid + " " + .mergeable' 2>/dev/null)" in
     "$head UNKNOWN" | "") ;;
-    "$head "*) return 1 ;;
+    "$head "*) break ;;
     esac
     sleep "$CHECKS_POLL"
   done
-  return 1
+  if strict_checks; then
+    echo "checks: origin/$base requires strict checks, waiting on them for the pushed head"
+    return 1
+  fi
+  return 0
 }
 
 pr='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
