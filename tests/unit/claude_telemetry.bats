@@ -129,9 +129,16 @@ attrs_in() {
   # started from it later, in any directory: an inherited one is dropped for that reason.
   local dir="$BATS_TEST_TMPDIR/.my-app"
   mkdir -p "$dir"
-  run attrs_in "$dir" 'project=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; claude_telemetry_project'
+  run attrs_in "$dir" 'project=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; claude_telemetry_launch'
   assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
   assert_line --index 1 "service.name=claude-code,host.name=$(hostname),project=my-app"
+}
+
+@test "queue.item is the launch's AGENT_QUEUE_ITEM, and an inherited one is dropped" {
+  run attrs_in / 'queue.item=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; AGENT_QUEUE_ITEM=fix-menu claude_telemetry_launch; claude_telemetry_launch'
+  assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
+  assert_line --index 1 "service.name=claude-code,host.name=$(hostname),queue.item=fix-menu"
+  assert_line --index 2 "service.name=claude-code,host.name=$(hostname)"
 }
 
 # The launch defaults sit outside the LAN guard: every launch gets them, on or off the LAN.

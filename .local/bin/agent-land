@@ -285,6 +285,10 @@ merged=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid 2>&1) || fail p
 . "$(dirname "$(readlink -f "$0")")/../lib/agent-merge-proof.sh"
 out=$(merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
 echo "proof: $out"
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
+chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
+  --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 
 if [ "$(jq -r .state <<<"$it")" != "done" ]; then
   [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2

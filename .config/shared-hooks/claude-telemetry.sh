@@ -102,17 +102,22 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # the Fleet tab can show $ per runner. Dropped when unset, so nothing else carries one.
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr agentctl.runner "${AGENTCTL_NAME:-}")"
     # `project` (the canonical name project-name.sh gives the directory Claude starts in, as
-    # every hook names it) is added per launch by claude_telemetry_project, which the .ai-rc
+    # every hook names it) is added per launch by claude_telemetry_launch, which the .ai-rc
     # claude and cl wrappers call, and never exported here. This env is inherited by everything
     # the shell starts, a tmux server included, so a project resolved now would label a session
     # started later in another directory: missing is better than wrong. An inherited one is
-    # dropped for the same reason.
+    # dropped for the same reason. `queue.item` (the agent-queue item the session works,
+    # AGENT_QUEUE_ITEM, which fleet-dispatch sets on its launch line) is per launch for the same
+    # reason, so spend joins the item's chain log (`notes log --item`).
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr project)"
+    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr queue.item)"
     export OTEL_RESOURCE_ATTRIBUTES
 
-    # claude_telemetry_project -> OTEL_RESOURCE_ATTRIBUTES with project= for $PWD.
-    claude_telemetry_project() {
-        claude_otel_attr project "$(bash -c '. "$1" && resolve_project_name "$2"' _ \
-            "$HOME/.config/shared-hooks/project-name.sh" "$PWD" 2>/dev/null)"
+    # claude_telemetry_launch -> OTEL_RESOURCE_ATTRIBUTES with project= for $PWD and queue.item=
+    # for $AGENT_QUEUE_ITEM, each dropped when it has no value.
+    claude_telemetry_launch() {
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr project "$(bash -c '. "$1" && resolve_project_name "$2"' _ \
+            "$HOME/.config/shared-hooks/project-name.sh" "$PWD" 2>/dev/null)")" \
+            claude_otel_attr queue.item "${AGENT_QUEUE_ITEM:-}"
     }
 fi

@@ -396,6 +396,9 @@ enum Cmd {
         /// Only this writer: `human`, a queue item or a session's first 8 characters
         #[arg(long)]
         by: Option<String>,
+        /// Only events of this agent-queue item, like fix-menu
+        #[arg(long)]
+        item: Option<String>,
         /// One JSON event per line
         #[arg(long)]
         json: bool,
@@ -690,24 +693,50 @@ enum OutboxCmd {
 
 #[derive(Subcommand)]
 enum IngestCmd {
-    /// Record one intake step the CLI did not make itself: a line the sweep `left` for the
-    /// human, one whose write was `refused`, or a row the planner `planned`
-    Record {
-        #[arg(long, value_parser = ["left", "refused", "planned"])]
-        action: String,
-        /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
-        #[arg(long)]
-        from: String,
-        #[arg(long)]
-        why: Option<String>,
-        /// The row's id, for `planned`
-        #[arg(long)]
-        id: Option<String>,
-        #[arg(required = true, num_args = 1..)]
-        text: Vec<String>,
-    },
+    /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
+    /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
+    /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
+    /// agent-land's `merged`). An empty flag value is no value.
+    Record(Box<RecordArgs>),
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+}
+
+/// `notes ingest record`: boxed, so the enum stays small.
+#[derive(clap::Args)]
+struct RecordArgs {
+    #[arg(long, value_parser = [
+        "left", "refused", "planned", "item-added", "item-moved", "item-set",
+        "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
+    ])]
+    action: String,
+    /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
+    #[arg(long)]
+    from: String,
+    /// Where it went: the item's new state, the project a row moved to
+    #[arg(long)]
+    to: Option<String>,
+    #[arg(long, default_value = "intake", value_parser = ["intake", "queue", "dispatch", "land"])]
+    stage: String,
+    #[arg(long)]
+    why: Option<String>,
+    /// The row's id, for `planned` or the item's row
+    #[arg(long)]
+    id: Option<String>,
+    /// The queue item it is about, when not this session's own (`AGENT_QUEUE_ITEM`)
+    #[arg(long)]
+    item: Option<String>,
+    #[arg(long)]
+    ticket: Option<String>,
+    /// The writer, when it is a runner with no queue item or session of its own (fleet-dispatch)
+    #[arg(long)]
+    by: Option<String>,
+    #[arg(long)]
+    pr: Option<String>,
+    #[arg(long)]
+    sha: Option<String>,
+    #[arg(required = true, num_args = 1..)]
+    text: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -1156,6 +1185,7 @@ fn main() -> Result<()> {
             id,
             action,
             by,
+            item,
             json,
         } => {
             let filter = ingest::Filter {
@@ -1163,20 +1193,43 @@ fn main() -> Result<()> {
                 id,
                 action,
                 by,
+                item,
             };
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record {
-                action,
-                from,
-                why,
-                id,
-                text,
-            } => {
-                let mut ev = ingest::Event::new(&action, &from, "", &text.join(" "));
-                ev.why = why;
-                ev.id = id;
+            IngestCmd::Record(r) => {
+                let RecordArgs {
+                    action,
+                    from,
+                    to,
+                    stage,
+                    why,
+                    id,
+                    item,
+                    ticket,
+                    by,
+                    pr,
+                    sha,
+                    text,
+                } = *r;
+                let set = |v: Option<String>| ingest::set(v.as_deref());
+                let mut ev = ingest::Event::new(
+                    &action,
+                    &from,
+                    to.as_deref().unwrap_or(""),
+                    &text.join(" "),
+                );
+                ev.stage = Some(stage);
+                ev.why = set(why);
+                ev.id = set(id);
+                ev.item = set(item).or(ev.item);
+                ev.ticket = set(ticket);
+                if let Some(b) = set(by) {
+                    ev.by = b;
+                }
+                ev.pr = set(pr);
+                ev.sha = set(sha);
                 ingest::record(&prof, &ev);
                 0
             }
