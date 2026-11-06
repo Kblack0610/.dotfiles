@@ -1043,8 +1043,7 @@ impl App {
                 self.open_query(q);
             }
             Msg::Boards(b) => {
-                let state = b.watch.state["sessions"].as_array().cloned();
-                self.controls.read(Some(state.unwrap_or_default()), None);
+                self.controls.read(Some(&b.watch.state), None);
                 self.boards = Some(*b);
                 if self.boards_read.done() {
                     self.read_boards();

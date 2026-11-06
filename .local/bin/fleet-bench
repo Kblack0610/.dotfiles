@@ -229,7 +229,6 @@ now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
 # jq helpers shared by every verb.
 JQ_LIB='
-def project: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "") | sub("-agent-[0-9]+$"; "");
 def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
@@ -435,7 +434,7 @@ sample_rows() {
   local t="$1"
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
     select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "SHARED") | not))
-    | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
+    | {epoch: $t, at: ($t | iso), session_id, target, project, bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
        context_tokens, nudged, escalated, pr, plan_file}'
 }
@@ -2723,10 +2722,10 @@ prom_snapshot() {
 
 # merge_rows <until> [since] -> project, merge epoch (tab-separated) for each project sampled in that
 # time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
-# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is a worktree's,
-# `<repo>-<slug>` (the `project` def strips only -agent-N, so unity-core-playground-agent-40-b gets
-# here whole): the longest registered checkout basename or alias it starts with names it, as
-# project-name.sh does for a reaped worktree, and its merges count under that name.
+# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is an app inside
+# a repo (project-name.sh resolves a bnb-platform worktree to its app) or a progress line written before
+# rows carried their project, a worktree's `<repo>-<slug>`: the longest registered checkout basename or
+# alias it starts with names it, and its merges count under that name.
 merge_rows() {
   local until="$1" since="${2:-$(($1 - 86400))}" p path head
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
