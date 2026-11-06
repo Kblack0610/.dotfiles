@@ -135,6 +135,7 @@ Media/Music
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
 !.claude/skills/ops/ci-cleanup/
+!.claude/skills/ops/docs-cleanup/
 !.claude/skills/ops/reaper-ops/
 !.claude/skills/ops/usage-cleanup/
 !.claude/skills/ops/pipeline-eval/
