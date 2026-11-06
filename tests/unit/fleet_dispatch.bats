@@ -763,6 +763,21 @@ refuses() {
   refuses 'no account has room under its weekly pace'
 }
 
+@test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
+  game_ready
+  # the gate's ask finds room; the start's ask, a moment later, finds none
+  stub claude-acct '[ "$1" = room ] || exit 0
+n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
+[ "$n" = 0 ] && { echo /home/u/.claude-personal; exit 0; }
+echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queue item gm-1 waits: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate'
+  assert_equal "$(outcome)" BLOCKED
+  assert_not_called 'wt new'
+}
+
 @test "run starts nothing when account usage cannot be read" {
   game_ready
   stub claude-acct 'exit 2'

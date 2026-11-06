@@ -378,7 +378,30 @@ cmd_room() {
         echo "claude-acct: no account has room and one cannot be read" >&2
         return 2
     fi
-    echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
+    # Name the account a start would fall back to (pick's best) and why room refused it, from its
+    # own row: "no account has room" alone read as every account being full (2026-11-05).
+    local name why run_out resets t=""
+    IFS=$'\037' read -r name why run_out resets < <(jq -r --argjson slack "$PACE_SLACK_PCT" --argjson reserve "$RESERVE_PCT" '
+        def pts: ceil | "\(.) point\(if . == 1 then "" else "s" end)";
+        [.[] | select(.state != "unread")] | sort_by(.rank) | first // empty
+        | [.name,
+           (if .week_used == null then "its week cannot be read"
+            elif .week_used >= 100 then "out of its week"
+            elif .week_used >= 100 - $reserve then "\(.week_used | floor)% of its week used, inside the last \($reserve)% kept for the human"
+            elif .week_used > .week_gone + $slack then
+              "\(.week_used - .week_gone - $slack | pts) over its weekly pace (\(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, \($slack) points of slack)"
+            elif (.five_hour // 0) >= 100 - $reserve then "its 5h window at \(.five_hour | floor)%"
+            else "its \(.live) live sessions use the rest of its week before the reset" end),
+           (.run_out // "-"), (.resets // "-")] | map(tostring)
+        | join("\u001f")' <<< "$rows")
+    if [[ -z "$name" ]]; then
+        echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
+        return 1
+    fi
+    # The RUNS-OUT and RESETS columns of status, from the same row.
+    if [[ "$run_out" != - ]]; then t=", runs out $(day_time "$run_out") at this rate"
+    elif [[ "$resets" != - ]]; then t=", lasts to its reset $(day_time "$resets")"; fi
+    echo "claude-acct: no account has room; $name is the closest, $why$t" >&2
     return 1
 }
 
