@@ -279,6 +279,7 @@ pub fn page(
             out.push(Line::styled("  nothing waits on you", p.dim()));
         } else {
             let t = Table {
+                mark: None,
                 header: vec!["ID", "PROJECT", "AGE", "SESSION", "QUESTION"],
                 rows: asks
                     .iter()

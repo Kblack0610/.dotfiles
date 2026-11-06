@@ -155,6 +155,49 @@ impl Job {
     }
 }
 
+impl State {
+    pub fn name(self) -> &'static str {
+        match self {
+            State::Running => "running",
+            State::Queued => "queued",
+            State::Done => "done",
+        }
+    }
+}
+
+/// The Jobs table on both surfaces: Infra's Jobs section in the hub and on agent-web.
+impl crate::table::Row for Job {
+    const COLUMNS: &'static [&'static str] = &[
+        "state", "source", "name", "started", "took", "result", "detail",
+    ];
+    const STATES: &'static [&'static str] = &["all", "running", "queued", "done", "failed"];
+    const FACETS: &'static [&'static str] = &["source", "result"];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: &str| Val::Text(s.to_string());
+        let num = |n: Option<i64>| n.map_or(Val::None, |n| Val::Num(n as f64));
+        match col {
+            "state" => text(self.state.name()),
+            "source" => text(self.source.name()),
+            "name" => text(&self.name),
+            "started" => num(self.started),
+            "took" => num(self.secs),
+            "result" if self.result.is_empty() => Val::None,
+            "result" => text(&self.result),
+            "detail" => text(&self.detail),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "failed" => self.ok == Some(false),
+            s => self.state.name() == s,
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Default)]
 pub struct Jobs {
     /// When this was collected, unix seconds.

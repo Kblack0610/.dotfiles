@@ -9,7 +9,7 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::fleet::ASK_FILTERS;
 use hub_core::infra::Infra;
-use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
+use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::queue::{Candidate, Candidates, Queue};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
@@ -21,6 +21,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::controls::{Ask, Controls};
+use crate::datatable::{DataTable, Took};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
@@ -1737,7 +1738,7 @@ impl App {
             match k.code {
                 KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
                 KeyCode::Enter => self.infra_jobs = true,
-                KeyCode::Char('/' | 's' | 'f' | 'h') => {
+                c if c == KeyCode::Char('h') || DataTable::owns(c) => {
                     self.infra_jobs = true;
                     return self.jobs_key(k);
                 }
@@ -1746,12 +1747,7 @@ impl App {
             return true;
         }
         let jv = &self.jv;
-        let root = jv.typing.is_none()
-            && jv.log.is_none()
-            && jv.history.is_none()
-            && jv.search.is_empty()
-            && jv.source.is_none()
-            && jv.state == Default::default();
+        let root = jv.table.is_default() && jv.log.is_none() && jv.history.is_none();
         if root && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             self.infra_jobs = false;
             return true;
@@ -1760,32 +1756,19 @@ impl App {
     }
 
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
-        if let Some(t) = self.jv.typing.as_mut() {
-            match k.code {
-                KeyCode::Enter => {
-                    self.jv.search = self.jv.typing.take().unwrap_or_default();
-                    self.jv.sel = 0;
-                }
-                KeyCode::Esc => {
-                    self.jv.typing = None;
-                    self.jv.search.clear();
-                }
-                KeyCode::Backspace => {
-                    t.pop();
-                }
-                KeyCode::Char(c) => t.push(c),
-                _ => {}
+        match self.jv.table.key::<Job>(k.code) {
+            Took::View => {
+                self.jv.sel = 0;
+                return true;
             }
-            return true;
+            Took::Typing => return true,
+            Took::No => {}
         }
         let rows = self.jobs.as_ref().map_or(0, |j| self.jv.shown(j).len());
         let last = rows.saturating_sub(1);
         let n = self.page.max(1);
         let jv = &mut self.jv;
         match k.code {
-            KeyCode::Char('/') => jv.typing = Some(jv.search.clone()),
-            KeyCode::Char('s') => jv.cycle_source(),
-            KeyCode::Char('f') => jv.cycle_state(),
             KeyCode::Char('j') | KeyCode::Down => jv.sel = (jv.sel + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => jv.sel = jv.sel.saturating_sub(1),
             KeyCode::Char('g') | KeyCode::Home => jv.sel = 0,
@@ -1810,9 +1793,8 @@ impl App {
                     jv.history = None;
                     self.read_jobs();
                 } else {
-                    jv.search.clear();
-                    jv.source = None;
-                    jv.state = Default::default();
+                    jv.table.clear();
+                    jv.sel = 0;
                 }
             }
             KeyCode::Char('h') => {
@@ -1975,12 +1957,14 @@ impl App {
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
+            Tab::Infra if self.jv.table.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc clears".into()
+            }
             Tab::Infra if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
             Tab::Infra => format!(
-                "Enter log  s source  f state  / search  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
+                "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Sessions if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
@@ -3829,7 +3813,7 @@ mod tests {
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
-        assert!(top(&s).starts_with("all sources"), "{s}");
+        assert!(top(&s).starts_with("all 1  running 0"), "{s}");
         assert!(s.lines().last().unwrap().contains("Esc back"), "{s}");
         // A filter clears first; the next Esc goes back to the summary.
         a.handle(key('f'));

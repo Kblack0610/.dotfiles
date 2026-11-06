@@ -392,6 +392,7 @@ fn candidates(
         })
         .collect();
     let mut t = Table {
+        mark: None,
         header: vec!["#", "PROJECT", "KEY", "TASK", "START", "WHY"],
         rows,
         // The why never hides: project, then key, give way first.
