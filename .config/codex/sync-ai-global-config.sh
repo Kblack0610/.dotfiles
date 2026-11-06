@@ -128,36 +128,13 @@ else
     : > "$codex_tmp"
 fi
 
+# Keys Codex no longer knows, which earlier syncs wrote: rmcp_client (now built in) and
+# codex_hooks (now the stable `hooks` feature). Dropped from [features] so the file holds no
+# dead key; the rest of [features] is the human's and stays.
 awk '
-    BEGIN { in_features=0; saw_features=0; saw_rmcp=0 }
-    /^\[/ {
-        if (in_features && !saw_rmcp) {
-            print "rmcp_client = true"
-            saw_rmcp = 1
-        }
-        in_features = ($0 == "[features]")
-        if (in_features) {
-            saw_features = 1
-        }
-        print
-        next
-    }
-    {
-        if (in_features && $0 ~ /^rmcp_client[[:space:]]*=/) {
-            saw_rmcp = 1
-        }
-        print
-    }
-    END {
-        if (in_features && !saw_rmcp) {
-            print "rmcp_client = true"
-        }
-        if (!saw_features) {
-            print ""
-            print "[features]"
-            print "rmcp_client = true"
-        }
-    }
+    /^\[/ { in_features = ($0 == "[features]") }
+    in_features && /^(rmcp_client|codex_hooks)[[:space:]]*=/ { next }
+    { print }
 ' "$codex_tmp" > "$features_tmp"
 mv "$features_tmp" "$codex_tmp"
 
@@ -182,6 +159,9 @@ if [ -s "$codex_tmp" ]; then
 fi
 cat "$managed_tmp" >> "$codex_tmp"
 mv "$codex_tmp" "$CODEX_HOME/config.toml"
+
+# Codex's skills and hooks.json, from the Claude skill corpus and .config/codex/hooks.json.
+"$SCRIPT_DIR/sync-codex-home.sh"
 
 export GEMINI_SETTINGS_PATH="$GEMINI_HOME/settings.json"
 export GEMINI_STAGE_PATH="$stage_dir/.gemini/settings.json"
