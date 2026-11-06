@@ -1325,7 +1325,8 @@ SH
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
   landed_fixture
   PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 \
+    --options 'a=ship|b=hold' --recommend a 'ship it?' >/dev/null
   local doc="$XDG_STATE_HOME/fleet/state.json"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --write
@@ -1343,6 +1344,9 @@ SH
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
+  [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
+  [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
   # no temp file left beside it
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]

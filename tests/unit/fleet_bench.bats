@@ -16,6 +16,7 @@ setup() {
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
+  export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
@@ -562,64 +563,57 @@ merged_pr() {
   refute_output --partial 'Review sample'
 }
 
-# ask <id> <session> <hours old> [recommend] [kind]: one agent-ask list row, stamped -0700
-# like a real ask so the offset parse is exercised
-ask() {
-  printf '%s\tgame\t\tpending\t%s\t%s question\ta|b\t\t\t\t%s\t%s\t%s\n' \
-    "$1" "${5:-question}" "$1" "${4:-}" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)" "$2"
+# need <id> <target or ""> <hours waited> [recommend] [phases left] [question]: one ask row of
+# `hub needs --json`, as hub_core::home::needs scored it
+need() {
+  jq -nc --arg id "$1" --arg t "$2" --argjson h "$3" --arg r "${4:-}" --argjson ph "${5:-0}" --arg q "${6:-$1 question}" '
+    {kind: "ask", id: $id, project: "game", text: $q, target: (if $t == "" then null else $t end),
+     since: 0, score: {human: true, session: ($t != ""), phases: $ph, dependents: 0,
+     age_min: ($h * 60), value: 0, holds: ([if $t != "" then "session" else empty end,
+       if $ph > 0 then "\($ph) phases" else empty end] | join(", "))}}
+    + (if $r == "" then {} else {recommend: $r} end)'
 }
 
-stub_asks() {
-  export BENCH_ASKS_CMD=asks-stub BENCH_SCORECARD_DIR="$HOME/lab/bench"
-  printf '#!/usr/bin/env bash\n[ -e "%s/asks.fail" ] && exit 1\ncat "%s/asks.tsv"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/asks-stub"
+# stub_needs: BENCH_NEEDS_CMD prints {needs, errors} from needs.jsonl (one need per line) and
+# errors.json; needs.fail makes it exit 1, as a hub that cannot run
+stub_needs() {
+  export BENCH_NEEDS_CMD=needs-stub BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  printf '#!/usr/bin/env bash
+[ -e "%s/needs.fail" ] && exit 1
+jq -cs --slurpfile e "%s/errors.json" "{needs: ., errors: \$e[0]}" "%s/needs.jsonl"
+' \
+    "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/needs-stub"
   printf '#!/usr/bin/env bash\necho "notify $*" >> "%s"\n' "$SANDBOX/pages" > "$SANDBOX/bin/agent-notify"
-  chmod +x "$SANDBOX/bin/asks-stub" "$SANDBOX/bin/agent-notify"
-  : > "$SANDBOX/asks.tsv"
+  chmod +x "$SANDBOX/bin/needs-stub" "$SANDBOX/bin/agent-notify"
+  : > "$SANDBOX/needs.jsonl"; echo '[]' > "$SANDBOX/errors.json"
 }
 
-asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | join(\" \")"' _ "$SUBJECT" "$T0"; }
+asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$SUBJECT"; }
 
-@test "asks rank by age x (1 + phases left + open PR) when blocking a live session, then the rest oldest first" {
-  stub_asks
-  { rowj 'phases_done: 0'; rowj 'session_id: "b", target: "lab/other:1", phases_done: 2, phases_total: 2, pr: "#5"'; } > "$SNAP"
-  sample_at 0
+@test "asks keep hub Home's ranked order and list the ones holding a live session first" {
+  stub_needs
   {
-    ask x a 4             # live by session id, 4 phases left: 4 x 5 = 20
-    ask y other 8 land    # live by tmux session name, open PR: 8 x 2 = 16
-    ask z "" 100          # headless
-    ask w gone-agent-3 1  # its session has ended
-  } > "$SANDBOX/asks.tsv"
+    need x lab/game-agent-1:1 4 "" 3
+    need z "" 100
+    need y lab/other:1 8 land
+    # a session row is Home's, not an ask
+    jq -nc '{kind: "session", id: "lab/s:1", project: "game", text: "dialog", score: {session: true, phases: 0, holds: "session", age_min: 5}}'
+  } > "$SANDBOX/needs.jsonl"
   run asks_order
-  # negative control: by age alone y (8h) would rank above x (4h)
-  assert_output 'x y z w'
+  # negative control: by age alone z (100h) would lead and y (8h) would beat x (4h)
+  assert_output 'x z y'
   BENCH_NOW=$T0 run "$SUBJECT" asks
   assert_success
-  assert_output --partial '| x | lab/game-agent-1:1 | 4h | 4 phases left | - | x question |'
-  assert_output --partial '| y | lab/other:1 | 8h | open PR | land | y question |'
-  assert_output --partial '| z | game | question | 4d | - | z question |'
+  assert_output --partial '| x | lab/game-agent-1:1 | 4h | session, 3 phases | - | x question |'
+  assert_output --partial '| y | lab/other:1 | 8h | session | land | y question |'
+  assert_output --partial '| z | game | 4d | - | - | z question |'
+  refute_output --partial 'dialog'
   [ ! -e "$BENCH_SCORECARD_DIR/asks.md" ]        # the bare verb only prints
 }
 
-@test "asks --page writes asks.md, pages the top 3 in plain words with their recommendation, publishes under its own name" {
-  stub_asks
-  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
-  { ask p a 1 go; ask q a 2; ask r a 3 hold gate; ask s a 4; ask old "" 72; } > "$SANDBOX/asks.tsv"
-  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
-  assert_success
-  [ "$(wc -l < "$SANDBOX/pages")" -eq 1 ]
-  run cat "$SANDBOX/pages"
-  assert_output 'notify -p normal -t asks 5 questions wait on you, 4 holding up a session. Top: s question (4h); r question (3h, recommend hold); q question (2h). List: fleet-bench asks.'
-  run grep -c '^| old | game |' "$BENCH_SCORECARD_DIR/asks.md"
-  assert_output 1
-  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
-  assert_output --partial WORKED
-  [ ! -e "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome" ] || ! grep -q asks "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"
-}
-
 @test "asks --write writes asks.md and prints the top one, with no page and no verdict of its own" {
-  stub_asks
-  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
-  { ask p a 1 go; ask old "" 72; } > "$SANDBOX/asks.tsv"
+  stub_needs
+  { need p lab/game-agent-1:1 1 go; need old "" 72; } > "$SANDBOX/needs.jsonl"
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_success
   assert_output '2 questions wait on you, 1 holding up a session. Top: p question (1h, recommend go). List: fleet-bench asks.'
@@ -630,50 +624,40 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
 }
 
 @test "asks quotes a question's first sentence whole, and names one too long instead of cutting it" {
-  stub_asks
-  rowj 'phases_done: 0' > "$SNAP"; sample_at 0
-  q() { printf '%s\tgame\t\tpending\tquestion\t%s\ta|b\t\t\t\t\t%s\t\n' "$1" "$2" "$(TZ=XXX+7 date -d "@$((T0 - $3 * 3600))" +%Y-%m-%dT%H:%M:%S%z)"; }
-  q a 'Real money: which US state do you live in? It decides whether the bot may trade at all.' 2 > "$SANDBOX/asks.tsv"
+  stub_needs
+  q() { need a "" 2 "" 0 "$1" > "$SANDBOX/needs.jsonl"; }
+  q 'Real money: which US state do you live in? It decides whether the bot may trade at all.'
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_output '1 question waits on you, none holding up a session. Top: Real money: which US state do you live in? (2h). List: fleet-bench asks.'
-  q a 'Should the nightly retry every red shard on the spare runner pool before it pages anyone about it' 2 > "$SANDBOX/asks.tsv"
+  q 'Should the nightly retry every red shard on the spare runner pool before it pages anyone about it'
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_output '1 question waits on you, none holding up a session. Top: a game question, ask a (2h). List: fleet-bench asks.'
-  q a 'Nightly retries: should the nightly retry every red shard on the spare runner pool before it pages anyone' 2 > "$SANDBOX/asks.tsv"
+  q 'Nightly retries: should the nightly retry every red shard on the spare runner pool before it pages anyone'
   AGENTCTL_NAME=briefing BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_output '1 question waits on you, none holding up a session. Top: Nightly retries, ask a (2h). List: fleet-bench asks.'
   refute_output --partial '...'
-  # The page quotes only the questions that fit its 300 chars.
-  { for i in a b c; do q $i "Question $i: should the nightly retry every red shard on the spare runner pool before it pages?" 2; done; } > "$SANDBOX/asks.tsv"
-  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
-  assert_success
-  run sed 's/^notify -p normal -t asks //' "$SANDBOX/pages"
-  [ "${#output}" -le 300 ]
-  assert_output --partial 'Top: Question a: should'
-  assert_output --partial 'Question b: should'
-  refute_output --partial 'Question c'
 }
 
-@test "asks rejects an unknown flag instead of printing (negative control)" {
-  stub_asks
-  run "$SUBJECT" asks --pgae
+@test "asks rejects --page, whose page is hub needs --page now (negative control)" {
+  stub_needs
+  run "$SUBJECT" asks --page
   assert_failure 2
+  [ ! -e "$SANDBOX/pages" ]
 }
 
-@test "no pending ask is NOOP with no page; agent-ask failing is FAILED with exit 1" {
-  stub_asks
-  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+@test "no pending ask writes None twice; a hub that fails or could not read agent-ask exits 1" {
+  stub_needs
+  BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_success
-  [ ! -e "$SANDBOX/pages" ]
-  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
-  assert_output --partial NOOP
+  assert_output ''
   run grep -c '^None\.$' "$BENCH_SCORECARD_DIR/asks.md"
   assert_output 2
-  touch "$SANDBOX/asks.fail"
-  AGENTCTL_NAME=ask-digest BENCH_NOW=$T0 run "$SUBJECT" asks --page
+  echo '["agent-ask could not be read, so no asks are shown"]' > "$SANDBOX/errors.json"
+  BENCH_NOW=$T0 run "$SUBJECT" asks --write
   assert_failure
-  run cat "$AGENTCTL_STATE_DIR/ask-digest/last-outcome"
-  assert_output --partial FAILED
+  echo '[]' > "$SANDBOX/errors.json"; touch "$SANDBOX/needs.fail"
+  BENCH_NOW=$T0 run "$SUBJECT" asks --write
+  assert_failure
 }
 
 # --- kpi and retro ---
@@ -683,7 +667,7 @@ asks_order() { BENCH_NOW=$T0 bash -c '. "$1"; ask_rows "$2" | jq -r "map(.id) | 
 kpi_setup() {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src" LEDGER_BOARDS="$SANDBOX/none.md"
-  export BENCH_ASKS_CMD=true BENCH_NOW=$T0
+  export BENCH_NOW=$T0
   export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_LESSONS_DIR="$SANDBOX/lessons"
   mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
   printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"

@@ -26,7 +26,7 @@ function renderBadge() {
 const DIALOG = { choice: "ask", tool: "perm", plan: "plan" };
 const dialog = (q) => DIALOG[q.kind] || "turn";
 
-// Every kind of row that waits on the human, in the order Needs you lists them: the label each
+// Every kind of row that waits on the human, in the order its tally chips list them: the label each
 // card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
 // amber, failing is red; the three dialog kinds take categorical colours.
 const NEED_KINDS = {
@@ -122,14 +122,15 @@ function askOptions(a) {
 
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
 // waited, who filed it, then the rest of the question and its context, which the options lean on.
-function askCard(a) {
+// `held` is what the ask holds, as Home's ranked row says it ("holds session, 2 phases").
+function askCard(a, held = "") {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
   const from = owner ? owner.short || owner.target : a.agent;
   const judge = judgeText(a);
   // What follows the question: its context, the judge's view, then the answers.
   const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
   const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
-  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? ago(a.created) : ""]);
+  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? ago(a.created) : "", held]);
   const body = a.title ? a.body : "";
   const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
   const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],
