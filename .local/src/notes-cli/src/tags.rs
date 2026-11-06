@@ -126,7 +126,10 @@ fn ranked(hits: &[Hit], only: Option<TagKind>) -> Vec<(String, usize)> {
     }
     let mut rows: Vec<_> = counts
         .into_iter()
-        .map(|(t, n)| (md::tag_kind(t), std::cmp::Reverse(n), t))
+        .map(|(t, n)| {
+            let kind = md::tag_kind(t.trim_start_matches('#'));
+            (kind, std::cmp::Reverse(n), t)
+        })
         .filter(|(k, ..)| only.is_none_or(|o| o == *k))
         .collect();
     rows.sort();

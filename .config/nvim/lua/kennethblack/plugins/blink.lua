@@ -34,9 +34,9 @@ return {
           -- https://cmp.saghen.dev/configuration/reference.html#providers
           lsp = {
             -- marksman indexes all of ~/.notes and can sit on a request for seconds. blink waits
-            -- for every sync provider, so that froze the menu on an older token's items.
+            -- for every sync provider, so that froze the tag menu on an older token's items.
             async = function()
-              return vim.bo.filetype == "markdown"
+              return require("notes.tag_source").enabled()
             end,
             min_keyword_length = 0, -- Number of characters to trigger provider
             -- score_offset = 90, -- Boost/penalize the score of the items

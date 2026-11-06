@@ -61,6 +61,14 @@ io.stdout:write(labels({ "---", "tags: [" }), "|", labels({ "---", "a: b", "---"
   assert_output 'software ai|'
 }
 
+@test "a closed frontmatter tag list offers nothing past its bracket" {
+  run lua_run '
+local s = require("notes.tag_source")
+io.stdout:write(tostring(s.context("tags: [a, so", true) ~= nil), " ",
+  tostring(s.context("tags: [a] so", true) ~= nil))'
+  assert_output 'true false'
+}
+
 @test "past a slash only the tags under it remain, filtered on the part after it" {
   run lua_run '
 local s = require("notes.tag_source")
@@ -106,14 +114,17 @@ io.stdout:write(on("~/.notes/a.md", "markdown"), " ", on("~/.notes-other/b.md", 
 
 # marksman indexes the whole vault and can sit on a request for seconds. blink waits for every
 # sync provider, so a sync lsp froze the menu on an older token and `#size/m` accepted as `#size/s`.
-@test "the lsp provider never holds up the menu in markdown, and stays sync in code" {
+@test "the lsp provider never holds up the menu in the vault, and stays sync elsewhere" {
   run lua_run '
 local spec = dofile("'"$REPO_ROOT"'/.config/nvim/lua/kennethblack/plugins/blink.lua")
 local async = spec[1].opts.sources.providers.lsp.async
-local function on(ft)
+local function on(name, ft)
+  vim.cmd("enew!")
+  vim.api.nvim_buf_set_name(0, vim.fn.expand(name))
   vim.bo.filetype = ft
   return tostring(async())
 end
-io.stdout:write(on("markdown"), " ", on("lua"))'
-  assert_output 'true false'
+io.stdout:write(on("~/.notes/a.md", "markdown"), " ", on("/tmp/repo/README.md", "markdown"), " ",
+  on("~/.notes/c.lua", "lua"))'
+  assert_output 'true false false'
 }

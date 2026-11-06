@@ -18,7 +18,7 @@ local KEYWORD_KIND = 14 -- LSP CompletionItemKind.Keyword
 -- a letter. A `#` alone at the start of a line is a heading on its way, so it offers nothing.
 -- Returns { kinds, start (0-based byte col the edit replaces from), prefix, sigil }.
 function M.context(before, in_frontmatter)
-  if in_frontmatter and before:match("^tags:%s*%[") then
+  if in_frontmatter and before:match("^tags:%s*%[[^%]]*$") then
     local word = before:match("[%w_%-/]*$")
     return { kinds = { "topic" }, start = #before - #word, prefix = word, sigil = "" }
   end
