@@ -13,6 +13,7 @@ setup() {
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
   export DISPATCH_WORKERS="$SANDBOX/workers.json"
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
@@ -97,6 +98,10 @@ case "${args[0]}" in
           { print }' "$f" > "$f.new" && mv "$f.new" "$f"
         [ -f "$f.out" ] || { echo "no open task matches" >&2; exit 1; }
         cat "$f.out"; rm -f "$f.out" ;;
+      tag)   # tag --add <tag> <id>: the tag goes in ahead of the row's marker
+        Q="${args[5]}" T="${args[4]}" awk -F'\t' -v OFS='\t' '
+          !done && index($2, "id:" ENVIRON["Q"] " ") { done = 1; sub(/ <!--/, " #" ENVIRON["T"] " <!--", $2) } { print }' "$f" > "$f.new" &&
+          mv "$f.new" "$f" ;;
     esac ;;
 esac
 EOF
@@ -523,10 +528,10 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   started_item other lab:other-1 run combat
   run cmd_suggest
   assert_success
-  assert_output "auto  dispatch  game game judged  [fleet, #high, beta]
-auto  unjudged  game game human  [fleet, beta]
-auto  dispatch  game game busy  [fleet, beta]  blocked: area held by a queue item
-auto  unjudged  game game new  [fleet, beta]
+  assert_output "auto  unjudged  game game human  [fleet, #high, beta]
+auto  dispatch  game game judged  [fleet, #high, beta]
+auto  dispatch  game game busy  [fleet, #high, beta]  blocked: area held by a queue item
+auto  unjudged  game game new  [fleet, #high, beta]
 man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   refute_output --partial 'app human'
   refute_output --partial 'sketch'
@@ -537,7 +542,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r '"\(.key)=\(.verdict)/\(.auto)"' <<<"$output" | paste -sd' ')" \
-    'game judged=unjudged/true game human=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
+    'game human=unjudged/true game judged=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
 }
 
 @test "suggest: each row no worker takes names why: no cover, the night path's skip word or its gap, the tier ceiling, size, the judge" {
@@ -579,7 +584,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale game fix app feat'
-  assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, beta'
+  assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, bug, beta'
   assert_equal "$(jq -r 'select(.key == "game fix") | .cleanup' <<<"$output")" 1
   # Empty scope turns it off: back to row priority.
   DISPATCH_CLEANUP_PROJECTS="" run cmd_suggest --json
@@ -613,7 +618,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_output "game high: focus project, fleet, #high, beta, 16d old
 game high new: focus project, fleet, #high, beta, 1d old
 game low: focus project, fleet, #low, beta, 4d old
-app due: due today, fleet, alpha
+app due: due today, fleet, #high, alpha
 app urgent: fleet, #urgent, alpha"
 }
 
@@ -627,6 +632,149 @@ app urgent: fleet, #urgent, alpha"
   run jq -sr "$RANK_JQ"'[.[] | rank_fields("2026-11-05"; if .k == "l" then "low" else "" end)] | rank | map(.k) | join(" ")' \
     <<<'{"k":"l","wrank":0,"prio":0,"stage":"prod"} {"k":"n","wrank":1,"prio":2,"stage":"alpha"}'
   assert_output 'n l'
+}
+
+# kinds_match <kinds.json> -- its keys are notes-cli's ROW_TYPES, no more and no fewer, and every
+# entry carries the fields dispatch and shepherd read
+kinds_match() {
+  local types keys
+  types=$(sed -n '/const ROW_TYPES/,/];/p' "$REPO_ROOT/.local/src/notes-cli/src/projects.rs" | grep -oE '"[a-z]+"' | tr -d '"' | sort)
+  [ -n "$types" ] || { echo "no ROW_TYPES read from projects.rs"; return 1; }
+  keys=$(jq -r 'keys[]' "$1" | sort)
+  [ "$types" = "$keys" ] || { echo "kinds.json keys differ from ROW_TYPES:"; diff <(echo "$types") <(echo "$keys"); return 1; }
+  jq -e 'to_entries | all(.value | (.rank | type) == "number" and (.entry | type) == "string"
+    and (.rung | IN("build", "propose", "human")) and (.exit | type) == "string"
+    and (.stages | type) == "array" and (.enabled | type) == "boolean")' "$1" >/dev/null || { echo "an entry lacks a field"; return 1; }
+}
+
+@test "kinds: kinds.json names every notes-cli row type and no other, each with rank, entry, rung, exit, stages and enabled" {
+  run kinds_match "$DISPATCH_KINDS"
+  assert_success
+  # negative controls: a key ROW_TYPES lacks, a type missing, and an entry with no rung each fail
+  jq '. + {bug: .fix}' "$DISPATCH_KINDS" > "$SANDBOX/extra.json"
+  run kinds_match "$SANDBOX/extra.json"
+  assert_failure
+  jq 'del(.perf)' "$DISPATCH_KINDS" > "$SANDBOX/fewer.json"
+  run kinds_match "$SANDBOX/fewer.json"
+  assert_failure
+  jq 'del(.fix.rung)' "$DISPATCH_KINDS" > "$SANDBOX/norung.json"
+  run kinds_match "$SANDBOX/norung.json"
+  assert_failure
+}
+
+@test "rank: a fix row goes before a feat row of the same priority, and why calls it a bug" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game feat' "- [ ] feat(game): a new mode #high $T #c1020"
+  row game agent 'game fix' "- [ ] fix(game): the score is wrong #high $T #c1104"
+  row game agent 'game urgent feat' "- [ ] feat(game): the menu #urgent $T #c1104"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent feat,game fix,game feat'
+  assert_equal "$(jq -r 'select(.key == "game fix") | .why' <<<"$output")" 'fleet, #high, bug, beta, 1d old'
+  assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 16d old'
+}
+
+@test "rank: a row with no priority tag ranks as #high, by age among them" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game high' "- [ ] game high #high $T #c1104"
+  row game agent 'game bare' "- [ ] game bare $T #c1001"
+  row game agent 'game low' "- [ ] game low #low $T #c0901"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game bare,game high,game low'
+  assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #high, beta, 35d old high'
+}
+
+@test "candidates: a kind that is off, off in the project or not at the stage, and a parent row, never reach the judge; suggest says why" {
+  jq -n '{fix: {rank: 0, label: "bug", entry: "/one-shot", rung: "build", exit: "pr", stages: ["beta", "alpha"], enabled: true},
+          feat: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", stages: ["beta", "alpha"], enabled: true, off: ["app"]},
+          chore: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", stages: ["prod"], enabled: true},
+          decide: {rank: 1, entry: "", rung: "human", exit: "ask", stages: [], enabled: false},
+          epic: {rank: 1, entry: "", rung: "human", exit: "none", stages: [], enabled: false}}' > "$SANDBOX/kinds.json"
+  export DISPATCH_KINDS="$SANDBOX/kinds.json"
+  project game beta "$SANDBOX/repos/game"
+  project app alpha "$SANDBOX/repos/app"
+  row game agent gm-1 "- [ ] fix(game): the score is wrong $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] decide(game): which mode first $T <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] chore(game): tidy the docs $T <!-- id:gm-3 -->"
+  row game agent gm-4 "- [ ] epic(game): the new mode $T <!-- id:gm-4 -->"
+  row game agent gm-5 "- [ ] fix(game): the mode's parent story $T <!-- id:gm-5 -->"
+  row game agent gm-6 "- [ ] fix(game): one leaf of it #of/gm-5 $T <!-- id:gm-6 -->"
+  row app agent ap-1 "- [ ] feat(app): a new page $T <!-- id:ap-1 -->"
+  row app agent ap-2 "- [ ] plain app row $T <!-- id:ap-2 -->"
+  board_row game agent gm-6 '["of/gm-5"]' '[]'
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-6,ap-2'
+  run cmd_suggest --json
+  assert_success
+  b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
+  assert_equal "$(b gm-2)" 'kind decide is off'
+  assert_equal "$(b gm-3)" 'kind chore does not dispatch at beta'
+  assert_equal "$(b gm-4)" 'kind epic is off'
+  assert_equal "$(b gm-5)" 'a parent: open rows name it in #of/'
+  assert_equal "$(b ap-1)" 'kind feat is off in app'
+  assert_equal "$(b gm-1)" ''
+  # A closed child holds nothing: with no open row naming it, the parent is a row like any other.
+  : > "$NOTES_FIXTURE/board.rows"
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-5,gm-6,ap-2'
+}
+
+@test "size: a row's #size/ tag is its size: the judge reads it as given and picks trust it over the judge" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] small by tag #size/s $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] large by tag #size/l $T <!-- id:gm-2 -->"
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"; echo "{\"verdicts\":[]}"'
+  run judge "$(cmd_candidates)"   # an empty reply fails the pass; only the prompt matters here
+  grep -qF '"key":"gm-1","text":"- [ ] small by tag #size/s #worker/fleet #tier/1 <!-- id:gm-1 -->","tier":1,"size":"S"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  : > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # The judge calls the small row L and the large one S: the tags win.
+  verdict game agent gm-1 dispatch L 1 one
+  verdict game agent gm-2 dispatch S 1 two
+  run picks "$(VERDICTS=/dev/null cmd_candidates)" 2
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" gm-1
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "gm-2") | .blocked | join("; ")' <<<"$output")" 'size/l: too big for a pick'
+  assert_equal "$(jq -r 'select(.key == "gm-1") | .size' <<<"$output")" S
+}
+
+@test "size_back: the judge's size goes onto an unsized row, and the verdict holds for the tagged text" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] unsized $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] sized #size/m $T <!-- id:gm-2 -->"
+  row game agent 'no id' "- [ ] no id yet $T"
+  echo '{"verdicts":[{"project":"game","lane":"agent","key":"gm-1","tier":1,"size":"S","clear":true,"agent_only":true,"area":"a","verdict":"dispatch","rule":"fits","reason":"r"},{"project":"game","lane":"agent","key":"gm-2","tier":1,"size":"S","clear":true,"agent_only":true,"area":"b","verdict":"dispatch","rule":"fits","reason":"r"},{"project":"game","lane":"agent","key":"no id","tier":1,"size":"M","clear":true,"agent_only":true,"area":"c","verdict":"dispatch","rule":"fits","reason":"r"}]}' > "$NOTES_FIXTURE/judge.out"
+  judge "$(cmd_candidates)"
+  run grep -F ' tag --add ' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial 'ptask game --agent tag --add size/s gm-1'
+  refute_output --partial 'gm-2'
+  refute_output --partial 'no id'
+  run awk -F'\t' '$1 == "gm-1" { print $2 }' "$NOTES_FIXTURE/rows.game.agent"
+  assert_output "- [ ] unsized $T #size/s <!-- id:gm-1 -->"
+  # Not judged twice: the verdict holds for the row's new text.
+  run cmd_candidates
+  assert_output ''
+}
+
+@test "item_brief: a session starts on its kind's entry, by the item's type or its title's prefix; /one-shot otherwise" {
+  jq '.fix.entry = "/fix-skill" | .design.entry = "/one-pager"' "$REPO_ROOT/.config/fleet-dispatch/kinds.json" > "$SANDBOX/kinds.json"
+  export DISPATCH_KINDS="$SANDBOX/kinds.json"
+  it() { jq -cn --arg t "$1" --arg ty "$2" '{slug: "s", mode: "oneshot", title: $t, task: $t} + (if $ty != "" then {type: $ty} else {} end)'; }
+  run item_brief "$(it 'fix(game): the score' '')"
+  assert_line --index 0 '/fix-skill fix(game): the score'
+  run item_brief "$(it 'the score is wrong' design)"
+  assert_line --index 0 '/one-pager the score is wrong'
+  run item_brief "$(it 'feat(game): a mode' '')"
+  assert_line --index 0 '/one-shot feat(game): a mode'
+  run item_brief "$(it 'decide(game): which' '')"   # a kind with no entry
+  assert_line --index 0 '/one-shot decide(game): which'
+  run item_brief "$(it 'plain task' '')"
+  assert_line --index 0 '/one-shot plain task'
+  run item_brief "$(it 'fix(game): the score' '')" opencode
+  assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
 
 @test "picks: a focus project's row goes before a more urgent row elsewhere, one area each" {
