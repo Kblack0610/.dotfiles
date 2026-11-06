@@ -253,6 +253,38 @@ EOF
   assert_output '[{"block-poll":2,"plan-standard":1,"focus-gate":1},1]'
 }
 
+@test "lesson_hits: a sig counts Bash commands only on days after its date; an anchored sig skips a grep for it; a bad regex never crashes" {
+  cat > "$TR/sig.jsonl" <<'EOF'
+{"type":"assistant","timestamp":"2026-10-02T09:00:00Z","message":{"id":"m1","content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"killall node"}}]}}
+{"type":"assistant","timestamp":"2026-10-03T09:00:00Z","message":{"id":"m2","content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"cd x && killall node"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T09:00:00Z","message":{"id":"m3","content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"killall vite"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T10:00:00Z","message":{"id":"m4","content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"grep -rn 'killall node' ~/.agent/lessons"}}]}}
+{"type":"assistant","timestamp":"2026-10-04T11:00:00Z","message":{"id":"m5","content":[{"type":"tool_use","id":"e","name":"Read","input":{"file_path":"killall"}}]}}
+EOF
+  sigs='[{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02"},{"sig":"([","since":"2026-01-01"}]'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/sig.jsonl' '$sigs' | jq -c .lesson_hits"
+  assert_success
+  assert_output '{"(^|[;&|]\\s*)killall\\s":2}'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/sig.jsonl' | jq -c .lesson_hits"
+  assert_output '{}'
+}
+
+@test "so_lesson_sigs: one entry per sig with its earliest date, file and bolded claim; lessons without a sig are left out" {
+  L="$BATS_TEST_TMPDIR/lessons"; mkdir -p "$L"
+  cat > "$L/a.md" <<'EOF'
+- **2026-10-02** **Never killall node; name the pid.** It took the shared dev server down. <!-- sig:2026-10-02 (^|[;&|]\s*)killall\s -->
+- **2026-10-03** a lesson with no sig
+EOF
+  cat > "$L/b.md" <<'EOF'
+- killall again, written later in another project <!-- sig:2026-10-09 (^|[;&|]\s*)killall\s -->
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$L' | jq -c '.[]'"
+  assert_success
+  assert_output '{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02","file":"a.md","claim":"Never killall node; name the pid."}'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$BATS_TEST_TMPDIR/none' | jq -c ."
+  assert_output '[]'
+}
+
 @test "activity: a commit ends the edit count, for edits made through Bash" {
   cat > "$TR/act.jsonl" <<'EOF'
 {"type":"assistant","message":{"id":"m1","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"git add -A && git commit -m x"}}]}}
