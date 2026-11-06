@@ -217,7 +217,11 @@ Two things verified, both load-bearing:
 - tmux has **no** cross-server `switch-client` (it is session-scoped). The hop is
   `detach-client -E`, which runs a command after the client detaches so the
   detach+attach reads as one motion. `new-session -A` makes each binding double as
-  the boot path.
+  the boot path. A tmx move to the server you are already on is a plain
+  `switch-client` instead, because a re-attach is a new client and a new client has no
+  last session. `Prefix+L` is stock `switch-client -l` whenever the client has one; a
+  client fresh from a cross-server hop has none, so L runs `tmx back`, which returns to
+  where that terminal's last hop left from (one slot per tty, in `~/.local/state/tmx/back/`).
 
 **tmux cannot move a live session between servers** - there is no `move-session -L`.
 Putting an existing session on another server means recreating it there.
