@@ -325,7 +325,9 @@ wt_pane_inside() {
 # executable) is <path> or below. A process of another user cannot be read, and is not ours
 # to keep the tree for.
 wt_pids_inside() {
-  find "${WT_PROC_ROOT:-/proc}"/[0-9]*/"${2:-cwd}" -maxdepth 0 \( -lname "$1" -o -lname "$1/*" \) -print 2>/dev/null |
+  local path
+  path=$(printf '%s' "$1" | sed 's/[][*?\\]/\\&/g') # -lname takes a glob; the path is literal
+  find "${WT_PROC_ROOT:-/proc}"/[0-9]*/"${2:-cwd}" -maxdepth 0 \( -lname "$path" -o -lname "$path/*" \) -print 2>/dev/null |
     awk -F/ '{ print $(NF - 1) }'
 }
 
@@ -369,7 +371,10 @@ wt_end_orphans() {
 # in <path> or below. A build, a test run or a subagent's shell holds no tmux pane, and a tree
 # deleted under one fails it halfway.
 wt_process_inside() {
-  [ -n "$(wt_pids_inside "$1" | grep -vxFf <(wt_orphans_inside "$1"))" ]
+  local pids
+  pids=$(wt_pids_inside "$1")
+  [ -n "$pids" ] || return 1
+  [ -n "$(grep -vxFf <(wt_orphans_inside "$1") <<<"$pids")" ]
 }
 
 # ── Eligibility ──────────────────────────────────────────────────────────────
@@ -1089,10 +1094,14 @@ cmd_gc() {
       [ -z "$ends" ] || ends=" (orphan daemon $ends)"
       if [ "$dry" -eq 1 ]; then
         printf '%swould reap%s  %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        reaped=$((reaped + 1))
+      elif reason=$(cmd_reap "$path" 2>&1 >/dev/null); then
+        printf '%sreaped%s      %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        reaped=$((reaped + 1))
       else
-        cmd_reap "$path" >/dev/null && printf '%sreaped%s      %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        printf '%skept%s        %-28s %s%s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$ends" "$C_OFF"
+        kept=$((kept + 1))
       fi
-      reaped=$((reaped + 1))
     else
       if wt_occupied_reason "$path" >/dev/null; then
         reason="$reason; stranded, nobody in it"

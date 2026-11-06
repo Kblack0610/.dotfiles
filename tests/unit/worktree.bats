@@ -689,6 +689,23 @@ orphan_tree() {
   [ -d "$T" ]
 }
 
+@test "gc counts a tree whose daemon will not exit as kept, naming the pid" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run cmd_gc
+  assert_success
+  assert_output --partial '0 of 1 reapable, 1 kept'
+  assert_output --partial 'an orphan daemon outlived SIGTERM (orphan daemon 500)'
+  [ -d "$T" ]
+}
+
+@test "a path with glob characters matches itself and no other tree" {
+  fake_proc 600 "$SANDBOX/a[1]/x" /bin/true 2000
+  fake_proc 601 "$SANDBOX/a1/x" /bin/true 2000
+  run wt_pids_inside "$SANDBOX/a[1]"
+  assert_output 600
+}
+
 @test "an idle slot is not recycled over a daemon that will not exit" {
   orphan_tree
   touch "$SANDBOX/kill.ignored"
