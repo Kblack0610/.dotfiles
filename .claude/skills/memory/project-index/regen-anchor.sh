@@ -144,8 +144,13 @@ lab_section() {
     echo "- _(notes CLI unavailable; lab facts not read)_"
     return
   fi
-  local rows
-  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" '
+  local rows types='{}' name
+  if declare -F project_inherited >/dev/null 2>&1; then
+    while IFS= read -r name; do
+      types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
+    done <<<"$LAB_NAMES"
+  fi
+  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
     ($names | split("\n")) as $want
@@ -153,7 +158,7 @@ lab_section() {
     | $rows[]
     | ((.stage == "beta" or .stage == "prod")
        and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
-    | "- **\(.name)** (\([.profile, .stage] | map(select(. != "")) | join(", ")))"
+    | "- **\(.name)** (\([.profile, ($types[.name] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
       + ": \(.open) open, \(.done) done, \(.agent) on the agent board"
       + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
@@ -165,6 +170,10 @@ lab_section() {
   ' <<<"$LAB_JSON" 2>/dev/null || true)"
   if [ -n "$rows" ]; then
     printf '%s\n' "$rows"
+    # What each step and stage must meet. A link is written only when its target exists.
+    if [ -f "$HOME/.local/src/docs/lifecycle.md" ] && [ -f "$HOME/.local/src/docs/stages.md" ]; then
+      echo "- Standards: \`~/.local/src/docs/lifecycle.md\` (each step), \`~/.local/src/docs/stages.md\` (each stage, by type)"
+    fi
   else
     echo "- _(no lab project; \`project-map add\` scaffolds one)_"
   fi

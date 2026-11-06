@@ -97,7 +97,7 @@ $open"
     < <(jq -r '.checks[]? | strings' <<<"$ans" | head -n 6)
   mapfile -t rows < <(jq -r '.split[]? | strings' <<<"$ans" | head -n 6)
   why="$(( ${#dets[@]} / 2 )) plan lines"
-  [ "${#rows[@]}" -gt 0 ] && dets+=(--detail "split: ${#rows[@]} rows, each marked part of $id")
+  [ "${#rows[@]}" -gt 0 ] && dets+=(--detail "split: ${#rows[@]} rows under $id")
   size="$(jq -r '.size // "" | tostring' <<<"$ans")"
   # The row's words without #plan, its size the plan's.
   new="$(sed -E 's/(^| )#[Pp][Ll][Aa][Nn]( |$)/ /g; s/  +/ /g; s/^ //; s/ $//' <<<"$text")"
@@ -114,7 +114,7 @@ $open"
   PLANNED=$((PLANNED + 1))
   for r in "${rows[@]}"; do
     r="$(clean 150 <<<"$r")"; [ -n "$r" ] || continue
-    notes ptask "$p" "${lanes[@]}" add --detail "part of $id: $new" -- "$r" >/dev/null 2>&1
+    notes ptask "$p" "${lanes[@]}" add -- "$r #of/$id" >/dev/null 2>&1
     rc=$?
     if [ "$rc" = 0 ]; then
       n=$((n + 1)); SPLIT=$((SPLIT + 1))

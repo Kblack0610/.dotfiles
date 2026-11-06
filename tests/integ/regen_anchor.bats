@@ -208,6 +208,24 @@ lab_row() {
   refute_output --partial '**other**'
 }
 
+@test "regen-anchor: the Lab section names the type and the standards to meet" {
+  echo "[$(lab_row proj beta "$(date +%F)" '')]" > "$NOTES_FIXTURE/stats.json"
+  mkdir -p "$HOME/.local/src/docs"
+  : > "$HOME/.local/src/docs/stages.md"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  # NEGATIVE CONTROL: a link is written only when its target exists.
+  refute_output --partial 'Standards:'
+  : > "$HOME/.local/src/docs/lifecycle.md"
+  jq '.trackers.proj.type = "game"' "$PROJECT_MAP_FILE" > "$BATS_TEST_TMPDIR/map" && cp "$BATS_TEST_TMPDIR/map" "$PROJECT_MAP_FILE"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- **proj** (bnb, game, beta) v1.2.0'
+  assert_output --partial '- Standards: `~/.local/src/docs/lifecycle.md` (each step), `~/.local/src/docs/stages.md` (each stage, by type)'
+}
+
 @test "regen-anchor: a prod project with an old status is flagged STALE" {
   echo "[$(lab_row proj prod 2026-01-01 'shipped')]" > "$NOTES_FIXTURE/stats.json"
   run bash "$REGEN" proj
