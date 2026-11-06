@@ -192,3 +192,32 @@ test("a draft kept on the device comes back; one made on an older read opens on 
   assert.equal(store.has(KEY), false);
   assert.equal(run("fcs.edit"), null);
 });
+
+// The inbox page: a handled row's box is live there and nowhere else, and a tick is one POST.
+const inbox = {
+  note: { ...day.note, target: "status/inbox", rel: "status/inbox", title: "Inbox", date: null, prev: null, markdown: "", links: [] },
+  focus: null,
+  sections: [{ title: "Handled today", markdown: "- [ ] 07:20 filed ar-1: words <!-- ack:2026-11-05T07:20:01-08:00 -->" }],
+};
+
+test("on the inbox page a handled row's box is live; the same line on another note is not", () => {
+  assert.match(draw(inbox, { arg: "status/inbox" }), /<input type="checkbox" data-ack="2026-11-05T07:20:01-08:00">/);
+  const other = { ...inbox, note: { ...inbox.note, target: "outbox", rel: "outbox" } };
+  assert.doesNotMatch(draw(other, { arg: "outbox" }), /data-ack/);
+});
+
+test("a tick posts its key and state and draws the page it gets back; a refusal says why", async () => {
+  draw(inbox, { arg: "status/inbox" });
+  const after = { ...inbox, sections: [{ title: "Handled today", markdown: "- +1 reviewed\n  - [x] 07:20 filed ar-1: words <!-- ack:2026-11-05T07:20:01-08:00 -->" }] };
+  let sent = null;
+  ctx.fetch = async (url, opts) => { sent = { url, body: JSON.parse(opts.body) }; return reply(200, after)(); };
+  const box1 = { dataset: { ack: "2026-11-05T07:20:01-08:00" }, checked: true, disabled: false };
+  ctx.input = box1;
+  await run("ackRow(input)");
+  assert.deepEqual(sent, { url: "/api/inbox/ack", body: { key: "2026-11-05T07:20:01-08:00", ack: true } });
+  assert.equal(box1.disabled, true, "locked until the redraw");
+  assert.match(box("focus").innerHTML, /\+1 reviewed<ul><li class="task"><input type="checkbox" data-ack="2026-11-05T07:20:01-08:00" checked>/);
+  ctx.fetch = reply(409, "no ingest event");
+  await run("ackRow(input)");
+  assert.match(box("focus").innerHTML, /panel down">Could not send to inbox \(HTTP 409\)/);
+});

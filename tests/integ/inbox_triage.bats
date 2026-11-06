@@ -309,3 +309,32 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx "$PROJ/scratch" "$NOTES_FIXTURE/watch.args" || fail "$(cat "$NOTES_FIXTURE/watch.args")"
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "an empty sweep called the model"
 }
+
+@test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
+  sheet '' ''
+  outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
+  run "$TRIAGE"
+  assert_success
+  mkdir -p "$HOME/.notes/lab/inbox"
+  "$NOTES_BIN" ingest page
+  page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
+  [ -n "$page" ] || fail "no inbox page"
+  key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
+  [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
+  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 ' "$page" || fail "$(cat "$page")"
+  run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
+  assert_failure
+  assert_output --partial 'no ingest event'
+  [ ! -e "$HOME/.local/state/notes/inbox-ack.jsonl" ] || fail "a bad key wrote a mark"
+  run "$NOTES_BIN" inbox ack -- "$key"
+  assert_success
+  run cat "$page"
+  assert_output --partial '- +1 reviewed'
+  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed sc-1 '
+  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 '
+  run "$NOTES_BIN" inbox ack --undo -- "$key"
+  assert_success
+  run cat "$page"
+  refute_output --partial '- +1 reviewed'
+  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 '
+}

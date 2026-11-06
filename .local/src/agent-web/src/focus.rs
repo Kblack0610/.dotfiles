@@ -5,13 +5,15 @@
 //! {t, base, text}` saves an edit through `notes put --base` (`cli.rs`): the CLI writes only when
 //! the note's hash is still the one the page read, else the page gets 409 and the note as it is
 //! now. Writing to the outbox is the Outbox tab's (`outbox.rs`); `notes put` refuses it.
+//! `POST /api/inbox/ack {key, ack}` ticks a Handled-today row of `status/inbox` through
+//! `notes inbox ack`, the mark's one writer, and answers with the page as it is after.
 
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use hub_core::focus::{self, View};
-use hub_core::session_actions::System;
+use hub_core::session_actions::{Runner, System};
 use serde::Deserialize;
 
 use crate::{bad, cli, ApiResult};
@@ -87,6 +89,40 @@ pub async fn save(Json(e): Json<Edit>) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+pub struct Ack {
+    key: String,
+    ack: bool,
+}
+
+/// The CLI call a tick makes, or why it is refused first: a key is an ingest event's RFC 3339
+/// `ts`, so anything else never reaches the CLI.
+fn ack_args(a: &Ack) -> Result<Vec<String>, &'static str> {
+    let k = a.key.as_str();
+    if chrono::DateTime::parse_from_rfc3339(k).is_err() {
+        return Err("key is the ts of the row's ingest event");
+    }
+    let mut args = vec!["notes".to_string(), "inbox".into(), "ack".into()];
+    if !a.ack {
+        args.push("--undo".into());
+    }
+    args.extend(["--".to_string(), k.to_string()]);
+    Ok(args)
+}
+
+pub async fn ack(Json(a): Json<Ack>) -> ApiResult<Json<View>> {
+    let args = ack_args(&a).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
+    tokio::task::spawn_blocking(move || {
+        System
+            .run(&args)
+            .map_err(|e| bad(StatusCode::CONFLICT, e))?;
+        focus::read(&System, "status/inbox").map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +152,25 @@ mod tests {
         assert!(put_args(&e("daily", "--x", "x")).is_err());
         assert!(put_args(&e("daily", "1", "\u{1b}[2J")).is_err());
         assert!(put_args(&e("daily", "1", &"x".repeat(MAX_NOTE + 1))).is_err());
+    }
+
+    #[test]
+    fn a_tick_is_one_cli_call_and_a_key_that_is_no_stamp_never_reaches_it() {
+        let a = |key: &str, ack: bool| Ack {
+            key: key.into(),
+            ack,
+        };
+        let ts = "2026-11-05T16:50:32.881399577-08:00";
+        assert_eq!(
+            ack_args(&a(ts, true)).unwrap(),
+            ["notes", "inbox", "ack", "--", ts]
+        );
+        assert_eq!(
+            ack_args(&a(ts, false)).unwrap(),
+            ["notes", "inbox", "ack", "--undo", "--", ts]
+        );
+        assert!(ack_args(&a("--undo", true)).is_err());
+        assert!(ack_args(&a("2026-11-05; rm -rf ~", true)).is_err());
+        assert!(ack_args(&a("", true)).is_err());
     }
 }

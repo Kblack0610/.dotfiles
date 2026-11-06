@@ -76,6 +76,21 @@ test("notes mode drops HTML comments and reads [/] as doing", () => {
   assert.doesNotMatch(h, /rollup:start/);
 });
 
+test("ack mode makes only a row with an ack key tickable, the key on the box and out of the text", () => {
+  const t = "- [ ] 07:20 filed ar-1: words <!-- ack:2026-11-05T07:20:01.5-08:00 -->\n- +1 reviewed\n  - [x] 08:00 joined nc-9 <!-- ack:2026-11-05T08:00:00-08:00 -->\n- [ ] a row <!-- id:ar-2 -->";
+  const h = md(t, { notes: true, ack: true });
+  assert.match(h, /<li class="task"><input type="checkbox" data-ack="2026-11-05T07:20:01.5-08:00"> 07:20 filed ar-1: words<\/li>/);
+  assert.match(h, /<input type="checkbox" data-ack="2026-11-05T08:00:00-08:00" checked> 08:00 joined nc-9<\/li>/);
+  assert.match(h, /<input type="checkbox" disabled> a row <\/li>/, "a row with no ack key stays read-only");
+  assert.doesNotMatch(h, /&lt;!--|id:ar-2/);
+  // Without ack mode (every other note) nothing is tickable and the key is dropped like any comment.
+  const plain = md(t, { notes: true });
+  assert.doesNotMatch(plain, /data-ack|ack:/);
+  assert.equal((plain.match(/disabled/g) || []).length, 3);
+  // A key that is no stamp is never put on a box.
+  assert.doesNotMatch(md('- [ ] x <!-- ack:"><b> -->', { notes: true, ack: true }), /data-ack/);
+});
+
 test("outside notes mode, and inside code, wikilinks and #p: stay text; web links still open a new tab", () => {
   assert.equal(md("[[outbox]] #p:x"), "<p>[[outbox]] #p:x</p>");
   assert.equal(md("`#p:x [[y]]`", { notes: true }), "<p><code>#p:x [[y]]</code></p>");

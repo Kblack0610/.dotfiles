@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/focus", get(focus::get).put(focus::save))
+        .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
