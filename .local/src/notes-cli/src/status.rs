@@ -55,7 +55,7 @@ impl Feed {
     pub fn guide(&self) -> Option<&'static str> {
         match self {
             Feed::Inbox => Some(
-                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why",
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why - tick a handled row once read and it folds into +N reviewed",
             ),
             _ => None,
         }
@@ -108,6 +108,9 @@ pub struct Page {
     /// Italic lead line, already carrying its own freshness stamp when the source has one.
     pub stat: Option<String>,
     pub rows: Vec<Row>,
+    /// Lines folded under one `+N reviewed` bullet closing the second bucket, each nested under
+    /// it: the rows the human marked read, kept so a mark can be taken back.
+    pub reviewed: Vec<String>,
     /// Sections between the attention bucket and the quiet one, for what waits on the human but
     /// is not an event of the feed; one with no lines is left out.
     pub lead: Vec<Section>,
@@ -194,7 +197,7 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     }
 
     s.push_str(&format!("\n## {rest}\n"));
-    if quiet.is_empty() {
+    if quiet.is_empty() && page.reviewed.is_empty() {
         s.push_str("_Nothing._\n");
     } else {
         for r in &quiet {
@@ -202,6 +205,12 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
                 push_row(&mut s, r);
             } else {
                 s.push_str(&format!("- {}\n", r.head));
+            }
+        }
+        if !page.reviewed.is_empty() {
+            s.push_str(&format!("- +{} reviewed\n", page.reviewed.len()));
+            for l in &page.reviewed {
+                s.push_str(&format!("  - {l}\n"));
             }
         }
     }
@@ -322,6 +331,7 @@ mod tests {
     fn render_is_byte_stable_across_runs() {
         let page = Page {
             feed: Feed::Watches,
+            reviewed: Vec::new(),
             lead: Vec::new(),
             more: Vec::new(),
             stat: Some("10 watches - 8 OK, 2 tripped".into()),
@@ -339,6 +349,7 @@ mod tests {
     fn tripped_rows_sort_above_quiet_ones() {
         let page = Page {
             feed: Feed::Watches,
+            reviewed: Vec::new(),
             lead: Vec::new(),
             more: Vec::new(),
             stat: None,
@@ -373,6 +384,7 @@ mod tests {
             more: Vec::new(),
             stat: Some("57 unread".into()),
             rows: vec![],
+            reviewed: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -402,6 +414,7 @@ mod tests {
             more: Vec::new(),
             stat: None,
             rows,
+            reviewed: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -438,6 +451,7 @@ mod tests {
             more: Vec::new(),
             stat: stat.map(str::to_string),
             rows,
+            reviewed: vec![],
         }
     }
 

@@ -10,6 +10,9 @@
 // the page read (`notes put --base`), so a note that changed since (nvim, a sweep, a sync) is
 // never overwritten: a 409 shows it as it is now beside yours, and you choose. The edit is kept
 // in localStorage until saved or discarded, so a phone that drops the tab loses nothing.
+// On `status/inbox` a Handled-today row's checkbox is live: ticking it is one POST /api/inbox/ack
+// (`notes inbox ack`, the mark's one writer), and the page comes back with the row folded into
+// `+N reviewed`, where unticking it brings it back.
 
 const fcs = { data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null };
 
@@ -71,10 +74,13 @@ function linksRow(links) {
     `<a class="dlink${l.exists ? "" : " missing"}" href="${focusHref(l.target)}" title="${esc(l.target)}${l.exists ? "" : " (no such note)"}">${esc(linkName(l))}</a>`).join("")}</nav>`;
 }
 
+// A note's markdown; only the inbox page's handled rows get live checkboxes.
+const noteMd = (text) => md(text, { notes: true, ack: !!fcs.data && fcs.data.note.rel === "status/inbox" });
+
 function sectionFold(s, open) {
   const k = "sec:" + (s.title || "top");
   seed(k, open);
-  return cfold(k, `<b>${esc(s.title || "Top")}</b>`, `<div class="md">${md(s.markdown, { notes: true })}</div>`, fcs.open);
+  return cfold(k, `<b>${esc(s.title || "Top")}</b>`, `<div class="md">${noteMd(s.markdown)}</div>`, fcs.open);
 }
 
 // The head: which note (a day reads as its date), its open and done counts, then the day
@@ -116,7 +122,7 @@ function focusBody(v) {
   // A daily note's other sections fold away under Focus; a note opened from a link is the
   // thing being read, so it is open, with its untitled top drawn as is.
   for (const s of v.sections) {
-    if (!f && !s.title) html += `<div class="md">${md(s.markdown, { notes: true })}</div>`;
+    if (!f && !s.title) html += `<div class="md">${noteMd(s.markdown)}</div>`;
     else html += sectionFold(s, !f);
   }
   if (!html) html = `<div class="empty">This note is empty.</div>`;
@@ -215,6 +221,20 @@ $("d-note").addEventListener("click", (e) => {
   else if (f === "copy" && fcs.data) {
     navigator.clipboard.writeText(fcs.data.note.markdown).then(() => { fcs.copied = true; renderFocus(); }, (err) => { fcs.err = "copy: " + err.message; renderFocus(); });
   }
+});
+// A tick or untick on the inbox page. The box is locked until the answer redraws the page; a
+// refusal says why and the redraw puts the box back as the page has it.
+async function ackRow(box) {
+  box.disabled = true;
+  try {
+    fcs.data = await post("/api/inbox/ack", { key: box.dataset.ack, ack: box.checked });
+    fcs.err = null;
+  } catch (err) { fcs.err = err.message; }
+  renderFocus();
+}
+$("d-note").addEventListener("change", (ev) => {
+  const b = ev.target;
+  if (b && b.dataset && b.dataset.ack && !fcs.edit) ackRow(b);
 });
 $("d-note").addEventListener("input", (ev) => {
   const e = fcs.edit;
