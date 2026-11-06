@@ -39,8 +39,8 @@ layout {
     // Tab 3: Platform
     tab name="Platform" cwd="~/dev/MyStudio/platform" {
             pane name="master_agent" {
-                command "claude"
-                args "--dangerously-skip-permissions"
+                command "claude-acct"
+                args "run" "--dangerously-skip-permissions"
             }
             pane name="nvim" {
                 command "nvim"

@@ -1,13 +1,7 @@
 #!/usr/bin/env bats
-# session-preflight.sh: the turn-1 context injection. These tests cover exactly one
-# property -- that a partial deploy cannot silence the whole hook.
-#
-# The hooks ship via `stow --no-folding .`, one symlink per file, so a checkout can reach a
-# commit that adds focus-lib.sh before stow has linked it. Under `set -e` an unguarded
-# source of the missing lib exits the script before it prints anything, and the only
-# symptom is an empty turn 1: no anchor, no plans, no lessons, no git context, no error
-# anyone sees. That is a much worse failure than losing the Focus block, so the source is
-# guarded and the Focus block is skipped when the lib did not load.
+# session-preflight.sh: the turn-1 context injection. Most of these pin the agent board
+# lane and the byte budget; the first ones pin what turn 1 no longer carries (the human's
+# Focus list, a second copy of the commits Claude Code's gitStatus already shows).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -22,6 +16,8 @@ setup() {
 exit 1
 EOF
   chmod +x "$SANDBOX/bin/gh"
+  # The lessons ranker, as stow deploys it onto PATH. CI has no stow.
+  ln -s "$REPO_ROOT/.local/bin/lessons" "$SANDBOX/bin/lessons"
 
   # A disposable repo to be the project dir, so the git section has something to read.
   REPO="$SANDBOX/repo"
@@ -47,85 +43,47 @@ context() {
     | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null
 }
 
-@test "with focus-lib present the hook emits context including the Focus block" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
-  run context
-  assert_success
-  assert_output --partial 'Session Preflight'
-  assert_output --partial 'Recent commits'
-  assert_output --partial 'Focus'
-}
-
-@test "with focus-lib missing the hook still exits 0" {
-  # The regression: `set -e` plus an unguarded source made this exit 1.
-  rm -f "$DEPLOY/focus-lib.sh"
-  run bash "$DEPLOY/session-preflight.sh" </dev/null
-  assert_success
-}
-
-@test "with focus-lib missing the rest of the context still ships" {
-  # This is the whole point. Losing Focus is survivable; losing the anchor, the plans, the
-  # lessons and the git context at turn 1, silently, is not.
-  rm -f "$DEPLOY/focus-lib.sh"
-  run context
-  assert_output --partial 'Session Preflight'
-  assert_output --partial 'Recent commits'
-  assert_output --partial 'first commit'
-}
-
-@test "with focus-lib missing the Focus block is skipped, not half-rendered" {
-  # A half-rendered block would mean the functions were called anyway and errored inline.
-  rm -f "$DEPLOY/focus-lib.sh"
-  run context
-  refute_output --partial 'Focus (today'
-  refute_output --partial 'focus_daily_note'
-  refute_output --partial 'command not found'
-}
-
-# --- where the nudge sends an agent's work --------------------------------------------
-#
-# The turn-1 nudge and the turn-N Stop gate (86-focus-reconcile.sh) state the same rule
-# from both ends and MUST agree. #204 taught the gate to accept a `ptask:` write but left
-# this hook saying "notes focus add", so an agent was instructed to use the human's list
-# and then blocked for having used it. These pin the halves together.
-#
-# `focus_daily_note` falls back to $HOME/.notes/journal/daily/<date>.md when `notes path
-# daily` prints nothing, which is exactly what the stub does -- so seeding that file is
-# enough to drive either branch.
-
 seed_focus() {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
   mkdir -p "$HOME/.notes/journal/daily"
   printf '# %s\n\n## Focus\n%s\n\n## Notes\n' \
     "$(date +%F)" "${1:-}" > "$HOME/.notes/journal/daily/$(date +%F).md"
 }
 
-@test "with Focus items the nudge sends the session's task to the queue, not to Focus" {
-  seed_focus '- [ ] a human task'
+@test "the human's Focus list is not turn-1 context, even with focus-lib deployed" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
+  seed_focus '- [/] a human task in progress'
   run context
-  assert_output --partial 'a human task'
-  assert_output --partial 'agent-queue add --running --project <p>'
-  assert_output --partial 'agent-queue list'
-}
-
-@test "with Focus items the nudge never tells an agent to add to Focus" {
-  # NEGATIVE CONTROL for the whole change. Before it, this line read
-  # "If not, \`notes focus add\`" -- the instruction that put five of six items on the
-  # human's 2026-08-05 list. If `notes focus add` ever comes back as advice here, the
-  # turn-1 half has silently reverted to disagreeing with the gate.
-  seed_focus '- [ ] a human task'
-  run context
+  assert_success
+  assert_output --partial 'Session Preflight'
+  refute_output --partial 'a human task'
+  refute_output --partial 'Focus'
+  # The retired nudge must not come back in another block either.
   refute_output --partial 'notes focus add'
 }
 
-@test "an empty Focus is reported as fine, and points at the queue" {
-  # The old empty-state text ("capture what we're on") read as an instruction to fill the
-  # human's list. An agent with nothing on Focus is sent to its queue item, not to `notes today`.
-  seed_focus ''
+@test "a whole-repo session gets no commit list: gitStatus already carries it" {
   run context
-  assert_output --partial 'none set'
-  assert_output --partial 'agent-queue add --running --project <p>'
-  refute_output --partial 'notes focus add'
+  assert_success
+  refute_output --partial 'Recent commits'
+  refute_output --partial 'first commit'
+}
+
+@test "an app session still gets the commits scoped to its subtree" {
+  export PROJECT_MAP_FILE="$SANDBOX/map.json"
+  cat > "$PROJECT_MAP_FILE" <<EOF
+{ "paths": { "$REPO": "toolrepo" }, "aliases": {},
+  "trackers": { "shop": { "repo": "toolrepo", "path": "apps/shop" } } }
+EOF
+  mkdir -p "$REPO/apps/shop"
+  echo x > "$REPO/apps/shop/f"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -qm "shop commit"
+  export CLAUDE_PROJECT_DIR="$REPO/apps/shop"
+  run context
+  assert_output --partial 'Recent commits (last 5, apps/shop)'
+  assert_output --partial 'shop commit'
+  # Negative control: the commit outside the subtree stays out.
+  refute_output --partial 'first commit'
 }
 
 # -- the agent board lane: the channel that replaced "## -> For the agents" ------
@@ -186,7 +144,7 @@ board_stub() {
 #!/usr/bin/env bash
 if [ "\$1 \$2" = "board --agent" ]; then
   for i in \$(seq 1 $2); do printf 'notes-cockpit\tfollow-up %s\n' "\$i"; done
-  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #ask #tier/2\n' "\$i"; done
+  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #requested #tier/2\n' "\$i"; done
 fi
 exit 0
 EOF
@@ -248,7 +206,7 @@ EOF
   run context
   assert_success
   assert_output --partial 'Session Preflight'
-  assert_output --partial 'Recent commits'
+  assert_output --partial 'runtime row one'
   refute_output --partial 'Cannot index string'
 }
 
@@ -302,7 +260,7 @@ EOF
 
   run context
   assert_success
-  assert_output --partial 'Recent commits'
+  assert_output --partial 'Session Preflight'
   refute_output --partial 'Left in flight'
   refute_output --partial 'Agent board clear'
   refute_output --partial 'Agent board unavailable'
@@ -350,10 +308,12 @@ seed_anchor_sized() {
     for i in $(seq 1 "$1"); do echo "- blocker $i $pad"; done
     echo "## Active plans (most recent)"
     echo "- \`a-plan.md\`"
-    echo "## Recent lessons (digest)"
-    echo "- a digest lesson"
-    for i in $(seq 2 "$2"); do echo "- lesson $i $pad"; done
   } > "$a"
+  mkdir -p "$HOME/.agent/lessons"
+  {
+    echo "- a digest lesson"
+    for i in $(seq 2 "$2"); do echo "- lesson $i $(printf 'word %.0s' $(seq 1 40))"; done
+  } > "$HOME/.agent/lessons/toolrepo.md"
 }
 
 # fat_board_stub <rows> <bytes-per-row>
@@ -384,7 +344,8 @@ EOF
   [[ "$out" == *"Decisions log: 40 entries"* ]]
   [[ "$out" == *"+ omitted to fit the 9000 B turn-1 budget:"* ]]
   [[ "$out" == *"lessons digest ("* ]]
-  [[ "$out" == *"commits (git log)"* ]]
+  # A digest that did not reach the context is not a delivery.
+  [ ! -e "$HOME/.agent/lessons/_delivered" ]
 }
 
 @test "small inputs omit nothing, and the lessons digest and plans arrive" {
@@ -398,10 +359,30 @@ EOF
   assert_success
   refute_output --partial 'omitted to fit'
   assert_output --partial 'Left in flight'
-  assert_output --partial '## Recent lessons (digest)'
+  assert_output --partial '## Lessons (newest 1; nothing matched this work)'
   assert_output --partial 'a digest lesson'
   assert_output --partial 'a-plan.md'
-  assert_output --partial 'first commit'
-  # Each generated section once: from its own slot, not also inside the anchor.
-  [ "$(grep -c 'a digest lesson' <<<"$output")" -eq 1 ]
+  [ "$(grep -c 'a-plan.md' <<<"$output")" -eq 1 ]
+}
+
+@test "lessons that match the queue item's task come first, and only the matched one is logged" {
+  cp "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  mkdir -p "$HOME/.agent/lessons"
+  {
+    echo "- **2026-01-01** A waybar chip costs width on the bar."
+    for i in 1 2 3 4 5 6; do echo "- **2026-02-0$i** unrelated lesson number $i."; done
+  } > "$HOME/.agent/lessons/toolrepo.md"
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' \
+    "'{\"title\":\"some-plan P2: make the waybar chip narrower\"}'" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_ITEM=some-plan-p2
+
+  run context
+  assert_success
+  assert_output --partial '## Lessons for this work (1 matched on: waybar, chip; 4 newest)'
+  [ "$(grep -A1 '## Lessons for this work' <<<"$output" | tail -1)" = "- **2026-01-01** A waybar chip costs width on the bar." ]
+  refute_output --partial 'unrelated lesson number 1.'
+  run cat "$HOME/.agent/lessons/_delivered/$(date +%Y-%m).tsv"
+  assert_output --regexp "^$(date +%F)	toolrepo	[0-9a-f]{8}$"
 }

@@ -2,7 +2,8 @@
 //! session actions. agent-queue is the store's only reader and writer (design:
 //! `~/.config/agentctl/QUEUE.md`), so this module never opens `~/.agent/queue`: it runs
 //! `agent-queue list --json` and `agent-queue stats --json` through a `Runner` and types what
-//! they print. Cancel and bump are argv for agent-queue too.
+//! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
+//! rows `fleet-dispatch suggest --json` prints, for the tabs' Candidates section.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session_actions::Runner;
+use crate::text::{cap, headline, TITLE_MAX};
 
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
@@ -39,6 +41,10 @@ pub const SECTIONS: [(State, &str); 4] = [
 pub struct Item {
     pub slug: String,
     pub state: State,
+    /// What the item is, in a few words: the `title:` header when it has one, else `parse` fills
+    /// it from the task (`title()`), so every view shows the same words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default)]
     pub project: String,
     #[serde(default)]
@@ -53,6 +59,9 @@ pub struct Item {
     /// `human`, `shepherd` or `board:<project>:<key>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// `<project>:<id>`: the board row this item works, the ledger's one link to the backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
     /// `<server>:<tmux session>`, or a bare tmux session on agent-queue's server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
@@ -86,13 +95,14 @@ impl Item {
         self.tags.split_whitespace()
     }
 
-    /// The first line of the task, for a one-line row.
-    pub fn title(&self) -> &str {
-        self.task
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim()
+    /// What the item is in a few words: the `title:` header, else the task's first sentence
+    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    pub fn title(&self) -> String {
+        if self.title.trim().is_empty() {
+            headline(&self.task).0
+        } else {
+            cap(self.title.trim(), TITLE_MAX)
+        }
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -163,7 +173,7 @@ pub struct Stats {
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
-fn dur(m: Option<i64>) -> String {
+pub(crate) fn dur(m: Option<i64>) -> String {
     match m {
         None => "-".into(),
         Some(m) if m >= 120 => format!("{}h", m / 60),
@@ -190,27 +200,47 @@ impl Stats {
         )
     }
 
-    /// What sits in the queue now: how many could start and for how long, and what holds the rest.
+    /// What sits in the queue now, in plain words: how many could start and the oldest of them,
+    /// then what holds the rest. The item slug comes after the point.
     pub fn sitting_line(&self) -> Option<String> {
         let s = self.sitting.as_ref()?;
         if s.queued == 0 {
-            return Some("sitting: nothing queued".into());
+            return Some("Queue: nothing waiting.".into());
         }
-        let mut out = format!("sitting: {} can start", s.runnable);
-        if let Some(o) = s.oldest_runnable.first() {
-            out += &format!(
-                ", oldest {} ({}), median {}",
+        let mut out = match (s.runnable, s.oldest_runnable.first()) {
+            (0, _) => "Queue: nothing can start now.".to_string(),
+            (n, Some(o)) => format!(
+                "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
                 dur(Some(o.minutes)),
                 o.slug,
                 dur(s.runnable_age_minutes_median)
-            );
-        }
-        out += &format!("; {} held", s.held);
-        if !s.held_by.is_empty() {
-            let by: Vec<String> = s.held_by.iter().map(|(k, v)| format!("{k} {v}")).collect();
-            out += &format!(" ({})", by.join(", "));
+            ),
+            (n, None) => format!("Queue: {n} can start now."),
+        };
+        if s.held > 0 {
+            let by: Vec<String> = s
+                .held_by
+                .iter()
+                .map(|(k, v)| format!("{v} {}", hold_reason(k)))
+                .collect();
+            out += &format!(" {} held", s.held);
+            if !by.is_empty() {
+                out += &format!(": {}", by.join(", "));
+            }
+            out += ".";
         }
         Some(out)
+    }
+}
+
+/// Why a queued item is held, from the first word of its `hold` (agent-queue `hold_for`).
+fn hold_reason(kind: &str) -> String {
+    match kind {
+        "after" => "after another item".into(),
+        "night" => "until night".into(),
+        "at" => "until a set time".into(),
+        "pr" => "until a PR merges".into(),
+        k => format!("held by {k}"),
     }
 }
 
@@ -226,6 +256,10 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
+        .map(|mut i| {
+            i.title = i.title();
+            i
+        })
         .collect()
 }
 
@@ -235,6 +269,25 @@ pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
         .run(&argv(&["list", "--json", "--state", state]))
         .map(|out| parse(&out))
+}
+
+/// The items in `state` with the done ones finished on `since` (`YYYY-MM-DD`) or later.
+pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<Item>, String> {
+    if since.len() != 10 || !since.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err(format!("bad date: {since}"));
+    }
+    runner
+        .run(&argv(&[
+            "list", "--json", "--state", state, "--since", since,
+        ]))
+        .map(|out| parse(&out))
+}
+
+/// The local date `days` before today, as `list_since` takes it.
+pub fn days_ago(days: i64) -> String {
+    (chrono::Local::now().date_naive() - chrono::Days::new(days.max(0) as u64))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
@@ -271,6 +324,185 @@ impl Queue {
     pub fn count(&self, s: State) -> usize {
         self.in_state(s).count()
     }
+}
+
+/// How many candidates a view lists; its heading counts them all.
+pub const CANDIDATES_SHOWN: usize = 30;
+
+/// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
+/// section shows. fleet-dispatch ranks it and nothing stores it; this only types it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Candidate {
+    pub profile: String,
+    pub project: String,
+    /// `agent` or `human`.
+    pub lane: String,
+    /// The row's id (`ucp-408`), or its text when it has none.
+    pub key: String,
+    /// The board line as it stands, what a promote passes back.
+    pub text: String,
+    pub stage: String,
+    pub priority: String,
+    /// Why it ranks where it does, e.g. "focus project, due today, #high, beta".
+    pub why: String,
+    /// A dispatch worker takes it.
+    pub auto: bool,
+    /// The judge's cached verdict, or `unjudged`.
+    pub verdict: String,
+    /// An active queue item holds its area.
+    pub held: bool,
+    pub area: String,
+    /// Row priority as fleet-dispatch ranks it: 0 is `#urgent`, 3 is `#low`.
+    pub prio: Option<u8>,
+    /// Each reason no worker would start it, as fleet-dispatch words it ("no worker covers
+    /// trader", "judge: skip, <reason>"); empty when one would.
+    pub blocked: Vec<String>,
+    /// No worker covers it and its repo has a commit in the last day: a gap in cover.
+    pub active: bool,
+}
+
+impl Candidate {
+    /// The row's words: no checkbox, no `#tags`, no trailing `<!-- -->` comment, capped.
+    pub fn title(&self) -> String {
+        let t = self.text.trim_start();
+        let t = t.strip_prefix("- [").and_then(|r| r.get(2..)).unwrap_or(t);
+        let t = t.split("<!--").next().unwrap_or(t);
+        let words: Vec<&str> = t
+            .split_whitespace()
+            .filter(|w| !w.starts_with('#'))
+            .collect();
+        cap(&words.join(" "), TITLE_MAX)
+    }
+
+    /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip
+    /// is one chip.
+    pub fn reasons(&self) -> Vec<String> {
+        self.blocked
+            .iter()
+            .map(|b| b.split(", ").next().unwrap_or(b).to_string())
+            .collect()
+    }
+
+    /// The why, then what blocks it: the WHY cell of both views.
+    pub fn why_line(&self) -> String {
+        if self.blocked.is_empty() {
+            self.why.clone()
+        } else {
+            format!("{}; blocked: {}", self.why, self.blocked.join("; "))
+        }
+    }
+
+    /// How it would start: auto or man, the judge's verdict once it has one, and held.
+    pub fn start_label(&self) -> String {
+        let mut l = vec![if self.auto { "auto" } else { "man" }];
+        if !self.verdict.is_empty() && self.verdict != "unjudged" {
+            l.push(&self.verdict);
+        }
+        if self.held {
+            l.push("held");
+        }
+        l.join(" ")
+    }
+
+    /// The board write that starts it: `fleet-dispatch promote`, the Projects tab's Start.
+    pub fn start(&self) -> crate::tasks::Write {
+        crate::tasks::Write {
+            profile: self.profile.clone(),
+            project: self.project.clone(),
+            lane: self.lane.clone(),
+            verb: crate::tasks::Verb::Start {
+                raw: self.text.clone(),
+            },
+        }
+    }
+}
+
+/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept,
+/// and every blocked reason counted over all of them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Candidates {
+    pub total: usize,
+    pub auto: usize,
+    pub rows: Vec<Candidate>,
+    /// Rows past the first `CANDIDATES_SHOWN`, in rank order, kept so each reason chip lists up
+    /// to `CANDIDATES_SHOWN` of its own.
+    pub blocked_rows: Vec<Candidate>,
+    /// Rows nothing blocks: a worker takes each and no judge, size or held area stops it.
+    pub clear: usize,
+    /// Each chip reason (`Candidate::reasons`) and how many rows it blocks, most first.
+    pub reasons: Vec<(String, usize)>,
+    /// `#urgent` rows something blocks: a view opens its Candidates by itself while any are.
+    pub urgent_blocked: usize,
+    /// Projects worked on in the last day that have a row no worker covers, sorted.
+    pub uncovered: Vec<String>,
+}
+
+impl Candidates {
+    pub fn more(&self) -> usize {
+        self.total - self.rows.len()
+    }
+}
+
+/// A row no worker covers: what `uncovered` counts.
+fn uncovered_reason(r: &str) -> bool {
+    r.starts_with("no worker covers ") || r.starts_with("night only: ")
+}
+
+/// `fleet-dispatch suggest --json` prints one object per line, in rank order, and nothing when
+/// there is no row; a line that does not parse is skipped.
+pub fn parse_candidates(jsonl: &str) -> Candidates {
+    let mut c = Candidates::default();
+    let mut by: Vec<(String, usize)> = Vec::new();
+    for row in jsonl
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Candidate>(l).ok())
+    {
+        c.total += 1;
+        c.auto += usize::from(row.auto);
+        let reasons = row.reasons();
+        c.clear += usize::from(reasons.is_empty());
+        if !reasons.is_empty() && row.prio == Some(0) {
+            c.urgent_blocked += 1;
+        }
+        if row.active
+            && row.blocked.iter().any(|r| uncovered_reason(r))
+            && !c.uncovered.contains(&row.project)
+        {
+            c.uncovered.push(row.project.clone());
+        }
+        let mut wanted = false;
+        for r in &reasons {
+            match by.iter_mut().find(|(k, _)| k == r) {
+                Some((_, n)) => {
+                    wanted |= *n < CANDIDATES_SHOWN;
+                    *n += 1;
+                }
+                None => {
+                    wanted = true;
+                    by.push((r.clone(), 1));
+                }
+            }
+        }
+        if c.rows.len() < CANDIDATES_SHOWN {
+            c.rows.push(row);
+        } else if wanted {
+            c.blocked_rows.push(row);
+        }
+    }
+    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    c.reasons = by;
+    c.uncovered.sort();
+    c
+}
+
+/// The ranked candidates. Slow (it reads every board), so a view reads it off its draw loop.
+pub fn candidates(runner: &dyn Runner) -> Result<Candidates, String> {
+    let argv: Vec<String> = ["fleet-dispatch", "suggest", "--json"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    runner.run(&argv).map(|out| parse_candidates(&out))
 }
 
 /// A slug as agent-queue writes it, so nothing else reaches its argv.
@@ -363,11 +595,64 @@ mod tests {
     }
 
     #[test]
+    fn a_title_is_the_header_or_the_tasks_first_sentence_with_paths_as_names() {
+        let item = |title: &str, task: &str| Item {
+            title: title.into(),
+            task: task.into(),
+            ..Item::default()
+        };
+        assert_eq!(item("Fix the page", "long task").title(), "Fix the page");
+        assert_eq!(
+            item(
+                "",
+                "\nDodginBalls epic, P4 (game: verified join). The plan is /a/b.md: read it."
+            )
+            .title(),
+            "DodginBalls epic, P4 (game: verified join)"
+        );
+        assert_eq!(
+            item(
+                "",
+                "Phase 4 of the plan /home/k/.agent/plans/x/rewards-admin.md: Game. Read it"
+            )
+            .title(),
+            "Phase 4 of the plan rewards-admin: Game"
+        );
+        assert_eq!(item("", "is ~/x/y.sh ok? yes").title(), "is y ok?");
+        let long = item(&"word ".repeat(40), "").title();
+        assert!(
+            long.ends_with("word...") && long.chars().count() <= TITLE_MAX + 3,
+            "{long}"
+        );
+        let parsed = parse(r#"{"slug":"s","state":"queued","title":"From the header","task":"x"}"#);
+        assert_eq!(parsed[0].title, "From the header");
+    }
+
+    #[test]
+    fn list_since_passes_a_date_and_refuses_anything_else() {
+        let fake = Fake {
+            list: Some(LIST),
+            ..Fake::default()
+        };
+        assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
+        assert_eq!(
+            fake.calls.borrow()[0],
+            "agent-queue list --json --state all --since 2026-10-30"
+        );
+        assert!(list_since(&fake, "all", "--state").is_err());
+        assert_eq!(days_ago(0).len(), 10);
+    }
+
+    #[test]
     fn an_item_hands_on_every_key_agent_queue_printed() {
         let items = parse(LIST);
         let back = serde_json::to_value(&items[0]).unwrap();
-        let orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
-        assert_eq!(back, orig, "agent and file ride in extra");
+        let mut orig: Value = serde_json::from_str(LIST.lines().next().unwrap()).unwrap();
+        orig["title"] = "Pick a side".into();
+        assert_eq!(
+            back, orig,
+            "agent and file ride in extra; parse adds the title"
+        );
         let q = serde_json::to_value(&items[1]).unwrap();
         assert_eq!(
             q["tags"], "night at:02:30",
@@ -401,12 +686,23 @@ mod tests {
         );
         assert_eq!(
             s.sitting_line().as_deref(),
-            Some("sitting: 1 can start, oldest 3h (q1), median 3h; 2 held (after 1, pr 1)")
+            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h. 2 held: 1 after another item, 1 until a PR merges.")
         );
         assert_eq!(
             Stats::default().sitting_line(),
             None,
             "an older agent-queue without `sitting` says nothing, never that the queue is empty"
+        );
+        let held: Stats = serde_json::from_str(
+            r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            held.sitting_line().as_deref(),
+            Some(
+                "Queue: nothing can start now. 13 held: 12 after another item, 1 held by vacation."
+            ),
+            "nothing runnable says so plainly, and a hold kind it does not know still reads"
         );
 
         let q = Queue::read(&Fake::default());
@@ -425,6 +721,158 @@ mod tests {
         assert_eq!(
             *fake.calls.borrow(),
             ["agent-queue cancel w", "agent-queue bump q urgent"]
+        );
+    }
+
+    const SUGGEST: &str = concat!(
+        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"pprio":0,"due":0,"due_in":0,"age":5,"why":"focus project, due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
+        "\n",
+        "not json\n",
+        r##"{"profile":"personal","project":"trader","stage":"alpha","lane":"human","key":"backtest report","text":"- [ ] backtest report","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":true,"area":"unity"}"##,
+        "\n",
+    );
+
+    #[test]
+    fn candidates_type_suggest_lines_in_rank_order() {
+        struct Out(&'static str, RefCell<Vec<String>>);
+        impl Runner for Out {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                self.1.borrow_mut().push(argv.join(" "));
+                Ok(self.0.into())
+            }
+        }
+        let r = Out(SUGGEST, RefCell::default());
+        let c = candidates(&r).unwrap();
+        assert_eq!(r.1.borrow()[0], "fleet-dispatch suggest --json");
+        assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
+        let c = c.rows;
+        let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["bar-17", "backtest report"], "a bad line is skipped");
+        assert!(c[1].lane == "human");
+        assert_eq!(c[0].title(), "fix the jump arc");
+        assert_eq!(c[1].title(), "backtest report");
+        assert_eq!(c[0].start_label(), "auto dispatch");
+        assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
+        assert_eq!(
+            candidates(&Out("", RefCell::default())).unwrap(),
+            Candidates::default(),
+            "no rows prints nothing"
+        );
+    }
+
+    #[test]
+    fn candidates_count_each_blocked_reason_over_every_row_and_keep_rows_for_each_chip() {
+        let row = |key: &str, prio: u8, blocked: &str, active: bool, project: &str| {
+            let b: Vec<&str> = blocked.split('|').filter(|s| !s.is_empty()).collect();
+            serde_json::json!({"key": key, "project": project, "prio": prio, "blocked": b,
+                "active": active, "why": "alpha"})
+            .to_string()
+        };
+        let mut lines: Vec<String> = (0..CANDIDATES_SHOWN)
+            .map(|i| row(&format!("top-{i}"), 2, "", false, "game"))
+            .collect();
+        lines.push(row("skip-a", 2, "judge: skip, too vague", false, "game"));
+        lines.push(row(
+            "skip-b",
+            0,
+            "judge: skip, a dupe|size/l: too big for a pick",
+            false,
+            "game",
+        ));
+        lines.push(row(
+            "gap",
+            2,
+            "night only: no day worker covers ar",
+            true,
+            "ar",
+        ));
+        lines.push(row(
+            "gap-old",
+            2,
+            "no worker covers trader",
+            false,
+            "trader",
+        ));
+        lines.push(row("taken", 0, "", false, "game"));
+        let c = parse_candidates(&lines.join("\n"));
+        assert_eq!(
+            (c.total, c.rows.len()),
+            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN)
+        );
+        let kept: Vec<&str> = c.blocked_rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(
+            kept,
+            ["skip-a", "skip-b", "gap", "gap-old"],
+            "an unblocked row past the cap is not kept"
+        );
+        assert_eq!(
+            c.reasons[0],
+            ("judge: skip".to_string(), 2),
+            "a judge's reason is one chip"
+        );
+        assert_eq!(c.reasons.len(), 4);
+        assert_eq!(
+            c.urgent_blocked, 1,
+            "an urgent row a worker takes is not counted"
+        );
+        assert_eq!(
+            c.uncovered,
+            ["ar"],
+            "a gap with no commit in a day is not a gap in cover"
+        );
+        assert_eq!(
+            c.blocked_rows[1].why_line(),
+            "alpha; blocked: judge: skip, a dupe; size/l: too big for a pick"
+        );
+        assert_eq!(c.rows[0].why_line(), "alpha");
+    }
+
+    #[test]
+    fn a_reason_chip_keeps_at_most_the_shown_count_past_the_top() {
+        let line = r#"{"key":"k","blocked":["tier 3: past the unattended ceiling"]}"#;
+        let c = parse_candidates(&vec![line; 3 * CANDIDATES_SHOWN].join("\n"));
+        assert_eq!(c.rows.len() + c.blocked_rows.len(), CANDIDATES_SHOWN);
+        assert_eq!(
+            c.reasons,
+            [(
+                "tier 3: past the unattended ceiling".to_string(),
+                3 * CANDIDATES_SHOWN
+            )]
+        );
+        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
+    }
+
+    #[test]
+    fn candidates_count_every_row_and_keep_the_first_shown() {
+        let line = r#"{"key":"k","auto":true}"#;
+        let c = parse_candidates(&vec![line; CANDIDATES_SHOWN + 8].join("\n"));
+        assert_eq!((c.total, c.auto, c.rows.len()), (38, 38, CANDIDATES_SHOWN));
+        assert_eq!(c.more(), 8);
+    }
+
+    #[test]
+    fn a_candidate_starts_through_the_boards_start() {
+        let c = parse_candidates(SUGGEST).rows;
+        assert_eq!(
+            crate::tasks::argv(&c[0].start()).unwrap(),
+            [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                "shape-city",
+                "--profile",
+                "bnb",
+                "--agent",
+                "--raw",
+                "- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->"
+            ]
+        );
+        // NEGATIVE CONTROL: a human-lane row is promoted without --agent.
+        let human = crate::tasks::argv(&c[1].start()).unwrap();
+        assert!(!human.contains(&"--agent".to_string()), "{human:?}");
+        assert_eq!(
+            human.last().map(String::as_str),
+            Some("- [ ] backtest report")
         );
     }
 

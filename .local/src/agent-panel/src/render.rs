@@ -1,6 +1,7 @@
 //! Project grouping, ANSI fzf rows, and preview formatting.
 
 use crate::chooser::Agent;
+use crate::sort::{Key, Sort};
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
@@ -88,11 +89,12 @@ pub struct Row {
 }
 
 /// The fleet stage beside the target, coloured as in the tmux status bar (`.tmux.conf`
-/// `@fleet_fmt`). WORKING and NEEDS print nothing: NEEDS is already the `!` glyph.
+/// `@fleet_fmt`). WORKING and NEEDS print nothing: NEEDS is already the `!` glyph. CHAT, the
+/// human's own conversation, prints uncoloured: it is not attention.
 fn stage(stage: &str) -> String {
     let colour = match stage {
         "STALLED" => RED,
-        "UNCLEAR" => YELLOW,
+        "CHAT" => return format!(" {stage}"),
         "LANDED" | "DONE" => GREEN,
         "PARKED" => DIM,
         _ => return String::new(),
@@ -109,23 +111,68 @@ fn labels(labels: &str) -> String {
     }
 }
 
-/// Build the grouped fzf rows (projects sorted) and the preview map-file body.
-/// Returns `(rows, map_lines)`.
-pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
-    let mut projects: Vec<&String> = agents.iter().map(|a| &a.project).collect();
-    projects.sort();
-    projects.dedup();
+/// The group pinned above every project: the agent holding the live shepherd lease. Its window
+/// carries the `shepherd` tag only while the lease is fresh (`tmux::list_panes`), so a stopped
+/// pass drops out of the group by itself.
+const SHEPHERD: &str = "shepherd";
+
+fn is_shepherd(a: &Agent) -> bool {
+    a.tags.split_whitespace().any(|t| t == SHEPHERD)
+}
+
+/// How long a session has been open, 3 columns wide so the targets after it stay aligned:
+/// ` 5m`, `45m`, ` 3h`, ` 2d`. Blank for a row with no start time (a parked one).
+pub fn age(now: u64, started_at: Option<u64>) -> String {
+    let Some(start) = started_at else { return "   ".to_string() };
+    let secs = now.saturating_sub(start);
+    match secs {
+        s if s < 3600 => format!("{:>2}m", s / 60),
+        s if s < 86_400 => format!("{:>2}h", s / 3600),
+        s => format!("{:>2}d", (s / 86_400).min(99)),
+    }
+}
+
+/// Build the fzf rows and the preview map-file body, ordered by `sort`. The project sort
+/// groups rows under a header per project (the shepherd first, then projects by name, which
+/// reverse flips); any other sort is one flat list under one header that names it, each
+/// target led by its project since no group header carries it. `now` (epoch seconds) dates
+/// the open column. Returns `(rows, map_lines)`.
+pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) {
+    let mut groups: Vec<(String, Vec<&Agent>)> = Vec::new();
+    if sort.key == Key::Project {
+        let mut projects: Vec<&str> =
+            agents.iter().filter(|a| !is_shepherd(a)).map(|a| a.project.as_str()).collect();
+        projects.sort();
+        projects.dedup();
+        if sort.reverse {
+            projects.reverse();
+        }
+        let shepherd: Vec<&Agent> = agents.iter().filter(|a| is_shepherd(a)).collect();
+        if !shepherd.is_empty() {
+            groups.push((SHEPHERD.to_string(), shepherd));
+        }
+        for project in projects {
+            groups.push((
+                project.to_string(),
+                agents.iter().filter(|a| !is_shepherd(a) && a.project == project).collect(),
+            ));
+        }
+    } else {
+        let mut all: Vec<&Agent> = agents.iter().collect();
+        sort.order(&mut all);
+        groups.push((format!("all, {}", sort.label()), all));
+    }
+    let flat = sort.key != Key::Project;
 
     let mut rows = Vec::new();
     let mut map = Vec::new();
 
-    for project in projects {
-        let group: Vec<&Agent> = agents.iter().filter(|a| &a.project == project).collect();
+    for (title, group) in groups {
         let statuses: String = group.iter().map(|a| colorize(a.glyph)).collect();
         let count = group.len();
         rows.push(Row {
             target: String::new(),
-            text: format!("\t{TITLE}━━━ {project}{RESET} {statuses} {DIM}({count}){RESET}"),
+            text: format!("\t{TITLE}━━━ {title}{RESET} {statuses} {DIM}({count}){RESET}"),
         });
 
         for a in group {
@@ -134,6 +181,12 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
             let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
+            let open = format!("{DIM}{}{RESET}", age(now, a.started_at));
+            let target = if flat {
+                format!("{} {}", a.project, a.short_target)
+            } else {
+                a.short_target.clone()
+            };
             // Window tags (Prefix+t) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
@@ -143,9 +196,9 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             };
             let tags = format!("{}{tags}{}", stage(&a.stage), labels(&a.labels));
             let display = if a.summary.is_empty() {
-                format!(" {g} {mode}{ask} {}{tags}", a.short_target)
+                format!(" {g} {mode}{ask} {open} {target}{tags}")
             } else {
-                format!(" {g} {mode}{ask} {}{tags} {DIM}{}{RESET}", a.short_target, a.summary)
+                format!(" {g} {mode}{ask} {open} {target}{tags} {DIM}{}{RESET}", a.summary)
             };
             rows.push(Row {
                 target: a.target.clone(),
@@ -158,8 +211,13 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             map.push(format!(
-                "{}\t{}\t{}\t{}\t{}",
-                a.target, jsonl, a.project, a.summary, a.repo_full
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                a.target,
+                jsonl,
+                a.project,
+                a.summary,
+                a.repo_full,
+                a.ask.as_deref().unwrap_or("")
             ));
         }
     }
@@ -168,7 +226,14 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
 }
 
 /// Render the preview pane for one agent row.
-pub fn preview(target: &str, jsonl: Option<&std::path::Path>, project: &str, summary: &str, repo_full: &str) {
+pub fn preview(
+    target: &str,
+    jsonl: Option<&std::path::Path>,
+    project: &str,
+    summary: &str,
+    repo_full: &str,
+    ask: &str,
+) {
     let mut header = if repo_full.is_empty() {
         if project.is_empty() {
             target.to_string()
@@ -183,23 +248,37 @@ pub fn preview(target: &str, jsonl: Option<&std::path::Path>, project: &str, sum
     }
     println!("{CYAN}{BOLD}── {header} ──{RESET}");
 
-    // Live pane state — keep colour escapes so it renders like the real pane.
-    let pane = crate::tmux::capture_pane(target, true, -60);
-    let lines: Vec<&str> = pane.lines().collect();
-    for line in &lines[lines.len().saturating_sub(40)..] {
-        println!("{line}");
+    // What it is asking comes first.
+    // `agent-ask card` owns the ask format, so the panel prints it rather than parse it.
+    if !ask.is_empty() {
+        println!("{BLUE}{BOLD}── question ──{RESET}");
+        print!("{}", crate::asks::card(ask));
     }
-    println!();
 
-    if let Some(path) = jsonl {
-        if path.exists() {
-            println!("{CYAN}{BOLD}── claude: recent events ──────────────────────{RESET}");
-            for ev in crate::jsonl::recent_events(path, 6) {
-                println!("{ev}");
-            }
+    // The session's last word, whole: the pane tail usually has it scrolled away under tool
+    // output. Then its last tool call, then a short pane tail for what only the pane shows
+    // (a permission dialog, a live prompt).
+    if let Some(path) = jsonl.filter(|p| p.exists()) {
+        let (message, tool) = crate::jsonl::preview_info(path);
+        if !message.is_empty() {
+            println!("{CYAN}{BOLD}── last message ──{RESET}");
+            println!("{message}");
+        }
+        if !tool.is_empty() {
+            println!("{DIM}last tool: {tool}{RESET}");
         }
     }
+
+    println!("{CYAN}{BOLD}── pane ──{RESET}");
+    let pane = crate::tmux::capture_pane(target, true, -PANE_TAIL);
+    let lines: Vec<&str> = pane.lines().collect();
+    for line in &lines[lines.len().saturating_sub(PANE_TAIL as usize)..] {
+        println!("{line}");
+    }
 }
+
+/// Pane lines at the foot of the preview.
+const PANE_TAIL: i32 = 12;
 
 #[cfg(test)]
 mod tests {
@@ -258,15 +337,16 @@ mod tests {
             agent("s:2", '✓', false, false),
             agent("s:3", '~', true, true),
         ];
-        let (rows, _) = build(&agents);
+        let (rows, _) = build(&agents, Sort::default(), 0);
         let a = format!("{BLUE}A{RESET}");
         let p = format!("{MAGENTA}P{RESET}");
-        assert!(row(&rows, "s:1").contains(&format!("  {a} s:1")));
+        let o = format!("{DIM}   {RESET}"); // no start time: a blank open column
+        assert!(row(&rows, "s:1").contains(&format!("  {a} {o} s:1")));
         // Negative control: no pending ask (answered, cancelled or none) -> no mark,
         // and the blank column keeps the target aligned.
         assert!(!row(&rows, "s:2").contains(&a));
-        assert!(row(&rows, "s:2").contains("    s:2"));
-        assert!(row(&rows, "s:3").contains(&format!("{p}{a} s:3")));
+        assert!(row(&rows, "s:2").contains(&format!("    {o} s:2")));
+        assert!(row(&rows, "s:3").contains(&format!("{p}{a} {o} s:3")));
     }
 
     #[test]
@@ -277,11 +357,71 @@ mod tests {
         stalled.tags = "pinned".into();
         let mut working = agent("s:2", '~', false, false);
         working.stage = "WORKING".into();
-        let (rows, _) = build(&[stalled, working]);
+        let (rows, _) = build(&[stalled, working], Sort::default(), 0);
         let want = format!("s:1 {RED}STALLED{RESET} {ORANGE}[pinned]{RESET} {CYAN}[manual]{RESET}");
         assert!(row(&rows, "s:1").contains(&want), "{}", row(&rows, "s:1"));
         // Negative control: WORKING and no labels add nothing after the target.
         assert!(row(&rows, "s:2").ends_with(" s:2"), "{}", row(&rows, "s:2"));
+    }
+
+    fn headers(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .filter(|r| r.target.is_empty())
+            .map(|r| r.text.split("━━━ ").nth(1).unwrap().split(RESET).next().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn pins_the_shepherd_above_every_project() {
+        let mut a = agent("s:1", '✓', false, false);
+        a.project = "alpha".into();
+        let mut shep = agent("s:2", '~', false, false);
+        shep.project = "zulu".into();
+        shep.tags = "pinned shepherd".into();
+        let (rows, _) = build(&[a.clone(), shep], Sort::default(), 0);
+        assert_eq!(headers(&rows), ["shepherd", "alpha"]);
+        assert_eq!(rows[1].target, "s:2");
+        // Negative control: without the lease tag it sorts into its project like any other row.
+        let mut plain = agent("s:2", '~', false, false);
+        plain.project = "zulu".into();
+        plain.tags = "pinned".into();
+        let (rows, _) = build(&[a, plain], Sort::default(), 0);
+        assert_eq!(headers(&rows), ["alpha", "zulu"]);
+    }
+
+    #[test]
+    fn the_open_column_is_three_wide_at_every_unit() {
+        let now = 100_000_000;
+        for (secs, want) in [(0, " 0m"), (59 * 60, "59m"), (3600, " 1h"), (23 * 3600 + 3599, "23h"), (86_400, " 1d"), (200 * 86_400, "99d")] {
+            assert_eq!(age(now, Some(now - secs)), want, "{secs}s");
+        }
+        assert_eq!(age(now, None), "   ");
+        // A start in the future (clock skew) reads as just opened, never a panic.
+        assert_eq!(age(now, Some(now + 10)), " 0m");
+    }
+
+    #[test]
+    fn a_sort_other_than_project_is_one_flat_list_led_by_each_project() {
+        use crate::sort::Key;
+        let mut old = agent("s:1", '✓', false, false);
+        old.project = "zulu".into();
+        old.started_at = Some(100);
+        let mut new = agent("s:2", '~', false, false);
+        new.project = "alpha".into();
+        new.started_at = Some(5000);
+        let open = Sort { key: Key::Open, reverse: false };
+        let (rows, map) = build(&[new.clone(), old.clone()], open, 7300);
+        assert_eq!(headers(&rows), ["all, longest open first"]);
+        assert_eq!((rows[1].target.as_str(), rows[2].target.as_str()), ("s:1", "s:2"));
+        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} zulu s:1")), "{}", row(&rows, "s:1"));
+        assert!(row(&rows, "s:2").contains(&format!("{DIM}38m{RESET} alpha s:2")), "{}", row(&rows, "s:2"));
+        assert!(map[0].starts_with("s:1\t"), "the preview map follows the row order");
+        // Negative control: the project sort keeps one header per project and bare targets.
+        let (rows, _) = build(&[new.clone(), old.clone()], Sort::default(), 7300);
+        assert_eq!(headers(&rows), ["alpha", "zulu"]);
+        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} s:1")));
+        let (rows, _) = build(&[new, old], Sort { key: Key::Project, reverse: true }, 7300);
+        assert_eq!(headers(&rows), ["zulu", "alpha"]);
     }
 
     #[test]

@@ -2,19 +2,26 @@
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
 #   agent-land <pr> [--item <slug>] [--plan <file> --phase "<text>"] [--dry-run]
-#   agent-land <pr> --project <board project> --title "<board row title>" [--plan ...] [--dry-run]
 #
-# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base>, checked before
-# and after the checks), checks (the PR's checks pass: CI, a required check), merge (--squash
-# --match-head-commit HEAD, then gh pr view must say MERGED), item (the queue item gets pr:<pr>
-# and moves to done, status ok), board (the item's row when it came from the board, done with
-# pr:<pr>; with no item, the --project/--title agent row), plan (--plan: the one "- [ ] <phase>"
-# line becomes "- [x] <phase> (#<pr>)"). One line per step.
+# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base> before the
+# checks; after them, a base that moved on is merged in, pushed and landed on the same gate), item-line
+# (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
+# only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
+# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
+# --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# on origin/<base>, by agent-merge-proof.sh), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
+# files (agent-queue attribute), and moves to done, status ok), board (the
+# item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
+# promoted from, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
+# line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
+# against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
-# one a hand-started session recorded with `agent-queue add --running` (`agent-queue mine`); with
-# one, --project and --title are not needed and not used: the item is the record.
-# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base>: merge it and re-run. A merge of
-# <base> keeps a green gate green; gate again only when the repo's CI doc says that merge needs one.
+# one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
+# is a unit of work on the work ledger, so add one first (`agent-queue add --running`).
+# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base> before the checks, or a catch-up
+# merge that conflicts: merge it and re-run. A merge of <base> keeps a green gate green; gate again
+# only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
@@ -58,6 +65,7 @@ wait_checks() {
     queued=$(gh run list --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
     [ "${queued:-0}" -eq 0 ] || try=0
     [ "$try" -lt "$CHECKS_TRIES" ] || {
+      [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
       echo "checks: none reported"
       return 0
     }
@@ -75,11 +83,75 @@ current_with_base() {
   fi
 }
 
-pr='' project='' title='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
+# strict_checks: whether <base> refuses a head whose required checks have not run on it: a ruleset's
+# required_status_checks rule with strict_required_status_checks_policy, or branch protection's
+# required_status_checks.strict. Read once. A 404 from the protection call is "not protected"; any
+# other unreadable answer counts as strict, the side that waits instead of being refused.
+strict=''
+strict_checks() {
+  if [ -z "$strict" ]; then
+    local repo="${pr_ref%#*}" out
+    strict=yes
+    if [ "$repo" != "$pr_ref" ] &&
+      out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) &&
+      jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1; then
+      if out=$(gh api "repos/$repo/branches/$base/protection" 2>&1); then
+        jq -e '.required_status_checks.strict == true' <<<"$out" >/dev/null 2>&1 || strict=no
+      else
+        case "$out" in *'(HTTP 404)'*) strict=no ;; esac
+      fi
+    fi
+  fi
+  [ "$strict" = yes ]
+}
+
+# catch_up: after a green gate, a base that moved on during the checks is merged in and pushed, and
+# that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
+# current, or after a push to a base with no strict required checks (strict_checks), and 1 after a
+# push to a strict one: the caller then waits on the PR checks again, because that base refuses a
+# head whose checks have not run (2026-11-05: unity-core-playground #1837 was refused twice). A base
+# with no strict checks gets no second wait: one that merges faster than its checks run would loop
+# it forever (dotfiles #1059 went green 9 times in an hour). Exiting 3 there instead sent the caller
+# round its own gate again, which a busy base outruns every time (#916). A conflict is aborted and
+# exits 3.
+catch_up() {
+  local out behind
+  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
+  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
+  if [ "$behind" -eq 0 ]; then
+    echo "fetch: current with origin/$base"
+    return 0
+  fi
+  if ! out=$(git merge -q --no-edit "origin/$base" 2>&1); then
+    git merge --abort >/dev/null 2>&1 || true
+    printf 'agent-land: behind origin/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$base" "$behind" >&2
+    exit 3
+  fi
+  out=$(git push -q 2>&1) || fail push "$(lastline "$out")"
+  echo "fetch: merged origin/$base ($behind behind) into the green head and pushed it"
+  # GitHub works out whether a pushed head merges after the push and refuses the merge until then
+  # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
+  # reads this head with a known answer; the merge step reports what it ends up refusing.
+  local head try
+  head=$(git rev-parse HEAD)
+  for ((try = 1; try <= CHECKS_TRIES; try++)); do
+    case "$(gh pr view "$pr" --json headRefOid,mergeable -q '.headRefOid + " " + .mergeable' 2>/dev/null)" in
+    "$head UNKNOWN" | "") ;;
+    "$head "*) break ;;
+    esac
+    sleep "$CHECKS_POLL"
+  done
+  if strict_checks; then
+    echo "checks: origin/$base requires strict checks, waiting on them for the pushed head"
+    return 1
+  fi
+  return 0
+}
+
+pr='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
-  --project) project="${2:?--project needs a value}" && shift ;;
-  --title) title="${2:?--title needs a value}" && shift ;;
+  --project | --title) die "$1 is gone: the queue item is the record; agent-queue add --running --project <p> \"<task>\", then --item <slug>" ;;
   --plan) plan="${2:?--plan needs a value}" && shift ;;
   --phase) phase="${2:?--phase needs a value}" && shift ;;
   --item) item="${2:?--item needs a value}" && shift ;;
@@ -97,31 +169,89 @@ if [ -z "$item" ]; then
   item=$(agent-queue mine 2>/dev/null) || mine=$?
   [ "$mine" -ne 2 ] || die "more than one queue item records this session: pass --item <slug> (agent-queue mine)"
 fi
-if [ -n "$item" ]; then
-  # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
-  it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
-  # A done item that already carries this PR is a re-run after a failed board step.
-  case "$(jq -r --arg pr "$pr" 'if .state == "done" and .pr == $pr then "rerun" else .state end' <<<"$it")" in
-  running | waiting | queued | rerun) ;;
-  *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
+[ -n "$item" ] || die "no queue item for this session: agent-queue add --running --project <p> \"<type(area): title>\" (or claim one), then re-run"
+# Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
+it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
+# A done item that already carries this PR is a re-run after a failed board step.
+case "$(jq -r --arg pr "$pr" 'if .state == "done" and ((.pr // "") | sub(".*#"; "")) == $pr then "rerun" else .state end' <<<"$it")" in
+running | waiting | queued | rerun) ;;
+*) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
+esac
+# The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
+# definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
+row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
+  | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
+    + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
+    + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
+# score_body: the merged body's score against comms-standard (channel pr-body). A score, never a
+# gate: the PR is already merged, and the line tells its author what to fix in the next one.
+score_body() {
+  local body out rc=0
+  command -v comms-lint >/dev/null 2>&1 || { echo "body: not scored (no comms-lint on PATH)"; return 0; }
+  body=$(gh pr view "$pr" --json body -q .body 2>&1) || { echo "body: not scored (gh pr view: $(lastline "$body"))"; return 0; }
+  out=$(printf '%s\n' "$body" | comms-lint --channel pr-body - 2>&1) || rc=$?
+  case "$rc" in
+  0) echo "body: passes comms-lint --channel pr-body" ;;
+  1) echo "body: $(lastline "$out") First: $(printf '%s\n' "$out" | sed -n '1s/^ *//p')" ;;
+  *) echo "body: not scored ($(lastline "$out"))" ;;
   esac
-  # The notes argv that closes a `from: board:<project>:<key>` item's row, one word a line,
-  # as fleet-dispatch reads it; empty for any other item.
-  row=$(jq -r --arg pr "$pr" 'select(.from | startswith("board:")) | (.from | ltrimstr("board:") | split(":")) as $r
-    | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
-      + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
-      + ["done", ($r[1:] | join(":")), "--proof", "pr:\($pr)"] | .[]' <<<"$it")
-else
-  [ -n "$project" ] && [ -n "$title" ] || die "--project and --title are required without a queue item (--item or AGENT_QUEUE_ITEM)"
-fi
-# board_cmd -> the notes argv that closes the row, one word a line: the item's, or --project/--title.
-board_cmd() {
-  if [ -n "$item" ]; then
-    [ -z "$row" ] || printf '%s\n' "$row"
-  else
-    printf '%s\n' ptask "$project" --agent "done" "$title" --proof "pr:$pr"
-  fi
 }
+
+# stamp_item: the PR body names its work item on one "Item: <slug>" line. A body that already has it
+# is left alone; any other "Item:" line is replaced, else the line is appended. Before the checks,
+# so a CI job that reads the body runs on the stamped one.
+stamp_item() {
+  local new out
+  body=$(gh pr view "$pr" --json body -q .body 2>&1) || fail item-line "gh pr view: $(lastline "$body")"
+  if grep -qxF "Item: $item" <<<"$body"; then
+    echo "item-line: present"
+    return 0
+  fi
+  if grep -q '^Item: ' <<<"$body"; then
+    new=$(I="Item: $item" awk '/^Item: / { $0 = ENVIRON["I"] } { print }' <<<"$body")
+  else
+    new=$(printf '%s\n\nItem: %s' "$body" "$item")
+  fi
+  out=$(printf '%s\n' "$new" | gh pr edit "$pr" --body-file - 2>&1) || fail item-line "gh pr edit: $(lastline "$out")"
+  body=$new
+  echo "item-line: added \"Item: $item\" to the body"
+}
+
+# review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
+# queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
+# <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
+# (wait_checks refuses "none reported" for it). The line is a claim, not proof: CI and the post-merge
+# hold check are the backstops.
+# Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
+# tier counts as 3, the side that waits.
+tier='' body=''
+review_gate() {
+  tier=$("$(dirname "$(readlink -f "$0")")/fleet-dispatch" item-tier "$item" 2>/dev/null) || tier=3
+  [ "$tier" = 3 ] || return 0
+  local line
+  line=$(grep -m1 '^Review: ' <<<"$body" || true)
+  [[ "$line" =~ ^Review:\ /code-review\ (low|medium|high|xhigh|max),\ *([^[:space:]].*)$ ]] &&
+    ! [[ "${BASH_REMATCH[2],,}" =~ ^(n/?a|none|-|tbd|todo)[[:space:].]*$ ]] ||
+    fail review "tier-3 item $item: no \"Review: /code-review <level>, <what it found and what you did>\" line in the PR body${line:+ (found: $line)}. Run /code-review high, fix or answer each finding, then add that line (~/.claude/skills/fix-red/SKILL.md step 5)"
+  echo "review: present (tier 3)"
+}
+
+# credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
+# credit the item to the registry project whose `path` owns most of them (a game inside the
+# playground). It never fails the landing: the PR is merged, and the item keeps the project it
+# was added under, so the line says why it was not credited.
+credit() {
+  local files out
+  [[ "$pr_ref" == */*#* ]] || { echo ", not credited (no repo on #$pr)"; return 0; }
+  files=$(gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename' 2>&1) ||
+    { echo ", not credited (gh api: $(lastline "$files"))"; return 0; }
+  out=$(printf '%s\n' "$files" | agent-queue attribute "$item" 2>&1) || { echo ", not credited ($(lastline "$out"))"; return 0; }
+  [ -z "$out" ] || echo ", $out"
+}
+
+# board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
+# Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
+board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
   [ -f "$plan" ] || die "no plan file: $plan"
@@ -131,29 +261,37 @@ if [ -n "$plan$phase" ]; then
 fi
 
 if [ "$dry" -eq 1 ]; then
-  echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none)"
-  echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (must be 0)"
+  echo "item-line: gh pr view $pr --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
+  echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
+  echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
+  echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
-  [ -z "$item" ] || echo "item: agent-queue set $item pr=$pr && agent-queue move $item done --status ok"
+  echo "body: gh pr view $pr --json body | comms-lint --channel pr-body -  (a score, never a gate)"
+  echo "proof: gh pr view $pr --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
+  echo "item: agent-queue set $item pr=$pr merged=<sha> && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   mapfile -t b < <(board_cmd)
   [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
   exit 0
 fi
 
-info=$(gh pr view "$pr" --json state,baseRefName -q '.state + " " + .baseRefName' 2>&1) ||
+info=$(gh pr view "$pr" --json state,baseRefName,url -q '.state + " " + .baseRefName + " " + .url' 2>&1) ||
   fail fetch "gh pr view $pr: $(lastline "$info")"
-state="${info%% *}" base="${info#* }"
+read -r state base url <<<"$info"
+# The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
+pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"$url")
+[[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || pr_ref="$pr"
+stamp_item
 
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
 else
   # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
+  review_gate
   current_with_base
   wait_checks
-  current_with_base
-  echo "fetch: current with origin/$base"
+  while ! catch_up; do wait_checks; done
 
   head=$(git rev-parse HEAD)
   out=$(gh pr merge "$pr" --squash --match-head-commit "$head" 2>&1) || fail merge "$(lastline "$out")"
@@ -162,18 +300,32 @@ else
   echo "merge: #$pr MERGED at ${head:0:8}"
 fi
 
-if [ -n "$item" ]; then
-  if [ "$(jq -r .state <<<"$it")" != "done" ]; then
-    out=$(agent-queue set "$item" "pr=$pr" 2>&1) || fail item "$(lastline "$out")"
-    out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
-  fi
-  echo "item: $item done with pr:$pr"
+score_body
+
+# The record steps carry the merge commit, proven on origin/<base> from the git graph: a PR object
+# reading MERGED is not proof its content is on the branch (ticket contract, "done is a gate").
+merged=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid 2>&1) || fail proof "gh pr view: $(lastline "$merged")"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/agent-merge-proof.sh"
+out=$(merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
+echo "proof: $out"
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
+chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
+  --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
+
+if [ "$(jq -r .state <<<"$it")" != "done" ]; then
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+  out=$(agent-queue set "$item" "pr=$pr_ref" "merged=$merged" 2>&1) || fail item "$(lastline "$out")"
+  credited=$(credit)
+  out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
 fi
+echo "item: $item done with pr:$pr_ref${credited:-}"
 
 mapfile -t b < <(board_cmd)
 if [ "${#b[@]}" -gt 0 ]; then
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with pr:$pr"
+  echo "board: closed \"${b[-3]}\" with ${b[-1]}"
 fi
 
 if [ -n "$plan" ]; then

@@ -96,6 +96,28 @@ seed_anchor() {
   refute_output --partial 'evals'
 }
 
+@test "regen-anchor: links plans, lessons and outcomes only when they exist" {
+  # A link to a path that is not there reads as a fact; it was 60 of 338 docs findings.
+  seed_anchor
+  rmdir "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   _(none yet)_'
+  assert_output --partial '- Lessons: _(none yet)_'
+  assert_output --partial '- Outcomes: _(none yet)_'
+  refute_output --partial '~/.agent/plans/proj/'
+  refute_output --partial '~/.agent/lessons/proj.md'
+  # negative control: once they exist, the links come back
+  mkdir -p "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  echo "- a lesson" > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   `~/.agent/plans/proj/`'
+  assert_output --partial '- Lessons: `~/.agent/lessons/proj.md`'
+  assert_output --partial '- Outcomes: `~/.agent/outcomes/proj/`'
+}
+
 @test "regen-anchor: preserves the hand-curated sections byte-for-byte" {
   seed_anchor
   local before
@@ -184,6 +206,24 @@ lab_row() {
   assert_output --partial '  - Status: boss fight in review'
   refute_output --partial 'STALE'
   refute_output --partial '**other**'
+}
+
+@test "regen-anchor: the Lab section names the type and the standards to meet" {
+  echo "[$(lab_row proj beta "$(date +%F)" '')]" > "$NOTES_FIXTURE/stats.json"
+  mkdir -p "$HOME/.local/src/docs"
+  : > "$HOME/.local/src/docs/stages.md"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  # NEGATIVE CONTROL: a link is written only when its target exists.
+  refute_output --partial 'Standards:'
+  : > "$HOME/.local/src/docs/lifecycle.md"
+  jq '.trackers.proj.type = "game"' "$PROJECT_MAP_FILE" > "$BATS_TEST_TMPDIR/map" && cp "$BATS_TEST_TMPDIR/map" "$PROJECT_MAP_FILE"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- **proj** (bnb, game, beta) v1.2.0'
+  assert_output --partial '- Standards: `~/.local/src/docs/lifecycle.md` (each step), `~/.local/src/docs/stages.md` (each stage, by type)'
 }
 
 @test "regen-anchor: a prod project with an old status is flagged STALE" {
@@ -292,4 +332,42 @@ EOF
   seed_anchor
   CLAUDE_PROJECT_DIR="$HOME/proj" run bash "$HOOK" </dev/null
   assert_success
+}
+
+@test "regen-anchor: the anchor carries no lessons digest; the preflight ranks lessons itself" {
+  seed_anchor
+  echo "- **2026-11-05** a lesson" > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  refute_output --partial 'Recent lessons'
+  refute_output --partial 'a lesson'
+  assert_output --partial 'Lessons: `~/.agent/lessons/proj.md`'
+}
+
+@test "regen-anchor: large plan directories stay capped without broken pipes" {
+  seed_anchor
+  python3 - "$HOME/.agent/plans/proj" <<'PYTHON'
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for i in range(2000):
+    path = root / (f"plan-{i:04d}-" + "x" * 160 + ".md")
+    path.touch()
+    os.utime(path, (1000000000, 1000000000))
+for i in range(7):
+    path = root / f"recent-{i}.md"
+    path.touch()
+    os.utime(path, (1000000010 + i, 1000000010 + i))
+for name in ("active", "archive", "_archive", "tasks"):
+    (root / name).mkdir()
+PYTHON
+  # An ignored SIGPIPE makes grep report EPIPE, as in the scheduled runner.
+  run bash -c 'trap "" PIPE; exec bash "$@"' _ "$REGEN" proj
+  assert_success
+  refute_output --partial 'Broken pipe'
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
 }

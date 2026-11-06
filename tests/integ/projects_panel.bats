@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
-# projects.sh -- Prefix+P, the projects switcher.
+# projects.sh -- Prefix+p, the projects finder.
 #
 # integ tier: the script runs as a subprocess against the recording `notes` stub, so no test
 # here reads or writes a vault. The picker itself is not driven (the fzf stub aborts); what
 # is asserted is the data behind it (--list), the action each key maps to (--key), the exact
-# `notes` write each write verb issues, and the hub request Enter makes (--board).
+# `notes` write each write verb issues, the hub request Enter makes (--board) and the hub
+# call the preview makes (--preview).
 
 bats_require_minimum_version 1.5.0
 
@@ -37,6 +38,12 @@ setup() {
   assert_output $'site\nbig-alpha\nsmall-alpha\nwork'
 }
 
+@test "--list puts a dev project after alpha and before unstaged, in the ladder's order" {
+  printf '%s\n' $'personal\tbuild\tdev\tv0.1.0\t50\t0\t0\t0\t0\t0\t/v/build/README.md' >>"$NOTES_FIXTURE/stats"
+  run bash -c "'$PROJECTS_SH' --list | cut -f2"
+  assert_output $'site\nbig-alpha\nsmall-alpha\nbuild\nwork'
+}
+
 @test "--list --drafts adds the draft last" {
   run bash -c "'$PROJECTS_SH' --list --drafts | cut -f2"
   assert_output $'site\nbig-alpha\nsmall-alpha\nwork\nidea'
@@ -49,22 +56,23 @@ setup() {
   assert_output '5'
 }
 
-@test "a row shows its counts and leaves the zeros out" {
+@test "a row is the summary: stage, open and urgent; the rest is the preview's" {
   run bash -c "'$PROJECTS_SH' --list | sed -n 2p | cut -f5"
-  assert_output --partial '9 open  1 urgent  5 high  3 low  +4 planned  agent 7'
+  assert_output ' alpha  9 open  1 urgent'
   run bash -c "'$PROJECTS_SH' --list | sed -n 3p | cut -f5"
-  assert_output --partial '2 open  2 high'
-  refute_output --partial 'urgent'
-  refute_output --partial 'agent'
+  assert_output ' alpha  2 open'
   run bash -c "'$PROJECTS_SH' --list | sed -n 1p | cut -f5"
-  assert_output --partial 'clear'
+  assert_output ' prod   clear'
+  # Unstaged keeps the column, so the counts stay lined up.
+  run bash -c "'$PROJECTS_SH' --list | sed -n 4p | cut -f5"
+  assert_output '        3 open'
 }
 
-@test "rows are numbered for the digit hotkeys and the profile is cut to fit" {
+@test "rows are numbered for the digit hotkeys and show the name only" {
   run bash -c "'$PROJECTS_SH' --list | cut -f4"
-  assert_line --index 0 --regexp '^1 site '
-  assert_line --index 3 --regexp '^4 work +longprof$'
-  refute_output --partial 'longprofilename'
+  assert_line --index 0 --regexp '^1 site +$'
+  assert_line --index 3 --regexp '^4 work +$'
+  refute_output --partial 'longprof'
   # ...but only on screen: column 1 goes to `notes --profile`, so it stays whole.
   run bash -c "'$PROJECTS_SH' --list | sed -n 4p | cut -f1"
   assert_output 'longprofilename'
@@ -103,6 +111,16 @@ setup() {
   assert_output 'print(enter)+accept'
 }
 
+@test "o opens the project on the hub Board like Enter, e opens its sheet in the hub editor" {
+  run "$PROJECTS_SH" --key list o
+  assert_output 'print(enter)+accept'
+  run "$PROJECTS_SH" --key list e
+  assert_output 'print(edit)+accept'
+  # Searching, both letters type themselves.
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list e
+  refute_output --partial 'accept'
+}
+
 @test "d toggles the drafts both ways" {
   run "$PROJECTS_SH" --key list d
   assert_output --partial 'change-prompt(all projects> )'
@@ -137,7 +155,25 @@ setup() {
   PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --board bnb big-alpha
   assert_success
   run cat "$BATS_TEST_TMPDIR/calls"
-  assert_output $'hub tab board bnb/big-alpha\ntmx goto hub hub:board'
+  assert_output $'hub tab projects bnb/big-alpha\ntmx goto hub hub:board'
+}
+
+@test "--preview prints the hub's card for the project at the preview's width" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\necho "COLUMNS=$COLUMNS hub $*"\n' >"$BATS_TEST_TMPDIR/bin/hub"
+  chmod +x "$BATS_TEST_TMPDIR/bin/hub"
+  FZF_PREVIEW_COLUMNS=61 PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --preview bnb big-alpha
+  assert_success
+  assert_output 'COLUMNS=61 hub --once --tab projects bnb/big-alpha'
+}
+
+@test "--preview without hub says so and succeeds, so the pane is never an error" {
+  local d nohub=''
+  IFS=: read -ra dirs <<<"$PATH"
+  for d in "${dirs[@]}"; do [ -x "$d/hub" ] || nohub="$nohub:$d"; done
+  PATH="${nohub#:}" run "$PROJECTS_SH" --preview bnb big-alpha
+  assert_success
+  assert_output --partial 'hub not on PATH'
 }
 
 @test "the task verbs are gone: the hub Board is the one task view" {
@@ -154,7 +190,9 @@ setup() {
   run "$PROJECTS_SH" --help
   assert_success
   assert_output --partial 'Verbs:'
-  assert_output --partial 'hub Board'
+  assert_output --partial 'hub Projects'
+  assert_output --partial '--preview'
+  assert_output --partial 'hub notes editor'
   refute_output --partial '#!'
 }
 

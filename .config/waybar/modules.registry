@@ -11,11 +11,12 @@
 
 agents|Agent sessions by world|custom/ai-agents
 health|System health|custom/health
+projects|Projects: progress per project|custom/projects
 dispatch|Queue: queue, dispatch, shepherd|custom/dispatch
 fleet|Fleet health|custom/fleet
 load|CPU and load (fleet on hover)|custom/load
 ci|CI runners|custom/ci
-day|Day: merged PRs, red now|custom/day
+mode|Machine mode|custom/machine-mode
 timebox|Timebox|custom/timebox
 storage|Disk usage|custom/storage
 machines|Machines (pin only)|custom/machines

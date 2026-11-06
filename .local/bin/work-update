@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""work-update - the facts, the saved drafts and the kept edits behind a client EOD or weekly.
+
+  work-update config <job>                          the job's merged config, as JSON
+  work-update facts <job> eod|weekly [--date D]     what the draft is written from: the job's
+                                                    merged PRs (day-log), its work items with their
+                                                    minutes (the agent-queue ledger), its daily
+                                                    notes, and for a weekly the week's saved EODs
+  work-update save <job> eod|weekly [--date D] <file|->   lint the draft on the job's channel and
+                                                    save it to <updates>/<D>-<kind>.md; never sends
+  work-update kept <job> eod|weekly [--date D] <file|->   save the text that was sent next to the
+                                                    draft and record how much of it changed
+  work-update report [--since 30d]                  per job: drafts, kept, median edit size
+
+A job is <jobs>/<job>.toml over <jobs>/_default.toml (jobs: $WORK_UPDATE_JOBS, else
+~/.config/comms-lint/jobs). The model writes the draft from `facts` and the job's prompt files;
+this tool only gathers, lints and records. Exit 0 ok, 1 the draft has lint findings (it is saved
+anyway), 2 usage.
+"""
+import datetime as dt
+import difflib
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import tomllib
+
+JOBS = os.path.expanduser(os.environ.get("WORK_UPDATE_JOBS", "~/.config/comms-lint/jobs"))
+DAYLOG = os.path.expanduser(os.environ.get("DAYLOG_DIR", "~/.agent/daylog"))
+QUEUE = os.environ.get("WORK_UPDATE_QUEUE", "agent-queue")
+KINDS = ("eod", "weekly")
+# The comms-lint beside this script: the repo copy in a checkout, ~/.local/bin once stowed.
+COMMS_LINT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comms-lint")
+
+
+def die(msg, code=2):
+    print(f"work-update: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_job(job):
+    path = os.path.join(JOBS, f"{job}.toml")
+    if job.startswith("_") or not os.path.isfile(path):
+        names = sorted(f[:-5] for f in os.listdir(JOBS) if f.endswith(".toml") and not f.startswith("_")) if os.path.isdir(JOBS) else []
+        die(f"no job {job!r} in {JOBS} (jobs: {', '.join(names) or 'none'})")
+    cfg = {}
+    for p in (os.path.join(JOBS, "_default.toml"), path):
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                cfg.update(tomllib.load(f))
+    cfg["job"] = job
+    return cfg
+
+
+def notes_path(cfg, target):
+    out = subprocess.run(["notes", "--profile", cfg["notes_profile"], "path", target],
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode != 0 or not out.stdout.strip():
+        die(f"notes --profile {cfg['notes_profile']} path {target}: {out.stderr.strip() or 'no path'}")
+    return out.stdout.strip()
+
+
+def updates_dir(cfg):
+    d = cfg.get("updates_dir") or os.path.join(notes_path(cfg, "root"), "updates")
+    return os.path.expanduser(d)
+
+
+def week_of(day):
+    start = day - dt.timedelta(days=day.weekday())
+    return [start + dt.timedelta(days=i) for i in range(7) if start + dt.timedelta(days=i) <= day]
+
+
+def merged_prs(cfg, day):
+    path = os.path.join(DAYLOG, f"{day.isoformat()}.json")
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    repos = set(cfg.get("repos", []))
+    return [p for p in rec.get("merged", []) if p.get("repo") in repos]
+
+
+def work_items(cfg, days):
+    """The job's work items finished in the window, from the work ledger: each item whose pr: is
+    owner/<repo>#N in one of the job's repos, keyed by its local finish day. None when the ledger
+    cannot be read."""
+    try:
+        out = subprocess.run([QUEUE, "list", "--json", "--state", "all", "--since", days[0].isoformat()],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    repos, want, items = set(cfg.get("repos", [])), set(days), {}
+    for line in out.stdout.splitlines():
+        try:
+            i = json.loads(line)
+            day = dt.datetime.fromisoformat(i["finished"].replace("Z", "+00:00")).astimezone().date()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        m = re.fullmatch(r"[^#/ ]+/([^#/ ]+)#(\d+)", i.get("pr") or "")
+        if m and m.group(1) in repos and day in want:
+            items.setdefault(day, []).append({**i, "repo": m.group(1), "number": m.group(2)})
+    return items
+
+
+def minutes(i):
+    try:
+        return int(float(i.get("work_min")))
+    except (TypeError, ValueError):
+        return None
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def facts(cfg, kind, day):
+    days = [day] if kind == "eod" else week_of(day)
+    out = [f"# Facts for the {cfg['job']} {kind}, {days[0].isoformat()}" + ("" if kind == "eod" else f" to {day.isoformat()}"), ""]
+    out.append(f"Channel: {cfg[kind + '_channel']}. Prompt: {os.path.join(JOBS, cfg[kind + '_prompt'])}.")
+    out.append(f"Repos: {', '.join(cfg.get('repos', [])) or 'none set'}. Weekly day: {cfg['weekly_day']}.")
+    names = cfg.get("section_names", {})
+    out += ["", "## Merged PRs"]
+    for d in days:
+        prs = merged_prs(cfg, d)
+        if prs is None:
+            out.append(f"- {d.isoformat()}: no day-log record")
+            continue
+        for p in prs:
+            out.append(f"- {d.isoformat()} [{names.get(p['repo'], p['repo'])}] {p['title']} ({p['url']})")
+    out += ["", "## Work items"]
+    items = work_items(cfg, days)
+    if items is None:
+        out.append("- (the work ledger could not be read)")
+    for d in days if items is not None else []:
+        for i in sorted(items.get(d, []), key=lambda i: -(minutes(i) or 0)):
+            m = minutes(i)
+            out.append(f"- {d.isoformat()} [{names.get(i['repo'], i['repo'])}] {i.get('title') or i['slug']}"
+                       f" ({m if m is not None else '?'} min, #{i['number']}, {i['slug']})")
+        if items.get(d):
+            known = [minutes(i) for i in items[d] if minutes(i) is not None]
+            out.append(f"- {d.isoformat()} total: {sum(known)} min over {len(items[d])} item(s)"
+                       + ("" if len(known) == len(items[d]) else f", {len(items[d]) - len(known)} with no time"))
+    daily_dir = notes_path(cfg, "daily-dir")
+    out += ["", "## Daily notes"]
+    for d in days:
+        text = read(os.path.join(daily_dir, f"{d.isoformat()}.md"))
+        out += [f"### {d.isoformat()}", text or "(none)", ""]
+    if kind == "weekly":
+        out.append("## EODs this week")
+        for d in days:
+            path = os.path.join(updates_dir(cfg), f"{d.isoformat()}-eod")
+            text = read(path + ".sent.md") or read(path + ".md")
+            if text:
+                out += [f"### {d.isoformat()}", text, ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def body(src):
+    text = sys.stdin.read() if src == "-" else read(src)
+    if not text:
+        die(f"empty update: {src}")
+    return text.strip() + "\n"
+
+
+def save(cfg, kind, day, text, sent=False):
+    d = updates_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    stem = os.path.join(d, f"{day.isoformat()}-{kind}")
+    path = stem + (".sent.md" if sent else ".md")
+    with open(path, "w") as f:
+        f.write(text)
+    return stem, path
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    verb, args = argv[0], argv[1:]
+    opts = {"--date": None, "--since": "30d"}
+    pos = []
+    while args:
+        a = args.pop(0)
+        if a in opts:
+            if not args:
+                die(f"{a} needs a value")
+            opts[a] = args.pop(0)
+        else:
+            pos.append(a)
+    try:
+        day = dt.date.fromisoformat(opts["--date"]) if opts["--date"] else dt.date.today()
+    except ValueError:
+        die(f"--date wants YYYY-MM-DD, got {opts['--date']}")
+
+    if verb == "report":
+        n = opts["--since"].rstrip("d")
+        if not n.isdigit():
+            die("--since wants <N>d")
+        cutoff = dt.date.today() - dt.timedelta(days=int(n))
+        rows = []
+        for f in sorted(os.listdir(JOBS)) if os.path.isdir(JOBS) else []:
+            if not f.endswith(".toml") or f.startswith("_"):
+                continue
+            cfg = load_job(f[:-5])
+            kept = [json.loads(l) for l in (read(os.path.join(updates_dir(cfg), "kept.jsonl")) or "").splitlines() if l.strip()]
+            kept = [k for k in kept if dt.date.fromisoformat(k["date"]) >= cutoff]
+            drafts = 0
+            if os.path.isdir(updates_dir(cfg)):
+                for u in os.listdir(updates_dir(cfg)):
+                    if u.endswith(("-eod.md", "-weekly.md")) and u[:10] >= cutoff.isoformat():
+                        drafts += 1
+            edit = f", median edit {statistics.median(k['edit_pct'] for k in kept):.0f}%" if kept else ""
+            rows.append(f"{cfg['job']}: {drafts} drafts, {len(kept)} kept{edit}")
+        print(f"Work updates, last {n}d: " + ("; ".join(rows) if rows else "no jobs configured") + ".")
+        return 0
+
+    if not pos:
+        die(f"{verb}: a job is required (try --help)")
+    cfg = load_job(pos[0])
+    if verb == "config":
+        print(json.dumps(cfg, indent=2))
+        return 0
+    if verb not in ("facts", "save", "kept"):
+        die(f"unknown verb: {verb}")
+    if len(pos) < 2 or pos[1] not in KINDS:
+        die(f"{verb}: eod or weekly is required")
+    kind = pos[1]
+    if verb == "facts":
+        sys.stdout.write(facts(cfg, kind, day))
+        return 0
+    if len(pos) != 3:
+        die(f"{verb}: a file or - is required")
+    text = body(pos[2])
+    if verb == "save":
+        _, path = save(cfg, kind, day, text)
+        lint = subprocess.run([COMMS_LINT, "--channel", cfg[kind + "_channel"], path], capture_output=True, text=True)
+        print(f"draft: {path}")
+        if lint.returncode not in (0, 1):
+            die(f"comms-lint: {(lint.stderr or lint.stdout).strip()}")
+        sys.stdout.write(lint.stdout)
+        print("lint: passes" if lint.returncode == 0 else "lint: fix the findings, then save again")
+        return lint.returncode
+    stem = os.path.join(updates_dir(cfg), f"{day.isoformat()}-{kind}")
+    draft = read(stem + ".md")
+    if draft is None:
+        die(f"no draft at {stem}.md: kept records the edits to a saved draft")
+    _, path = save(cfg, kind, day, text, sent=True)
+    edit = round(100 * (1 - difflib.SequenceMatcher(None, draft, text.strip()).ratio()))
+    with open(os.path.join(os.path.dirname(stem), "kept.jsonl"), "a") as f:
+        f.write(json.dumps({"date": day.isoformat(), "kind": kind, "edit_pct": edit,
+                            "draft_chars": len(draft), "sent_chars": len(text.strip())}) + "\n")
+    print(f"kept: {path}, {edit}% of the draft changed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

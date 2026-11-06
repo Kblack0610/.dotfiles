@@ -1074,6 +1074,7 @@ cmd_pick() {
   panel_need fzf
   panel_fzf_opts
   panel_fzf_table
+  panel_fzf_layout
 
   local me picked
   me="$(printf '%q' "$SELF")"
@@ -1085,7 +1086,7 @@ cmd_pick() {
     --bind="ctrl-n:become($me new)" \
     --bind="ctrl-x:execute($me reap {1} || (printf '\n[any key]'; read -r -n1))+reload($me --list)" \
     --bind="ctrl-r:reload($me --list)" \
-    "$(panel_fzf_preview right 45)" \
+    "${PANEL_FZF_LAYOUT[@]}" \
     --preview="$me preview {1}" |
     cut -f1)"
 

@@ -74,42 +74,33 @@ claude() {
 # Claude Code reads OTEL_RESOURCE_ATTRIBUTES once, at start, so the project of the directory
 # it starts in is added here, per launch (claude-telemetry.sh says why not at shell start).
 _claude_launch() {
-    if command -v claude_telemetry_project >/dev/null 2>&1; then
-        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)" command claude "$@"
+    if command -v claude_telemetry_launch >/dev/null 2>&1; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)" command claude "$@"
     else
         command claude "$@"
     fi
 }
 
-# cl starts on whichever Claude account is cheapest to spend from (claude-acct,
-# accounts in ~/.config/claude-acct/accounts); `cl --acct <name>` forces one.
-# `cl --lazer` runs on the paid Lazer reserve instead (claude-lazer: Sonnet only, capped).
-# Plain `claude` stays on the default one.
+# cl starts on whichever Claude account is cheapest to spend from (`claude-acct run`, the one
+# launcher every human start goes through; accounts in ~/.config/claude-acct/accounts);
+# `cl --acct <name>` forces one. `cl --lazer` runs on the paid Lazer reserve instead
+# (claude-lazer: Sonnet only, capped). Plain `claude` keeps the inherited account, for
+# `claude mcp`, `claude update` and the like.
 unalias cl 2>/dev/null
 cl() {
-    local dir="" acct=""
+    local acct=()
     case "${1:-}" in
-        --acct) acct="${2:?cl: --acct needs an account name}"; shift 2 ;;
-        --acct=*) acct="${1#--acct=}"; shift ;;
+        --acct) acct=(--acct "${2:?cl: --acct needs an account name}"); shift 2 ;;
+        --acct=*) acct=(--acct "${1#--acct=}"); shift ;;
         --lazer)
             shift
             ( unset CLAUDE_CONFIG_DIR
-              command -v claude_telemetry_project >/dev/null 2>&1 \
-                  && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"
+              command -v claude_telemetry_launch >/dev/null 2>&1 \
+                  && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"
               claude-lazer --dangerously-skip-permissions "$@" )
             return ;;
     esac
-    if [ -n "$acct" ]; then
-        dir=$(claude-acct pick "$acct") || return 1
-    elif command -v claude-acct >/dev/null; then
-        dir=$(claude-acct pick)
-    fi
-    if [ -n "$dir" ]; then
-        CLAUDE_CONFIG_DIR="$dir" _claude_launch --dangerously-skip-permissions "$@"
-    else
-        # Main is the unset dir; a shell spawned by an alt session would otherwise pass alt on.
-        ( unset CLAUDE_CONFIG_DIR; _claude_launch --dangerously-skip-permissions "$@" )
-    fi
+    claude-acct run "${acct[@]}" --dangerously-skip-permissions "$@"
 }
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
 alias cb="agent" # need to rename to agent

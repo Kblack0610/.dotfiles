@@ -26,6 +26,11 @@ mkdir -p "$INBOX"
 
 # shellcheck source=/dev/null
 . "$HOOKS" || { echo "wave-roll: cannot source $HOOKS" >&2; exit 1; }
+# The stage ladder and its order (lab_stage_at_least), from notes projects --stages.
+LAB_FEED="${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}"
+# shellcheck source=/dev/null
+. "$LAB_FEED" || { echo "wave-roll: cannot source $LAB_FEED" >&2; exit 1; }
+LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
 
 is_ver() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 # ver_ge A B: A >= B, both bare `vX.Y.Z`.
@@ -92,9 +97,12 @@ while read -r profile; do
       log "skip $name: no versioned sheet (shipped $shipped)"
       continue
     fi
-    # A draft or alpha project keeps one working list; `notes projects --release` refuses it.
+    # A project below beta keeps one working list; `notes projects --release` refuses it.
+    # No stage at all predates stages and rolls as it always did (the release gate agrees).
     stage="$(notes --profile "$profile" projects --stage "$name" 2>/dev/null)"
-    case "$stage" in draft|alpha) log "skip $name: #$stage does not roll"; continue ;; esac
+    if [ -n "$stage" ] && ! lab_stage_at_least "$stage" beta; then
+      log "skip $name: #$stage does not roll"; continue
+    fi
     ver_ge "$shipped" "$ver" || continue            # the open version has not shipped yet
     next="$(next_after "$profile" "$name" "$shipped")"
     open="$(notes --profile "$profile" ptask "$name" list 2>/dev/null | grep -c . || true)"
@@ -127,9 +135,9 @@ log "pass done: $rolled rolled, $failed failed, $fetch_failed of $fetched tag fe
 . "${AGENT_PROOF_LIB:-$HOME/.local/lib/agent-proof.sh}" 2>/dev/null || true
 if command -v proof_report >/dev/null 2>&1; then
   if [ "$failed" -gt 0 ]; then
-    proof_report wave-roll STALLED "$failed roll(s) failed"
+    proof_outcome wave-roll STALLED "$failed roll(s) failed"
   elif [ "$fetched" -gt 0 ] && [ "$fetch_failed" = "$fetched" ]; then
-    proof_report wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
+    proof_outcome wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
   elif [ "$rolled" -gt 0 ]; then
     proof_report wave-roll WORKED "$rolled rolled"
   else

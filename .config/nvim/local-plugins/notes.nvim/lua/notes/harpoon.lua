@@ -4,10 +4,11 @@
 
 local M = {}
 
--- The stages lab pins, in slot order: prod is visited directly, draft has nothing yet.
-M.STAGES = { "beta", "alpha" }
+-- The stages lab pins, in slot order: the ones being built (`notes projects --stages` is the
+-- ladder); prod is visited directly, draft has nothing yet.
+M.STAGES = { "beta", "alpha", "dev" }
 
--- `notes projects --stats` rows -> the sheets of every beta/alpha project under lab_root,
+-- `notes projects --stats` rows -> the sheets of every beta/alpha/dev project under lab_root,
 -- beta first, then by name. Rows outside lab (employment, lazer) are left out.
 function M.stage_sheets(stats_lines, lab_root)
   local rank = {}

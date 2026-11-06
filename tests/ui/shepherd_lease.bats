@@ -37,6 +37,15 @@ teardown() {
 }
 
 t() { local srv="$1"; shift; "$REAL_TMUX" -L "$srv" -f /dev/null "$@"; }
+# panel_rows <server> <home session> <home window>: every pane with agent-panel's own shepherd
+# tag expression (read from tmux.rs, not a copy), the clock and the home window filled in.
+panel_rows() {
+  local expr
+  expr="$(grep -o '#{?#{||:#{e|<:NOW,#{@shepherd}}.*,shepherd ,}' "$REPO_ROOT/.local/src/agent-panel/src/tmux.rs")"
+  [ -n "$expr" ] || fail "tmux.rs no longer has the shepherd expression"
+  expr="${expr//NOW/$(date +%s)}"; expr="${expr//HOME_SESSION/$2}"; expr="${expr//HOME_WINDOW/$3}"
+  t "$1" list-panes -a -F "#{pane_id} $expr"
+}
 # tag <server> <pane>: what a format in that pane reads, inherited values included.
 tag() { t "$1" display-message -p -t "$2" '#{@shepherd}'; }
 
@@ -65,13 +74,22 @@ lease_from() {
   assert_success
   assert_equal "$(tag "$SRV_A" "$PANE_ONE")" ''
   assert_equal "$(tag "$SRV_A" "$PANE_SIB2")" ''
-  # agent-panel's own expression, not a copy, over the rows it lists.
-  local expr rows
-  expr="$(grep -o '#{?#{e|<:NOW,#{@shepherd}},shepherd ,}' "$REPO_ROOT/.local/src/agent-panel/src/tmux.rs")"
-  [ -n "$expr" ] || fail "tmux.rs no longer has the shepherd expression"
-  rows="$(t "$SRV_A" list-panes -a -F "#{pane_id} ${expr//NOW/$(date +%s)}")"
+  local rows
+  rows="$(panel_rows "$SRV_A" hub shepherd)"
   assert_equal "$(grep -c shepherd <<<"$rows")" 1
   assert_equal "$(grep shepherd <<<"$rows" | cut -d' ' -f1)" "$PANE_SIB"
+}
+
+@test "a pass idle past its lease stays tagged while it sits in the shepherd's home window" {
+  local home rows
+  home="$(t "$SRV_A" new-window -d -P -F '#{pane_id}' -n shepherd -t '=two:')"
+  # No live lease anywhere: the stale tag on PANE_TWO is all there is.
+  rows="$(panel_rows "$SRV_A" two shepherd)"
+  assert_equal "$(grep -c shepherd <<<"$rows")" 1
+  assert_equal "$(grep shepherd <<<"$rows" | cut -d' ' -f1)" "$home"
+  # Negative control: another home window, so nothing on this server is the shepherd.
+  rows="$(panel_rows "$SRV_A" hub shepherd)"
+  assert_equal "$(grep -c shepherd <<<"$rows")" 0
 }
 
 @test "the runner's pass in its tmux window is tagged too; a lease outside tmux tags nothing and still clears" {

@@ -70,6 +70,10 @@ LLM_API_KEY
 LLM_KEY_RBW
 LLM_KEY_RESOLVED
 LLM_ENV                           # points at a file that sets all of the above
+OPENAI_API_KEY                    # codex bills the API instead of the ChatGPT plan when set
+OPENAI_BASE_URL                   # repoints codex's OpenAI provider
+CODEX_API_KEY                     # a credential; overrides the ChatGPT login
+CODEX_HOME                        # config and auth root; relocating it reselects the account
 
 [not-transport]
 # Kept deliberately. Each line says why, because an unexplained exclusion is how
@@ -79,6 +83,7 @@ CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
 CLAUDE_CODE_SESSION_ATTENDED      # 1 when a human is attached; agent-ask reads it, no routing effect
 CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
+CLAUDE_CODE_ARTIFACT              # Artifact tool on/off (claude-telemetry.sh defaults it to 0); a tool toggle, no routing effect
 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY
 CLAUDE_CODE_ENABLE                # not a variable: a prefix fragment inside a regex
 CLAUDE_CODE_ENHANCED              # in tests/unit/claude_telemetry.bats:24

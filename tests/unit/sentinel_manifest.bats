@@ -210,3 +210,18 @@ EOF
   assert_failure
   assert_output --partial 'confirm'
 }
+
+@test "env words a watch from its name when the manifest says nothing" {
+  base
+  sed -i 's/^name: w$/name: home-k3s-node-ready/' "$M"
+  run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s|%s' \"\$W_subject\" \"\$W_trip\""
+  assert_success
+  assert_output "Home k3s node ready|Home k3s node ready failing"
+}
+
+@test "env uses the manifest's subject and trip, without a trailing stop" {
+  base
+  printf 'subject: Home cluster nodes\ntrip: A node is not Ready.\n' >> "$M"
+  run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s|%s' \"\$W_subject\" \"\$W_trip\""
+  assert_output "Home cluster nodes|A node is not Ready"
+}

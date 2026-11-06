@@ -12,6 +12,7 @@ path = "src/main.rs"
 agent-panel = { path = "../agent-panel" }
 hub-core = { path = "../hub-core" }
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 axum = "0.8"
 notify = "8"
 serde = { version = "1", features = ["derive"] }

@@ -13,7 +13,9 @@ setup() {
   sandbox_init basic
   ACCT="$REPO_ROOT/.local/bin/claude-acct"
   ALT="$HOME/.claude-alt"
-  mkdir -p "$HOME/.claude" "$ALT" "$XDG_CACHE_HOME/claude-acct"
+  mkdir -p "$HOME/.claude" "$ALT" "$XDG_CACHE_HOME/claude-acct" "$SANDBOX/proc"
+  # The host's own claude processes count as live sessions, which now move the rank.
+  export CLAUDE_ACCT_PROC="$SANDBOX/proc"
   export CLAUDE_ACCT_CONFIG="$SANDBOX/accounts"
   printf 'main -\nalt %s\n' "$ALT" > "$CLAUDE_ACCT_CONFIG"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
@@ -428,14 +430,17 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   week main 30 84
   week alt 30 84
   local p
-  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT"; do
+  # main last too: its line once came out empty and $(...) dropped it
+  for p in 1:claude:"" 2:claude:"" 3:claude:"$ALT" 4:bash:"$ALT" 5:claude:"" 6:claude:""; do
     IFS=: read -r pid comm dir <<<"$p"
     mkdir -p "$SANDBOX/proc/$pid"
     echo "$comm" > "$SANDBOX/proc/$pid/comm"
     [ -z "$dir" ] && : > "$SANDBOX/proc/$pid/environ" || printf 'CLAUDE_CONFIG_DIR=%s\0' "$dir" > "$SANDBOX/proc/$pid/environ"
   done
+  # a claude-lazer session (no CLAUDE_CONFIG_DIR, on the gateway) spends no account
+  printf 'ANTHROPIC_BASE_URL=https://llm.example\0' > "$SANDBOX/proc/6/environ"
   run --separate-stderr "$ACCT" status --json
-  [ "$(field main .live <<<"$output")" = 2 ]
+  [ "$(field main .live <<<"$output")" = 3 ]
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
@@ -494,6 +499,110 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   assert_output "$ALT"
 }
 
+# live <dir> <n> -- n claude processes running on that account (empty dir = main)
+live() {
+  local i pid
+  for ((i = 0; i < $2; i++)); do
+    pid=$((40000 + $(ls "$CLAUDE_ACCT_PROC" | wc -l)))
+    mkdir -p "$CLAUDE_ACCT_PROC/$pid"
+    echo claude > "$CLAUDE_ACCT_PROC/$pid/comm"
+    if [ -n "$1" ]; then printf 'CLAUDE_CONFIG_DIR=%s\0' "$1"; else : ; fi > "$CLAUDE_ACCT_PROC/$pid/environ"
+  done
+}
+
+@test "the live sessions an account already carries count against what it has left" {
+  # 2026-11-04: alt at 95% resetting in 5h carried 12 live and still won on its reset alone,
+  # while main sat idle at 89% with 27h to go and was on course to lose its 11% at the reset.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.07
+  week main 89 27   # carries 0.41 an hour
+  week alt 95 5     # carries 1 an hour
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  live "$ALT" 12    # burns 0.84 of it: 0.16 spare against main's 0.41
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt '.burn * 100 | round' <<<"$output")" = 84 ]
+  [ "$(field main .burn <<<"$output")" = 0 ]
+}
+
+@test "every account overcommitted: the one with less burn per point left takes the next start" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50   # carries 1 an hour
+  week alt 50 50
+  live "" 20        # twice what it carries
+  live "$ALT" 15    # 1.5 times
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  live "$ALT" 10
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+}
+
+@test "every account overcommitted: the next start goes where it keeps running longest" {
+  # 2026-11-05: alt fresh at 19% with 26 live caps in 27h, bnb at 89% with 9 live caps in 10h.
+  # Burn per spare point an hour sent cl to bnb, which its own sessions empty first.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.118
+  week main 89 30
+  week alt 19 150
+  live "" 9
+  live "$ALT" 26
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output "$ALT"
+}
+
+@test "room: under pace, the account with spare room after its live sessions wins" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 10 150  # sooner reset elsewhere would win with nothing live
+  week alt 20 30
+  live "$ALT" 30    # 3 an hour against 2.7 it can carry
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+}
+
+@test "room: an account under pace that its live sessions already overcommit has none" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # both under pace, 1 point an hour to spare
+  live "$ALT" 15
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output ''
+  live "" 12
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'live sessions use the rest of its week before the reset'* ]]
+  # a hand start is told, never refused
+  run --separate-stderr "$ACCT" pick
+  assert_success
+}
+
+@test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in *live_sessions*) echo '{"data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+STUB
+  export CC_PROM_URL=http://prom.test
+  # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
+  run bash -c "source '$ACCT'; session_rate nospend"
+  assert_output 0.07
+  [ ! -e "$XDG_CACHE_HOME/claude-acct/session_rate" ]
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.25
+  touch -d '-1 day' "$XDG_CACHE_HOME/claude-acct/session_rate"
+  run bash -c "source '$ACCT'; session_rate nospend"
+  assert_output 0.25
+  touch "$XDG_CACHE_HOME/claude-acct/session_rate"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.25
+  rm "$XDG_CACHE_HOME/claude-acct/session_rate"
+  run bash -c "source '$ACCT'; session_rate"
+  assert_output 0.07
+}
+
 @test "room: today's numbers refuse main and take alt" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 66 102   # 39% of the week gone
@@ -512,6 +621,27 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   [[ "$stderr" == *'no account has room'* ]]
 }
 
+@test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
+  # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
+  # main) at 88%, inside its reserve. "no account has room" alone read as every account full.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 88 50
+  week alt 15 152
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_output ''
+  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
+  # the same row status prints
+  run "$ACCT" status
+  assert_line --regexp '^alt +- +15% +9% +over +Tue 02:40 '
+  # the reserve, when that is what refuses the closest one; it lasts to its reset
+  week main 88 2
+  week alt 90 100
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 88% of its week used, inside the last 15% kept for the human, lasts to its reset Fri 10:00'
+}
+
 @test "room: the slack is the edge of the pace line" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PACE_SLACK_PCT=5
   week main 55 84
@@ -522,6 +652,32 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   week main 56 84
   run --separate-stderr "$ACCT" room
   assert_failure 1
+}
+
+@test "room: the machine-mode level scales slack and reserve; pick, which cl uses, does not move" {
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 88 50
+  week alt 15 152   # 1 point past mid's 5 of slack
+  run --separate-stderr "$ACCT" pick
+  local mid_pick="$output"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  mkdir -p "$HOME/.agent"
+  echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"   # high: 10 of slack
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  run --separate-stderr "$ACCT" pick
+  assert_output "$mid_pick"
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 20 kept back
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'5 points over its weekly pace (15% used, 9% of its week gone, 1 point of slack)'* ]] || fail "$stderr"
+  week main 82 2
+  week alt 90 100
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'82% of its week used, inside the last 20% kept for the human'* ]] || fail "$stderr"
 }
 
 @test "room: the reserve holds late in the week, even under pace" {
@@ -598,50 +754,20 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   assert_success
 }
 
-# prom <rate-points-over-2h> -- a curl stub answering the burn check's two queries
-prom() {
-  cat > "$SANDBOX/bin/curl" <<STUB
+@test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "\$*" in
-  *topk*) echo '{"data":{"result":[{"metric":{"session_id":"bbbbbbbb-2"},"value":[0,"31.2"]},{"metric":{"session_id":"aaaaaaaa-1"},"value":[0,"88.9"]}]}}' ;;
-  *offset*) echo '{"data":{"result":[{"metric":{},"value":[0,"$1"]}]}}' ;;
-  *) exit 22 ;;
-esac
+echo "$*" > "$HOME/curl.args"
+echo '{"data":{"result":[{"metric":{"session_id":"s1"},"value":[0,"12.345"]},{"metric":{},"value":[0,"9"]}]}}'
 STUB
   export CC_PROM_URL=http://prom.test
-}
-
-@test "check burn: a 2h rate over what the week can carry trips and names the spenders" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 70 20   # 30 left
-  week alt 50 10    # 50 left; 80 points over 20h is 4 a hour
-  prom 12           # 6 a hour over 2h
-  export CLAUDE_ACCT_PROC="$SANDBOX/proc"
-  mkdir -p "$CLAUDE_ACCT_PROC/7" "$CLAUDE_ACCT_PROC/8"
-  for p in 7 8; do echo claude > "$CLAUDE_ACCT_PROC/$p/comm"; : > "$CLAUDE_ACCT_PROC/$p/environ"; done
-  run "$ACCT" check burn
-  assert_failure 1
-  assert_output --partial 'burning 6.0%/h over 2h, the week can carry 4.0%/h (80% left, resets in 20h)'
-  assert_output --partial '2 live sessions; top by 2h spend: aaaaaaaa $88, bbbbbbbb $31'
-}
-
-@test "check burn: a 2h rate under what the week can carry passes" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 70 20
-  week alt 50 10
-  prom 6            # 3 a hour
-  run "$ACCT" check burn
+  run "$ACCT" cost
   assert_success
-  assert_output --partial 'burning 3.0%/h'
-}
-
-@test "check burn: Prometheus unreachable is exit 2, not a pass" {
-  export CLAUDE_ACCT_NOW=$NOW CC_PROM_URL=http://prom.test   # the curl stub fails
-  week main 70 20
-  week alt 50 10
-  run "$ACCT" check burn
+  assert_output '{"s1":12.35}'
+  grep -q 'USD_total\[7d\]' "$HOME/curl.args"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run "$ACCT" cost
   assert_failure 2
-  assert_output --partial 'Prometheus is unreachable'
 }
 
 @test "check: an unknown name is a usage error, not a pass" {
@@ -661,4 +787,30 @@ STUB
   run --separate-stderr "$ACCT" pick nope
   assert_failure
   [[ "$stderr" == *"no account 'nope'"*"have: main alt"* ]]
+}
+
+# run: the one launcher for a human start (cl, sessions resume, the fzf picker, the hub).
+seen_claude() {
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "${CLAUDE_CONFIG_DIR:-<main>}" "$*"\n' > "$SANDBOX/bin/claude"
+}
+
+@test "run execs claude on the picked account with its arguments" {
+  seen_claude
+  usage main 10 80
+  usage alt 50 50
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" run --separate-stderr "$ACCT" run -r sid-1
+  assert_success
+  assert_output "$ALT|-r sid-1"
+}
+
+@test "run on main drops an inherited alt account; --acct forces one" {
+  seen_claude
+  usage main 20 10
+  usage alt 60 30
+  CLAUDE_CONFIG_DIR="$ALT" run --separate-stderr "$ACCT" run --dangerously-skip-permissions
+  assert_output "<main>|--dangerously-skip-permissions"
+  run --separate-stderr "$ACCT" run --acct alt -c
+  assert_output "$ALT|-c"
+  run --separate-stderr "$ACCT" run --acct nope
+  assert_failure
 }

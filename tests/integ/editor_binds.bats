@@ -59,9 +59,10 @@ setup() {
 
 @test "the editor takes NO key from any existing surface" {
   # Space's stock binding is next-layout, which is tmux's own and not a surface in this
-  # repo. Every other key in .tmux.conf must still point where it did.
+  # repo. Every other key in .tmux.conf must still point where it did. e and a are muxpoon's,
+  # bound by its plugin, so they have no line here.
   local k
-  for k in e i u U o p g w m a t f S A W r N H; do
+  for k in i u U o p g w m t f W r N H A F; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }
@@ -79,11 +80,11 @@ setup() {
 
 # ── prefix+i, which this feature must NOT have touched ───────────────────────
 
-@test "infra is still on prefix+i, exactly where it was" {
+@test "home is still on prefix+i, exactly where it was" {
   local infra
   infra="$(bind_for i)"
-  [ -n "$infra" ] || fail "prefix+i is not bound -- infra was dropped"
-  grep -qF 'hub tab overview' <<< "$infra" || fail "prefix+i is bound to something that is not infra: $infra"
+  [ -n "$infra" ] || fail "prefix+i is not bound -- home was dropped"
+  grep -qF 'hub tab home' <<< "$infra" || fail "prefix+i is bound to something that is not home: $infra"
 }
 
 @test "prefix+i is bound exactly once" {
@@ -96,7 +97,7 @@ setup() {
 
 @test "the editor claimed no Alt key, so nvim and the shell still see them" {
   # A root-table (-n) bind is swallowed by tmux everywhere. The pane nav owns M-hjkl/HJKL
-  # and the session harpoon owns M-1..M-4 (harpoon.sh), both by design; the editor must
+  # and muxpoon owns M-1..M-4 (bound by its plugin, so not in this file), both by design; the editor must
   # not have quietly added to that set.
   local extra
   extra="$(grep -E '^[[:space:]]*bind(-key)? -n ' "$TMUX_CONF" \

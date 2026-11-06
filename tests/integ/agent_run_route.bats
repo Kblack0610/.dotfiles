@@ -287,3 +287,64 @@ model_seen() {
   assert_success
   assert_equal "$(cat "$SANDBOX/model.txt")" "<unset>"
 }
+
+# ---------------------------------------------------------------- the account
+# Every subscription run spends from the account claude-acct picks, the choice `cl` makes.
+# Before this, runners ran on whatever CLAUDE_CONFIG_DIR they inherited: none under systemd,
+# so every timer runner sat on main and waited out its weekly limit while alt had room.
+account_seen() {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${CLAUDE_CONFIG_DIR:-<main>}" > "%s/acct.txt"\n' "$SANDBOX" > "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/claude"
+  route oauth 'anthropic-native' '' yes yes yes subscription 'ROUTE_KEY_SOURCE="oauth"'
+}
+
+@test "a subscription run spends from the account claude-acct picks, not the inherited one" {
+  account_seen
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" STUB_ACCT_PICK="$HOME/.claude-alt" \
+    run "$RUN" --role fixture --route oauth -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "$HOME/.claude-alt"
+  assert_called 'claude-acct pick'
+}
+
+@test "pick naming main unsets an inherited account" {
+  account_seen
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" STUB_ACCT_PICK='' run "$RUN" --role fixture --route oauth -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "<main>"
+}
+
+@test "AGENTCTL_ACCOUNT is the caller's choice: a dir, a name, or default for main" {
+  account_seen
+  STUB_ACCT_PICK="$HOME/.claude-alt" AGENTCTL_ACCOUNT="$HOME/.claude-bnb" run "$RUN" --role fixture --route oauth -p hi
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "$HOME/.claude-bnb"
+  assert_not_called 'claude-acct pick'
+  AGENTCTL_ACCOUNT=bnb run "$RUN" --role fixture --route oauth -p hi
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "$HOME/.claude-bnb"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-spent" AGENTCTL_ACCOUNT=default run "$RUN" --role fixture --route oauth -p hi
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "<main>"
+}
+
+@test "--explain names the account and who chose it" {
+  route oauth 'anthropic-native' '' yes yes yes subscription 'ROUTE_KEY_SOURCE="oauth"'
+  STUB_ACCT_PICK="$HOME/.claude-alt" run "$RUN" --role fixture --route oauth --explain
+  assert_success
+  assert_output --partial "account:     $HOME/.claude-alt  (from: claude-acct pick)"
+}
+
+@test "with no claude-acct a subscription run refuses rather than run on main" {
+  account_seen
+  rm "$SANDBOX/bin/claude-acct"
+  AGENTCTL_ACCT_CMD=claude-acct-missing run "$RUN" --role fixture --route oauth -p hi
+  assert_failure
+  assert_output --partial 'must pick its account'
+  [ ! -e "$SANDBOX/acct.txt" ]
+}
+
+@test "a non-oauth route never asks for an account (negative control)" {
+  account_seen
+  CLAUDE_CONFIG_DIR="$HOME/.claude-kept" STUB_ACCT_PICK="$HOME/.claude-alt" run "$RUN" --role fixture --route safe -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/acct.txt")" "$HOME/.claude-kept"
+  assert_not_called 'claude-acct'
+}

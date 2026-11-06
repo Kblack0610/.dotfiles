@@ -16,7 +16,8 @@ setup() {
   R() { echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-20T10:00:00Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"is_error\":${3:-false},\"content\":\"$2\"}]}}"; }
   B() { echo "{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"${3:+,$3}}}"; }
   T() { echo "{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"$2\",\"input\":$3}"; }
-  N() { echo "{\"type\":\"user\",\"timestamp\":\"2026-10-20T10:$2:00Z\",\"message\":{\"content\":\"<task-notification><tool-use-id>$1</tool-use-id></task-notification>\"}}"; }
+  # N <tool id> <minute> [task id]: a background run's notice
+  N() { echo "{\"type\":\"user\",\"timestamp\":\"2026-10-20T10:$2:00Z\",\"message\":{\"content\":\"<task-notification>${3:+<task-id>$3</task-id>}<tool-use-id>$1</tool-use-id></task-notification>\"}}"; }
   {
     echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-20T10:00:00Z\",\"message\":{\"content\":\"fix the thing\"}}"
     # m1 is written as two records with one usage: one response, two calls, one parallel
@@ -49,14 +50,15 @@ setup() {
     A m11 1100 10 ''
     N toolu_k 11
     A m12 1200 11 ''
-    # a long background run with work done meanwhile, then its output read back
+    # a long background run with work done meanwhile: its output polled before the notice, read after
     A m13 1300 12 "$(B toolu_l 'run.sh --all' '"run_in_background":true')"
     R toolu_l 'started'
-    A m14 1400 12 ''
+    A m14 1400 12 "$(B toolu_l2 'tail -n 5 /tmp/x/tasks/bq1.output')"
+    R toolu_l2 'partial'
     A m15 1500 13 "$(T toolu_m Edit '{"file_path":"/g"}')"
     R toolu_m 'ok'
     A m16 1600 14 ''
-    N toolu_l 30
+    N toolu_l 30 bq1
     A m17 1700 30 "$(T toolu_n Read '{"file_path":"/tmp/x/tasks/bq1.output"}')"
     R toolu_n 'lines'
     A m18 1800 31 "$(T toolu_o mcp__playwright__click '{}')"
@@ -95,12 +97,17 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
 
 @test "one count per response: a split response is one response, two calls, one parallel" {
   run hand '[.responses,.tool_responses,.parallel_responses,.calls]'
-  assert_output '[23,17,1,18]'
+  assert_output '[23,18,1,19]'
 }
 
 @test "session kinds: hand, dispatched, runner and subagent each get their own row" {
   run jq -c '.sessions | [."kind:hand",."kind:dispatched",."kind:runner",."kind:subagent",.all]' <<<"$(out)"
   assert_output '[1,1,1,1,4]'
+}
+
+@test "cards: the kind column is the same session kind, and subagents get no card" {
+  run bash -c "\"$RECALL\" cards | cut -f1,13 | sort"
+  assert_output "$(printf 's1\thand\ns2\tdispatched\ns3\trunner')"
 }
 
 @test "a call is priced by the response after it" {
@@ -136,7 +143,13 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
 
 @test "background: how it is waited on" {
   run group background
-  assert_output '[["read task output",1,1800],["started",2,2500],["timed out into background",1,2100]]'
+  assert_output '[["read task output after its notice",1,1800],["read task output before its notice",1,1500],["started",2,2500],["timed out into background",1,2100]]'
+}
+
+@test "negative control: with no task id in the notice, every read counts as before it" {
+  sed -i 's#<task-id>bq1</task-id>##' "$D/projects/p/s1.jsonl"
+  run group background
+  assert_output --partial '["read task output before its notice",2,3300]'
 }
 
 @test "mcp calls group by server, and ToolSearch loads count" {

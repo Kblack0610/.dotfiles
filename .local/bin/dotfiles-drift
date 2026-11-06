@@ -23,8 +23,9 @@
 #           on the duplicate itself, not only on a difference: a copy that still
 #           matches is drift that has not happened yet, and the fix for both is
 #           the same one - own the file in one repo and LINK to it, never copy.
-#   LINK    a tracked file under a stow root has no ~/ counterpart, or has one
-#           that dangles. That is "stow has not run".
+#   LINK    a tracked file under a stow root has no ~/ counterpart, has one that
+#           dangles ("stow has not run"), or is served by a plain copy that
+#           resolves fine and silently stops following merges.
 #
 # Symlinks are skipped throughout. git stores them as mode 120000 blobs holding
 # the link TARGET, so diffing that against a resolved file always reports a
@@ -120,7 +121,10 @@ check_mirror() {
 }
 
 # --- LINK -------------------------------------------------------------------
-# A tracked file under a stow root should have a ~/ counterpart that resolves.
+# A tracked file under a stow root should have a ~/ counterpart that IS the repo file.
+# Existence alone is not enough: ~/.claude/settings.json sat as a plain copy from
+# 2026-11-03 to 11-05 and this check reported clean while two merged hook changes
+# never went live.
 check_links() {
   local repo="$1" name="$2" p target
   is_repo_root "$repo" || return 0
@@ -132,9 +136,11 @@ check_links() {
       if [ -L "$target" ]; then add LINK "$name" "$p" "symlink dangles (target missing)"
       else                      add LINK "$name" "$p" "not linked into \$HOME (stow has not run)"
       fi
+    elif [ ! "$target" -ef "$repo/$p" ]; then
+      add LINK "$name" "$p" "served by a copy, so merges to it do not deploy"
     fi
   done < <(git -C "$repo" ls-tree -r --name-only origin/main 2>/dev/null \
-             | grep -E '^\.local/(bin|lib)/[^/]+$')
+             | grep -E '^(\.local/(bin|lib)/[^/]+|\.claude/settings\.json)$')
   return 0
 }
 
@@ -179,5 +185,7 @@ cat <<'EOF'
   LINK   -> run `stow --no-folding .` in the repo, then re-check.
             Check `stow --simulate` first: stow deploys the FILESYSTEM, not the
             git index, so untracked junk in the tree gets linked into $HOME too.
+            A copy: diff it against the repo, commit any live value worth keeping,
+            then replace the copy with a link to the repo file.
 EOF
 exit 1

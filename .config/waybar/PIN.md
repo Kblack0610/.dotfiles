@@ -8,6 +8,12 @@ without leaving whatever is fullscreen.
 It is separate from the main bar (which runs as the `waybar.service` systemd user
 unit). The pin is toggle-on-demand and never autostarts.
 
+The pin covers the window under it. To see the full main bar over a fullscreen window
+without covering anything, press `Ctrl+Alt+Shift+B` (`hypr/scripts/fullscreen-bar.sh`):
+the window drops to fullscreen under the bar (Hyprland maximizes it, so it ends below
+waybar, while the app still thinks it is fullscreen); press again for true fullscreen.
+It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
+
 ## Use
 
 - `Super+Shift+M`  - toggle the pin on/off (restores the last size)
@@ -22,9 +28,12 @@ unit). The pin is toggle-on-demand and never autostarts.
 `Super+A` opens a which-key popup; single keys fire actions; submaps nest 3 deep.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
+The agents leaves act in the terminal you typed in last, never a new window: a popup on it (`tmx popup`), or a hop of it (`o` and `h` land through `tmx goto`). With no tmux client attached anywhere, one floating kitty opens instead.
+
 ```
-Super+A                L1 pinbar          t toggle | u utils> | s settings> | esc/q exit
-  u utils              L2 pinbar-utils    a agents | h ssh | r reload | t timebox> | y sync> | g git> | esc back
+Super+A                L1 pinbar          space control menu | a agents> | k keys | t toggle | u utils> | s settings> | esc/q exit
+  a agents             L2 pinbar-agents   a agent panel | w all sessions | c scratch claude | n pick a page | o open newest page | h triage newest page | esc back
+  u utils              L2 pinbar-utils    h ssh | r reload | t timebox> | y sync> | g git> | esc back
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
@@ -34,13 +43,15 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
+**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A click that opens a terminal (`kitty --class C -e CMD`, which is every dropdown) runs CMD in the menu's own window, and its Esc or q comes back to the list; any other click (a GUI app, a URL, a toggle) launches and closes the menu. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "hub" row per hub tab (`hub tabs`, from hub-core's layout): the preview is that tab's `hub --once` page and Enter opens that hub page in place. Then one "window" row per described exec bind (`bindd`/`bindpd` in `keybindings.conf` and `leader.conf`) with the chord that reaches it (`Super+D`, `Super+A u t s`); Enter runs it through `hyprctl dispatch exec`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
+
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
 is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 
-**Add a leaf:** in the target submap add three lines - `bind = , <key>, exec, <cmd>`,
-`bind = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bind = , <key>, submap, reset`
-- then add the key to that level's legend in `pin-hint.sh`.
+**Add a leaf:** in the target submap add three lines - `bindpd = , <key>, <description>, exec, <cmd>`,
+`bindp = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bindp = , <key>, submap, reset`.
+The description (no commas: Hyprland splits on them) is the leaf's legend entry and its control-menu row; `pin-hint.sh` builds each level's popup from the described binds via `hyprctl binds -j`, so there is no legend to edit. A submap entry, Esc and q carry the description on their `submap` line. `tests/integ/pin_hint.bats` fails a leader key with no described bind.
 
 ## Views
 
@@ -98,7 +109,7 @@ survives a reboot, unlike `pin.sh`'s `/tmp` state.
 **Add a toggle:** add a row to `modules.registry` (`key|label|module-id ...`, one key
 may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and give it
 `"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
-`leader.conf` and the key to `pin-hint.sh`'s settings legend.
+`leader.conf` with a description (it is the legend entry).
 
 Only **custom** modules can be toggled. Built-ins (memory, clock, tray...) have
 no `exec` to gate; hiding those would mean generating the config and restarting the
@@ -106,23 +117,27 @@ bar on every toggle, which is why they are out of scope.
 
 `SIGRTMIN+10` is the shared contract: every gated module listens on it. An unhandled
 RT signal is a harmless no-op to Waybar, so signalling a bar that predates this is
-safe. Note `gungan` still fires `RTMIN+9` at a module that no longer exists - keep
-new modules off 9. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
+safe. `RTMIN+9` belongs to `custom/gungan` (the red mic while a voice take runs), fired by
+`gungan` on every start and stop. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
 removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 `custom/passthrough` (`passthrough.sh`), fired by the Hyprland passthrough toggles.
+`custom/webcam` (`webcam.sh`) needs no signal: it stays running on inotify and prints a line
+whenever a `/dev/video*` node gains or loses its holders.
 
 ## Files
 
 - `modules.sh`       - module toggles (`gate|list|menu|on|off|toggle`)
-- `modules.registry` - which modules are toggleable (`key|label|ids`)
+- `modules.registry` - which modules are toggleable (`key|label|ids`), and the control menu's chips
+- `pango.sh`         - the chips' markup helpers, and `pango_ansi` (a tooltip as terminal text, for the control menu)
 - `machines.sh`      - fleet probe module (`min|full`) + `pick` ssh chooser
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
+- `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds
-- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals
+- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals and the `control-menu` window
 
 ## Add a machine
 

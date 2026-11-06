@@ -13,12 +13,19 @@
 mod assets;
 mod auth;
 mod board;
+mod cli;
 mod cloud;
 mod feed;
 mod fleet;
+mod focus;
 mod infra;
 mod jobs;
+mod outbox;
+mod outcomes;
+mod pipeline;
+mod projects;
 mod queue;
+mod reds;
 mod shepherd;
 mod transcript;
 
@@ -67,6 +74,7 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     fleet: fleet::Cache,
+    pipeline: pipeline::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -91,6 +99,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
         fleet: fleet::Cache::default(),
+        pipeline: pipeline::Cache::default(),
     });
 
     let api = Router::new()
@@ -102,21 +111,34 @@ async fn main() -> Result<()> {
         .route("/api/session-options", get(session_options))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/asks/{id}/trace", get(ask_trace))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
+        .route("/api/home", get(home_board))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
+        .route("/api/fleet/runner", get(fleet_runner))
+        .route("/api/pipeline", get(pipeline_line))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/projects", get(projects::get))
+        .route("/api/projects/{name}/page", get(projects::page))
+        .route("/api/focus", get(focus::get).put(focus::save))
+        .route("/api/inbox/ack", post(focus::ack))
+        .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
+        .route("/api/queue/candidates", get(queue::candidates))
         .route("/api/shepherd", get(shepherd::get))
+        .route("/api/outcomes", get(outcomes::ranked))
+        .route("/api/outcomes/card", get(outcomes::card))
+        .route("/api/reds", get(reds::get))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
@@ -221,7 +243,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 .map(|p| (p, flat)),
         );
     }
-    let asks = session::home().join(".agent").join("asks");
+    let asks = boards::asks_dir();
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
     }
@@ -241,7 +263,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
-        // agent-notify's ledger, for the Actions tab.
+        // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
             .parent()
@@ -259,6 +281,18 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let rundowns = boards::shepherd_dir().join("rundowns");
     std::fs::create_dir_all(&rundowns)?;
     targets.push((rundowns, flat));
+    // Daily's outbox: the outbox's directory, from the CLI that owns its path, and the notes
+    // state directory that holds ingest.jsonl. Both files are replaced by a rename.
+    if let Some(dir) = hub_core::outbox::doc(&hub_core::session_actions::System)
+        .ok()
+        .and_then(|d| PathBuf::from(d.path).parent().map(Path::to_path_buf))
+    {
+        targets.push((dir, flat));
+    }
+    let notes_state = session::home().join(".local/state/notes");
+    if notes_state.is_dir() {
+        targets.push((notes_state, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -301,15 +335,20 @@ fn classify(p: &Path) -> Option<String> {
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
-    // fleet-shepherd's ledger: the Shepherd tab's due lines, the pass running now and the last
+    // fleet-shepherd's ledger: the Sessions tab's shepherd due lines, the pass running now and the last
     // one scored. Dotfiles have no extension, so this comes before the `ext` match.
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
-    // The Actions tab's own ledgers: the shepherd's log and agent-notify's (which has no
+    // Log's Actions section's own ledgers: the shepherd's log and agent-notify's (which has no
     // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
     if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
         return Some(r#"{"kind":"actions"}"#.to_string());
+    }
+    // Daily's outbox: the doc and the ingest record of what intake did with its lines. Before
+    // `ext`, which reads any other `.jsonl` as a transcript.
+    if name == "outbox.md" || (parent == "notes" && name == "ingest.jsonl") {
+        return Some(r#"{"kind":"outbox"}"#.to_string());
     }
     let ext = p.extension()?.to_str()?;
     if (parent == "agentctl" && name == "runs.jsonl")
@@ -498,6 +537,9 @@ struct AgentOut {
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
+    /// When a `waiting` agent started waiting, unix seconds: its transcript's last write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waiting_since: Option<u64>,
 }
 
 async fn collect() -> Vec<chooser::Agent> {
@@ -553,6 +595,14 @@ async fn agents() -> Json<Vec<AgentOut>> {
                     ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
                 },
+                waiting_since: match (a.status.as_str(), &a.jsonl) {
+                    ("waiting", Some(p)) => std::fs::metadata(p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()),
+                    _ => None,
+                },
                 target: a.target,
                 short: a.short_target,
                 project: a.project,
@@ -601,32 +651,6 @@ struct TargetQuery {
 async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
     let agent = find(&q.t).await?;
     capture(agent.pane).await
-}
-
-/// Sampling a pane while a paste renders. tmux has no event for "the program in this pane has
-/// read its input", so this is the one bounded loop on one cadence. 40 samples is 2s.
-const PASTE_POLL: Duration = Duration::from_millis(50);
-const PASTE_POLLS: u32 = 40;
-
-/// Wait until `capture` has moved away from `before` and then held still for one sample: the
-/// program has read the paste and drawn it. Claude Code drops an Enter that arrives on the heels
-/// of a paste, which leaves the message sitting unsent in its input box. False when the pane never
-/// settles, as under a running spinner; the caller presses Enter regardless, once.
-async fn paste_settled<F, Fut>(before: &str, mut capture: F, polls: u32, cadence: Duration) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = String>,
-{
-    let mut last: Option<String> = None;
-    for _ in 0..polls {
-        let now = capture().await;
-        if now != before && last.as_deref() == Some(now.as_str()) {
-            return true;
-        }
-        last = Some(now);
-        tokio::time::sleep(cadence).await;
-    }
-    false
 }
 
 async fn capture(pane: String) -> ApiResult<String> {
@@ -706,30 +730,19 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
 
     if !b.text.is_empty() {
-        let before = capture(agent.pane.clone()).await?;
-        // A bracketed paste, not send-keys -l: a newline inside the text stays part of
-        // the message instead of submitting it half-written.
-        run_tmux(
-            server,
-            &["load-buffer", "-b", "agent-web", "-"],
-            Some(&b.text),
-        )
-        .await?;
-        run_tmux(
-            server,
-            &["paste-buffer", "-p", "-d", "-b", "agent-web", "-t", pane],
-            None,
-        )
-        .await?;
-        if b.submit.unwrap_or(true) {
-            paste_settled(
-                &before,
-                || async { capture(agent.pane.clone()).await.unwrap_or_default() },
-                PASTE_POLLS,
-                PASTE_POLL,
-            )
-            .await;
-            run_tmux(server, &["send-keys", "-t", pane, "Enter"], None).await?;
+        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
+        // drawn before Enter, and the check that the Enter was taken.
+        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
+        let sent =
+            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
+                .await
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if sent == agent_panel::send::Sent::NotSubmitted {
+            return Err(bad(
+                StatusCode::CONFLICT,
+                "the session did not take the Enter; the text is in its input box",
+            ));
         }
     }
     if let Some(k) = b.key.as_deref() {
@@ -810,28 +823,71 @@ struct Ask {
     session: String,
     /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
     judge: String,
+    /// When it was filed, unix seconds.
+    created: Option<i64>,
+    /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
+    agent: String,
+    /// The question's first sentence, and the question after it (hub-core `text::headline`).
+    /// A first sentence too long for headline's cap makes the whole question the title (a TSV row
+    /// is one line): a card wraps, so it never shows a cut title over the same question again.
+    title: String,
+    body: String,
+    /// What each option does, in `options` order ("" for a bare option), from `--options a=...`.
+    notes: Vec<String>,
+    /// The background the asker gave (`--context`), and why it recommends its option (`--why`).
+    context: String,
+    why: String,
+    /// The judge's policy rule and its reason, who answered (human, judge, shepherd) and the
+    /// message an in-session answer came from: the card's Details fold.
+    rule: String,
+    reason: String,
+    answered_by: String,
+    answer_note: String,
+    /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
+    assume_at: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
-/// claude_session, judge, answered_by.
+/// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
+/// judge_reason, answer_note, assume_at.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            (f.len() >= 7 && !f[0].is_empty()).then(|| Ask {
-                id: f[0].into(),
-                project: f[1].into(),
-                kind: f[4].into(),
-                question: f[5].into(),
-                options: f[6]
-                    .split('|')
-                    .filter(|o| !o.is_empty())
-                    .map(String::from)
-                    .collect(),
-                recommend: f.get(10).copied().unwrap_or("").into(),
-                session: f.get(15).copied().unwrap_or("").into(),
-                judge: f.get(16).copied().unwrap_or("").into(),
+            let col = |i: usize| f.get(i).copied().unwrap_or("");
+            (f.len() >= 7 && !f[0].is_empty()).then(|| {
+                let q = f[5].trim();
+                let (title, body) = match hub_core::text::headline(q) {
+                    (_, rest) if rest == q => (rest, String::new()),
+                    split => split,
+                };
+                Ask {
+                    id: f[0].into(),
+                    project: f[1].into(),
+                    kind: f[4].into(),
+                    question: f[5].into(),
+                    options: f[6]
+                        .split('|')
+                        .filter(|o| !o.is_empty())
+                        .map(String::from)
+                        .collect(),
+                    recommend: col(10).into(),
+                    session: col(15).into(),
+                    judge: col(16).into(),
+                    created: hub_core::fleet::ts(col(11)),
+                    agent: col(12).into(),
+                    title,
+                    body,
+                    notes: col(18).split('|').map(String::from).collect(),
+                    context: col(19).into(),
+                    why: col(20).into(),
+                    answered_by: col(17).into(),
+                    rule: col(21).into(),
+                    reason: col(22).into(),
+                    answer_note: col(23).into(),
+                    assume_at: col(24).into(),
+                }
             })
         })
         .collect()
@@ -852,13 +908,28 @@ struct AnswerBody {
     answer: String,
 }
 
-async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
-    if b.id.is_empty()
-        || !b
-            .id
+/// An ask id as agent-ask makes them (mktemp's letters and digits), so nothing else reaches argv.
+fn ask_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+}
+
+/// One ask's Full log, `agent-ask trace <id> --json`: its timeline, the judge's call line and
+/// the Langfuse link. Read only when the card's Full log fold is opened.
+async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::Value>> {
+    if !ask_id_ok(&id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let out = run_cmd("agent-ask", &["trace", &id, "--json"], None).await?;
+    serde_json::from_str(&out)
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+}
+
+async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
+    if !ask_id_ok(&b.id) {
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
     if b.answer.trim().is_empty() {
@@ -884,6 +955,7 @@ async fn watch_board() -> ApiResult<Json<boards::Watch>> {
         boards::watch(
             &boards::fleet_state(),
             &boards::shepherd_dir().join("watch.log"),
+            &actions::System,
         )
     })
     .await
@@ -900,11 +972,14 @@ async fn log_day(Query(q): Query<LogQuery>) -> ApiResult<Json<serde_json::Value>
     if q.date.as_deref().is_some_and(|d| !boards::is_day(d)) {
         return Err(bad(StatusCode::BAD_REQUEST, "date is YYYY-MM-DD"));
     }
-    tokio::task::spawn_blocking(move || boards::record(&boards::daylog_dir(), q.date.as_deref()))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
+    tokio::task::spawn_blocking(move || {
+        boards::record(&boards::daylog_dir(), q.date.as_deref())
+            .map(|r| boards::log_view(r, &chrono::Local))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no day-log record for that day"))
 }
 
 #[derive(Deserialize)]
@@ -920,10 +995,33 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
+/// Prometheus answer, the same join the hub TUI's Home draws.
+async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+    let infra = s.infra.infra().await;
+    tokio::task::spawn_blocking(move || {
+        let state = boards::state(&boards::fleet_state(), &actions::System);
+        let queue = hub_core::queue::Queue::read(&actions::System);
+        let board = hub_core::tasks::feed(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 async fn infra_board(State(s): State<Shared>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
         s.infra.get().await,
+    )
+        .into_response()
+}
+
+async fn pipeline_line(State(s): State<Shared>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.pipeline.get().await,
     )
         .into_response()
 }
@@ -934,6 +1032,18 @@ async fn fleet_board(State(s): State<Shared>) -> Response {
         s.fleet.get().await,
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct RunnerQuery {
+    name: String,
+}
+
+async fn fleet_runner(Query(q): Query<RunnerQuery>) -> ApiResult<Response> {
+    let json = fleet::runner(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) -> Response {
@@ -986,24 +1096,6 @@ async fn events_stream(
 mod tests {
     use super::*;
 
-    /// Run `paste_settled` over scripted captures; returns its answer and how many it read.
-    async fn settle(script: &[&str], polls: u32) -> (bool, usize) {
-        let mut it = script.iter();
-        let mut read = 0;
-        let settled = paste_settled(
-            "before",
-            || {
-                read += 1;
-                let next = it.next().copied().unwrap_or("before").to_string();
-                async move { next }
-            },
-            polls,
-            Duration::ZERO,
-        )
-        .await;
-        (settled, read)
-    }
-
     #[test]
     fn only_a_dir_directly_under_projects_is_a_new_project() {
         use notify::event::{CreateKind, ModifyKind};
@@ -1017,24 +1109,6 @@ mod tests {
         ));
         let modify = EventKind::Modify(ModifyKind::Any);
         assert!(!is_new_project(&modify, &projects.join("-new"), projects));
-    }
-
-    #[tokio::test]
-    async fn settles_once_the_paste_is_drawn_and_still() {
-        let got = settle(&["before", "before", "pasted", "pasted", "unread"], 40).await;
-        assert_eq!(got, (true, 4));
-    }
-
-    #[tokio::test]
-    async fn a_pane_still_redrawing_has_not_settled() {
-        let got = settle(&["a", "b", "c", "c"], 40).await;
-        assert_eq!(got, (true, 4));
-        assert_eq!(settle(&["a", "b", "c", "d"], 4).await, (false, 4));
-    }
-
-    #[tokio::test]
-    async fn an_unchanged_pane_gives_up_at_the_bound() {
-        assert_eq!(settle(&[], 5).await, (false, 5));
     }
 
     /// A path that cannot be watched comes back as failed and does not stop the others; the
@@ -1161,6 +1235,14 @@ mod tests {
         );
         assert_eq!(classify(Path::new("/h/.agent/parked/.agent-3.Xy12")), None);
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
+        for p in ["/h/.notes/outbox.md", "/h/.local/state/notes/ingest.jsonl"] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"outbox"}"#),
+                "{p}"
+            );
+        }
+        assert_eq!(classify(Path::new("/h/.notes/.outbox.lock")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(
             classify(Path::new("/h/.claude/projects/-h-x/abc.json")),
@@ -1180,6 +1262,54 @@ mod tests {
         let judged =
             "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
         assert_eq!(parse_asks(judged)[0].judge, "answer:b");
+        let full = "F1\tbnb\t\tpending\tquestion\tShip it? CI is green.\ta|b\t\t\t\ta\t2026-11-05T05:51:30-0800\tshepherd\t\t\tsid\t\t\n";
+        let a = &parse_asks(full)[0];
+        assert_eq!(
+            (a.title.as_str(), a.body.as_str()),
+            ("Ship it?", "CI is green.")
+        );
+        assert_eq!(
+            (a.created, a.agent.as_str()),
+            (Some(1_793_886_690), "shepherd")
+        );
+        assert_eq!(asks[0].created, None);
+        let q = format!("{}fix? More after it.", "which ".repeat(30));
+        let a = &parse_asks(&format!("L1\tbnb\t\tpending\tquestion\t{q}\ta|b\n"))[0];
+        assert_eq!((a.title.as_str(), a.body.as_str()), (q.as_str(), ""));
+        // option_notes, context and recommend_why trail the row (agent-ask list appends only).
+        let noted = "N1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\t\t\tdo a|do b\tthe background\tit is cheaper\n";
+        let a = &parse_asks(noted)[0];
+        assert_eq!(a.notes, vec!["do a", "do b"]);
+        assert_eq!(
+            (a.context.as_str(), a.why.as_str()),
+            ("the background", "it is cheaper")
+        );
+        // judge_rule, judge_reason and answer_note after them, for the Details fold.
+        let ruled = "R1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\thuman\tjudge\t\t\t\ttaste\tonly you know\tin session: b\n";
+        let a = &parse_asks(ruled)[0];
+        assert_eq!(
+            (
+                a.judge.as_str(),
+                a.answered_by.as_str(),
+                a.rule.as_str(),
+                a.reason.as_str(),
+                a.answer_note.as_str()
+            ),
+            ("human", "judge", "taste", "only you know", "in session: b")
+        );
+        assert_eq!(parse_asks(noted)[0].rule, "");
+        // assume_at after them, for the card's deadline.
+        let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
+        assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
+        assert_eq!(parse_asks(ruled)[0].assume_at, "");
+    }
+
+    #[test]
+    fn ask_ids_are_mktemp_shaped() {
+        assert!(ask_id_ok("JSVBgC"));
+        assert!(!ask_id_ok(""));
+        assert!(!ask_id_ok("../x"));
+        assert!(!ask_id_ok("a b"));
     }
 
     #[test]

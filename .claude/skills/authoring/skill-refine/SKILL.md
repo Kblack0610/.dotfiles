@@ -14,14 +14,14 @@ A `SKILL.md` is prose an agent obeys. It has no compiler, no test, and no import
 
 This skill is the maintenance pass for that corpus. It never trusts a skill's own account of itself; it checks against the filesystem, then against what the memory layers have since learned.
 
-## Why propose-only
+## Who changes a skill
 
-Skills are instructions, not code. An auto-rewrite that is subtly wrong does not throw - it changes how every future session behaves, invisibly. So the split is:
+Skills are instructions, not code. An auto-rewrite that is subtly wrong does not throw - it changes how every future session behaves, invisibly. So no change reaches a skill without a reviewable diff:
 
-- **Headless** (the weekly `agentctl@skill-refine` run): audit, write a report with proposed diffs, touch nothing.
-- **Interactive** (`apply`): a human walks the report and confirms each change.
+- **Nightly** (`docs-cleanup`): the runner counts `skill-drift` findings and queues a session that fixes the mechanical ones (a moved path, a renamed command) one area per PR, CI on each.
+- **Interactive** (`audit`, `apply`): the judgment layer below, a human confirming each change.
 
-Same gate as Dreaming's `mem0-queue.md`: machine-generated durable changes get staged, never auto-committed.
+The weekly propose-only `agentctl@skill-refine` run was retired on 2026-11-05: six reports in six weeks while DEADPATH rose from 25 to 31, because a report nobody applies fixes nothing.
 
 ## Verbs
 
@@ -35,9 +35,9 @@ Four layers, in order. The first is ground truth; the rest are judgment.
 skill-drift --json
 ```
 
-**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `UNLISTED` (on disk, absent from CLAUDE.md), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts).
+**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `LISTBUDGET` (the whole listing over its budget).
 
-**Static** (`skill-drift --lint .`, and CI already gates every PR on these, so a finding here means something landed before the gate existed): `NOFRONTMATTER`, `BADNAME`, `DUPNAME`, `BADMETA`, `CATCOLLIDE`, `LONGDESC`, `NONASCII`, plus the advisory `DESCNEAR`.
+**Static** (`skill-drift --lint .`, the checks `~/.local/src/docs/skills.md` names): CI gates every PR on these, so a finding here is debt frozen in `tests/skill-lint.baseline` or something that landed before the gate existed.
 
 `skill-drift` reports **all** findings and marks which are `new` relative to `~/.agent/skill-drift.baseline`. Read the whole set in an audit; the baseline marks what is new, not so old debt disappears.
 
@@ -82,7 +82,7 @@ Rank by blast radius: a skill invoked constantly with a dead path outranks a rar
 2. Walk findings in rank order. For each: show the diff, confirm, edit.
 3. Route the fix to the right tool:
    - Skill prose -> edit the `SKILL.md` directly.
-   - CLAUDE.md registration (`UNLISTED`/`GHOST`) -> the `update-rules` skill.
+   - CLAUDE.md registration (`GHOST`) -> the `update-rules` skill.
    - `UNDEPLOYED` -> create the symlink into `~/.claude/skills/`.
 4. Re-run `skill-drift` to confirm the finding is gone and nothing new appeared.
 5. If the fixed set is now the accepted state, refresh the baseline: `skill-drift --write-baseline`.
@@ -94,7 +94,7 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 
 1. Name the evidence: which sessions/lessons show the repetition.
 2. Confirm scope and name with the user. **Never auto-create a skill file.**
-3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. Which repo is decided by `.githooks/sensitive-tokens.txt`, not by taste: if the draft matches any of those patterns it goes in `~/.dotfiles-private`, otherwise public plus a `.gitignore` allowlist line.
+3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. `dotfiles-land` decides which repo.
 4. Run `skill-deploy` - never hand-write the symlink. A skill that is not linked is invisible. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.
 
@@ -105,19 +105,17 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 - **`*.example.internal` hostnames are deliberate sanitization** for the public repo (see `dotfiles-land`), not drift. Same for `AcmeCorp` and `YYYY-MM-DD` placeholders. Do not "fix" them into real hostnames - that leaks infra into a public repo.
 - **Do not silence a finding by weakening the check.** If `skill-drift` is wrong, fix its logic or use the `skill-drift: ignore` line marker with a stated reason.
 - **A skill is not stale just because it is old.** Verify against the filesystem before proposing a rewrite.
-- **Keep the house writing style**: plain ASCII, no em dashes, no hard-wrapping.
+- **Hold every edit to `~/.local/src/docs/skills.md`**, and do not hard-wrap.
 
 ## Cadence
 
 | Piece | Runs | Does |
 |---|---|---|
 | `skill-drift` | on demand; `--lint` in CI on every PR | deterministic, zero-token |
-| `agentctl@skill-refine` | Mon 05:00 | full audit -> report at `~/.agent/plans/dotfiles/`; edits nothing |
-| `/skill-refine apply` | when you choose | the only thing that changes a file |
+| `agentctl@docs-cleanup` | nightly 05:00 | counts drift, queues a `docs-cleanup` pass that lands fixes by PR |
+| `/skill-refine audit`, `apply` | when you choose | judgment: overlaps, lesson contradictions, missing skills |
 
-05:00 Monday is deliberate: after `dream` (03:00) so the audit sees the latest consolidation, and after `lab-sync` (04:00).
-
-There is no sentinel watch on skill-drift: it was deleted on 2026-11-02 after 84 days red on UNUSED signals and false positives. The weekly audit reads the same findings.
+There is no sentinel watch on skill-drift: it was deleted on 2026-11-02 after 84 days red on UNUSED signals and false positives. The nightly runner reads the same findings.
 
 ## Verification
 

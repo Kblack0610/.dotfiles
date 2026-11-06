@@ -109,13 +109,13 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   refute_blocks "$(gate s1)"
 }
 
-@test "a focus write during this turn satisfies the gate" {
+@test "a focus write during this turn does not satisfy the gate -- work is tracked in the queue" {
   dirty
   gate s1 >/dev/null                       # first run stamps last_run
   focus '- [ ] open thing (2d)' '- [ ] freshly added (0d)'
   sleep 1
   printf '[%s] [INFO] focus: added "freshly added"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
-  refute_blocks "$(gate s2)"
+  assert_blocks "$(gate s2)"
 }
 
 @test "a ptask write satisfies the gate -- project work need not touch the daily note" {
@@ -176,33 +176,33 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   assert_blocks "$(gate s2)"
 }
 
-@test "a focus write from before the last run does not count" {
+@test "a ptask write from before the last run does not count" {
   dirty
   gate s0 >/dev/null                       # establish a last_run mark
   sleep 1
-  printf '[%s] [INFO] focus: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
 
-@test "on a first run an old focus write does not fail the gate open" {
-  # No state file means no turn window. A bare epoch 0 would make every focus write ever
+@test "on a first run an old ptask write does not fail the gate open" {
+  # No state file means no turn window. A bare epoch 0 would make every ptask write ever
   # logged look like it just happened, silently skipping the gate once per project.
   dirty
-  printf '[%s] [INFO] focus: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
 
-@test "on a first run a focus write from seconds ago still counts" {
+@test "on a first run a ptask write from seconds ago still counts" {
   dirty
-  printf '[%s] [INFO] focus: added "just now"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "just now"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   refute_blocks "$(gate s1)"
 }
 
-@test "a notes-today write is not a focus write" {
+@test "a notes-today write is not a ptask write" {
   # Backticks are deliberately absent from this test name: bats evaluates the name string,
   # so a quoted `notes today` in it would actually run the command.
   #
-  # Only `focus:` lines count. `today:` refreshes Watches/Comms on its own schedule and
+  # Only `ptask:` lines count. `today:` refreshes Watches/Comms on its own schedule and
   # would otherwise satisfy the gate without anyone tracking anything.
   dirty
   sleep 1
@@ -316,10 +316,10 @@ gate_t() {
   assert_blocks "$(gate_t s1)"
 }
 
-@test "session: a focus write counts too" {
+@test "session: a focus write is not tracking -- work is tracked in the queue" {
   tcall s1 Write
   tcall s1 Bash 'notes focus start "my thing"'
-  refute_blocks "$(gate_t s1)"
+  assert_blocks "$(gate_t s1)"
 }
 
 @test "session: two concurrent sessions each get their one nudge" {
@@ -337,4 +337,113 @@ gate_t() {
   local out
   out=$(jq -cn --arg t "$SANDBOX/missing.jsonl" '{session_id:"s1", transcript_path:$t, stop_hook_active:false}' | bash "$GATE" 2>/dev/null)
   assert_blocks "$out"
+}
+
+# ── the agent-queue item is tracking ─────────────────────────────────────────
+# The global rule tracks an agent's task on its agent-queue item, and a dispatched brief
+# forbids other board rows. Before 2026-11-05 about half the gate's blocks hit such sessions.
+
+@test "session: a dispatched queue item (AGENT_QUEUE_ITEM) is tracking" {
+  tcall s1 Edit
+  local out
+  out=$(touch "$SANDBOX/s1.jsonl"; jq -cn --arg t "$SANDBOX/s1.jsonl" '{session_id:"s1", transcript_path:$t, stop_hook_active:false}' \
+    | AGENT_QUEUE_ITEM=fix-thing bash "$GATE" 2>/dev/null)
+  refute_blocks "$out"
+}
+
+@test "session: its own agent-queue add or agent-land is tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue add --running --project dotfiles --slug fix-thing "fix the thing"'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  tcall s2 Bash 'agent-land 42 --item fix-thing'
+  refute_blocks "$(gate_t s2)"
+}
+
+@test "session: an item whose sessions list this one is tracking, though the transcript lost the add" {
+  # 2026-11-05 a compaction dropped the add from the transcript the gate reads, and it blocked
+  # a session its own item already named. A stub answers for the queue: s1 has an item.
+  printf '#!/bin/sh\n[ "$1 $2 $3" = "mine --sid s1" ] && { echo the-item; exit 0; }\nexit 1\n' > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  tcall s1 Edit
+  refute_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  assert_blocks "$(gate_t s2)"
+}
+
+# filler <session> -- 1 MB of later calls, far past a pipe buffer (64 KB), so a grep that stops
+# at an earlier match always leaves its writer unwritten bytes. 100 KB a call: one argument's limit is 128 KB.
+filler() {
+  local i x
+  x=$(head -c 100000 /dev/zero | tr '\0' x)
+  for i in $(seq 10); do tcall "$1" Bash "echo $x"; done
+}
+
+@test "session: a long session's early PR and agent-land still count past a pipe buffer" {
+  # 2026-11-05 under pipefail `printf "$CALLS" | grep -q` read a match as no match once the
+  # calls passed 64 KB: grep exits on the match, printf takes SIGPIPE, the pipeline is 141.
+  # A session that landed with agent-land was blocked, and one with no item could pass.
+  tcall s1 Edit
+  tcall s1 Bash 'gh pr create --title t'
+  filler s1
+  assert_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  tcall s2 Bash 'gh pr create --title t'
+  tcall s2 Bash 'agent-land 42 --item fix-thing'
+  filler s2
+  refute_blocks "$(gate_t s2)"
+}
+
+@test "session: its own agent-queue claim is tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue claim fix-thing'
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: a read-only agent-queue verb is not tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue list'
+  tcall s1 Bash 'agent-queue show fix-thing'
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "the block reason leads with the agent-queue item" {
+  dirty
+  local reason
+  reason="$(gate s1 | jq -r '.reason')"
+  [[ "$reason" == *'agent-queue add --running'* ]]
+}
+
+# ── a PR is a unit of work: only a queue item tracks it ──────────────────────
+# 2026-11-05 only 26% of merged PRs had a queue item: a board write or a Focus item in
+# progress let a PR session pass with nothing on the work ledger.
+
+@test "session: a PR with only a board write or a Focus item in progress blocks, once" {
+  focus '- [/] something in progress'
+  tcall s1 Edit
+  tcall s1 Bash 'notes ptask dotfiles --agent done "the row" --proof pr:42'
+  tcall s1 Bash 'gh pr create --title t --body b'
+  local out
+  out="$(gate_t s1)"
+  assert_blocks "$out"
+  [[ "$(jq -r .reason <<<"$out")" == *'agent-queue claim <slug>'* ]]
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: a PR with its own agent-queue add, claim or agent-land passes" {
+  tcall s1 Edit; tcall s1 Bash 'gh pr create --title t'; tcall s1 Bash 'agent-queue add --running --project dotfiles "fix(x): y"'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Bash 'gh pr merge 7 --squash'; tcall s2 Bash 'agent-queue claim fix-x-y'
+  refute_blocks "$(gate_t s2)"
+  tcall s3 Edit; tcall s3 Bash 'gh pr create'; tcall s3 Bash 'agent-land 7 --item fix-x-y'
+  refute_blocks "$(gate_t s3)"
+}
+
+@test "session: an earlier Edit nudge does not spend the PR nudge" {
+  tcall s1 Edit
+  assert_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  assert_blocks "$(gate_t s1)"
 }

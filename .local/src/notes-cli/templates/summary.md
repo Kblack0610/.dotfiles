@@ -8,7 +8,7 @@ tags: []
 
 Working sheet: [[README]] - this file is generated (lab-status, lab-sync). Edit README, not here.
 
-Wants for the agents go on the BOARD, not here: `notes ptask {name} add "<title>" #ai` (the session preflight injects that lane at turn 1).
+Wants for the agents go on the AGENT board, not here: `notes ptask {name} --agent add "type(area): title #size/s"` (the session preflight injects that lane at turn 1).
 
 <!-- STATUS:START — an agent writes a dated "where we are" note here; do not hand-edit -->
 _(no status yet)_

@@ -1,9 +1,9 @@
 "use strict";
-// The Jobs tab: every job that runs on its own (agentctl runners, user timers, Unity gates,
+// Infra's Jobs section (agent-web's Jobs tab until phase 4): every job that runs on its own (agentctl runners, user timers, Unity gates,
 // CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log.
 
 // Most sources are files and journald, which push nothing to a browser, so the open tab
-// re-reads on the Infra board's cadence; the server folds reads inside 15s into one.
+// re-reads on the Infra board's cadence while Infra is open; the server folds reads inside 15s into one.
 const JOBS_REFRESH_MS = 60e3;
 const JOB_SOURCES = ["agentctl", "timer", "unity", "ci", "k8s"];
 const JOB_STATES = ["running", "queued", "done"];
@@ -17,7 +17,7 @@ const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? 
 const refreshJobs = coalesce(async () => {
   const q = jst.hist ? `?name=${encodeURIComponent(jst.hist)}` : "";
   try { jst.data = await api("/api/jobs" + q); jst.err = null; } catch (e) { jst.err = e.message; }
-  if (st.tab === "jobs") renderJobs();
+  if (st.tab === "infra") renderJobs();
 });
 
 
@@ -31,9 +31,9 @@ function resultCell(j) {
 function jobRow(j) {
   const k = jobKey(j);
   const dur = j.state === "queued" ? `wait ${secs(j.secs)}` : secs(j.secs);
-  const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">x${j.runs}</a>` : "";
+  const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">${j.runs} runs</a>` : "";
   const next = j.next ? ` <span class="muted">next ${when(j.next)}</span>` : "";
-  const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">&rarr;</a>` : "";
+  const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="jr${k === jst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-key="${esc(k)}">` +
     `<td>${esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
     `<td class="n">${when(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +
@@ -52,8 +52,8 @@ function renderJobs() {
   const n = (f) => all.filter(f).length;
   const shown = all.filter((j) => (!jst.src || j.source === jst.src) && (!jst.state || j.state === jst.state));
   const hours = Math.round((d.window_secs || 86400) / 3600);
-  let html = `<div class="bhead"><span>${jst.hist ? `every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a>` : "jobs"}` +
-    ` <span class="muted">running ${n((j) => j.state === "running")}, queued ${n((j) => j.state === "queued")}, failed ${n((j) => j.ok === false)} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
+  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
+    ` <span class="muted">running ${n((j) => j.state === "running")}, queued ${n((j) => j.state === "queued")}, failed ${n((j) => j.ok === false)} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   html += `<div class="fold">${chips(JOB_SOURCES, jst.src, "data-src")} &nbsp; ${chips(JOB_STATES, jst.state, "data-state")}</div>`;
@@ -66,20 +66,26 @@ function renderJobs() {
   html += `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>`;
   if (jst.log) html += `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>`;
   paint(el, html);
+  seekSection();
+}
+
+// A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
+// The Fleet tab's runner page reads its runs' logs here too.
+async function jobLogText(j) {
+  if (!j.log) return j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log.";
+  try {
+    return await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
+  } catch (e) {
+    return "Could not read the log: " + e.message;
+  }
 }
 
 async function openLog(j) {
   jst.sel = jobKey(j);
-  const title = `${j.source} ${j.name} ${when(j.started)}`;
-  if (!j.log) { jst.log = { title, text: j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log." }; renderJobs(); return; }
-  jst.log = { title, text: "Loading..." };
+  const log = jst.log = { title: `${j.source} ${j.name} ${when(j.started)}`, text: "Loading..." };
   renderJobs();
-  try {
-    jst.log.text = await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
-  } catch (e) {
-    jst.log.text = "Could not read the log: " + e.message;
-  }
-  if (st.tab === "jobs") renderJobs();
+  log.text = await jobLogText(j);
+  if (st.tab === "infra") renderJobs();
 }
 
 $("jobs").addEventListener("click", (e) => {
@@ -96,9 +102,5 @@ $("jobs").addEventListener("click", (e) => {
   if (j) openLog(j);
 });
 
-const pollJobs = poll("jobs", refreshJobs, JOBS_REFRESH_MS);
-
-TABS.jobs = {
-  show() { renderJobs(); pollJobs(); },
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "jobs") refreshJobs(); },
-};
+// Shown and refreshed by TABS.infra (infra.js).
+const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);

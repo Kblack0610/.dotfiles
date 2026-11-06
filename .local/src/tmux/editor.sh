@@ -12,9 +12,6 @@
 #                 Idempotent, so it is both the create path and the repair path.
 #   root          print the directory the editor opens in. Split out so the resolution
 #                 order is assertable without a terminal.
-#   open <file> [line]
-#                 show <file> at <line> in the editor window, creating it if needed. The
-#                 projects popup's `o`.
 #   --help, -h    this text
 #
 # ONE editor per session, living at window 1, rooted at the session's directory. NOT one per
@@ -61,7 +58,7 @@ _session() { tmux display-message -p '#{session_name}' 2>/dev/null; }
 #
 # session_path first, because that is the directory the session was BORN in, which is the
 # project root for everything that creates sessions here: the manifests in
-# .config/tmux-servers/ (`new-session -c "$dir"`), sessionizer.sh, and sesh. The pane's
+# .config/tmux-servers/ (`new-session -c "$dir"`) and sessionizer.sh. The pane's
 # path is a worse answer - it is wherever you happened to cd - so it is only consulted when
 # the session has none, and then via its git root rather than raw.
 _root_dir() {
@@ -241,27 +238,6 @@ cmd_toggle() {
 
 # cmd_open <file> [line] - show <file> at <line> in this session's editor.
 #
-# No editor window yet: create it ON the file, so there is nothing to type into an editor
-# that is still starting (the race cmd_toggle describes). Editor fell back to its shell:
-# start it on the file. Editor running: `:e` it, the way servers.sh's _refresh_landing does,
-# backslash-escaping spaces because this is typed at vim's command line.
-cmd_open() {
-  panel_in_tmux || panel_die "not inside tmux - there is no editor window to open in"
-  local file="${1:-}" line="${2:-1}" win
-  [ -n "$file" ] || panel_die "usage: editor.sh open <file> [line]"
-
-  win="$(_editor_window)"
-  if [ -z "$win" ]; then
-    win="$(EDITOR_WINDOW_CMD="nvim +$line $(printf '%q' "$file")" cmd_ensure)" || return 1
-  elif _at_shell "$win"; then
-    tmux send-keys -t "$win" "nvim +$line $(printf '%q' "$file")" Enter
-  else
-    tmux send-keys -t "$win" Escape
-    tmux send-keys -t "$win" ":e +$line ${file// /\\ }" Enter
-  fi
-  tmux select-window -t "$win"
-}
-
 # ── The test seam ────────────────────────────────────────────────────────────
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
@@ -270,7 +246,6 @@ case "${1:-}" in
 toggle) cmd_toggle "${2:-}" ;;
 ensure) cmd_ensure ;;
 root) cmd_root ;;
-open) cmd_open "${2:-}" "${3:-}" ;;
 -h | --help) panel_usage ;;
 *) panel_die "unknown verb: ${1:-} (try --help)" ;;
 esac

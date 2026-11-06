@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# pr-viewer.sh -- Prefix+p, the open-PR board.
+# pr-viewer.sh -- Prefix+P, the open-PR board.
 #
 # integ tier: the script runs as a subprocess against the recording `gh` stub, so no test
 # here touches the network. The fzf picker is not exercised (there is nothing to assert

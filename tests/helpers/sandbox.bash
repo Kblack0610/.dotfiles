@@ -39,19 +39,21 @@ MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
 GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 # The shared AUTO-block splicer, same reason again.
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
+# The chain event writer agent-queue, fleet-dispatch and agent-land share, same reason again.
+CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
+# The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
+PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
 # fixture data by copy (never by running the real tool).
 # sandbox_worlds -- the manifests the fleet scripts ask `tmux-world` about: agents on lab, the
-# human's dotfiles on hub, the shepherd's session on its own world. A test of routing itself
-# writes its own.
+# human's dotfiles on hub. A test of routing itself writes its own.
 sandbox_worlds() {
   mkdir -p "$HOME/.config/tmux-servers"
   echo '@agents' > "$HOME/.config/tmux-servers/lab.conf"
   echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
-  echo 'shepherd ~/.dotfiles' > "$HOME/.config/tmux-servers/shepherd.conf"
 }
 
 sandbox_init() {
@@ -74,7 +76,7 @@ sandbox_init() {
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_CACHE_HOME="$HOME/.cache"
   export XDG_DATA_HOME="$HOME/.local/share"
-  # State too: tmx's back-slot and wt's `new` lock both prefer XDG_STATE_HOME, and a desktop
+  # State too: tmx's places (Prefix+L) and wt's `new` lock both prefer XDG_STATE_HOME, and a desktop
   # session exports it pointing at the real ~/.local/state.
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$HOME/.agent/asks"
@@ -115,9 +117,14 @@ sandbox_init() {
   # row, and the fleet view renders them as real.
   unset AGENTCTL_STATE AGENTCTL_NAME
 
-  # The suite runs from inside a Claude session, whose id and attended flag would otherwise
-  # be read as the test's own: an attended post renders into the pane.
-  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
+  # The suite runs from inside a Claude session, whose id, attended flag and dispatched queue
+  # item would otherwise be read as the test's own: an attended post renders into the pane,
+  # and an item satisfies the focus gate.
+  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
+
+  # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
+  # that as "detach through systemd-run", which would start a real transient scope.
+  unset INVOCATION_ID
 
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
@@ -130,8 +137,13 @@ sandbox_init() {
 
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
-  # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
-  unset NTFY_URL NTFY_TOKEN DISPLAY
+  # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included. The
+  # display ones keep a subject from opening a real window or driving the real compositor.
+  unset NTFY_URL NTFY_TOKEN DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+  # Detach from the host's model transport: every name agentctl-run scrubs (an OPENAI_API_KEY in
+  # the human's shell, say), so a subject sees the clean environment CI gives it.
+  # shellcheck disable=SC2046
+  unset $(awk '/^\[/ { s = ($0 == "[scrub]") } s && /^[A-Z_]+([[:space:]]|$)/ { print $1 }' "$REPO_ROOT/.local/src/agent-run/lib/scrub.list")
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the
@@ -216,7 +228,7 @@ sandbox_init() {
 # enforces, so seeding one is exactly "drop a conf in".
 seed_runner() {
   local name="$1" activity="${2:-}"
-  printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047test runner\047\nCOMMAND=/bin/true\n' "$name" > "$AGENTCTL_CONF_DIR/$name.conf"
+  printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047test runner\047\nEFFECT=none\nCOMMAND=/bin/true\n' "$name" > "$AGENTCTL_CONF_DIR/$name.conf"
   if [ -n "$activity" ]; then
     mkdir -p "$AGENTCTL_STATE_DIR/$name"
     printf '[2026-07-24T12:00:00-07:00] %s\n' "$activity" >> "$AGENTCTL_STATE_DIR/$name/activity.log"

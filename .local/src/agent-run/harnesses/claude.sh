@@ -56,8 +56,24 @@ harness_exec() {
   # the prompt agentctl-dream and agentctl-nightly-sync already use. A run with no
   # --print is a timer's pass in a tmux window (fleet-shepherd), which a human may
   # attach to and type into, so it answers them, but still never waits on one.
-  local print=0 a
+  local print=0 a i input="" args=("$@")
   for a in "$@"; do case "$a" in -p|--print) print=1 ;; esac; done
+  # The print call's input goes to claude on stdin, never as an argument: an argument is
+  # capped at 128 KiB (E2BIG), and an agent's PROMPT file is prepended to it.
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -p|--print)
+        if [ $((i + 1)) -lt ${#args[@]} ] && [ "${args[i + 1]:0:1}" != - ]; then
+          input="${args[i + 1]}"
+          args=("${args[@]:0:i+1}" "${args[@]:i+2}")
+        fi
+        break ;;
+    esac
+  done
+  set -- "${args[@]+"${args[@]}"}"
+  local cap; cap="$(budget_call_usd)"
+  if [ "$print" = 1 ] && [ -n "$cap" ]; then flags+=(--max-budget-usd "$cap"); fi
+  if [ "$print" = 1 ] && [ -n "${AGENT_SCHEMA:-}" ]; then flags+=(--json-schema "$(jq -c . "$AGENT_SCHEMA")"); fi
   if [ "$print" = 1 ]; then
     flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
   else
@@ -69,6 +85,20 @@ harness_exec() {
     printf ' %q' "${flags[@]}"
     printf '\n'
     return 0
+  fi
+  [ -z "$input" ] || exec 0<<<"$input"
+
+  # A named print call (an --agent, or a runner by its unit's AGENTCTL_NAME) is recorded
+  # (lib/calls.sh): the JSON result carries the session id, tokens and cost, which the day
+  # budget sums, and the caller still gets plain text. A caller that chose its own
+  # --output-format keeps it, unrecorded.
+  if [ -n "$(calls_name)" ] && [ "$print" = 1 ]; then
+    local own=0
+    for a in "$@"; do case "$a" in --output-format|--output-format=*) own=1 ;; esac; done
+    if [ "$own" = 0 ]; then
+      calls_record claude claude --output-format json "${flags[@]}" "$@"
+      exit $?
+    fi
   fi
 
   exec claude "${flags[@]}" "$@"

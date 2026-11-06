@@ -13,7 +13,7 @@ setup() {
   sandbox_init basic
   TIMERS="$HOME/.config/systemd/user"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\nLANE=maintain\nDESCRIPTION=\047test runner %s\047\nCOMMAND=/bin/true\nSCHEDULE=daily\n' "$n" "$n" > "$AGENTCTL_CONF_DIR/$n.conf"
+    printf 'NAME=%s\nKIND=oneshot\nLANE=maintain\nDESCRIPTION=\047test runner %s\047\nEFFECT=none\nCOMMAND=/bin/true\nSCHEDULE=daily\n' "$n" "$n" > "$AGENTCTL_CONF_DIR/$n.conf"
   done
 }
 
@@ -137,12 +137,13 @@ setup() {
 }
 
 @test "a oneshot restarts only on an abnormal end; a persistent runner keeps the template's policy" {
-  printf 'NAME=gamma\nKIND=persistent\nLANE=observe\nDESCRIPTION=\047test daemon\047\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/gamma.conf"
+  printf 'NAME=gamma\nKIND=persistent\nLANE=observe\nDESCRIPTION=\047test daemon\047\nEFFECT=none\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/gamma.conf"
   mkdir -p "$TIMERS/agentctl@gamma.service.d"
   echo stale > "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf"   # it was a oneshot once
   run "$AGENTCTL_BIN" reload
   assert_success
   grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -qx 'SuccessExitStatus=75' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
 }
 

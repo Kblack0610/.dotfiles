@@ -81,6 +81,8 @@ panel_conf_bindings() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ && /display-popup/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       table = "root"
       if (match(line, /-T[[:space:]]+[^[:space:]]+/)) {
         t = substr(line, RSTART, RLENGTH); sub(/-T[[:space:]]+/, "", t); table = t
@@ -214,6 +216,13 @@ panel_assert_no_bare_script_name() {
   ! grep -qE "(execute|execute-silent|reload|become|preview|transform)\([^)]*${base//./\\.}" "$f"
 }
 
+# A picker takes its preview layout from panel_fzf_layout (panel-lib.sh), never its own
+# --preview-window or change-preview-window: one layout, one ctrl-/ toggle, in every panel.
+panel_assert_layout_from_lib() {
+  local f="$REPO_ROOT/$1"
+  ! grep -qE -- '--preview-window|change-preview-window' "$f"
+}
+
 # The palette must use ANSI indices 0-7/90 and SGR attributes only -- never truecolor.
 #
 # This is what makes these surfaces theme-responsive TODAY: theme-switch recolours the
@@ -252,7 +261,7 @@ panel_ratchet() {
     "$fn" "$path" || offenders+=("$path")
   done < <(panel_rows)
 
-  # Uniq: a script bound to two keys (servers.sh is S, C-s and A) must count once.
+  # Uniq: a script bound to two keys (servers.sh is S and H) must count once.
   n="$(printf '%s\n' "${offenders[@]+"${offenders[@]}"}" | sort -u | grep -c . || true)"
 
   if [ "$n" -gt "$max" ]; then
@@ -283,6 +292,8 @@ root_binds() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       if (line ~ /^[[:space:]]*(bind|bind-key)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-T[[:space:]]/) next
       n = split(line, F, /[[:space:]]+/)
       key = ""

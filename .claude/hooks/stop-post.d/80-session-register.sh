@@ -118,7 +118,7 @@ jq -nc \
   --arg sid "$SID" \
   --arg project "$PROJECT_NAME" \
   --arg transcript "$TRANSCRIPT" \
-  --arg resume "claude -r $SID" \
+  --arg resume "cl -r $SID" \
   --arg first_prompt "$FIRST_PROMPT" \
   --argjson edits "${EDITS:-0}" \
   --arg head_commit "$HEAD_COMMIT" \
@@ -132,6 +132,7 @@ jq -nc \
         usage_partial: $usage.usage_partial,
         tokens:        $usage.tokens,
         models:        $usage.models,
+        cost_by_model: $usage.cost_by_model,
         duration_s:    $usage.duration_s
       } end)' \
   >> "$TMP" 2>/dev/null || { rm -f "$TMP"; exit 0; }

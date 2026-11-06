@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
-  reviewed: 2026-11-03
+  reviewed: 2026-11-05
 ---
 
 # fleet-pace
@@ -14,9 +14,9 @@ The machine-room role of `fleet-lead` (Binks). It was written down after 2026-10
 
 ## Tools
 
-- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
+- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
 - `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
-- `claude-acct park <session>` exits a session's claude and keeps its pane, writing the resume to `~/.agent/parked/<session>`; `claude-acct unpark <session>` resumes it there on the account with room. A parked session costs no tokens: no background task finishing and no message can wake it to re-read its context. A pause sent as a message costs one full-context turn, and the session keeps waking on its own waits: on 2026-11-02 those wakes were 48% of the fleet's tokens.
+- `claude-acct park <target>` exits a session's claude and keeps its pane, writing the resume to `~/.agent/parked/<key>`; `claude-acct unpark <target>` resumes it there on the account with room. A target is `[server/]session`, `[server/]session:window` or a pane id `%N`; name the window or pane when the tmux session holds more than one claude (the hub `dotfiles` session does), and the ledger key is then `session:window`. A parked session costs no tokens: no background task finishing and no message can wake it to re-read its context. A pause sent as a message costs one full-context turn, and the session keeps waking on its own waits: on 2026-11-02 those wakes were 48% of the fleet's tokens.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
 
 The class column tells you how each consumer can be stopped:
@@ -32,7 +32,7 @@ The class column tells you how each consumer can be stopped:
 
 | Verdict | Meaning |
 |---|---|
-| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch`, which pauses work and says nothing about load) |
+| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch mac-desktop`, which pause work or the mac-mini desktop and say nothing about load) |
 | CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more). Safe to send GO |
 | OK | Nothing held, nothing over the line |
 
@@ -78,9 +78,11 @@ What a `fleet-lead pass` runs for a `pace:`, `blocked:` or `limit:` due line, or
 
 - Over the top (HOLD, or idle under 5%): run the `hold` verb. If one process tree is the cause, name it. A player build on the workstation (`PlaygroundBuild.Build*`, one shader compiler per core) is never in budget; tell the human and kill it only with their OK.
 - A `pace:` line naming a hold while the machine reads CLEAR: run `go`.
+- A `pace: parked <targets>` line (sessions parked while the machine reads CLEAR with no hold): `claude-acct unpark` each target. A session parked on its budget is left off the line, because that park paged the human, who decides when it resumes.
 - A gate queued or running past about an hour (`gh run list --status queued`, or a pane waiting on `ci-gate.sh`): report it once per run as a CI bug (one agent-board row, or `agent-ask` when it blocks a session), and leave the gate where it is (`docs/operations/ci.md` rule 9).
 - Blocked on I/O (a `blocked:` due line, or rows in the `blocked on I/O` table that a second pass still shows): a recursive search (`find`, `bfs`, `fd`, `rg`, `grep -r`, `ugrep`, or Claude's own Grep/Glob, whose comm is its version, like `2.1.312`) only reads, so `kill` it without asking and send its session one `fleet-comms` line: "your search from `/` was walking the NAS for <age>; I killed it. Search your worktree or a named directory." That line is the one message a WORKING session ever gets. Anything else blocked (a build, copy or test on a network mount, a hung mount) goes to the human with the open path; never kill it. Blocked threads are not CPU, so they are never a reason to hold Unity. 2026-10-29: three searches from `/` walked `/mnt/nas` for 25-43 minutes, load 28 at 0% CPU, and no pass saw them; `block-root-search.sh` now denies the call.
-- Sessions stopped on the account's usage limit (a `limit:` due line, or the pane shows "weekly limit" or "/login"; read the pane first, since a due line is only a text match): run `claude-acct move <session>` (`--server` when the name is on two servers, `--dry-run` to see the plan). It exits that claude and resumes the same conversation in the same pane on the account `claude-acct pick` returns. It refuses a busy session, an open dialog, a session already on that account, and a session with background shells running, which it lists. Move a refused session on a later pass; add `--stop-shells` only when every listed shell is a wait loop the session can restart, never a running gate. Never answer /exit's "Move to background": it forks the conversation into a `claude daemon` session left on the old account, a second agent in the same worktree once that account resets. Escalate once to the human only when `move` says no account has room: only they can log in or add usage.
+- An account out of usage (`claude-acct status` shows it at 100% of its week or its 5h window): `fleet-shepherd due` prints one `limit:` line per live session on it, and the pass answers each. Idle: run the line's `claude-acct move <target> --to <account>`, which exits that claude and resumes the same conversation in the same pane on the account `claude-acct room` named. In a dialog: list it for the human, then `fleet-shepherd skip` the line. Busy or running shells: no line; it comes due once idle, so a gate or test is never cut off. Never add `--stop-shells` to a limit move, and never move a session `~/.agent/shepherd/orders.md` marks CI-first without asking the human first. No account has room: one line per account; tell the human once, since only they can log in or add usage, and skip it. Which account carries new work is `claude-acct room`'s call (the account-usage-leverage item), not this move's.
+- A session on an account with room that still stopped on the limit (the `stopped on the usage limit` line, or the pane shows "weekly limit" or "/login"; read the pane first, since that line is only a text match): `claude-acct move <target>` (`--dry-run` shows the plan). It refuses a busy session, an open dialog, a session already on that account, and one with background shells running, which it lists; move it on a later pass. Never answer /exit's "Move to background": it forks the conversation into a `claude daemon` session left on the old account, a second agent in the same worktree once that account resets.
 - Otherwise the pace is fine; say the numbers in one line.
 
 ## Do NOT
@@ -88,6 +90,7 @@ What a `fleet-lead pass` runs for a `pace:`, `blocked:` or `limit:` due line, or
 The fleet-wide list is in `fleet-lead`; these are this role's own.
 
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
+- Lift a `dispatch` hold set by `machine-mode`, or read the mode's lower runner and Unity slots as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it.
 - Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.

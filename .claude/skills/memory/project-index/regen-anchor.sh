@@ -16,7 +16,7 @@
 # was an AUTO block two months stale: the dotfiles anchor advertised its latest eval as
 # 2026-06-08 while the directory held 2026-08-09. Nothing failed, because a stale
 # generated block and a fresh one look identical. That matters more now that the session
-# preflight stopped listing plans and lessons itself and delegates both to this block.
+# preflight stopped listing plans itself and delegates them to this block.
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
@@ -96,7 +96,7 @@ REPO=""
 if declare -F project_repo_path >/dev/null 2>&1; then
   REPO="$(project_repo_path "$PROJECT")"
 elif command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
-  REPO=$(jq -r --arg n "$PROJECT" '.paths | to_entries[] | select(.value==$n) | .key' "$MAP_FILE" 2>/dev/null | head -1)
+  REPO=$(jq -r --arg n "$PROJECT" 'limit(1; .paths | to_entries[] | select(.value==$n) | .key)' "$MAP_FILE" 2>/dev/null)
 fi
 # tracker line
 TRACKER=""
@@ -130,7 +130,7 @@ for d in docs/decisions docs/architecture/decisions; do
   if [ -n "$REPO" ] && [ -d "$REPO/$d" ]; then ADR_DIR="$REPO/$d"; break; fi
 done
 if [ -n "$ADR_DIR" ]; then
-  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | head -3 \
+  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | sed -n '1,3p' \
     | paste -sd, - | sed 's/,/, /g' || true)"
 fi
 
@@ -144,8 +144,13 @@ lab_section() {
     echo "- _(notes CLI unavailable; lab facts not read)_"
     return
   fi
-  local rows
-  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" '
+  local rows types='{}' name
+  if declare -F project_inherited >/dev/null 2>&1; then
+    while IFS= read -r name; do
+      types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
+    done <<<"$LAB_NAMES"
+  fi
+  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
     ($names | split("\n")) as $want
@@ -153,7 +158,7 @@ lab_section() {
     | $rows[]
     | ((.stage == "beta" or .stage == "prod")
        and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
-    | "- **\(.name)** (\([.profile, .stage] | map(select(. != "")) | join(", ")))"
+    | "- **\(.name)** (\([.profile, ($types[.name] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
       + ": \(.open) open, \(.done) done, \(.agent) on the agent board"
       + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
@@ -165,6 +170,10 @@ lab_section() {
   ' <<<"$LAB_JSON" 2>/dev/null || true)"
   if [ -n "$rows" ]; then
     printf '%s\n' "$rows"
+    # What each step and stage must meet. A link is written only when its target exists.
+    if [ -f "$HOME/.local/src/docs/lifecycle.md" ] && [ -f "$HOME/.local/src/docs/stages.md" ]; then
+      echo "- Standards: \`~/.local/src/docs/lifecycle.md\` (each step), \`~/.local/src/docs/stages.md\` (each stage, by type)"
+    fi
   else
     echo "- _(no lab project; \`project-map add\` scaffolds one)_"
   fi
@@ -174,12 +183,24 @@ lab_section() {
 auto_block() {
   echo "$START"
   echo "## Links"
-  echo "- Plans:   \`~/.agent/plans/$PROJECT/\`"
-  echo "- Lessons: \`~/.agent/lessons/$PROJECT.md\`"
+  # A link is written only when its target exists: a named path that is not
+  # there reads to a session as a fact, and skill-drift --docs flags it.
+  if [ -d "$PLAN_DIR" ]; then
+    echo "- Plans:   \`~/.agent/plans/$PROJECT/\`"
+  else
+    echo "- Plans:   _(none yet)_"
+  fi
+  if [ -f "$LESSONS" ]; then
+    echo "- Lessons: \`~/.agent/lessons/$PROJECT.md\`"
+  else
+    echo "- Lessons: _(none yet)_"
+  fi
   if [ -n "$LATEST_OUTCOMES" ]; then
     echo "- Outcomes: \`~/.agent/outcomes/$PROJECT/\` (latest: \`$LATEST_OUTCOMES\`)"
-  else
+  elif [ -d "$OUTCOMES_DIR" ]; then
     echo "- Outcomes: \`~/.agent/outcomes/$PROJECT/\`"
+  else
+    echo "- Outcomes: _(none yet)_"
   fi
   echo "- Repo docs: $REPO_DOCS"
   [ -n "$ADRS" ] && echo "- ADRs: \`$ADR_DIR/\` (latest: $ADRS)"
@@ -191,7 +212,7 @@ auto_block() {
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
     local plans
-    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | grep -vxE 'active|archive|_archive|tasks' | head -5 || true)
+    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | awk '!/^(active|archive|_archive|tasks)$/ && ++n <= 5' || true)
     if [ -n "$plans" ]; then
       echo "$plans" | sed 's/^/- `/; s/$/`/'
     else
@@ -199,22 +220,6 @@ auto_block() {
     fi
   else
     echo "- _(no plans dir yet)_"
-  fi
-  echo
-  echo "## Recent lessons (digest)"
-  if [ -f "$LESSONS" ]; then
-    local digest
-    # tail of bullet lessons, each truncated to keep the digest scannable (it's injected
-    # at session start — one mega-lesson must not dominate the context window)
-    digest=$(grep -E '^- ' "$LESSONS" 2>/dev/null | tail -5 \
-      | awk '{ if (length($0) > 200) print substr($0,1,197) "…"; else print }' || true)
-    if [ -n "$digest" ]; then
-      echo "$digest"
-    else
-      echo "- _(lessons file has no bullet entries yet)_"
-    fi
-  else
-    echo "- _(no lessons file yet)_"
   fi
   echo "$END"
 }

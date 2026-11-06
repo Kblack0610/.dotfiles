@@ -43,6 +43,8 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook"
 SID=""
 command -v jq >/dev/null 2>&1 && SID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 export CI_RESULT_FILE="$CACHE_DIR/ci-result-${SID:-${PROJ}-${DATE}}.txt"
+# The checks run with no stdin, so the session id reaches them here (10-git-workflow.sh).
+export STOP_SESSION_ID="$SID"
 LOG="$CACHE_DIR/last-stop-${PROJ}.log"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 # One ci-result file per session, and nothing else ever deletes them.
@@ -53,7 +55,7 @@ VERBOSE="${CLAUDE_STOP_VERBOSE:-0}"
 # and the linters all put their summary last. The rest stays one `cat "$LOG"` away.
 REPLAY_LINES="${CLAUDE_STOP_REPLAY_LINES:-40}"
 # Guard per check (seconds). A hung check would otherwise run until Claude Code kills the
-# whole hook, and the post phase (session register, eval gate) would never run.
+# whole hook, and the post phase (session register, wind-down) would never run.
 CHECK_TIMEOUT="${CLAUDE_STOP_CHECK_TIMEOUT:-300}"
 
 note() {

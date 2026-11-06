@@ -22,6 +22,7 @@
 # Usage:
 #   ROLE=build HARNESS=claude agentctl-run -p "<prompt>" [--max-turns N ...]
 #   agentctl-run --role observe --harness claude -p "<prompt>"
+#   agentctl-run --agent ask-judge -p "<input>"   # a registered agent: its conf sets role, model, prompt
 #   agentctl-run --explain build            # print the resolved invocation, run nothing
 #
 # Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
@@ -34,6 +35,9 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/role.sh"
 . "$SELF_DIR/lib/scrub.sh"
 . "$SELF_DIR/lib/route.sh"
+. "$SELF_DIR/lib/agent.sh"
+. "$SELF_DIR/lib/calls.sh"
+. "$SELF_DIR/lib/budget.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
 # MODEL is the conf key (it arrives as environment on a supervised runner);
@@ -41,18 +45,57 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
+agent="" cli_role="" cli_route="" cli_class="" cli_harness=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --role)    role="${2:?--role needs a value}"; shift 2 ;;
-    --route)      AGENTCTL_ROUTE="${2:?--route needs a value}"; shift 2 ;;
-    --data-class) AGENTCTL_DATA_CLASS="${2:?--data-class needs a value}"; shift 2 ;;
-    --harness) harness="${2:?--harness needs a value}"; shift 2 ;;
-    --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { role="$2"; shift; }; shift ;;
+    --agent)   agent="${2:?--agent needs a value}"; shift 2 ;;
+    --role)    cli_role="${2:?--role needs a value}"; shift 2 ;;
+    --route)      cli_route="${2:?--route needs a value}"; shift 2 ;;
+    --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
+    --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
+    --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
 done
 export AGENTCTL_EXPLAIN="${AGENTCTL_EXPLAIN:-}"
+
+# `-p` with no input after it takes the input from stdin, as `claude -p` does. A prompt
+# passed as an argument is capped at 128 KiB by the kernel (E2BIG): inbox-triage's prompt
+# carries every open row of a project and outgrew it on 2026-11-05.
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -p|--print)
+      if [ $((i + 1)) -ge ${#args[@]} ] || [ "${args[i + 1]:0:1}" = - ]; then
+        [ -t 0 ] || args=("${args[@]:0:i+1}" "$(cat)" "${args[@]:i+1}")
+      fi
+      break ;;
+  esac
+done
+
+# --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE,
+# DATA_CLASS and HARNESS replace whatever a parent runner's conf left in the environment;
+# only this call's own flags (--role, --route, --data-class, --harness) still win over it.
+if [ -n "$agent" ]; then
+  agent_load "$agent"
+  role="$AGENT_ROLE"
+  AGENTCTL_MODEL="$AGENT_MODEL"
+  ROUTE="$AGENT_ROUTE"
+  DATA_CLASS="$AGENT_DATA_CLASS"
+  AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
+  [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
+  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA \
+    AGENT_MAX_TOKENS AGENT_TEMPERATURE
+  agent_otel_runner "$agent"
+  # raw sends the PROMPT file as the system message itself (harnesses/raw.sh)
+  if [ -z "$AGENTCTL_EXPLAIN" ] && [ "$harness" != raw ]; then
+    agent_prompt_args "${args[@]+"${args[@]}"}"
+    args=("${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}")
+  fi
+fi
+[ -n "$cli_role" ]  && role="$cli_role"
+[ -n "$cli_route" ] && AGENTCTL_ROUTE="$cli_route"
+[ -n "$cli_class" ] && AGENTCTL_DATA_CLASS="$cli_class"
 
 # Every caller of this script is a runner on a timer with no human attached — that
 # is the premise the whole role contract rests on (see harnesses/claude.sh, which
@@ -109,6 +152,9 @@ route_load "$(route_resolve)"
 route_check_pair
 route_apply
 
+# Only claude and codex can hold a reply to a schema; on any other harness the caller would parse prose.
+case "$harness" in claude|codex) ;; *) [ -z "${AGENT_SCHEMA:-}" ] || role_die "agent '$agent' has a SCHEMA, which needs the claude or codex harness, not '$harness'" ;; esac
+
 harness_file="$SELF_DIR/harnesses/$harness.sh"
 [ -r "$harness_file" ] || role_die "unknown harness '$harness' (no $harness_file).
 Available: $(ls -1 "$SELF_DIR/harnesses" 2>/dev/null | sed 's/\.sh$//' | tr '\n' ' ')"
@@ -135,6 +181,13 @@ _model="$(role_run_model)"
 [ -n "$_model" ] && export ANTHROPIC_MODEL="$_model"
 
 if [ -n "$AGENTCTL_EXPLAIN" ]; then
+  if [ -n "$agent" ]; then
+    printf 'agent:       %s (%s)\n' "$agent" "${AGENT_KIND:-?}"
+    printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}}"
+    printf 'schema:      %s\n' "${AGENT_SCHEMA:-(none)}"
+    printf 'delay rules: %s\n' "${AGENT_DELAY_RULES:-(none)}"
+    printf 'call log:    %s\n' "$AGENTCTL_CALLS"
+  fi
   printf 'role:        %s\n'  "$ROLE_NAME"
   printf 'description: %s\n'  "$ROLE_DESC"
   printf 'write:       %s\n'  "$ROLE_WRITE"
@@ -154,6 +207,7 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   # ANTHROPIC_BASE_URL shows up here and nowhere else.
   printf 'env scrubbed: %s\n' "${SCRUBBED:-(none)}"
   route_explain
+  budget_explain
   if [ -n "$ROLE_FAMILY_EXCLUDE" ]; then
     printf 'excludes:    %s%s\n' "$ROLE_FAMILY_EXCLUDE" \
       "$([ "$ROLE_FAMILY_EXCLUDE" = author ] && printf ' -> %s' "$(role_family_of "${AGENT_AUTHOR_FAMILY:-}")")"
@@ -168,4 +222,5 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   exit 0
 fi
 
+budget_check
 harness_exec "${args[@]+"${args[@]}"}"

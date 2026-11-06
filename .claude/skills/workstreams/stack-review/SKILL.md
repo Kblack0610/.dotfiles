@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [audit, architecture, performance, refactor, tech-debt]
-  reviewed: "2026-10-05"
+  reviewed: "2026-11-05"
 ---
 
 # stack-review
@@ -33,6 +33,7 @@ Not for: work that landed in a recent window (`drift-audit`), one diff (`code-hy
 | `review` (default) | Steps 1-6, writes the report | No |
 | `fix` | Lands the report's **safe tier** (below) as one PR per concern | Yes, only when asked |
 | `plan` | Turns the remaining findings into agent-board rows; hands design-heavy ones to `kb-architect` as a spec request | Board only |
+| `research` | The nightly research run: `review` scoped to the task's paths and lenses, then `plan` with nobody to ask, then one retro row | Board only |
 
 `fix` and `plan` take an existing report. If none exists for today, run `review` first.
 
@@ -109,7 +110,7 @@ Path: `~/.agent/evals/{project}/stack-review-<YYYY-MM-DD>/report.md`. Never insi
 
 Run as a subagent, you may not be allowed to write files: return the full report as text and the parent writes it to the path. Skip the Artifact offer in that case too.
 
-Run in the main session, offer in one line to publish it as an Artifact when the user will share it; publish without asking if they said a team or reviewer will read it.
+Run in the main session with the Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it), offer in one line to publish it as an Artifact when the user will share it; publish without asking if they said a team or reviewer will read it.
 
 In the chat reply give the top findings per tier with their why, the verified/unverified count, and the report path. The full report stays in the file.
 
@@ -122,9 +123,18 @@ In the chat reply give the top findings per tier with their why, the verified/un
 
 ## plan
 
-1. For each non-safe finding, one agent-board row (`notes ptask <project> --agent add "<short title>"`) or the repo's tracker, with the report path. Fold into existing rows; do not duplicate.
+1. For each non-safe finding, one agent-board row (`notes ptask <project> --agent add "<type(area): short title> #size/s"`) or the repo's tracker, with the report path. Fold into an existing row that says the same thing in other words; an exact open twin is refused by `ptask add` (exit 3).
 2. Findings that need a design (a module split, a workspace, a new shared lib with several callers) go to `kb-architect` as a spec request quoting the finding, its evidence and its why.
 3. Never place rows into a planned release/wave - that is the human's call.
+
+## research
+
+The task comes from `research-pick` (its roster: `~/.config/agentctl/research-facets.json`) as a queue item: `<repo> [paths], lenses: <...>; findings on the <board> agent board tagged #research/<id>`.
+
+1. `review`, with Step 3's fan-out limited to the named paths and to the dimensions the lenses name. Read the rest of the repo only as context.
+2. `plan` with nobody to ask: the 8 best findings by impact over effort become rows on the named board, each tagged `#research/<id>` with the report path; a design-heavy one becomes a row asking for its spec. The rest stay in the report.
+3. Retro: at most one row on the agent-runtime board, `research(retro): <one change to the research pass>`, when the run showed the roster, the lenses or this verb missing something. None when nothing did.
+4. No PR. Close the item with what it made: `agent-queue set "$AGENT_QUEUE_ITEM" report=<report path> "note=<n> rows on <board>"`, then `agent-queue move "$AGENT_QUEUE_ITEM" done --status ok`.
 
 ## Do NOT
 

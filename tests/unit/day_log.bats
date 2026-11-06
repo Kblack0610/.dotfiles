@@ -41,10 +41,16 @@ EOF
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
-  # queue-stub: agent-queue stats --json serves $SANDBOX/queue, and fails while it is missing
+  # queue-stub: agent-queue list serves $SANDBOX/items (the work ledger), stats serves $SANDBOX/queue;
+  # each fails while its file is missing
   export DAYLOG_QUEUE_CMD=queue-stub
-  printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/queue" > "$SANDBOX/bin/queue-stub"
+  printf '#!/usr/bin/env bash\n[ "$1" = list ] && exec cat "%s"\nexec cat "%s"\n' "$SANDBOX/items" "$SANDBOX/queue" > "$SANDBOX/bin/queue-stub"
+  : > "$SANDBOX/items"
   echo '{"flow":{"2026-10-28":{"queued":4,"started":3,"waiting":1,"done":2,"failed":1,"lead_minutes":{"n":2,"p50":30,"p90":50},"wait_minutes":{"n":1,"p50":10,"p90":10},"run_minutes":{"n":2,"p50":20,"p90":40}}}}' > "$SANDBOX/queue"
+  # fleet-stub: fleet-sessions stages --json serves $SANDBOX/stages and logs its args
+  export DAYLOG_FLEET_CMD=fleet-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec cat "%s"\n' "$SANDBOX/fleet-args" "$SANDBOX/stages" > "$SANDBOX/bin/fleet-stub"
+  echo '{"stages":{"NEEDS":{"minutes":90},"NEEDS:ask":{"minutes":60}},"ci":{"rerun_after_red":2},"ended_no_pr":3,"prs":{"open_to_merged":{"p50":16}}}' > "$SANDBOX/stages"
   # cif-stub: ci-failures --json serves $SANDBOX/cif and exits $SANDBOX/cif-rc
   export DAYLOG_CI_FAILURES_CMD=cif-stub DAYLOG_CI="$SANDBOX/ci" DAYLOG_CI_CACHE="$SANDBOX/ci-cache"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
@@ -62,9 +68,48 @@ EOF
   echo '[]' > "$GHD/merged"; echo '[]' > "$GHD/open"
   echo '{"sessions":[],"main":[],"asks":[]}' > "$DAYLOG_STATE"
   : > "$DAYLOG_WATCH_LOG"
+  # The runner rollup's sources: runs.jsonl, calls.jsonl, the confs and judge-stub (judge-eval
+  # --all --json serves $SANDBOX/judge, and fails while it is missing).
+  export DAYLOG_RUNS="$SANDBOX/runs.jsonl" DAYLOG_CALLS="$SANDBOX/calls.jsonl" DAYLOG_AGENTS_DIR="$SANDBOX/agents"
+  export DAYLOG_JUDGE_CMD=judge-stub
+  printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/judge" > "$SANDBOX/bin/judge-stub"
+  chmod +x "$SANDBOX/bin/judge-stub"
   SUBJECT="$REPO_ROOT/.local/bin/day-log"
   # 2026-10-28 16:00 PDT
   export DAYLOG_NOW=1793228400
+}
+
+# run_row <local time on 2026-10-27/28> <name> <outcome> [minutes long] [result]: one runs.jsonl line
+run_row() {
+  local s; s=$(date -d "$1" +%s)
+  jq -cn --arg n "$2" --arg o "$3" --argjson s "$s" --argjson f "$((s + ${4:-5} * 60))" --arg r "${5:-success}" \
+    '{name: $n, invocation: "i", started: $s, finished: $f, result: $r, exit: "0", outcome: $o, out: [0, 0], err: [0, 0]}' >> "$DAYLOG_RUNS"
+}
+# call_row <local time> <agent> <cost>: one calls.jsonl line
+call_row() {
+  jq -cn --arg at "$(date -d "$1" -Iseconds)" --arg a "$2" --argjson c "$3" '{id: "c", agent: $a, at: $at, exit: 0, cost_usd: $c}' >> "$DAYLOG_CALLS"
+}
+# night: the night before 2026-10-28, 20:00 to 07:00, with a pass a minute either side of it
+night() {
+  mkdir -p "$DAYLOG_AGENTS_DIR"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/dream.conf"
+  printf 'CALLER=dream\nEFFECT="acts"\n' > "$DAYLOG_AGENTS_DIR/ask-sweep.conf"
+  printf "EFFECT='none'\n" > "$DAYLOG_AGENTS_DIR/token-usage.conf"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/fleet-dispatch.conf"
+  printf 'EFFECT=acts\n' > "$DAYLOG_AGENTS_DIR/inbox-triage.conf"
+  run_row '2026-10-27 19:59' dream WORKED
+  run_row '2026-10-28 06:30' fleet-dispatch BLOCKED
+  run_row '2026-10-28 03:04' dream WORKED 36
+  run_row '2026-10-27 22:00' inbox-triage NOOP
+  run_row '2026-10-28 03:42' token-usage '' 1 exit-code
+  run_row '2026-10-28 05:00' fleet-dispatch WORKED
+  run_row '2026-10-28 06:59' fleet-dispatch BLOCKED
+  run_row '2026-10-28 07:00' session-outcomes WORKED
+  # dream's own call and its ask-sweep call price its pass; one after the pass ended does not
+  call_row '2026-10-28 03:10' dream 8.2
+  call_row '2026-10-28 03:20' ask-sweep 0.02
+  call_row '2026-10-28 04:00' dream 5
+  echo '{"agents":[{"agent":"inbox-triage","score_7d":{"text":"93% untouched"}},{"agent":"ask-sweep","score_7d":{"text":"-"}}]}' > "$SANDBOX/judge"
 }
 
 # pr <repo> <number> <title> <merged-at-utc>
@@ -131,24 +176,37 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
     '3	hovercraft	hovercraft	Games' '2	story	Raiders	Games' '1	raiders	Raiders	Games')"
 }
 
-@test "a PR is credited to the live session whose worktree is that repo, not a same-number PR elsewhere" {
-  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'feat: y' 2026-10-28T20:00:00Z; } | merged
-  echo '{"sessions":[{"target":"lab/game-agent-3:1","pr":"7","cwd":"/w/game-agent-3"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"
+@test "a PR carries the project its repo is registered as, an alias, or its name without the dot" {
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  echo '{"paths":{"/x/dev/game":"raiders-game"},"aliases":{"tool_attempt":"tools"}}' > "$PROJECT_MAP_FILE"
+  { pr game 1 'feat: a' 2026-10-28T20:00:00Z; pr tool_attempt 2 'feat: b' 2026-10-28T19:00:00Z
+    pr .cfg 3 'feat: c' 2026-10-28T18:00:00Z; } | merged
+  pr .cfg 4 'feat: d' 2026-10-28T18:00:00Z | jq -s 'map(. + {createdAt: .closedAt, updatedAt: .closedAt, isDraft: false})' > "$GHD/open"
   run "$SUBJECT" snapshot --date 2026-10-28
-  run rec -c '[.merged[] | {repo, by}]' 2026-10-28
-  assert_output '[{"repo":"game","by":"agent-3"},{"repo":"tools","by":null}]'
+  assert_success
+  run rec -r '(.merged[] | [.number, .project] | @tsv), (.open[] | [.number, .project] | @tsv)' 2026-10-28
+  assert_output "$(printf '%s\n' '3	cfg' '2	tools' '1	raiders-game' '4	cfg')"
 }
 
-@test "a credit seen on an earlier pass is kept after the session has gone, and outcomes fill the rest" {
-  { pr game 7 'feat: x' 2026-10-28T20:00:00Z; pr game 8 'feat: y' 2026-10-28T21:00:00Z; } | merged
-  echo '{"sessions":[{"target":"lab/game-agent-3:1","pr":"7","cwd":"/w/game-agent-3"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"
-  "$SUBJECT" snapshot --date 2026-10-28
-  echo '{"sessions":[],"main":[],"asks":[]}' > "$DAYLOG_STATE"
-  mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
-  echo '{"session_id":"s","title":"game-agent-9","prs":[{"repo":"O/game","number":8,"state":"MERGED"}]}' > "$DAYLOG_OUTCOMES_DIR/game/2026-10.jsonl"
+@test "a merged PR is credited to the work item whose pr: is that repo and number, and takes its scope from the item's area" {
+  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'feat(ci): y' 2026-10-28T20:00:00Z; } | merged
+  printf '%s\n' '{"slug":"raiders-x","pr":"o/game#7","area":"hovercraft"}' '{"slug":"no-pr","pr":null}' \
+    '{"slug":"bad-pr","pr":"7"}' > "$SANDBOX/items"
   run "$SUBJECT" snapshot --date 2026-10-28
-  run rec -c '[.merged[].by]' 2026-10-28
-  assert_output '["agent-3","game-agent-9"]'
+  assert_success
+  run rec -c '[.merged[] | {repo, by, scope}]' 2026-10-28
+  assert_output '[{"repo":"game","by":"raiders-x","scope":"hovercraft"},{"repo":"tools","by":null,"scope":"ci"}]'
+}
+
+@test "a pass that cannot read the ledger keeps the credits its last record held and names it" {
+  pr game 7 'feat: x' 2026-10-28T20:00:00Z | merged
+  echo '{"slug":"raiders-x","pr":"o/game#7"}' > "$SANDBOX/items"
+  "$SUBJECT" snapshot --date 2026-10-28
+  rm "$SANDBOX/items"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[[.merged[].by], .unreadable]' 2026-10-28
+  assert_output '[["raiders-x"],["queue ledger"]]'
 }
 
 @test "a blind pass keeps the last good merged list and names what it could not read" {
@@ -201,14 +259,91 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\ntools\\t1\\t2\\t1000000\\t2.5\\t0\\nTOTAL\\t4\\t12\\t3000000\\t15\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '4 sessions active, whose whole-session spend is $15.'
+  assert_output --partial '4 sessions spent $15.'
   assert_output --partial '| TOTAL | 4 | 3M | $15 |'
 }
 
 @test "negative control: a rollup with no TOTAL row is summed" {
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '3 sessions active, whose whole-session spend is $12.5.'
+  assert_output --partial '3 sessions spent $12.5.'
+}
+
+# status_day: a live day with one of each kind of line the status shape prints
+status_day() {
+  { pr game 1 'feat(raiders): bosses stay home' 2026-10-28T20:00:00Z
+    pr tools 2 'fix: the lockfile resolves' 2026-10-28T19:00:00Z; } | merged
+  jq -cn '[{number: 3, title: "feat(story): the intro plays once", url: "https://example.test/game/3",
+    repository: {name: "game"}, createdAt: "2026-10-28T10:00:00Z", updatedAt: "2026-10-28T22:00:00Z", isDraft: true}]' > "$GHD/open"
+  jq -cn '{main: [{repo: "game", reason: "game red: Tests (no green in window)"}],
+    sessions: [
+      {target: "lab/game-agent-3:1", cwd: "/w/game-agent-3", bucket: "NEEDS", reason: "1 pending ask(s)", idle_min: 2,
+       next_phase: "Phase 2 (#12): **Bosses** stay home. Then the rest.", phases_done: 1, phases_total: 3},
+      {target: "lab/game-agent-4:1", cwd: "/w/game-status-shape", bucket: "NEEDS", reason: "3 pending ask(s)", idle_min: 9,
+       next_phase: "2. Arena: rules 4.5:1, no doubles", phases_done: 1, phases_total: 2},
+      {target: "lab/game-agent-5:1", cwd: "/w/game-agent-5", bucket: "NEEDS", reason: "waiting on a prompt or permission", idle_min: 30,
+       next_phase: "-", finished: false},
+      {target: "lab/tools-agent-1:1", cwd: "/w/tools-agent-1", bucket: "WORKING", next_phase: "Done already", finished: true}],
+    asks: [range(4) as $i | {id: "a\($i)", project: "game", kind: "question",
+      question: "Question \($i)?", created: "2026-10-28T1\($i):00:00-0700"}]}' > "$DAYLOG_STATE"
+}
+
+@test "show is the status shape: Done, Doing, Next, then Needs you, before the details" {
+  status_day
+  run "$SUBJECT" show
+  assert_success
+  run bash -c "grep '^## ' <<<\"\$1\" | head -5 | paste -sd ' '" _ "$output"
+  assert_output '## Done ## Doing ## Next ## Needs you ## Sessions'
+}
+
+@test "show prints Done and Doing as one plain line each, subject first and the link last" {
+  status_day
+  run "$SUBJECT" show
+  assert_line '- Bosses stay home (13:00) [game#1](https://example.test/game/1)'
+  assert_line '- The intro plays once (draft) [game#3](https://example.test/game/3)'
+}
+
+@test "Next is each unfinished session's next phase under its repo's area, a worktree slug included" {
+  status_day
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Next/,/^## Needs you/p' <<<\"\$1\" | grep -v '^\$'" _ "$output"
+  assert_output "$(printf '%s\n' '## Next' '### Games' '- Bosses stay home. (game-agent-3, 1 of 3 done)' \
+    '- Arena: rules 4.5:1, no doubles (game-agent-4, 1 of 2 done)' '## Needs you')"
+}
+
+@test "Needs you groups sessions by why, and asks are a count, the newest three and where to see all" {
+  status_day
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Needs you/,/^## Sessions/p' <<<\"\$1\" | grep '^- '" _ "$output"
+  assert_output "$(printf '%s\n' '- Nightly red in game: Tests (no green in window)' \
+    '- Questions hold up 2 sessions: game-agent-3, game-agent-4.' \
+    '- 1 session is waiting on a prompt or permission: game-agent-5.' \
+    '- 4 questions wait on you. List: fleet-bench asks.' \
+    '- Question: Question 3? (game, 13:00)' '- Question: Question 2? (game, 12:00)' '- Question: Question 1? (game, 11:00)')"
+}
+
+@test "a quiet day says so in each section instead of leaving it empty" {
+  run "$SUBJECT" show
+  assert_line '- Nothing merged.'
+  assert_line '- No session has a phase left.'
+  assert_line '- Nothing.'
+}
+
+@test "a long subject is clipped so the line fits the status channel's item budget" {
+  pr game 1 "feat: $(printf 'word %.0s' {1..60})" 2026-10-28T20:00:00Z | merged
+  run "$SUBJECT" show
+  run bash -c "grep '^- Word' <<<\"\$1\" | awk '{ print length }'" _ "$output"
+  assert_output 200
+}
+
+@test "show passes comms-lint --channel status" {
+  status_day
+  night
+  export COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$SANDBOX/check.py"
+  printf 'import sys\nsys.stdin.read()\n' > "$COMMS_PROSE_CHECK"
+  "$SUBJECT" show > "$SANDBOX/show.md"
+  run "$REPO_ROOT/.local/bin/comms-lint" --channel status "$SANDBOX/show.md"
+  assert_success
 }
 
 @test "a snapshot of today publishes merged PRs per area and spend per project, TOTAL left out" {
@@ -259,7 +394,7 @@ PROM
   refute_output --partial 'tokens 2026-10-28'
 }
 
-@test "work: queue flow for the local day, merges per repo and area, plan phases from fleet-bench flow" {
+@test "work: queue flow for the local day, merges per repo and area, plan phases from fleet-bench flow, stages from fleet-sessions" {
   pr game 1 'feat(raiders): one' 2026-10-28T17:00:00Z > "$SANDBOX/p1"
   pr web 3 'docs: three' 2026-10-28T19:00:00Z > "$SANDBOX/p3"
   cat "$SANDBOX/p1" "$SANDBOX/p3" | merged
@@ -268,6 +403,10 @@ PROM
   assert_output '[2,[]]'
   run rec -c '.work | [.queue.queued, .queue.done, .queue.lead_minutes.p50, .merges.by_repo, .merges.by_area, .phases.ticked]' 2026-10-28
   assert_output '[4,2,30,{"game":1,"web":1},{"Games":1,"web":1},5]'
+  run rec -c '.work.stages | [.stages["NEEDS:ask"].minutes, .ended_no_pr]' 2026-10-28
+  assert_output '[60,3]'
+  run cat "$SANDBOX/fleet-args"
+  assert_output "stages --from $(date -d 2026-10-28 +%s) --to $(date -d 2026-10-29 +%s) --json"
   run "$SUBJECT" show --date 2026-10-28
   assert_output --partial '- Queue: 4 queued, 3 started, 1 moved to waiting, 2 done (1 failed); lead p50 30 min, wait p50 10 min'
   assert_output --partial '- Plan phases: 5 ticked, 2 added'
@@ -424,6 +563,7 @@ week_fixture() {
   done
   for d in 21 22 23 24 25 26 27; do
     day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
+      | .work.stages = {stages: {\"NEEDS:ask\": {minutes: 10}}, prs: {open_to_merged: {p50: $d}}}
       | .ci.repos[\"O/game\"] = {runs: 10, red: 1, workflows: {Tests: {runs: 10, red: 1}}}"
   done
   cat > "$SANDBOX/bin/usage-stub" <<EOF
@@ -448,6 +588,7 @@ EOF
   assert_equal "$(v '.metrics["board.open"] | [.value, .prev]')" '[27,3]'
   assert_equal "$(v '.metrics["ci.game.red_rate"] | [.value, .prev, .delta]')" '[0.1,0.5,-0.4]'
   assert_equal "$(v '.metrics["ci.game.pass.Tests"] | [.value, .prev]')" '[0.9,0.5]'
+  assert_equal "$(v '[.metrics["stages.ask_min"].value, .metrics["stages.pr_to_merge_p50_min"].value]')" '[70,24]'
   day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1}'
   run "$SUBJECT" week --date 2026-10-27 --line
   assert_output --partial 'dotfiles red 25%'
@@ -493,4 +634,67 @@ EOF
   rm "$DAYLOG_DIR/2026-10-2"?.json
   run "$SUBJECT" week --line
   assert_output --partial '14 merged (+7)'
+}
+
+@test "nightly under agentctl declares WORKED, so the runner is not promoted to STALLED" {
+  ci_clone
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" WORKED
+}
+
+@test "nightly under agentctl declares FAILED when a part fails" {
+  echo 1 > "$SANDBOX/cif-rc"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_failure 1
+  assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" FAILED
+}
+
+@test "nightly by hand writes no runner outcome" {
+  ci_clone
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  AGENTCTL_STATE_DIR="$SANDBOX/astate" run env -u AGENTCTL_NAME "$SUBJECT" nightly
+  assert_success
+  [ ! -e "$SANDBOX/astate" ]
+}
+
+@test "agents.runners: every pass from 20:00 to 07:00 in time order, 19:59 and 07:00 left out, priced, its EFFECT and score" {
+  night
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c .unreadable 2026-10-28
+  assert_output '[]'
+  run rec -r '.agents.runners | .from, .to' 2026-10-28
+  assert_output "$(date -d '2026-10-27 20:00' +%s)
+$(date -d '2026-10-28 07:00' +%s)"
+  run rec -c '[.agents.runners.passes[] | [(.at | strflocaltime("%H:%M")), .name, .verdict, .cost_usd, .effect, .score]]' 2026-10-28
+  assert_output '[["22:00","inbox-triage","NOOP",null,"acts","93% untouched"],["03:04","dream","WORKED",8.22,"acts","-"],["03:42","token-usage","FAILED",null,"none","-"],["05:00","fleet-dispatch","WORKED",null,"acts","-"],["06:30","fleet-dispatch","BLOCKED",null,"acts","-"],["06:59","fleet-dispatch","BLOCKED",null,"acts","-"]]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line '- Asks: 0 open, oldest - h'
+  assert_line '- Last night (20:00-07:00): 6 passes, 1 failed, 2 blocked, $8.22 in calls'
+  assert_line '  - 22:00 inbox-triage           NOOP      -      acts   93% untouched'
+  assert_line '  - 03:04 dream                  WORKED    $8.22  acts   -'
+  assert_line '  - 03:42 token-usage            FAILED    -      none   -'
+  assert_line '  - 05:00 fleet-dispatch x3      2 BLOCKED, 1 WORKED -      acts   -'
+  # Under the Sessions and Asks lines, in the Flow section.
+  local asks night
+  asks=$(grep -n '^- Asks:' <<<"$output" | cut -d: -f1); night=$(grep -n '^- Last night' <<<"$output" | cut -d: -f1)
+  [ "$night" -eq $((asks + 1)) ]
+}
+
+@test "agents.runners negative controls: no runs.jsonl is no passes, an unreadable judge-eval is ?, a broken log keeps the last rollup" {
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[.unreadable, .agents.runners.passes]' 2026-10-28
+  assert_output '[[],[]]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line '- Last night: no runner passes'
+  night
+  rm "$SANDBOX/judge"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[.agents.runners.passes[].score] | unique' 2026-10-28
+  assert_output '["?"]'
+  echo 'not json' >> "$DAYLOG_RUNS"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '[(.unreadable[] | select(startswith("runners:")) | .[0:8]), (.agents.runners.passes | length)]' 2026-10-28
+  assert_output '["runners:",6]'
 }

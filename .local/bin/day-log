@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# day-log - what a day shipped: every PR you merged in any repo, what is still open, what
-# waits on you, and the fleet's telemetry, kept as one record per day. The hub Today and
-# History tabs (`hub`, Prefix O) render the records; day-log.timer snapshots today every 5 min.
+# day-log - what a day shipped, in the status shape (Done, Doing, Next, Needs you): every PR you merged in any repo, what is still open, what
+# waits on you, and the fleet's telemetry, kept as one record per day. The hub Log tab
+# (`hub`, Prefix i, then 7) renders the records; day-log.timer snapshots today every 5 min.
 #
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
 #                                 today is also published as day_log.prom
@@ -23,6 +23,10 @@ set -uo pipefail
 # shellcheck source=/dev/null
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$HERE/../lib/agent-proof.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 
 : "${DAYLOG_DIR:=$HOME/.agent/daylog}"
@@ -37,11 +41,17 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
-                              # (the hub Today tab keeps its own OPEN_DAYS = 7)
+                              # (the hub Log tab keeps its own OPEN_DAYS = 7)
 : "${DAYLOG_QUEUE_CMD:=agent-queue}"
+: "${DAYLOG_FLEET_CMD:=fleet-sessions}"
 : "${DAYLOG_NOTES_DIR:=$HOME/.notes}"
 : "${DAYLOG_CI:=$HOME/.config/agentctl/day-log-ci}"   # private overlay: it names private repos
-export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI
+: "${DAYLOG_RUNS:=${AGENTCTL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl}/runs.jsonl}"
+: "${DAYLOG_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"
+: "${DAYLOG_AGENTS_DIR:=$HOME/.config/agentctl/agents}"
+: "${DAYLOG_JUDGE_CMD:=judge-eval}"
+export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI DAYLOG_FLEET_CMD
+export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -61,14 +71,13 @@ groups_json() {
          repos: (map(select(.[0] == "r") | {key: .[1], value: .[2]}) | from_entries)}'
 }
 
-# outcome_prs <day> -> {"repo#N": session title} for PRs session-outcomes saw merge that day.
-outcome_prs() {
-  local m; m="${1:0:7}"
-  if compgen -G "$DAYLOG_OUTCOMES_DIR/*/$m.jsonl" >/dev/null; then
-    cat "$DAYLOG_OUTCOMES_DIR"/*/"$m".jsonl
-  fi | jq -cs '[.[] | select(.title and (.prs | type) == "array") | .title as $t
-      | .prs[] | select(.state == "MERGED") | {key: "\(.repo | sub(".*/"; ""))#\(.number)", value: $t}]
-    | from_entries'
+# ledger_prs <day> -> {"repo#N": {item, area}} from the work ledger: every item active or done
+# since the day whose pr: is owner/repo#N, keyed by the repo's name as gh search gives it. The item
+# that carries a PR is the one unit of work it landed (agent-land records it), so this is the credit.
+ledger_prs() {
+  $DAYLOG_QUEUE_CMD list --json --state all --since "$1" 2>/dev/null | jq -cs '
+    [.[] | . as $i | (.pr // "" | capture("^[^#/ ]+/(?<r>[^#/ ]+)#(?<n>[0-9]+)$")) // empty
+     | {key: "\(.r)#\(.n)", value: {item: $i.slug, area: ($i.area // null)}}] | from_entries'
 }
 
 # usage_json <since> <until> -> per-project spend from the agent-usage registry (no network).
@@ -103,8 +112,11 @@ gather() {
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
   $DAYLOG_USAGE_CMD tokens line --date "$day" 2>/dev/null | jq -Rs 'rtrimstr("\n") | if . == "" then null else . end' > "$tmp/tokens"
-  outcome_prs "$day" > "$tmp/outcomes"
+  ledger_prs "$day" > "$tmp/ledger" 2>/dev/null || rm -f "$tmp/ledger"
   groups_json > "$tmp/groups"
+  # the project each PR's repo belongs to (the project registry), merged and open alike
+  mapfile -t repos < <(cat "$tmp/merged" "$tmp/open" 2>/dev/null | jq -r '.[]?.repository.name' | sort -u)
+  project_of_repos_json "${repos[@]}" > "$tmp/projects" 2>/dev/null || echo '{}' > "$tmp/projects"
 
   jq -n --arg day "$day" --argjson live "$live" --arg at "$(date -d "@$(now)" +%FT%T%z)" \
      --slurpfile prev <(cat "$prev" 2>/dev/null || echo '{}') \
@@ -116,35 +128,42 @@ gather() {
      --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
-     --slurpfile outcomes "$tmp/outcomes" --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" '
-    ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st
-    | def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
+     --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
+     --slurpfile projects "$tmp/projects" '
+    ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st | $projects[0] as $pm
+    | def project($r): $pm[$r] // ($r | ltrimstr("."));
+      def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
       def who($repo): (.target // "" | sub("^[^/]*/"; "") | sub(":1$"; "")) as $t
         | ($t | ltrimstr($repo + "-")) as $l | if $l == "" then $t else $l end;
-    # the session that landed each PR: what the live sessions say now, then earlier passes, then outcomes
-    (if $st == null then {} else
-       [ $st.sessions[]? | select((.pr // "-") != "-") | . as $x | ($x.cwd // "" | sub(".*/"; "")) as $b
-         | ($merged[0] // [])[] | select((.number | tostring) == $x.pr)
-         | .repository.name as $r | select($b == $r or ($b | startswith($r + "-")))
-         | {key: "\($r)#\(.number)", value: ($x | who($r))} ] | from_entries end) as $now_by
-    | ($outcomes[0] + ($p.landed_by // {}) + $now_by) as $by
+    # the work item that landed each PR (the ledger); a pass that cannot read it keeps the credits
+    # its last record held
+    ($ledger[0] // ([($p.merged // [])[] | select(.by) | {key: "\(.repo)#\(.number)", value: {item: .by}}] | from_entries)) as $by
     | ($merged[0] // null) as $m
     | {schema: 2, date: $day, live: $live, gathered_at: $at,
        unreadable: ([if $m == null then "gh merged" else empty end,
+                     if $ledger[0] == null then "queue ledger" else empty end,
                      if $live and $open[0] == null then "gh open" else empty end,
                      if $live and $st == null then "fleet state" else empty end]),
-       landed_by: $by,
        merged: (if $m == null then ($p.merged // [])
-         else [$m[] | (scope) as $sc | .repository.name as $r
-           | {repo: $r, number, title, url, merged_at: .closedAt, scope: $sc,
-              group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $by["\($r)#\(.number)"]}]
+         else [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i
+           | ($i.area // scope) as $sc
+           | {repo: $r, project: project($r), number, title, url, merged_at: .closedAt, scope: $sc,
+              group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $i.item}]
            | sort_by(.merged_at) end),
        open: (if $live and $open[0] != null then
            [$open[0][] | .repository.name as $r | (.number | tostring) as $n
             | ([$st.sessions[]? | select(.pr == $n and ((.cwd // "") | sub(".*/"; "") | . == $r or startswith($r + "-")))] | first) as $x
-            | {repo: $r, number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
-               ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
+            | {repo: $r, project: project($r), number, title, url, created_at: .createdAt, updated_at: .updatedAt, draft: .isDraft,
+               area: ($g.repos[$r] // $r), ci: ($x.ci // null), by: (if $x then ($x | who($r)) else null end)}] | sort_by(.updated_at) | reverse
          else ($p.open // null) end),
+       next: (if $live and $st != null then
+           [$st.sessions[]? | select(.finished != true and (.next_phase // "-") != "-")
+            | (.cwd // "" | sub(".*/"; "")) as $b
+            | ([$g.repos | keys[] | . as $k | ltrimstr(".") as $r
+                | select($b == $k or $b == $r or ($b | startswith($r + "-")))] | max_by(length)) as $k
+            | {area: (if $k then $g.repos[$k] else ($b | sub("-agent-[0-9]+$"; "")) end), who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")),
+               phase: .next_phase, done: .phases_done, total: .phases_total}]
+         else ($p.next // null) end),
        waiting: (if $live and $st != null then
            {main: [$st.main[]? | {repo, reason}],
             needs: [$st.sessions[]? | select(.bucket == "NEEDS") | {who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")), reason, idle_min}],
@@ -217,12 +236,6 @@ rollup_prom() {
       gauge("agent_usage_cost_per_merged_pr_usd"; "Cost per merged PR on the last finished day (token-usage snapshot)."; [{}, $a.cost_per_merged_pr]),
       gauge("agent_usage_sessions_no_pr"; "Sessions with no PR on the last finished day (session-outcomes)."; [{}, $a.outcomes.no_pr]),
       gauge("agent_day_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
-      gauge("agent_queue_flow"; "Queue items reaching each stage on the last finished day.";
-        ($w.queue // {}) as $q | ("queued", "started", "waiting", "done", "failed") | [{stage: .}, $q[.]]),
-      gauge("agent_queue_minutes"; "Queue lead, wait and run time on the last finished day, minutes.";
-        ($w.queue // {}) as $q | ("lead", "wait", "run") | . as $s | $q["\(.)_minutes"] // {} | quantiles({stage: $s})),
-      gauge("agent_board_rows"; "Agent board rows opened and closed on the last finished day, and open at its end.";
-        ($w.board // {}) | [{event: "opened"}, .opened], [{event: "closed"}, .closed], [{event: "open"}, .open_end]),
       gauge("agent_phases_ticked"; "Plan phases ticked on the last finished day (fleet-bench flow)."; [{}, $w.phases.ticked]),
       gauge("agent_week_value"; "A week metric over the last 7 finished days (day-log week).";
         ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.value]),
@@ -247,27 +260,60 @@ def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1
 def spend: (.usage // []) | (map(select(.project == "TOTAL")) | first)
   // {cost_usd: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)}
   | {cost: .cost_usd, tokens: .tokens, sessions: .sessions};
+def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
+def cap: (.[:1] | ascii_upcase) + .[1:];
+def pad($w): tostring | if length >= $w then . else . + " " * ($w - length) end;
+# The runner passes of the night, one row a runner in the order it first ran: its verdicts, the
+# worst first, then cost, EFFECT and score.
+def night: (.passes | map(.verdict)) as $v
+  | "- Last night (\(.from | strflocaltime("%H:%M"))-\(.to | strflocaltime("%H:%M"))): \(.passes | length) passes, "
+    + "\($v | map(select(. == "FAILED")) | length) failed, \($v | map(select(. == "BLOCKED")) | length) blocked"
+    + ($v | map(select(. == "STALLED")) | length | if . > 0 then ", \(.) stalled" else "" end)
+    + (.passes | map(.cost_usd // empty) | if length > 0 then ", \(add | money) in calls" else ", no call priced" end),
+    (.passes | group_by(.name) | sort_by(.[0].at)[]
+      | (group_by(.verdict) | sort_by((.[0].verdict | IN("FAILED", "BLOCKED", "STALLED") | not), -length)) as $g
+      | (if ($g | length) == 1 then $g[0][0].verdict else $g | map("\(length) \(.[0].verdict)") | join(", ") end) as $said
+      | "  - \(.[0].at | strflocaltime("%H:%M")) \(.[0].name + (if length > 1 then " x\(length)" else "" end) | pad(22))"
+        + " \($said | pad(9)) \(map(.cost_usd // empty) | if length > 0 then add | money else "-" end | pad(6))"
+        + " \(.[0].effect // "-" | pad(6)) \(.[0].score)");
+def step: gsub("\\*\\*"; "") | sub("^(Phase +[0-9]+[a-z]?( *\\([^)]*\\))?:? *|[0-9]+\\. *)"; "") | (capture("^(?<s>.+?[.])( |$)").s // .);
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 
-# markdown <record>: the day with every PR, for `show` and the notes ref.
+# markdown <record>: the day in the status shape with every PR, for `show` and the notes ref.
 markdown() {
   jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
-      "\(.merged | length) merged in \(.merged | map(.repo) | unique | length) repos, \($u.sessions) sessions active, whose whole-session spend is \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
+      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: gh, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
-      (if .waiting then "## Waiting on you (as last gathered)", "",
-        (.waiting.main[] | "- NIGHTLY \(.repo): \(.reason | sub("^[^ ]+ red: "; "red: "))"),
-        (.waiting.needs[] | "- NEEDS \(.who): \(.reason)"),
-        (.waiting.asks[] | "- ASK \(.id) (\(.project)): \(.question | gsub("\n"; " "))"), "" else empty end),
-      "## Merged", "",
+      "## Done", "",
+      (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
       (.merged | group_by(.area)[] | "### \(.[0].area) (\(length))", "",
         (group_by(.group) | sort_by(-length)[] | "#### \(.[0].group) (\(length))", "",
-          (.[] | "- \(.merged_at | hm) [\(.repo)#\(.number)](\(.url)) \(subject)\(if .by then " (\(.by))" else "" end)"), "")),
-      (if .open then "## Still open", "",
-        (.open[] | select(recent($now; $days)) | "- [\(.repo)#\(.number)](\(.url)) \(subject)\(if .draft then " (draft)" else "" end)"),
-        "", "\(.open | map(select(recent($now; $days) | not)) | length) older open PRs not listed.", "" else empty end),
+          (.[] | " [\(.repo)#\(.number)](\(.url))" as $l | " (\(.merged_at | hm), \(.by // "" | clip(40)))\($l)" as $b
+            | (if .by and ($b | length) <= 138 then $b else " (\(.merged_at | hm))\($l)" end) as $t
+            | "- \(subject | cap | clip([198 - ($t | length), 60] | max))\($t)"), "")),
+      (if .open then "## Doing", "",
+        ([.open[] | select(recent($now; $days))] | group_by(.area // .repo)[] | "### \(.[0].area // .[0].repo)", "",
+          (.[] | "\(if .draft then " (draft)" else "" end) [\(.repo)#\(.number)](\(.url))" as $t
+            | "- \(subject | cap | clip([198 - ($t | length), 60] | max))\($t)"), ""),
+        "\(.open | map(select(recent($now; $days) | not)) | length) older open PRs not listed.", "" else empty end),
+      (if .next then "## Next", "",
+        (if (.next | length) == 0 then "- No session has a phase left.", "" else empty end),
+        (.next | group_by(.area)[] | "### \(.[0].area)", "",
+          (.[] | "- \(.phase | step | cap | clip(120)) (\(.who)\(if .total then ", \(.done // 0) of \(.total) done" else "" end))"), "")
+        else empty end),
+      (if .waiting then "## Needs you", "",
+        (if (.waiting.main + .waiting.needs + .waiting.asks | length) == 0 then "- Nothing." else empty end),
+        (.waiting.main[] | "- Nightly red in \(.repo): \(.reason | sub("^[^ ]+ red: "; "") | clip(150))"),
+        (.waiting.needs | map(.why = (.reason | if test("pending ask") then "asks" else . end)) | group_by(.why) | sort_by(-length)[]
+          | (if length == 1 then "1 session" else "\(length) sessions" end) as $n
+          | "- \(if .[0].why == "asks" then "Questions hold up \($n)" else "\($n) \(if length == 1 then "is" else "are" end) \(.[0].why)" end): \(map(.who) | .[:4] | join(", "))\(if length > 4 then ", and \(length - 4) more" else "" end)."),
+        (.waiting.asks | if length > 0 then
+          "- \(length) \(if length == 1 then "question waits" else "questions wait" end) on you. List: fleet-bench asks.",
+          (.[:3][] | "- Question: \(.question | gsub("\n"; " ") | clip(140)) (\(.project), \(.created | hm))")
+          else empty end), "" else empty end),
       (if .bench then "## Sessions", "", .bench.headline, "",
         "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
@@ -279,6 +325,7 @@ markdown() {
         (.work.phases | if . then "- Plan phases: \(.ticked) ticked, \(.added) added" else empty end),
         (.agents.outcomes | if . then "- Sessions: \(.sessions), \(.no_pr) with no PR (\(.no_pr_with_edits) of them edited files)" else empty end),
         (.agents.asks | if . then "- Asks: \(.open) open, oldest \(.age_h_max // "-") h" else empty end),
+        (.agents.runners | if . == null then empty elif (.passes | length) == 0 then "- Last night: no runner passes" else night end),
         (.ci.repos // {} | to_entries[] | select(.value.runs) | "- CI \(.key | sub(".*/"; "")): \(.value.red) red of \(.value.runs) runs, \(.value.main.red // 0) on main"
           + (.value.cost | if . then ", gate wall p50 \(.gate.wall.p50 // "-") min, \(.hours.pool) runner-hours, \(.regates.branches_regated) branches re-gated" else "" end)),
         "" else empty end),
@@ -310,6 +357,12 @@ nightly() {
   "$SNAPSHOTS" week --date "$day" --write || rc=1
   prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
     say "could not write day_log_rollup.prom"
+  # Under agentctl (the token-usage runner) a run that declares no outcome is promoted to
+  # STALLED, which trips fleet-liveness every night.
+  if [ -n "${AGENTCTL_NAME:-}" ]; then
+    local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
+    proof_outcome "$AGENTCTL_NAME" "$verdict" "day-log nightly $day rc=$rc"
+  fi
   return "$rc"
 }
 

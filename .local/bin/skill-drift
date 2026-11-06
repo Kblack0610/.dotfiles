@@ -15,9 +15,12 @@
 #
 # The checks split into two families, and the split is what lets CI run this.
 #
-# STATIC - decidable from a repo checkout alone, so they gate every PR (--lint):
+# STATIC - decidable from a repo checkout alone, so they gate every PR (--lint). They
+# enforce the standard in ~/.local/src/docs/skills.md, which is the one home for the
+# rules; this file holds only the mechanism.
 #
 #   NOFRONTMATTER  no YAML frontmatter, or no name:/description:.
+#   BADYAML    the frontmatter does not parse, so Claude Code drops every field.
 #   BADNAME    name is not kebab-case, or does not match its directory. A
 #              mismatch is invisible until the wrong thing is invoked.
 #   DUPNAME    the same skill name defined twice. ~/.claude/skills is ONE flat
@@ -34,7 +37,15 @@
 #              about 30 KB for every skill and command; past it the rest arrive
 #              as a bare name, so a long description costs other skills theirs.
 #   NONASCII   the house plain-ASCII rule (em/en dash, arrows, >=, ellipsis...).
-#              Ratcheted against tests/skill-lint.baseline, not all-or-nothing.
+#   NOHEADING  no `## Scope and triggers` heading, so a reader cannot find what the
+#              skill covers in the same place in every skill.
+#
+# .claude/commands/**/*.md and .claude/agents/*.md are linted too, as command:<path>
+# and agent:<name>: NOFRONTMATTER, BADYAML, LONGDESC and NONASCII.
+#
+# NONASCII, NOHEADING and every command or agent finding can be frozen in
+# tests/skill-lint.baseline; all other static findings are hard errors. --ratchet is
+# what makes that file shrink-only, and --lint names any line whose debt is gone.
 #
 # ENVIRONMENTAL - need a real machine, so they stay local (report/--quiet/--json):
 #
@@ -46,18 +57,20 @@
 #              so it is documented and unreachable.
 #   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
 #              advertised, so the agent tries to invoke it).
-#   (UNLISTED was retired: the auto-injected description listing is the index
-#    now, so CLAUDE.md carries only routing overrides. See check_registration.)
 #   STALE      metadata.reviewed is older than STALE_DAYS. Not "last edited",
 #              which git already answers - last VERIFIED against reality.
 #   UNUSED     never invoked in USAGE_DAYS of transcripts. A skill nothing calls
 #              still spends its description tokens in every session. This is a
 #              SIGNAL, not a verdict: a release runbook fires per release and is
 #              supposed to look idle.
+#   LISTBUDGET every listed skill and command together are over the shared listing
+#              budget, so the last ones arrive as a bare name. A skill with `paths:`
+#              or `disable-model-invocation: true` is not listed. Needs both repos
+#              deployed, so it lives here and not in --lint.
 #
 # Deliberately trivial and dependency-free: a checker that needs a working
-# environment cannot report a broken one. CI runs --lint and the weekly skill-refine
-# run reads --json. The 12h sentinel watch on --quiet was deleted 2026-11-02: it was red
+# environment cannot report a broken one. CI runs --lint and the nightly docs-cleanup
+# runner reads --json and --docs --json. The 12h sentinel watch on --quiet was deleted 2026-11-02: it was red
 # for 84 days, 33 of its 53 NEW findings UNUSED (a signal, not drift) and the rest
 # false positives, so nobody read it.
 #
@@ -77,17 +90,34 @@
 #   skill-drift --json           machine-readable (everything, with "new": true|false)
 #   skill-drift --new            human-readable, NEW findings only
 #   skill-drift --write-baseline freeze current findings as accepted
-#   skill-drift --lint [DIR]     STATIC checks only, over DIR/.claude/skills.
-#                                What CI runs: no deployed tree, no private repo
-#                                and no CLAUDE.md exist on a runner, so the
-#                                environmental checks cannot even be attempted.
-#   skill-drift --write-lint-baseline [DIR]   freeze current NONASCII debt
+#   skill-drift --lint [DIR] [--profile full|project]
+#                                STATIC checks only, over DIR/.claude. What CI runs:
+#                                no deployed tree, no private repo and no CLAUDE.md
+#                                exist on a runner, so the environmental checks
+#                                cannot even be attempted. `full` is the dotfiles
+#                                corpus. `project` is a game repo: no metadata.* or
+#                                category rules, and flat .claude/skills/<name>/.
+#   skill-drift --write-lint-baseline [DIR] [--profile full|project]
+#                                freeze the current frozen-eligible debt
+#   skill-drift --ratchet [DIR] [BASE]
+#                                exit 1 if tests/skill-lint.baseline gained a line
+#                                since the merge base with BASE (default origin/main).
+#                                A commit trailer `Skill-Baseline-Raise: <why>` in
+#                                that range allows it: a new check has debt to freeze.
+#   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
+#                                the skills: both CLAUDE.md layers, AGENTS.md,
+#                                ~/.local/src/docs, the agentctl runbooks, every
+#                                auto-memory file, anchor and lessons file. Each
+#                                finding names the doc and its first line. Override
+#                                the set with DRIFT_DOCS (newline-separated paths).
+#                                The nightly docs-cleanup runner reads --docs --json.
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
 CODEX="${CODEX_SKILLS:-$PUB/.config/codex/skills}"
+COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
 STALE_DAYS="${SKILL_STALE_DAYS:-180}"
@@ -107,15 +137,40 @@ CATEGORIES=" authoring memory messaging monitoring ops reference research ticket
 # whole corpus inside the listing.
 DESC_MAX=300
 
-MODE=report LINT_DIR=""
+# What this tree may spend of that shared listing: about 30 KB, less about 6 KB of
+# built-in and plugin entries the harness adds that no deployed tree can show (measured
+# from a session's listing 2026-11-06). Counting the tree against the full 30 KB would
+# stay green past the point where entries really go bare.
+LISTING_MAX="${SKILL_LISTING_MAX:-24576}"
+
+# The one heading every skill carries (the majority form when the standard was written).
+HEADING='## Scope and triggers'
+
+MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main
 case "${1:-}" in
   --quiet)          MODE=quiet ;;
   --json)           MODE=json ;;
   --new)            MODE=new ;;
   --write-baseline) MODE=write_baseline ;;
-  --lint)               MODE=lint;               LINT_DIR="${2:-$PWD}" ;;
-  --write-lint-baseline) MODE=write_lint_baseline; LINT_DIR="${2:-$PWD}" ;;
-  -h|--help) sed -n '2,78p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  --lint)                MODE=lint ;;
+  --write-lint-baseline) MODE=write_lint_baseline ;;
+  --ratchet)             MODE=ratchet ;;
+  --docs)           MODE=docs; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
+  -h|--help) sed -n '2,/^set -uo pipefail/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
+esac
+
+# The modes that work on one checkout take [DIR] [--profile P]; --ratchet also takes BASE.
+case "$MODE" in lint|write_lint_baseline|ratchet)
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile) PROFILE="${2:-}"; shift; [ $# -eq 0 ] || shift ;;
+      *) if [ -z "$LINT_DIR" ]; then LINT_DIR="$1"; else RATCHET_BASE="$1"; fi; shift ;;
+    esac
+  done
+  LINT_DIR="${LINT_DIR:-$PWD}"
+  # A typo here would run the wrong contract and report it clean.
+  case "$PROFILE" in full|project) ;; *) echo "skill-drift: unknown profile '$PROFILE' (full|project)" >&2; exit 2 ;; esac
 esac
 
 LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
@@ -135,11 +190,14 @@ is_common() { case "$COMMON" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # --- per-skill checks --------------------------------------------------------
 
+# check_frontmatter <label> <file> <required-key>...
 check_frontmatter() {
-  local skill="$1" f="$2"
-  head -1 "$f" | grep -q '^---$' || { add NOFRONTMATTER "$skill" SKILL.md "no YAML frontmatter"; return 0; }
-  sed -n '2,/^---$/p' "$f" | grep -q '^name:'        || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing name:"
-  sed -n '2,/^---$/p' "$f" | grep -q '^description:' || add NOFRONTMATTER "$skill" SKILL.md "frontmatter missing description:"
+  local skill="$1" f="$2" item key; shift 2
+  item="$(basename "$f")"
+  head -1 "$f" | grep -q '^---$' || { add NOFRONTMATTER "$skill" "$item" "no YAML frontmatter"; return 0; }
+  for key in "$@"; do
+    sed -n '2,/^---$/p' "$f" | grep -q "^$key:" || add NOFRONTMATTER "$skill" "$item" "frontmatter missing $key:"
+  done
   return 0
 }
 
@@ -154,7 +212,8 @@ check_frontmatter() {
 # An unavailable parser is a FINDING, not a skip. A check that quietly passes
 # when it could not run is the failure mode this whole file is written against.
 check_yaml() {
-  local skill="$1" f="$2" out
+  local skill="$1" f="$2" item out
+  item="$(basename "$f")"
   out=$(fm "$f" | python3 -c '
 import sys
 try:
@@ -174,12 +233,12 @@ except Exception as e:
     print(" ".join(str(e).split())[:90]); sys.exit(0)
 if not isinstance(d, dict):
     print("frontmatter is not a mapping")
-' 2>/dev/null) || { add BADYAML "$skill" SKILL.md "could not run the YAML parser"; return 0; }
+' 2>/dev/null) || { add BADYAML "$skill" "$item" "could not run the YAML parser"; return 0; }
   [ -n "$out" ] || return 0
   if [ "$out" = NOPARSER ]; then
-    add BADYAML "$skill" SKILL.md "PyYAML unavailable - frontmatter left unverified"
+    add BADYAML "$skill" "$item" "PyYAML unavailable - frontmatter left unverified"
   else
-    add BADYAML "$skill" SKILL.md "$out"
+    add BADYAML "$skill" "$item" "$out"
   fi
   return 0
 }
@@ -242,9 +301,8 @@ check_meta() {
 # measured, and measured the way the consumer reads it: parsed YAML, so a folded
 # `>-` block counts its folded value, not its indentation and line breaks. The
 # old awk counter read raw lines and so over- or under-counted every block.
-check_desc_len() {
-  local skill="$1" f="$2" n
-  n=$(fm "$f" | python3 -c '
+desc_bytes() {
+  fm "$1" | python3 -c '
 import sys
 try:
     import yaml
@@ -262,7 +320,12 @@ except Exception:
 if isinstance(d, dict):
     v = "".join(str(d.get(k) or "") for k in ("description", "when_to_use"))
     print(len(v.encode("utf-8")))
-' 2>/dev/null)
+' 2>/dev/null
+}
+
+check_desc_len() {
+  local skill="$1" f="$2" n
+  n=$(desc_bytes "$f")
   # No number means the frontmatter did not parse; check_yaml already reports that.
   [ -n "$n" ] || return 0
   [ "$n" -gt "$DESC_MAX" ] \
@@ -276,7 +339,12 @@ if isinstance(d, dict):
 check_ascii() {
   local skill="$1" f="$2" n
   n=$(grep -c -P '[\x{2014}\x{2013}\x{2192}\x{2190}\x{2265}\x{2264}\x{2026}\x{00A7}\x{00B7}]' "$f" 2>/dev/null || true)
-  [ "${n:-0}" -gt 0 ] && add NONASCII "$skill" SKILL.md "$n line(s) with non-ASCII punctuation (em dash, arrow, ellipsis...)"
+  [ "${n:-0}" -gt 0 ] && add NONASCII "$skill" "$(basename "$f")" "$n line(s) with non-ASCII punctuation (em dash, arrow, ellipsis...)"
+  return 0
+}
+
+check_heading() {
+  grep -qE "^${HEADING}[[:space:]]*$" "$2" || add NOHEADING "$1" SKILL.md "no '$HEADING' heading"
   return 0
 }
 
@@ -284,15 +352,25 @@ check_ascii() {
 # only CHECKABLE if it is concrete: placeholders (<repo>, {project}, *.md, ...)
 # describe a shape, not a file, and testing them would produce pure noise.
 #
+# The token keeps its < > { } * ? so the placeholder test below can see them:
+# `~/.cache/x/p<N>/` cut at the < read as a missing `~/.cache/x/p`; now it is
+# checked as `~/.cache/x`.
+#
 # A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
 # `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
 # stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
 check_paths() {
-  local skill="$1" f="$2" p
+  local skill="$1" f="$2" p orig
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    orig="$p"
     case "$p" in
-      *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*|*'...'*) continue ;;
+      *'...'*) continue ;;
+      # A placeholder or brace list: only the concrete directory before it is
+      # checkable (`~/.openclaw/{a,b}` names a dead ~/.openclaw).
+      *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*)
+        p="${p%%[\<\>\{\}\*\?]*}"; p="${p%/*}"
+        case "$p" in '~'|'$HOME'|'') continue ;; esac ;;
       *'example.internal'*|*AcmeCorp*|*YYYY*|*vX.Y.Z*) continue ;;
       *-|*.) continue ;;
       *'$'*) case "$p" in '$HOME/'*) : ;; *) continue ;; esac ;;
@@ -300,12 +378,24 @@ check_paths() {
     p="${p/#\~\//$HOME/}"
     p="${p/#\$HOME\//$HOME/}"
     p="${p%/}"
-    [ -e "$p" ] || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist"
+    [ -e "$p" ] || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
     grep -v 'skill-drift: ignore' "$f" \
-      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/-]*[A-Za-z0-9._-]' \
+      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?-]*[A-Za-z0-9._>}*?-]' \
       | sort -u
   )
+  return 0
+}
+
+# In --docs mode a finding carries the doc's first line naming it, since a doc
+# has no SKILL.md-sized scope and the fixer needs to land on it. Off for skills:
+# the detail string is part of the baseline key, so adding it would mark every
+# baselined skill finding NEW.
+at_line() {
+  [ "$MODE" = docs ] || return 0
+  local n
+  n=$(grep -m1 -nF -- "$2" "$1" | cut -d: -f1)
+  [ -n "$n" ] && printf ' (line %s)' "$n"
   return 0
 }
 
@@ -320,16 +410,30 @@ check_cmds() {
     [ -n "$c" ] || continue
     is_common "$c" && continue
     command -v "$c" >/dev/null 2>&1 && continue
-    add NOCMD "$skill" "$c" "command not found on PATH"
+    add NOCMD "$skill" "$c" "command not found on PATH$(at_line "$f" "$c")"
   done < <(
     awk '
-      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; cont=0; next }
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; cont=0; inq=0; hd=""; next }
       /^[[:space:]]*```/ { inblock=0; next }
       !inblock || /skill-drift: ignore/ { next }
       {
         line = $0
         sub(/^[[:space:]]+/, "", line)
-        sub(/^[$#][[:space:]]+/, "", line)
+        # Data, not commands: a heredoc body, and the lines of a single-quoted
+        # string that spans lines (a GraphQL or jq program). Their first words
+        # ("number", "from") are not tools.
+        if (hd != "") { if (line == hd) hd = ""; next }
+        # Count the quotes that are not inside "..." or a trailing # comment, so
+        # an apostrophe in a "..." string or a trailing comment opens no string.
+        tmp = line; gsub(/"[^"]*"/, "", tmp); sub(/(^|[[:space:]])#.*$/, "", tmp)
+        nq = gsub(/\047/, "", tmp)
+        if (inq) { if (nq % 2) inq = 0; next }
+        if (line ~ /^#/) next                   # a comment, not a root prompt
+        if (nq % 2) inq = 1
+        if (match(tmp, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*/)) {
+          hd = substr(tmp, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047]?/, "", hd)
+        }
+        sub(/^[$][[:space:]]+/, "", line)
         was_cont = cont
         cont = (line ~ /(\\|\||&&|\|\|)[[:space:]]*$/)
         if (was_cont) next                      # continuation: no command here
@@ -433,20 +537,29 @@ check_registration() {
     ' "$CLAUDE_MD" \
       | grep -oE '^- `[a-z][a-z0-9:-]*`' | sed 's/^- `//; s/`$//' | grep -v ':' | sort -u
   )
+  return 0
+}
 
-  # There is deliberately no UNLISTED check any more.
-  #
-  # It existed when CLAUDE.md's skill section was the routing layer: a skill
-  # missing from it was a skill nothing could route to. That stopped being true.
-  # Every skill's `description` is injected into the context automatically, so
-  # the listing IS the index, and CLAUDE.md now carries only what a description
-  # cannot - which skill wins between two, what to prefer over an MCP, what is
-  # retired. Requiring all 60 names in prose as well made the section a ~5k-token
-  # duplicate of something already arriving, and it drifted anyway: 7 missing and
-  # 1 retired-but-listed when it was cut.
-  #
-  # GHOST stays, because a routing rule that names a skill which no longer exists
-  # is still a live bug - the agent will try to invoke it.
+# The whole listing, measured the way it arrives: one `- name: description` line per
+# skill and command that is listed. Over the deployed tree because only that holds both
+# repos. A `paths:` or `disable-model-invocation: true` entry costs nothing until used.
+check_listing() {
+  local total=0 f name n
+  while IFS=$'\t' read -r name f; do
+    fm "$f" | grep -E '^paths:|^disable-model-invocation:[[:space:]]*true' >/dev/null && continue
+    n=$(desc_bytes "$f")
+    total=$((total + ${#name} + 5 + ${n:-0}))
+  done < <(
+    for f in "$SKILLS"/*/SKILL.md; do
+      [ -e "$f" ] && printf '%s\t%s\n' "$(basename "$(dirname "$f")")" "$f"
+    done
+    [ -d "$COMMANDS" ] && find -L "$COMMANDS" -name '*.md' -type f | while IFS= read -r f; do
+      name="${f#"$COMMANDS"/}"; name="${name%.md}"
+      printf '%s\t%s\n' "${name//\//:}" "$f"
+    done
+  )
+  [ "$total" -gt "$LISTING_MAX" ] \
+    && add LISTBUDGET listing "${total}B" "listed skills and commands are over the ${LISTING_MAX}-byte budget, so the last ones arrive as a bare name"
   return 0
 }
 
@@ -465,10 +578,13 @@ check_registration() {
 declare -A SEEN_NAME=()
 # run_static <contract> <root>...
 #
-# <contract> is `full` or `structural`.
+# <contract> is `full`, `project` or `structural`.
 #
 #   full        the Claude corpus: category/tags/reviewed, the category directory
-#               layout, and the house ASCII rule.
+#               layout, the description budget, the house ASCII rule, the heading.
+#   project     the same minus category/tags/reviewed and the category layout, which
+#               mean nothing outside dotfiles. --profile project: a game repo's flat
+#               .claude/skills/<name>/ is still a Claude skill, listed like any other.
 #   structural  only what is true of ANY skill file - it parses, it has a name and
 #               a description, the name matches its directory, no duplicates.
 #
@@ -494,14 +610,14 @@ run_static() {
       else
         SEEN_NAME[$s]="$d"
       fi
-      check_frontmatter "$s" "$m"
+      check_frontmatter "$s" "$m" name description
       check_yaml        "$s" "$m"
       check_name        "$s" "$m"
-      if [ "$contract" = full ]; then
-        check_meta     "$s" "$m" "$parent"
-        check_desc_len "$s" "$m"
-        check_ascii    "$s" "$m"
-      fi
+      [ "$contract" = structural ] && continue
+      [ "$contract" = full ] && check_meta "$s" "$m" "$parent"
+      check_desc_len "$s" "$m"
+      check_ascii    "$s" "$m"
+      check_heading  "$s" "$m"
     done < <(find_skills "$root")
   done
   # A category directory that shares a name with a skill: comms/comms/ makes
@@ -523,13 +639,110 @@ run_static() {
   return 0
 }
 
+find_commands() { [ -d "$1/.claude/commands" ] && find "$1/.claude/commands" -name '*.md' -type f | sort; }
+find_agents()   { [ -d "$1/.claude/agents" ] && find "$1/.claude/agents" -maxdepth 1 -name '*.md' -type f | sort; }
+
+# check_entry <label> <file> <required-key>...
+# A file with no frontmatter stops at that finding: fm would hand its prose to the parser.
+check_entry() {
+  local label="$1" f="$2"
+  check_frontmatter "$@"
+  check_ascii "$label" "$f"
+  head -1 "$f" | grep -q '^---$' || return 0
+  check_yaml     "$label" "$f"
+  check_desc_len "$label" "$f"
+}
+
+# run_entries <repo>...: commands and agents share the listing and the house rules with
+# skills. A command's name is its path, so only an agent has a name: key to require.
+run_entries() {
+  local repo m rel
+  for repo in "$@"; do
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      rel="${m#"$repo/.claude/commands/"}"
+      check_entry "command:${rel%.md}" "$m" description
+    done < <(find_commands "$repo")
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      check_entry "agent:$(basename "$m" .md)" "$m" name description
+    done < <(find_agents "$repo")
+  done
+}
+
+# The global doc set: what loads into, or is pointed at by, every session.
+# Memory dirs exist once per config dir (~/.claude, ~/.claude-personal, ...) but
+# resolve to one tree, so they are deduped by real path.
+doc_set() {
+  # readlink -e drops missing paths and unmatched globs; -f below drops directories.
+  if [ -n "${DRIFT_DOCS:-}" ]; then printf '%s\n' "$DRIFT_DOCS"
+  else printf '%s\n' "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" \
+    "$HOME"/.local/src/docs/*.md "$HOME"/.config/agentctl/*.md \
+    "$HOME"/.agent/anchors/*.md "$HOME"/.agent/lessons/*.md \
+    "$HOME"/.claude*/projects/*/memory/*.md
+  fi | xargs -d '\n' -r readlink -e -- | sort -u | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done
+}
+
+if [ "$MODE" = docs ]; then
+  ndocs=0
+  while IFS= read -r f; do
+    ndocs=$((ndocs + 1))
+    label="${f/#$HOME/\~}"
+    check_paths "$label" "$f"
+    check_cmds  "$label" "$f"
+  done < <(doc_set)
+  # A run that scanned nothing is a failure, never a clean report.
+  [ "$ndocs" -gt 0 ] || { echo "skill-drift --docs: no docs found - refusing to report success" >&2; exit 2; }
+  n=${#FINDINGS[@]}
+  if [ "$DOCS_JSON" = 1 ]; then
+    printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} | jq -Rnc --argjson docs "$ndocs" \
+      '[inputs | select(. != "") | split("|") | {type: .[0], doc: .[1], item: .[2], detail: (.[3:] | join("|"))}]
+       | {docs: $docs, drift: length, findings: .}'
+  else
+    for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+      IFS='|' read -r t s p d <<< "$f"
+      printf '  %-9s %-60s %-50s %s\n' "$t" "$s" "$p" "$d"
+    done
+    printf 'skill-drift --docs: %s finding(s) across %s doc(s)\n' "$n" "$ndocs"
+  fi
+  [ "$n" -eq 0 ] && exit 0 || exit 1
+fi
+
+# --- ratchet (what makes the lint baseline shrink-only) ------------------------
+#
+# Compares the file as it stands with the file at the merge base. A file missing there,
+# for any reason, counts as empty, so every line is an added line: this fails closed.
+if [ "$MODE" = ratchet ]; then
+  mb=$(git -C "$LINT_DIR" merge-base "$RATCHET_BASE" HEAD 2>/dev/null) || {
+    echo "skill-ratchet: no merge base with $RATCHET_BASE (shallow clone?) - refusing to report success" >&2
+    exit 2
+  }
+  added=$(LC_ALL=C comm -13 \
+    <(git -C "$LINT_DIR" show "$mb:tests/skill-lint.baseline" 2>/dev/null | LC_ALL=C sort -u) \
+    <(LC_ALL=C sort -u "$LINT_BASELINE" 2>/dev/null))
+  if [ -z "$added" ]; then
+    echo "skill-ratchet: no baseline line added since ${mb:0:8}"
+    exit 0
+  fi
+  raise=$(git -C "$LINT_DIR" log "$mb..HEAD" --format='%(trailers:key=Skill-Baseline-Raise,valueonly)' | grep -m1 .)
+  sed 's/^/  ADDED  /' <<< "$added"
+  if [ -n "$raise" ]; then
+    printf 'skill-ratchet: %d line(s) added under Skill-Baseline-Raise: %s\n' "$(wc -l <<< "$added")" "$raise"
+    exit 0
+  fi
+  printf '\nskill-ratchet: %d line(s) added since %s. Fix the finding instead. A new check freezing old debt says so with a commit trailer, Skill-Baseline-Raise: <why>.\n' "$(wc -l <<< "$added")" "${mb:0:8}"
+  exit 1
+fi
+
 if [ "$MODE" = lint ] || [ "$MODE" = write_lint_baseline ]; then
-  run_static full "$LINT_DIR/.claude/skills"
+  run_static "$PROFILE" "$LINT_DIR/.claude/skills"
+  run_entries "$LINT_DIR"
 else
   # Two namespaces, two calls: the dotfiles pair feed one flat ~/.claude/skills,
   # while the Codex corpus is a different tool's and legitimately reuses names.
   run_static full "$PUB/.claude/skills" "$PRIV/.claude/skills"
   run_static structural "$CODEX"
+  run_entries "$PUB" "$PRIV"
 
   load_usage
   for d in "$SKILLS"/*/; do
@@ -544,6 +757,7 @@ else
   check_undeployed "$PUB"  public
   check_undeployed "$PRIV" private
   check_registration
+  check_listing
 fi
 
 # Sorting keeps the baseline file stable across runs, so `git diff` on it shows
@@ -564,46 +778,67 @@ fi
 
 # --- lint (what CI runs) ------------------------------------------------------
 #
-# Only NONASCII is ratcheted, and only because the corpus carries 1355 known
-# occurrences that predate the rule being enforced. Everything else is a hard
-# error from the first run: those checks were all clean when the gate landed, so
-# there is no debt to grandfather and no reason to allow any.
+# The baseline holds `TYPE|subject` lines. Only debt that predates its rule may sit there:
+# NONASCII, NOHEADING, and anything on a command or agent, linted only since 2026-11.
+# Every other check was clean when it landed, so it stays a hard error from the first run.
+freezable() {
+  case "$1|$2" in
+    NONASCII\|*|NOHEADING\|*|*\|command:*|*\|agent:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ "$MODE" = write_lint_baseline ]; then
   mkdir -p "$(dirname "$LINT_BASELINE")"
   : > "$LINT_BASELINE"
   for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
-    case "$f" in NONASCII\|*) printf '%s\n' "${f%%|*}|$(printf '%s' "$f" | cut -d'|' -f2)" >> "$LINT_BASELINE" ;; esac
+    IFS='|' read -r t s _ <<< "$f"
+    freezable "$t" "$s" && printf '%s|%s\n' "$t" "$s" >> "$LINT_BASELINE"
   done
-  sort -u -o "$LINT_BASELINE" "$LINT_BASELINE"
-  echo "skill-lint: baselined $(wc -l < "$LINT_BASELINE") NONASCII skill(s) -> $LINT_BASELINE"
+  LC_ALL=C sort -u -o "$LINT_BASELINE" "$LINT_BASELINE"
+  echo "skill-lint: baselined $(wc -l < "$LINT_BASELINE") finding(s) -> $LINT_BASELINE"
   exit 0
 fi
 
 if [ "$MODE" = lint ]; then
   errs=0
+  declare -A CURRENT=()
   for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
     IFS='|' read -r t s p d <<< "$f"
-    if [ "$t" = NONASCII ] && [ -f "$LINT_BASELINE" ] && grep -qxF "NONASCII|$s" "$LINT_BASELINE"; then
+    CURRENT["$t|$s"]=1
+    if freezable "$t" "$s" && [ -f "$LINT_BASELINE" ] && grep -qxF "$t|$s" "$LINT_BASELINE"; then
       continue   # known debt, tracked in the baseline
     fi
     printf '  FAIL  %-13s %-24s %-24s %s\n' "$t" "$s" "$p" "$d"
     errs=$((errs + 1))
   done
+  # A line whose debt is gone would let that debt back in unnoticed. A warning, not a
+  # failure: the fix is one deleted line, and it should not hold up unrelated work.
+  warn=""
+  [ -z "${GITHUB_ACTIONS:-}" ] || warn="::warning::"
+  while IFS= read -r line; do
+    [ -z "$line" ] || [ -n "${CURRENT[$line]:-}" ] && continue
+    printf '%sskill-lint: stale baseline line, delete it: %s\n' "$warn" "$line"
+  done < <(cat "$LINT_BASELINE" 2>/dev/null)
   scanned=$(find_skills "$LINT_DIR/.claude/skills" | wc -l)
+  entries=$( { find_commands "$LINT_DIR"; find_agents "$LINT_DIR"; } | wc -l)
   # An empty input list is a FAILURE, not a clean run. Every tooling failure in
   # this repo has been a silent success, and a lint that scans nothing and says
   # "all good" is the purest form of it.
-  if [ "$scanned" -eq 0 ]; then
-    echo "skill-lint: found NO skills under $LINT_DIR/.claude/skills - refusing to report success"
+  if [ "$((scanned + entries))" -eq 0 ]; then
+    echo "skill-lint: found NO skills, commands or agents under $LINT_DIR/.claude - refusing to report success"
     exit 2
   fi
   if [ "$errs" -gt 0 ]; then
-    printf '\nskill-lint: %d error(s) across %d skill(s)\n' "$errs" "$scanned"
+    printf '\nskill-lint: %d error(s) across %d skill(s) and %d command or agent file(s). The standard: ~/.local/src/docs/skills.md\n' "$errs" "$scanned" "$entries"
     exit 1
   fi
-  printf 'skill-lint: %d skill(s) valid\n' "$scanned"
+  printf 'skill-lint: %d skill(s) valid, and %d command or agent file(s)\n' "$scanned" "$entries"
   exit 0
 fi
+
+# A YAML parser error quotes the text it choked on, and the nightly reads this as JSON.
+json_esc() { local v="${1//\\/\\\\}"; printf '%s' "${v//\"/\\\"}"; }
 
 is_new() { [ -f "$BASELINE" ] || return 0; ! grep -qxF "$1" "$BASELINE"; }
 
@@ -621,7 +856,7 @@ case "$MODE" in
       IFS='|' read -r t s p d <<< "${FINDINGS[$i]}"
       [ "$i" -gt 0 ] && printf ','
       printf '{"type":"%s","skill":"%s","item":"%s","detail":"%s","new":%s}' \
-        "$t" "$s" "$p" "$d" "$(is_new "${FINDINGS[$i]}" && echo true || echo false)"
+        "$t" "$s" "$(json_esc "$p")" "$(json_esc "$d")" "$(is_new "${FINDINGS[$i]}" && echo true || echo false)"
     done
     printf ']}\n'
     [ "$nnew" -eq 0 ] && exit 0 || exit 1 ;;
@@ -654,16 +889,21 @@ cat <<'EOF'
   GHOST      -> the skill is retired; remove the bullet from CLAUDE.md
   BADNAME    -> rename the directory or the frontmatter so the two agree
   DUPNAME    -> one flat namespace across both repos; rename one of them
-  BADMETA    -> fix the metadata block (see .claude/skills/SKILL-TEMPLATE.md)
+  BADMETA    -> fix the metadata block (see ~/.local/src/docs/skills.md)
+  BADYAML    -> use a `description: >-` block; a bare `: ` in the value breaks the parse
   CATCOLLIDE -> rename the category; it cannot share a name with a skill
   LONGDESC   -> cut the description to a trigger line (what it is, the main
                 "use when" phrases, one "not this, use X"); detail goes in the body
-  NONASCII   -> plain ASCII (see the Writing Style rules); `--write-lint-baseline`
-                only freezes debt, it does not make the rule optional
+  NONASCII   -> plain ASCII (see the Writing Style rules)
+  NOHEADING  -> say what the skill covers and when under `## Scope and triggers`
+                (`--write-lint-baseline` freezes debt in these two, it does not make
+                the rule optional, and `--ratchet` refuses a line added to it)
   STALE      -> re-verify the skill against reality, THEN bump metadata.reviewed.
                 Bumping the date without checking is worse than leaving it stale.
   UNUSED     -> a signal, not a verdict. A release runbook is meant to look idle;
                 a skill the router never picks is the one to look at
+  LISTBUDGET -> shorten descriptions, or give a domain skill `paths:` so it is listed
+                only where it applies
 
   Reason about these with `/skill-refine audit` - it adds the lessons/mem0 layer
   and writes proposed diffs. Do NOT silence a finding by deleting the check.

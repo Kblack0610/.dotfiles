@@ -243,7 +243,7 @@ if [ -n "${seen_names:-}" ]; then
   fi
 fi
 
-# --- 6c. every lab project declares a stage, and a `prod` claim is backed by a tag ----
+# --- 6c. every lab project declares a stage, and meets it ------------------------------
 # The `#prod` / `#alpha` hashtag in a project's HEAD (above its first `##`) is a DECLARED
 # fact no tool can derive: a toy app and a load-bearing one both ship real git tags at
 # similar version numbers, and only a human knows breaking one is a shrug and the other an
@@ -255,16 +255,20 @@ fi
 # safe to type: closed vocabulary, and the one half that IS derivable -- whether anything
 # shipped at all -- verified against git rather than taken on trust.
 #
-# `prod` with a repo and no tag is a FAIL: the claim is refutable and refuted. `prod` with
-# no repo at all is a WARN, because agent-runtime and notes-cockpit are notes-only by
-# design and have no product tag to find.
-STAGE_VOCAB="draft alpha beta prod"
-if declare -F lab_roots >/dev/null 2>&1; then
+# Whether a project meets its stage is `project-stage-check`, which runs the stages.md rows
+# (the shipped-tag row for prod among them). Its exit is the verdict: 1 is a FAIL here, and
+# 0 with FAIL rows is the report-only window, a WARN.
+# The ladder comes from its one definition (notes-cli STAGES), never a copy kept here.
+STAGE_VOCAB="$(notes projects --stages 2>/dev/null)"
+if [ -z "$STAGE_VOCAB" ]; then
+  skip "notes projects --stages printed nothing; cannot check project stages"
+elif declare -F lab_roots >/dev/null 2>&1; then
   # Overridable like PROJECT_NAME_LIB above, for the same worktree reason.
   # shellcheck source=/dev/null
   [ -r "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}" ] \
     && . "${LAB_FEED_LIB:-$HOME/.local/lib/lab-feed.sh}"
-  n=0; bad=0; stage_warns=0
+  STAGE_CHECK="${STAGE_CHECK:-$(dirname "$(realpath "$0")")/project-stage-check}"
+  n=0; bad=0; stage_warns=0; unchecked=0
   while IFS= read -r root; do
     [ -d "$root" ] || continue
     for d in "$root"/*/; do
@@ -275,7 +279,7 @@ if declare -F lab_roots >/dev/null 2>&1; then
         stage="$(lab_head_tag "$(lab_front_page "$d")" $STAGE_VOCAB)"
       else
         skip "lab-feed.sh unavailable; cannot read \"$name\" stage tag"
-        continue
+        unchecked=$((unchecked + 1)); continue
       fi
 
       if [ -z "$stage" ]; then
@@ -288,25 +292,68 @@ if declare -F lab_roots >/dev/null 2>&1; then
       # no stage, and the WARN above already says exactly that and names the fix. A tag the
       # vocabulary does not know has to be ignorable, or a `#urgent` in a project's prose
       # would fail this gate.
-      [ "$stage" = prod ] || continue
-
-      repo="$(project_repo_path "$name" 2>/dev/null || true)"
-      if [ -z "$repo" ]; then
-        warn "lab project \"$name\" claims prod but resolves no repo - nothing can verify it"
-        stage_warns=$((stage_warns + 1))
-      elif [ -z "$(project_release_version "$name" 2>/dev/null || true)" ]; then
-        fail "lab project \"$name\" claims prod but $repo has shipped no tag for it"
-        bad=$((bad + 1))
+      out="$(LAB_STAGES="$STAGE_VOCAB" "$STAGE_CHECK" "$name" --stage "$stage" 2>&1)"; rc=$?
+      if [ "$rc" -eq 2 ]; then
+        skip "project-stage-check could not run for \"$name\": $(tail -n1 <<<"$out")"
+        unchecked=$((unchecked + 1)); continue
       fi
+      rows="$(grep -c '^FAIL' <<<"$out" || true)"
+      [ "$rows" -gt 0 ] || [ "$rc" -ne 0 ] || continue
+      # The stages the failing rows belong to, lowest first: "draft,alpha" says where the gap starts.
+      at="$(awk '/^FAIL/ && !seen[$2]++ { printf "%s%s", (k++ ? "," : ""), $2 }' <<<"$out")"
+      msg="lab project \"$name\" fails $rows row(s) of #$stage${at:+ (at $at)}; see: project-stage-check $name"
+      if [ "$rc" -ne 0 ]; then fail "$msg"; bad=$((bad + 1)); else warn "$msg"; stage_warns=$((stage_warns + 1)); fi
     done
   done < <(lab_roots)
   if [ "$n" -eq 0 ]; then
     skip "lab roots present but empty; no stages to check"
-  elif [ "$bad" -eq 0 ] && [ "$stage_warns" -eq 0 ]; then
-    pass "all $n lab projects declare a valid stage, and every prod claim ships a tag"
+  elif [ "$bad" -eq 0 ] && [ "$stage_warns" -eq 0 ] && [ "$unchecked" -eq 0 ]; then
+    pass "all $n lab projects declare a stage and meet it"
   fi
 else
   skip "lab-roots.sh unavailable (private overlay); cannot check project stages"
+fi
+
+# --- 6d. a game project's lab stage agrees with its game's status ----------------------
+# The playground's per-game `status` (GameStatus in GameDefinition.cs) uses the SAME ladder
+# as the lab tag: one vocabulary, two places it has to be written (the JSON ships in the
+# build; the tag drives the fleet). This turns the two writers into one checked fact. The
+# JSON is read from the repo's remote branch, not the checkout: a clone on a feature branch
+# or behind main must not decide whether the two agree.
+if [ -n "$STAGE_VOCAB" ] && declare -F lab_roots >/dev/null 2>&1 && declare -F lab_head_tag >/dev/null 2>&1; then
+  gchecked=0; gbad=0
+  while IFS=$'\t' read -r name _ path branch; do
+    repo="$(project_repo_path "$name" 2>/dev/null || true)"
+    [ -n "$repo" ] && [ -e "$repo/.git" ] || continue
+    labdir=""
+    while IFS= read -r root; do
+      [ -f "$root/$name/summary.md" ] && { labdir="$root/$name"; break; }
+    done < <(lab_roots)
+    [ -n "$labdir" ] || continue
+    # shellcheck disable=SC2086 # the ladder is a word list on purpose
+    stage="$(lab_head_tag "$(lab_front_page "$labdir")" $STAGE_VOCAB)"
+    ref="origin/${branch:-main}"
+    statuses="$(git -C "$repo" ls-tree -r --name-only "$ref" -- "$path" 2>/dev/null \
+      | grep '/Resources/Games/[^/]*\.json$' \
+      | while IFS= read -r f; do git -C "$repo" show "$ref:$f" 2>/dev/null \
+          | jq -r 'select(.category == "Game") | (.status // "Draft") | ascii_downcase' 2>/dev/null; done \
+      | sort -u)"
+    if [ -z "$statuses" ]; then
+      warn "game project \"$name\" has no Game-category JSON under $path on $ref, so its #${stage:-unset} cannot be checked against a game status"
+      continue
+    fi
+    gchecked=$((gchecked + 1))
+    while IFS= read -r st; do
+      if [ "$st" != "$stage" ]; then
+        fail "game project \"$name\" is #${stage:-unset} on its lab sheet but its game status is ${st} on $ref; move one (notes projects --stage $name --set $st, or the game's status on the admin site, then Save to repo)"
+        gbad=$((gbad + 1))
+      fi
+    done <<<"$statuses"
+  done < <(jq -r '.trackers | to_entries[] | select((.value | type) == "object" and .value.type == "game" and (.value.path // "") != "")
+      | [.key, .value.repo, .value.path, (.value.branch // "main")] | @tsv' "$MAP_FILE")
+  [ "$gchecked" -gt 0 ] && [ "$gbad" -eq 0 ] && pass "$gchecked game project(s): lab stage agrees with the game status"
+else
+  skip "no ladder or lab roots; cannot compare game statuses with lab stages"
 fi
 
 # --- 7. lab and type: the schema, and lab dirs match the registry both ways ----------

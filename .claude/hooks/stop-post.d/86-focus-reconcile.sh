@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop-post: close the Focus loop. The preflight surfaces today's `## Focus` at turn 1;
+# Stop-post: close the Focus loop. Today's `## Focus` is the human's list (turn 1 does not carry it);
 # this checks, at the end of a turn that actually changed something, that the work got
 # tracked. Without it the turn-1 nudge is advisory and silently rots — you finish a
 # session having shipped three things the cockpit never heard about.
@@ -7,7 +7,8 @@
 # Fires only when ALL of these hold:
 #   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
 #   2. nothing is in progress    — no `- [/]` item in today's Focus
-#   3. the work went untracked   — no `notes ptask|focus` write by this session
+#   3. the work went untracked   - no `notes ptask` or `agent-queue` write by this
+#                                  session, and no `$AGENT_QUEUE_ITEM` from the dispatcher
 #   4. not already fired         — at most ONCE per session
 #
 # 1 and 3 are read from THIS session's transcript (`transcript_path` in the payload), so
@@ -26,6 +27,13 @@
 # documents at pre-stop-checks.sh:9) and exiting 0 — NOT by exiting 2. Exit 2 would make
 # the coordinator exit 2 as well, and Claude Code would then read the coordinator's stderr
 # as the reason, which by that point is full of unrelated check chatter.
+#
+# A session that opened or merged a PR is held to more: the PR is a unit of work, so only a
+# queue item satisfies it (`agent-queue add|claim`, `agent-land`, $AGENT_QUEUE_ITEM, or an item
+# whose `sessions:` lists this session); a
+# Focus item in progress or a board write does not, and it has its own once-per-session nudge.
+# Why: 2026-11-05 only 26% of merged PRs since 11-04 had an item, so the work ledger could not
+# answer what was done.
 #
 # Escape hatch: CLAUDE_SKIP_FOCUS_GATE=1.
 
@@ -93,7 +101,7 @@ case "$LAST_RUN" in ''|*[!0-9]*) LAST_RUN=0 ;; esac
 
 NOW=$(date +%s)
 # With no prior mark (first run for this project) there is no turn window to compare a
-# focus write against, and a bare 0 would make every focus write ever logged look like it
+# ptask write against, and a bare 0 would make every ptask write ever logged look like it
 # happened just now — the gate would fail open exactly once per project, silently. Fall
 # back to a conservative recent window instead: a turn is not 15 minutes of wall clock.
 [ "$LAST_RUN" -eq 0 ] && LAST_RUN=$((NOW - 900))
@@ -123,6 +131,8 @@ save_state() {
   } > "$STATE_FILE" 2>/dev/null || true
 }
 
+# A check reads $CALLS as a here-string, never `printf | grep -q`: under pipefail, once the calls
+# outgrow a pipe buffer, grep's early exit SIGPIPEs printf and a match reads as 141 (2026-11-05).
 # This session's tool calls, one per line: `TOOL <name>` for every call and `BASH <command>`
 # for Bash ones (newlines folded). The grep prefilter keeps a large transcript cheap; jq
 # then reads only real tool_use blocks, so a tool name quoted in prose cannot count.
@@ -138,8 +148,8 @@ session_calls() {
 DID_WORK=0
 if [ "$SESSION_MODE" -eq 1 ]; then
   CALLS=$(session_calls)
-  if printf '%s\n' "$CALLS" | grep -qE '^TOOL (Edit|Write|MultiEdit|NotebookEdit)$' \
-     || printf '%s\n' "$CALLS" | grep -qE '^BASH .*\b(git (commit|push)|gh pr (create|merge))\b'; then
+  if grep -qE '^TOOL (Edit|Write|MultiEdit|NotebookEdit)$' <<<"$CALLS" \
+     || grep -qE '^BASH .*\b(git (commit|push)|gh pr (create|merge))\b' <<<"$CALLS"; then
     DID_WORK=1
   fi
 else
@@ -153,17 +163,37 @@ else
   fi
 fi
 [ "$DID_WORK" -eq 1 ] || { save_state; exit 0; }
+# Did this session open or merge a PR? Then only a queue item tracks it (header).
+PR_WORK=0
+if [ "$SESSION_MODE" -eq 1 ] && grep -qE '^BASH .*\bgh +pr +(create|merge)\b' <<<"$CALLS"; then
+  PR_WORK=1 MARKER="$MARKER.pr"
+fi
 
-# --- 2. is something already marked in progress? ---
+# --- 2. is the work an agent-queue item? ---
+# The global rule tracks an agent's own task on its agent-queue item, and fleet-dispatch
+# hands a session its item as $AGENT_QUEUE_ITEM with a brief that forbids other board rows.
+# Before this check the gate fired anyway and told those sessions to add a board row:
+# 2026-10-29..11-05, about half of its 223 blocks hit sessions already on a queue item.
+[ -n "${AGENT_QUEUE_ITEM:-}" ] && { save_state; exit 0; }
+# An item whose `sessions:` lists this one (add, claim, agent-land stamp it) is the same fact,
+# and survives a compaction that drops those calls from the transcript (2026-11-05). Exit 2 is
+# "more than one item": still on the ledger.
+if [ -n "$SESSION_ID" ] && command -v agent-queue >/dev/null 2>&1; then
+  agent-queue mine --sid "$SESSION_ID" >/dev/null 2>&1
+  case $? in 0 | 2) save_state; exit 0 ;; esac
+fi
+
+# --- 2b. is something already marked in progress? ---
 DAILY_NOTE=$(focus_daily_note)
 FOCUS_BODY=$(focus_body "$DAILY_NOTE")
 WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
-[ -n "$WIP" ] && { save_state; exit 0; }
+[ -n "$WIP" ] && [ "$PR_WORK" -eq 0 ] && { save_state; exit 0; }
 
 # --- 3. was the work tracked since the last run? ---
 # `notes` logs every command as `[<iso8601>] [INFO] <cmd>: <msg>` (logging.rs). The most
-# recent `focus:` OR `ptask:` line is enough — if it postdates our last run, this turn
-# tracked its work somewhere. Bounded tail so the scan cost does not grow with the log.
+# recent `ptask:` line is enough - if it postdates our last run, this turn tracked its work
+# somewhere. A `focus:` write is the human's list and never counts: work is tracked in the queue.
+# Bounded tail so the scan cost does not grow with the log.
 #
 # `ptask:` counts, and that is the whole point. The daily note is ONE human's list; this
 # gate used to accept only a write to it, so every agent session satisfied it the only way
@@ -180,14 +210,17 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 # In session mode the question is asked of this session's own commands instead, so neither
 # a concurrent session's Stop nor its writes can change the answer. Read-only verbs
 # (`notes ptask x list`, `notes today`) do not count.
-if [ "$SESSION_MODE" -eq 1 ]; then
-  if printf '%s\n' "$CALLS" \
-     | grep -qE '^BASH .*\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b'; then
+if [ "$PR_WORK" -eq 1 ]; then
+  if grep -qE '^BASH .*(\bagent-queue +(add|claim)\b|\bagent-land\b)' <<<"$CALLS"; then
+    save_state; exit 0
+  fi
+elif [ "$SESSION_MODE" -eq 1 ]; then
+  if grep -qE '^BASH .*(\bnotes +ptask\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)' <<<"$CALLS"; then
     save_state; exit 0
   fi
 elif [ -r "$NOTES_LOG" ]; then
   LAST_FOCUS_TS=$(tail -n 2000 "$NOTES_LOG" 2>/dev/null \
-    | grep -E '^\[[^]]+\] \[[A-Z]+\] (focus|ptask):' | tail -1 \
+    | grep -E '^\[[^]]+\] \[[A-Z]+\] ptask:' | tail -1 \
     | sed -E 's/^\[([^]]+)\].*/\1/' || true)
   if [ -n "$LAST_FOCUS_TS" ]; then
     LAST_FOCUS_EPOCH=$(date -d "$LAST_FOCUS_TS" +%s 2>/dev/null || echo 0)
@@ -208,17 +241,29 @@ fi
 OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
+if [ "$PR_WORK" -eq 1 ]; then
+  REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
+  agent-queue add --running --project <project> \"<type(area): title>\"   the work this PR is part of
+  agent-queue claim <slug>                                                   when an item for it already exists
+  agent-land <N> --item <slug>                                               merges and closes it
+
+A board row or a Focus item in progress does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
+  mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
+  save_state
+  jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
+  exit 0
+fi
+
 REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
 
-PROJECT work belongs on the project's board, NOT the daily note - the note is the human's
-own list and an agent item added there crowds it out:
-  notes ptask <project> --agent add   \"<short title>\"   not tracked yet
-  notes ptask <project> --agent start \"<a word or two>\"  you are on it   -> [/]
-  notes ptask <project> --agent done  \"<a word or two>\"  it landed       -> [x]
-  notes board                                             regenerate the board, print its path
+The task you are on is an agent-queue item, NOT a board row and NOT the daily note:
+  agent-queue add --running --project <project> \"<task>\"   you are on it
+  agent-land <N>, or agent-queue move <slug> done            it landed
 
-Your own work goes on the AGENT board (--agent). The sheet without --agent is the human's
-queue: human asks, human-only actions, and prod/PHI/security/money findings only.
+A cleanup or agent-runtime fix you will not do now goes into the queue at high priority: agent-queue add --priority high --project <project> \"<task>\".
+Any other follow-up goes on the AGENT board: notes ptask <project> --agent add \"<type(area): title> #size/s\".
+The sheet without --agent is the human's queue: human asks, human-only actions, and
+prod/PHI/security/money findings only.
 
 Use the daily ## Focus only for the HUMAN's own work on this machine:
   notes focus start \"<couple words>\"   |  notes focus add \"<couple words>\"  |  notes focus done \"<couple words>\"

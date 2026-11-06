@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# research-pick: the nightly research stage, called from agentctl-dream. No model.
+#
+#   research-pick run [--dry-run]   queue tonight's research item and at most one coverage row
+#   research-pick rank              the ranking, one facet per line, nothing written
+#
+# The roster (RESEARCH_FACETS, JSON) lists the facets of the stack worth a deep look: a repo,
+# the paths inside it, the lenses to use and the board its findings go to. Each night the
+# stalest facet, weighted by recent churn, becomes one agent-queue item (`from: research:<id>`)
+# that runs `/rigor /stack-review research`; fleet-dispatch starts it like any queued item, when
+# an account has room. While a research item is still queued, running or waiting, nothing new is
+# queued, so at most one is ever in flight. The roster grows by rows: a project-map project that
+# no facet covers and the roster does not exclude gets one "add a facet" row on the agent-runtime
+# board, for the human to accept or exclude. A full board does not hold it: the board-open watch alerts.
+#
+# picks.jsonl under RESEARCH_DIR is the record of what was queued and when; this is its only writer.
+set -uo pipefail
+
+: "${RESEARCH_FACETS:=$HOME/.config/agentctl/research-facets.json}"
+: "${RESEARCH_DIR:=$HOME/.agent/research}"
+: "${RESEARCH_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${RESEARCH_NEVER_DAYS:=60}"   # the staleness of a facet never picked
+: "${RESEARCH_CHURN_DAYS:=14}"   # the window recent commits are counted over
+
+DRY=0
+PICKS="$RESEARCH_DIR/picks.jsonl"
+
+say() { printf 'research-pick: %s\n' "$*" >&2; }
+expand() { local p="$1"; printf '%s' "${p/#\~/$HOME}"; }
+
+# in_flight: "<slug> <from>" for each research item still queued, running or waiting. rc 1 when
+# the queue cannot be read, which queues nothing: an unknown queue might already hold one.
+in_flight() {
+  local out
+  out=$(agent-queue list --json --state active 2>/dev/null) || return 1
+  jq -r 'select((.from // "") | startswith("research:")) | "\(.slug) \(.from)"' <<<"$out"
+}
+
+# last_pick <facet>: the epoch day it was last filed, or empty.
+last_pick() {
+  [ -f "$PICKS" ] || return 0
+  jq -r --arg f "$1" 'select(.facet == $f) | .day' "$PICKS" 2>/dev/null | sort -n | tail -n 1
+}
+
+# churn <repo> <paths...>: commits touching the paths over the churn window.
+churn() {
+  local repo="$1"; shift
+  git -C "$repo" rev-list --count --since="$RESEARCH_CHURN_DAYS days ago" HEAD -- "$@" 2>/dev/null || echo 0
+}
+
+# weight <commits>: 1 + the commit count's bit length, so churn raises a facet on a log scale
+# (1054 commits weighs 12, 15 weighs 5) and one busy repo cannot starve the rest.
+weight() { local n="$1" w=1; while [ "$n" -gt 0 ]; do w=$((w + 1)); n=$((n / 2)); done; echo "$w"; }
+
+# rank: "<score>\t<id>\t<stale days>\t<churn>" per facet, best first. score is
+# staleness * weight(churn), so an untouched facet still rises with age and a busy one rises faster.
+rank() {
+  local today id repo stale c last paths
+  today=$(( $(date +%s) / 86400 ))
+  while IFS=$'\t' read -r id repo; do
+    repo="$(expand "$repo")"
+    if [ ! -d "$repo" ]; then say "$id: no repo at $repo, skipped"; continue; fi
+    mapfile -t paths < <(jq -r --arg f "$id" '.facets[] | select(.id == $f) | .paths[]?' "$RESEARCH_FACETS")
+    [ "${#paths[@]}" -gt 0 ] || paths=(.)
+    last="$(last_pick "$id")"
+    if [ -n "$last" ]; then stale=$(( today - last )); else stale=$RESEARCH_NEVER_DAYS; fi
+    c="$(churn "$repo" "${paths[@]}")"
+    printf '%s\t%s\t%s\t%s\n' "$(( stale * $(weight "$c") ))" "$id" "$stale" "$c"
+  done < <(jq -r '.facets[] | [.id, .repo] | @tsv' "$RESEARCH_FACETS") | sort -t$'\t' -k1,1nr -k2,2
+}
+
+# task_text <id>: the research item's task; stack-review's `research` verb reads it.
+task_text() {
+  jq -r --arg f "$1" '.facets[] | select(.id == $f) |
+    "/rigor /stack-review research \(.repo)\(if (.paths // []) == [] then "" else " " + (.paths | join(" ")) end), lenses: \((.lenses // ["all"]) | join(", ")); findings on the \(.board) agent board tagged #research/\(.id)"' "$RESEARCH_FACETS"
+}
+
+# item_project <id>: the project-map name of the facet's repo, so the session's worktree is cut
+# there; the facet's board when the map has no exact entry.
+item_project() {
+  local repo board name
+  IFS=$'\t' read -r repo board < <(jq -r --arg f "$1" '.facets[] | select(.id == $f) | [.repo, .board] | @tsv' "$RESEARCH_FACETS")
+  name=$(jq -r --arg p "$(expand "$repo")" '.paths[$p] // empty' "$RESEARCH_MAP" 2>/dev/null)
+  printf '%s' "${name:-$board}"
+}
+
+# queue <id>: queue the facet's research item. 0 when queued.
+queue() {
+  local project task
+  project=$(item_project "$1"); task=$(task_text "$1")
+  if [ "$DRY" = 1 ]; then printf 'would queue [%s] %s\n' "$project" "$task"; return 0; fi
+  agent-queue add --project "$project" --priority low --from "research:$1" --tags research \
+    --title "research($1)" -- "$task" >/dev/null 2>&1
+}
+
+# add <board> <text>: file one row. 0 when filed or already open (exit 3), 1 otherwise.
+add() {
+  if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$1" "$2"; return 0; fi
+  notes ptask "$1" --agent add "$2" >/dev/null 2>&1
+  local rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ]
+}
+
+# roster_open: whether a research(roster) row is open on the agent-runtime board.
+roster_open() { notes ptask agent-runtime --agent list 2>/dev/null | cut -f4 | grep -qF 'research(roster):'; }
+
+# uncovered: project-map projects on disk that no facet's repo lies in or under and the roster
+# does not exclude, one name a line.
+uncovered() {
+  local path name hit repo
+  local -a repos
+  mapfile -t repos < <(jq -r '.facets[].repo' "$RESEARCH_FACETS")
+  while IFS=$'\t' read -r path name; do
+    [ -d "$path" ] || continue
+    jq -e --arg n "$name" '(.exclude // []) | index($n)' "$RESEARCH_FACETS" >/dev/null && continue
+    hit=0
+    for repo in "${repos[@]}"; do
+      repo="$(expand "$repo")"
+      case "$repo/" in "$path"/*) hit=1; break ;; esac
+    done
+    [ "$hit" = 1 ] || printf '%s\t%s\n' "$name" "$path"
+  done < <(jq -r '.paths | to_entries[] | [.key, .value] | @tsv' "$RESEARCH_MAP")
+}
+
+cmd_rank() {
+  printf 'score\tfacet\tstale\tchurn\n'
+  rank
+}
+
+cmd_run() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY=1 ;;
+      *) say "unknown flag $1"; return 2 ;;
+    esac
+    shift
+  done
+  [ -f "$RESEARCH_FACETS" ] || { say "no roster at $RESEARCH_FACETS, nothing to pick"; return 0; }
+  jq -e '.facets | type == "array"' "$RESEARCH_FACETS" >/dev/null 2>&1 \
+    || { say "roster $RESEARCH_FACETS is not {facets: [...]}"; return 1; }
+  mkdir -p "$RESEARCH_DIR"
+  local busy score id stale c today
+  today=$(( $(date +%s) / 86400 ))
+  if ! busy=$(in_flight); then
+    say "the queue could not be read, nothing queued"
+  elif [ -n "$busy" ]; then
+    say "research item still in flight, nothing queued: $(head -n 1 <<<"$busy")"
+  else
+    IFS=$'\t' read -r score id stale c < <(rank)
+    if [ -z "${id:-}" ]; then
+      say "no facet to queue: the roster lists none on disk"
+    elif queue "$id"; then
+      say "queued $id (score $score: ${stale}d stale, $c commits)"
+      [ "$DRY" = 1 ] || jq -cn --arg f "$id" --argjson d "$today" \
+        '{facet: $f, day: $d, date: (now | strftime("%Y-%m-%d"))}' >> "$PICKS"
+    else
+      say "$id: agent-queue add failed, nothing queued"
+    fi
+  fi
+
+  # One coverage row a night, the first uncovered project, unless one is already open.
+  local gap name path
+  gap="$(uncovered | head -n 1)"
+  if [ -n "$gap" ]; then
+    IFS=$'\t' read -r name path <<<"$gap"
+    if roster_open; then
+      say "coverage: $name uncovered, a roster row is already open"
+    elif add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"; then
+      say "coverage: picked a roster row for $name"
+    fi
+  fi
+  return 0
+}
+
+case "${1:-}" in
+  run) shift; cmd_run "$@" ;;
+  rank) cmd_rank ;;
+  *) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

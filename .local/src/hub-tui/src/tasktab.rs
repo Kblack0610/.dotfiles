@@ -1,10 +1,11 @@
-//! The Board tab: every project's open rows as `notes board --json` prints them, read through
-//! `hub_core::tasks`, the same feed and writes as agent-web's Board tab. Rows are grouped by
-//! profile and project (each profile's Focus rows are their own group, read-only); j/k pick a
-//! row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m, e, + and - add, start,
-//! finish, drop (with why, or the id it duplicates), move (to a project or a version), edit, and
-//! step a row a release sooner or later through `notes ptask --exact`; `o` opens the sheet at the
-//! row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
+//! The rows under the Projects tab (projtab.rs): one project's open rows, or every project's
+//! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
+//! same feed and writes as agent-web's Projects tab. Rows are grouped by profile and project
+//! and their text wraps, so a row shows whole; All names each profile's open Focus count, whose
+//! rows are the Daily tab's (focustab.rs); j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
+//! e, t/T, + and - add, start, finish, drop (with why, or the id it duplicates), move (to a
+//! project or a version), edit, tag and untag, and step a row a release sooner or later through
+//! `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
 //! the read fails in `notes` and the page re-reads.
 
 use std::collections::BTreeMap;
@@ -13,10 +14,10 @@ use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
-/// What a key on the Board tab asks the app to do.
+/// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
 pub enum Ask {
     /// Not one of the tab's own keys.
@@ -39,6 +40,8 @@ pub enum Kind {
     Dup,
     Move,
     Edit,
+    Tag,
+    Untag,
 }
 
 /// A line being typed at the status line, and the row it is about (none for a search).
@@ -50,13 +53,7 @@ pub struct Prompt {
 }
 
 /// `l` steps through these; None shows every lane.
-const LANES: [Option<&str>; 5] = [
-    None,
-    Some("human"),
-    Some("agent"),
-    Some("playtest"),
-    Some("focus"),
-];
+const LANES: [Option<&str>; 4] = [None, Some("human"), Some("agent"), Some("playtest")];
 
 #[derive(Debug, Default)]
 pub struct TaskView {
@@ -64,6 +61,8 @@ pub struct TaskView {
     pub sel: usize,
     pub search: String,
     pub lane: Option<&'static str>,
+    /// One project's rows, as (profile, project); None shows every project's.
+    pub project: Option<(String, String)>,
     pub prompt: Option<Prompt>,
     /// The write now running, as "done in bnb/demo".
     pub running: Option<String>,
@@ -73,10 +72,7 @@ pub struct TaskView {
 
 /// A row's group, as agent-web titles it.
 fn group(r: &Row) -> String {
-    match &r.project {
-        Some(p) => format!("{}/{p}", r.profile),
-        None => format!("{} Focus", r.profile),
-    }
+    format!("{}/{}", r.profile, r.project.as_deref().unwrap_or_default())
 }
 
 /// The rows the filters leave, grouped and in group order, each group in the feed's order.
@@ -86,6 +82,11 @@ pub fn groups<'a>(f: &'a Feed, v: &TaskView) -> Vec<(String, Vec<&'a Row>)> {
     for r in &f.rows {
         if v.lane.is_some_and(|l| r.lane != l) {
             continue;
+        }
+        if let Some((profile, project)) = &v.project {
+            if r.profile != *profile || r.project.as_ref() != Some(project) {
+                continue;
+            }
         }
         let hay = format!("{} {} {}", group(r), r.text, r.tags.join(" ")).to_lowercase();
         if !q.is_empty() && !hay.contains(&q) {
@@ -101,7 +102,7 @@ pub fn shown<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
     groups(f, v).into_iter().flat_map(|(_, r)| r).collect()
 }
 
-/// A write on a row, or None for a focus row (`notes focus` owns the daily note).
+/// A write on a row, or None for a row with no project (the feed has none).
 fn on(r: &Row, verb: Verb) -> Option<Write> {
     Some(Write {
         profile: r.profile.clone(),
@@ -133,9 +134,6 @@ impl TaskView {
         let why = match self.selected(f) {
             _ if self.running.is_some() => "a write is still running",
             None => "no row selected",
-            Some(r) if r.project.is_none() => {
-                "a Focus row is read-only here: notes focus owns the daily note"
-            }
             Some(r) if r.lane == "playtest" && !playtest_ok => {
                 "a playtest check has no state, version or edit: d done, x drop"
             }
@@ -207,6 +205,22 @@ impl TaskView {
                     text: p.text,
                 },
             ),
+            Kind::Tag | Kind::Untag => {
+                let tags: Vec<String> = p.text.split_whitespace().map(str::to_string).collect();
+                let (add, remove) = if p.kind == Kind::Tag {
+                    (tags, vec![])
+                } else {
+                    (vec![], tags)
+                };
+                (
+                    format!("tag in {at}"),
+                    Verb::Tag {
+                        raw: r.raw.clone(),
+                        add,
+                        remove,
+                    },
+                )
+            }
             Kind::Proof | Kind::Unverified => {
                 let (proof, unverified) = if p.kind == Kind::Proof {
                     (Some(p.text), None)
@@ -331,6 +345,12 @@ impl TaskView {
                     self.prompt = prompt(Kind::Move, Some(r));
                 }
             }
+            KeyCode::Char(c @ ('t' | 'T')) => {
+                if let Some(r) = self.target(f, false) {
+                    let kind = if c == 't' { Kind::Tag } else { Kind::Untag };
+                    self.prompt = prompt(kind, Some(r));
+                }
+            }
             KeyCode::Char('e') => {
                 if let Some(r) = self.target(f, false) {
                     self.prompt = Some(Prompt {
@@ -386,8 +406,8 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         cell(r.state.clone(), Default::default())
     };
     let mut text = r.text.clone();
-    if r.ask {
-        text += "  #ask";
+    if r.requested {
+        text += "  #requested";
     }
     vec![
         cell(r.priority.clone(), prio),
@@ -412,7 +432,11 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
     let mut out = vec![
         clip_line(
             heading(
-                "TASK BOARD",
+                if v.project.is_some() {
+                    "OPEN ROWS"
+                } else {
+                    "ALL PROJECTS"
+                },
                 format!("  {n} open rows in {} groups{filter}", gs.len()),
                 p,
             ),
@@ -420,6 +444,21 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         ),
         status_line(v, p, w),
     ];
+    if v.project.is_none() && !f.focus.is_empty() {
+        let each: Vec<String> = f
+            .focus
+            .iter()
+            .map(|c| format!("{} {}", c.profile, c.open))
+            .collect();
+        out.push(clip_line(
+            heading(
+                "FOCUS",
+                format!("  {} open, on the Daily tab", each.join(", ")),
+                p,
+            ),
+            w,
+        ));
+    }
     if gs.is_empty() {
         out.push(Line::raw(""));
         out.push(Line::styled("No open rows match.", p.dim()));
@@ -434,11 +473,8 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         if urgent > 0 {
             rest += &format!(", {urgent} urgent");
         }
-        if rows[0].project.is_none() {
-            rest += "  (read-only)";
-        }
         out.push(clip_line(heading(&title.to_uppercase(), rest, p), w));
-        let mut t = Table {
+        let (mut t, starts) = Table {
             header: vec!["PRIO", "LANE", "VERSION", "STATE", "TEXT"],
             rows: rows.iter().map(|r| row(r, p)).collect(),
             keep: vec![0, 3, 1, 2],
@@ -448,17 +484,93 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             cap: vec![(2, 16)],
             ..Default::default()
         }
-        .fit(w, p.head());
+        .fit_wrapped(w, p.head());
         if let Some(i) = rows
             .iter()
             .position(|r| sel.as_ref() == Some(&(r.sheet.clone(), r.raw.clone())))
         {
-            t[i + 1].style = p.sel();
-            at = Some(out.len() + i + 1);
+            let end = starts.get(i + 1).copied().unwrap_or(t.len());
+            for l in &mut t[starts[i]..end] {
+                l.style = p.sel();
+            }
+            at = Some(out.len() + starts[i]);
         }
         out.append(&mut t);
     }
     (out, at)
+}
+
+/// The selected row in full, for the pane under the rows: what the table clips or leaves out
+/// (its id, tags, worker, dates, marker and the sheet line a write lands on).
+pub fn preview(r: &Row, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut head = vec![
+        r.id.clone().unwrap_or_else(|| "no id".into()),
+        group(r),
+        r.lane.clone(),
+    ];
+    let version = if r.lane == "playtest" {
+        &r.game
+    } else {
+        &r.version
+    };
+    head.extend(version.iter().cloned());
+    head.push(r.state.clone());
+    head.push(r.priority.clone());
+    head.extend(r.size.iter().map(|s| format!("size/{s}")));
+    let mut out: Vec<Line<'static>> = wrap(&head, "  ", w)
+        .into_iter()
+        .map(|l| clip_line(Line::styled(l, p.head()), w))
+        .collect();
+    let words: Vec<&str> = r.text.split_whitespace().collect();
+    out.extend(
+        wrap(&words, " ", w)
+            .into_iter()
+            .map(|l| clip_line(Line::raw(l), w)),
+    );
+    // A label, then its items wrapped under one another.
+    let field = |k: &str, items: &[String], sep: &str| -> Vec<Line<'static>> {
+        wrap(items, sep, w.saturating_sub(7).max(1))
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let k = if i == 0 { k } else { "" };
+                clip_line(
+                    Line::from(vec![Span::styled(format!("{k:<7}"), p.dim()), Span::raw(v)]),
+                    w,
+                )
+            })
+            .collect()
+    };
+    if !r.tags.is_empty() || r.requested {
+        let mut t: Vec<String> = r.tags.iter().map(|t| format!("#{t}")).collect();
+        if r.requested && !r.tags.iter().any(|t| t == "requested") {
+            t.push("#requested".into());
+        }
+        out.extend(field("tags", &t, " "));
+    }
+    let mut when = vec![];
+    if let Some(wk) = &r.worker {
+        when.push(format!("worker {wk}"));
+    }
+    if let Some(d) = &r.since {
+        when.push(format!("since {d}"));
+    }
+    if let Some(d) = &r.filed {
+        when.push(format!("filed {d}"));
+    }
+    if let Some(m) = &r.marker {
+        when.push(m.clone());
+    }
+    if !when.is_empty() {
+        out.extend(field("about", &when, "  "));
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let sheet = match r.sheet.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => r.sheet.clone(),
+    };
+    out.extend(field("sheet", &[format!("{sheet}:{}", r.line)], ""));
+    out
 }
 
 fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
@@ -476,6 +588,8 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
             (Kind::Move, _) => "Move to a project, a version vX.Y.Z, or both: ".into(),
             (Kind::Edit, _) => "New text (tags stay): ".into(),
+            (Kind::Tag, _) => "Add tags (size/s, requested; a new size replaces the old): ".into(),
+            (Kind::Untag, _) => "Remove tags: ".into(),
             (_, None) => String::new(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
@@ -501,12 +615,12 @@ pub(crate) mod tests {
             profile: profile.into(),
             project: project.map(String::from),
             lane: lane.into(),
-            version: Some("v0.1.0".into()).filter(|_| lane != "focus" && lane != "playtest"),
+            version: Some("v0.1.0".into()).filter(|_| lane != "playtest"),
             game: Some("demo".into()).filter(|_| lane == "playtest"),
             state: "open".into(),
             priority: prio.into(),
             text: text.into(),
-            sheet: format!("/v/{profile}/{}/{lane}.md", project.unwrap_or("focus")),
+            sheet: format!("/v/{profile}/{}/{lane}.md", project.unwrap_or_default()),
             raw: format!("- [ ] {text}"),
             ..Default::default()
         };
@@ -529,8 +643,11 @@ pub(crate) mod tests {
                 row("bnb", Some("demo"), "human", "urgent", "fix the menu"),
                 row("bnb", Some("demo"), "agent", "high", "sweep the logs"),
                 row("bnb", Some("demo"), "playtest", "high", "jump feels late"),
-                row("bnb", None, "focus", "urgent", "ship the board"),
             ],
+            focus: vec![tasks::FocusOpen {
+                profile: "bnb".into(),
+                open: 1,
+            }],
         }
     }
 
@@ -558,13 +675,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rows_group_by_profile_and_project_with_focus_read_only() {
+    fn rows_group_by_profile_and_project_under_the_focus_count() {
         let f = fixture();
         let v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("TASK BOARD  5 open rows in 3 groups"), "{s}");
-        assert!(at("BNB FOCUS  1, 1 urgent  (read-only)") < at("BNB/DEMO  3, 1 urgent"));
+        assert!(s.contains("ALL PROJECTS  4 open rows in 2 groups"), "{s}");
+        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("BNB/DEMO  3, 1 urgent"));
         assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
         // j/k follow the page's order, not the feed's.
@@ -572,7 +689,6 @@ pub(crate) mod tests {
         assert_eq!(
             order,
             [
-                "ship the board",
                 "fix the menu",
                 "sweep the logs",
                 "jump feels late",
@@ -580,8 +696,16 @@ pub(crate) mod tests {
             ]
         );
         let (_, line) = page(&f, &v, Palette { no_color: true }, 120);
-        // heading, status, blank, group heading, table header, then the first row.
-        assert_eq!(line, Some(5));
+        // heading, status, focus count, blank, group heading, table header, then the first row.
+        assert_eq!(line, Some(6));
+        let one = TaskView {
+            project: Some(("bnb".into(), "demo".into())),
+            ..Default::default()
+        };
+        assert!(
+            !text(&f, &one, 120).contains("on the Daily tab"),
+            "one project's rows have no Focus count"
+        );
     }
 
     #[test]
@@ -594,13 +718,13 @@ pub(crate) mod tests {
         assert_eq!(enter(&mut v, &f), Ask::Done);
         assert_eq!(shown(&f, &v).len(), 1);
         v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
-        assert_eq!(shown(&f, &v).len(), 5, "Esc clears the filters");
+        assert_eq!(shown(&f, &v).len(), 4, "Esc clears the filters");
         v.key(key('l'), Some(&f), 10);
         v.key(key('l'), Some(&f), 10);
         assert_eq!(v.lane, Some("agent"));
         assert_eq!(shown(&f, &v)[0].text, "sweep the logs");
         assert!(text(&f, &v, 120).contains("lane agent"));
-        for _ in 0..3 {
+        for _ in 0..2 {
             v.key(key('l'), Some(&f), 10);
         }
         assert_eq!(v.lane, None, "l comes back round to every lane");
@@ -609,19 +733,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn writes_carry_the_rows_raw_line_and_focus_is_read_only() {
+    fn writes_carry_the_rows_raw_line() {
         let f = fixture();
         let mut v = TaskView::default();
-        assert_eq!(v.key(key('s'), Some(&f), 10), Ask::Done);
-        assert!(
-            matches!(&v.said, Some(Err(e)) if e.contains("read-only")),
-            "{:?}",
-            v.said
-        );
-        assert_eq!(v.key(key('x'), Some(&f), 10), Ask::Done);
-        assert!(v.prompt.is_none(), "no drop on a focus row");
-
-        v.key(key('j'), Some(&f), 10);
         let Ask::Write(label, w) = v.key(key('s'), Some(&f), 10) else {
             panic!("start runs")
         };
@@ -704,7 +818,6 @@ pub(crate) mod tests {
     fn move_edit_and_the_version_keys_carry_the_rows_raw_line() {
         let f = fixture();
         let mut v = TaskView::default();
-        v.key(key('j'), Some(&f), 10);
         assert_eq!(v.selected(&f).unwrap().text, "fix the menu");
 
         v.key(key('m'), Some(&f), 10);
@@ -773,23 +886,22 @@ pub(crate) mod tests {
             Ask::Open("/v/bnb/demo/human.md".into(), 0)
         );
 
-        // The playtest row and the focus row refuse the version keys before anything runs.
+        // The playtest row refuses the version keys and a move before anything runs.
         for _ in 0..2 {
             v.key(key('j'), Some(&f), 10);
         }
         assert_eq!(v.selected(&f).unwrap().lane, "playtest");
         assert_eq!(v.key(key('+'), Some(&f), 10), Ask::Done);
         assert!(matches!(&v.said, Some(Err(e)) if e.contains("playtest")));
-        v.key(key('g'), Some(&f), 10);
         assert_eq!(v.key(key('m'), Some(&f), 10), Ask::Done);
-        assert!(v.prompt.is_none(), "no move on a focus row");
+        assert!(v.prompt.is_none(), "no move on a playtest row");
     }
 
     #[test]
     fn add_goes_to_the_selected_rows_project_and_lane() {
         let f = fixture();
         let mut v = TaskView::default();
-        for _ in 0..3 {
+        for _ in 0..2 {
             v.key(key('j'), Some(&f), 10);
         }
         assert_eq!(v.selected(&f).unwrap().lane, "playtest");
@@ -825,7 +937,7 @@ pub(crate) mod tests {
     fn a_new_read_keeps_the_selection_on_its_line() {
         let f = fixture();
         let mut v = TaskView {
-            sel: 2,
+            sel: 1,
             ..Default::default()
         };
         let was = v.selected(&f).cloned();
@@ -835,5 +947,101 @@ pub(crate) mod tests {
         assert_eq!(v.selected(&fewer).unwrap().text, "sweep the logs");
         v.reselect(None, &Feed::default());
         assert_eq!(v.sel, 0);
+    }
+
+    #[test]
+    fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
+        let mut f = fixture();
+        f.rows[1].text = "fix the menu so the back button returns to the map".into();
+        f.rows[1].size = Some("m".into());
+        let mut v = TaskView {
+            project: Some(("bnb".into(), "demo".into())),
+            ..Default::default()
+        };
+        assert_eq!(shown(&f, &v).len(), 3, "only bnb/demo's rows");
+        let s = text(&f, &v, 50);
+        assert!(s.contains("OPEN ROWS  3 open rows in 1 groups"), "{s}");
+        assert!(!s.contains('~'), "nothing is clipped:\n{s}");
+        assert!(
+            s.contains("returns to the map"),
+            "the text wraps whole:\n{s}"
+        );
+        // The selected row is lit on every line it wraps onto.
+        let (lines, at) = page(&f, &v, Palette::default(), 50);
+        let at = at.unwrap();
+        assert_eq!(lines[at].style, lines[at + 1].style);
+        assert!(
+            plain(&lines[at + 1]).starts_with(' '),
+            "{:?}",
+            plain(&lines[at + 1])
+        );
+
+        v.key(key('t'), Some(&f), 10);
+        assert!(text(&f, &v, 160).contains("Add tags"));
+        typed(&mut v, &f, "size/s #requested");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("tag runs")
+        };
+        assert_eq!(label, "tag in bnb/demo");
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            [
+                "--exact",
+                "tag",
+                "--add=size/s",
+                "--add=requested",
+                "--",
+                "- [ ] fix the menu"
+            ]
+        );
+        v.key(key('T'), Some(&f), 10);
+        typed(&mut v, &f, "v0.2.0");
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a release is move's");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("release")));
+    }
+
+    #[test]
+    fn the_preview_shows_the_selected_row_whole_with_what_the_table_leaves_out() {
+        let mut f = fixture();
+        let r = &mut f.rows[1];
+        r.id = Some("bnb-7".into());
+        r.size = Some("m".into());
+        r.tags = vec!["p1".into(), "size/m".into()];
+        r.since = Some("2026-10-27".into());
+        r.marker = Some("carried:3 id:bnb-7".into());
+        r.line = 36;
+        r.text = "fix the menu so the back button returns to the map".into();
+        let l: Vec<String> = preview(&f.rows[1], Palette { no_color: true }, 30)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "bnb-7  bnb/demo  human  v0.1.0",
+                "open  urgent  size/m",
+                "fix the menu so the back",
+                "button returns to the map",
+                "tags   #p1 #size/m",
+                "about  since 2026-10-27",
+                "       carried:3 id:bnb-7",
+                "sheet  /v/bnb/demo/human.md:36",
+            ],
+            "nothing is clipped: every part wraps between words"
+        );
+
+        // A row with nothing extra: no tags or about line, and it says it has no id.
+        let l: Vec<String> = preview(&f.rows[0], Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            l,
+            [
+                "no id  personal/garden  human  v0.1.0  open  low",
+                "water the beds",
+                "sheet  /v/personal/garden/human.md:0"
+            ]
+        );
     }
 }

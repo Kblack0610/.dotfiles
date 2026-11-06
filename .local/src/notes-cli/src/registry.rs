@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 
 pub struct Registry(Value);
 
+/// The project `name` means once its alias is followed, so an old name keeps working after a
+/// rename. With no registry, `name` itself.
+pub fn canonical(name: &str) -> String {
+    Registry::load().map_or_else(|| name.to_string(), |r| r.canonical(name))
+}
+
 impl Registry {
     /// `$PROJECT_MAP_FILE`, else the stowed `~/.config/shared-hooks/project-map.json`, the
     /// same path `project_map_file` in `project-name.sh` resolves. None when it is absent.
@@ -54,6 +60,16 @@ impl Registry {
         self.is_value_of("paths", name)
             || self.tracker(name).is_some()
             || self.is_value_of("aliases", name)
+    }
+
+    /// `aliases.<name>` when `name` is another name for a project, else `name`.
+    fn canonical(&self, name: &str) -> String {
+        self.0
+            .get("aliases")
+            .and_then(|m| m.get(name.to_lowercase()))
+            .and_then(Value::as_str)
+            .unwrap_or(name)
+            .to_string()
     }
 
     /// `trackers.<name>.type`: game, app or infra.
@@ -104,6 +120,24 @@ mod tests {
         .unwrap();
         let r = Registry::from_path(&path).unwrap();
         (path, r)
+    }
+
+    #[test]
+    fn canonical_follows_an_alias_in_any_case_and_leaves_other_names() {
+        let dir = std::env::temp_dir().join(format!("notes-registry-alias-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("map.json");
+        std::fs::write(
+            &path,
+            r#"{"aliases": {"old": "new"}, "trackers": {"new": {}}}"#,
+        )
+        .unwrap();
+        let r = Registry::from_path(&path).unwrap();
+        assert_eq!(r.canonical("old"), "new");
+        assert_eq!(r.canonical("OLD"), "new");
+        assert_eq!(r.canonical("new"), "new");
+        assert_eq!(r.canonical("other"), "other");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

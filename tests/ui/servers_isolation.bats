@@ -125,7 +125,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 
 @test "a declared window renamed after creation is still found, not rebuilt" {
   # The zsh prompt hook renamed declared windows to the git branch, so ensure's by-name
-  # lookup missed them and every Prefix o made another board. Identity is @tmx_window.
+  # lookup missed them and every Prefix i made another board. Identity is @tmx_window.
   manifest "$SRV_A" "main $MDIR" "main:board $MDIR"
   "$TMX" ensure "$SRV_A"
   "${REAL_TMUX}" -L "$SRV_A" rename-window -t 'main:board' feat/x
@@ -326,15 +326,14 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   refute_output --partial "$SRV_A               1 session(s)"
 }
 
-# ── rows / preview: the cross-server view (prefix A) ─────────────────────────
+# ── rows: the cross-server view (prefix H) ──────────────────────────
 #
-# `rows` is the data behind `pick-all`, split out from the fzf call precisely so it can be
+# `rows` is the data behind `pick`, split out from the fzf call precisely so it can be
 # asserted without a terminal. Field layout is <server> <session> <window> <display>, and
 # the window field is what distinguishes a session header row from a window row.
 
-@test "rows reaches ACROSS servers - the one thing choose-tree and sesh cannot do" {
-  # The whole point of the view. prefix w is server-scoped by construction and sesh follows
-  # $TMUX into one server, so a list containing BOTH worlds is the only new capability here.
+@test "rows reaches ACROSS servers - the one thing choose-tree cannot do" {
+  # The whole point of the view. prefix w is server-scoped by construction, so a list containing BOTH worlds is the only new capability here.
   manifest "$SRV_A" "alpha-only $MDIR"
   manifest "$SRV_B" "beta-only $MDIR"
   "$TMX" ensure "$SRV_A"
@@ -362,6 +361,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   # the window, not just repeat its number.
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' 2>/dev/null
   run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
   assert_success
   assert_output --regexp '(bash|sh|zsh)'
@@ -386,29 +386,156 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 
 @test "rows offers the server itself, so one list also replaces the server picker" {
   # A server row is the only row with BOTH the session and window fields empty; that is
-  # what tells pick-all to hop the whole world rather than land on a session.
+  # what tells pick to treat it as a world rather than a session.
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\"' | wc -l"
   assert_output '1'
 }
 
-@test "both views exist: ls feeds the compact picker, rows feeds the full one" {
-  # They answer different questions - "which world" vs "where is that window" - so
-  # neither may quietly absorb the other. `pick` was deleted once as superseded and
-  # had to come back; this is the assertion that stops that happening silently.
+@test "the picker opens collapsed to the worlds, and opening one shows its sessions" {
+  # One picker answers both "which world" and "where is that window": collapsed it is the
+  # compact view, open it is the full one. Neither may quietly vanish.
   manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
+  export TMX_PICK_DIR="$BATS_TEST_TMPDIR/pick"
+  mkdir -p "$TMX_PICK_DIR"
+  "$TMX" rows > "$TMX_PICK_DIR/rows"
+  : > "$TMX_PICK_DIR/open"
 
-  run "$TMX" ls                       # the compact view's data: one row per SERVER
+  run bash -c "'$TMX' tree-rows | cut -f4"
   assert_success
-  assert_output --partial "$SRV_A"
-  refute_output --partial 'one'       # sessions are the preview, not the list
+  assert_output --partial "+ $SRV_A"
+  refute_output --partial '  one'
 
-  run "$TMX" rows                     # the full view's data: sessions AND windows
-  assert_success
+  "$TMX" tree-fold "$SRV_A" >/dev/null
+  run bash -c "'$TMX' tree-rows | cut -f4"
+  assert_output --partial "- $SRV_A"
   assert_output --partial 'one'
   assert_output --partial 'two'
+}
+
+# ── rows: agent state and stranded sessions ──────────────────────────────────
+#
+# fleet_state writes the document fleet-sessions --write would: one session per target, all
+# NEEDS and 480 minutes idle. Call it AFTER making sessions, since one newer than the
+# document is not stranded yet.
+fleet_state() {
+  export FLEET_STATE_FILE="$BATS_TEST_TMPDIR/state.json"
+  local age="${FLEET_AGE:-0}" unreadable="${FLEET_UNREADABLE:-[]}"
+  printf '%s\n' "$@" | jq -R 'select(length > 0) | {target: ., bucket: "NEEDS", idle_min: 480}' \
+    | jq -s --argjson e "$(( $(date +%s) - age ))" --argjson u "$unreadable" \
+      '{generated_epoch: $e, unreadable: $u, sessions: .}' > "$FLEET_STATE_FILE"
+}
+
+@test "an undeclared session with no agent is stranded, and shows there only" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  fleet_state
+
+  run "$TMX" rows
+  assert_success
+  assert_output --partial 'STRANDED  1'
+  assert_line --index 0 --partial 'STRANDED'
+  assert_line --index 1 --partial 'loose'
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"loose\"' | wc -l"
+  assert_output '1'
+}
+
+@test "a declared session with no agent is not stranded" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+}
+
+@test "an undeclared session with an agent is not stranded, and reads as state and idle" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s worker
+  fleet_state "$SRV_A/worker:1" "$SRV_A/worker:0"
+
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --regexp 'worker +NEEDS +8h'
+  assert_output --partial '1 need you'
+}
+
+@test "a session newer than the fleet state is not stranded yet" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s fresh
+  FLEET_AGE=30 fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+}
+
+@test "stale fleet state marks nothing stranded, and says so" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  FLEET_AGE=3600 fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --partial 'fleet state is old'
+}
+
+@test "a pass that could not read agent-panel marks nothing stranded" {
+  # Its session list is empty rather than true, so every agent would read as stranded.
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  FLEET_UNREADABLE='["agent-panel"]' fleet_state
+  run "$TMX" rows
+  assert_success
+  refute_output --partial 'STRANDED'
+  assert_output --partial 'fleet state is old'
+}
+
+@test "a live server with no manifest is stranded" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_B" new-session -d -s orphan
+  fleet_state "$SRV_A/one:1" "$SRV_A/one:0"
+  run "$TMX" rows
+  assert_success
+  assert_output --partial 'STRANDED'
+  assert_output --partial "$SRV_B  (no manifest)  stranded"
+}
+
+@test "a world that is down gets a row, targeting the server" {
+  manifest "$SRV_A" "one $MDIR"
+  run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\" {print \$4}'"
+  assert_success
+  assert_output --partial 'not running'
+}
+
+@test "a window with an empty name keeps its columns" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' -n ''
+  "${REAL_TMUX}" -L "$SRV_A" select-pane -t 'one:' -T 'the-title'
+  run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
+  assert_success
+  assert_output --regexp ' - +(bash|sh|zsh) +the-title'
+}
+
+@test "a long session name keeps its agent number and no row passes 80 columns" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s freqtrade_trading_attempt-agent-2
+  fleet_state "$SRV_A/one:1" "$SRV_A/one:0"
+  run "$TMX" rows
+  assert_success
+  assert_output --partial '~pt-agent-2'
+  run bash -c "'$TMX' rows | awk -F'\t' 'length(\$4) > 80' | wc -l"
+  assert_output '0'
 }
 
 # ── land with an explicit target ─────────────────────────────────────────────

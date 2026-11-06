@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, tmux};
+use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, sort, tmux};
 
 /// One detected Claude agent, ready to render.
 #[derive(Clone, Debug, Default)]
@@ -57,10 +57,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Waiting on the human: at a prompt or dialog (`!`), or holding a pending ask. A question
-    /// asked only in the conversation is not a source: the Stop check makes the session file it.
+    /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
+    /// prompt or dialog (`!`), holding a pending ask, or idle in plan mode, which is a plan
+    /// awaiting approval (`bucket_facts` in fleet-sessions). A question asked only in the
+    /// conversation is not a source: the Stop check makes the session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some()
+        self.glyph == '!' || self.ask.is_some() || (self.plan && self.glyph == '✓')
     }
 }
 
@@ -243,7 +245,7 @@ pub fn run_interactive() -> Result<()> {
     }
 
     let map_file = map_file_path();
-    let rows = write_rows(&agents, &map_file)?;
+    let rows = write_rows(&agents, &map_file, saved_sort())?;
     let rows_text = rows_text(&rows);
 
     // Position the cursor on the currently active agent, if any.
@@ -270,9 +272,13 @@ pub fn run_interactive() -> Result<()> {
     Ok(())
 }
 
-/// Render the rows and write the preview map file they need.
-fn write_rows(agents: &[Agent], map_file: &Path) -> Result<Vec<render::Row>> {
-    let (rows, map_lines) = render::build(agents);
+/// Render the rows in `sort` and write the preview map file they need.
+fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (rows, map_lines) = render::build(agents, sort, now);
     fs::write(map_file, map_lines.join("\n"))?;
     Ok(rows)
 }
@@ -285,10 +291,28 @@ fn rows_text(rows: &[render::Row]) -> String {
 }
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
-/// from a key shows without leaving the chooser.
-pub fn run_rows(map_file: &Path) -> Result<()> {
-    println!("{}", rows_text(&write_rows(&collect(), map_file)?));
+/// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
+/// the human (ctrl-y). `step` is a C-o or A-o press: it moves the saved sort first.
+pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>) -> Result<()> {
+    let mut sort = saved_sort();
+    if let Some(step) = step {
+        sort = sort.step(step);
+        if let Some(file) = sort::state_file() {
+            sort::save(&file, sort)?;
+        }
+    }
+    println!("{}", rows_text(&write_rows(&only_asking(collect(), asking), map_file, sort)?));
     Ok(())
+}
+
+/// The sort the panel was last left in (`sort::state_file`), project when none.
+fn saved_sort() -> sort::Sort {
+    sort::state_file().map(|f| sort::load(&f)).unwrap_or_default()
+}
+
+/// The agents ctrl-y shows: all of them, or with `asking` only those that need the human.
+fn only_asking(agents: Vec<Agent>, asking: bool) -> Vec<Agent> {
+    agents.into_iter().filter(|a| !asking || a.needs_attention()).collect()
 }
 
 /// Jump to one `<server>/<session>:<window>` target, for surfaces that list agents
@@ -375,37 +399,40 @@ fn idle_since(last_entry: Option<u64>, mtime: u64, started_at: Option<u64>) -> u
     })
 }
 
-/// Jump to the next agent needing attention (`!` or a pending ask), else the next in the list.
+/// Prefix G: jump to the next agent that needs the human, after the current one. With none, it
+/// says so in the message bar and stays put; jumping somewhere else would read as "this one".
 pub fn run_next() -> Result<()> {
     let agents = collect();
-    if agents.is_empty() {
-        return Ok(());
-    }
     let current = tmux::current_target();
-    let cur_idx = current
-        .as_ref()
-        .and_then(|c| agents.iter().position(|a| &a.target == c));
-    let total = agents.len();
-    let start = cur_idx.map(|i| i as isize).unwrap_or(-1);
-
-    // First look for the next attention-needed agent after the current one.
-    let mut target: Option<&str> = None;
-    for step in 1..=total {
-        let idx = (((start + step as isize) % total as isize + total as isize)
-            % total as isize) as usize;
-        if agents[idx].needs_attention() {
-            target = Some(&agents[idx].target);
-            break;
-        }
+    match next_needing(&agents, current.as_deref()) {
+        Next::Jump(target) => tmux::jump(target),
+        Next::OnlyHere => tmux::message("only this session needs you"),
+        Next::Nobody => tmux::message("no session needs you"),
     }
-    // Otherwise just advance to the next agent.
-    let next_target = target.unwrap_or_else(|| {
-        let idx = (((start + 1) % total as isize + total as isize) % total as isize) as usize;
-        &agents[idx].target
-    });
-
-    tmux::jump(next_target);
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum Next<'a> {
+    Jump(&'a str),
+    OnlyHere,
+    Nobody,
+}
+
+/// The first agent needing attention after `current` in list order, wrapping around.
+fn next_needing<'a>(agents: &'a [Agent], current: Option<&str>) -> Next<'a> {
+    let start = current
+        .and_then(|c| agents.iter().position(|a| a.target == c))
+        .map_or(0, |i| i + 1);
+    let n = agents.len();
+    let hit = (0..n)
+        .map(|k| &agents[(start + k) % n])
+        .find(|a| a.needs_attention());
+    match hit {
+        None => Next::Nobody,
+        Some(a) if Some(a.target.as_str()) == current => Next::OnlyHere,
+        Some(a) => Next::Jump(&a.target),
+    }
 }
 
 /// fzf preview callback: render the pane state + recent events for one row.
@@ -422,13 +449,14 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(());
     }
 
-    let (jsonl_path, project, summary, repo_full) = lookup(map_file, &target);
+    let (jsonl_path, project, summary, repo_full, ask) = lookup(map_file, &target);
     render::preview(
         &target,
         jsonl_path.as_deref(),
         &project,
         &summary,
         &repo_full,
+        &ask,
     );
     Ok(())
 }
@@ -450,10 +478,11 @@ fn extract_target(row: &str) -> Option<String> {
 }
 
 /// Read the preview map file for a target row:
-/// `target \t jsonl \t project \t summary \t repo_full`.
-fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, String) {
+/// `target \t jsonl \t project \t summary \t repo_full \t ask`.
+type MapRow = (Option<PathBuf>, String, String, String, String);
+fn lookup(map_file: &Path, target: &str) -> MapRow {
     let Ok(text) = fs::read_to_string(map_file) else {
-        return (None, String::new(), String::new(), String::new());
+        return MapRow::default();
     };
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
@@ -464,10 +493,11 @@ fn lookup(map_file: &Path, target: &str) -> (Option<PathBuf>, String, String, St
                 f.get(2).unwrap_or(&"").to_string(),
                 f.get(3).unwrap_or(&"").to_string(),
                 f.get(4).unwrap_or(&"").to_string(),
+                f.get(5).unwrap_or(&"").to_string(),
             );
         }
     }
-    (None, String::new(), String::new(), String::new())
+    MapRow::default()
 }
 
 #[cfg(test)]
@@ -503,6 +533,59 @@ mod tests {
             attached,
             ..Agent::default()
         }
+    }
+
+    #[test]
+    fn plan_mode_counts_only_while_idle() {
+        let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
+        let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
+        let idle = Agent { glyph: '✓', ..live_agent("hub", "c", false) };
+        assert!(plan_idle.needs_attention());
+        assert!(!plan_busy.needs_attention());
+        assert!(!idle.needs_attention());
+    }
+
+    #[test]
+    fn prefix_g_jumps_only_to_what_needs_you() {
+        let quiet = |s| Agent { glyph: '✓', ..live_agent("hub", s, false) };
+        let prompt = |s| Agent { glyph: '!', ..live_agent("hub", s, false) };
+        // Nothing needs you: no jump, with or without a current window.
+        let none = vec![quiet("a"), quiet("b")];
+        assert_eq!(next_needing(&none, Some("hub/a:1")), Next::Nobody);
+        assert_eq!(next_needing(&none, None), Next::Nobody);
+        assert_eq!(next_needing(&[], None), Next::Nobody);
+        // The next one after the current, wrapping past the end.
+        let agents = vec![prompt("a"), quiet("b"), prompt("c")];
+        assert_eq!(next_needing(&agents, Some("hub/a:1")), Next::Jump("hub/c:1"));
+        assert_eq!(next_needing(&agents, Some("hub/c:1")), Next::Jump("hub/a:1"));
+        assert_eq!(next_needing(&agents, None), Next::Jump("hub/a:1"));
+        // Only the current one: say so instead of jumping to itself.
+        let solo = vec![prompt("a"), quiet("b")];
+        assert_eq!(next_needing(&solo, Some("hub/a:1")), Next::OnlyHere);
+    }
+
+    #[test]
+    fn ctrl_y_keeps_only_the_sessions_waiting_on_the_human() {
+        let prompt = Agent { glyph: '!', ..live_agent("hub", "a", false) };
+        let busy = Agent { glyph: '~', ..live_agent("hub", "b", false) };
+        let pending = Agent { ask: Some("x1".into()), ..live_agent("hub", "c", false) };
+        let agents = vec![pending, busy, prompt];
+        let kept: Vec<_> = only_asking(agents.clone(), true).into_iter().map(|a| a.target).collect();
+        assert_eq!(kept, ["hub/c:1", "hub/a:1"]);
+        // Off: every agent, in order.
+        assert_eq!(only_asking(agents, false).len(), 3);
+    }
+
+    #[test]
+    fn the_preview_map_carries_the_ask_id() {
+        let dir = std::env::temp_dir().join(format!("agent-panel-map-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("map");
+        fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
+        assert_eq!(lookup(&map, "hub/a:1").4, "JSVBgC");
+        assert_eq!(lookup(&map, "hub/b:1").4, "");
+        assert_eq!(lookup(&map, "hub/none:1").4, "");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

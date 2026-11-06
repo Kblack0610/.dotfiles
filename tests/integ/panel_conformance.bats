@@ -198,9 +198,9 @@ setup() {
   # %hidden FULL/WIDE/SMALL in one late pass, deliberately AFTER every script owns its own
   # --border, so that adding -B cannot leave a surface frameless.
   #
-  # Remaining: f and S (80%x80%), C-s (60%x50%), tags:l (70%x50%). The 90%x85% ones are
+  # Remaining: f (80%x80%), tags:l (70%x50%). The 90%x85% ones are
   # already WIDE. Lower this number by exactly what you normalise.
-  local max=4
+  local max=2
   local table key w h cmd resolved rw rh offenders=() n
   while IFS=$'\t' read -r table key w h cmd; do
     resolved="$(panel_conf_geometry "$w" "$h")"
@@ -279,4 +279,10 @@ setup() {
   # recolours the terminal's palette, so \033[1;32m follows a theme swap for free. Emitting
   # 38;2;R;G;B would pin a surface to one theme and stop it tracking. No legacy: 0.
   panel_ratchet 0 "ANSI indices only, no truecolor" panel_assert_no_truecolor
+}
+
+@test "pickers take their preview layout from panel_fzf_layout" {
+  # Stacked by default, ctrl-/ to side by side and hidden, PANEL_LAYOUT to flip them all.
+  # One helper, so every panel opens the same way and one setting flips them all.
+  panel_ratchet 0 "preview layout from panel_fzf_layout" panel_assert_layout_from_lib
 }

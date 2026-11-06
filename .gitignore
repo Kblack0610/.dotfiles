@@ -118,6 +118,8 @@ Media/Music
 !.claude/skills/memory/wind-down/
 !.claude/skills/messaging/fleet-comms/
 !.claude/skills/messaging/work-comms/
+!.claude/skills/messaging/comms-standard/
+!.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
 !.claude/skills/monitoring/fleet-dispatch/
@@ -125,15 +127,23 @@ Media/Music
 !.claude/skills/monitoring/fleet-pace/
 !.claude/skills/monitoring/shepherd/
 !.claude/skills/monitoring/sentinel/
+!.claude/skills/monitoring/fix-red/
+!.claude/skills/monitoring/fleet-runners/
+!.claude/skills/monitoring/fleet-asks/
+!.claude/skills/monitoring/fleet-accounts/
+!.claude/skills/monitoring/fleet-queue/
 !.claude/skills/ops/game-eval/
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
 !.claude/skills/ops/playground-headless-test/
+!.claude/skills/ops/playground-nightly-fix/
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
 !.claude/skills/ops/ci-cleanup/
+!.claude/skills/ops/docs-cleanup/
 !.claude/skills/ops/reaper-ops/
 !.claude/skills/ops/usage-cleanup/
+!.claude/skills/ops/pipeline-eval/
 !.claude/skills/reference/compliance/
 !.claude/skills/reference/hz-immersive-designer/
 !.claude/skills/reference/hz-perfetto-debug/
@@ -154,6 +164,7 @@ Media/Music
 !.claude/skills/workstreams/ingest-prs/
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
+!.claude/skills/workstreams/rigor/
 !.claude/skills/workstreams/stack-review/
 # Agents: allowlist the generic specialists (kb-* and release-coordinator are private).
 !.claude/agents/

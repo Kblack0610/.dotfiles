@@ -1,137 +1,243 @@
 #!/usr/bin/env bash
-# agentctl-inbox-triage: file every project sheet's `## Inbox` lines as typed rows.
+# agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
 #
-# A line already written as `type(area): title` is filed as written with no model. The rest
-# of a project's lines go to one cheap-model call (model-lane: triage is a classification job),
-# which only proposes: a typed row or rows, a duplicate of an open row, or a skip. Every write
-# goes through `notes ptask <p> --exact file`, which refuses an untyped row, a missing id or a
-# line that changed since it was read, so this script never edits a sheet. A skipped or refused
-# line stays in the inbox for the human. Nothing is ever dropped.
-#
-# Woken by inbox-triage.path when a notes writer touches <state_dir>/inbox.changed. A write
-# that lands during a pass changes the flag again, so the pass repeats until the flag holds
-# still (at most INBOX_TRIAGE_PASSES times). A line typed into a sheet by hand touches no flag,
-# so the runner also has a daily SCHEDULE pass.
-#
-# --backlog runs the same triage over the rows already on each project's two boards, largest
-# project first: the model proposes keep, rewrite (`ptask edit --was`, which keeps the old words
-# as a `was:` line), a move to the product the row is about (`ptask move --project`), a dup of
-# another row, or a drop with its reason (`ptask drop`, which keeps the row ticked). A row in
-# progress is only ever rewritten. Every write is `--exact`, so a row edited since the read is
-# left alone.
+# `#p:` outbox lines, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
+# call (the conf's MODEL), which only proposes rows, a dup, a skip, and whether to plan first.
+# Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
+# edits a sheet, and a skipped or refused line stays put, recorded in the ingest record so later
+# sweeps pass it over until its words change. --watch is the runner: a sweep after each save,
+# once INBOX_SWEEP_QUIET seconds pass with no other. --backlog re-triages the rows already on the
+# boards. How it all fits: notes-cli README, "Intake".
+
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
-: "${INBOX_TRIAGE_CMD:=agentctl-run --role distill}"
+: "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_TRIAGE_PASSES:=3}"
-: "${INBOX_TRIAGE_MAX:=40}"   # lines sent to the model per project per pass, and rows per --backlog call
+: "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
+: "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
+: "${INBOX_RETRY_S:=900}"      # --watch: wait before a failed sweep runs again by itself; doubles each failure
+: "${INBOX_RETRY_MAX_S:=7200}" # --watch: the longest that wait grows to
 
-LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+LIB="$HERE/../lib"
 # shellcheck source=/dev/null
 . "$LIB/agent-proof.sh"
 # shellcheck source=/dev/null
+. "$HERE/../src/agent-run/lib/budget.sh"
+# shellcheck source=/dev/null
 . "$LIB/md-render.sh"
+# shellcheck source=/dev/null
+. "$LIB/inbox-epics.sh"
 
-DRY=0; ONLY=""; BACKLOG=0; FILED=0; KEPT=0; FAILED=0; FLAG=""
-REWROTE=0; MOVED=0; DROPPED=0
+DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0
+OUT=""
+FLAG=""; RECORD=""; OUTBOX=""
+PAUSED="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/PAUSED"
 say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# One model answer line -> n, action, id, project, lane, rows (joined by RS), split by US.
+# ask <prompt> <items> <label>: one model call over <items> lines or rows, its answer in OUT. A
+# failed call keeps its stderr in the log and its first words (a usage limit, an auth error) as
+# the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
+# a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
+# place of the model.
+ask() {
+  local wd err rc first
+  wd="$(mktemp -d)"; err="$(mktemp)"
+  # shellcheck disable=SC2086 # a word list by design, overridable in tests
+  OUT="$(cd "$wd" && $INBOX_TRIAGE_CMD -p <<<"$1" 2>"$err")"; rc=$?
+  [ -s "$err" ] && head -n 20 "$err" >&2
+  case "$rc" in
+    0) budget_batch_note "$NAME" ok "$2" ;;
+    "$CALLS_RC_CAPPED")
+      budget_batch_note "$NAME" capped "$2"
+      say "$3: the call stopped at its per-call cap with $2 items; the next carries $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+      proof_why "$3: a call of $2 stopped at the per-call cap" ;;
+    *)
+      first="$(cat - "$err" <<<"$OUT" | grep -m1 '[^[:space:]]' | clean 120)"
+      say "$3: model call failed: ${first:-no output}"
+      proof_why "model call failed: ${first:-no output}" ;;
+  esac
+  rm -rf -- "$wd" "$err"
+  return "$rc"
+}
+
+# answered <label>: OUT holds an answer block, else the pass's reason says it did not.
+answered() {
+  grep -qx 'INBOX-TRIAGE-START' <<<"$OUT" && return 0
+  say "$1: model returned no answer block"
+  proof_why "$1: the model returned no answer block"
+  return 1
+}
+
+# One model answer line -> n, action, id, project, lane, plan (1 or empty), why, rows (joined
+# by RS), split by US.
 # shellcheck disable=SC2016 # jq source, not shell
 ANSWER_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
   | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.lane | s),
+     (if .plan == true then "1" else "" end), (.why | s),
      ([.rows[]? | strings | s] | join("\u001e"))] | join("\u001f")'
 
-# file_line <project> <raw> <args...>: one `ptask file`, counted.
+# note <action> <from> <why> <text>: a left or refused line in the ingest record, which keeps it
+# out of later sweeps until its words change.
+note() {
+  [ "$DRY" = 1 ] && return 0
+  notes ingest record --action "$1" --from "$2" --why "$3" -- "$4" >/dev/null 2>&1 \
+    || say "$2: not recorded as $1: $4"
+}
+
+# left <from> <text> <why>: a line the model passed over, counted and recorded.
+left() { KEPT=$((KEPT + 1)); note left "$1" "$3" "$2"; }
+
+# file_line <project> <raw> <text> <args...>: one `ptask file`, counted. A refusal is recorded
+# with the CLI's reason.
 file_line() {
-  local p="$1" raw="$2"; shift 2
+  local p="$1" raw="$2" text="$3" err; shift 3
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s:' "$p" "$raw"; printf ' %q' "$@"; echo; FILED=$((FILED + 1)); return 0; fi
-  if notes ptask "$p" --exact file "$@" -- "$raw"; then
+  if { err="$(notes ptask "$p" --exact file "$@" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
     FILED=$((FILED + 1))
   else
-    say "$p: not filed, left in the inbox: $raw"
+    say "$p: not filed, left in the inbox: $raw${err:+ ($err)}"
+    note refused "$p" "$(tail -n 1 <<<"${err:-refused}" | clean 160)" "$text"
     FAILED=$((FAILED + 1)); return 1
   fi
+}
+
+# move_out <project> <raw> <text>: one outbox line into <project>'s inbox. A name that is no
+# project is recorded as refused, and the line stays in the outbox.
+move_out() {
+  local p="$1" raw="$2" text="$3" err
+  if [ "$DRY" = 1 ]; then printf 'would move [outbox -> %s] %s\n' "$p" "$raw"; ROUTED=$((ROUTED + 1)); return 0; fi
+  if { err="$(notes outbox move --project "$p" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
+    ROUTED=$((ROUTED + 1))
+  else
+    say "outbox: not moved to $p, left in the outbox: $raw${err:+ ($err)}"
+    note refused outbox "$(tail -n 1 <<<"${err:-not moved}" | clean 160)" "$text"
+    FAILED=$((FAILED + 1)); return 1
+  fi
+}
+
+# An outbox line that answers an open row: `<id>: <words>`.
+# shellcheck disable=SC2016 # jq source, not shell
+ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
+
+# answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
+# join the open row as a dup does (moved to the row's project, then `file --dup`, which keeps them
+# as the row's `was:` line), and a decide row is closed by it. No open row is `left`, with why.
+answer() {
+  local id="$1" raw="$2" text="$3" row p lane ty
+  row="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id and (.lane == "human" or .lane == "agent"))
+    | [.project, .lane, (.type // "-")] | join("\u001f")) // ""' <<<"$4")"
+  [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
+  IFS=$'\x1f' read -r p lane ty <<<"$row"
+  move_out "$p" "$raw" "$text" || return 1
+  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
+  [ "$ty" = decide ] || return 0
+  pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
 }
 
 # The flag every notes inbox writer touches (`ptask add`, the Focus sweep): its stamp, or empty.
 flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 
-# triage <project> <board json> <project names>: one project's inbox.
-triage() {
-  local p="$1" board="$2" names="$3" lines batch raw prompt out rc wd untyped
-  lines="$(notes ptask "$p" inbox --json 2>/dev/null)" || { say "$p: cannot read the inbox"; return 1; }
-  # Typed already (the CLI reads the row grammar, so this script holds no copy of it): `file`
-  # with no --as files it as written.
-  while IFS= read -r -d '' raw; do
-    file_line "$p" "$raw"
-  done < <(jq -j '.[] | select(.typed) | .raw, "\u0000"' <<<"$lines")
-  untyped="$(jq -c --argjson max "$INBOX_TRIAGE_MAX" '[.[] | select(.typed | not)] | .[$max:] as $over | {take: .[:$max], over: ($over | length)}' <<<"$lines")"
-  KEPT=$((KEPT + $(jq .over <<<"$untyped")))
-  local -a raws=()
-  mapfile -d '' -t raws < <(jq -j '.take[] | .raw, "\u0000"' <<<"$untyped")
-  [ "${#raws[@]}" -gt 0 ] || return 0
-  batch="$(jq -r '.take | to_entries[] | "\(.key + 1). \(.value.text)", (.value.details[] | "   " + .)' <<<"$untyped")"
+# The routing rule both model calls carry, from the registry: which projects live in another
+# project's repo, and where a row about one of them, or the code they share, belongs.
+homes_rule() {
+  local homes
+  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  [ -z "$homes" ] || printf " Projects whose code lives in another project's repo: %s. A row about only one of those belongs on that project, not on the repo's; a row about several of them, or the shared code under them, belongs on the repo's project." "$homes"
+  printf ' A row about a host or the cluster belongs on home-config.'
+}
 
-  local open
-  open="$(jq -r --arg p "$p" '.rows[] | select(.project == $p and .state != "done" and .id != null) | "\(.id)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
-  prompt="You file raw notes from a person's project inbox as task rows. Project: $p. Other projects: $names.
+# route <lines json> <board json>: the one model call for a sweep's untyped lines, each
+# {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
+route() {
+  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out
+  names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
+  homes="$(homes_rule)"
+  srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
+  wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
+  local -a froms=() raws=() texts=()
+  mapfile -d '' -t froms < <(jq -j '.[] | .from, "\u0000"' <<<"$lines")
+  mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$lines")
+  mapfile -d '' -t texts < <(jq -j '.[] | .text, "\u0000"' <<<"$lines")
+  batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)", (.value.details[]? | "   " + .)' <<<"$lines")"
+  # Every open row of a project a line waits in, for dups. An outbox line can go anywhere, so
+  # with one in the batch each other project shows its newest rows too, which is what it is for.
+  open="$(jq -r --argjson src "$srcs" --argjson wide "$wide" '
+    [.rows[] | select(.project != null and .state != "done" and .id != null)] | group_by(.project)[]
+    | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
+    | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  epics="$(epics_open "$board")"
+  prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"$p\", \"lane\": \"human\"}
+{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
 {\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\"}
-{\"n\": 3, \"action\": \"skip\"}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is another project's name only when the line is plainly about that project. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.
+{\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
+file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human. plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing.
-skip: the line is not a task (a thought, a question, a note to self) or you cannot tell what it asks.
+skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for.
+A filed row that plainly belongs to an open epic of its project ends with #of/<the epic's id>. When none plainly fits, add no #of.
 
-## Inbox lines
+## Lines
 $batch
-## Open rows (id, lane, text)
+## Open epics (id, project, title)
+$epics
+## Open rows (id, project, lane, text)
 $open"
-  wd="$(mktemp -d)"
-  # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  # An empty directory, so no repo's Stop hook answers in place of the model.
-  out="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$prompt" 2>/dev/null)"; rc=$?
-  rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "$p: model call failed"; return 1; }
-  grep -qx 'INBOX-TRIAGE-START' <<<"$out" || { say "$p: model returned no answer block"; return 1; }
-  local n action id dest lane rows r
+  ask "$prompt" "${#raws[@]}" route || return
+  answered route || return 1
+  out="$OUT"
+  local n action id dest lane plan why rows r from raw text src
   local -a args rowv
-  while IFS=$'\x1f' read -r n action id dest lane rows; do
+  while IFS=$'\x1f' read -r n action id dest lane plan why rows; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
-    raw="${raws[n - 1]}"
+    raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
     [ -n "$raw" ] || continue
     raws[n - 1]=""   # one answer per line
+    why="$(clean 100 <<<"$why")"
+    dest="$(clean 60 <<<"$dest")"
+    src="$from"
     case "$action" in
-      file)
+      file|dup)
         args=()
-        IFS=$'\x1e' read -r -a rowv <<<"$rows"
-        for r in "${rowv[@]}"; do
-          r="$(clean 150 <<<"$r")"
-          [ -n "$r" ] && args+=(--as "$r")
-        done
-        [ "${#args[@]}" -gt 0 ] || { KEPT=$((KEPT + 1)); continue; }
-        dest="$(clean 60 <<<"$dest")"
-        [ -n "$dest" ] && [ "$dest" != "$p" ] && args+=(--project "$dest")
-        [ "$lane" = agent ] && args+=(--lane agent)
-        file_line "$p" "$raw" "${args[@]}"
+        if [ "$action" = dup ]; then
+          id="$(clean 40 <<<"$id")"
+          [ -n "$id" ] || { left "$from" "$text" "dup of no row"; continue; }
+          # A dup's project and lane are the open row's, never the model's word for them.
+          dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$board")"
+          args=(--dup "$id" --lane "$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .lane) // "human"' <<<"$board")")
+        else
+          IFS=$'\x1e' read -r -a rowv <<<"$rows"
+          for r in "${rowv[@]}"; do
+            r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
+            if [ -n "$plan" ] && [ "${#args[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
+            [ -n "$r" ] && args+=(--as "$r")
+          done
+          [ "${#args[@]}" -gt 0 ] || { left "$from" "$text" "no row"; continue; }
+          [ "$lane" = agent ] && args+=(--lane agent)
+        fi
+        if [ "$from" = outbox ]; then
+          [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
+          move_out "$dest" "$raw" "$text" || continue
+          src="$dest"
+        elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
+          args+=(--project "$dest")
+        fi
+        file_line "$src" "$raw" "$text" "${args[@]}"
         ;;
-      dup)
-        id="$(clean 40 <<<"$id")"
-        [ -n "$id" ] || { KEPT=$((KEPT + 1)); continue; }
-        file_line "$p" "$raw" --dup "$id"
-        ;;
-      *) KEPT=$((KEPT + 1)) ;;
+      *) left "$from" "$text" "${why:-skipped}" ;;
     esac
   done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$ANSWER_JQ")
+  # A line with no answer is not recorded: the next sweep asks again.
   for raw in "${raws[@]}"; do [ -n "$raw" ] && KEPT=$((KEPT + 1)); done
   return 0
 }
@@ -148,12 +254,13 @@ pt() {
   local -a on=()
   [ "$lane" = agent ] && on=(--agent)
   if [ "$DRY" = 1 ]; then printf 'would run: notes ptask'; printf ' %q' "$p" "${on[@]}" "$@"; echo; return 0; fi
-  notes ptask "$p" "${on[@]}" "$@" >/dev/null || { say "$p ($lane): refused: $*"; FAILED=$((FAILED + 1)); return 1; }
+  notes ptask "$p" "${on[@]}" "$@" >/dev/null || { say "$p ($lane): refused: $*"; proof_why "$p ($lane): ptask refused an edit"; FAILED=$((FAILED + 1)); return 1; }
 }
 
 # backlog <project> <lane> <board json> <project names> <homes>: one lane's open rows, in batches.
 backlog() {
-  local p="$1" lane="$2" board="$3" names="$4" homes="$5" rows total off rc=0
+  local p="$1" lane="$2" board="$3" names="$4" homes="$5" rows total off=0 size r rc=0 epics
+  epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
   # model sees as context and which go wherever the row goes.
   # shellcheck disable=SC2016 # jq source, not shell
@@ -163,23 +270,29 @@ backlog() {
                          | (if $stop == null then . else .[:$stop] end) | map(.text))}]
     | sort_by(.text | ascii_downcase)' <<<"$board")"
   total="$(jq length <<<"$rows")"
-  for ((off = 0; off < total; off += INBOX_TRIAGE_MAX)); do
-    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$INBOX_TRIAGE_MAX" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" || rc=1
+  # Each call carries budget_batch rows; one stopped at the cap asks the same rows again at the
+  # halved size, and a single row that caps alone is passed over.
+  while [ "$off" -lt "$total" ]; do
+    size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" "$epics"; r=$?
+    [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
+    [ "$r" = 0 ] || rc=1
+    off=$((off + size))
   done
   return "$rc"
 }
 
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" listing prompt out rc wd
+  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" epics="$6" listing prompt out
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   mapfile -t states < <(jq -r '.[] | .state' <<<"$batch")
   mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
-  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.${homes:+ Projects whose code lives in another project's repo: $homes. A row about only one of those belongs on that project, not on the repo's.}
+  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
@@ -191,14 +304,15 @@ dup: only when another row in this list asks for the same thing; never the row's
 drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
 A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
+A row you rewrite that plainly belongs to an open epic below ends with #of/<the epic's id>. When none plainly fits, add no #of.
+
+## Open epics of this project (id, project, title)
+$(epics_of "$p" "$epics")
 ## Rows (n. [id] text, child rows indented)
 $listing"
-  wd="$(mktemp -d)"
-  # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  out="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$prompt" 2>/dev/null)"; rc=$?
-  rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "$p ($lane): model call failed"; return 1; }
-  grep -qx 'INBOX-TRIAGE-START' <<<"$out" || { say "$p ($lane): model returned no answer block"; return 1; }
+  ask "$prompt" "${#raws[@]}" "$p ($lane)" || return
+  answered "$p ($lane)" || return 1
+  out="$OUT"
   local n action id dest row why raw own
   local -a seen=()
   while IFS=$'\x1f' read -r n action id dest row why; do
@@ -216,7 +330,7 @@ $listing"
     [ "${kids[n - 1]}" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
     case "$action" in
       rewrite)
-        row="$(clean 150 <<<"$row")"
+        row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
         if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
           REWROTE=$((REWROTE + 1))
           # the row's line changed, so the move names it by its id
@@ -258,9 +372,9 @@ $listing"
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
   local board names homes rc=0 p lane
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
-  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  homes="$(homes_rule)"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
@@ -272,16 +386,148 @@ backlog_pass() {
   return "$rc"
 }
 
+# One sweep's pass: the outbox, then every inbox.
 pass() {
-  local board names rc=0 p
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
-  names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
+  local ob board all seen rc=0 p lines from raw text size r
+  ob="$(notes outbox list --json 2>/dev/null)" || { say "notes outbox list failed"; proof_why "notes outbox list failed"; return 1; }
+  # What the record says was left or refused, by where it waited and its words.
+  seen='{}'
+  [ -s "$RECORD" ] && seen="$(jq -cn '[inputs | select(.action == "left" or .action == "refused")
+    | {key: (.from + "\t" + .text), value: true}] | from_entries' "$RECORD" 2>/dev/null || echo '{}')"
+  local fresh='select($seen[.from + "\t" + .text] | not)'
+  # A `#p:` line names its project, so it moves with no model and is triaged from that inbox.
+  while IFS=$'\x1f' read -r -d '' p raw text; do
+    move_out "$p" "$raw" "$text" || rc=1
+  done < <(jq -j --argjson seen "$seen" --arg only "$ONLY" ".[] | select(.project and (\$only == \"\" or .project == \$only))
+    | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
+
+  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  # A `<id>: <words>` line answers its open row, with no model.
+  [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
+    answer "$p" "$raw" "$text" "$board" || rc=1
+  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" ".[] | select((.project | not) and (.text | test(\$re)))
+    | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
+  all='[]'
+  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" '[.[] | select((.project | not) and (.text | test($re) | not))
+    | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    triage "$p" "$board" "$names" || rc=1
+    lines="$(notes ptask "$p" inbox --json 2>/dev/null)" || { say "$p: cannot read the inbox"; proof_why "$p: cannot read the inbox"; rc=1; continue; }
+    all="$(jq -c --arg p "$p" --argjson all "$all" '$all + [.[] | {from: $p, raw, text, details, typed}]' <<<"$lines")"
   done < <(jq -r '.projects[] | select(.inbox > 0) | .project' <<<"$board" | sort -u)
+  all="$(jq -c --argjson seen "$seen" "[.[] | $fresh]" <<<"$all")"
+
+  # Typed already (the CLI reads the row grammar, so this script holds no copy of it): `file`
+  # with no --as files it as written.
+  while IFS=$'\x1f' read -r -d '' from raw text; do
+    file_line "$from" "$raw" "$text"
+  done < <(jq -j '.[] | select(.typed) | .from, "\u001f", .raw, "\u001f", .text, "\u0000"' <<<"$all")
+  size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  all="$(jq -c --argjson max "$size" '[.[] | select(.typed | not)] | {take: .[:$max], over: (.[$max:] | length)}' <<<"$all")"
+  local over; over="$(jq .over <<<"$all")"
+  [ "$over" -gt 0 ] && { KEPT=$((KEPT + over)); OVER=1; }
+  [ "$(jq '.take | length' <<<"$all")" -gt 0 ] || return "$rc"
+  route "$(jq -c .take <<<"$all")" "$board"; r=$?
+  # Capped: the next pass asks the same lines at the halved size. One line that caps alone is
+  # refused, so it waits for the person instead of being asked again every sweep.
+  # CAPPED holds until a call fits, so a sweep whose passes all capped ends FAILED.
+  CAPPED=0
+  if [ "$r" = "$CALLS_RC_CAPPED" ]; then
+    if [ "$size" -gt 1 ]; then
+      CAPPED=1; KEPT=$((KEPT + $(jq '.take | length' <<<"$all"))); OVER=1
+    else
+      FAILED=$((FAILED + 1))
+      note refused "$(jq -r '.take[0].from' <<<"$all")" "too big for one call at the per-call cap" "$(jq -r '.take[0].text' <<<"$all")"
+    fi
+  elif [ "$r" != 0 ]; then
+    rc=1
+  fi
   return "$rc"
+}
+
+# One sweep: passes until the inbox flag holds still and nothing is over the cap, then the
+# inbox page and the proof.
+sweep() {
+  local k before rc=0 verdict
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0
+  if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
+  for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
+    before="$(flag_state)"; OVER=0
+    pass || rc=1
+    [ "$DRY" = 1 ] && break
+    [ "$OVER" = 0 ] && [ "$(flag_state)" = "$before" ] && break
+  done
+  [ "$CAPPED" = 0 ] || rc=1
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  say "$SUMMARY"
+  [ "$DRY" = 1 ] && return "$rc"
+  notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
+  # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
+  "$HERE/agentctl-inbox-plan" --kick || true
+  verdict=NOOP
+  [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
+  [ "$rc" != 0 ] && verdict=FAILED
+  proof_report "$NAME" "$verdict" "$SUMMARY"
+  agentctl report --name "$NAME" "detail=$SUMMARY" next= >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# The directories whose saves wake a sweep: the outbox's, each project's (its human sheet holds
+# the inbox; agent boards have none), and the fleet state dir, for PAUSED going away.
+watch_dirs() {
+  { dirname "$OUTBOX"; dirname "$PAUSED"
+    notes board --json 2>/dev/null | jq -r '.projects[].dir'
+  } | while IFS= read -r d; do [ -d "$d" ] && printf '%s\n' "$d"; done | sort -u
+}
+
+# watch_sweep: one sweep, then WAIT for --watch: 0 after a clean sweep, else the backoff from
+# INBOX_RETRY_S, doubling to INBOX_RETRY_MAX_S, so a failed sweep is retried with no save.
+watch_sweep() {
+  if sweep; then WAIT=0; return 0; fi
+  if [ "$WAIT" = 0 ]; then WAIT=$INBOX_RETRY_S; else WAIT=$((WAIT * 2)); fi
+  [ "$WAIT" -le "$INBOX_RETRY_MAX_S" ] || WAIT=$INBOX_RETRY_MAX_S
+  say "the sweep failed; it runs again in ${WAIT}s unless a save comes first"
+  local at; at=$(($(date +%s) + WAIT))
+  agentctl report --name "$NAME" "detail=$SUMMARY; retry $(date -d "@$at" +%H:%M)" "next=$at" >/dev/null 2>&1 || true
+}
+
+# --watch: a sweep now, then one after each burst of saves, and again on the backoff after a failure. Writers (notes, nvim) replace a file
+# by rename, so the directories are watched, not the files. Returns 1 when inotifywait ends, so
+# systemd restarts the runner.
+watch() {
+  command -v inotifywait >/dev/null || { say "--watch needs inotifywait (inotify-tools)"; return 1; }
+  local dirs fd pid got
+  local -a d
+  while :; do
+    dirs="$(watch_dirs)"
+    mapfile -t d <<<"$dirs"
+    exec {fd}< <(exec inotifywait -m -q -e close_write,moved_to,delete --format '%w%f' \
+      --include '/(README\.md|outbox\.md|PAUSED)$' "${d[@]}")
+    pid=$!
+    watch_sweep
+    got=0
+    while :; do
+      if [ "$WAIT" -gt 0 ]; then
+        # A failed sweep (a usage limit, a broken call) has no event that says it would now pass,
+        # so it runs again on the backoff when no save comes first.
+        read -r -t "$WAIT" -u "$fd" _; got=$?
+        if [ "$got" -gt 128 ]; then watch_sweep; continue; fi
+      else
+        read -r -u "$fd" _; got=$?
+      fi
+      [ "$got" = 0 ] || break
+      # The debounce: each read returns on the next save, or times out once the saves stop.
+      while :; do read -r -t "$INBOX_SWEEP_QUIET" -u "$fd" _ || { got=$?; break; }; done
+      watch_sweep
+      [ "$got" -gt 128 ] || break
+      [ "$(watch_dirs)" = "$dirs" ] || { got=dirs; break; }
+    done
+    exec {fd}<&-
+    kill "$pid" 2>/dev/null
+    [ "$got" = dirs ] || { say "inotifywait ended"; return 1; }
+    say "a project came or went; watching the new set"
+  done
 }
 
 main() {
@@ -290,14 +536,15 @@ main() {
       --dry-run) DRY=1; shift ;;
       --project) ONLY="${2:-}"; shift 2 ;;
       --backlog) BACKLOG=1; shift ;;
+      --watch) WATCH=1; shift ;;
       -h|--help) sed -n '2,4p' "$0"; return 0 ;;
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
-  local rc=0 before k dir summary verdict
+  local rc=0 summary verdict cfg dir
   if [ "$BACKLOG" = 1 ]; then
     backlog_pass || rc=1
-    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED"
+    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
     say "$summary"
     [ "$DRY" = 1 ] && return "$rc"
     verdict=NOOP
@@ -306,23 +553,17 @@ main() {
     proof_report "$NAME" "$verdict" "$summary"
     return "$rc"
   fi
-  dir="$(notes config 2>/dev/null | awk '$1 == "state" {print $2; exit}')"
-  [ -n "$dir" ] && FLAG="$dir/inbox.changed"
-  for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
-    before="$(flag_state)"
-    pass || rc=1
-    [ "$DRY" = 1 ] && break
-    [ "$(flag_state)" = "$before" ] && break
-  done
-  summary="filed $FILED, left $KEPT, refused $FAILED"
-  say "$summary"
-  [ "$DRY" = 1 ] && return "$rc"
-  verdict=NOOP
-  [ "$FILED" -gt 0 ] && verdict=WORKED
-  [ "$rc" != 0 ] && verdict=FAILED
-  proof_report "$NAME" "$verdict" "$summary"
-  agentctl report --name "$NAME" "detail=$summary" >/dev/null 2>&1 || true
-  return "$rc"
+  cfg="$(notes config 2>/dev/null)"
+  # `key   value`, the value to the end of the line: a path may hold a space.
+  dir="$(sed -n 's/^state  *//p' <<<"$cfg" | head -n 1)"
+  OUTBOX="$(sed -n 's/^outbox  *//p' <<<"$cfg" | head -n 1)"
+  [ -n "$dir" ] && { FLAG="$dir/inbox.changed"; RECORD="$dir/ingest.jsonl"; }
+  if [ "$WATCH" = 1 ]; then
+    [ "$DRY" = 0 ] && [ -z "$ONLY" ] && [ -n "$OUTBOX" ] || { say "--watch takes no --dry-run or --project, and needs notes config's outbox"; return 2; }
+    watch
+    return
+  fi
+  sweep
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

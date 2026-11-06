@@ -104,12 +104,55 @@ EOF
 headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
+  # The two exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`
+  # and the `agent-codex run` that `--harness codex` launches.
   run headless_launches "$REPO_ROOT/.local"
-  assert_output ''
+  assert_equal "${#lines[@]}" 2
+  assert_output --partial '/.local/bin/fleet-dispatch:'
+  assert_output --partial '/.local/bin/agent-codex:'
   run headless_launches "$REPO_ROOT/.config"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"
   assert_output ''
+}
+
+# A human start runs on the account `claude-acct run` picks, the choice `cl` makes; an unattended
+# one picks through agentctl-run. A bare `exec claude` anywhere else runs on whatever account
+# its caller inherited. These files are the launchers themselves.
+session_launches() {
+  (cd "$1" && git grep --no-index --exclude-standard -nIE \
+    '\b(exec|command)[[:space:]]+"?claude"?([[:space:]]|$)|"claude -r' \
+    -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//|echo )' \
+    | grep -vE '^(\.ai-rc|\.local/bin/(claude-acct|claude-lazer)|\.local/src/agent-run/harnesses/claude\.sh):'
+}
+
+@test "every claude session start goes through claude-acct run or agentctl-run" {
+  run session_launches "$REPO_ROOT"
+  assert_output ''
+}
+
+@test "the session launcher scan catches a bare exec claude (negative control)" {
+  local d="$BATS_TEST_TMPDIR/launch"
+  mkdir -p "$d/.local/bin" "$d/kdl"
+  printf '#!/bin/sh
+# exec claude in a comment is fine
+exec claude -r "$id"
+exec claude-acct run -r "$id"
+' > "$d/.local/bin/resume"
+  printf 'pane {
+    command "claude"
+}
+' > "$d/kdl/hub.kdl"
+  printf '#!/bin/sh
+exec claude "$@"
+' > "$d/.local/bin/claude-acct"
+  run session_launches "$d"
+  assert_line --partial 'resume:3:'
+  assert_line --partial 'hub.kdl:2:'
+  refute_output --partial 'resume:2:'
+  refute_output --partial 'resume:4:'
+  refute_output --partial 'claude-acct:'
 }
 
 @test "the launcher scan catches a direct claude -p (negative control)" {
@@ -117,8 +160,25 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
   mkdir -p "$d"
   printf '#!/bin/sh\n# claude -p in a comment is fine\nclaude -p "do it" --max-turns 5\n' > "$d/runner"
   printf '#!/bin/sh\nprintf x | "$CLAUDE_BIN" --print\n' > "$d/piped"
+  printf '#!/bin/sh\n# codex exec in a comment is fine\n"$CODEX_BIN" exec --json "do it"\n' > "$d/cx"
+  printf '#!/bin/sh\n# OpenAI chat/completions in prose is fine\ncurl -s "$BASE/v1/chat/completions" -d @q\ncurl -s https://api.anthropic.com/v1/messages\n' > "$d/http"
   run headless_launches "$d"
   assert_line --partial 'runner:3:'
   assert_line --partial 'piped:2:'
+  assert_line --partial 'cx:3:'
+  refute_output --partial 'cx:2:'
+  assert_line --partial 'http:3:'
+  assert_line --partial 'http:4:'
   refute_output --partial 'runner:2:'
+  refute_output --partial 'http:2:'
+}
+
+@test "only agent-run's own harnesses may call a model's HTTP API (negative control)" {
+  local d="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$d/src/agent-run/harnesses" "$d/src/agent-run/lib"
+  printf '#!/bin/sh\ncurl -s "${LLM_BASE_URL%%/}/chat/completions" -d @-\n' > "$d/src/agent-run/harnesses/raw.sh"
+  cp "$d/src/agent-run/harnesses/raw.sh" "$d/src/agent-run/lib/sneak.sh"
+  run headless_launches "$d"
+  assert_line --partial 'lib/sneak.sh:2:'
+  refute_output --partial 'harnesses/raw.sh'
 }

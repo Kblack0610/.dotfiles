@@ -35,22 +35,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The unit and integ tiers run as two jobs at once: back to back they took 4m47s and
+  # 5m10s on 2026-11-05 and the shared 10-minute cap cut the job off on its last test.
   fast:
-    name: fast tier (unit + contract)
+    name: fast tier (${{ matrix.tier }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [unit, integ]
     steps:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
         run: make -C tests bootstrap
       # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
-      - name: GNU parallel
-        run: command -v parallel || { sudo apt-get update -qq && sudo apt-get install -y -qq parallel; }
+      # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
+      # sqlite3: session_outcomes.bats builds a fixture opencode DB.
+      - name: GNU parallel, inotify-tools, sqlite3
+        run: |
+          { command -v parallel && command -v inotifywait && command -v sqlite3; } >/dev/null ||
+            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools sqlite3; }
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
       - name: Fast tier
-        run: make -C tests test-fast
+        run: make -C tests test-${{ matrix.tier }}
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
@@ -69,6 +79,10 @@ jobs:
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
+      # tests/ui/session_send.bats drives the real agent-panel binary; the image has no Rust,
+      # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
+      - name: Build agent-panel for the ui tier
+        run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}
@@ -140,25 +154,12 @@ jobs:
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
           NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
-      - name: Inbox triager, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=integ/inbox_triage.bats BATS_FLAGS="--print-output-on-failure"
+      - name: Inbox triager and planner, on the real notes
+        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      # The STATIC subset only. A runner has no ~/.claude/skills, no private
-      # overlay and no CLAUDE.md, so DEADPATH/NOCMD/UNDEPLOYED/GHOST/UNLISTED
-      # cannot be attempted here - those stay with the weekly skill-refine pass. What CI can decide, CI should decide: a
-      # SKILL.md has no compiler, so before this job the only thing standing
-      # between a broken skill and main was somebody reading the diff.
-      #
-      # Exits 2 if it finds no skills at all, so a path change that silently
-      # empties the input list fails the job instead of reporting success.
-      - name: Lint SKILL.md frontmatter
-        run: .local/bin/skill-drift --lint .
+    uses: ./.github/workflows/skill-lint.yml
 
   lint:
     name: shellcheck + shfmt

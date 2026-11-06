@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::queue::PRIORITIES;
 use crate::session_actions::Runner;
 
-/// The lanes a board can write. `focus` rows are in the feed too, read-only: `notes focus`
-/// owns the daily note.
+/// The lanes a board can write. The feed's `focus` rows are counted into `Feed::focus` and
+/// left out of `rows`: a profile's Focus is the Daily tab's (`crate::focus`), and a board shows
+/// only how many are open, linking there.
 pub const LANES: [&str; 3] = ["human", "agent", "playtest"];
 
 /// One project, listed even with no open rows so a board can offer `add` on it.
@@ -38,11 +39,15 @@ pub struct Row {
     pub lane: String,
     pub version: Option<String>,
     pub game: Option<String>,
+    /// The row's `type(area):` type (`feat`, `run`, ...), when its title has a well-formed one.
+    pub r#type: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,
     pub worker: Option<String>,
-    pub ask: bool,
+    /// The row's `#size/<s|m|l>`, without the prefix.
+    pub size: Option<String>,
+    pub requested: bool,
     /// The row's `<code>-<n>` id, when its project has a code.
     pub id: Option<String>,
     pub text: String,
@@ -56,18 +61,41 @@ pub struct Row {
     pub raw: String,
 }
 
+/// A profile's open Focus rows, counted.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FocusOpen {
+    pub profile: String,
+    pub open: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
     /// The day the feed was read (`YYYY-MM-DD`, the CLI's clock), what `filed` compares to.
     pub today: String,
     pub projects: Vec<Project>,
+    /// Every project's open rows; never a `focus` row.
     pub rows: Vec<Row>,
+    /// Each profile with open Focus rows, in feed order.
+    pub focus: Vec<FocusOpen>,
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
     let out = runner.run(&["notes".into(), "board".into(), "--json".into()])?;
-    serde_json::from_str(&out).map_err(|e| format!("notes board --json: {e}"))
+    let mut f: Feed = serde_json::from_str(&out).map_err(|e| format!("notes board --json: {e}"))?;
+    let (focus, rows): (Vec<Row>, Vec<Row>) = f.rows.drain(..).partition(|r| r.lane == "focus");
+    f.rows = rows;
+    for r in focus {
+        match f.focus.iter_mut().find(|c| c.profile == r.profile) {
+            Some(c) => c.open += 1,
+            None => f.focus.push(FocusOpen {
+                profile: r.profile,
+                open: 1,
+            }),
+        }
+    }
+    Ok(f)
 }
 
 /// What a write does to one row, or the row it adds.
@@ -109,6 +137,23 @@ pub enum Verb {
     Demote { raw: String },
     /// New text; the checkbox, place and tags stay.
     Edit { raw: String, text: String },
+    /// Tags added and removed, at least one of either. A row has one size, so adding a
+    /// `size/<s>` replaces its old one; a release tag is `Move`'s.
+    Tag {
+        raw: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+/// A tag as a row carries it, without the `#`: one word that cannot read as a flag.
+fn is_tag(t: &str) -> bool {
+    let t = t.strip_prefix('#').unwrap_or(t);
+    !t.is_empty()
+        && !t.starts_with('-')
+        && !is_version(t)
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | ':' | '.'))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -286,6 +331,19 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
             }
             raw.clone()
         }
+        Verb::Tag { raw, add, remove } => {
+            if add.is_empty() && remove.is_empty() {
+                return Err("type a tag to add or remove".into());
+            }
+            if !add.iter().chain(remove).all(|t| is_tag(t)) {
+                return Err("a tag is one word (size/s, requested); a release is move".into());
+            }
+            a.extend(["--exact".into(), "tag".into()]);
+            let flag = |f: &str, t: &String| format!("--{f}={}", t.trim_start_matches('#'));
+            a.extend(add.iter().map(|t| flag("add", t)));
+            a.extend(remove.iter().map(|t| flag("remove", t)));
+            raw.clone()
+        }
         Verb::Promote { raw } => {
             a.extend(["--exact".into(), "promote".into()]);
             raw.clone()
@@ -365,23 +423,31 @@ mod tests {
     }
 
     #[test]
-    fn the_feed_parses_and_a_focus_row_has_no_project() {
+    fn the_feed_parses_and_focus_rows_become_a_count() {
         let f = Fake {
             out: Ok(
                 r#"{"today":"2026-11-04","projects":[{"profile":"bnb","project":"demo","dir":"/d","version":"v1.0.0","open":1,"agent_open":0,"playtest_open":0,"inbox":2}],
                 "rows":[{"profile":"personal","project":null,"lane":"focus","state":"open","priority":"high","text":"x","tags":[],"sheet":"/n","line":4,"raw":"- [ ] x","later":"kept out"},
+                {"profile":"personal","project":null,"lane":"focus","state":"doing","priority":"low","text":"z","sheet":"/n","line":5,"raw":"- [/] z"},
                 {"profile":"bnb","project":"demo","lane":"human","state":"open","priority":"low","id":"de-3","text":"y","filed":"2026-11-04","sheet":"/s","line":9,"raw":"- [ ] y"}]}"#,
             ),
             calls: RefCell::default(),
         };
         let feed = feed(&f).unwrap();
         assert_eq!(feed.projects[0].version.as_deref(), Some("v1.0.0"));
-        assert_eq!((feed.rows[0].project.clone(), feed.rows[0].line), (None, 4));
+        assert_eq!(
+            feed.focus,
+            [FocusOpen {
+                profile: "personal".into(),
+                open: 2
+            }]
+        );
+        assert_eq!(feed.rows.len(), 1, "no focus row is left among the rows");
         // what the Filed today card reads
         assert_eq!(feed.today, "2026-11-04");
         assert_eq!(feed.projects[0].inbox, 2);
-        assert_eq!(feed.rows[1].id.as_deref(), Some("de-3"));
-        assert_eq!(feed.rows[1].filed.as_deref(), Some("2026-11-04"));
+        assert_eq!(feed.rows[0].id.as_deref(), Some("de-3"));
+        assert_eq!(feed.rows[0].filed.as_deref(), Some("2026-11-04"));
         assert_eq!(f.calls.borrow()[0], ["notes", "board", "--json"]);
         let bad = Fake {
             out: Ok("not json"),
@@ -531,6 +597,37 @@ mod tests {
             argv(&w("human", edit)).unwrap()[5..],
             ["--exact", "edit", "--text", "-ship it today", "--", RAW]
         );
+    }
+
+    #[test]
+    fn tag_passes_each_tag_as_a_glued_flag_and_refuses_what_is_not_one() {
+        let tag = |add: &[&str], remove: &[&str]| Verb::Tag {
+            raw: RAW.into(),
+            add: add.iter().map(|t| t.to_string()).collect(),
+            remove: remove.iter().map(|t| t.to_string()).collect(),
+        };
+        assert_eq!(
+            argv(&w("agent", tag(&["#size/m", "requested"], &["ai"]))).unwrap()[5..],
+            [
+                "--agent",
+                "--exact",
+                "tag",
+                "--add=size/m",
+                "--add=requested",
+                "--remove=ai",
+                "--",
+                RAW
+            ]
+        );
+        for bad in [
+            tag(&[], &[]),
+            tag(&["two words"], &[]),
+            tag(&["-x"], &[]),
+            tag(&["v1.2.0"], &[]),
+            tag(&[""], &[]),
+        ] {
+            assert!(argv(&w("human", bad)).is_err());
+        }
     }
 
     #[test]

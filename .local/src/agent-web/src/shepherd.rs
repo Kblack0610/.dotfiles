@@ -1,8 +1,8 @@
-//! The Shepherd tab: the rundowns and chat answers the shepherd kept
+//! The shepherd on the Sessions tab: the rundowns and chat answers the shepherd kept
 //! (`fleet-shepherd log --rundown`, read by `hub_core::boards::rundowns`) and the live shepherd
 //! session, so the page can show its transcript and type into it through the Sessions routes.
 //! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by
-//! `hub_core::boards::due`); what a pass chose to leave is in its log, read by the Actions tab.
+//! `hub_core::boards::due`); what a pass chose to leave is in its log, read by Log's Actions section.
 //! Its numbers and the pass running now are `fleet-shepherd stats`, the object the MQTT feed
 //! publishes, so the page and Home Assistant read one source.
 

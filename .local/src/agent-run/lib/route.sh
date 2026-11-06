@@ -57,6 +57,10 @@ route_file() {
 # Required keys start at the __unset__ sentinel so that "the author forgot
 # ROUTE_PERSONAL_SAFE" and "ROUTE_PERSONAL_SAFE=no" can never be the same
 # observable. role.sh uses the same trick for the same reason.
+# route_native -> 0 when the transport is a vendor's own endpoint on the CLI's own login: no
+# router in the path, so no failover edge exists.
+route_native() { case "$ROUTE_TRANSPORT" in anthropic-native|openai-native) return 0 ;; esac; return 1; }
+
 route_load() {
   local name="$1" f
   f="$(route_file "$name")" || route_die "unknown route '$name'.
@@ -79,14 +83,14 @@ Every key is explicit here on purpose: a forgotten one must not read as a 'no'."
   done
 
   case "$ROUTE_TRANSPORT" in
-    anthropic-native|anthropic-gateway|openai-compatible) ;;
-    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|anthropic-gateway|openai-compatible" ;;
+    anthropic-native|openai-native|anthropic-gateway|openai-compatible) ;;
+    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|openai-native|anthropic-gateway|openai-compatible" ;;
   esac
 
   # I1. A gateway route claiming personal-safety while sitting behind a failover
   # edge is a silent paid-route spill expressed as a config error. Fallbacks fire INSIDE
   # the router, AFTER the key check, so a scoped key cannot stop the spill.
-  if [ "$ROUTE_PERSONAL_SAFE" = yes ] && [ "$ROUTE_TRANSPORT" != anthropic-native ] \
+  if [ "$ROUTE_PERSONAL_SAFE" = yes ] && ! route_native \
      && [ "$ROUTE_FALLBACK_SAFE" != yes ]; then
     route_die "route '$name' claims PERSONAL_SAFE=yes on a non-native transport while
 FALLBACK_SAFE=no. A failover edge fires inside the router, after the key check,
@@ -104,7 +108,7 @@ do nothing. Use ROUTE_MODEL_RAW for ids with spaces or parentheses."
 
   # I3. An unfalsifiable safety claim is not a safety claim: if a route asserts
   # FALLBACK_SAFE it must name what `make verify-routes` should probe.
-  if [ "$ROUTE_FALLBACK_SAFE" = yes ] && [ "$ROUTE_TRANSPORT" != anthropic-native ] \
+  if [ "$ROUTE_FALLBACK_SAFE" = yes ] && ! route_native \
      && { [ -z "$ROUTE_VERIFY_MODEL" ] || [ -z "$ROUTE_VERIFY_API_BASE" ]; }; then
     route_die "route '$name' claims FALLBACK_SAFE=yes but names no ROUTE_VERIFY_MODEL /
 ROUTE_VERIFY_API_BASE, so nothing can ever check it."
@@ -116,8 +120,8 @@ ROUTE_VERIFY_API_BASE, so nothing can ever check it."
   fi
 
   # I5. A native route with a base URL is a gateway route lying about itself.
-  if [ "$ROUTE_TRANSPORT" = anthropic-native ] && [ -n "$ROUTE_BASE_URL" ]; then
-    route_die "route '$name': anthropic-native must not set ROUTE_BASE_URL."
+  if route_native && [ -n "$ROUTE_BASE_URL" ]; then
+    route_die "route '$name': $ROUTE_TRANSPORT must not set ROUTE_BASE_URL."
   fi
 }
 
@@ -125,7 +129,9 @@ ROUTE_VERIFY_API_BASE, so nothing can ever check it."
 # on absence is what makes migration a provable no-op: a runner that names no
 # route keeps the behaviour it had.
 route_resolve() {
-  printf '%s' "${AGENTCTL_ROUTE:-${ROUTE:-${ROLE_ROUTE:-subscription}}}"
+  local def=subscription
+  [ "${harness:-}" != codex ] || def=chatgpt   # each native harness defaults to its own login
+  printf '%s' "${AGENTCTL_ROUTE:-${ROUTE:-${ROLE_ROUTE:-$def}}}"
 }
 
 # route_data_class -- what KIND of data this invocation handles.
@@ -195,11 +201,39 @@ route_key() {
 # return non-zero and kills the caller -- which is exactly what happened the
 # first time this ran, and it presented as the whole command producing no output
 # and no error at all. An empty model pin is a normal state, not a failure.
+# route_account -- the subscription account a native oauth run spends from. The caller's
+# choice wins (AGENTCTL_ACCOUNT: an account name, a config dir, or "default" for main; shepherd
+# and dispatch pass the one `claude-acct room` named), else `claude-acct pick`, the choice `cl`
+# makes. An inherited CLAUDE_CONFIG_DIR never decides: unset means main, and "main" cannot be
+# told apart from "nobody chose", which is how every timer runner sat on a spent main account.
+# `pick`, not `room`: a runner is a small call, and room refuses whenever all accounts are over
+# pace. Without claude-acct the run refuses rather than falling back to main.
+route_account() {
+  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" want="${AGENTCTL_ACCOUNT:-}" dir
+  ROUTE_ACCOUNT_FROM='claude-acct pick'
+  if [ -n "$want" ]; then ROUTE_ACCOUNT_FROM='$AGENTCTL_ACCOUNT'; fi
+  if [ "$want" = default ]; then
+    dir=''
+  elif [ "${want:0:1}" = / ]; then
+    dir="$want"
+  else
+    command -v "$cmd" >/dev/null 2>&1 ||
+      role_die "no $cmd on PATH: a subscription run must pick its account. Install it or set AGENTCTL_ACCOUNT."
+    # The name, when one was given, goes through pick, which knows the account list.
+    dir="$("$cmd" pick ${want:+"$want"} 2>/dev/null)" ||
+      role_die "$cmd pick ${want} failed: no account to run on."
+  fi
+  ROUTE_ACCOUNT="${dir:-default}"
+  if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+  return 0
+}
+
 route_apply() {
   local key; key="$(route_key)"
   case "$ROUTE_TRANSPORT" in
     anthropic-native)
       if [ -n "$ROUTE_MODEL_CLAUDE" ]; then export ANTHROPIC_MODEL="$ROUTE_MODEL_CLAUDE"; fi
+      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_account; fi
       ;;
     anthropic-gateway)
       export ANTHROPIC_BASE_URL="$ROUTE_BASE_URL"
@@ -209,6 +243,7 @@ route_apply() {
       if [ -n "$key" ]; then export ANTHROPIC_AUTH_TOKEN="$key"; fi
       unset ANTHROPIC_API_KEY
       ;;
+    openai-native) ;;   # the Codex CLI's own ChatGPT login; the scrub already took any API key
     openai-compatible)
       export LLM_BASE_URL="$ROUTE_BASE_URL"
       if [ -n "$ROUTE_MODEL_RAW" ]; then export LLM_MODEL="$ROUTE_MODEL_RAW"; fi
@@ -233,6 +268,9 @@ route_explain() {
   printf 'route file:  %s\n' "$ROUTE_FILE"
   printf 'transport:   %s%s\n' "$ROUTE_TRANSPORT" "${ROUTE_BASE_URL:+ -> $ROUTE_BASE_URL}"
   printf 'payer:       %s\n' "$ROUTE_PAYER"
+  if [ -n "${ROUTE_ACCOUNT:-}" ]; then
+    printf 'account:     %s  (from: %s)\n' "$ROUTE_ACCOUNT" "$ROUTE_ACCOUNT_FROM"
+  fi
   printf 'safety:      personal=%s work=%s fallback=%s\n' \
     "$ROUTE_PERSONAL_SAFE" "$ROUTE_WORK_SAFE" "$ROUTE_FALLBACK_SAFE"
   printf 'data class:  %s  -> ALLOW\n' "$(route_data_class)"

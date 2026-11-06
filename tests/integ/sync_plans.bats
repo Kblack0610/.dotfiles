@@ -204,3 +204,34 @@ landed_count() { landed | grep -c . || true; }
   run run_hook
   assert_success
 }
+
+# epic_map -- a registry where this checkout is alpha and the row code bt is the project beta.
+epic_map() {
+  export PROJECT_MAP_FILE="$HOME/.config/shared-hooks/project-map.json"
+  printf '{"paths":{"%s":"alpha"},"trackers":{"beta":{"lab":"bnb","code":"bt"}}}\n' "$PROJECT" > "$PROJECT_MAP_FILE"
+}
+
+@test "a plan with an epic: line is filed under the project that epic's row code names" {
+  # A game plan written from the playground checkout counts on the game, so the
+  # backfill (credit-backfill) can move it there and the next sync keeps it there.
+  epic_map
+  f=$(plan gamey)
+  printf 'epic: bt-12\n' >> "$f"
+  names gamey
+  run run_hook
+  assert_success
+  assert [ -f "$HOME/.agent/plans/beta/gamey.md" ]
+  run landed_count
+  assert_output '0'
+}
+
+@test "an epic: line with a code the registry does not know files the plan as before" {
+  epic_map
+  f=$(plan stray)
+  printf 'epic: zz-3\n' >> "$f"
+  names stray
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'stray.md'
+}

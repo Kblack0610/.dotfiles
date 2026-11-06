@@ -65,10 +65,17 @@ load_agent() {
         source "$conf"
         : "${NAME:?missing NAME}"
         : "${KIND:?missing KIND}"
-        : "${COMMAND:?missing COMMAND}"
+        # KIND=call is a model call another script makes (a judge): its caller starts it
+        # through `agentctl-run --agent <name>`, so it has no COMMAND, unit or timer. It is
+        # in the roster so every model call is defined, listed and scored the same way.
         case "$KIND" in
-            oneshot|persistent) ;;
-            *) printf 'invalid KIND=%s\n' "$KIND" >&2; exit 1 ;;
+            oneshot|persistent) : "${COMMAND:?missing COMMAND}" ;;
+            call)
+                [ -z "${SCHEDULE:-}" ] && [ "${AUTOSTART:-no}" = no ] \
+                    || { printf 'KIND=call is started by its caller: no SCHEDULE or AUTOSTART\n' >&2; exit 1; }
+                : "${ROLE:?missing ROLE (KIND=call)}"
+                COMMAND="agentctl-run --agent $NAME" ;;
+            *) printf 'invalid KIND=%s (oneshot|persistent|call)\n' "$KIND" >&2; exit 1 ;;
         esac
         [ "$NAME" = "$name" ] || { printf 'NAME=%s does not match filename %s\n' "$NAME" "$name" >&2; exit 1; }
         # Every runner says which lane it is in and what it is for, so `agentctl list` can
@@ -79,6 +86,15 @@ load_agent() {
             *) printf 'invalid LANE=%s (%s)\n' "$LANE" "$AGENTCTL_LANES" >&2; exit 1 ;;
         esac
         : "${DESCRIPTION:?missing DESCRIPTION (one line: what it is for)}"
+        # What a run may change on its own, so the catalog (`list --md`) says which runners
+        # act unattended: none (runs no model, itself or through a session it starts), draft
+        # (a report or draft for the human), shadow (a verdict nothing acts on yet), acts
+        # (model output changes state: rows, files, labels, sessions, merges).
+        : "${EFFECT:?missing EFFECT (none|draft|shadow|acts)}"
+        case "$EFFECT" in
+            none|draft|shadow|acts) ;;
+            *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
+        esac
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -103,6 +119,10 @@ load_agent() {
         printf 'ENABLED=%s\n' "$ENABLED"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
         printf 'INBOX=%s\n' "$INBOX"
+        printf 'EFFECT=%s\n' "$EFFECT"
+        printf 'ROLE=%s\n' "${ROLE:-}"
+        printf 'MODEL=%s\n' "${MODEL:-}"
+        printf 'ROUTE=%s\n' "${ROUTE:-}"
     )
 }
 
@@ -194,6 +214,7 @@ fmt_dur() {
 #     project=<canonical project name; empty for a global runner like sentinel>
 #     item=<one line: what it is doing now, or last did>
 #     detail=<optional extra>
+#     next=<epoch of the runner's own next try, for one no timer starts (a retry); empty when none>
 #     updated=<epoch of the last report>
 #
 # It sits beside that runner's activity.log in the same INBOX dir. Readers (fleet.sh)
@@ -203,7 +224,7 @@ fmt_dur() {
 # Writes MERGE: `report item=...` must never wipe `project`. Unknown keys are rejected
 # rather than stored, so a typo fails loudly instead of vanishing into a file nobody reads.
 
-STATUS_KEYS=' state project item detail updated '
+STATUS_KEYS=' state project item detail next updated '
 STATUS_STATES=' working idle ok blocked error '
 
 status_file() { printf '%s/%s/status' "$STATE_DIR" "$1"; }
@@ -247,7 +268,7 @@ status_write() {
 
     tmp="$dir/.status.$$"
     : > "$tmp" || die "cannot write $tmp"
-    for k in state project item detail updated; do
+    for k in state project item detail next updated; do
         printf '%s=%s\n' "$k" "${merged[$k]-}" >> "$tmp"
     done
     mv -f "$tmp" "$f"
@@ -344,7 +365,7 @@ cmd_report() {
         start)
             # `project` is deliberately kept: a runner that reports one keeps it across
             # fires, and a fresh run overwrites it anyway. item/detail are last run's.
-            kvs+=(state=working item= detail=)
+            kvs+=(state=working item= detail= next=)
             # Seed the proof contract. The absence of a last-outcome must mean "this
             # runner was never wired", NOT "it ran and said nothing" - those need
             # different fixes and looked identical before. A run that STARTS declares
@@ -384,7 +405,43 @@ cmd_report() {
 # kv_get <KEY> - read one key from load_agent output on stdin.
 kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); exit}'; }
 
+# cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
+# so it prints the same on any machine. PIPELINES.md points here instead of copying it.
+cmd_list_md() {
+    local name conf lane kind sched trigger model effect role route
+    printf '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|\n'
+    local -a names=() invalid=()
+    mapfile -t names < <(list_agent_names)
+    declare -A confs=()
+    for name in "${names[@]}"; do
+        if conf=$(load_agent "$name" 2>/dev/null); then confs[$name]=$conf; else invalid+=("$name"); fi
+    done
+    for lane in $AGENTCTL_LANES; do
+        for name in "${names[@]}"; do
+            conf=${confs[$name]:-}
+            [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
+            kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
+            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
+            if [ "$kind" = call ]; then trigger='called by its caller'
+            elif [ "$kind" = persistent ]; then trigger='always on'
+            elif [ -n "$sched" ]; then trigger="\`$sched\`"
+            else trigger='started by another runner'; fi
+            [ "$(kv_get ENABLED <<<"$conf")" = no ] && trigger="$trigger (disabled)"
+            if [ "$effect" = none ]; then model=-
+            elif [ -z "$model" ]; then model='not in conf'; fi
+            [ -n "$route" ] && model="$model via $route"
+            printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+        done
+    done
+    [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
+    return 0
+}
+
 cmd_list() {
+    [ "${1:-}" = --md ] && { cmd_list_md; return; }
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     local -a names=()
@@ -417,6 +474,7 @@ cmd_list() {
             [ "$header" -eq 1 ] || { printf '%s\n' "$lane"; header=1; }
             state=$(unit_state "$name")
             case "$state" in active) state=running ;; inactive|"") state=idle ;; esac
+            [ "$(kv_get KIND <<<"$conf")" = call ] && state=call
             [ "$(kv_get ENABLED <<<"$conf")" = no ] && [ "$state" != running ] && state=off
             last=-
             out=$(_outcome_file "$name")
@@ -522,6 +580,7 @@ cmd_start() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl start <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user start "agentctl@${name}.service"
 }
 
@@ -535,6 +594,7 @@ cmd_restart() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl restart <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user restart "agentctl@${name}.service"
 }
 
@@ -629,6 +689,8 @@ EOF
 # loop: fleet-review failed in about 3 minutes, so it restarted 90 to 115 times a night
 # without ever reaching 5 in 5 minutes. A oneshot's exit 1 is its verdict, and its timer
 # is the retry. A start that timed out under load is still retried 5s later.
+# 75 is a budget stop (lib/budget.sh): the runner reported BLOCKED, and a cap holding is not a
+# failed unit.
 write_oneshot_dropin() {
     local dir="$SYSTEMD_USER_DIR/agentctl@${1}.service.d"
     mkdir -p "$dir"
@@ -637,6 +699,7 @@ write_oneshot_dropin() {
 # Generated by 'agentctl reload' for every oneshot runner. Why: write_oneshot_dropin in agentctl.
 [Service]
 Restart=on-abnormal
+SuccessExitStatus=75
 EOF
 }
 
@@ -756,9 +819,12 @@ agentctl — manage named long-running Claude agents via systemd
 
 Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
+  agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
   agentctl status <name>         Detailed status for one agent
+  agentctl budget                Spend against each runner's caps today (lib/budget.sh)
+  agentctl budget <n> raise <usd> [calls]  Lift <n>'s day cap (and hour cap) for the rest of today
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
-  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)
+  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
   agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)
@@ -775,6 +841,8 @@ See ~/.config/agentctl/README.md for the schema.
 Headless LLM runs go through agentctl-run, the one launcher: it applies the role and
 route contract and refuses (exit 78) rather than degrade. A runner's COMMAND, or a script
 it calls, invokes it; the caller scores the run with proof_verdict (agent-proof.sh).
+A model call made inside a script (a judge) is a KIND=call conf, started by its caller as
+`agentctl-run --agent <name>`; each call is one line in ~/.local/state/agentctl/calls.jsonl.
 
 The status contract (what a headless runner publishes, and readers consume):
   agentctl report state=working project=bnb-platform item='queue: fix-login'
@@ -786,13 +854,53 @@ The status contract (what a headless runner publishes, and readers consume):
 EOF
 }
 
+# budget [<name> raise <usd> [calls]]: spend against each runner's caps (lib/budget.sh), or
+# lift one runner's caps for the rest of today. A raise adds to what is already raised today.
+cmd_budget() {
+    local lib; lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib"
+    # shellcheck source=../src/agent-run/lib/calls.sh
+    . "$lib/calls.sh"
+    # shellcheck source=../src/agent-run/lib/budget.sh
+    . "$lib/budget.sh"
+    if [ $# -gt 0 ]; then
+        local name="$1" usd="${3:-}" calls="${4:-0}" have hc
+        [ "${2:-}" = raise ] && [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [[ "$calls" =~ ^[0-9]+$ ]] \
+            || die "usage: agentctl budget <name> raise <usd> [calls]"
+        [ -f "$CONFIG_DIR/$name.conf" ] || die "no such agent: $name"
+        read -r have hc < <(budget_raise "$name")
+        mkdir -p "$(budget_state "$name")"
+        printf '%s %s %s\n' "$(date +%F)" "$(awk -v a="$have" -v b="$usd" 'BEGIN { print a + b }')" \
+            "$((hc + calls))" > "$(budget_state "$name")/budget-raise"
+        _budget_row "$name"
+        return 0
+    fi
+    printf '%-18s %8s %16s %12s\n' NAME 'A CALL' 'TODAY' 'THIS HOUR'
+    local c
+    for c in "$CONFIG_DIR"/*.conf; do _budget_row "$(basename "$c" .conf)"; done
+}
+
+# _budget_row <name>: one line from the conf's budget keys and calls.jsonl. A name with no
+# keys and no call today never calls a model, so it is left out.
+_budget_row() {
+    local v=() usd hour day cap
+    mapfile -t v < <(set +eu; unset BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR
+        # shellcheck disable=SC1090
+        . "$CONFIG_DIR/$1.conf" >/dev/null 2>&1
+        printf '%s\n' "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}")
+    read -r usd hour < <(budget_spent "$1")
+    [ -n "${v[0]}${v[1]}${v[2]}" ] || [ "$usd" != 0 ] || [ "$hour" != 0 ] || return 0
+    read -r day cap < <(BUDGET_DAY_USD="${v[1]}" MAX_CALLS_HOUR="${v[2]}" budget_caps "$1")
+    printf '%-18s %8s %16s %12s\n' "$1" "\$${v[0]:-$BUDGET_DEFAULT_CALL_USD}" "\$$usd of \$$day" "$hour of $cap"
+}
+
 # ----------------------------------------------------------------------
 # Dispatch
 # ----------------------------------------------------------------------
 
 case "${1:-}" in
-    list)              cmd_list ;;
+    list)              shift; cmd_list "$@" ;;
     status)            shift; cmd_status "$@" ;;
+    budget)            shift; cmd_budget "$@" ;;
     report)            shift; cmd_report "$@" ;;
     start)             shift; cmd_start "$@" ;;
     stop)              shift; cmd_stop "$@" ;;

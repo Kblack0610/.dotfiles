@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# agent-request - gather file:line notes while you browse a repo, then send them as ONE request.
+# This script is the only writer of the repo's draft, ~/.agent/requests/<project>/<repo>.md;
+# nvim (<leader>i) and the hunk extension call it. Usage: .config/hunk/README.md.
+#
+#   add --file F --line L [--end E] [--id ID] [--dir D] [--] <note...>   one note
+#   list [--json] [--dir D]                 `file:line: note` (quickfix format) or JSON
+#   send --queue [--title T] [--dir D]      every note as one agent-queue item
+#   send --session [--pane P] [--dir D]     one `@<sent bundle>` line typed into the repo's
+#                                           Claude pane; exit 2 lists candidates when not
+#                                           exactly one matches, exit 3 means it sits unsent
+#   clear [--dir D] | path [--dir D]
+#
+# --dir defaults to $PWD; the repo is its git toplevel, so each worktree has its own draft.
+set -euo pipefail
+
+REQUESTS_ROOT="$HOME/.agent/requests"
+# The most source lines quoted under one note; a long selection is cut, not pasted whole.
+QUOTE_MAX=8
+# The registry's own resolver, beside this script in the repo, as fleet-dispatch reads it.
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# The one-pane guard every scripted send shares (agent-voice too).
+# shellcheck source=../lib/agent-pane.sh
+. "${AGENT_PANE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-pane.sh}"
+
+die() { echo "agent-request: $*" >&2; exit 1; }
+
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+
+# repo_init <dir>: set ROOT, PROJECT and DRAFT for the repo containing <dir>.
+repo_init() {
+  ROOT="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || die "not in a git repo: $1"
+  PROJECT="$(resolve_project_name "$ROOT")"
+  DRAFT="$REQUESTS_ROOT/$PROJECT/${ROOT##*/}.md"
+}
+
+one_line() { tr '\n\t' '  ' <<< "$*" | sed 's/  */ /g; s/^ //; s/ $//'; }
+
+# NOTE_RE: `- <file>:<line>[-<end>]: <text>[ <!-- id:<id> -->]`. A path holds no colon.
+NOTE_RE='^- ([^:]+):([0-9]+)(-([0-9]+))?: (.*)$'
+ID_RE='^(.*) <!-- id:([^ ]+) -->$'
+
+cmd_add() {
+  local file='' line='' end='' id='' dir="$PWD"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) file=$2; shift 2 ;;
+      --line) line=$2; shift 2 ;;
+      --end) end=$2; shift 2 ;;
+      --id) id=$2; shift 2 ;;
+      --dir) dir=$2; shift 2 ;;
+      --) shift; break ;;
+      -*) die "add: unknown option $1" ;;
+      *) break ;;
+    esac
+  done
+  local text; text="$(one_line "$*")"
+  [ -n "$file" ] && [ -n "$text" ] || die "add: needs --file, --line and a note"
+  [[ "$line" =~ ^[0-9]+$ ]] || die "add: --line must be a number, got '$line'"
+  [ -z "$end" ] || [[ "$end" =~ ^[0-9]+$ ]] || die "add: --end must be a number, got '$end'"
+  [ -z "$end" ] || [ "$end" -gt "$line" ] || end=''
+  case "$file" in /*) ;; *) file="$dir/$file" ;; esac
+  repo_init "$(dirname "$file")"
+  local rel; rel="$(realpath -m --relative-to="$ROOT" "$file")"
+  case "$rel" in ../*) die "add: $file is outside $ROOT" ;; esac
+
+  if [ -n "$id" ] && [ -f "$DRAFT" ] && grep -qF -- "<!-- id:$id -->" "$DRAFT"; then
+    echo "already in the request: $rel:$line"
+    return 0
+  fi
+  mkdir -p "$(dirname "$DRAFT")"
+  [ -f "$DRAFT" ] || printf '# Request: %s\n\n' "$ROOT" > "$DRAFT"
+  {
+    printf -- '- %s:%s%s: %s%s\n' "$rel" "$line" "${end:+-$end}" "$text" "${id:+ <!-- id:$id -->}"
+    if [ -f "$ROOT/$rel" ]; then
+      local last="${end:-$line}"
+      [ $((last - line)) -lt "$QUOTE_MAX" ] || last=$((line + QUOTE_MAX - 1))
+      sed -n "${line},${last}p" "$ROOT/$rel" | sed 's/^/    > /'
+    fi
+  } >> "$DRAFT"
+  echo "noted $rel:$line ($(note_count) in the request)"
+}
+
+note_count() {
+  local n=0
+  [ -f "$DRAFT" ] && n="$(grep -cE "$NOTE_RE" "$DRAFT" || true)"
+  echo "${n:-0}"
+}
+
+cmd_list() {
+  local json='' dir="$PWD"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --dir) dir=$2; shift 2 ;;
+      *) die "list: unknown argument $1" ;;
+    esac
+  done
+  repo_init "$dir"
+  local l file ln end text id rows=()
+  if [ -f "$DRAFT" ]; then
+    while IFS= read -r l; do
+      [[ "$l" =~ $NOTE_RE ]] || continue
+      file="${BASH_REMATCH[1]}"; ln="${BASH_REMATCH[2]}"; end="${BASH_REMATCH[4]}"; text="${BASH_REMATCH[5]}"; id=''
+      if [[ "$text" =~ $ID_RE ]]; then text="${BASH_REMATCH[1]}"; id="${BASH_REMATCH[2]}"; fi
+      if [ -n "$json" ]; then
+        rows+=("$(jq -cn --arg f "$ROOT/$file" --arg r "$file" --argjson l "$ln" --arg e "$end" --arg t "$text" --arg i "$id" \
+          '{file:$f, rel:$r, line:$l, end:($e|if .=="" then null else tonumber end), text:$t, id:($i|if .=="" then null else . end)}')")
+      else
+        printf '%s:%s: %s\n' "$ROOT/$file" "$ln" "$text"
+      fi
+    done < "$DRAFT"
+  fi
+  if [ -n "$json" ]; then
+    if [ ${#rows[@]} -eq 0 ]; then echo '[]'; else printf '%s\n' "${rows[@]}" | jq -cs .; fi
+  fi
+}
+
+# brief: the request as the agent reads it, built from the draft.
+brief() {
+  local branch sha
+  branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  sha="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  printf 'Notes from a pass over %s (branch %s at %s). Each is file:line (relative to that root), then the lines it points at. Make the change each note asks for.\n\n' "$ROOT" "$branch" "$sha"
+  grep -v '^# Request: ' "$DRAFT" | sed '/./,$!d' | sed -E 's/ <!-- id:[^ ]+ -->$//'
+}
+
+# archive: write the brief to sent/, print its path. The draft is removed by the caller once
+# the send has gone, so a failed send keeps it.
+archive() {
+  local out; out="$REQUESTS_ROOT/$PROJECT/sent/${ROOT##*/}-$(date +%Y%m%d-%H%M%S).md"
+  mkdir -p "$(dirname "$out")"
+  brief > "$out"
+  echo "$out"
+}
+
+cmd_send() {
+  local target='' title='' pane='' dir="$PWD"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --queue) target=queue; shift ;;
+      --session) target=session; shift ;;
+      --title) title=$2; shift 2 ;;
+      --pane) pane=$2; shift 2 ;;
+      --dir) dir=$2; shift 2 ;;
+      *) die "send: unknown argument $1" ;;
+    esac
+  done
+  [ -n "$target" ] || die "send: --queue or --session"
+  repo_init "$dir"
+  local n; n="$(note_count)"
+  [ "$n" -gt 0 ] || die "send: no notes in the request for $ROOT"
+
+  if [ "$target" = queue ]; then
+    [ -n "$title" ] || title="${ROOT##*/}: $n notes"
+    local out
+    out="$(brief | agent-queue add --project "$PROJECT" --from human --title "$(one_line "$title")")" ||
+      die "send: agent-queue add failed; the draft is kept"
+    archive > /dev/null
+    rm -f "$DRAFT"
+    echo "$out"
+    return 0
+  fi
+
+  if [ -z "$pane" ]; then
+    local rows
+    rows="$(agent-panel list --json 2>/dev/null |
+      jq -c --arg r "$ROOT" 'select(.cwd == $r or (.cwd | startswith($r + "/")))')" || true
+    pane_one "$ROOT" "$rows" || exit 2
+    pane=$PANE
+  fi
+  local sent rc=0
+  sent="$(archive)"
+  agent-panel send --pane "$pane" "My notes from a pass over this repo ($n): @$sent - fold them into what we are doing." || rc=$?
+  case "$rc" in
+    0) rm -f "$DRAFT"; echo "sent $n notes to $pane" ;;
+    3) rm -f "$DRAFT"; echo "agent-request: the line is in $pane's input box; press Enter there" >&2; exit 3 ;;
+    *) rm -f "$sent"; die "send: agent-panel send failed ($rc); the draft is kept" ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    add) cmd_add "$@" ;;
+    list) cmd_list "$@" ;;
+    send) cmd_send "$@" ;;
+    clear|path)
+      local dir="$PWD"
+      [ "${1:-}" = --dir ] && dir=$2
+      repo_init "$dir"
+      if [ "$cmd" = clear ]; then rm -f "$DRAFT"; echo "cleared"; else echo "$DRAFT"; fi ;;
+    -h|--help|help|'') usage ;;
+    *) die "unknown command '$cmd' (see --help)" ;;
+  esac
+}
+
+main "$@"

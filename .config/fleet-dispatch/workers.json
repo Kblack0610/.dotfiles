@@ -1,18 +1,47 @@
 {
-  "asks": {
-    "what": "/one-shot on an #ask row the human already decided, game work only",
+  "requested": {
+    "what": "/one-shot on a #requested row the human already decided, game work only",
     "max_tier": 2,
-    "projects": ["unity-core-playground"],
-    "only_tag": "ask"
+    "projects": [
+      "unity-core-playground"
+    ],
+    "only_tag": "requested"
   },
   "fleet": {
     "what": "/one-shot on a row the human assigned with #worker/fleet",
     "max_tier": 1
   },
   "board": {
-    "what": "/one-shot on an agent-board row of the game, no tags needed, the judge reads the tier",
+    "what": "/one-shot on an agent-board row of a game, no tags needed, the judge reads the tier",
     "max_tier": 2,
-    "projects": ["unity-core-playground"],
+    "projects": [
+      "unity-core-playground",
+      "dodginballs",
+      "apociseum",
+      "shape-city"
+    ],
+    "lane": "agent",
+    "untagged": true
+  },
+  "personal": {
+    "what": "/one-shot on an agent-board row of a personal app, no tags needed; finance is left out (it stays human-gated)",
+    "max_tier": 2,
+    "projects": [
+      "trader",
+      "black-dev",
+      "kenneth-black-portfolio",
+      "notes-cockpit"
+    ],
+    "lane": "agent",
+    "untagged": true
+  },
+  "infra": {
+    "what": "/one-shot on an agent-board row of the AI systems and the home cluster, no tags needed; tier 3 rows (harness, CI, runners) still run only as night items to a PR, under the unattended ceiling",
+    "max_tier": 2,
+    "projects": [
+      "agent-runtime",
+      "home-config"
+    ],
     "lane": "agent",
     "untagged": true
   }

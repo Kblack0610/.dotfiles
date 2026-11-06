@@ -20,7 +20,7 @@ Usage:
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
   claude-recall tool-output [--days N | --since YYYY-MM-DD]
-                            [--by tool|command|filetype|kind|method|day|week|project]
+                            [--by tool|command|filetype|kind|day|week|project]
                             [--top K] [--json]
 
 Examples:
@@ -35,12 +35,14 @@ Examples:
 """
 import argparse
 import json
+import math
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -244,7 +246,7 @@ def session_meta(path):
 
 CARD_FIELDS = [
     "id", "project", "updated", "mtime", "cwd", "branch",
-    "title", "titles_all", "first_prompt", "last_prompt", "files", "prs",
+    "title", "titles_all", "first_prompt", "last_prompt", "files", "prs", "kind",
 ]
 
 
@@ -268,7 +270,7 @@ def session_card(path):
     titles, files, prs = [], [], []
     proj = cwd = branch = None
     first_prompt = last_prompt = None
-    last_ts = None
+    last_ts = entry = raw_prompt = None
     try:
         for line in path.read_text(errors="replace").splitlines():
             rec = parse_line(line)
@@ -303,6 +305,8 @@ def session_card(path):
             if first_prompt is None and rtype == "user":
                 msg = rec.get("message") or {}
                 txt = blocks_to_text(msg.get("content", ""))
+                if raw_prompt is None and not rec.get("isMeta"):
+                    entry, raw_prompt = rec.get("entrypoint"), user_text(rec)
                 if txt and not txt.lstrip().startswith("<"):
                     first_prompt = txt
     except OSError:
@@ -326,6 +330,7 @@ def session_card(path):
         "last_prompt": _flatten(last_prompt, 300),
         "files": " ".join(files[:40]),
         "prs": " ".join(prs[:10]),
+        "kind": session_kind(path, entry, raw_prompt),
     }
 
 
@@ -741,9 +746,6 @@ def session_meta_project(path):
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
                 "output_tokens")
 SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl", "rtk")
-TF_STATE = Path(os.environ.get("TOKEN_FILTER_STATE", HOME / ".agent" / "token-filter"))
-TF_CACHE = Path(os.environ.get("TOKEN_FILTER_CACHE",
-                               Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "token-filter"))
 
 
 SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its commands
@@ -760,7 +762,7 @@ def bash_head(cmd):
         if not w or w[0] == "cd":
             continue
         head = os.path.basename(w[0])
-        if head == "rtk" and len(w) > 1:  # count a filtered call under the tool it ran
+        if head == "rtk" and len(w) > 1:  # a call from the 2026-11 rtk trial counts under the tool it ran
             w, head = w[1:], w[1]
         if head in SUBCMD_HEADS:
             rest = [x for x in w[1:] if not x.startswith("-")]
@@ -809,54 +811,49 @@ def read_target(name, inp):
     return f"{EXT_CLASS.get(ext, 'other')} .{ext}" if ext else "other (none)"
 
 
-def method_windows():
-    """[(ts, method)] from the token-filter switch log; before the first switch it was off."""
-    out = []
-    try:
-        for line in (TF_STATE / "methods.jsonl").open():
-            rec = parse_line(line)
-            if rec and rec.get("ts") and rec.get("method"):
-                out.append((rec["ts"], rec["method"]))
-    except OSError:
-        pass
-    return sorted(out)
-
-
-def method_at(windows, ts):
-    m = "off"
-    for t, meth in windows:
-        if t > ts:
-            break
-        m = meth
-    return m
-
-
-def rewritten_ids():
-    ids = set()
-    try:
-        for line in (TF_CACHE / "rewrites.jsonl").open(errors="replace"):
-            rec = parse_line(line)
-            if rec and rec.get("id"):
-                ids.add(rec["id"])
-    except OSError:
-        pass
-    return ids
-
-
 # A stretch of this many responses with no compaction is a long run: every tool result in it is
 # re-read on each later response (about 32x its size on the 2026-11 fleet), so the longest are
 # where a /compact would have paid most. 150 was the p99 stretch in the week to 2026-11-05
 # (42 of 3,168; median 30). Tune with --long-turns.
 LONG_TURNS = 150
+MISS_SHARE = 0.5      # a response that reads back under half the context before it rewrote the prefix
+CW_CAUSES = ("start", "subagent_start", "compaction", "idle_expiry", "prefix_change", "tail")
 
 
-def tool_output_file(path, since, until, windows, rewritten, emit):
+def cache_write_cause(turn, kind, compacted, cache_read, prev_ctx, gap, ttl):
+    """Why a response wrote cache: the first response of a transcript, the first after a compaction,
+    a miss (under MISS_SHARE of the prior context read back) after an idle gap past the cache TTL or
+    without one (something changed the prefix), or the tail: the new turn's own content."""
+    if turn == 1:
+        return "subagent_start" if kind == "subagent" else "start"
+    if compacted:
+        return "compaction"
+    if prev_ctx and cache_read < MISS_SHARE * prev_ctx:
+        return "idle_expiry" if gap > ttl else "prefix_change"
+    return "tail"
+
+
+def ts_epoch(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def tool_output_file(path, since, until, emit):
     """Stream one transcript: emit('turn', ...) per API response, emit('result', ...) per tool
     result, with how many later turns re-read the result before a compaction drops it, and
-    emit('segment', ...) per stretch between compactions that had a response in the window."""
+    emit('segment', ...) per stretch between compactions that had a response in the window,
+    emit('session', ...) once with its responses in the window, and emit('hook', ...) per turn a
+    hook forced (Stop feedback, a PreToolUse deny).
+    A turn carries why it wrote cache and its context split three ways: start (the transcript's
+    first context: system prompt, rules, first prompt), tool (tool output since the last
+    compaction) and conversation (the rest: model text, hook and system text, loaded skills)."""
     uses, pending, seen_msgs, turns = {}, [], set(), 0
     project, seg = None, {"start": 0, "in_win": 0, "carried": 0, "chars": 0, "last": ""}
     kind = "subagent" if "subagents" in path.parts else "main"
+    first_ctx, prev_ctx, prev_ts, live_tool, compacted, in_win = 0, 0, 0.0, 0, False, 0
+    ttl = 300  # the TTL of the prefix written before: 1h when that write was ephemeral_1h
 
     def settle(compacted):
         for r in pending:
@@ -874,8 +871,10 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
     for line in path.open(errors="replace"):
         if '"compact_boundary"' in line:
             settle(True)
+            live_tool, compacted = 0, True
             continue
-        if '"type":"assistant"' not in line and '"tool_result"' not in line:
+        stop = '"Stop hook feedback' in line
+        if '"type":"assistant"' not in line and '"tool_result"' not in line and not stop:
             continue
         rec = parse_line(line)
         if not rec:
@@ -884,36 +883,57 @@ def tool_output_file(path, since, until, windows, rewritten, emit):
             project = stats_repo(project_of(rec, path))
         ts = str(rec.get("timestamp") or "")
         msg = rec.get("message") or {}
+        if stop and rec.get("type") == "user" and str(msg.get("content") or "").startswith("Stop hook feedback"):
+            if since <= ts < until:
+                emit("hook", {"project": project or "?", "what": "stop_feedback"})
+            continue
         if rec.get("type") == "assistant":
             mid = msg.get("id")
             if mid and mid not in seen_msgs:
                 seen_msgs.add(mid)
                 turns += 1
                 u = msg.get("usage") or {}
+                n = {f: int(u.get(f) or 0) for f in USAGE_FIELDS}
+                ctx = n["input_tokens"] + n["cache_creation_input_tokens"] + n["cache_read_input_tokens"]
+                now = ts_epoch(ts)
+                cause = cache_write_cause(turns, kind, compacted, n["cache_read_input_tokens"], prev_ctx,
+                                          now - prev_ts if prev_ts else 0, ttl)
+                if n["cache_creation_input_tokens"]:
+                    ttl = 3600 if int((u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0) else 300
+                first_ctx = first_ctx or ctx
+                start = min(first_ctx, ctx)
+                tool = min(live_tool, ctx - start)
+                prev_ctx, prev_ts, compacted = ctx, now or prev_ts, False
                 if since <= ts < until:
                     seg["in_win"] += 1
                     seg["last"] = ts
-                    emit("turn", {"ts": ts, "project": project or "?",
-                                  "method": method_at(windows, ts),
-                                  **{f: int(u.get(f) or 0) for f in USAGE_FIELDS}})
+                    in_win += 1
+                    emit("turn", {"ts": ts, "project": project or "?", **n, "cw_cause": cause,
+                                  "split": (start, tool, ctx - start - tool)})
             for b in msg.get("content") or []:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     name, inp = b.get("name") or "?", b.get("input") or {}
                     cmd = bash_head(inp.get("command") or "") if name == "Bash" else None
                     uses[b.get("id")] = (name, cmd, read_target(name, inp))
             continue
-        if not since <= ts < until:
-            continue
+        win = since <= ts < until
         for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
             if not isinstance(b, dict) or b.get("type") != "tool_result":
                 continue
+            text = result_text(b)
+            live_tool += len(text) // 4
+            if not win:
+                continue
+            if b.get("is_error") and text.startswith("PreToolUse:") and "hook error" in text[:200]:
+                emit("hook", {"project": project or "?", "what": "tool_denied"})
             tid = b.get("tool_use_id")
             name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "filetype": ftype, "kind": kind,
-                            "chars": len(result_text(b)), "at": turns, "method": method_at(windows, ts),
-                            "rewritten": tid in rewritten})
+                            "chars": len(text), "at": turns})
     settle(False)
+    if in_win and kind == "main":
+        emit("session", {"project": project or "?", "turns": in_win})
 
 
 def window_bound(s):
@@ -931,19 +951,21 @@ def cmd_tool_output(a):
     since, since_epoch = window_bound(
         a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
     until = window_bound(a.until)[0] if a.until else "9999"
-    windows, rewritten = method_windows(), rewritten_ids()
     bucket_of = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
-                 "method": lambda r: r["method"], "day": lambda r: r["ts"][:10],
+                 "day": lambda r: r["ts"][:10],
                  "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
                  "project": lambda r: r["project"], "filetype": lambda r: r.get("filetype"),
                  "kind": lambda r: r["kind"]}[a.by]
     totals = {f: 0 for f in USAGE_FIELDS}
     totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0)
-    rows, segments = {}, []
+    cw_by_cause = {k: 0 for k in CW_CAUSES}
+    split = {"start": 0, "tool": 0, "conversation": 0}
+    hooks = {"stop_feedback": 0, "tool_denied": 0}
+    rows, segments, session_turns = {}, [], []
 
     def row(k):
         return rows.setdefault(k, {"key": k, "turns": 0, **{f: 0 for f in USAGE_FIELDS},
-                                   "calls": 0, "chars": 0, "carried": 0, "rewritten": 0,
+                                   "calls": 0, "chars": 0, "carried": 0,
                                    "bash_calls": 0, "bash_chars": 0})
 
     def emit(kind, r):
@@ -952,11 +974,20 @@ def cmd_tool_output(a):
         if kind == "segment":
             segments.append(r)
             return
+        if kind == "session":
+            session_turns.append(r["turns"])
+            return
+        if kind == "hook":
+            hooks[r["what"]] += 1
+            return
         if kind == "turn":
             totals["turns"] += 1
             for f in USAGE_FIELDS:
                 totals[f] += r[f]
-            if a.by in ("method", "day", "week", "project"):
+            cw_by_cause[r["cw_cause"]] += r["cache_creation_input_tokens"]
+            for k, v in zip(split, r["split"]):
+                split[k] += v
+            if a.by in ("day", "week", "project"):
                 x = row(bucket_of(r))
                 x["turns"] += 1
                 for f in USAGE_FIELDS:
@@ -979,7 +1010,6 @@ def cmd_tool_output(a):
         x["calls"] += 1
         x["chars"] += r["chars"]
         x["carried"] += carried
-        x["rewritten"] += r["rewritten"]
         if r["tool"] == "Bash":
             x["bash_calls"] += 1
             x["bash_chars"] += r["chars"]
@@ -994,20 +1024,26 @@ def cmd_tool_output(a):
             continue
         seen.add(real)
         files += 1
-        tool_output_file(real, since, until, windows, rewritten, emit)
+        tool_output_file(real, since, until, emit)
 
-    order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week", "method") \
+    order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week") \
         else sorted(rows.values(), key=lambda r: -r["chars"])
-    if a.top and a.by not in ("day", "week", "method", "kind"):
+    if a.top and a.by not in ("day", "week", "kind"):
         order = order[:a.top]
     # Compaction cadence: the stretches that ran longest without one, by what they re-read.
     long = sorted((x for x in segments if x["turns"] >= a.long_turns), key=lambda x: -x["carried"])
     long_runs = {"turns_over": a.long_turns, "stretches": len(segments), "long": len(long),
                  "rows": long[:10]}
+    # A one-response transcript is a print call (a lane, a judge), not a working session.
+    st = sorted(t for t in session_turns if t > 1)
+    sessions = {"count": len(st), "single": len(session_turns) - len(st),
+                "p50": st[len(st) // 2] if st else None,
+                "p90": st[min(len(st) - 1, len(st) * 9 // 10)] if st else None}
     if a.json:
         print(json.dumps({"since": since, "until": a.until and until, "by": a.by,
                           "transcripts": files, "totals": totals, "rows": order,
-                          "long_runs": long_runs}, indent=1))
+                          "long_runs": long_runs, "cache_write_by_cause": cw_by_cause,
+                          "context_split": split, "sessions": sessions, "hook_turns": hooks}, indent=1))
         return 0
     t = totals
     billed_in = t["input_tokens"] + t["cache_creation_input_tokens"] + t["cache_read_input_tokens"]
@@ -1021,23 +1057,28 @@ def cmd_tool_output(a):
           f"Bash {t['bash_calls']:,} calls, {t['bash_chars'] // max(t['bash_calls'], 1):,} chars/call")
     print(f"  carried: tool output re-read {t['carried'] // 4:,} tokens' worth before compaction "
           f"({t['carried'] // max(t['chars'], 1)}x its size), ~{100 * t['carried'] / 4 / max(billed_in, 1):.0f}% of input")
+    cw = max(sum(cw_by_cause.values()), 1)
+    print("  cache write by cause: " + ", ".join(f"{k} {100 * v / cw:.0f}%" for k, v in cw_by_cause.items() if v))
+    print("  context split: " + ", ".join(f"{k} {100 * v / max(billed_in, 1):.0f}%" for k, v in split.items()))
+    print(f"  main sessions: {sessions['count']:,} (and {sessions['single']:,} one-response calls), "
+          f"responses p50 {sessions['p50']}, p90 {sessions['p90']}; "
+          f"hook-forced turns: {hooks['stop_feedback']:,} Stop feedback, {hooks['tool_denied']:,} denied calls")
     print(f"  compaction: {len(long)} of {len(segments)} stretches ran {a.long_turns}+ responses without one"
           + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
                     f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
                     for x in long[:3]) + "\n")
     if a.by in ("tool", "command", "filetype", "kind"):
-        print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13} {'filtered':>8}  {a.by}"))
+        print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {a.by}"))
         for r in order:
             print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
-                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,} "
-                  f"{r['rewritten']:>8,}  {r['key']}")
+                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {r['key']}")
     else:
         print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
-                     f"{'bash calls':>10} {'chars/call':>10} {'filtered':>8} {'carried~tok':>13}  {a.by}"))
+                     f"{'bash calls':>10} {'chars/call':>10} {'carried~tok':>13}  {a.by}"))
         for r in order:
             print(f"  {r['turns']:>9,} {r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
                   f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,} {r['bash_calls']:>10,} "
-                  f"{r['bash_chars'] // max(r['bash_calls'], 1):>10,} {r['rewritten']:>8,} "
+                  f"{r['bash_chars'] // max(r['bash_calls'], 1):>10,} "
                   f"{r['carried'] // 4:>13,}  {r['key']}")
     return 0
 
@@ -1063,7 +1104,8 @@ READONLY_SUB = re.compile(r"^(git (status|log|show|diff|branch|rev-parse|rev-lis
                           r"|cat-file|merge-base|describe|shortlog)|gh (pr|run|issue|repo|api|release) ?(view|list|"
                           r"checks|diff|status)?$|agent-queue list|notes (list|show|board|ptask)|claude-recall .*)")
 TASK_DONE = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
-BG_OUTPUT = re.compile(r"/tasks/[\w.-]+\.output")
+TASK_ID = re.compile(r"<task-id>([\w.-]+)</task-id>")
+BG_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
 WORD = re.compile(r"[\w./~@:-]{5,}")
 RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 
@@ -1106,19 +1148,139 @@ def result_text(b):
     return str(rc or "")
 
 
+# Read discipline: the responses a file read costs beyond itself. A read of a file a grep or rg
+# found in one of the LOCATE_WINDOW calls before it paid two responses where one call would do
+# (`rg -n -C`, or the locate and the slice chained in one command). A read of lines this stretch
+# already read, with no write to the file between, paid one for nothing. Logs, transcripts and
+# /tmp captures grow while a session runs, so reading one again is never counted as a repeat.
+LOCATE_WINDOW = 8
+LOCATE_HEADS = {"grep", "rg", "ugrep", "ag"}
+SED_RANGE = re.compile(r"^(\d+)(?:,(\d+))?p$")
+REDIRECT = re.compile(r"^\d*[<>]")  # 2>/dev/null, 2>&1
+REDIRECT_OP = re.compile(r"\d*[<>]+&?")  # a bare 2> or >>, whose target is the next word
+VOLATILE = {"output", "data"}
+# Docs a rule tells every session to read (lessons, the fleet map, plans, the plan standard,
+# shepherd orders): their reads are the rules' price.
+RULE_DOC = re.compile(os.environ.get("RECALL_RULE_DOC_RE",
+                      r"/\.agent/lessons/|/agentctl/ARCHITECTURE\.md$|/\.(?:claude|agent)/plans/"
+                      r"|/docs/planning\.md$|/shepherd/orders\.md$"))
+HOME = os.path.expanduser("~")
+
+
+def norm_path(p, cwd):
+    p = os.path.expanduser(p)
+    if not os.path.isabs(p) and cwd:
+        p = os.path.join(cwd, p)
+    return os.path.normpath(p)
+
+
+def path_class(p):
+    return EXT_CLASS.get(os.path.splitext(p)[1].lstrip(".").lower(), "other")
+
+
+def read_spans(name, inp, cwd):
+    """[(path, lo, hi)]: the files a Read or a sed/cat/head/tail call printed; hi None is to the end."""
+    if name == "Read":
+        p = inp.get("file_path")
+        if not p:
+            return []
+        lo = int(inp.get("offset") or 1)
+        return [(norm_path(p, cwd), lo, lo + int(inp["limit"]) - 1 if inp.get("limit") else None)]
+    if name != "Bash":
+        return []
+    for seg in SEGMENTS.split((inp.get("command") or "").strip()):
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            w = seg.split()
+        if w[:1] == ["cd"] and len(w) > 1:
+            cwd = norm_path(w[1], cwd)
+            continue
+        if not w or os.path.basename(w[0]) not in READ_HEADS \
+                or any(x.startswith((">", "<<", "-i")) for x in w[1:]):
+            continue
+        head = os.path.basename(w[0])
+        args = [x for i, x in enumerate(w[1:]) if not REDIRECT.match(x) and not REDIRECT_OP.fullmatch(w[i])]
+        if head == "sed" and not any(x in ("-e", "-f") or x.startswith("--expr") for x in args):
+            args = [x for x in args if x.startswith("-")] + [x for x in args if not x.startswith("-")][1:]
+        paths = [x for x in args if not x.startswith("-") and ("." in x or "/" in x)
+                 and not SED_RANGE.match(x) and not x.startswith(("/dev/", "/proc/"))]
+        if not paths:
+            continue
+        lo, hi = 1, None
+        if head == "sed":
+            m = next(filter(None, map(SED_RANGE.match, w[1:])), None)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+            paths = paths[-1:]
+        elif head == "head":
+            n = next((w[i + 1] for i, x in enumerate(w[:-1]) if x == "-n"), None) \
+                or next((x[1:] for x in w if re.fullmatch(r"-\d+", x)), "10")
+            hi = int(n) if str(n).isdigit() else None
+            paths = paths[-1:]
+        elif head == "tail":
+            paths = paths[-1:]
+        return [(norm_path(p, cwd), lo, hi) for p in paths]
+    return []
+
+
+def write_paths(name, inp, cwd):
+    """The files a call wrote: Edit and Write targets, sed -i files and shell redirects."""
+    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        p = inp.get("file_path") or inp.get("notebook_path")
+        return [norm_path(p, cwd)] if p else []
+    if name != "Bash":
+        return []
+    cmd = inp.get("command") or ""
+    out = []
+    for seg in SEGMENTS.split(cmd.strip()):
+        w = seg.split()
+        if w[:1] == ["cd"] and len(w) > 1:
+            cwd = norm_path(w[1].strip("'\""), cwd)
+        out += [norm_path(p, cwd) for p in re.findall(r"(?<![0-9&<>])>>?\s*([^\s;&|<>()]+)", seg)]
+        if w and os.path.basename(w[0]) == "sed" and any(x.startswith("-i") for x in w[1:]):
+            out += [norm_path(x.strip("'\""), cwd)
+                    for x in w[1:] if not x.startswith("-") and ("." in x or "/" in x)][1:]
+    return [p for p in out if p != "/dev/null" and "&" not in p]
+
+
+def locate_call(name, inp):
+    if name in ("Grep", "Glob"):
+        return True
+    return name == "Bash" and any(bash_head(s) in LOCATE_HEADS
+                                  for s in SEGMENTS.split((inp.get("command") or "").strip()))
+
+
+def located_by(p, recent, seg):
+    """True when one of the recent calls in this stretch was a grep or rg that named or found p."""
+    base = os.path.basename(p)
+    tail = "/".join(p.split("/")[-2:])
+    word = re.compile(r"(?<![\w.-])" + re.escape(base) + r"(?![\w.-])")
+    hit = re.compile(r"(?m)^(?:\./)?" + re.escape(base) + ":")  # grep -rn output for a file at the top of the tree
+    return any(s == seg and loc and (word.search(cmd) or tail in text or hit.search(text))
+               for s, loc, cmd, text in recent)
+
+
 def tool_calls_file(path, since, until, seen_msgs, emit):
     """Stream one transcript into responses and results, then emit('stat', key, n) per measure."""
     resps, results, seg, entry, prompt, project = [], {}, 0, None, None, None
-    by_mid, notified = {}, {}
+    by_mid, notified, noticed = {}, {}, {}  # noticed: task id -> index of the first response after its notice
+    reports = []  # (index of the first response after it, seg, text): a background Agent's report
     for line in path.open(errors="replace"):
         if '"compact_boundary"' in line:
             seg += 1
             continue
         if "<task-notification>" in line and '"tool_result"' not in line:
             rec = parse_line(line)
-            m = rec and TASK_DONE.search(json.dumps(rec.get("message") or rec.get("content") or ""))
+            body = json.dumps(rec.get("message") or rec.get("content") or "") if rec else ""
+            m = TASK_DONE.search(body)
             if m and rec.get("timestamp"):
                 notified.setdefault(m.group(1), (str(rec.get("timestamp") or ""), len(resps)))
+            t = TASK_ID.search(body)
+            if t:
+                noticed.setdefault(t.group(1), len(resps))
+            if "<summary>Agent " in body:
+                reports.append((len(resps), seg, body[:50000]))
             continue
         if '"type":"assistant"' not in line and '"type":"user"' not in line:
             continue
@@ -1144,7 +1306,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
         if r is None:
             seen_msgs.add(mid)
             u = msg.get("usage") or {}
-            r = by_mid[mid] = {"ts": str(rec.get("timestamp") or ""), "seg": seg, "calls": [],
+            r = by_mid[mid] = {"ts": str(rec.get("timestamp") or ""), "seg": seg, "calls": [], "cwd": rec.get("cwd"),
                                "ctx": sum(int(u.get(f) or 0) for f in USAGE_FIELDS[:3])}
             resps.append(r)
         for b in msg.get("content") or []:
@@ -1154,9 +1316,13 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
     project = project or "?"
     emit("session", kind, project)
     last_in_seg, seen_words, repeats, edits = {}, set(), {}, 0
+    spans, recent, hot = {}, deque(maxlen=LOCATE_WINDOW), {}  # read discipline: path -> [(seg, lo, hi)]
+    agent_texts = []  # (seg, report): what an Agent handed back, for reads that re-check it
     for i, r in enumerate(resps):
         last_in_seg[r["seg"]] = i
     for i, r in enumerate(resps):
+        while reports and reports[0][0] <= i:
+            agent_texts.append(reports.pop(0)[1:])
         nxt = resps[i + 1] if i + 1 < len(resps) and resps[i + 1]["seg"] == r["seg"] else None
         later = last_in_seg[r["seg"]] - i
         win = since <= r["ts"] < until
@@ -1182,9 +1348,38 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             prior = repeats.get(key) if key else None
             if key:
                 repeats[key] = (r["seg"], edits)
+            nctx = nxt["ctx"] if nxt else 0
+            for p in write_paths(name, inp, r["cwd"]):
+                spans.pop(p, None)
+            if name == "Bash" and not ro:  # a run can rewrite any generated file; code changes by edit
+                for p in [p for p in spans if path_class(p) != "code"]:
+                    del spans[p]
+            for p, lo, hi in ([] if err else read_spans(name, inp, r["cwd"])):
+                again = path_class(p) not in VOLATILE and not p.startswith("/tmp/") and any(
+                    s == r["seg"] and lo <= (h or math.inf) and l <= (hi or math.inf) for s, l, h in spans.get(p, ()))
+                found = located_by(p, recent, r["seg"])
+                segs = {s for s, _, _ in spans.get(p, ())}
+                fresh = r["seg"] not in segs  # first read of p in this stretch
+                tail = "/".join(p.split("/")[-2:])
+                spans.setdefault(p, []).append((r["seg"], lo, hi))
+                if win:
+                    emit("n", kind, project, "reads", 1, nctx)
+                    if found:
+                        emit("n", kind, project, "locate_then_read", 1, nctx)
+                    if again:
+                        emit("n", kind, project, "reread_same_lines", 1, nctx)
+                    if fresh and any(s < r["seg"] for s in segs):
+                        emit("n", kind, project, "read_after_compaction", 1, nctx)
+                    if fresh and any(s == r["seg"] and tail in t for s, t in agent_texts):
+                        emit("n", kind, project, "read_after_subagent", 1, nctx)
+                    if RULE_DOC.search(p):
+                        emit("n", kind, project, "read_rule_doc", 1, nctx)
+                    hot[p] = hot.get(p, 0) + nctx
+            recent.append((r["seg"], locate_call(name, inp), json.dumps(inp), text[:20000]))
+            if name == "Agent" and text:
+                agent_texts.append((r["seg"], text[:50000]))
             if not win:
                 continue
-            nctx = nxt["ctx"] if nxt else 0
             head = bash_head(inp.get("command") or "") if name == "Bash" else name
             emit("tool", name, len(text), len(text) * later, nctx)
             emit("n", kind, project, "calls", 1, nctx)
@@ -1227,8 +1422,13 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             elif name == "Bash" and "moved to the background" in text[:400]:
                 emit("group", "background", "timed out into background", 1, 0, nctx)
             cmd = str(inp.get("command") or inp.get("file_path") or "")
-            if BG_OUTPUT.search(cmd):
-                emit("group", "background", "read task output", 1, len(text) * later, nctx)
+            out = BG_OUTPUT.search(cmd)
+            if out:
+                # Before its notice a read is polling a run still going; after it, the read is how
+                # the session sees the output, which the notice does not carry.
+                n = noticed.get(out.group(1))
+                when = "after its notice" if n is not None and n <= i else "before its notice"
+                emit("group", "background", f"read task output {when}", 1, len(text) * later, nctx)
             elif name == "Bash" and re.search(r"\bsleep\b|\buntil\b", cmd):
                 emit("group", "background", "sleep or until loop", 1, len(text) * later, nctx)
             elif name in ("Monitor", "TaskOutput"):
@@ -1246,6 +1446,8 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                 emit("group", "serial", bash_head(nxt["calls"][0][2].get("command") or "")
                      if nxt["calls"][0][1] == "Bash" else nxt["calls"][0][1], 1, 0, nxt["ctx"])
         edits += mutated
+    for p, ctx in hot.items():  # one per session, so a target's calls are the sessions that read it
+        emit("group", "hot_target", p.replace(HOME, "~", 1), 1, 0, ctx)
 
 
 def cmd_tool_calls(a):
@@ -1303,7 +1505,14 @@ def cmd_tool_calls(a):
                   f"{al.get('calls', 0):,} tool calls"))
     print(f"  {ctx // max(resp, 1):,} context tokens per response, {ctx:,} in all; "
           f"{100 * al.get('parallel_responses', 0) / max(al.get('tool_responses', 0), 1):.1f}% of "
-          f"tool responses carried more than one call\n")
+          f"tool responses carried more than one call")
+    reads = al.get("reads", 0)
+    print(f"  {reads:,} file reads: {100 * al.get('locate_then_read', 0) / max(reads, 1):.1f}% read a file a grep "
+          f"found in the {LOCATE_WINDOW} calls before, {100 * al.get('reread_same_lines', 0) / max(reads, 1):.1f}% "
+          f"read lines already read with no write between")
+    print(f"  read triggers: {100 * al.get('read_after_compaction', 0) / max(reads, 1):.1f}% first re-read after a "
+          f"compaction, {100 * al.get('read_after_subagent', 0) / max(reads, 1):.1f}% a file an Agent report named, "
+          f"{100 * al.get('read_rule_doc', 0) / max(reads, 1):.1f}% a doc a rule says to read\n")
     head = f"  {'sessions':>8} {'responses':>9} {'calls':>8} {'ctx/resp':>8} {'parallel':>8} {'serial':>7} {'failed':>7} {'repeat':>6} {'search':>6}  bucket"
     print(c(DIM, head))
     rows = sorted((k for k in buckets if k != "all"), key=lambda k: (k[0] != "k", -buckets[k].get("responses_ctx", 0)))
@@ -1323,7 +1532,8 @@ def cmd_tool_calls(a):
               ("bg_wait", "background shells by run time; ctx is the start ack plus the wake"),
               ("bg_short_idle", "background runs under 10m with nothing else done, by command"),
               ("agent", "Agent spawns; carried is the parent's cost of the report"),
-              ("mcp", "MCP calls by server"))
+              ("mcp", "MCP calls by server"),
+              ("hot_target", "files by the responses their reads caused; calls are the sessions that read each"))
     for g, title in titles:
         if out["groups"].get(g):
             print(c(DIM, f"\n  {'calls':>8} {'ctx tokens':>14} {'carried~tok':>12}  {title}"))
@@ -1389,11 +1599,10 @@ def main():
     to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
     to.add_argument("--long-turns", type=int, default=LONG_TURNS,
                     help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
-    to.add_argument("--by", choices=["tool", "command", "filetype", "kind", "method", "day", "week",
-                                     "project"],
+    to.add_argument("--by", choices=["tool", "command", "filetype", "kind", "day", "week", "project"],
                     default="tool", help="command = Bash calls by command head; filetype = Read and "
                                          "sed/cat/head/tail by the file's class and extension; kind = "
-                                         "main session or subagent; method = token-filter method windows")
+                                         "main session or subagent")
     to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
     to.add_argument("--project", "-p", help="substring match on repo")
     to.add_argument("--json", action="store_true")

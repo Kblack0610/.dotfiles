@@ -1,43 +1,50 @@
 #!/usr/bin/env bash
-# ask-sweep: the nightly catch for work that fell off, called from agentctl-dream. A session files
-# what did not land when it winds down; this finds what still slipped past that.
+# ask-sweep: the catch for work that fell off, a runner four times a day. A session files what did
+# not land when it winds down; this finds what still slipped past that.
 #
-#   ask-sweep run [--dry-run] [--date YYYY-MM-DD]   file rows; default date is yesterday
-#   ask-sweep report                                the one line the morning briefing prints
+#   ask-sweep run [--dry-run]   file rows for unfinished plans and missed asks
 #
-# Plans: a plan with unticked phases, no live session and no change for a day gets one row, keyed
-# by its slug so it is never filed twice. No model. Plans older than the first run are not
+# Plans: a plan with unticked phases, no live session and no change for a day gets one row naming
+# its slug; an open row that names it already, or an open twin (`ptask add` exit 3), stops a second
+# one. No model. Plans older than the first run are not
 # back-filled. A plan with no checklist and no Results is only counted, since many of those landed.
-# Asks: one model call over the date's human messages from sessions that have gone quiet, matched
-# against open rows and merged PRs. A session still live at 03:00 is left to its own wind-down.
-# It never closes a row, and files at most ASK_SWEEP_MAX rows a night, reporting the rest as a count.
+# Asks: the human's messages from quiet sessions in every repo with a board and no client (the
+# registry: project_board, project_inherited client), grouped by board, one model call per board
+# that has new ones, matched against that board's open rows and its repos' merged PRs. A live
+# session is left to its own wind-down. Each transcript keeps a watermark in since/<board>, moved
+# only when its board's call succeeds, so a failed board is asked again and an idle one costs no
+# call. It never closes a row, and files at most ASK_SWEEP_MAX rows a run.
 set -uo pipefail
 
 : "${ASK_SWEEP_DIR:=$HOME/.agent/ask-sweep}"
 : "${ASK_SWEEP_PLANS:=$HOME/.claude/plans}"
 : "${ASK_SWEEP_PLAN_CACHE:=$HOME/.agent/plans}"
 : "${ASK_SWEEP_TRANSCRIPTS:=$HOME/.claude/projects}"
-: "${ASK_SWEEP_REPOS:=unity-core-playground}"   # repos whose messages are read: work repos stay out
-: "${ASK_SWEEP_BOARD:=unity-core-playground}"   # the board those asks and the report's counts use
-: "${ASK_SWEEP_PR_REPO:=}"                      # owner/name whose merged PRs count as delivered; the caller sets it
+: "${ASK_SWEEP_LOOKBACK_MIN:=2880}"            # a message older than this is never read
 : "${ASK_SWEEP_MAX:=15}"
 : "${ASK_SWEEP_MSG_BYTES:=70000}"
 : "${ASK_SWEEP_QUIET_MIN:=60}"                  # a transcript written this recently is a live session
-: "${ASK_SWEEP_CMD:=agentctl-run --role observe}"
+: "${ASK_SWEEP_CMD:=agentctl-run --agent ask-sweep}"
+NAME="${AGENTCTL_NAME:-ask-sweep}"
 
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=/dev/null
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
-SHARED_HOOKS="$HOME/.config/shared-hooks"
+. "$HERE/../lib/agent-proof.sh"
 # shellcheck source=/dev/null
-[ -f "$SHARED_HOOKS/project-name.sh" ] && . "$SHARED_HOOKS/project-name.sh"
+. "$HERE/../lib/plan-phases.sh"
+# The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
+# outside it, as fleet-dispatch and agent-queue take it).
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0
+DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0; STOPPED=0
+declare -A NO_BOARD=()
 
 say() { printf 'ask-sweep: %s\n' "$*" >&2; }
 ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
-sig() { sha256sum | cut -c1-12; }
 
-# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed.
+# file_row [--sheet] <board> <text>: one row within the run's cap. Returns 1 when not filed;
+# an open twin already on the board (`ptask add` exit 3) counts as filed.
 file_row() {
   local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
   local board="$1" text="$2"
@@ -45,13 +52,12 @@ file_row() {
   FILED=$((FILED + 1))
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
   notes ptask "$board" "${lane[@]}" add "$text" >/dev/null 2>&1
+  local rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
 
-board_of() {
-  local b=""
-  declare -F project_lab_names >/dev/null && b="$(project_lab_names "$1" 2>/dev/null | head -1)"
-  printf '%s' "${b:-$1}"
-}
+# board_of <project> -> its board, or nothing (project-name.sh's project_board)
+board_of() { project_board "$1"; }
 
 sweep_plans() {
   local first live f slug done_n total next project board
@@ -73,63 +79,82 @@ sweep_plans() {
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
     grep -qxF "$f" <<<"$live" && continue
-    grep -qxF "$slug" "$ASK_SWEEP_DIR/plans-filed" 2>/dev/null && continue
     project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
     [ -n "$project" ] || continue
     board="$(board_of "$(basename "$project")")"
-    if notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug"; then
-      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
-      continue
-    fi
-    if file_row "$board" "finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #ask #tier/2"; then
-      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
-    fi
+    [ -n "$board" ] || continue
+    notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug" && continue
+    file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2 #size/m"
   done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
 }
 
-# human_messages <date>: what the human typed that day, one JSON string per message.
-human_messages() {
-  local date="$1" repo d f
-  for repo in $ASK_SWEEP_REPOS; do
-    for d in "$ASK_SWEEP_TRANSCRIPTS"/*"$repo"*/; do
-      [ -d "$d" ] || continue
-      while IFS= read -r -d '' f; do
-        jq -c --arg date "$date" '
-          select(.type == "user" and (.isSidechain | not) and (.isMeta | not)
-            and ((.timestamp // "") | startswith($date)))
-          | .message.content
-          | if type == "array" then
-              if any(.[]; .type? == "tool_result") then empty
-              else map(select(.type? == "text") | .text) | join(" ") end
-            else . end
-          | select(type == "string") | gsub("^\\s+"; "")
-          | select(startswith("<") or startswith("Base directory") or startswith("This session")
-              or contains("system-reminder") or startswith("[Request interrupted") | not)
-          | select(length > 0) | .[0:800]' "$f" 2>/dev/null
-      done < <(find "$d" -maxdepth 1 -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -print0 2>/dev/null)
-    done
-  done | awk '!seen[$0]++'
+# transcripts -> "<board>\t<checkout>\t<file>" for each quiet transcript written inside the lookback,
+# in a repo with a board and no client. A session's cwd names its project (resolve_project_name),
+# read once a dir; the checkout is where that project's merged PRs are listed.
+transcripts() {
+  local d f cwd p b r
+  while IFS= read -r d; do
+    f="$(find "$d" -maxdepth 1 -name '*.jsonl' -print -quit)"
+    cwd="$(head -n 50 "$f" | jq -r 'select(.cwd? | type == "string") | .cwd' 2>/dev/null | head -1)"
+    [ -n "$cwd" ] || continue
+    p="$(resolve_project_name "$cwd")"
+    [ -z "$(project_inherited "$p" client)" ] || continue
+    b="$(board_of "$p")"
+    [ -n "$b" ] || { NO_BOARD["$p"]=1; continue; }
+    r="$(project_repo_path "$p")"
+    find "$d" -maxdepth 1 -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" -printf "$b\t${r:--}\t%p\n"
+  done < <(find "$ASK_SWEEP_TRANSCRIPTS" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
+             -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" -printf '%h\n' 2>/dev/null | sort -u)
 }
 
-sweep_asks() {
-  local date="$1" msgs open_rows prs prompt wd out rc line quote text state tier size done_is key tags
-  msgs="$(human_messages "$date")"
+# human_messages <since file> <file>...: "<file>\t<timestamp>\t<message as a JSON string>" for what
+# the human typed after each file's watermark (else the lookback's start).
+human_messages() {
+  local since="$1" floor f from; shift
+  floor="$(date -u -d "-$ASK_SWEEP_LOOKBACK_MIN min" +%FT%T)"
+  for f in "$@"; do
+    from="$(awk -F'\t' -v f="$f" '$1 == f { t = $2 } END { print t }' "$since" 2>/dev/null)"
+    [[ "${from:-}" > "$floor" ]] || from="$floor"
+    jq -r --arg from "$from" --arg f "$f" '
+      select(.type == "user" and (.isSidechain | not) and (.isMeta | not)
+        and ((.timestamp // "") > $from))
+      | .timestamp as $ts
+      | .message.content
+      | if type == "array" then
+          if any(.[]; .type? == "tool_result") then empty
+          else map(select(.type? == "text") | .text) | join(" ") end
+        else . end
+      | select(type == "string") | gsub("^\\s+"; "")
+      | select(startswith("<") or startswith("Base directory") or startswith("This session")
+          or contains("system-reminder") or startswith("[Request interrupted") | not)
+      | select(length > 0) | "\($f)\t\($ts)\t\(.[0:800] | tojson)"' "$f" 2>/dev/null
+  done
+}
+
+# sweep_board <board> <checkouts> <file>...: one model call over the board's new messages; files
+# its rows and moves the watermarks only when the call answered.
+sweep_board() {
+  local board="$1" repos="$2" since msgs text open_rows prs prompt wd out rc line quote row tier size
+  local done_is human tags asked floor r; shift 2
+  since="$ASK_SWEEP_DIR/since/$board"
+  # Oldest first up to ASK_SWEEP_MSG_BYTES: the prompt is one argument, and Linux limits one to
+  # 128 KB. What does not fit is past the watermarks this call moves, so the next run reads it.
+  msgs="$(human_messages "$since" "$@" | sort -t$'\t' -k2,2 \
+    | awk -F'\t' -v max="$ASK_SWEEP_MSG_BYTES" '{ n += length($3) + 1 } n > max { cut++; next } { print }
+        END { if (cut) printf "%d\n", cut > "/dev/stderr" }' 2>"$ASK_SWEEP_DIR/.cut")"
+  [ -s "$ASK_SWEEP_DIR/.cut" ] && say "$board: $(cat "$ASK_SWEEP_DIR/.cut") messages wait for the next run"
+  rm -f -- "$ASK_SWEEP_DIR/.cut"
   [ -n "$msgs" ] || return 0
-  # The prompt is one argument, and Linux limits one argument to 128 KB.
-  [ "${#msgs}" -le "$ASK_SWEEP_MSG_BYTES" ] || { say "messages cut to $ASK_SWEEP_MSG_BYTES bytes of ${#msgs}"; msgs="${msgs:0:$ASK_SWEEP_MSG_BYTES}"; }
-  open_rows="$({ notes ptask "$ASK_SWEEP_BOARD" --agent list 2>/dev/null; notes ptask "$ASK_SWEEP_BOARD" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
-  prs="$(gh pr list --repo "$ASK_SWEEP_PR_REPO" --state merged --limit 200 \
-    --search "merged:>=$date" --json title -q '.[].title' 2>/dev/null)"
-  prompt="You find what a person asked for that no one recorded. Below are their messages to coding agents on $date, the board's open rows and the PRs merged since.
-
-List each separate thing they asked to have built or changed that NO open row and NO merged PR covers. Match by meaning, not wording: a reworded row counts as covered, and when unsure treat it as covered. Leave out questions, reactions, instructions about how to work, one-off commands, anything they later rejected, and anything they called future or not wanted.
-
-For each one, one JSON object per line, between a line ASK-SWEEP-START and a line ASK-SWEEP-END, nothing else between them:
-{\"quote\": \"<their words, short>\", \"row\": \"<what to do, plain ASCII, under 150 characters>\", \"tier\": 1|2|3, \"size\": \"S|M|L\", \"done_is_stated\": true|false, \"human_only\": true|false}
-tier: 2 is ordinary game code, 3 is CI, build, tooling or dependencies. human_only: only a person can do it (a purchase, a playtest, a decision). done_is_stated: the row says how anyone would know it is finished.
-
-## Messages
-$msgs
+  ASKED=$((ASKED + 1))
+  text="$(cut -f3 <<<"$msgs" | awk '!seen[$0]++')"
+  open_rows="$({ notes ptask "$board" --agent list 2>/dev/null; notes ptask "$board" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
+  floor="$(cut -f2 <<<"$msgs" | sort | head -1)"
+  prs="$(while IFS= read -r r; do
+      [ -d "$r" ] && (cd "$r" && gh pr list --state merged --limit 200 --search "merged:>=${floor:0:10}" --json title -q '.[].title' 2>/dev/null)
+    done <<<"$repos")"
+  # The instructions are the ask-sweep agent's PROMPT file; agentctl-run puts them ahead of this.
+  prompt="## Messages ($board)
+$text
 
 ## Open rows
 $open_rows
@@ -141,66 +166,89 @@ $prs"
   # An empty directory, so no repo's Stop hook answers in place of the model.
   out="$(cd "$wd" && $ASK_SWEEP_CMD -p "$prompt" 2>/dev/null)"; rc=$?
   rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "model call failed"; return 1; }
-  grep -qx 'ASK-SWEEP-START' <<<"$out" || { say "model returned no answer block"; return 1; }
+  case "$rc" in
+    0) ;;
+    75) STOPPED=1; say "$board: stopped at its budget"; proof_why "$board: stopped at its budget"; return 1 ;;
+    *) FAULT=1; say "$board: model call failed (exit $rc)"; proof_why "$board: model call failed (exit $rc)"; return 1 ;;
+  esac
+  grep -qx 'ASK-SWEEP-START' <<<"$out" || { FAULT=1; say "$board: model returned no answer block"; proof_why "$board: the model returned no answer block"; return 1; }
   while IFS= read -r line; do
     jq -e 'type == "object" and (.row | type) == "string" and (.quote | type) == "string"' <<<"$line" >/dev/null 2>&1 || continue
     quote="$(jq -r .quote <<<"$line" | ascii 80)"
-    text="$(jq -r .row <<<"$line" | ascii 150)"
+    row="$(jq -r .row <<<"$line" | ascii 150)"
     tier="$(jq -r '.tier // 3 | floor' <<<"$line" 2>/dev/null)"; [[ "$tier" =~ ^[123]$ ]] || tier=3
-    size="$(jq -r '.size // "L"' <<<"$line")"
+    size="$(jq -r '.size // "L"' <<<"$line")"; [[ "$size" =~ ^[SML]$ ]] || size=L
     done_is="$(jq -r '.done_is_stated // false' <<<"$line")"
-    state="$(jq -r '.human_only // false' <<<"$line")"
-    [ -n "$text" ] || continue
-    # The same words on a later night, or the same night run twice, are never filed again.
-    key="$(printf '%s' "$quote" | tr '[:upper:]' '[:lower:]' | sig)"
-    grep -qxF "$key" "$ASK_SWEEP_DIR/asks-filed" 2>/dev/null && continue
-    tags="#ask #tier/$tier"
-    [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$state" != true ] && tags+=" #worker/asks"
-    if [ "$state" = true ]; then
-      file_row --sheet "$ASK_SWEEP_BOARD" "$text; asked ${date:5} \"$quote\" #low" || continue
+    human="$(jq -r '.human_only // false' <<<"$line")"
+    [ -n "$row" ] || continue
+    # The day the quoted message was sent, else the newest message's.
+    asked="$(awk -F'\t' -v q="$(tr '[:upper:]' '[:lower:]' <<<"$quote")" 'index(tolower($3), q) { print $2; exit }' <<<"$msgs")"
+    [ -n "$asked" ] || asked="$(cut -f2 <<<"$msgs" | sort | tail -1)"
+    asked="${asked:5:5}"
+    tags="#requested #tier/$tier #size/${size,,}"
+    [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$human" != true ] && tags+=" #worker/requested"
+    if [ "$human" = true ]; then
+      file_row --sheet "$board" "$row; asked $asked \"$quote\" #low"
     else
-      file_row "$ASK_SWEEP_BOARD" "$text; asked ${date:5} \"$quote\" $tags" || continue
+      file_row "$board" "$row; asked $asked \"$quote\" $tags"
     fi
-    [ "$DRY" = 1 ] || echo "$key" >> "$ASK_SWEEP_DIR/asks-filed"
   done < <(sed -n '/^ASK-SWEEP-START$/,/^ASK-SWEEP-END$/p' <<<"$out" | sed '1d;$d')
+  [ "$DRY" = 1 ] && return 0
+  # The newest message read is each file's watermark; one older than the lookback is dropped.
+  mkdir -p "$ASK_SWEEP_DIR/since"
+  floor="$(date -u -d "-$ASK_SWEEP_LOOKBACK_MIN min" +%FT%T)"
+  { cat "$since" 2>/dev/null; cut -f1,2 <<<"$msgs"; } \
+    | awk -F'\t' -v floor="$floor" '$2 > floor && $2 > t[$1] { t[$1] = $2 } END { for (f in t) print f "\t" t[f] }' \
+    | sort > "$since.tmp" && mv "$since.tmp" "$since"
+}
+
+sweep_asks() {
+  local rc=0 board repo file files list
+  local -A by=() repos=()
+  # Into a file, not a pipe: transcripts counts into this shell's NO_BOARD and FAULT.
+  list="$(mktemp)"; transcripts > "$list"
+  while IFS=$'\t' read -r board repo file; do
+    [ -n "$file" ] || continue
+    by["$board"]+="$file"$'\n'; repos["$board"]+="$repo"$'\n'
+  done < "$list"
+  rm -f -- "$list"
+  for board in "${!by[@]}"; do
+    mapfile -t files < <(printf '%s' "${by[$board]}" | sort -u)
+    sweep_board "$board" "$(printf '%s' "${repos[$board]}" | sort -u)" "${files[@]}" || rc=1
+  done
+  return "$rc"
 }
 
 cmd_run() {
-  local date rc=0
-  date="$(date -d yesterday +%F)"
+  local rc=0 summary verdict
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) DRY=1; shift ;;
-      --date) date="${2:-}"; shift 2 ;;
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
   mkdir -p "$ASK_SWEEP_DIR"
   sweep_plans
-  sweep_asks "$date" || rc=1
-  [ "$DRY" = 1 ] || printf '%s\t%s\t%s\t%s\n' "$FILED" "$OVER" "$PLANS_OPEN" "$PLANS_UNCHECKED" > "$ASK_SWEEP_DIR/last"
-  say "$date: filed $FILED, over the cap $OVER, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED"
+  sweep_asks || rc=1
+  [ "$FAULT" = 0 ] || rc=1
+  summary="asked $ASKED boards, filed $FILED, over the cap $OVER, ${#NO_BOARD[@]} projects with no board, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED"
+  say "$summary"
+  [ "$DRY" = 1 ] && return "$rc"
+  verdict=NOOP
+  [ "$FILED" -gt 0 ] && verdict=WORKED
+  # A budget stop alone is the cap holding, not a fault; the watermarks resume it next run.
+  [ "$rc" != 0 ] && verdict=BLOCKED
+  [ "$FAULT" = 1 ] && verdict=FAILED
+  # "budget: " is what agentctl-briefing reads on the last outcome line.
+  [ "$verdict" = BLOCKED ] && [ "$STOPPED" = 1 ] && { rc=75; summary="budget: $summary"; }
+  proof_report "$NAME" "$verdict" "$summary"
   return "$rc"
-}
-
-cmd_report() {
-  local rows queue asks filed=0 over=0 open=0 unchecked=0
-  rows="$(notes ptask "$ASK_SWEEP_BOARD" --agent list 2>/dev/null | cut -f4)"
-  queue="$(grep -c '#worker/asks' <<<"$rows")"
-  asks="$(grep -c '#ask' <<<"$rows")"
-  [ -f "$ASK_SWEEP_DIR/last" ] && IFS=$'\t' read -r filed over open unchecked < "$ASK_SWEEP_DIR/last"
-  printf 'asks: %s in downtime queue, %s waiting to be scoped, %s filed last night' \
-    "$queue" "$((asks - queue))" "$filed"
-  [ "$over" -gt 0 ] && printf ' (%s more over the cap)' "$over"
-  printf '; plans: %s unfinished, %s with no checklist\n' "$open" "$unchecked"
 }
 
 main() {
   case "${1:-}" in
     run) shift; cmd_run "$@" ;;
-    report) cmd_report ;;
-    *) sed -n '2,6p' "$0" >&2; return 2 ;;
+    *) sed -n '2,5p' "$0" >&2; return 2 ;;
   esac
 }
 

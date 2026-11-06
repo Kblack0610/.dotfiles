@@ -5,6 +5,18 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
+/// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
+/// a page read with one `notes` still matches after an upgrade.
+pub fn fnv1a(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Atomically write `contents` to `path`: stage into a sibling `.<name>.tmp` file, then
 /// `rename` it over the target. The rename is atomic on POSIX, so a concurrent reader (a
 /// daily note open in Nvim, the session preflight, another `notes` run) never observes a
@@ -31,6 +43,37 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// An exclusive `flock` on a lock file, released when dropped (the descriptor closes).
+pub(crate) struct FileLock(#[allow(dead_code)] std::fs::File);
+
+/// Take an exclusive `flock` on `path`, creating it and its directory, waiting for any holder.
+/// The read-modify-write writers (`notes outbox`, `notes ptask`) hold one around each change,
+/// so two writers never interleave a read and a write and lose one of the two.
+pub(crate) fn lock_file(path: &Path) -> Result<FileLock> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening lock {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: flock on a descriptor this function owns; the lock ends when `f` closes.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            anyhow::bail!(
+                "locking {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    Ok(FileLock(f))
 }
 
 /// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
@@ -564,6 +607,20 @@ pub fn split_version(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(|t| format!("#{t}")))
 }
 
+/// True when `tag` (bare, no `#`) names a row's parent: `of/` then a row id (`of/ar-12`).
+/// The one link of the epic -> story -> subtask tree; the parent is a field on the child so a
+/// move, archive or release carries it.
+pub fn is_parent_tag(tag: &str) -> bool {
+    tag.strip_prefix("of/").is_some_and(is_row_id)
+}
+
+/// Strip a row's `#of/<id>` tags, like [`split_version`], and return the first parent id.
+/// A row's identity must not change when it is attached to an epic.
+pub fn split_parent(line: &str) -> (String, Option<String>) {
+    let (cleaned, found) = cut_tags(line, is_parent_tag);
+    (cleaned, found.map(|t| t["of/".len()..].to_string()))
+}
+
 /// How a date tag spells its date: month and day, `#c1026` (created) and `#due1031` (due).
 /// The year is left off because it is nearly always this one and every task line pays for
 /// it; the reader takes the occurrence NEAREST `today` ([`tag_date`]). A date further than
@@ -668,7 +725,7 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
 
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
-/// The shared half of [`split_version`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
+/// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
 /// tags instead of taking the first, so it keeps its own loop.
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
@@ -774,34 +831,7 @@ pub fn find_hashtags(line: &str) -> Vec<String> {
     out
 }
 
-/// The `#idea` tag on a line: `None` when it has none, `Some(None)` for a bare `#idea`, and
-/// `Some(Some(project))` for `#idea:<project>`.
-///
-/// Its own reader because the shared tag walker stops at `:` (so `find_hashtags` sees both
-/// forms as `idea`), and only this tag gives the suffix a meaning.
-pub fn idea_tag(line: &str) -> Option<Option<String>> {
-    let bytes = line.as_bytes();
-    let mut found = None;
-    for_each_tag(line, |_, tag_start, scan_end, end| {
-        if found.is_some() || !line[tag_start..end].eq_ignore_ascii_case("idea") {
-            return;
-        }
-        if scan_end != end || bytes.get(end) != Some(&b':') {
-            found = Some(None);
-            return;
-        }
-        let rest = &line[end + 1..];
-        let len = rest
-            .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-            .count();
-        let name = rest[..len].trim_end_matches(['-', '.']);
-        found = Some((!name.is_empty()).then(|| name.to_lowercase()));
-    });
-    found
-}
-
-/// The project a `#p:<project>` tag sends a Focus row to, lower-cased. A bare `#p` or an
+/// The project a `#p:<project>` tag sends an outbox line to, lower-cased. A bare `#p` or an
 /// empty name is no tag. Only the text before the marker comment counts.
 pub fn project_tag(line: &str) -> Option<String> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
@@ -817,12 +847,45 @@ fn project_tag_word(w: &str) -> Option<String> {
 
 /// `line` without its `#p:<project>` tag, the rest as it was.
 pub fn without_project_tag(line: &str) -> String {
+    without_words(line, |w| project_tag_word(w).is_some())
+}
+
+/// Whether `line` carries an `#agent` word, which files it on the agent board. Only the text
+/// before the marker comment counts.
+pub fn agent_tag(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().any(is_agent_word)
+}
+
+fn is_agent_word(w: &str) -> bool {
+    w.eq_ignore_ascii_case("#agent")
+}
+
+/// `line` without its `#agent` tag, the rest as it was.
+pub fn without_agent_tag(line: &str) -> String {
+    without_words(line, is_agent_word)
+}
+
+fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
+    // Only the dropped words and the space before each go; every other byte stays, so a line
+    // with a double space or a tab is still found by its raw text after the move.
     let indent = &line[..line.len() - line.trim_start().len()];
-    let kept: Vec<&str> = line
-        .split_whitespace()
-        .filter(|w| project_tag_word(w).is_none())
-        .collect();
-    format!("{indent}{}", kept.join(" "))
+    let mut out = indent.to_string();
+    let mut rest = line.trim_start();
+    let mut gap = "";
+    while let Some(w) = rest.split_whitespace().next() {
+        let after = &rest[w.len()..];
+        if !drop(w) {
+            if out.len() > indent.len() {
+                out.push_str(gap);
+            }
+            out.push_str(w);
+        }
+        let ws = after.len() - after.trim_start().len();
+        gap = &after[..ws];
+        rest = &after[ws..];
+    }
+    out
 }
 
 /// Remove the first inline legacy `[YYYY-MM-DD]` due token, collapsing the surrounding
@@ -1230,6 +1293,7 @@ pub fn task_text(line: &str) -> String {
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_version(&stripped);
+    let (stripped, _) = split_parent(&stripped);
     let stripped = strip_trailing_day(&stripped);
     let t = stripped.trim();
     // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
@@ -1280,6 +1344,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     let (bare, due) = split_due(&bare);
     let (bare, _) = split_priority(&bare);
     let (bare, _) = split_version(&bare);
+    let (bare, parent) = split_parent(&bare);
     let no_day = strip_trailing_day(&bare);
     let day = bare[no_day.len()..].trim();
     let mut out = format!("{indent}{checkbox} {text}");
@@ -1297,6 +1362,10 @@ pub fn retext_task(line: &str, text: &str) -> String {
     }
     if let Some(w) = version_tag(before_marker) {
         out = add_tag(&out, &w);
+    }
+    // `task_text` strips the parent link, so a rewrite keeps it the way it keeps the release.
+    if let Some(id) = parent {
+        out = add_tag(&out, &format!("#of/{id}"));
     }
     out
 }
@@ -1399,6 +1468,15 @@ pub fn row_block_end(lines: &[&str], i: usize) -> usize {
     end
 }
 
+/// The lines of the block under the row at index `i` (its details and children), trimmed: the
+/// one reader of a row's details, what `notes board --json` and the inbox both report.
+pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
+    lines[i + 1..row_block_end(lines, i)]
+        .iter()
+        .map(|d| d.trim().to_string())
+        .collect()
+}
+
 /// The detail lines for a row at `indent`: each of `details` two spaces deeper, blanks
 /// skipped. A detail is one line; a newline inside one splits it.
 pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
@@ -1459,24 +1537,14 @@ mod tests {
             without_project_tag("  - [ ] fix the chest #p:apociseum #high"),
             "  - [ ] fix the chest #high"
         );
-    }
-
-    #[test]
-    fn idea_tag_reads_the_bare_and_the_project_form() {
-        assert_eq!(idea_tag("- [ ] a game about cans #idea"), Some(None));
+        // The rest of the line keeps its bytes: an outbox line moved by `notes outbox move` is
+        // filed next by its raw text, which a collapsed double space or tab would no longer match.
         assert_eq!(
-            idea_tag("- [ ] cans #idea:Apociseum #low"),
-            Some(Some("apociseum".into()))
+            without_project_tag("- [ ] the gun  shot\tis late"),
+            "- [ ] the gun  shot\tis late"
         );
-        assert_eq!(
-            idea_tag("- [ ] more levels #idea:unity-playground."),
-            Some(Some("unity-playground".into()))
-        );
-        assert_eq!(idea_tag("- [ ] not one #ideas #high"), None);
-        assert_eq!(idea_tag("- [ ] in code `#idea` only"), None);
-        assert_eq!(idea_tag("- [ ] glued foo#idea"), None);
-        assert_eq!(idea_tag("- [ ] empty suffix #idea:"), Some(None));
-        assert_eq!(idea_tag("- [ ] ends a sentence #idea."), Some(None));
+        assert_eq!(without_project_tag("#p:demo the gun"), "the gun");
+        assert_eq!(without_agent_tag("- [ ] #agent fix it"), "- [ ] fix it");
     }
 
     fn d(s: &str) -> NaiveDate {

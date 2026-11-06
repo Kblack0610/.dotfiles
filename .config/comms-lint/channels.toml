@@ -1,0 +1,166 @@
+# Every surface the fleet writes for a human, and the numbers its text must fit.
+# Rules and their reasons: ~/.claude/skills/comms-standard/SKILL.md. What each key
+# means: that skill's references/channels.md. Read by comms-lint.
+
+[defaults]
+ascii = true
+emoji = false
+max_emoji = 0
+max_chars = 0
+max_lines = 0
+max_line = 0
+max_lead = 140
+lead_ids = true
+prose = false
+item = '^\s*(?:[-*]|\d+\.)\s+'
+max_items = 0
+max_item = 0
+option_meanings = false
+
+[ids]
+# Names for machines, not people. A message may carry them, after the point.
+patterns = [
+  '^\[[\w.:-]+\]',                                  # [watch-name]
+  '^(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*\d)?[A-Za-z0-9]{6}\b(?=\s*[(:])',  # ask id: lusBbd (
+  '^[\w.-]+/[\w.-]+:\d+\b',                         # hub/dotfiles:3
+  '^[\w.-]*agent-\d+\b',                            # agent-60, unity-core-playground-agent-6
+  '^[\w.-]+#\d+\b',                                 # dotfiles#910
+  '^~?/[\w.~/-]+',                                  # a path
+  '^\d{8}-\d{6}-',                                  # a queue slug
+]
+# What a proof may cite: a PR or issue, a commit, a URL. Searched anywhere in the text.
+refs = [
+  '#\d+\b',                                        # #926, dotfiles#926
+  '\bpr:\d+\b',                                     # pr:982
+  '\b[0-9a-f]{7,40}\b',                             # a commit
+  'https?://\S+',                                   # a URL
+]
+
+[report]
+buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
+# The buzzes-a-day target is buzzes_per_day_max in ~/.config/agentctl/kpi-thresholds.
+
+# The needs pager (`hub needs --page`, hub-core pager.rs): one grouped page for the rows of
+# hub Home's NEEDS YOU that only the human can act on and that crossed min_score since the
+# last page. A score is (1 + session + plan phases left + queued items after it) x minutes
+# waited, so 60 is an hour alone or 15 minutes holding a session and 2 phases. Past
+# max_buzz_day high pages a day the page still goes out, at normal. top is how many rows one
+# page names before "+N more".
+[pager.needs]
+min_score = 60
+max_buzz_day = 6
+top = 3
+
+# A push to the phone. The lock screen shows the title and about two lines.
+[channel.page]
+max_chars = 300
+max_lead = 110
+forbid = [
+  ['\| at: ', 'probe plumbing: say where in plain words, or leave it to the briefing'],
+  ['\(want \d+\)', 'probe internals: say what broke'],
+  ['\b[A-Z]{5,}\b', 'an all-caps status word: say the state in plain words'],
+  ['-> do: ', 'a runbook hint: give one action'],
+]
+quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
+source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
+
+# The morning briefing page (refs/<date>/briefing.md), linted whole: at most 5 under Needs you.
+[channel.briefing]
+items_under = '^## Needs you$'
+max_items = 5
+max_item = 160
+max_line = 200
+forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
+source = { kind = "files", glob = "~/.notes/journal/refs/*/briefing.md" }
+
+# The Morning block the briefing copies into the daily note.
+[channel.morning]
+max_lines = 8
+max_line = 200
+max_item = 200
+max_lead = 200
+source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "## Morning" }
+
+# The phone widget's rows (`hub phone --json`). No source: the retained MQTT message is the only copy.
+[channel.phone]
+max_lines = 14
+max_line = 100
+max_lead = 100
+
+# A fleet rundown: the answer to "where are we".
+[channel.rundown]
+prose = true
+max_item = 240
+require = [['(?im)^#*\s*done\b', 'Done section'], ['(?im)^#*\s*next\b', 'Next section'], ['(?im)^#*\s*needs you\b', 'Needs you section']]
+source = { kind = "files", glob = "~/.agent/shepherd/rundowns/*.md" }
+
+# A status update in the one shape (Done, Doing, Next, Needs you).
+[channel.status]
+prose = true
+max_item = 200
+# A section is a heading or a "Done:" label, so a one-line lab status passes in the same shape.
+require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
+source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
+
+# A pull request body.
+[channel.pr-body]
+prose = true
+lead_ids = false
+source = { kind = "gh", query = "--author=@me" }
+
+# A client end-of-day update, drafted for the human to post. A job config may override.
+[channel.client-eod]
+prose = true
+emoji = true
+max_emoji = 8
+max_item = 400
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-eod.md" }
+
+# A client weekly recap.
+[channel.client-weekly]
+prose = true
+emoji = true
+max_emoji = 5
+source = { kind = "files", glob = "~/.notes/employment/jobs/**/updates/*-weekly.md" }
+
+# Row streams: what the fleet writes into ledgers, boards and queues. group = "rows" keeps
+# them out of the messages' pass rate (rows_pass_pct instead). A `command` source runs the
+# stream's own reader, so the row format stays in the reader; see references/channels.md.
+
+# Board rows an agent wrote: every add, edit and move through the notes CLI. The chain stages
+# (queue, dispatch, land) are the same log's item and session events, not row text.
+[channel.board]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}"], text = "text", path = "id", skip = { by = "human", stage = ["queue", "dispatch", "land"] } }
+
+# The proof on a board row an agent marked done: it cites a PR, a commit or a URL.
+[channel.proof]
+group = "rows"
+lead_ids = false
+max_lead = 0
+refs = true
+source = { kind = "command", cmd = ["notes", "log", "--json", "--days", "{days}", "--action", "done"], text = "why", path = "id", skip = { by = "human" } }
+
+# An ask the fleet put to the human: its question and the context it gave.
+[channel.ask]
+group = "rows"
+max_lead = 0                    # agent-ask post caps the question itself
+option_meanings = true          # every option says what it does, as agent-ask post requires
+source = { kind = "files", glob = "~/.agent/asks/*/*.md", fields = ["question", "context"] }
+
+# A queue item the fleet filed for itself (the human's own words are left alone).
+[channel.queue]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["agent-queue", "list", "--json", "--state", "all", "--since", "{since_date}"], ts = "queued", text = "task", path = "slug", skip = { from = "human" } }
+
+# The fleet's own log rows: the shepherd's and dispatch's entries, and the lines their reader
+# (hub-core actions) could not parse. Pages and queue items have channels of their own.
+[channel.fleet-log]
+group = "rows"
+lead_ids = false
+max_lead = 0
+source = { kind = "command", cmd = ["hub", "actions", "--since", "{since}", "--records"], ts = "at", text = "text", path = "source", select = { source = ["shepherd-log", "dispatch-log"] } }

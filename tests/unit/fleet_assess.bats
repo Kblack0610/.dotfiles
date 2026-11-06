@@ -74,7 +74,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch hold does not" {
+@test "only a machine-resource hold counts as held; a dispatch or mac-desktop hold does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   HOLD_ROOT="$AGENT_HOLD_DIR"
@@ -83,15 +83,18 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   touch "$AGENT_HOLD_DIR/dispatch"
   run holds_set
   assert_failure
+  touch "$AGENT_HOLD_DIR/mac-desktop"
+  run holds_set
+  assert_failure
   touch "$AGENT_HOLD_DIR/unity"
   run holds_set
   assert_success
 }
 
-@test "--watch-probe between the marks: OK with only the dispatch hold, HOLD with a unity hold" {
+@test "--watch-probe between the marks: OK with only the dispatch and mac-desktop holds, HOLD with a unity hold" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
-  touch "$AGENT_HOLD_DIR/dispatch"
+  touch "$AGENT_HOLD_DIR/dispatch" "$AGENT_HOLD_DIR/mac-desktop"
   local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
@@ -119,6 +122,20 @@ EOF
   assert_line "$(printf '80\t/wt/c\tPlaygroundBuild.BuildWindows\t103')"
   assert_line "$(printf '90\t/wt/d\teditor\t104')"
   refute_output --partial '105'
+}
+
+@test "pane_of: a process's pane as agent-panel names it, <server>/<pane id>, from its tmux env" {
+  # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each prints its
+  # own pid ($$ survives the exec) once it runs under its env, so the read never races the exec.
+  local in out got_in got_out
+  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo $$; exec sleep 30' 3>&-)
+  read -r in <&5
+  exec 6< <(env -u TMUX -u TMUX_PANE sh -c 'echo $$; exec sleep 30' 3>&-)
+  read -r out <&6
+  got_in="$(pane_of "$in")"; got_out="$(pane_of "$out")"
+  kill "$in" "$out"; exec 5<&- 6<&-
+  [ "$got_in" = lab/%8 ]
+  [ "$got_out" = - ]
 }
 
 # --- --textfile: what node_exporter publishes for the hub board ---------------------

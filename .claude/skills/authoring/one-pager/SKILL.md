@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [docs, briefs, writing]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-06"
 ---
 
 # one-pager
@@ -67,6 +67,25 @@ Run the interview corresponding to the selected format. Reuse anything the user 
 - **Rabbit holes**: parts of the problem we're explicitly *not* solving, or known-hard areas to avoid spiraling on.
 - **No-gos**: things this proposal will *not* do (cuts scope explicitly).
 
+## Head lines
+
+Every brief for a registered project opens with the four lines in its template, under the date line. Ask for any you cannot fill from what you have; they count toward the 3-5 questions.
+
+- Goal: what done looks like. The project page reads it.
+- Target load: a number. The `stages.md` draft row greps for these words, and the alpha and beta rows test against the number.
+- Type standard: `type` from `project-map.json`, and the standard the project will meet.
+- Epic: the row id, added when the epic is filed. This line is how the project page ties a brief to its epic.
+
+A brief in `~/.notes/lab/ideas/` has no project yet, so it may omit Type standard and Epic.
+
+## From a design( row
+
+`fleet-dispatch` starts this skill for a `design(` row (`.config/fleet-dispatch/kinds.json`: rung propose, exit doc+ask), and its brief says the run ends on a doc and an ask. No one is at the window, so this replaces Format selection and Interview:
+
+- Ask nothing in the conversation. Take the format from the row (one-pager when it names none) and draft from the row, its detail lines and the `decide(` row or answered ask that let it in (`notes-system`, "Project board").
+- A head line those do not fill reads `TBD: <what is missing>`, and the ask's `--context` lists each one.
+- Save it as Output says. The one ask is its review: `--options 'a=approve: the brief stands and its epic is filed from it|b=revise: say what changes|c=drop: the idea stops here'`, with `--context` naming the brief's path.
+
 ## Output
 
 Render the chosen template with the answers, then save to:
@@ -95,6 +114,11 @@ After writing, print:
 
 > Problem brief - {{YYYY-MM-DD}}
 
+Goal: {{what done looks like, one line}}
+Target load: {{a number: CCU, users, rows}}
+Type standard: {{the project type and the standard it will meet}}
+Epic: {{the epic row id once filed; omit before}}
+
 ## Context
 
 {{context}}
@@ -122,6 +146,11 @@ After writing, print:
 # {{title}}
 
 > One-pager - {{YYYY-MM-DD}}
+
+Goal: {{what done looks like, one line}}
+Target load: {{a number: CCU, users, rows}}
+Type standard: {{the project type and the standard it will meet}}
+Epic: {{the epic row id once filed; omit before}}
 
 ## Context
 
@@ -161,6 +190,11 @@ After writing, print:
 # {{title}}
 
 > Pitch - {{YYYY-MM-DD}} - Appetite: {{appetite}}
+
+Goal: {{what done looks like, one line}}
+Target load: {{a number: CCU, users, rows}}
+Type standard: {{the project type and the standard it will meet}}
+Epic: {{the epic row id once filed; omit before}}
 
 ## Problem
 

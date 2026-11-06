@@ -116,11 +116,12 @@
         "modules": [
             "custom/timebox",
             "custom/health",
+            "custom/fleet",
+            "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/fleet",
             "custom/ci",
-            "custom/day"
+            "custom/machine-mode"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
@@ -144,6 +145,29 @@
         "hide-empty-text": true,
         "tooltip": true
     },
+    // Shown only while a gungan voice take runs (red mic: stream, mic: record). Not gated: a
+    // hot mic is a privacy indicator. No interval: gungan fires RTMIN+9 on every start and
+    // stop. A click stops a stream; a record take is stopped by whoever started it.
+    "custom/gungan": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": "once",
+        "exec": "$HOME/.local/bin/gungan status",
+        "signal": 9,
+        "hide-empty-text": true,
+        "tooltip": true,
+        "on-click": "[ \"$(~/.local/bin/gungan status | jq -r .tooltip)\" = 'Gungan: Streaming...' ] && ~/.local/bin/gungan stream"
+    },
+    // Shown only while a process holds a /dev/video* node open (CAM, the holders on hover). Not
+    // gated: a live camera is a privacy indicator. No interval: webcam.sh stays running on inotify
+    // and prints a line per change.
+    "custom/webcam": {
+        "format": "{}",
+        "return-type": "json",
+        "exec": "$HOME/.config/waybar/webcam.sh",
+        "hide-empty-text": true,
+        "tooltip": true
+    },
     // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
@@ -155,9 +179,11 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/agent-panel",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --tab fleet",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab sessions",
         "tooltip": true
     },
+    // Fleet pulse: shown beside the health heart only while a machine is not up (fleet_pulse.sh
+    // prints nothing for a healthy fleet). Click opens the gatus status page.
     "custom/fleet": {
         "format": "{}",
         "return-type": "json",
@@ -177,7 +203,7 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/load $HOME/.config/waybar/load.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab machines",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra machines'",
         "tooltip": true
     },
     // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
@@ -189,12 +215,12 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/ci $HOME/.config/waybar/ci_runners.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab ci",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra ci'",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // System health: a pulse and one dot per system, worst first; the hover says what is down
-    // and what is up (health.sh). Click opens the hub board on Overview.
+    // System health: the heart in the overall colour; the hover leads with one dot per system,
+    // worst first, then says what is down and what is up (health.sh). Click opens the hub board on Home.
     "custom/health": {
         "format": "{}",
         "return-type": "json",
@@ -202,11 +228,34 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/health $HOME/.config/waybar/health.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab overview",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
+        "tooltip": true
+    },
+    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
+    // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // board on Projects.
+    "custom/projects": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/projects $HOME/.config/waybar/projects.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab projects",
         "tooltip": true
     },
     // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
     // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
+    "custom/machine-mode": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 60,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/machine-mode $HOME/.config/waybar/machine_mode.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "$HOME/.local/bin/machine-mode next",
+        "tooltip": true
+    },
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",
@@ -214,21 +263,8 @@
         "exec": "$HOME/.config/waybar/modules.sh gate custom/dispatch $HOME/.config/waybar/dispatch.sh",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab queue",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
-        "tooltip": true
-    },
-    // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
-    // what is red now (day.sh). Click opens the hub board on Today, right-click on Overview.
-    "custom/day": {
-        "format": "{}",
-        "return-type": "json",
-        "interval": 60,
-        "exec": "$HOME/.config/waybar/modules.sh gate custom/day $HOME/.config/waybar/day.sh",
-        "signal": 10,
-        "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --tab today",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab queue",
+        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup",
         "tooltip": true
     },
     "custom/timebox": {

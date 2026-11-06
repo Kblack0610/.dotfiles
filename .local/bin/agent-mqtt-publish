@@ -210,19 +210,19 @@ snapshot() {
             emit summary pager mdi:bell-alert "$(jq -c '{state: .undelivered_24h} + .' <<< "$pstats")" '{"state_class":"measurement"}'
     fi
 
-    # Overview: the waybar chips' phone lines (`fleet-overview`) for the phone widget. The HTML rides
-    # as an attribute because an HA state over 255 chars is rejected; the state is the worst chip.
-    # A run within OVERVIEW_TTL of the last send repeats it: hooks fire many times a minute, and the
-    # chips read Prometheus, which must not cost a hooked run its budget.
-    if command -v fleet-overview >/dev/null 2>&1; then
+    # Overview: `hub phone --json`, the phone widget's rows. They ride as attributes because an HA
+    # state over 255 chars is rejected; the state is the worst row. A run within OVERVIEW_TTL of the
+    # last send repeats it: hooks fire many times a minute, and hub reads Prometheus, which must not
+    # cost a hooked run its budget (PROM_TIMEOUT keeps a dead one inside agentctl's five seconds).
+    if command -v hub >/dev/null 2>&1; then
         local overview sent
         sent="$(tfile "agents/$HOST_ID/summary/overview")"
         if [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < OVERVIEW_TTL)); then
             overview="$(cat "$sent")"
         else
-            overview="$(fleet-overview 2>/dev/null)"
+            overview="$(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)"
         fi
-        jq -e '.html | strings' <<< "$overview" >/dev/null 2>&1 &&
+        jq -e '.rows | arrays' <<< "$overview" >/dev/null 2>&1 &&
             emit summary overview mdi:view-dashboard "$overview"
     fi
 

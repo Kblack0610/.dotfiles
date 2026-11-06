@@ -4,7 +4,7 @@
 #
 #   sessions list [project] [--all] [-n N]   show registered sessions (newest first)
 #   sessions live                            only the sessions running right now
-#   sessions resume <id|prefix|--pick>       reopen a session (claude -r), cd'ing to its repo
+#   sessions resume <id|prefix|--pick>       reopen a session (claude-acct run -r), cd'ing to its repo
 #   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 #
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
@@ -109,10 +109,13 @@ load_live() {
   while IFS="$TAB" read -r id st nm cwd started pid entry; do
     [ -n "$id" ] || continue
     LIVE_STATUS["$id"]="$st"
-    LIVE_NAME["$id"]="$(_unsentinel "$nm")"
+    # _unsentinel inline: a $(...) per field is three forks per live session, on every
+    # keystroke of the search window.
+    [ "$nm" = - ] && nm=""; [ "$cwd" = - ] && cwd=""; [ "$entry" = - ] && entry=""
+    LIVE_NAME["$id"]="$nm"
     LIVE_START["$id"]="$started"
-    LIVE_CWD["$id"]="$(_unsentinel "$cwd")"
-    LIVE_ENTRY["$id"]="$(_unsentinel "$entry")"
+    LIVE_CWD["$id"]="$cwd"
+    LIVE_ENTRY["$id"]="$entry"
   done < <(live_lines)
 }
 
@@ -365,7 +368,8 @@ cmd_list() {
 # and "aerc" (its current one).
 #
 # Columns: id project updated mtime cwd branch title titles_all
-#          first_prompt last_prompt files prs
+#          first_prompt last_prompt files prs kind
+# kind is hand, runner (claude -p) or dispatched (/one-shot); search shows hand only.
 
 INDEX="$SESS_ROOT/index.tsv"
 RECALL="${CLAUDE_RECALL:-claude-recall}"
@@ -383,6 +387,8 @@ cmd_index() {
     echo "sessions: $RECALL not found (needed to build the index)" >&2; return 1; }
   mkdir -p "$SESS_ROOT" 2>/dev/null || true
 
+  # An index from before the kind column cannot be filtered: rebuild it once.
+  [ -f "$INDEX" ] && [ "$(head -1 "$INDEX" | awk -F"$TAB" '{print NF}')" -lt 13 ] && rebuild=true
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/sessions-index.XXXXXX")" || return 1
   if [ "$rebuild" = true ] || [ ! -f "$INDEX" ]; then
     "$RECALL" cards > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -405,11 +411,13 @@ cmd_index() {
 }
 
 index_rows() {
-  # Ensure an index exists, refresh it cheaply, then emit it newest-first.
+  # [--cached] Ensure an index exists, refresh it unless --cached, then emit it newest-first.
+  # The refresh is a claude-recall run, most of the time a search keystroke took, so the
+  # search window opens on the cached index and refreshes once (cmd_search).
   if [ ! -f "$INDEX" ]; then
     printf 'sessions: building the index for the first time, one moment...\n' >&2
     cmd_index >/dev/null 2>&1 || return 1
-  else
+  elif [ "${1:-}" != --cached ]; then
     cmd_index >/dev/null 2>&1 || true
   fi
   sort -t"$TAB" -k4,4nr "$INDEX" 2>/dev/null
@@ -488,18 +496,22 @@ cmd_show() {
 # ----------------------------------------------------------------- search ---
 
 cmd_filter() {
-  # $1 = query (may be empty) -> "id \t rendered row" for every matching session.
+  # [--cached] [--all] query (may be empty) -> "id \t rendered row" for every matching
+  # session a human started; --all adds the runner and dispatched ones.
   #
   # fzf runs this on every keystroke via `reload`, with its own matcher disabled,
   # so that typing searches the WHOLE card (title history, first and last prompt,
   # touched files, project, branch) while the list stays a tidy fixed-width table.
   # Terms are ANDed and case-insensitive: "voice home" narrows to both.
+  local cached="" all=0
+  [ "${1:-}" = --cached ] && { cached=--cached; shift; }
+  [ "${1:-}" = --all ] && { all=1; shift; }
   local q="${*:-}"
   load_live
   local live_ids=""
   local k; for k in "${!LIVE_STATUS[@]}"; do live_ids+="${k} "; done
 
-  index_rows | awk -F"$TAB" -v q="$q" -v now="$(date +%s)" -v live="$live_ids" '
+  index_rows $cached | awk -F"$TAB" -v q="$q" -v all="$all" -v now="$(date +%s)" -v live="$live_ids" '
     function age(t,   d) {
       d = now - t; if (d < 0) d = 0
       if (d < 60)     return "now"
@@ -514,7 +526,8 @@ cmd_filter() {
     }
     {
       # $1 id, $2 project, $4 mtime, $6 branch, $7 title, $8 titles_all,
-      # $9 first_prompt, $10 last_prompt, $11 files
+      # $9 first_prompt, $10 last_prompt, $11 files, $13 kind
+      if (!all && $13 != "" && $13 != "hand") next
       hay = tolower($1 " " $2 " " $6 " " $8 " " $9 " " $10 " " $11)
       for (i = 1; i <= nq; i++) if (terms[i] != "" && index(hay, terms[i]) == 0) next
       # A title shows whole; the fallback prompt is capped so it stays one row.
@@ -529,11 +542,13 @@ cmd_search() {
   #   sessions search            -> the live fzf window (the point of the feature)
   #   sessions search <term>     -> a plain table, scriptable and testable
   #   sessions search -i <term>  -> the window, pre-seeded with <term>
-  local interactive=false q="" window=""
+  #   -a|--all adds runner and dispatched sessions to either
+  local interactive=false q="" window="" all=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -w|--window)      window="--window" ;;
       -i|--interactive) interactive=true ;;
+      -a|--all)         all="--all" ;;
       *) q="${q:+$q }$1" ;;
     esac
     shift
@@ -544,7 +559,7 @@ cmd_search() {
   command -v fzf >/dev/null 2>&1 || interactive=false
 
   if [ "$interactive" != true ]; then
-    local out; out="$(cmd_filter "$q" | cut -f2-)"
+    local out; out="$(cmd_filter $all "$q" | cut -f2-)"
     if [ -z "$out" ]; then
       printf 'No sessions matched %s.\n\nFor a full-text sweep of every message:\n  %s search %s\n' \
         "'${q}'" "$RECALL" "'${q}'" >&2
@@ -555,11 +570,16 @@ cmd_search() {
     return 0
   fi
 
+  # It opens on the cached index, so the list is there at once, and refreshes the index in
+  # the background, detached so closing the popup does not kill it. A keystroke filters the
+  # index as it stands by then. Not a start:reload: rows reordering under the cursor while
+  # you arrow down to the session two back would resume the wrong one.
   local id
-  id=$(cmd_filter "$q" | fzf \
+  [ -f "$INDEX" ] && setsid -f "$SELF" index >/dev/null 2>&1 </dev/null
+  id=$(cmd_filter --cached $all "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
         --disabled --query="$q" --wrap \
-        --bind="change:reload('$SELF' _filter {q})" \
+        --bind="change:reload('$SELF' _filter --cached ${all:+$all }{q})" \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
         --prompt="session> " --header='enter resume | ctrl-g full-text' \
       | cut -f1)
@@ -613,10 +633,10 @@ session_window() {
   done
 }
 
-# open_window <id> <dir> -- a window running claude -r, in the world and session that directory
+# open_window <id> <dir> -- a window running claude-acct run -r, in the world and session that directory
 # belongs to, then go there. A directory no manifest claims opens in the current session.
 open_window() {
-  local id="$1" dir="$2" cmd="claude -r '$1'" world='' name='' here
+  local id="$1" dir="$2" cmd="claude-acct run -r '$1'" world='' name='' here
   [ -z "$dir" ] || read -r world name <<< "$(tmux-world route "$dir")"
   here="$(basename "${TMUX%%,*}")"
   if [ "${world:-here}" = here ]; then
@@ -655,7 +675,7 @@ cmd_resume() {
       return 0
     fi
     echo "sessions: $id is already open (${LIVE_STATUS[$id]}) but I can't find its pane." >&2
-    echo "          'claude -r $id --fork-session' branches a new session from it." >&2
+    echo "          'cl -r $id --fork-session' branches a new session from it." >&2
     return 1
   fi
 
@@ -671,7 +691,7 @@ cmd_resume() {
   if [ -n "$dir" ]; then
     cd "$dir" || echo "sessions: could not cd to $dir, resuming from $PWD" >&2
   fi
-  exec claude -r "$id"
+  exec claude-acct run -r "$id"
 }
 
 # ---------------------------------------------------------------- compact ---
@@ -700,7 +720,7 @@ cmd_compact() {
 Write a concise digest to $out with these markdown sections: \
 '# Session digest ${id}', '## What happened', '## Files touched', '## Key decisions', '## Next step'. \
 Plain ASCII only, no em dashes, no emoji. Keep it under ~40 lines. Overwrite the file if it exists."
-  agentctl-run --role curate -p "$prompt" >/dev/null 2>&1 \
+  agentctl-run --agent session-compact -p "$prompt" >/dev/null 2>&1 \
     && echo "Digest written: $out" >&2 \
     || echo "sessions: compact run failed (see claude output)" >&2
 }
@@ -711,7 +731,7 @@ usage() {
   cat >&2 <<'EOF'
 sessions - list / resume / compact important Claude sessions
 
-  sessions search [-i] [-w] [term]         live fzf window over every session
+  sessions search [-i] [-w] [-a] [term]    live fzf window over sessions you started (-a: all)
   sessions list [project] [--all] [-n N]   registered sessions, newest first
   sessions live                            only what is running right now
   sessions show <id|prefix>                where that session got to

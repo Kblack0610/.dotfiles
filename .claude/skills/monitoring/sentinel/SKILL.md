@@ -24,7 +24,7 @@ Sentinel - the always-on, observe-only monitoring companion. Talk to it to keep 
 - **Autonomy rung:** observe / diagnose (never executes, mutates, or touches release gates)
 - **Carrying primitive:** agentctl service (`sentinel`)
 - **Notify channel:** `agent-notify` (state-change only; ntfy / desktop)
-- **Registry:** `~/.dotfiles/.claude/PERSONAS.md`
+- **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
 
 The standing watch companion. A persistent `agentctl` service
 (`~/.config/agentctl/agents/sentinel.conf`) runs `watch-companion-loop daemon`, which
@@ -34,7 +34,7 @@ manifest CRUD; the running service does the watching.
 
 | Concern | Owned by |
 |---|---|
-| Run probes, dedupe, notify, expire | the **service** (`watch-companion-loop`, `claude -p` only when needed) |
+| Run probes, dedupe, notify, expire | the **service** (`watch-companion-loop`, the `sentinel-diagnose` runner only when needed) |
 | Add / list / stop / pause watches | **this skill** (manifest CRUD) |
 | Diagnose a trip / judge a fuzzy watch | the service's bounded agent tier (observe-only) |
 | Act on a notification (fix, roll back, restart) | the **human** - Sentinel only recommends |
@@ -172,7 +172,7 @@ registered it. Sentinel remains the single notification voice for whatever it's 
 - The service is `agentctl@sentinel.service` (systemd `--user`, `AUTOSTART=yes`, survives logout
   via `loginctl enable-linger`). `agentctl logs sentinel -f` tails it; `agentctl restart sentinel`
   after editing the loop.
-- Cost: deterministic probes are free every pass. The model (`claude -p`, cheap model, bounded
+- Cost: deterministic probes are free every pass. The model (`agentctl-run --agent sentinel-diagnose`, bounded
   `--max-turns`) is invoked only on (1) a deterministic TRIP for an `agent_evaluate: true` watch, or
   (2) a `probe: agent` watch on its slow interval. `SENTINEL_AGENT_BUDGET` (default 20/hour) hard-
   stops any storm; over budget, the watch reports "budget exhausted" instead of spending.

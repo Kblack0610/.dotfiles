@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-05"
 ---
 
 # one-shot
@@ -25,7 +25,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 ## Steps
 
-1. **Posture.** Follow `~/.claude/commands/my/autopilot.md` for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads UNCLEAR, `finished` stays false, and the session can never close itself.
+1. **Posture.** Follow `~/.claude/commands/my/autopilot.md` for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads CHAT, `finished` stays false, and the session can never close itself.
 
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
@@ -38,7 +38,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 4. **Validate.** A project with a gate script (its CLAUDE.md names it; unity-core-playground: `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`) runs it in step 6, once the PR is open. A repo with no gate script runs its lint, typecheck and tests now, before the PR. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 7 in blocked mode.
 
-5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, the classes/checks run with their counts, and for an item promoted from a board row the `Task: <id>` line its brief names. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
+5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, the classes/checks run with their counts, the line `Item: <slug>` naming its queue item (`agent-land` adds it when missing), and for an item promoted from a board row the `Task: <id>` line its brief names. A tier-3 item (`fleet-dispatch item-tier <slug>` prints 3: harness projects and `tier3` items) also needs the `Review:` line of fix-red step 5, after `/code-review high`; `agent-land` refuses it without one. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
 
 6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Start ONE background command and act only on its result:
    ```bash
@@ -48,10 +48,11 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`, and tick the plan phase by hand.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
-   - Exit 3: the branch is behind. Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), push, and start the same command.
+   - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
+   - Work left that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.
    - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`. A board row stays started; the human's merge closes it.
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.

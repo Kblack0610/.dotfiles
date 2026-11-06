@@ -101,7 +101,7 @@ pub(crate) struct InboxLine {
 }
 
 /// The words of an inbox line: `- [ ] x`, `- x` and `x` all read as `x`.
-fn inbox_text(line: &str) -> String {
+pub(crate) fn inbox_text(line: &str) -> String {
     let t = line.trim();
     let t = ["- [ ]", "- [/]", "- [x]", "- [X]", "-", "*"]
         .iter()
@@ -114,8 +114,14 @@ fn inbox_text(line: &str) -> String {
 /// human typed: a checkbox row, a bare bullet or a sentence. A line indented under one is its
 /// detail; a comment line is neither.
 pub(crate) fn inbox_lines(content: &str) -> Vec<InboxLine> {
+    lines_in(content, INBOX)
+}
+
+/// The lines waiting under `## <heading>`, read the way [`inbox_lines`] reads `## Inbox`. The
+/// outbox (`outbox.rs`) is the other section with this grammar.
+pub(crate) fn lines_in(content: &str, heading: &str) -> Vec<InboxLine> {
     let lines: Vec<&str> = content.lines().collect();
-    let Some(span) = md::section_span(&lines, INBOX) else {
+    let Some(span) = md::section_span(&lines, heading) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -140,10 +146,7 @@ pub(crate) fn inbox_lines(content: &str) -> Vec<InboxLine> {
             line: i + 1,
             raw: l.trim_end().to_string(),
             text,
-            details: lines[i + 1..end]
-                .iter()
-                .map(|d| d.trim().to_string())
-                .collect(),
+            details: md::row_details(&lines[..end], i),
         });
         i = end;
     }
@@ -154,9 +157,14 @@ pub(crate) fn inbox_lines(content: &str) -> Vec<InboxLine> {
 /// the foot of a sheet with neither) when the sheet has none. Oldest first, so the triager
 /// files in the order the human wrote.
 pub(crate) fn put_in_inbox(content: &str, block: &[String]) -> String {
+    put_in(content, INBOX, block)
+}
+
+/// `content` with `block` at the end of `## <heading>`, placed as [`put_in_inbox`] places it.
+pub(crate) fn put_in(content: &str, heading: &str, block: &[String]) -> String {
     let refs: Vec<&str> = content.lines().collect();
     let (inbox, tasks) = (
-        md::section_span(&refs, INBOX),
+        md::section_span(&refs, heading),
         md::section_span(&refs, TASKS),
     );
     let mut lines: Vec<String> = refs.iter().map(|l| (*l).to_string()).collect();
@@ -169,7 +177,7 @@ pub(crate) fn put_in_inbox(content: &str, block: &[String]) -> String {
             at
         }
         None => {
-            let heading = format!("## {INBOX}");
+            let heading = format!("## {heading}");
             match tasks {
                 Some(span) => {
                     let at = span.start - 1;
@@ -198,7 +206,15 @@ pub(crate) fn take_inbox<P>(content: &str, hits: P) -> Option<(String, InboxLine
 where
     P: Fn(&InboxLine) -> bool,
 {
-    let found = inbox_lines(content).into_iter().find(|l| hits(l))?;
+    take_in(content, INBOX, hits)
+}
+
+/// [`take_inbox`] for any section with the inbox grammar.
+pub(crate) fn take_in<P>(content: &str, heading: &str, hits: P) -> Option<(String, InboxLine)>
+where
+    P: Fn(&InboxLine) -> bool,
+{
+    let found = lines_in(content, heading).into_iter().find(|l| hits(l))?;
     let lines: Vec<&str> = content.lines().collect();
     let start = found.line - 1;
     let end = start + 1 + found.details.len();

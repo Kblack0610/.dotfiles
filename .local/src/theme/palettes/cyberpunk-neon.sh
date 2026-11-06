@@ -2,7 +2,8 @@
 # Cyberpunk Neon Theme Palette (upstream: kitty-themes/Cyberpunk-Neon.conf)
 # Sourced by theme-switch to apply colors across all tools.
 #
-# ANSI values are upstream Cyberpunk Neon verbatim - including its
+# ANSI values are upstream Cyberpunk Neon, lifted to 4.5:1 on BG by
+# lightness only (tests/unit/theme_contrast.bats) - including its
 # deliberately scrambled ramp, where color2 (green) is magenta and
 # color12 (bright blue) is green. Deviations, all UI-role only:
 #   - selection: upstream sets it to `none`. Picked #133e7c / #0abdc6.
@@ -29,20 +30,20 @@ THEME_SELECTION_FG="#0abdc6"
 # -- ANSI 0-7 (normal) -------------------------------------------------
 THEME_BLACK="#000b1e"
 THEME_RED="#ff0000"
-THEME_GREEN="#d300c4"
+THEME_GREEN="#db00cb"
 THEME_YELLOW="#f57800"
-THEME_BLUE="#133e7c"
-THEME_MAGENTA="#711c91"
+THEME_BLUE="#2f77df"
+THEME_MAGENTA="#b347db"
 THEME_CYAN="#0abdc6"
 THEME_WHITE="#0abdc6"
 
 # -- ANSI 8-15 (bright) ------------------------------------------------
-THEME_BRIGHT_BLACK="#1c61c2"
+THEME_BRIGHT_BLACK="#2e78e1"
 THEME_BRIGHT_RED="#ff0000"
-THEME_BRIGHT_GREEN="#d300c4"
+THEME_BRIGHT_GREEN="#db00cb"
 THEME_BRIGHT_YELLOW="#ff5780"
 THEME_BRIGHT_BLUE="#00ff00"
-THEME_BRIGHT_MAGENTA="#711c91"
+THEME_BRIGHT_MAGENTA="#b347db"
 THEME_BRIGHT_CYAN="#0abdc6"
 THEME_BRIGHT_WHITE="#0abdc6"
 

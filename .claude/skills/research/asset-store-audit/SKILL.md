@@ -2,6 +2,9 @@
 name: asset-store-audit
 description: >-
   Audit downloaded Unity Asset Store packs from their files and decide per pack if it fits the BNB URP stack. Use for "analyze my downloaded assets", "is this pack worth bringing in". Read-only; ingest: playground-ingest.
+paths:
+  - "Assets/**"
+  - "Packages/**"
 metadata:
   category: research
   tags: [unity, asset-store, audit, assets, catalog]
@@ -36,7 +39,7 @@ Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.ca
 4. **Judge in parallel.** Up to 3 general-purpose agents, grouped: environments / characters + animation / props + VFX + audio + tools. Each reads `$OUT/RUBRIC.md` and its packs' fact sheets, samples real files, writes `$OUT/verdicts/<Pack>.json` in the rubric's exact schema. Environment and prop packs get the most scrutiny (the user's priority).
 5. **Spot check two claims by hand** (one material's `m_Shader` GUID, one prefab's structure) and fold them into the synthesis.
 6. **Synthesis.** Write `$OUT/synth.html` (fragment, plain ASCII): the short answer with verdict counts, what unlocks what (pipeline gap -> packs it unblocks), suggested order, style families, gaps no pack fills, cache space reclaimable from skipped packs. Take the counts from step 7's output, never from memory.
-7. **Build and publish.** `python3 scripts/build_report.py "$OUT" "$OUT/synth.html" "$OUT/report.html"` (fails if a pack lacks a verdict or a verdict has non-ASCII). Load `artifact-design`, then publish `report.html` with the Artifact tool. If the printed counts disagree with the synthesis, fix the synthesis and republish.
+7. **Build and publish.** `python3 scripts/build_report.py "$OUT" "$OUT/synth.html" "$OUT/report.html"` (fails if a pack lacks a verdict or a verdict has non-ASCII). Load `artifact-design`, then publish `report.html` with the Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it). If the printed counts disagree with the synthesis, fix the synthesis and republish.
 8. **Save.** Copy `report.html`, `verdicts/`, `facts/`, `RUBRIC.md` and a short `README.md` (link, counts, pipeline gaps) to the lab project the user names (default: unity-core-playground, `~/.notes/lab/bnb/projects/current/unity-core-playground/docs/research/asset-store-audit-<date>/`), and log it on that project's agent board with `notes ptask <project> --agent add` / `done --proof <artifact url>`.
 
 ## Do NOT

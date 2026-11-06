@@ -87,6 +87,28 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   assert_output --partial 'no telemetry'
 }
 
+@test "with telemetry, cost is split by model, rounded to 1/100 cent" {
+  # A curl stub stands in for Prometheus: it answers by which sum the query asks for.
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+q="$*"
+case "$q" in
+  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"data":{"result":[]}}' ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+  assert_equal "$(usage_field .usage_source)" 'otel'
+  assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
+  assert_equal "$(usage_field .cost_usd)" '1.73456'
+}
+
+@test "without telemetry there is no per-model cost" {
+  assert_equal "$(usage_field .cost_by_model)" 'null'
+}
+
 # ── rows: the TSV the cockpit consumes ───────────────────────────────────────
 
 @test "every row carries 9 fields" {
@@ -223,8 +245,9 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 #
 # The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
 # two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
-# m4 follows a compaction), one subagent call, one headless call, a registry with a superseded
-# row, outcomes naming PR o/r#1 twice, and a dream log with one real and one dry run.
+# m4 follows a compaction; m1's request is recorded as an api-request-shape and two blobs), one subagent call, one headless call, a registry with a superseded
+# row, outcomes naming PR o/r#1 twice, a dream log with one real and one dry run, and two queue
+# items that used s1's worktree (demo-task while s1 ran, old-task a day before).
 
 burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
 
@@ -258,7 +281,7 @@ burn() {
 }
 
 @test "burn: the registry keeps a session's last row and splits by account" {
-  assert_equal "$(burn '[.registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [5, 4, 1]')" 'true'
+  assert_equal "$(burn '[.registry.sessions, .registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [2, 5, 4, 1]')" 'true'
 }
 
 @test "burn: a PR merged in the window counts once however many sessions name it" {
@@ -291,4 +314,74 @@ burn() {
   assert_output '[1,4000]'
   # Negative control: the whole day sees the session start, so it counts.
   assert_equal "$(burn '.first_turn_context.sessions')" '2'
+}
+
+@test "burn: turn mix classes each response once: write over wait over investigate, no tool is a reply" {
+  # m1 sleeps (wait), m2 commits (write), m3 edits (write), m4 runs git status (investigate),
+  # sa1 and h1 call no tool (reply).
+  assert_equal "$(burn '.turn_mix | map_values(.turns)')" '{"investigate":1,"wait":1,"write":2,"reply":2}'
+  # Negative control: a read-only git command is not a write.
+  refute [ "$(burn '.turn_mix.write.turns')" = '3' ]
+}
+
+@test "burn: by session joins subagent turns, registry cost and merged PRs to their session" {
+  assert_equal "$(burn '.by_session.s1 | [.turns, .mix, .compactions, .first_turn_context, .cost_usd, .merged_prs, .cost_per_merged_pr]
+    == [5, {"investigate":1,"wait":1,"write":2,"reply":1}, 1, 50010, 4, ["o/r#1","o/r#2"], 2]')" 'true'
+  assert_equal "$(burn '.by_session.s1.wait_share')" '0.286'
+  assert_equal "$(burn '.by_session | keys')" '["h1","s1"]'
+  # Ranked by cost: the $4 session comes first.
+  assert_equal "$(burn '.by_session | keys_unsorted[0]')" '"s1"'
+}
+
+@test "burn: origin joins a session to the queue item that ran in its worktree, with model and size" {
+  # s1 ran in demo-agent-1 while demo-task (origin run, #size/s) did; old-task used the same
+  # tmux name a day earlier and does not claim it. h1 is headless and no item names it.
+  assert_equal "$(burn '.by_session.s1 | [.origin, .item, .size, .models, .subagent_turns]')" \
+    '["run","demo-task","s",{"claude-opus-5-5":4,"claude-sonnet-5-5":1},1]'
+  assert_equal "$(burn '.by_session.h1 | [.origin, .item, .kind]')" '["runner",null,"headless"]'
+  # The subagent row is the subagent thread's turns only; its parent's row keeps the cost.
+  assert_equal "$(burn '.by_origin | map_values([.sessions, .cost_usd, .turns, .opus_turns])
+    == {"run":[1,4,4,4],"runner":[1,1,1,1],"subagent":[1,null,1,0]}')" 'true'
+}
+
+@test "burn: a session id an item lists wins, mode plan is plan; no item is interactive" {
+  burn_home
+  printf 'slug: p\nmode: plan\norigin: hand\nsessions: h1\n---\nplan it\n' > "$HOME/.agent/queue/done/p.md"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.h1.origin, .by_session.h1.item]'"
+  assert_output '["plan","p"]'
+  # Negative control: with no queue, the worktree session is the human's, not a run.
+  rm -rf "$HOME/.agent/queue"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.s1.origin, .by_session.s1.item]'"
+  assert_output '["interactive",null]'
+}
+
+@test "burn: --since sets the window start and wins over --days" {
+  burn_home
+  run bash -c "TZ=UTC '$AU' burn --days 30 --since 2026-01-01T02:00:00+00:00 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.window.start, .by_session.s1.turns, .by_session.s1.first_turn_context]'"
+  assert_output '["2026-01-01T02:00",2,null]'
+}
+
+@test "burn: a bad or inverted --since is refused" {
+  run "$AU" burn --since soon
+  assert_failure 2
+  run "$AU" burn --since 2026-01-03 --before 2026-01-02
+  assert_failure 2
+}
+
+@test "burn: the table form prints the turn mix and the by-session table" {
+  burn_home
+  run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --top 1
+  assert_success
+  assert_output --partial 'turn mix: investigate 1'
+  assert_output --partial 'by session (top 1 of 2'
+  refute_output --partial $'\n  h1\t'
+}
+
+@test "burn: the first request splits into its parts, in chars, from the recorded request" {
+  assert_equal "$(burn '.first_request_parts.parts | map_values(.median_chars)')" \
+    '{"skill_listing":200,"preflight":100,"system_prompt":100,"memory_md":90,"global_claude_md":80,"repo_claude_md":60,"tools_builtin":38,"tools_mcp":21,"instructions_other":18,"prompt":14,"system_other":0}'
+  assert_equal "$(burn '.first_request_parts.tools_mean_chars')" '{"Bash":38,"mcp__x__y":21}'
+  # Negative control: only the worktree session recorded its request, so the headless one,
+  # which still counts toward first_turn_context, adds no parts.
+  assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
 }

@@ -38,18 +38,6 @@ setup() {
   assert_not_called 'tmux -L hub new-session'
 }
 
-@test "pick-session offers exactly what the world's manifest declares, built at pick time" {
-  printf '#!/bin/sh\nprintf "sesh %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\ncat "$2" > "$NOTES_FIXTURE/sesh.toml"\n' > "$SANDBOX/bin/sesh"
-  chmod +x "$SANDBOX/bin/sesh"
-  export TMUX=/tmp/tmux-stub/lab,1,0 STUB_SOCKET=/tmp/tmux-stub/lab
-  run "$TMX" pick-session
-  assert_success
-  assert_called 'picker -i -d -c -t'
-  grep -qF 'name = "game"' "$NOTES_FIXTURE/sesh.toml" || fail "lab's own repo is not offered"
-  ! grep -qF 'name = "dotfiles"' "$NOTES_FIXTURE/sesh.toml" || fail "offered a session of another world"
-  ! grep -qF 'name = "gone"' "$NOTES_FIXTURE/sesh.toml" || fail "offered a directory this machine does not have"
-}
-
 # resumable <id> <cwd> -- a stopped session whose transcript says where it ran.
 resumable() {
   local d="$HOME/.claude/projects/p"

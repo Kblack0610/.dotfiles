@@ -12,11 +12,9 @@
 //! AUTHORED region is reorganized: a rollup mirror (everything from md::ROLLUP_START on)
 //! is left untouched at the end of the section.
 //!
-//! Before the lanes are rebuilt, an open row tagged `#idea` leaves Focus for the ideas file it
-//! names: `#idea:<project>` goes to that project's `ideas.md`, a bare `#idea` to the
-//! cross-project file (`ideas` in the config, default `lab/ideas/_IDEAS.md`). An idea is not
-//! today's work, so it does not belong on today's list. The nvim buffer sweep does not do
-//! this move; the next `notes focus sweep` does.
+//! The sweep never moves a row out of Focus, so the note is written only to regroup it. A row
+//! is ingested only when asked, by `notes focus ingest` (focus.rs), which hands it to the
+//! outbox and its sweep.
 //!
 //! Lives in its own module to stay clear of a concurrent focus.rs refactor.
 
@@ -26,9 +24,7 @@ use crate::logging::Logger;
 use crate::md;
 use crate::sweep;
 use anyhow::{bail, Result};
-use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
 
 // The priority lanes are md::PRIORITIES (the single source of truth, most-urgent first),
 // shared with tag detection. Untagged open tasks (rank == PRIORITIES.len()) stay unheaded on
@@ -94,199 +90,21 @@ pub fn start(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     }
     fs::write(&note, joined)?;
     log.info("focus", "toggled in-progress");
+    crate::ingest::record(p, &crate::ingest::Event::new("toggled", "focus", "", query));
     Ok(0)
 }
 
-/// Pull every open `#idea` row out of the authored `## Focus` region, with the indented
-/// lines under it. `route` names each row's ideas file from its tag (`None` = no project,
-/// `Some(name)` = `#idea:<name>`); a row it returns `None` for stays where it is.
-///
-/// Returns the note without the moved rows and each file's rows in note order, or `None`
-/// when nothing moves.
-fn take_ideas(
-    content: &str,
-    route: impl FnMut(Option<&str>) -> Option<PathBuf>,
-) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
-    take_tagged(content, md::idea_tag, route)
-}
-
-/// [`take_ideas`] for any routing tag: `tag_of` reads a row's tag (`None` = not tagged).
-fn take_tagged(
-    content: &str,
-    tag_of: impl Fn(&str) -> Option<Option<String>>,
-    mut route: impl FnMut(Option<&str>) -> Option<PathBuf>,
-) -> Option<(String, BTreeMap<PathBuf, Vec<String>>)> {
-    let lines: Vec<&str> = content.lines().collect();
-    let span = md::section_span(&lines, "Focus")?;
-    let mut moved: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
-    let mut keep: Vec<&str> = Vec::with_capacity(lines.len());
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let tag = (span.contains(&i) && md::is_open_task(line))
-            .then(|| tag_of(line))
-            .flatten();
-        let Some(target) = tag.and_then(|t| route(t.as_deref())) else {
-            keep.push(line);
-            i += 1;
-            continue;
-        };
-        let indent = line.len() - line.trim_start().len();
-        let mut end = i + 1;
-        while end < span.end
-            && !lines[end].trim().is_empty()
-            && lines[end].len() - lines[end].trim_start().len() > indent
-        {
-            end += 1;
-        }
-        let rows = moved.entry(target).or_default();
-        rows.extend(lines[i..end].iter().map(|l| l.to_string()));
-        i = end;
-    }
-    if moved.is_empty() {
-        return None;
-    }
-    let mut out = keep.join("\n");
-    if content.ends_with('\n') {
-        out.push('\n');
-    }
-    Some((out, moved))
-}
-
-/// Append `rows` to the ideas file at `path`, creating it with `header` when absent. A row
-/// already in the file is not written twice, so a sweep that stopped between this write and
-/// the note's can run again.
-fn append_ideas(path: &Path, header: &str, rows: &[String]) -> Result<()> {
-    let existing = fs::read_to_string(path).unwrap_or_else(|_| header.to_string());
-    let have: Vec<&str> = existing.lines().collect();
-    let new: Vec<&String> = rows
-        .iter()
-        .filter(|r| !have.contains(&r.as_str()))
-        .collect();
-    if new.is_empty() {
-        return Ok(());
-    }
-    let mut out = existing.trim_end().to_string();
-    out.push('\n');
-    for r in new {
-        out.push('\n');
-        out.push_str(r);
-    }
-    out.push('\n');
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    md::write_atomic(path, &out)
-}
-
-/// Move today's `#idea` rows to their ideas files ([`take_ideas`]), resolving a project by
-/// `project_dir`. The files are written before the note, so a failure part way leaves a row
-/// in both places, never in neither.
-fn move_ideas(
-    p: &Profile,
-    log: &Logger,
-    content: &str,
-    project_dir: impl Fn(&str) -> Option<PathBuf>,
-) -> Result<Option<String>> {
-    let mut headers: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let taken = take_ideas(content, |proj| {
-        let (path, header) = match proj {
-            None => (p.ideas.clone(), "# Ideas\n".to_string()),
-            Some(name) => match project_dir(name) {
-                Some(dir) => (dir.join("ideas.md"), crate::projects::ideas_template(name)),
-                None => {
-                    eprintln!("focus sweep: #idea:{name} names no project; the row stays in Focus");
-                    return None;
-                }
-            },
-        };
-        headers.insert(path.clone(), header);
-        Some(path)
-    });
-    let Some((rest, moved)) = taken else {
-        return Ok(None);
-    };
-    for (path, rows) in &moved {
-        append_ideas(path, &headers[path], rows)?;
-        let n = rows.iter().filter(|r| md::is_task(r)).count();
-        log.info(
-            "focus",
-            &format!("moved {n} #idea row(s) to {}", path.display()),
-        );
-        println!("moved {n} idea(s) -> {}", path.display());
-    }
-    Ok(Some(rest))
-}
-
-/// Move today's `#p:<project>` rows, with their indented lines, to the `## Inbox` of that
-/// project's sheet, the tag taken off and the rest as typed, for the triager to file. Like
-/// [`move_ideas`] the sheets are written before the note, and a row already in an inbox is
-/// not written twice. A name that is no project leaves the row in Focus.
-fn move_to_inboxes(
-    p: &Profile,
-    log: &Logger,
-    content: &str,
-    project_dir: impl Fn(&str) -> Option<PathBuf>,
-) -> Result<Option<String>> {
-    let taken = take_tagged(
-        content,
-        |l| md::project_tag(l).map(Some),
-        |proj| {
-            let name = proj?;
-            let dir = project_dir(name);
-            if dir.is_none() {
-                eprintln!("focus sweep: #p:{name} names no project; the row stays in Focus");
-            }
-            dir
-        },
-    );
-    let Some((rest, moved)) = taken else {
-        return Ok(None);
-    };
-    for (dir, rows) in &moved {
-        // The group's first line is the tagged row itself.
-        let name = rows
-            .first()
-            .and_then(|r| md::project_tag(r))
-            .unwrap_or_default();
-        let lines: Vec<String> = rows.iter().map(|r| md::without_project_tag(r)).collect();
-        let path = crate::project_tasks::inbox_put(p, dir, &name, &lines)?;
-        log.info(
-            "focus",
-            &format!(
-                "moved {} #p row(s) to {}'s inbox",
-                lines.len(),
-                path.display()
-            ),
-        );
-        println!(
-            "moved {} row(s) -> {name} inbox",
-            lines.iter().filter(|r| md::is_task(r)).count()
-        );
-    }
-    Ok(Some(rest))
-}
-
-/// notes focus sweep: move `#idea` rows to their ideas files and `#p:<project>` rows to
-/// their project's inbox, then organize today's
-/// `## Focus` by status in place.
+/// notes focus sweep: organize today's `## Focus` by status in place. It moves nothing out
+/// of Focus: a row leaves only when someone runs `notes focus ingest` on it.
 pub fn sweep(p: &Profile, log: &Logger) -> Result<i32> {
     let note = daily::today_path(p);
     if !note.exists() {
         return Ok(0);
     }
     let content = fs::read_to_string(&note)?;
-    let dir_of = |name: &str| crate::projects::project_dir(p, name).ok();
-    let moved = move_ideas(p, log, &content, dir_of)?;
-    let moved = move_to_inboxes(p, log, moved.as_deref().unwrap_or(&content), dir_of)?.or(moved);
-    let base = moved.as_deref().unwrap_or(&content);
-    match sweep_content(base) {
-        Some(new) => {
-            fs::write(&note, new)?;
-            log.info("focus", "swept ## Focus by status");
-        }
-        None if moved.is_some() => fs::write(&note, base)?,
-        None => {}
+    if let Some(new) = sweep_content(&content) {
+        fs::write(&note, new)?;
+        log.info("focus", "swept ## Focus by status");
     }
     Ok(0)
 }
@@ -455,112 +273,5 @@ after
         assert!(task > urgent && task < high, "stays in the Urgent lane");
         // and the inherited tag is stable on a re-sweep (tag now wins, no double-tagging)
         assert!(sweep_content(&out).is_none(), "drop-to-tag is idempotent");
-    }
-
-    // -- #idea rows ---------------------------------------------------------------------
-
-    fn idea_note() -> &'static str {
-        "\
-## Focus
-- [ ] ship the build #high
-- [ ] a can-kicking level #idea:apociseum
-  - drugs make you dizzy
-- [ ] a pinball roguelike #idea
-- [x] an old idea already done #idea
-- [ ] typo project #idea:nosuch
-<!-- rollup:start -->
-- [ ] mirrored #idea
-"
-    }
-
-    fn sandbox(tag: &str) -> (PathBuf, Profile) {
-        let root = std::env::temp_dir().join(format!("focus-ideas-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("apociseum")).unwrap();
-        let p = crate::config::test_profile(root.to_str().unwrap());
-        (root, p)
-    }
-
-    #[test]
-    fn idea_rows_leave_focus_for_their_files() {
-        let (root, p) = sandbox("move");
-        let log = Logger::new(p.log_file.clone(), false);
-        let dir = root.join("apociseum");
-        let rest = move_ideas(&p, &log, idea_note(), |n| {
-            (n == "apociseum").then(|| dir.clone())
-        })
-        .unwrap()
-        .unwrap();
-
-        // the open idea rows left, with the indented line under the project one
-        assert!(!rest.contains("can-kicking"));
-        assert!(!rest.contains("drugs make you dizzy"));
-        assert!(!rest.contains("pinball"));
-        // a done row, an unknown project and the rollup mirror stay put
-        assert!(rest.contains("an old idea already done"));
-        assert!(rest.contains("typo project #idea:nosuch"));
-        assert!(rest.contains("- [ ] mirrored #idea"));
-        assert!(rest.contains("ship the build"));
-
-        let proj = fs::read_to_string(dir.join("ideas.md")).unwrap();
-        assert!(proj.starts_with("# apociseum - ideas"));
-        assert!(
-            proj.contains("- [ ] a can-kicking level #idea:apociseum\n  - drugs make you dizzy\n")
-        );
-        let cross = fs::read_to_string(&p.ideas).unwrap();
-        assert!(cross.contains("- [ ] a pinball roguelike #idea\n"));
-        assert!(!cross.contains("mirrored"));
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_rerun_does_not_write_an_idea_twice() {
-        let (root, p) = sandbox("rerun");
-        let log = Logger::new(p.log_file.clone(), false);
-        let none = |_: &str| None;
-        move_ideas(&p, &log, idea_note(), none).unwrap();
-        // the note write never happened: the same rows are swept again
-        move_ideas(&p, &log, idea_note(), none).unwrap();
-        let cross = fs::read_to_string(&p.ideas).unwrap();
-        assert_eq!(cross.matches("pinball roguelike").count(), 1);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_project_tagged_row_moves_to_that_projects_inbox() {
-        let (root, p) = sandbox("inbox");
-        let log = Logger::new(p.log_file.clone(), false);
-        let dir = root.join("apociseum");
-        let note = "## Focus\n- [ ] gun sound is off #p:apociseum\n  since the patch\n\
-                    - [ ] typo #p:nosuch\n- [ ] just work\n";
-        let at = |n: &str| (n == "apociseum").then(|| dir.clone());
-        let rest = move_to_inboxes(&p, &log, note, at).unwrap().unwrap();
-        assert!(!rest.contains("gun sound"), "{rest}");
-        assert!(
-            rest.contains("- [ ] typo #p:nosuch"),
-            "an unknown project stays"
-        );
-        assert!(rest.contains("- [ ] just work"));
-        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
-        let inbox = sheet.split("## Tasks").next().unwrap();
-        assert!(
-            inbox.contains("- [ ] gun sound is off\n  since the patch\n"),
-            "{sheet}"
-        );
-        // a rerun over the same note does not write the line twice
-        move_to_inboxes(&p, &log, note, at).unwrap();
-        let again = fs::read_to_string(dir.join("README.md")).unwrap();
-        assert_eq!(again.matches("gun sound").count(), 1, "{again}");
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_note_with_no_ideas_is_untouched() {
-        let (root, p) = sandbox("none");
-        let log = Logger::new(p.log_file.clone(), false);
-        let note = "## Focus\n- [ ] just work #high\n";
-        assert!(move_ideas(&p, &log, note, |_| None).unwrap().is_none());
-        assert!(!p.ideas.exists());
-        let _ = fs::remove_dir_all(&root);
     }
 }

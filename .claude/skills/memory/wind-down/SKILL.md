@@ -1,11 +1,11 @@
 ---
 name: wind-down
 description: >-
-  Wrap up: write a "what happened" note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
+  Wrap up: write a status note to ~/.agent/sessions/{project}/ and close Claude's tmux window. Use for "wind down", "close this out", "shut it down", "/wind-down". "session" closes the whole tmux session, unless it is a world session.
 metadata:
   category: memory
   tags: [session, teardown, tmux]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-05"
 ---
 
 # wind-down
@@ -17,7 +17,7 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short "what happened" report to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 
@@ -39,7 +39,7 @@ re-run `/wind-down` when that work is finished.
 
 ### 0. Who asked decides the mode
 
-**The human asked** (they typed `/wind-down`, or said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
+**The human asked** (they typed `/wind-down`, the shepherd's CHAT message passed on their standing order to close a chat quiet 24 hours, or they said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
 
 **You are winding yourself down** (`/wind-down auto`: the shepherd's DONE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
 
@@ -64,32 +64,38 @@ resolution matches the hook:
 # -> /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
 ```
 
-Write that file with this shape (no frontmatter - plain markdown, like the lessons/eval files):
+Write that file in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
 
 **Project:** <repo / project name>
 
-## What happened
-- <bullet per meaningful thing done this session>
+<One sentence that stands alone: where the work is now.>
 
-## Files touched
-- `path/to/file` - <one-line why>
+## Done
+- <what landed, one plain line each, link last: "The rundown reads as Done, Doing, Next, Needs you (dotfiles#946)">
 
-## Verification
-- <what was tested / proven, or "not verified - why">
+## Doing
+- <what is still open and how far along: an unmerged PR, a phase half done; "Nothing." when the session finished>
+
+## Next
+- <what comes next, in order; the first line is the single most useful next action>
+
+## Needs you
+- <one verb, one action, where to do it: an open ask, a human-sheet row; else "Nothing.">
 
 ## Deferred phases
 - <each `[-]` phase in the plan's ## Phases checklist, and the board row it went to; omit the section when there are none>
 
-## Next step
-- <the single most useful next action, if any>
+## Verification
+- <what was tested and proven, or "not verified - why">
+
+## Files touched
+- `path/to/file` - <one-line why>
 ```
 
-Keep it concise and factual - it's a memory aid, not a changelog. If the file already exists for
-today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked,
-so the note becomes durable, recallable knowledge.
+Lint it: `comms-lint --channel status <note>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. If the file already exists for today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 
@@ -105,7 +111,7 @@ Skip if the repo has no lab project.
 See the `lab-sync` skill.
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
-"where we are" line from this session's work into the cockpit's `STATUS` block - the narrative
+"where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
 `lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
@@ -115,15 +121,15 @@ that file. When the session leaves a real follow-up that should come back up on 
 put it on the project board, picking the lane by who has to do it:
 
 ```bash
-notes ptask <project> --agent add "<the next action>"   # an agent can do it: the default
+notes ptask <project> --agent add "<type(area): the next action> #size/s #low"   # an agent can do it: the default
 notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 
 One line, a couple of words; the wrap-up note holds the detail. Check both lanes for the same
-thing first and skip the add if it is already there. Skip it entirely when the session has no
+thing first and skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
-Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#ask` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #ask`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing an `#ask` row needs proof of every clause, and what is left goes on a new `#ask` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
+Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#requested` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #requested`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
 
 Do NOT write it to `notes inbox add`. The inbox is not triaged: by 2026-10-19 it held 217
 wind-down captures across 58 files, none drained since June, all archived unread.

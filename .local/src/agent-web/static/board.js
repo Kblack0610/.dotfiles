@@ -1,7 +1,8 @@
 "use strict";
-// The Board tab: every project's open rows from `notes board --json` (/api/board): the human
-// sheet, the agent board, playtest, and each profile's Focus (read-only here). Add, start, done,
-// remove, move (to a project or a version), a release sooner or later, and edit go through
+// The rows under the Projects tab (projects.js opens them for one project or for all): every
+// project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
+// playtest; each profile's Focus is a count linking to the Daily tab. Add, start, done, drop, move (to a
+// project or a version), a release sooner or later, edit and tags go through
 // `notes ptask --exact` with the row's raw line (POST /api/board), so a
 // row changed elsewhere since this page read it fails the write, and the page says so and
 // re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
@@ -13,13 +14,13 @@ const bst = {
   feed: null, err: null, busy: false, msg: "",
   filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  // `form` is the one row whose done, drop, move or edit form is open: { k, kind }.
+  // `form` is the one row whose done, drop, move, edit or tags form is open: { k, kind }.
   open: {}, form: null, controlsKey: "",
 };
 
 const refreshBoard = coalesce(async () => {
   try { bst.feed = await api("/api/board"); bst.err = null; } catch (e) { bst.err = e.message; }
-  if (st.tab === "board") renderBoard();
+  if (st.tab === "projects") renderProjects();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -50,7 +51,7 @@ function bControls() {
     `<input id="bf-q" placeholder="filter text, #tag" value="${esc(f.q)}">` +
     `<select id="bf-profile"><option value="">every profile</option>${bOpt(profiles, f.profile)}</select>` +
     `<select id="bf-project"><option value="">every project</option>${bOpt(keys, f.project)}</select>` +
-    `<select id="bf-lane"><option value="">every lane</option>${bOpt([...B_LANES, "focus"], f.lane)}</select>` +
+    `<select id="bf-lane"><option value="">every lane</option>${bOpt(B_LANES, f.lane)}</select>` +
     `<select id="bf-priority"><option value="">any priority</option>${bOpt(B_PRIORITIES, f.priority)}</select>` +
     `<button class="btn sm" id="b-refresh">Refresh</button>` +
     `</div></div>`;
@@ -69,7 +70,6 @@ function bMatch(r) {
 
 function bRow(r, i) {
   const k = bKey(r);
-  const focus = r.lane === "focus";
   const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
     r.size && "size " + r.size, r.game, r.ask && "#ask", ...(r.tags || []).map((t) => "#" + t)]
     .filter(Boolean).map((t) => `<span class="qtag">${esc(t)}</span>`).join("");
@@ -79,9 +79,7 @@ function bRow(r, i) {
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
-  if (focus) {
-    acts = `<div class="muted">Focus is the human's day; edit it in the daily note.</div>`;
-  } else if (bst.form && bst.form.k === k) {
+  if (bst.form && bst.form.k === k) {
     const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
     const kind = bst.form.kind;
     if (kind === "done" || kind === "drop") {
@@ -99,6 +97,12 @@ function bRow(r, i) {
         `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
         `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
         `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else if (kind === "tag") {
+      // A row has one size, so adding size/m replaces its old one; a release is Move's.
+      acts = `<div class="opts">` +
+        `<input data-forminput="${i}" placeholder="add: size/s requested">` +
+        `<input data-formremove="${i}" placeholder="remove: ai">` +
+        `<button class="btn sm primary" data-formgo="${i}">Save tags</button>` + cancel;
     } else {
       acts = `<div class="opts">` +
         `<input data-forminput="${i}" value="${esc(r.text)}">` +
@@ -113,7 +117,8 @@ function bRow(r, i) {
       (versioned ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` +
         `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
-        `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
+        `<button class="btn sm" data-edit="${i}">Edit...</button>` +
+        `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
@@ -127,7 +132,7 @@ function bGroups() {
   bst.feed.rows.forEach((r, i) => {
     if (!bMatch(r)) return;
     if (r.filed && r.filed === bst.feed.today) return filed.push([r, i]);
-    const g = r.project ? r.profile + "/" + r.project : r.profile + " Focus";
+    const g = r.profile + "/" + r.project;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push([r, i]);
   });
@@ -159,11 +164,14 @@ function drawBoardList() {
       `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
       list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
   }
-  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups</div>` +
+  // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
+  const focus = bst.filter.project ? [] : bst.feed.focus || [];
+  const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
+  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups ${fbadge}</div>` +
     (n ? html : html + `<div class="card muted">No row matches.</div>`);
-  const y = $("board").scrollTop;
+  const y = $("projects").scrollTop;
   el.innerHTML = html;
-  $("board").scrollTop = y;
+  $("projects").scrollTop = y;
 }
 
 function renderBoard() {
@@ -212,6 +220,7 @@ async function bWrite(body, okMsg) {
   } finally {
     renderBoard();
     refreshBoard();
+    refreshProjects();
   }
 }
 
@@ -239,7 +248,7 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.formgo || d.formcancel];
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) return;
   const k = bKey(r);
   if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
@@ -248,9 +257,9 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
-  const opened = d.done || d.drop || d.move || d.edit;
+  const opened = d.done || d.drop || d.move || d.edit || d.tag;
   if (opened) {
-    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : "edit" };
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
     drawBoardList();
     const i = $("board").querySelector(`[data-forminput="${opened}"]`);
     if (i) i.focus();
@@ -270,6 +279,10 @@ $("board").addEventListener("click", (e) => {
       const dest = q("movedest").value;
       if (!dest && !v) { bst.msg = "Pick a project, a version, or both."; renderBoard(); return; }
       body = { verb: "move", dest, to: v }; ok = dest ? `Moved to ${dest}.` : `Moved to ${v}.`;
+    } else if (kind === "tag") {
+      const rm = q("formremove").value.trim();
+      if (!v && !rm) { bst.msg = "Type a tag to add or remove."; renderBoard(); return; }
+      body = { verb: "tag", add: v, remove: rm }; ok = "Tags saved.";
     } else {
       if (!v) { bst.msg = "Type the new text."; renderBoard(); return; }
       body = { verb: "edit", text: v }; ok = "Edited.";
@@ -289,14 +302,10 @@ $("board").addEventListener("input", (e) => {
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
-  const i = e.target.dataset.forminput;
+  const i = e.target.dataset.forminput || e.target.dataset.formremove;
   if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
 $("board").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;
 }, true);
 
-TABS.board = {
-  show() { renderBoard(); refreshBoard(); },
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "board") refreshBoard(); },
-};

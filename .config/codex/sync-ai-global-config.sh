@@ -95,8 +95,8 @@ fi
 
 mkdir -p "$CODEX_HOME" "$GEMINI_HOME" "$OPENCODE_HOME"
 
-# Claude Code's CLAUDE.md and .mcp.json are stow-managed from ~/.dotfiles/.claude/
-# — do NOT write them here; it would clobber the stow symlinks.
+# Claude Code's CLAUDE.md is stow-managed from ~/.dotfiles-private/.claude/ and MCP servers live in each
+# repo's .mcp.json - do NOT write them here; it would clobber the stow symlinks.
 cp "$stage_dir/AGENTS.md" "$CODEX_HOME/AGENTS.md"
 if [ "$gemini_rules" = 1 ]; then
     cp "$stage_dir/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
@@ -219,13 +219,9 @@ opencode_path = os.environ["OPENCODE_CONFIG_PATH"]
 opencode_stage_path = os.environ["OPENCODE_STAGE_PATH"]
 opencode_current = read_json(opencode_path)
 opencode_stage = read_json(opencode_stage_path)
-current_mcp = opencode_current.get("mcp", {})
-shared_mcp = opencode_stage.get("mcp", {})
-
-for key, value in shared_mcp.items():
-    current_mcp[key] = value
-
-opencode_current["mcp"] = current_mcp
+# opencode.jsonc is a required rulesync output (asserted above), so the stage is never
+# absent here; replacing the block prunes a removed server, as the Gemini branch does.
+opencode_current["mcp"] = opencode_stage.get("mcp", {})
 write_json(opencode_path, opencode_current)
 PY
 

@@ -2,12 +2,13 @@
 //!
 //! agent-queue is the only writer of `~/.agent/queue` (design: `~/.config/agentctl/QUEUE.md`).
 //! The list, cancel and bump go through `hub_core::queue`, which the hub TUI reads too; add
-//! shells out here, since its task goes on stdin. Every call is plain arguments, never a shell,
-//! and agent-queue's stderr comes back as the error the page shows.
+//! shells out here, since its task goes on stdin. The Candidates section is hub-core's
+//! `candidates`; its Promote posts the board's Start (`POST /api/board`). Every call is plain
+//! arguments, never a shell, and agent-queue's stderr comes back as the error the page shows.
 
 use axum::http::StatusCode;
 use axum::Json;
-use hub_core::queue::{self as hub_queue, Item, PRIORITIES};
+use hub_core::queue::{self as hub_queue, Candidates, Item, PRIORITIES};
 use hub_core::session_actions::System;
 use serde::Deserialize;
 
@@ -32,13 +33,19 @@ fn is_tags(s: &str) -> bool {
     })
 }
 
-/// Every active item plus today's finished ones, in queue order, read through hub-core.
+/// How many days back, today included, the page's Done section reaches.
+const DONE_DAYS: i64 = 7;
+
+/// Every active item plus those finished in the last `DONE_DAYS` days, in queue order, read
+/// through hub-core.
 pub async fn list() -> ApiResult<Json<Vec<Item>>> {
-    tokio::task::spawn_blocking(|| hub_queue::list(&System, "all"))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+    tokio::task::spawn_blocking(|| {
+        hub_queue::list_since(&System, "all", &hub_queue::days_ago(DONE_DAYS - 1))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
 /// The window's line and what sits now, worded by hub-core as the hub TUI words them.
@@ -47,9 +54,50 @@ pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(
-        serde_json::json!({ "week": s.week(), "sitting": s.sitting_line() }),
-    ))
+    // The prose lines for the folded detail, and the typical times the page's tiles show; the
+    // tiles count the items themselves.
+    Ok(Json(serde_json::json!({
+        "week": s.week(),
+        "sitting": s.sitting_line(),
+        "wait_minutes_median": s.wait_minutes_median,
+        "run_minutes_median": s.run_minutes_median,
+        "to_pr_minutes_median": s.to_pr_minutes_median,
+    })))
+}
+
+/// The counts and the rows hub-core keeps, each with the title and start label it words.
+fn candidates_view(c: &Candidates) -> serde_json::Value {
+    let view = |rows: &[hub_queue::Candidate]| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|r| {
+                let mut v = serde_json::to_value(r).unwrap_or_default();
+                v["title"] = r.title().into();
+                v["start_label"] = r.start_label().into();
+                v["reasons"] = r.reasons().into();
+                v
+            })
+            .collect()
+    };
+    let reasons: Vec<serde_json::Value> = c
+        .reasons
+        .iter()
+        .map(|(r, n)| serde_json::json!({ "reason": r, "rows": n }))
+        .collect();
+    serde_json::json!({
+        "total": c.total, "auto": c.auto, "rows": view(&c.rows),
+        "blocked_rows": view(&c.blocked_rows), "reasons": reasons,
+        "urgent_blocked": c.urgent_blocked, "uncovered": c.uncovered, "clear": c.clear,
+    })
+}
+
+/// The ranked board rows `fleet-dispatch suggest` prints, read through hub-core. Slow (every
+/// board), so the page asks for it on showing the tab and after a promote, not on queue events.
+pub async fn candidates() -> ApiResult<Json<serde_json::Value>> {
+    tokio::task::spawn_blocking(|| hub_queue::candidates(&System))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(|c| Json(candidates_view(&c)))
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
 /// Cancel or bump through hub-core, which checks the slug and priority and runs agent-queue.
@@ -137,11 +185,7 @@ pub async fn bump(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
 /// The projects a task may be queued for: the names in project-map.json, which is also what
 /// agent-queue checks `--project` against.
 pub async fn projects() -> Json<Vec<String>> {
-    let path = std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
-        std::path::PathBuf::from,
-    );
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
     Json(project_names(&text))
 }
 
@@ -204,6 +248,41 @@ mod tests {
         assert!(add_args(&body("dotfiles", "", "", "--after x", "x")).is_err());
         assert!(add_args(&body("dotfiles", "", "", "a;b", "x")).is_err());
         assert!(add_args(&body("dotfiles", "", "", "", "  \n")).is_err());
+    }
+
+    #[test]
+    fn candidates_carry_the_counts_and_each_rows_title_and_label() {
+        let c = hub_queue::parse_candidates(concat!(
+            r##"{"key":"k-0","text":"- [ ] row 0 #high <!-- id:k-0 -->","auto":true,"verdict":"dispatch"}"##,
+            "\n",
+            r##"{"key":"k-1","text":"- [ ] row 1","held":true}"##,
+        ));
+        let v = candidates_view(&c);
+        assert_eq!(
+            (v["total"].as_u64(), v["auto"].as_u64()),
+            (Some(2), Some(1))
+        );
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows[0]["key"], "k-0");
+        assert_eq!(rows[0]["title"], "row 0");
+        assert_eq!(rows[0]["start_label"], "auto dispatch");
+        assert_eq!(rows[1]["start_label"], "man held");
+        assert_eq!(v["blocked_rows"].as_array().unwrap().len(), 0);
+        let b = candidates_view(&hub_queue::parse_candidates(
+            r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
+        ));
+        assert_eq!(b["rows"][0]["reasons"][0], "judge: skip");
+        assert_eq!(b["reasons"][0]["reason"], "judge: skip");
+        assert_eq!(b["reasons"][0]["rows"], 1);
+        assert_eq!(b["urgent_blocked"], 1);
+        assert_eq!(b["clear"], 0);
+        assert_eq!(
+            b["uncovered"].as_array().unwrap().len(),
+            0,
+            "a skip is not a gap in cover"
+        );
+        let none = candidates_view(&Candidates::default());
+        assert_eq!(none["rows"].as_array().unwrap().len(), 0);
     }
 
     #[test]

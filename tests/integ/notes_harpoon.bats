@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# notes.nvim lab harpoon order: the projects index, then beta sheets, then alpha sheets, then
+# notes.nvim lab harpoon order: the projects index, then beta, alpha and dev sheets, then
 # whatever the user added. Drives notes.harpoon.lab_slots in a real headless nvim against
 # fixture `notes projects --stats` rows; harpoon itself is not needed.
 #
@@ -19,6 +19,7 @@ setup() {
     "bnb	game	beta	v1	0	0	0	0	0	0	$LAB/bnb/projects/current/game/README.md" \
     "bnb	live	prod	v2	0	0	0	0	0	0	$LAB/bnb/projects/current/live/README.md" \
     "personal	alef	alpha	v0	0	0	0	0	0	0	$LAB/projects/current/alef/README.md" \
+    "personal	work	dev	v0	0	0	0	0	0	0	$LAB/projects/current/work/README.md" \
     "personal	idea	draft	v0	0	0	0	0	0	0	$LAB/projects/current/idea/README.md" \
     "work	client	beta	v0	0	0	0	0	0	0	$BATS_TEST_TMPDIR/employment/client/README.md" \
     > "$STATS"
@@ -37,23 +38,24 @@ slots() {
     -c 'qa!' 2>/dev/null
 }
 
-@test "empty list fills as index, beta, then alpha by name; prod, draft and non-lab rows stay out" {
+@test "empty list fills as index, beta, alpha, then dev by name; prod, draft and non-lab rows stay out" {
   run slots '{}'
   assert_success
   assert_output "$(printf '%s\n' \
     'LAB/projects/index.md' \
     'LAB/bnb/projects/current/game/README.md *' \
     'LAB/projects/current/alef/README.md *' \
-    'LAB/bnb/projects/current/zeta/README.md *')"
+    'LAB/bnb/projects/current/zeta/README.md *' \
+    'LAB/projects/current/work/README.md *')"
 }
 
 @test "hand-added items stay after the auto block, in their order" {
   run slots "{ { value = '$LAB/projects/current/idea/README.md', context = {} },
                { value = '$LAB/scratch.md', context = { row = 3, col = 0 } } }"
   assert_success
-  assert_line --index 4 'LAB/projects/current/idea/README.md'
-  assert_line --index 5 'LAB/scratch.md'
-  assert_equal "${#lines[@]}" 6
+  assert_line --index 5 'LAB/projects/current/idea/README.md'
+  assert_line --index 6 'LAB/scratch.md'
+  assert_equal "${#lines[@]}" 7
 }
 
 @test "a stale auto entry (project now prod) is dropped, a hand-added prod sheet is kept" {
@@ -61,7 +63,7 @@ slots() {
   assert_success
   refute_output --partial 'live'
   run slots "{ { value = '$LAB/bnb/projects/current/live/README.md', context = {} } }"
-  assert_line --index 4 'LAB/bnb/projects/current/live/README.md'
+  assert_line --index 5 'LAB/bnb/projects/current/live/README.md'
 }
 
 @test "a hand-added sheet that is now alpha joins the auto block once; the index and dailies are not duplicated" {
@@ -69,6 +71,6 @@ slots() {
                { value = '$LAB/projects/index.md', context = {} },
                { value = '$LAB/daily/2026-10-26.md', context = {} } }"
   assert_success
-  assert_equal "${#lines[@]}" 4
+  assert_equal "${#lines[@]}" 5
   assert_line --index 2 'LAB/projects/current/alef/README.md *'
 }

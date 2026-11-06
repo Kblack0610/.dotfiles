@@ -87,7 +87,7 @@ PANEL_TAB=$'\t'
 # for free. Pinning a hex value would stop the surface tracking the terminal -- a regression
 # dressed as a feature. tests/integ/panel_conformance.bats enforces it.
 if [ -n "${PANEL_NO_COLOR:-${NO_COLOR:-}}" ]; then
-  C_HEAD='' C_SEL='' C_INP='' C_ERR='' C_DIM='' C_BOX='' C_PROJ='' C_ACC='' C_OFF=''
+  C_HEAD='' C_SEL='' C_INP='' C_ERR='' C_DIM='' C_BOX='' C_PROJ='' C_ACC='' C_BOLD='' C_FAINT='' C_OFF=''
 else
   C_HEAD=$'\033[1;37m' # section header (bold white)
   C_SEL=$'\033[1;32m'  # healthy / active / selected (bold green)
@@ -97,6 +97,10 @@ else
   C_BOX=$'\033[36m'    # checkbox / accent (cyan)
   C_PROJ=$'\033[1;35m' # project sub-header (magenta)
   C_ACC=$'\033[1;34m'  # blue accent
+  # Attributes with no colour: on fzf's selected row they take its fg+ white, so they still
+  # read on the selection bar (colour 8, the same grey as C_DIM, which vanishes there).
+  C_BOLD=$'\033[1m'
+  C_FAINT=$'\033[2m'
   C_OFF=$'\033[0m'
 fi
 
@@ -177,8 +181,11 @@ panel_paint() { printf '%s%s%s' "$(panel_glyph_color "$1")" "$1" "$C_OFF"; }
 #
 # --no-input, --cycle and --wrap are NOT here: they are per-surface choices (modal nav,
 # pre-ordered lists), not a floor.
+#
+# --color=16: fzf's own chrome (prompt, pointer, header, match highlight) uses the 16 ANSI
+# colours the theme sets, not fzf's 256-colour defaults, which ignore it.
 panel_fzf_opts() {
-  PANEL_FZF_OPTS=(--ansi --reverse --border)
+  PANEL_FZF_OPTS=(--ansi --reverse --border --color=16)
 }
 
 # panel_fzf_table -- the extra flags a pre-ordered TSV list wants on top of the base.
@@ -201,6 +208,69 @@ panel_fzf_preview() {
   *) panel_fail "unknown preview side: $side" || return 1 ;;
   esac
   printf -- '--preview-window=%s,%s%%,%s,wrap\n' "$side" "$pct" "$border"
+}
+
+# panel_fzf_layout [default] -- sets PANEL_FZF_LAYOUT, the one preview layout every picker
+# uses: the window it opens with, and a ctrl-/ that steps stacked -> side -> hidden -> stacked.
+# stacked = list on top at full width, preview below; side = list left, preview right; hidden =
+# no preview. A panel reopens in the layout ctrl-/ last left it in: the opening layout is the
+# panel's state file (panel_layout_file), else ${PANEL_LAYOUT} (`set-environment -g PANEL_LAYOUT
+# side` in .tmux.conf flips every panel that has none), else [default], else stacked.
+# agent-panel (Rust) gets the same two arguments from `panel-layout.sh args agent-panel`.
+panel_fzf_layout() {
+  local file first='' helper
+  file="$(panel_layout_file "$PANEL_NAME")"
+  if [ -f "$file" ]; then first="$(<"$file")"; fi
+  first="${first:-${PANEL_LAYOUT:-${1:-stacked}}}"
+  _panel_layout_spec "$first" >/dev/null ||
+    panel_fail "unknown layout: $first (stacked, side or hidden; saved in $file?)" || return 1
+  helper="$(realpath "${BASH_SOURCE[0]}")"
+  helper="$(printf '%q' "${helper%/*}/panel-layout.sh")"
+  PANEL_FZF_LAYOUT=(--preview-window="$(_panel_layout_spec "$first")"
+    "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME"))")
+}
+
+# panel_layout_file <panel> -- where a panel keeps the layout it was last left in, one word.
+panel_layout_file() {
+  printf '%s/panels/%s.layout\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"
+}
+
+# _panel_layout_spec stacked|side|hidden -- the --preview-window value for a layout. hidden is
+# stacked with the preview off, so the window has a shape to come back in.
+_panel_layout_spec() {
+  local w
+  case "$1" in
+  stacked) w="$(panel_fzf_preview down 60)" ;;
+  side) w="$(panel_fzf_preview right 65)" ;;
+  hidden) w="$(panel_fzf_preview down 60),hidden" ;;
+  *) return 1 ;;
+  esac
+  printf '%s\n' "${w#--preview-window=}"
+}
+
+# panel_layout_next <panel> -- ctrl-/'s fzf transform: print the next step of stacked -> side ->
+# hidden -> stacked and save it as the panel's layout. The step fzf is on comes from the preview
+# geometry it exports to child processes: no columns is hidden, a preview under three quarters
+# of fzf's width is side. Reading it, not tracking it, leaves no per-picker file to clean up.
+# A third argument (the opening layout an fzf
+# started before the fixed cycle still passes) is ignored.
+panel_layout_next() {
+  local panel="$1" now next file
+  if [ "${FZF_PREVIEW_COLUMNS:-0}" -eq 0 ]; then
+    now=hidden
+  elif [ $((FZF_PREVIEW_COLUMNS * 4)) -lt $((${FZF_COLUMNS:-0} * 3)) ]; then
+    now=side
+  else
+    now=stacked
+  fi
+  case "$now" in
+  stacked) next=side ;;
+  side) next=hidden ;;
+  hidden) next=stacked ;;
+  esac
+  file="$(panel_layout_file "$panel")"
+  mkdir -p "${file%/*}" && printf '%s\n' "$next" >"$file"
+  printf 'change-preview-window(%s)\n' "$(_panel_layout_spec "$next")"
 }
 
 # ── tmux ─────────────────────────────────────────────────────────────────────

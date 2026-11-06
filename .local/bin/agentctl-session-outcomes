@@ -2,8 +2,9 @@
 # agentctl-session-outcomes - nightly, model-free record of what each session did.
 #
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
-#   agentctl-session-outcomes worst [--project P] [--days N] [-n N]
-#   agentctl-session-outcomes langfuse [--all]             push outcomes to Langfuse as scores
+#   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
+#   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
+#   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -12,12 +13,22 @@
 # again, so a fixed detector reaches sessions already past their final observation. Lib + field meanings:
 # ~/.local/lib/session-outcomes.sh. A headless session (`claude -p`, a runner) files under
 # project `_runner` with no corrections: nobody is there to correct it, so a lesson it
-# writes is its job, not a redirect. Every run ends with `langfuse`: rows observed since the
+# writes is its job, not a redirect. Its `agent` is the runner calls.jsonl names for it. Every run ends with `langfuse`: rows observed since the
 # last push go to Langfuse as session scores (so_langfuse_events), so its trace view filters
-# by them. URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry SO_LF_ENTRY,
-# "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push leaves the
-# mark where it was, so the next run sends them again.
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL.
+# by them, and each judge verdict that names its call goes as a score on that call's session
+# (judge.sh, its own mark). URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry
+# SO_LF_ENTRY, "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push
+# leaves the mark where it was, so the next run sends them again.
+# A row is the session's whole card: the registry's cost, tokens and models, the transcript's
+# counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
+# escalations, merged PRs with their lines and CI reds), read once per run. The account is the
+# Claude config dir its transcript lives under, as `agent-usage burn` names it.
+# An opencode or Codex session has no registry row, so its line comes from opencode's DB
+# (so_opencode_rows) or Codex's rollout files (so_codex_rows).
+# `harness` on a line is claude, or what the queue item it worked says. A gateway item's real spend
+# goes on the item as gateway_cost_usd (gateway_push).
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
+# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES.
 
 set -uo pipefail
 
@@ -29,10 +40,18 @@ PR_LIMIT="${SO_PR_LIMIT:-1000}"   # newest N PRs per repo; one paginated call co
 GH="${SO_GH:-gh}"
 RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
+BENCH="${SO_BENCH:-fleet-bench}"
+QUEUE="${SO_QUEUE:-agent-queue}"
+OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
+CX_DIR="${SO_CODEX_SESSIONS:-$HOME/.codex/sessions}"
+HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
+# Money as `worst` and `card` print it.
+FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
-LF_BATCH=100      # events per ingestion request
+SO_ASKS="${SO_ASKS:-$HOME/.agent/asks}"                          # the ask judge's verdicts
+SO_VERDICTS="${SO_VERDICTS:-$HOME/.agent/dispatch/verdicts.jsonl}"  # the dispatch judge's
 NAME=session-outcomes
 
 LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
@@ -40,11 +59,15 @@ LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-proof.sh"
 # shellcheck source=/dev/null
+. "$LIB_DIR/langfuse.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/judge.sh"
+# shellcheck source=/dev/null
 . "$LIB_DIR/session-outcomes.sh"
 
 die_stalled() {
   echo "$NAME: $1" >&2
-  proof_report "$NAME" STALLED "$1"
+  proof_outcome "$NAME" STALLED "$1"
   exit 1
 }
 
@@ -61,11 +84,19 @@ cmd_run() {
 
   so_latest "$OUT" > "$work/seen.jsonl" || die_stalled "could not read $OUT"
 
+  # A DB opencode's next upgrade reshapes loses its lines and says so, like the bench below: it must
+  # not stall every Claude session's row. Nothing reads as zero, because no line is written.
+  local oc_note=""
+  so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
+    { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
+  so_codex_rows "$CX_DIR" "$work" > "$work/codex.jsonl" 2>"$work/cx.err" ||
+    { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
+
   # Registry rows due for an observation. A session id can sit in two project files
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | jq -cnR --slurpfile seen "$work/seen.jsonl" \
+  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" | jq -cnR --slurpfile seen "$work/seen.jsonl" \
         --argjson now "$NOW" --argjson days "$FINAL_DAYS" --argjson all "$all" '
       ($seen | map({key: .session_id, value: .}) | from_entries) as $s
       | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
@@ -79,22 +110,42 @@ cmd_run() {
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
-    proof_report "$NAME" NOOP "nothing due; $(lf_push "" "$work")"
+    proof_report "$NAME" NOOP "nothing due$oc_note; $(gateway_push); $(lf_push "" "$work")"
     return 0
   fi
 
+  # What the queue knows of a session: the work items whose `sessions:` list it (the ledger join
+  # every reader of a row uses; a session can work several), the harness it ran on and, for
+  # a headless harness (opencode, codex), the PR the brief set.
+  local queue_note=""
+  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
+      | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
+        .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug])})' > "$work/queue.json" ||
+    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude, items unknown"; }
+  jq -c --slurpfile q "$work/queue.json" '($q[0][.session_id] // {}) as $i
+      | .items = ($i.items // [])
+      | .harness = (.harness // $i.agent // "claude")
+      | if .harness == "opencode" or .harness == "codex" then
+          .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
+        else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
+    die_stalled "could not join the due sessions to the queue"
+
   # Transcript metrics, one file per due session. A pruned transcript yields null
   # metrics rather than a skipped session: the registry row (cost, edits) still counts.
-  local row sid tr n=0
+  # Lessons that carry a sig, read once: each transcript counts its hits (lesson_hits), and
+  # fleet-bench retro turns a lesson recurring in two sessions into a guard row.
+  local row sid tr n=0 sigs
+  sigs=$(so_lesson_sigs | jq -c 'map({sig, since})') || sigs='[]'
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
-      so_transcript_metrics "$tr" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
-      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null' > "$work/t.$sid.json"
+      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
+      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
     else
-      printf 'null' > "$work/m.$sid.json"
-      printf 'null' > "$work/t.$sid.json"
+      # Newline-ended: the repo list below cats every m file into one jq stream, and nullnull is not JSON.
+      printf 'null\n' > "$work/m.$sid.json"
+      printf 'null\n' > "$work/t.$sid.json"
     fi
     n=$((n + 1))
   done < "$work/due.jsonl"
@@ -102,7 +153,7 @@ cmd_run() {
   # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
   # what tripped the 403 rate limit.
   local repo
-  cat "$work"/m.*.json | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
+  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
   printf '{}' > "$work/index.json"
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
@@ -115,21 +166,44 @@ cmd_run() {
       "$work/index.json" > "$work/index.next" && mv "$work/index.next" "$work/index.json"
   done < "$work/repos"
 
+  # Delivery from the bench, keyed by session and kept to the due ones, since each row's jq
+  # reads the whole map. An unreadable bench leaves delivery null and says so in the
+  # report: the rest of the row does not depend on it.
+  local bench_note=""
+  if ! "$BENCH" stats --json > "$work/bench.jsonl" 2>"$work/bench.err"; then
+    bench_note="; fleet-bench stats failed: $(head -c 120 "$work/bench.err")"
+    : > "$work/bench.jsonl"
+  fi
+  jq -cn --slurpfile due "$work/due.jsonl" '($due | map({key: .session_id}) | from_entries) as $d
+      | [inputs | .session_id as $s | select($d | has($s)) | {key: .session_id, value: del(.session_id, .project)}]
+      | from_entries' "$work/bench.jsonl" > "$work/bench.json" 2>/dev/null \
+    || { printf '{}' > "$work/bench.json"; bench_note="; fleet-bench stats unreadable"; }
+
+  # Which runner a headless session was: calls.jsonl names the agent of every call that
+  # went through agentctl-run, keyed by its session id. A session with no call line (a
+  # runner still outside the contract) keeps agent null.
+  jq -cn '[inputs | select(.session_id and .agent) | {key: .session_id, value: .agent}] | from_entries' \
+    "$AGENTCTL_CALLS" > "$work/agents.json" 2>/dev/null || printf '{}' > "$work/agents.json"
+
   local observed
   observed="$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)"
   : > "$work/lines.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
-    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" --arg observed "$observed" '
+    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" \
+       --slurpfile bench "$work/bench.json" --slurpfile agents "$work/agents.json" --arg observed "$observed" '
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
-      | [ ($mm.prs // [])[] | . as $p
+      | [ (($mm.prs // []) + ($row.prs // []))[] | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
           | {repo: $p.repo, number: $p.number, state, merged_at, reverted} ] as $prs
       | { session_id: $row.session_id,
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
+          harness: $row.harness,
+          items: ($row.items // []),
+          agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),
           updated_epoch: $row.updated,
@@ -138,6 +212,9 @@ cmd_run() {
           transcript: ($m != null),
           edits: ($row.edits // 0),
           cost_usd: ($row.cost_usd // null),
+          cost_by_model: ($row.cost_by_model // null),
+          models: ($row.models // null),
+          account: ($row.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a // null),
           tokens_total: ($row.tokens.total // null),
           duration_s: ($row.duration_s // null),
           prs: $prs,
@@ -148,8 +225,13 @@ cmd_run() {
           board_done: ($mm.board_done // null),
           corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null),
+          plan_gate: ($mm.plan_gate // null),
+          guards: ($mm.guards // null),
+          lesson_hits: (if ($mm.lesson_hits // {}) == {} then null else $mm.lesson_hits end),
           activity: ($mm.activity // null),
-          time_use: $time_use[0] }
+          uses: ($mm.uses // null),
+          time_use: $time_use[0],
+          delivery: ($bench[0][$row.session_id] // null) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
@@ -163,16 +245,73 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked"
-  proof_report "$NAME" WORKED "observed $written; $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note; $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+}
+
+# ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
+# active or finished in the last FINAL_DAYS days gets cost_usd and work_min (agent-panel's
+# time_use.work_min) summed over the newest outcome row of each session its `sessions:` lists,
+# through `agent-queue set`, only where a value changed. work_min is left out when no session has
+# a time_use. Prints one status phrase; never fails the run, the outcome rows are already written.
+ledger_push() {
+  local items since lines slug kv n=0 bad=0
+  since="$(date -u -d "@$((NOW - FINAL_DAYS * 86400))" +%F)"
+  items="$("$QUEUE" list --json --state all --since "$since" 2>/dev/null)" || { echo "ledger unreadable"; return 0; }
+  lines="$(so_latest "$OUT" | jq -rn --slurpfile items <(printf '%s\n' "$items") '
+    ([inputs] | map({key: .session_id, value: .}) | from_entries) as $o
+    | $items[] | select(.sessions) | . as $it
+    | [(.sessions | split(" "))[] | $o[.] // empty] as $rows
+    | select($rows | length > 0)
+    | {cost_usd: ($rows | map(.cost_usd // 0) | add * 100 | round / 100 | tostring),
+       work_min: (if any($rows[]; .time_use) then $rows | map(.time_use.work_min // 0) | add | tostring else null end)}
+    | to_entries | map(select(.value != null and .value != ($it[.key] // null)) | "\(.key)=\(.value)")
+    | select(length > 0) | [$it.slug] + . | join("\t")')" || { echo "ledger join failed"; return 0; }
+  while IFS=$'\t' read -r slug kv; do
+    [ -n "$slug" ] || continue
+    # shellcheck disable=SC2086 # kv is key=value fields, tab-joined above
+    if "$QUEUE" set "$slug" ${kv//$'\t'/ } >/dev/null 2>&1; then n=$((n + 1)); else bad=$((bad + 1)); fi
+  done <<<"$lines"
+  if [ "$bad" -eq 0 ]; then echo "ledger $n item(s) updated"; else echo "ledger $n item(s) updated, $bad failed"; fi
+}
+
+# gateway_push - what each gateway item really cost: every item on another harness than claude,
+# active or finished in the last FINAL_DAYS days, gets gateway_cost_usd from the spend tagged
+# queue:<slug>. Runs on the NOOP path too, so an item's cost never waits on an unrelated session, and
+# with its own `agent-queue set`, so a failure cannot take cost_usd with it. The endpoint needs both
+# dates, in UTC, and lags calls by a minute or so. A failed read, or a tag with no requests yet,
+# leaves the field as it is: empty means unknown, and $0 would be a claim. Prints one status phrase.
+gateway_push() {
+  local items since url file key slug from cur body v to n=0 bad=0
+  [ -r "$HARNESSES" ] || { echo "gateway skipped, no harness map"; return 0; }
+  since="$(date -u -d "@$((NOW - FINAL_DAYS * 86400))" +%F)"
+  to="$(date -u -d "@$NOW" +%F)"
+  items="$("$QUEUE" list --json --state all --since "$since" 2>/dev/null |
+    jq -r 'select(.started and (.agent // "claude") != "claude") | [.slug, .started[0:10], .gateway_cost_usd // ""] | @tsv')" ||
+    { echo "gateway ledger unreadable"; return 0; }
+  [ -n "$items" ] || { echo "gateway 0 item(s)"; return 0; }
+  url="$(jq -r .gateway.url "$HARNESSES")"
+  file="$(jq -r '.gateway.reader_key_file | sub("^~"; env.HOME)' "$HARNESSES")"
+  key="$(cat "$file" 2>/dev/null)" || { echo "gateway reader key unreadable"; return 0; }
+  while IFS=$'\t' read -r slug from cur; do
+    # The key goes in on stdin, off the process list.
+    body="$("$CURL" -fsS -m 20 -K - "$url/tag/daily/activity?tags=queue:$slug&start_date=$from&end_date=$to" \
+      <<<"header = \"Authorization: Bearer $key\"" 2>/dev/null)" || { bad=$((bad + 1)); continue; }
+    v="$(jq -er '.metadata | if .total_api_requests > 0 then .total_spend * 10000 | round / 10000 else "" end' <<<"$body" 2>/dev/null)" ||
+      { bad=$((bad + 1)); continue; }
+    [ -n "$v" ] && [ "$v" != "$cur" ] || continue
+    if "$QUEUE" set "$slug" "gateway_cost_usd=$v" >/dev/null 2>&1; then n=$((n + 1)); else bad=$((bad + 1)); fi
+  done <<<"$items"
+  if [ "$bad" -eq 0 ]; then echo "gateway $n item(s) updated"; else echo "gateway $n item(s) updated, $bad failed"; fi
 }
 
 # lf_push [--all] WORKDIR - send every session's newest row observed after the mark (all
-# of them with --all) to Langfuse, then move the mark. Prints one status phrase for the
-# run's report. Never fails the run: the outcome rows are already written and are the
-# record; a push that failed says so on stderr and in the report, and is retried next run.
+# of them with --all) to Langfuse, then move the mark; then the same for the judge lanes'
+# verdicts (lf_push_judge). Prints one status phrase for the run's report. Never fails the
+# run: the outcome rows are already written and are the record; a push that failed says so on
+# stderr and in the report, and is retried next run.
 lf_push() {
-  local all="$1" work="$2" key mark since code n=0 sent=0
+  local all="$1" work="$2" key mark since
   local mark_file
   mark_file="$(proof_state_dir)/$NAME/langfuse-mark"
   if [ -z "$LF_URL" ]; then
@@ -195,33 +334,38 @@ lf_push() {
   }
   if [ ! -s "$work/lf.rows" ]; then
     printf 'langfuse: nothing new'
-    return 0
-  fi
-  if ! so_langfuse_events < "$work/lf.rows" | jq -cn --argjson b "$LF_BATCH" \
-      '[inputs] | range(0; length; $b) as $i | {batch: .[$i:$i + $b]}' > "$work/lf.batches"; then
+  elif ! so_langfuse_events < "$work/lf.rows" > "$work/lf.events"; then
     echo "$NAME: langfuse: could not build score events" >&2
     printf 'langfuse: FAILED building events'
-    return 0
+  elif ! lf_ingest "$CURL" "$LF_URL" "$key" "$work/lf.events" "$work"; then
+    printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "$LF_SENT"
+  else
+    mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
+    printf 'langfuse: %s score(s) for %s session(s)' "$LF_SENT" "$(wc -l < "$work/lf.rows")"
   fi
-  while IFS= read -r batch; do
-    n=$((n + 1))
-    printf '%s' "$batch" > "$work/lf.body"
-    # The key goes in on stdin (-K -), never argv, where any `ps` would show it.
-    code="$(printf 'user = "%s"\n' "$key" | "$CURL" -sS -K - -o "$work/lf.resp" -w '%{http_code}' \
-      --max-time 30 -H 'Content-Type: application/json' \
-      --data-binary @"$work/lf.body" "$LF_URL/api/public/ingestion" 2>"$work/lf.err")" || code=000
-    # 207 is the normal answer: per-event results, any of which can be an error.
-    if { [ "$code" = 200 ] || [ "$code" = 207 ]; } \
-       && [ "$(jq '.errors | length' "$work/lf.resp" 2>/dev/null)" = 0 ]; then
-      sent=$((sent + $(jq '.batch | length' "$work/lf.body")))
-    else
-      echo "$NAME: langfuse: batch $n failed (HTTP $code): $(head -c 300 "$work/lf.resp" "$work/lf.err" 2>/dev/null)" >&2
-      printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$code" "$sent"
-      return 0
-    fi
-  done < "$work/lf.batches"
-  mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
-  printf 'langfuse: %s score(s) for %s session(s)' "$sent" "$(wc -l < "$work/lf.rows")"
+  lf_push_judge "$all" "$work" "$key" "$since"
+}
+
+# lf_push_judge ALL WORKDIR KEY SINCE - each judge verdict judged after its own mark, as a score
+# on the session its call ran as (judge_langfuse_events). Appends "; judge: ..." to the report,
+# and nothing when there was no verdict to send.
+lf_push_judge() {
+  local all="$1" work="$2" key="$3" since="$4" mark_file mark=0
+  mark_file="$(proof_state_dir)/$NAME/langfuse-judge-mark"
+  [ "$all" = --all ] || mark="$(cat "$mark_file" 2>/dev/null || echo 0)"
+  judge_verdicts "$SO_ASKS" "$SO_VERDICTS" |
+    judge_langfuse_events "$AGENTCTL_CALLS" "$since" "${mark:-0}" > "$work/jv.events" 2>/dev/null || {
+    printf '; judge: FAILED building events'
+    return 0
+  }
+  [ -s "$work/jv.events" ] || return 0
+  jq -c 'del(.epoch)' "$work/jv.events" > "$work/jv.send"
+  if lf_ingest "$CURL" "$LF_URL" "$key" "$work/jv.send" "$work"; then
+    mkdir -p "${mark_file%/*}" && jq -s 'map(.epoch) | max' "$work/jv.events" > "$mark_file"
+    printf '; judge: %s score(s)' "$LF_SENT"
+  else
+    printf '; judge: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "$LF_SENT"
+  fi
 }
 
 cmd_langfuse() {
@@ -239,36 +383,32 @@ cmd_langfuse() {
 
 # worst: the sessions to look at first over the last N days, as a markdown table.
 cmd_worst() {
-  local project="" days=7 top=5
+  local project="" days=7 top=5 json=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:-}"; shift 2 ;;
       --days) days="${2:-7}"; shift 2 ;;
       -n) top="${2:-5}"; shift 2 ;;
+      --json) json=true; shift ;;
       *) echo "$NAME worst: unknown arg $1" >&2; return 2 ;;
     esac
   done
-  so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" \
-      --argjson days "$days" --argjson top "$top" "$(so_friction_def)"'
+  so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" --argjson json "$json" \
+      --argjson days "$days" --argjson top "$top" "$(so_friction_def)$FMT_DEF"'
     [inputs
      | select($p == "" or .project == $p)
      | select(.updated_epoch >= $now - $days * 86400)
-     | . + {f: friction}
-     | select(.f > 0)]
-    | sort_by(-.f, -(.cost_usd // 0)) | .[:$top]
-    | if length == 0 then "_(no session with friction in the last \($days) days)_"
+     | . + {friction: friction}
+     | select(.friction > 0)]
+    | sort_by(-.friction, -(.cost_usd // 0)) | .[:$top]
+    | if $json then .[] | . + {why: why} | tojson
+      elif length == 0 then "_(no session with friction in the last \($days) days)_"
       else
         (["| friction | session | project | title | why | cost | test runs | CI polls | spent after last edit |",
           "|---|---|---|---|---|---|---|---|---|"]
-         + map("| \(.f) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
-               + ([ (if .reverted_7d > 0 then "\(.reverted_7d) reverted" else empty end),
-                    (if .prs_closed_unmerged > 0 then "\(.prs_closed_unmerged) PR closed unmerged" else empty end),
-                    (if (.corrections.lessons_written // 0) > 0 then "\(.corrections.lessons_written) lesson(s) written" else empty end),
-                    (if (.corrections.interrupts // 0) > 0 then "\(.corrections.interrupts) interrupt(s)" else empty end),
-                    (if (.hard_errors.denied // 0) > 0 then "\(.hard_errors.denied) denied" else empty end),
-                    (if (.hard_errors.api_error // 0) > 0 then "\(.hard_errors.api_error) API error(s)" else empty end)
-                  ] | join(", "))
-               + " | \(if .cost_usd then "$\(.cost_usd * 100 | round / 100)" else "-" end)"
+         + map("| \(.friction) | `\(.session_id[0:8])` | \(.project) | \(.title | gsub("[|\n]"; " ") | .[0:60]) | "
+               + why
+               + " | \(.cost_usd | usd)"
                + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
                + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0
                   then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) + " |"))
@@ -276,10 +416,70 @@ cmd_worst() {
       end'
 }
 
+# cmd_card PREFIX [--json] - one session's newest row as its full card: time, stages, cost,
+# delivery, the friction sum term by term, activity and what it reached for. --json is the
+# row plus friction and why. A prefix that names no session or more than one is an error.
+cmd_card() {
+  local prefix="" json=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=true ;;
+      -*) echo "$NAME card: unknown arg $1" >&2; return 2 ;;
+      *) prefix="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$prefix" ] || { echo "usage: $NAME card <session-id prefix> [--json]" >&2; return 2; }
+  local rows n
+  rows="$(so_latest "$OUT" | jq -c --arg p "$prefix" 'select(.session_id | startswith($p))')"
+  n=$(grep -c . <<<"$rows")
+  if [ "$n" -eq 0 ]; then
+    echo "$NAME card: no outcome row for $prefix" >&2; return 1
+  elif [ "$n" -gt 1 ]; then
+    echo "$NAME card: $prefix names $n sessions:" >&2
+    jq -r '"  \(.session_id)  \(.project)  \(.title | .[0:60])"' <<<"$rows" >&2
+    return 2
+  fi
+  jq -r --argjson json "$json" "$(so_friction_def)$FMT_DEF"'
+    def dur: if . == null then "-" else (floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)" else "\($m)m" end end;
+    def big: if . == null then "-" elif . >= 1e6 then "\(. / 1e5 | round / 10)M" elif . >= 1e3 then "\(. / 1e3 | round)k" else tostring end;
+    def ranked(f): to_entries | sort_by(-.value) | map("\(.key) \(.value | f)") | join(", ");
+    . + {friction: friction, why: why}
+    | if $json then tojson else
+      (.time_use // {}) as $t | (.delivery // {}) as $d | (.activity // {}) as $a
+      | [ "\(.title | gsub("\n"; " ") | .[0:80]) (\(.session_id[0:8])), \(.project), updated \(.updated[0:16] | sub("T"; " ")): "
+          + "\(if .duration_s then .duration_s / 60 | dur else "-" end) wall, friction \(.friction), \(.cost_usd | usd), "
+          + "\(.prs_merged) of \(.prs | length) PRs merged",
+          "  Time      " + (if .time_use == null then "-" else
+            "work \($t.work_min | dur), gate \($t.gate_min | dur), tests \($t.test_min | dur), jobs \($t.jobs_min | dur), waiting on you \($t.human_min | dur), parked \($t.parked_min | dur)" end),
+          "  Stages    " + (if .delivery == null or $d.sampled == false then "never sampled by fleet-bench" else
+            ($d.minutes | ranked(dur) | if . == "" then "-" else . end)
+            + "; phases ticked \($d.ticked // 0); nudges \($d.nudges // 0), escalations \($d.escalations // 0); peak context \($d.peak_context | big)" end),
+          "  Cost      \(.cost_usd | usd)"
+            + (if .cost_by_model then ": " + (.cost_by_model | ranked(usd)) else "" end)
+            + "; account \(.account // "-"); \(.tokens_total | big) tokens",
+          "  Delivery  " + (if (.prs | length) == 0 then "no PR" else
+            "\(.prs_merged) merged, \(.prs_open) open, \(.prs_closed_unmerged) closed unmerged, \(.reverted_7d) reverted"
+            + " (" + (.prs | map("#\(.number)") | if length > 6 then .[0:6] + ["+\(length - 6) more"] else . end | join(" ")) + ")" end)
+            + (if $d.merged then "; +\($d.merged.lines_added) -\($d.merged.lines_deleted) landed; CI \($d.merged.ci_runs) runs, \($d.merged.ci_reds) red before merge" else "" end),
+          "  Friction  \(.friction)" + (if .why == "" then "" else " = " + .why end),
+          "  Activity  " + (if .activity == null then "no transcript" else
+            "\($a.tool_calls) tool calls, \($a.test_runs) test runs, \($a.ci_polls) CI polls"
+            + (if $a.compactions then ", \($a.compactions.auto + $a.compactions.manual) compactions (\($a.compactions.auto) auto)" else "" end)
+            + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
+          "  Uses      " + (if .uses == null then "-" else
+            ([ (.uses.skills | if length > 0 then "skills: " + ranked(tostring) else empty end),
+               (.uses.subagents | if length > 0 then "agents: " + ranked(tostring) else empty end),
+               (.uses.slash | if length > 0 then "commands: " + ranked(tostring) else empty end) ] | join("; ") | if . == "" then "nothing" else . end) end)
+        ] | join("\n")
+      end' <<<"$rows"
+}
+
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
+  card) shift; cmd_card "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
-  -h|--help) sed -n '2,19p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] | langfuse [--all]" >&2; exit 2 ;;
+  -h|--help) sed -n '2,25p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | langfuse [--all]" >&2; exit 2 ;;
 esac

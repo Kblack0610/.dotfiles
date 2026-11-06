@@ -1,14 +1,16 @@
 //! The fleet and day-log boards' files. Their own tools write them (`fleet-sessions tick`, run
 //! every minute by fleet-state.timer, and `day-log snapshot`, by day-log.timer); this module
-//! only parses them, for agent-web's Watch and Log tabs and the hub TUI's Sessions, Today and
-//! History tabs, so the surfaces can never disagree about what happened.
+//! only parses them, for agent-web's Watch and Log tabs and the hub TUI's Sessions and Log
+//! tabs, so the surfaces can never disagree about what happened.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
-/// Transitions sent to the Watch tab: about a day of a busy fleet, sync lines included.
+use crate::session_actions::Runner;
+
+/// Transitions sent to the Sessions tab: about a day of a busy fleet, sync lines included.
 pub const WATCH_LOG_LINES: usize = 1500;
 
 fn home() -> PathBuf {
@@ -28,6 +30,54 @@ pub fn fleet_state() -> PathBuf {
             .unwrap_or_else(|| home().join(".local/state"))
             .join("fleet/state.json")
     })
+}
+
+/// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
+pub fn asks_dir() -> PathBuf {
+    env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
+}
+
+/// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
+/// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
+/// home is agent-ask's store, so a board shows what the questions panel shows. A failed read
+/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does.
+pub fn state(path: &Path, r: &dyn Runner) -> Value {
+    let mut state = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null);
+    if !state.is_object() {
+        return state;
+    }
+    let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
+    match r.run(&argv) {
+        Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
+        Err(_) => {
+            state["asks"] = json!([]);
+            match state["unreadable"].as_array_mut() {
+                Some(u) => u.push("agent-ask".into()),
+                None => state["unreadable"] = json!(["agent-ask"]),
+            }
+        }
+    }
+    state
+}
+
+/// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
+fn asks(tsv: &str) -> Vec<Value> {
+    let some = |v: &str| (!v.is_empty()).then(|| v.to_string());
+    tsv.lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let col = |i: usize| f.get(i).copied().unwrap_or("");
+            json!({
+                "id": col(0), "project": col(1), "kind": col(4), "question": col(5),
+                "task": some(col(7)), "created": col(11), "session": some(col(12)),
+                "recommend": some(col(10)), "judge": some(col(16)),
+            })
+        })
+        .collect()
 }
 
 /// Where `fleet-sessions` keeps watch.log (`FLEET_SHEPHERD_DIR`).
@@ -118,6 +168,143 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
         cost_usd: total.and_then(|t| t["cost_usd"].as_f64()),
         tokens: total.and_then(|t| t["tokens"].as_u64()),
     }
+}
+
+/// The project a merged PR counts under: the `project` day-log writes, or for a record from
+/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+pub fn pr_project(pr: &Value) -> String {
+    match pr["project"].as_str() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => pr["repo"]
+            .as_str()
+            .map(|r| r.trim_start_matches('.').to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "other".into()),
+    }
+}
+
+/// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
+#[derive(Serialize, Debug, PartialEq, Default)]
+pub struct HourGrid {
+    /// Local hours of the day, first to last hour with a merge; empty when nothing merged.
+    pub hours: Vec<u32>,
+    /// One row per project, most merges first, then by name.
+    pub rows: Vec<HourRow>,
+    /// Merges per hour across every project, in `hours` order.
+    pub total: Vec<usize>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct HourRow {
+    pub project: String,
+    /// Merges per hour, in `hours` order.
+    pub counts: Vec<usize>,
+    pub total: usize,
+}
+
+/// `rec`'s merged PRs bucketed by the hour they merged in `tz`. A PR whose `merged_at` does not
+/// parse is left out of the grid.
+pub fn merges_by_hour<Tz: chrono::TimeZone>(rec: &Value, tz: &Tz) -> HourGrid {
+    use chrono::Timelike;
+    let mut per: std::collections::BTreeMap<String, [usize; 24]> = Default::default();
+    for pr in rec["merged"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let Some(at) = pr["merged_at"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        else {
+            continue;
+        };
+        per.entry(pr_project(pr)).or_insert([0; 24])[at.with_timezone(tz).hour() as usize] += 1;
+    }
+    let mut all = [0usize; 24];
+    for c in per.values() {
+        for (a, n) in all.iter_mut().zip(c) {
+            *a += n;
+        }
+    }
+    let (Some(a), Some(b)) = (
+        all.iter().position(|n| *n > 0),
+        all.iter().rposition(|n| *n > 0),
+    ) else {
+        return HourGrid::default();
+    };
+    let mut rows: Vec<HourRow> = per
+        .into_iter()
+        .map(|(project, c)| HourRow {
+            project,
+            counts: c[a..=b].to_vec(),
+            total: c.iter().sum(),
+        })
+        .collect();
+    rows.sort_by(|x, y| {
+        y.total
+            .cmp(&x.total)
+            .then_with(|| x.project.cmp(&y.project))
+    });
+    HourGrid {
+        hours: (a as u32..=b as u32).collect(),
+        rows,
+        total: all[a..=b].to_vec(),
+    }
+}
+
+/// The order the Log tabs list projects in: the hour grid's (most merges first), then the
+/// projects with only open PRs, most open first, then by name.
+pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
+    let mut order: Vec<String> = grid.rows.iter().map(|r| r.project.clone()).collect();
+    let mut rest: std::collections::BTreeMap<String, usize> = Default::default();
+    for pr in rec["open"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let p = pr_project(pr);
+        if !order.contains(&p) {
+            *rest.entry(p).or_insert(0) += 1;
+        }
+    }
+    let mut rest: Vec<(String, usize)> = rest.into_iter().collect();
+    rest.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    order.extend(rest.into_iter().map(|(p, _)| p));
+    order
+}
+
+/// `prs` in one group per project, groups in `order` and each keeping the order it was given; a
+/// project `order` does not name goes last, by name. Empty groups are left out.
+pub fn by_project<'a>(prs: &[&'a Value], order: &[String]) -> Vec<(String, Vec<&'a Value>)> {
+    let mut groups: Vec<(String, Vec<&'a Value>)> = vec![];
+    for pr in prs {
+        let p = pr_project(pr);
+        match groups.iter_mut().find(|g| g.0 == p) {
+            Some(g) => g.1.push(pr),
+            None => groups.push((p, vec![pr])),
+        }
+    }
+    let rank = |p: &str| order.iter().position(|o| o == p).unwrap_or(usize::MAX);
+    groups.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then_with(|| a.0.cmp(&b.0)));
+    groups
+}
+
+/// A day's record as the web Log reads it: every merged and open PR carries its `project`
+/// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
+/// `projects` (project_order), so the browser draws the grid and the groups and computes neither.
+pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
+    for k in ["merged", "open"] {
+        if let Some(a) = rec[k].as_array_mut() {
+            for pr in a {
+                let p = pr_project(pr);
+                if let Some(o) = pr.as_object_mut() {
+                    o.insert("project".into(), p.into());
+                }
+            }
+        }
+    }
+    let grid = merges_by_hour(&rec, tz);
+    let order = project_order(&rec, &grid);
+    if let Some(o) = rec.as_object_mut() {
+        o.insert(
+            "hours".into(),
+            serde_json::to_value(&grid).unwrap_or_default(),
+        );
+        o.insert("projects".into(), order.into());
+    }
+    rec
 }
 
 /// History charts span at most this many days; a record is about 130 KB.
@@ -213,17 +400,14 @@ pub fn parse_transition(line: &str) -> Option<Transition> {
 
 #[derive(Serialize)]
 pub struct Watch {
-    /// `state.json` exactly as `fleet-sessions --write` left it, or null when it is missing.
+    /// `state.json` as `fleet-sessions --write` left it with live asks (`state`), or null.
     pub state: Value,
     /// Oldest first.
     pub transitions: Vec<Transition>,
 }
 
-pub fn watch(state: &Path, log: &Path) -> Watch {
-    let state = std::fs::read_to_string(state)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
+pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
+    let state = self::state(state, r);
     let log = std::fs::read_to_string(log).unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
@@ -243,6 +427,12 @@ pub struct Phases {
     pub total: u64,
     /// The first unchecked phase.
     pub next: Option<String>,
+    /// fleet-bench's finish estimate as fleet-sessions wrote it: `HH:MM <basis>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta: Option<String>,
+    /// The same estimate as epoch seconds, so a view can tell a past one from a future one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_epoch: Option<i64>,
 }
 
 /// Each session's plan progress by its tmux target, from a `state.json` document. A session
@@ -260,6 +450,11 @@ pub fn phases(state: &Value) -> std::collections::HashMap<String, Phases> {
                     done: r["phases_done"].as_u64().unwrap_or(0),
                     total,
                     next: r["next_phase"].as_str().map(String::from),
+                    eta: r["eta"]
+                        .as_str()
+                        .filter(|e| !e.is_empty() && *e != "-")
+                        .map(String::from),
+                    eta_epoch: r["eta_epoch"].as_i64(),
                 },
             ))
         })
@@ -312,8 +507,8 @@ pub fn parse_rundown(file: &str, text: &str) -> Rundown {
     }
 }
 
-/// The newest `limit` rundowns in `dir`, newest first.
-pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
+/// Every rundown file name in `dir`, newest first.
+pub fn rundown_files(dir: &Path) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
@@ -324,6 +519,11 @@ pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
         .unwrap_or_default();
     files.sort_by_key(|f| std::cmp::Reverse(rundown_key(f)));
     files
+}
+
+/// The newest `limit` rundowns in `dir`, newest first.
+pub fn rundowns(dir: &Path, limit: usize) -> Vec<Rundown> {
+    rundown_files(dir)
         .into_iter()
         .take(limit)
         .filter_map(|f| {
@@ -404,9 +604,117 @@ mod tests {
     use super::*;
 
     #[test]
+    fn projects_list_by_merges_then_open_only_ones_and_group_in_that_order() {
+        let rec = serde_json::json!({
+        "merged": [
+            {"repo": "game", "merged_at": "2026-11-05T16:00:00Z"},
+            {"repo": ".dotfiles", "merged_at": "2026-11-05T16:00:00Z"},
+            {"repo": ".dotfiles", "merged_at": "2026-11-05T17:00:00Z"},
+        ],
+        "open": [
+            {"repo": "web", "number": 1}, {"repo": "api", "number": 2},
+            {"repo": "web", "number": 3}, {"repo": "game", "number": 4},
+        ]});
+        let order = project_order(&rec, &merges_by_hour(&rec, &chrono::Utc));
+        assert_eq!(order, vec!["dotfiles", "game", "web", "api"]);
+        let open: Vec<&Value> = rec["open"].as_array().unwrap().iter().collect();
+        let g: Vec<(String, Vec<u64>)> = by_project(&open, &order)
+            .into_iter()
+            .map(|(p, v)| (p, v.iter().map(|x| x["number"].as_u64().unwrap()).collect()))
+            .collect();
+        assert_eq!(
+            g,
+            vec![
+                ("game".into(), vec![4]),
+                ("web".into(), vec![1, 3]),
+                ("api".into(), vec![2])
+            ]
+        );
+    }
+
+    #[test]
+    fn the_log_view_stamps_every_pr_with_its_project_and_carries_the_grid() {
+        let rec = serde_json::json!({
+            "merged": [{"repo": ".dotfiles", "merged_at": "2026-11-05T16:00:00Z"},
+                       {"repo": "x", "project": "trader", "merged_at": "2026-11-05T16:00:00Z"}],
+            "open": [{"repo": "web"}]});
+        let v = log_view(rec, &chrono::Utc);
+        assert_eq!(v["merged"][0]["project"], "dotfiles");
+        assert_eq!(v["merged"][1]["project"], "trader");
+        assert_eq!(v["open"][0]["project"], "web");
+        assert_eq!(v["hours"]["hours"], serde_json::json!([16]));
+        assert_eq!(v["hours"]["rows"][0]["project"], "dotfiles");
+        assert_eq!(
+            v["projects"],
+            serde_json::json!(["dotfiles", "trader", "web"])
+        );
+    }
+
+    #[test]
+    fn merges_by_hour_counts_each_project_per_local_hour_busiest_first() {
+        let rec = serde_json::json!({"merged": [
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "2026-11-05T16:10:00Z"},
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "2026-11-05T16:50:00Z"},
+            {"repo": "unity-core-playground", "project": "unity-core-playground", "merged_at": "2026-11-05T18:05:00Z"},
+            {"repo": "freqtrade_trading_attempt", "project": "trader", "merged_at": "2026-11-05T18:30:00Z"},
+            {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "not a time"},
+        ]});
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        let g = merges_by_hour(&rec, &pst);
+        assert_eq!(g.hours, vec![8, 9, 10]);
+        assert_eq!(g.total, vec![2, 0, 2]);
+        let rows: Vec<_> = g
+            .rows
+            .iter()
+            .map(|r| (r.project.as_str(), r.counts.clone(), r.total))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("dotfiles", vec![2, 0, 0], 2),
+                ("trader", vec![0, 0, 1], 1),
+                ("unity-core-playground", vec![0, 0, 1], 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn merges_by_hour_uses_the_given_zone_across_midnight_utc() {
+        // 07:30Z is 23:30 the evening before at UTC-8, and 07:30 at UTC.
+        let rec =
+            serde_json::json!({"merged": [{"repo": "game", "merged_at": "2026-11-05T07:30:00Z"}]});
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        assert_eq!(merges_by_hour(&rec, &pst).hours, vec![23]);
+        assert_eq!(merges_by_hour(&rec, &chrono::Utc).hours, vec![7]);
+    }
+
+    #[test]
+    fn a_record_from_before_the_project_field_counts_by_repo_without_the_dot() {
+        let rec = serde_json::json!({"merged": [
+            {"repo": ".dotfiles-private", "merged_at": "2026-11-05T16:10:00Z"},
+            {"repo": "", "merged_at": "2026-11-05T16:10:00Z"},
+        ]});
+        let g = merges_by_hour(&rec, &chrono::Utc);
+        let names: Vec<_> = g.rows.iter().map(|r| r.project.as_str()).collect();
+        assert_eq!(names, vec!["dotfiles-private", "other"]);
+    }
+
+    #[test]
+    fn nothing_merged_is_an_empty_grid() {
+        assert_eq!(
+            merges_by_hour(&serde_json::json!({}), &chrono::Utc),
+            HourGrid::default()
+        );
+        assert_eq!(
+            merges_by_hour(&serde_json::json!({"merged": []}), &chrono::Utc),
+            HourGrid::default()
+        );
+    }
+
+    #[test]
     fn phases_are_keyed_by_target_and_skip_a_plan_with_no_checklist() {
         let state = serde_json::json!({"sessions": [
-            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags"},
+            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags", "eta": "18:20 p150", "eta_epoch": 1793900000},
             {"target": "lab/b:1", "phases_done": 2, "phases_total": 2, "next_phase": null},
             {"target": "lab/c:1", "phases_done": null, "phases_total": null},
         ]});
@@ -417,10 +725,16 @@ mod tests {
             Phases {
                 done: 3,
                 total: 6,
-                next: Some("4: weight tags".into())
+                next: Some("4: weight tags".into()),
+                eta: Some("18:20 p150".into()),
+                eta_epoch: Some(1793900000),
             }
         );
         assert_eq!(p["lab/b:1"].next, None);
+        assert_eq!(
+            p["lab/b:1"].eta, None,
+            "no estimate is none, not an empty string"
+        );
         assert!(phases(&Value::Null).is_empty());
     }
 
@@ -563,11 +877,49 @@ mod tests {
         assert_eq!(missing, None);
     }
 
+    /// A runner that answers every command the same, and records it.
+    struct Fixed(Result<String, String>);
+    impl Runner for Fixed {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            assert_eq!(argv.join(" "), "agent-ask list --all --pending");
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn state_reads_asks_live_and_names_a_failed_read() {
+        let dir = std::env::temp_dir().join(format!("hub-core-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("state.json");
+        // The snapshot holds an ask already answered and lacks one filed since.
+        std::fs::write(
+            &f,
+            r#"{"asks":[{"id":"old"}],"unreadable":[],"sessions":[]}"#,
+        )
+        .unwrap();
+        let tsv = "new\tdotfiles\t\tpending\tquestion\tWhich one?\ta|b\t\t\t\ta\t\
+                   2026-11-05T14:00:00-0800\tdotfiles-agent-1\t\t\t\ttake-recommend\n";
+        let s = state(&f, &Fixed(Ok(tsv.into())));
+        assert_eq!(s["asks"].as_array().unwrap().len(), 1);
+        assert_eq!(s["asks"][0]["id"], "new");
+        assert_eq!(s["asks"][0]["question"], "Which one?");
+        assert_eq!(s["asks"][0]["created"], "2026-11-05T14:00:00-0800");
+        assert_eq!(s["asks"][0]["session"], "dotfiles-agent-1");
+        assert_eq!(s["asks"][0]["task"], Value::Null);
+        assert_eq!(s["asks"][0]["recommend"], "a");
+        assert_eq!(s["asks"][0]["judge"], "take-recommend");
+        let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
+        assert_eq!(s["asks"], json!([]));
+        assert_eq!(s["unreadable"], json!(["agent-ask"]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn watch_survives_missing_files() {
         let w = watch(
             Path::new("/nonexistent/state.json"),
             Path::new("/nonexistent/log"),
+            &Fixed(Err("not run".into())),
         );
         assert_eq!(w.state, Value::Null);
         assert!(w.transitions.is_empty());

@@ -13,6 +13,7 @@
 #   focus.all                   profile  file  line  key  text
 #   ptask.<profile>.<project>   path  line  key  text
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
+#   stages                      the ladder `notes projects --stages` prints
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -57,10 +58,12 @@ case "${1:-}" in
         froze="$(cat "$FIX/roll.frozen" 2>/dev/null)"
         printf 'released %s: v1.0.0 -> v1.0.1%s\n' "${3:-x}" "${froze:+ (froze $froze)}"
         ;;
+      # `notes projects --stages` -> the ladder, from the `stages` fixture
+      --stages) emit stages ;;
       --version-of) emit "version-of.${3:-}" ;;
       # `notes projects --stage <name>` -> the bare stage tag, or nothing if undeclared
       --stage) emit "stage.${3:-}" ;;
-      # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done
+      # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done TAB open_weight TAB done_weight TAB unsized_open
       --roadmap) emit "roadmap.${3:-}" ;;
       # `notes projects --stats [--json]` -> every profile's projects with their open
       # counts, as TSV (`stats`) or the JSON array (`stats.json`)

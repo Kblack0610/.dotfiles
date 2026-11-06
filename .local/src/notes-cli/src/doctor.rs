@@ -47,6 +47,19 @@ impl Report {
     }
 }
 
+/// `notes doctor --projects --untyped`: the type proposed for each untyped agent-board row.
+pub fn untyped() -> Result<i32> {
+    let rows = crate::propose::untyped_report()?;
+    for r in &rows {
+        println!("{r}");
+    }
+    println!(
+        "{} untyped row(s); apply one with `notes ptask <project> --agent edit --was --text \"<row>\" -- <id>`",
+        rows.len()
+    );
+    Ok(0)
+}
+
 /// `notes doctor --projects`: every project in every profile against the project shape
 /// (`projects::SHAPE` plus its registry type's overlay), one line per finding and a count.
 /// Exit 0 either way: a finding is a WARN, never a broken vault. With no project registry
@@ -103,6 +116,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
 
     // 3. Heading validity on current daily notes
     check_headings(&mut r, p);
+
+    // 3b. Text in a recent Focus that no verb will move or carry
+    check_loose_focus(&mut r, p);
 
     // 4. Sync freshness (sync layer is owned elsewhere; we only observe)
     check_sync(&mut r);
@@ -321,6 +337,20 @@ fn check_gaps(r: &mut Report, p: &Profile) {
                     ""
                 }
             ),
+        );
+    }
+}
+
+fn check_loose_focus(r: &mut Report, p: &Profile) {
+    let found = crate::focus::loose_recent(p, crate::focus::LOOSE_DAYS);
+    if found.is_empty() {
+        r.add(Status::Pass, "loose focus", "every Focus line is an item");
+    }
+    for (note, lines) in found {
+        r.add(
+            Status::Warn,
+            "loose focus",
+            &crate::focus::loose_summary(&note, &lines),
         );
     }
 }

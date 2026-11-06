@@ -42,6 +42,31 @@ impl Feed {
         }
     }
 
+    /// The two headings: what needs the human, then the rest.
+    pub fn sections(&self) -> (&'static str, &'static str) {
+        match self {
+            Feed::Inbox => ("Needs you", "Handled today"),
+            _ => ("Needs attention", "Quiet"),
+        }
+    }
+
+    /// A line under the stat saying what the rows' words mean, for a feed whose rows lead with
+    /// a verb.
+    pub fn guide(&self) -> Option<&'static str> {
+        match self {
+            Feed::Inbox => Some(
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why - tick a handled row once read and it folds into +N reviewed",
+            ),
+            _ => None,
+        }
+    }
+
+    /// Whether rows in the second bucket show their sub-lines. A healthy watch's `at:` and
+    /// `do:` are noise; a planned inbox row's `added:` says what the planner wrote.
+    pub fn quiet_detail(&self) -> bool {
+        matches!(self, Feed::Inbox)
+    }
+
     pub fn slug(&self) -> &'static str {
         match self {
             Feed::Watches => "watches",
@@ -83,6 +108,23 @@ pub struct Page {
     /// Italic lead line, already carrying its own freshness stamp when the source has one.
     pub stat: Option<String>,
     pub rows: Vec<Row>,
+    /// Lines folded under one `+N reviewed` bullet closing the second bucket, each nested under
+    /// it: the rows the human marked read, kept so a mark can be taken back.
+    pub reviewed: Vec<String>,
+    /// Sections between the attention bucket and the quiet one, for what waits on the human but
+    /// is not an event of the feed; one with no lines is left out.
+    pub lead: Vec<Section>,
+    /// Sections after the two buckets, each a heading and its bullet lines (without `- `);
+    /// one with no lines is left out.
+    pub more: Vec<(String, Vec<String>)>,
+}
+
+/// A lead section: its heading, a guide line under it saying what to do, and its bullet lines
+/// (without `- `).
+pub struct Section {
+    pub heading: String,
+    pub guide: Option<String>,
+    pub lines: Vec<String>,
 }
 
 /// Where a feed's page lives: `<root>/status/<slug>.md`.
@@ -122,35 +164,60 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     if let Some(stat) = &page.stat {
         s.push_str(&format!("_{stat}_\n\n"));
     }
+    if let Some(guide) = feed.guide() {
+        s.push_str(&format!("{guide}\n\n"));
+    }
 
     let mut rows: Vec<&Row> = page.rows.iter().collect();
     rows.sort_by(|a, b| a.sort.cmp(&b.sort));
     let (attention, quiet): (Vec<&Row>, Vec<&Row>) = rows.into_iter().partition(|r| r.attention);
 
     let cap = feed.attention_cap();
-    s.push_str("## Needs attention\n");
+    let (needs, rest) = feed.sections();
+    s.push_str(&format!("## {needs}\n"));
     if attention.is_empty() {
         s.push_str("_Nothing needs you._\n");
     } else {
         for r in attention.iter().take(cap) {
-            s.push_str(&format!("- {}\n", r.head));
-            for (label, value) in &r.detail {
-                if !value.is_empty() {
-                    s.push_str(&format!("  - {label}: {value}\n"));
-                }
-            }
+            push_row(&mut s, r);
         }
         if attention.len() > cap {
             s.push_str(&format!("- ... and {} more\n", attention.len() - cap));
         }
     }
 
-    s.push_str("\n## Quiet\n");
-    if quiet.is_empty() {
+    for sec in page.lead.iter().filter(|x| !x.lines.is_empty()) {
+        s.push_str(&format!("\n## {}\n", sec.heading));
+        if let Some(g) = &sec.guide {
+            s.push_str(&format!("{g}\n\n"));
+        }
+        for l in &sec.lines {
+            s.push_str(&format!("- {l}\n"));
+        }
+    }
+
+    s.push_str(&format!("\n## {rest}\n"));
+    if quiet.is_empty() && page.reviewed.is_empty() {
         s.push_str("_Nothing._\n");
     } else {
         for r in &quiet {
-            s.push_str(&format!("- {}\n", r.head));
+            if feed.quiet_detail() {
+                push_row(&mut s, r);
+            } else {
+                s.push_str(&format!("- {}\n", r.head));
+            }
+        }
+        if !page.reviewed.is_empty() {
+            s.push_str(&format!("- +{} reviewed\n", page.reviewed.len()));
+            for l in &page.reviewed {
+                s.push_str(&format!("  - {l}\n"));
+            }
+        }
+    }
+    for (heading, lines) in page.more.iter().filter(|(_, l)| !l.is_empty()) {
+        s.push_str(&format!("\n## {heading}\n"));
+        for l in lines {
+            s.push_str(&format!("- {l}\n"));
         }
     }
 
@@ -171,6 +238,16 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     s
 }
 
+/// A row's bullet and its non-empty `- label: value` sub-bullets.
+fn push_row(s: &mut String, r: &Row) {
+    s.push_str(&format!("- {}\n", r.head));
+    for (label, value) in &r.detail {
+        if !value.is_empty() {
+            s.push_str(&format!("  - {label}: {value}\n"));
+        }
+    }
+}
+
 /// What [`publish`] did, so a caller can tell whether it is safe to strip the old section.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Outcome {
@@ -181,7 +258,7 @@ pub enum Outcome {
 
 /// Render and write a page, only when the bytes change.
 ///
-/// `source_present` is the cross-machine guard. The vault git-syncs between machines on a 30s
+/// `source_present` is the cross-machine guard. The vault git-syncs between machines on a 5 min
 /// timer and `git-sync-notes.sh` aborts the rebase and exits on conflict with no retry and no
 /// notification, so two machines disagreeing about one page silently wedges the sync rather
 /// than merely churning. A machine not hosting a feed's source leaves that page alone.
@@ -254,6 +331,9 @@ mod tests {
     fn render_is_byte_stable_across_runs() {
         let page = Page {
             feed: Feed::Watches,
+            reviewed: Vec::new(),
+            lead: Vec::new(),
+            more: Vec::new(),
             stat: Some("10 watches - 8 OK, 2 tripped".into()),
             rows: vec![
                 row(true, 0, "deploy-drift", "TRIP deploy-drift"),
@@ -269,6 +349,9 @@ mod tests {
     fn tripped_rows_sort_above_quiet_ones() {
         let page = Page {
             feed: Feed::Watches,
+            reviewed: Vec::new(),
+            lead: Vec::new(),
+            more: Vec::new(),
             stat: None,
             rows: vec![
                 row(false, 1, "pmp-api-health", "OK pmp-api-health"),
@@ -297,8 +380,11 @@ mod tests {
     fn page_has_frontmatter_and_a_footer_rule() {
         let page = Page {
             feed: Feed::Comms,
+            lead: Vec::new(),
+            more: Vec::new(),
             stat: Some("57 unread".into()),
             rows: vec![],
+            reviewed: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -324,8 +410,11 @@ mod tests {
             .collect();
         let page = Page {
             feed: Feed::Comms,
+            lead: Vec::new(),
+            more: Vec::new(),
             stat: None,
             rows,
+            reviewed: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -358,8 +447,11 @@ mod tests {
     fn watches(stat: Option<&str>, rows: Vec<Row>) -> Page {
         Page {
             feed: Feed::Watches,
+            lead: Vec::new(),
+            more: Vec::new(),
             stat: stat.map(str::to_string),
             rows,
+            reviewed: vec![],
         }
     }
 
@@ -383,7 +475,7 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
-    /// The cross-machine guard. The vault git-syncs on a 30s timer and the sync script aborts
+    /// The cross-machine guard. The vault git-syncs on a 5 min timer and the sync script aborts
     /// its rebase and exits on conflict, so a machine that does not host the source must not
     /// touch the page at all - not write it, and above all not blank it.
     #[test]
