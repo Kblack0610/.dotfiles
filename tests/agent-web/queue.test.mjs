@@ -44,3 +44,38 @@ test("a failed read says why beside pipeline -, and no data yet says reading", (
   assert.match(draw({ lines: ["pipeline -"], pipeline: null, error: "no prom", grafana: null }), /pipeline -.*no prom/);
   assert.match(draw(null), /reading Prometheus/);
 });
+
+const done = (o) => ({ state: "done", status: "ok", project: "p", slug: "s", title: "T", finished: "2026-11-06T12:00:00Z", started: "2026-11-06T11:00:00Z", ...o });
+const card = (i) => vm.runInContext(`qItem(${JSON.stringify(i)})`, ctx);
+
+test("a done item with a merged PR shows the PR link, merged, and its dollars", () => {
+  const html = card(done({ pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", pr_merged: true, cost: 6.1, cost_label: "$6.10" }));
+  assert.match(html, /PR <a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a> merged/);
+  assert.match(html, /\$6\.10/);
+  assert.doesNotMatch(html, /no PR, no proof/);
+});
+
+test("negative control: no PR and no report is flagged, and an unknown cost reads - , never $0", () => {
+  const html = card(done({ unproven: true }));
+  assert.match(html, /class="qbad"[^>]*>! no PR, no proof</);
+  assert.match(html, /<span title="dollars[^>]*>-<\/span>/);
+  assert.doesNotMatch(html, /\$0/);
+});
+
+test("a PR with no recorded merge says so, and a bare older PR number keeps its words", () => {
+  assert.match(card(done({ pr: "o/r#7", pr_label: "r#7", pr_url: "u", pr_merged: false })), /merge not recorded/);
+  assert.match(card(done({ pr: "1796", pr_label: "#1796", pr_url: null, pr_merged: false })), /PR #1796 merge not recorded/);
+  assert.match(card({ state: "running", project: "p", slug: "s", pr: "812" }), /PR 812/);
+});
+
+test("Done days carry hub-core's day total in the heading, one per day", () => {
+  const rows = [
+    done({ slug: "a", day: "2026-11-06", day_total: "2 done, 1 failed, $9.12" }),
+    done({ slug: "b", day: "2026-11-06", day_total: "2 done, 1 failed, $9.12", finished: "2026-11-06T11:00:00Z" }),
+    done({ slug: "c", day: "2026-11-04", day_total: "1 done, $4.00", finished: "2026-11-04T12:00:00Z" }),
+  ];
+  const html = vm.runInContext(`qDoneDays(${JSON.stringify(rows)})`, ctx);
+  assert.equal((html.match(/<h3 class="qday">/g) || []).length, 2);
+  assert.match(html, /<span class="muted">2 done, 1 failed, \$9\.12<\/span>/);
+  assert.match(html, /<span class="muted">1 done, \$4\.00<\/span>/);
+});

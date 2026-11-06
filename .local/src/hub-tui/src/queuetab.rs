@@ -6,7 +6,7 @@
 //! the Projects tab's Start (`fleet-dispatch promote`). Every write goes through hub-core.
 
 use hub_core::pipeline::{self, Pipeline};
-use hub_core::queue::{Candidate, Candidates, Item, Queue, State, SECTIONS};
+use hub_core::queue::{money, Candidate, Candidates, DayTotal, Item, Queue, State, SECTIONS};
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
@@ -182,10 +182,20 @@ fn state(i: &Item, p: Palette) -> Cell {
         State::Done => {
             let st = i.status.clone().unwrap_or_default();
             let style = if st == "ok" { p.good() } else { p.bad() };
-            match &i.pr {
-                Some(pr) => cell(format!("{st}, PR {pr}"), style),
-                None => cell(st, style),
+            let mut out = st;
+            if let Some((label, _)) = i.pr_link() {
+                out += &format!(", PR {label}");
+                if i.merged() {
+                    out += " merged";
+                }
             }
+            if let Some(c) = i.cost() {
+                out += &format!(" {}", money(c));
+            }
+            if i.unproven() {
+                out += ", ! no PR, no proof";
+            }
+            cell(out, style)
         }
     }
 }
@@ -285,11 +295,14 @@ pub fn page(
             continue;
         }
         out.push(Line::raw(""));
-        out.push(heading(
-            &title.to_uppercase(),
-            format!("  {}", rows.len()),
-            p,
-        ));
+        let mut count = format!("  {}", rows.len());
+        if s == State::Done {
+            let detail = DayTotal::of(rows.iter().copied()).detail();
+            if !detail.is_empty() {
+                count += &format!("  {detail}");
+            }
+        }
+        out.push(heading(&title.to_uppercase(), count, p));
         if rows.is_empty() {
             let what = if s == State::Done {
                 "finished today"
@@ -522,6 +535,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_done_row_shows_pr_merge_and_dollars_and_flags_a_finish_with_no_proof() {
+        let mut q = fixture();
+        q.items.extend(hub_core::queue::parse(concat!(
+            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"M"}"#,
+            "\n",
+            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"N"}"#,
+            "\n",
+        )));
+        let s = text(&q, &QueueView::default(), 200);
+        assert!(s.contains("ok, PR r#7 merged $6.10"), "{s}");
+        assert!(s.contains("ok, ! no PR, no proof"), "{s}");
+        assert!(s.contains("DONE TODAY  3  $6.10, 2 unpriced"), "{s}");
+        assert!(!s.contains("$0"), "{s}");
+    }
+
+    #[test]
     fn the_page_has_the_web_pages_sections_in_order() {
         let q = fixture();
         let s = text(&q, &QueueView::default(), 160);
@@ -532,7 +561,7 @@ pub(crate) mod tests {
         assert!(s.contains("4 done (3 ok, 0 failed, 1 cancelled)"), "{s}");
         assert!(s.contains("to PR median 95m"), "{s}");
         assert!(s.contains("waits: night (01:00-06:00)"), "{s}");
-        assert!(s.contains("ok, PR 812"), "{s}");
+        assert!(s.contains("ok, PR #812"), "{s}");
         assert!(
             s.contains("plan heavy"),
             "the weight shows beside the mode\n{s}"
