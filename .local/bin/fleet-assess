@@ -8,7 +8,8 @@
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
 # Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
-# (under the low mark while a hold is set: safe to send GO), OK (nothing to do).
+# (under the low mark while a hold is set: safe to send GO), OK (nothing to do). For
+# --watch-probe a tripped fleet-thermal watch counts as a hold.
 # Load is the primary signal. Tctl alone is not: a Zen 4 part boosts until it reads 95 C,
 # so 90s under one busy thread is by design. Thresholds are the FLEET_* block below.
 
@@ -28,6 +29,7 @@ set -uo pipefail
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
+WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
 fleet_verdict() {
@@ -361,6 +363,9 @@ main() {
   local load cores tctl mem held=0 verdict blocked
   load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"
   holds_set && held=1
+  # The watch's own trip counts as a hold, so it clears at the low mark. With no hold set it
+  # cleared at the first dip under 1.75x: about 31 trips and 63 pages in the 7 days to 2026-11-06.
+  [ "${1:-}" != --watch-probe ] || [ "$(cat "$WATCH_TRIP_FILE" 2>/dev/null)" != TRIP ] || held=1
   verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held")"
 
   if [ "${1:-}" = --watch-probe ]; then
