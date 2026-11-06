@@ -84,7 +84,10 @@ LABELS="$LEDGER/labels"
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
 #                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)> \
-#                <dirty names: the first dirty paths, shown beside the count, or ->
+#                <dirty names: the first dirty paths, shown beside the count, or -> \
+#                <landed: this session's own PRs ("#N,#M") when its transcript names some and all
+#                 merged, or -; a session in the main checkout lands from worktrees, so its
+#                 branch never has a PR of its own>
 #   -> "BUCKET reason"
 # Who must act decides before whether the session is active: an ask waits on the human, and
 # a PR that is otherwise ready but cannot merge wastes the wait, however busy the session is.
@@ -132,7 +135,8 @@ session_bucket() {
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
-        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm=""
+        pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm="" \
+        landed="${19:--}"
   [ "${18:--}" = - ] || nm=" (${18})"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
@@ -156,6 +160,7 @@ bucket_facts() {
     *)
       if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s)$nm, no PR"
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
+      elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1
       else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0; fi ;;
   esac
 }
@@ -177,6 +182,7 @@ work_blockers() {
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
         red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm=""
   [ "${18:--}" = - ] || nm=" (${18})"
+  [ "$state" = - ] && [ "${19:--}" != - ] && merged=1
   if [ -n "$ids" ]; then
     for id in ${ids//,/ }; do b+=("open ask $id"); done
   elif [ "$asks" -gt 0 ]; then b+=("$asks open ask(s)"); fi
@@ -653,7 +659,7 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -666,6 +672,7 @@ collect() {
        (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
     prs="$(session_prs "$transcript")"
+    landed="$(jq -r 'if length > 0 and all(.state == "MERGED") then map("#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
@@ -697,11 +704,11 @@ collect() {
       fi
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed")"
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
