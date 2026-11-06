@@ -27,6 +27,8 @@ LIB="$HERE/../lib"
 . "$LIB/agent-proof.sh"
 # shellcheck source=/dev/null
 . "$LIB/md-render.sh"
+# shellcheck source=/dev/null
+. "$LIB/inbox-epics.sh"
 
 DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0
@@ -133,7 +135,7 @@ homes_rule() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open prompt out
+  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
@@ -149,6 +151,7 @@ route() {
     [.rows[] | select(.project != null and .state != "done" and .id != null)] | group_by(.project)[]
     | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  epics="$(epics_open "$board")"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
 A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
@@ -160,9 +163,12 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human. plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing.
 skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for.
+A filed row that plainly belongs to an open epic of its project ends with #of/<the epic's id>. When none plainly fits, add no #of.
 
 ## Lines
 $batch
+## Open epics (id, project, title)
+$epics
 ## Open rows (id, project, lane, text)
 $open"
   ask "$prompt" || { say "model call failed: ${WHY:-no output}"; return 1; }
@@ -190,7 +196,7 @@ $open"
         else
           IFS=$'\x1e' read -r -a rowv <<<"$rows"
           for r in "${rowv[@]}"; do
-            r="$(clean 150 <<<"$r")"
+            r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
             if [ -n "$plan" ] && [ "${#args[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
             [ -n "$r" ] && args+=(--as "$r")
           done
@@ -231,7 +237,8 @@ pt() {
 
 # backlog <project> <lane> <board json> <project names> <homes>: one lane's open rows, in batches.
 backlog() {
-  local p="$1" lane="$2" board="$3" names="$4" homes="$5" rows total off rc=0
+  local p="$1" lane="$2" board="$3" names="$4" homes="$5" rows total off rc=0 epics
+  epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
   # model sees as context and which go wherever the row goes.
   # shellcheck disable=SC2016 # jq source, not shell
@@ -242,13 +249,13 @@ backlog() {
     | sort_by(.text | ascii_downcase)' <<<"$board")"
   total="$(jq length <<<"$rows")"
   for ((off = 0; off < total; off += INBOX_TRIAGE_MAX)); do
-    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$INBOX_TRIAGE_MAX" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" || rc=1
+    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$INBOX_TRIAGE_MAX" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" "$epics" || rc=1
   done
   return "$rc"
 }
 
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" listing prompt out
+  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" epics="$6" listing prompt out
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
@@ -269,6 +276,10 @@ dup: only when another row in this list asks for the same thing; never the row's
 drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
 A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
+A row you rewrite that plainly belongs to an open epic below ends with #of/<the epic's id>. When none plainly fits, add no #of.
+
+## Open epics of this project (id, project, title)
+$(epics_of "$p" "$epics")
 ## Rows (n. [id] text, child rows indented)
 $listing"
   ask "$prompt" || { say "$p ($lane): model call failed: ${WHY:-no output}"; return 1; }
@@ -291,7 +302,7 @@ $listing"
     [ "${kids[n - 1]}" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
     case "$action" in
       rewrite)
-        row="$(clean 150 <<<"$row")"
+        row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
         if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
           REWROTE=$((REWROTE + 1))
           # the row's line changed, so the move names it by its id

@@ -179,6 +179,34 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx '  was: other needs a logo' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
 }
 
+@test "a filed row keeps an #of/ naming an open epic of its project and only loses a bad one" {
+  sheet '- the gun sound is off\n- the menu flickers\n' '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound is off #high #size/s #of/sc-9"]}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the menu flickers #low #size/s #of/sc-404"]}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2, left 0, refused 0'
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9'
+  assert_output --partial 'fix(ui): the menu flickers'
+  refute_output --partial 'sc-404'
+  grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
+}
+
+@test "--backlog: a rewrite keeps an #of/ naming an open epic and only loses a bad one" {
+  sheet '' '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] gun sound is off #low <!-- id:sc-1 -->\n- [ ] menu flickers #low <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "action": "keep"}' \
+    '{"n": 2, "action": "rewrite", "row": "fix(audio): the gun sound is off #size/s #of/sc-9"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(ui): the menu flickers #size/s #of/sc-404"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9'
+  assert_output --partial 'fix(ui): the menu flickers'
+  refute_output --partial 'sc-404'
+  grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
+}
+
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
   sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
   # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)

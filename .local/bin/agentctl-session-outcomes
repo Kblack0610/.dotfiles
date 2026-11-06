@@ -23,7 +23,11 @@
 # counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
 # escalations, merged PRs with their lines and CI reds), read once per run. The account is the
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR.
+# An opencode session has no registry row, so its line comes from opencode's DB (so_opencode_rows).
+# `harness` on a line is claude, or what the queue item it worked says. A gateway item's real spend
+# goes on the item as gateway_cost_usd (gateway_push).
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
+# SO_OPENCODE_DB SO_PROJECT_LIB SO_HARNESSES.
 
 set -uo pipefail
 
@@ -37,6 +41,8 @@ RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
 BENCH="${SO_BENCH:-fleet-bench}"
 QUEUE="${SO_QUEUE:-agent-queue}"
+OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
+HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
 # Money as `worst` and `card` print it.
 FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
@@ -76,11 +82,17 @@ cmd_run() {
 
   so_latest "$OUT" > "$work/seen.jsonl" || die_stalled "could not read $OUT"
 
+  # A DB opencode's next upgrade reshapes loses its lines and says so, like the bench below: it must
+  # not stall every Claude session's row. Nothing reads as zero, because no line is written.
+  local oc_note=""
+  so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
+    { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
+
   # Registry rows due for an observation. A session id can sit in two project files
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | jq -cnR --slurpfile seen "$work/seen.jsonl" \
+  fi | cat - "$work/opencode.jsonl" | jq -cnR --slurpfile seen "$work/seen.jsonl" \
         --argjson now "$NOW" --argjson days "$FINAL_DAYS" --argjson all "$all" '
       ($seen | map({key: .session_id, value: .}) | from_entries) as $s
       | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
@@ -94,9 +106,21 @@ cmd_run() {
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
-    proof_report "$NAME" NOOP "nothing due; $(lf_push "" "$work")"
+    proof_report "$NAME" NOOP "nothing due$oc_note; $(gateway_push); $(lf_push "" "$work")"
     return 0
   fi
+
+  # What the queue knows of a session: the harness it ran on and, for opencode, the PR the brief set.
+  local queue_note=""
+  "$QUEUE" list --json --state all 2>/dev/null | jq -cn '[inputs | select(.sessions) | . as $i
+      | (.sessions | split(" "))[] | {key: ., value: {agent: $i.agent, pr: $i.pr}}] | from_entries' > "$work/queue.json" ||
+    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude"; }
+  jq -c --slurpfile q "$work/queue.json" '($q[0][.session_id] // {}) as $i
+      | .harness = (.harness // $i.agent // "claude")
+      | if .harness == "opencode" then
+          .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
+        else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
+    die_stalled "could not join the due sessions to the queue"
 
   # Transcript metrics, one file per due session. A pruned transcript yields null
   # metrics rather than a skipped session: the registry row (cost, edits) still counts.
@@ -120,7 +144,7 @@ cmd_run() {
   # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
   # what tripped the 403 rate limit.
   local repo
-  cat "$work"/m.*.json | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
+  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
   printf '{}' > "$work/index.json"
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
@@ -162,12 +186,13 @@ cmd_run() {
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
-      | [ ($mm.prs // [])[] | . as $p
+      | [ (($mm.prs // []) + ($row.prs // []))[] | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
           | {repo: $p.repo, number: $p.number, state, merged_at, reverted} ] as $prs
       | { session_id: $row.session_id,
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
+          harness: $row.harness,
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),
@@ -210,8 +235,8 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note; $(ledger_push); $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note; $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
@@ -238,6 +263,36 @@ ledger_push() {
     if "$QUEUE" set "$slug" ${kv//$'\t'/ } >/dev/null 2>&1; then n=$((n + 1)); else bad=$((bad + 1)); fi
   done <<<"$lines"
   if [ "$bad" -eq 0 ]; then echo "ledger $n item(s) updated"; else echo "ledger $n item(s) updated, $bad failed"; fi
+}
+
+# gateway_push - what each gateway item really cost: every item on another harness than claude,
+# active or finished in the last FINAL_DAYS days, gets gateway_cost_usd from the spend tagged
+# queue:<slug>. Runs on the NOOP path too, so an item's cost never waits on an unrelated session, and
+# with its own `agent-queue set`, so a failure cannot take cost_usd with it. The endpoint needs both
+# dates, in UTC, and lags calls by a minute or so. A failed read, or a tag with no requests yet,
+# leaves the field as it is: empty means unknown, and $0 would be a claim. Prints one status phrase.
+gateway_push() {
+  local items since url file key slug from cur body v to n=0 bad=0
+  [ -r "$HARNESSES" ] || { echo "gateway skipped, no harness map"; return 0; }
+  since="$(date -u -d "@$((NOW - FINAL_DAYS * 86400))" +%F)"
+  to="$(date -u -d "@$NOW" +%F)"
+  items="$("$QUEUE" list --json --state all --since "$since" 2>/dev/null |
+    jq -r 'select(.started and (.agent // "claude") != "claude") | [.slug, .started[0:10], .gateway_cost_usd // ""] | @tsv')" ||
+    { echo "gateway ledger unreadable"; return 0; }
+  [ -n "$items" ] || { echo "gateway 0 item(s)"; return 0; }
+  url="$(jq -r .gateway.url "$HARNESSES")"
+  file="$(jq -r '.gateway.reader_key_file | sub("^~"; env.HOME)' "$HARNESSES")"
+  key="$(cat "$file" 2>/dev/null)" || { echo "gateway reader key unreadable"; return 0; }
+  while IFS=$'\t' read -r slug from cur; do
+    # The key goes in on stdin, off the process list.
+    body="$("$CURL" -fsS -m 20 -K - "$url/tag/daily/activity?tags=queue:$slug&start_date=$from&end_date=$to" \
+      <<<"header = \"Authorization: Bearer $key\"" 2>/dev/null)" || { bad=$((bad + 1)); continue; }
+    v="$(jq -er '.metadata | if .total_api_requests > 0 then .total_spend * 10000 | round / 10000 else "" end' <<<"$body" 2>/dev/null)" ||
+      { bad=$((bad + 1)); continue; }
+    [ -n "$v" ] && [ "$v" != "$cur" ] || continue
+    if "$QUEUE" set "$slug" "gateway_cost_usd=$v" >/dev/null 2>&1; then n=$((n + 1)); else bad=$((bad + 1)); fi
+  done <<<"$items"
+  if [ "$bad" -eq 0 ]; then echo "gateway $n item(s) updated"; else echo "gateway $n item(s) updated, $bad failed"; fi
 }
 
 # lf_push [--all] WORKDIR - send every session's newest row observed after the mark (all
