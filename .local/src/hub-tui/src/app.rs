@@ -746,7 +746,7 @@ impl App {
         };
         let null = serde_json::Value::Null;
         let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
-        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), &l.repos)
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref())
     }
 
     /// Open the project a `hub tab projects <name>` named, once the cards are read.
@@ -2726,7 +2726,6 @@ mod tests {
                 stat("personal", "garden", 1, 1),
                 stat("bnb", "demo", 1, 3),
             ]),
-            repos: Default::default(),
         }
     }
 

@@ -5,8 +5,6 @@
 //! comes back here, as Backspace does at once. `P` steps the selected project's priority
 //! (normal, focus, high, low); app.rs runs the write. This file reads and writes nothing.
 
-use std::collections::HashMap;
-
 use hub_core::page::Page;
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
@@ -18,21 +16,15 @@ use crate::fit::{clip_line, wrap};
 use crate::fmt::Palette;
 use crate::tasktab::{Kind, Prompt, TaskView};
 
-/// One read of the cards' inputs that are not the board feed: `notes projects --stats --json`
-/// and project-map.json's repos (the queue join).
+/// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
 #[derive(Debug)]
 pub struct Loaded {
     pub stats: Result<Vec<Stats>, String>,
-    pub repos: HashMap<String, String>,
 }
 
 pub fn load(runner: &dyn Runner) -> Loaded {
-    let repos = std::fs::read_to_string(projects::map_path())
-        .map(|t| projects::repos(&t))
-        .unwrap_or_default();
     Loaded {
         stats: projects::stats(runner),
-        repos,
     }
 }
 
