@@ -23,22 +23,12 @@
 #                                     reason, CI runs and reruns, PR open to merged, conflicts,
 #                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
-# Buckets: WORKING, NEEDS (the human), DONE (wind it down), LANDED (queue the next phases, wind down),
-# STALLED (nudge once), UNCLEAR, PARKED (`claude-acct park` exited it: never nudged or
-# escalated, `claude-acct unpark` resumes it), plus one NIGHTLY row per repo whose default branch is red
-# (the latest decided run of a workflow failed; in practice a nightly or scheduled suite, since the
-# PR gate keeps main green), naming the PRs merged since that workflow was
-# last green. DONE means every line of the plan's `## Phases` checklist is `[x]` or `[-]`, or
-# the unchecked ones are queue items (another active item names the plan, PLAN_ITEMS_JQ),
-# nothing it made is unlanded, no ask is open, and it is idle. The --json `finished` field
-# is DONE without the idle and status checks, so a session can check its own row mid-turn,
-# and `blockers` lists every reason it is false. A plan with no checklist counts as one phase:
-# its PR merged with the tree clean is DONE.
-# A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
-# A pending ask (NEEDS; the one record of waiting on the human, which a Stop check makes an
-# attended session file; `, carrying on` while the session is busy or in a gate shell, which keeps
-# WORKING's overdue check) and a ready open PR that conflicts with the default branch (STALLED)
-# decide before the session's status, so none can hide behind WORKING or read as DONE.
+# Buckets: PARKED, NEEDS, STALLED, WORKING, LANDED, DONE and CHAT, one per session, plus one NIGHTLY
+# row per repo whose default branch is red. Each is defined once, with its entry facts, exit,
+# actor, action and pinning test, in the bucket table of .local/src/docs/fleet-states.md, and
+# tests/unit/fleet_states_doc.bats fails when the words emitted here differ from that table.
+# The --json `finished` field is DONE without the idle and status checks, so a session can check
+# its own row mid-turn, and `blockers` lists every reason it is false.
 # Facts come from agent-panel, git, gh and the ask queue; no model. The shepherd skill's
 # `status` and `nudge` verbs read this. Thresholds are the FLEET_* block below.
 
@@ -161,7 +151,7 @@ bucket_facts() {
   [ "$idle" -lt "$FLEET_IDLE_MIN" ] && { echo "WORKING idle ${idle}m"; return; }
   # wt done reaps a worktree once its work landed; nothing is left here to land or lose.
   [ "$git" = gone ] && { echo "DONE its worktree was removed"; return; }
-  [ "$git" = 1 ] || { echo "UNCLEAR not in a git repo"; return; }
+  [ "$git" = 1 ] || { echo "CHAT not in a git repo"; return; }
   case "$state" in
     MERGED)
       # A merge that may have turned a nightly red is not landed, whatever the tree says.
@@ -240,9 +230,9 @@ work_blockers() {
 # or no plan file, is one phase of work: DONE once its PR merged. Without a merged PR, no
 # checklist is LANDED asking for one. No plan file goes by the queue item: one that moved on
 # (done, requeued, or running in another session) is DONE, one still running here with nothing
-# on the branch is STALLED, and with no item it is the human's call (usually a conversation,
-# which closing on idle would cut off). 2026-11-05: agent-26 sat 22.5h and agent-21 a day
-# after their items were requeued, escalated once and never wound down.
+# on the branch is STALLED, and with no item it is CHAT, the human's own conversation, which
+# closing on idle would cut off (the shepherd waits FLEET_CHAT_CLOSE_H). 2026-11-05: agent-26
+# sat 22.5h and agent-21 a day after their items were requeued, escalated once and never wound down.
 plan_bucket() {
   local why="$1" phases="$2" next="$3" merged="${4:-0}" item="${5:--}"
   case "$phases" in
@@ -250,7 +240,7 @@ plan_bucket() {
           else case "$item" in
             moved:*) echo "DONE $why, no plan file, its item ${item#moved:}" ;;
             own:*)   echo "STALLED $why, no plan file, its item ${item#own:} is running here" ;;
-            *)       echo "UNCLEAR $why, no plan file: done or never started" ;;
+            *)       echo "CHAT $why, no plan file, no queue item: the human's conversation" ;;
           esac; fi ;;
     none) if [ "$merged" = 1 ]; then echo "DONE $why, single-phase plan, its PR landed"
           else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
@@ -862,7 +852,7 @@ board_cells() {
       return name ? wait_names[name] " " hrs(top) : "-"
     }
     BEGIN {
-      n = split("NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
+      n = split("NEEDS STALLED DONE LANDED CHAT WORKING PARKED", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
@@ -1029,7 +1019,7 @@ write_state() {
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
       # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.
       | .counts = ((.sessions | map(select((.labels // []) | index("shepherd") | not) | .bucket)) as $b
-          | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "PARKED"] + $b | unique)
+          | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "PARKED"] + $b | unique)
           | map(. as $k | {key: $k, value: ($b | map(select(. == $k)) | length)}) | from_entries)' > "$tmp"; then
     rm -f "$tmp"; echo "fleet-sessions: could not build $STATE_FILE" >&2; return 1
   fi
@@ -1098,7 +1088,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in NIGHTLY NEEDS STALLED DONE LANDED UNCLEAR WORKING PARKED; do
+  for b in NIGHTLY NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do

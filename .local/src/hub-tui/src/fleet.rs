@@ -17,7 +17,7 @@ use hub_core::layout::FOLD_ROWS;
 
 /// Buckets in the order the board lists them: what needs the human first.
 const RANK: [&str; 7] = [
-    "NEEDS", "STALLED", "DONE", "LANDED", "UNCLEAR", "WORKING", "PARKED",
+    "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED",
 ];
 
 /// A bucket's place in RANK; an unknown one sorts last.

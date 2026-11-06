@@ -2,10 +2,11 @@
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
 # The bar is the robot and three totals, "<robot> ~22 <check>1 !9": ~ working (WORKING, amber), the
 # check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red above 0),
-# each shown at 0 so the bar keeps its shape. STALLED and UNCLEAR are in none of the three; the robot's colour
-# carries them. The robot is the fleet's health:
+# each shown at 0 so the bar keeps its shape. STALLED is in none of the three; the robot's colour
+# carries it. CHAT (the human's own conversation) and PARKED are not in progress and carry no colour.
+# The robot is the fleet's health:
 #   red    a host's fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
-#   amber  a session is STALLED or UNCLEAR, or Prometheus has no session numbers: a session wants
+#   amber  a session is STALLED, or Prometheus has no session numbers: a session wants
 #          a look, which is not a broken fleet
 #   green  otherwise
 # The hover has the stage counts, then one section per tmux world (hub, lab: the part of the
@@ -60,25 +61,25 @@ mapfile -t rows < <(jq -r '
          idle: (map(select(.n == "agent_session_idle_minutes") | .v) | max)})
   | map(select(.age != null or .idle != null))
   | map(. + {w: (if (.t | contains("/")) then (.t | split("/")[0]) else "other" end),
-             s: ({STALLED: 0, UNCLEAR: 1, NEEDS: 2, WORKING: 3, LANDED: 4, DONE: 5, PARKED: 6}[.b] // 7)})
+             s: ({STALLED: 0, NEEDS: 1, WORKING: 2, LANDED: 3, DONE: 4, CHAT: 5, PARKED: 6}[.b] // 7)})
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
   | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-")] | map(tostring) | join("|")' <<< "$raw")
 
 # stage_paint <stage> <text>: amber for what wants a look, plain for the rest.
 stage_paint() {
   case "$1" in
-    STALLED|UNCLEAR|NEEDS) paint "$C_YEL" "$2" ;;
+    STALLED|NEEDS) paint "$C_YEL" "$2" ;;
     *) printf '%s' "$2" ;;
   esac
 }
 
 # counts <rows...>: "N in progress: 3 working, 2 need you, ..." for those rows, zeros left out.
-in_progress() { case "$1" in WORKING|NEEDS|STALLED|UNCLEAR) return 0 ;; esac; return 1; }
+in_progress() { case "$1" in WORKING|NEEDS|STALLED) return 0 ;; esac; return 1; }
 counts() {
   local -A c=()
   local r b n=0 k label out=''
   for r in "$@"; do IFS='|' read -r _ b _ <<< "$r"; c[$b]=$((${c[$b]:-0} + 1)); in_progress "$b" && n=$((n + 1)); done
-  for k in WORKING:working NEEDS:'need you' STALLED:stalled UNCLEAR:unclear LANDED:landed DONE:done PARKED:parked; do
+  for k in WORKING:working NEEDS:'need you' STALLED:stalled LANDED:landed DONE:done CHAT:chat PARKED:parked; do
     label="${k#*:}" k="${k%%:*}"
     ((${c[$k]:-0} > 0)) || continue
     out+=", $(stage_paint "$k" "${c[$k]}") $label"
@@ -87,13 +88,12 @@ counts() {
   [ -n "$out" ] && printf ': %s' "${out#, }"
 }
 
-total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 n_unclear=0 width=8
+total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ <<< "$r"
   in_progress "$b" && total=$((total + 1))
   case $b in WORKING) n_work=$((n_work + 1)) ;; LANDED|DONE) n_ready=$((n_ready + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
-  [ "$b" = UNCLEAR ] && n_unclear=$((n_unclear + 1))
   ((${#t} > width)) && width=${#t}
 done
 
@@ -102,7 +102,6 @@ if ! jq -e 'any(.data.result[]; .metric.__name__ == "node_textfile_mtime_seconds
   flag 1 "no fleet_sessions.prom on Prometheus: fleet-sessions tick writes it"
 fi
 ((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
-((n_unclear > 0)) && flag 1 "$n_unclear session(s) UNCLEAR: no repo, or its PR closed unmerged"
 
 head="$title  $(counts "${rows[@]}")"
 tip="$head"
@@ -125,7 +124,6 @@ for r in "${rows[@]}"; do
   line="$(pango_esc "$line")"
   case "$b" in
     STALLED) line="$(paint "$C_YEL" "$line")" ;;
-    UNCLEAR) line="$(paint "$C_YEL" "$line")" ;;
   esac
   body+=$'\n'"$line"
 done

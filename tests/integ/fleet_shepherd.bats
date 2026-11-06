@@ -125,6 +125,45 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_failure
 }
 
+# chat <target> <nudged> <escalated> <idle_min> [age_min]: a CHAT row, quiet for the lesser of the two
+chat() { row "$1" CHAT "$2" "$3" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
+
+@test "a CHAT row is due only past FLEET_CHAT_CLOSE_H, then nudged once and escalated once" {
+  doc "[$(chat a false false 60), $(chat b false false 1440), $(chat c false false 2000 30), $(row d CHAT false false)]"
+  run "$SH" due
+  assert_success
+  assert_output 'nudge CHAT: b f-b'
+  FLEET_CHAT_CLOSE_H=1 run "$SH" due
+  assert_line 'nudge CHAT: a f-a'
+  refute_output --partial ' c '
+  doc "[$(chat b true false 1500)]"
+  run "$SH" due
+  assert_output 'escalate CHAT: b r-b'
+  doc "[$(chat b true true 3000)]"
+  run "$SH" due
+  assert_failure
+  assert_output ''
+}
+
+# prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
+prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
+
+@test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {
+  doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
+  printf 'q3\t1\tparked\nq2\t1\textended\n' > "$FLEET_SHEPHERD_DIR/.budget"
+  run "$SH" due
+  assert_success
+  assert_output 'pace: parked lab/p:1, lab/q:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  STUB_HOLDS=$'unity\tx' run "$SH" due
+  refute_output --partial 'pace: parked'
+  STUB_VERDICT=HOLD run "$SH" due
+  assert_output 'pace: machine reads HOLD with no hold set'
+  # Negative control: with no budget park on record, q3's session is unparked too.
+  rm "$FLEET_SHEPHERD_DIR/.budget"
+  run "$SH" due
+  assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+}
+
 @test "run with nothing due still starts a pass, told so, and refreshes the document" {
   doc "[$(row a WORKING false false)]"
   run "$SH" run
@@ -147,7 +186,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
 }
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
-  doc "[$(row a NEEDS false true)]"
+  doc "[$(row a NEEDS false true), $(chat b true true 3000)]"   # CHAT is not attention: not counted
   "$SH" run
   "$SH" run
   run cat "$HOME/pages"
