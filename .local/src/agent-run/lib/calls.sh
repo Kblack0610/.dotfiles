@@ -14,8 +14,10 @@ AGENTCTL_CALLS="${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl
 CALLS_RAW_MAX=4096
 # A call that stopped at its per-call cap (--max-budget-usd; the result's subtype
 # error_max_budget_usd) exits this, so a caller can shrink its batch on the code, never on text.
-# 75 is budget_stop's: the call was not made at all.
 CALLS_RC_CAPPED=76
+# A call budget_stop refused exits this: it was not made at all.
+# shellcheck disable=SC2034 # read by budget.sh and each caller of a named call
+EX_BUDGET=75
 
 # calls_name -> the name a call is recorded (and budgeted) under, empty for a hand run
 calls_name() { printf '%s' "${AGENTCTL_AGENT:-${AGENTCTL_NAME:-}}"; }

@@ -1962,6 +1962,29 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
     "$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
 }
 
+@test "a judge budget stop leaves no error verdict, and a pass with nothing else to do is BLOCKED, exit 0" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' "- [ ] fix crash $T"
+  stub judge-stub 'echo "agentctl-run: dispatch-judge over its daily budget" >&2; exit 75'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'judge stopped at its budget'
+  assert_equal "$(outcome)" BLOCKED
+  grep -q 'outcome=BLOCKED why: budget: could not judge the new rows (stopped at its budget)' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log" || fail "$(cat "$HOME/.local/state/agentctl/fleet-dispatch/activity.log")"
+  [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] || fail "$(cat "$FLEET_DISPATCH_DIR/verdicts.jsonl")"
+}
+
+@test "a judge budget stop does not stop the pass: a row the cache already judged still starts" {
+  game_ready
+  row game human 'fix the new crash' "- [ ] fix the new crash $T"
+  stub judge-stub 'exit 75'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'judge stopped at its budget'
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "a dry run publishes nothing, past a gate or at one" {
   game_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
