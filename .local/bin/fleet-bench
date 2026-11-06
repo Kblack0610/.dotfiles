@@ -1499,7 +1499,7 @@ rules_states() {
     value=""
     [ -z "$cmd" ] || value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>/dev/null </dev/null | tail -1)
     printf '%s\x1f%s\n' "$anchored" "$value"
-  done < <(jq -r '[.source, .anchor, (.measure // "")] | join("\u001f")' "$RULES_REGISTER") |
+  done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
     jq -cRn --slurpfile rows "$RULES_REGISTER" '
       [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i

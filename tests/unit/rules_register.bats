@@ -99,6 +99,14 @@ row() {
   assert_equal "$(jq -r '.[0].anchored' <<<"$output")" true
 }
 
+@test "rules: a multi-line anchor is stale on its own row and leaves the next row's value alone" {
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "two\nlines", kind: "invariant"}' >> "$RULES_REGISTER"
+  row "under ten" high 'echo 3' 10
+  run "$SUBJECT" rules --json
+  assert_success
+  assert_equal "$(jq -c '[.[] | [.anchored, .value]]' <<<"$output")" '[[false,null],[true,3]]'
+}
+
 @test "rules: no register is an empty count, not an error" {
   run "$SUBJECT" rules
   assert_success
