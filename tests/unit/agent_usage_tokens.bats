@@ -15,6 +15,7 @@ setup() {
   export CLAUDE_TRANSCRIPTS="$HOME/.claude/projects"
   AU="$REPO_ROOT/.local/bin/agent-usage"
   export TOKENS_RECALL_CMD="$REPO_ROOT/.local/bin/claude-recall tool-output" TOKENS_BURN_CMD="$AU burn"
+  export TOKENS_CALLS_CMD="$REPO_ROOT/.local/bin/claude-recall tool-calls"
   cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
 }
 
@@ -51,6 +52,14 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   "$AU" tokens snapshot >/dev/null
   assert_equal "$(snap '.line')" '"tokens 2026-01-01: 179.0k context over 6 responses, 29.8k/response, carried 0% (2x its size), start median 27.0k, $2.50/merged PR (2), 0 long runs without compaction"'
   assert_equal "$(snap 'has("token_filter") or has("by_method")')" false
+}
+
+@test "snapshot: responses per merged PR, chars per call, and the read-discipline counts from tool-calls" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[.responses_per_merged_pr == 3, .tool_chars_per_call, .reads.reads, .locate_read_share]')" '[true,4,0,null]'
+  printf '%s' '{"buckets":{"all":{"reads":8,"locate_then_read":4,"reread_same_lines":1,"locate_then_read_ctx":400,"reread_same_lines_ctx":90}},"groups":{"hot_target":[{"key":"~/a.md","calls":3,"ctx":700}]}}' > "$BATS_TEST_TMPDIR/calls.json"
+  TOKENS_CALLS_CMD="sh -c 'cat $BATS_TEST_TMPDIR/calls.json' calls" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[.reads.locate_then_read_ctx, .locate_read_share, .reread_share, .hot_targets]')" '[400,0.5,0.125,[{"path":"~/a.md","sessions":3,"ctx":700}]]'
 }
 
 @test "snapshot: a source that fails is named, and the rest of the day is still written" {
