@@ -1095,6 +1095,24 @@ log_triage_setup() {
   jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
+@test "triage: a fault arriving while board_open is past board_open_max is still filed and queued as a red" {
+  log_triage_setup
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  echo board_open_max=1 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_failure
+  lock_route '#size/m'
+  run "$SUBJECT" triage
+  assert_success
+  refute_output --partial held
+  assert_output --partial '1 queued as red fixes'
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+}
+
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
   log_triage_setup
   run "$SUBJECT" triage --dry-run
@@ -1643,6 +1661,18 @@ pipeline_fixture() {
   assert_failure 1
 }
 
+@test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' '- [ ] c #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  run "$SUBJECT" kpi --check '^board_open$'
+  assert_failure 1
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+}
+
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" improve file revert_rate 'fix(ci): retry flaky steps once'
@@ -1748,7 +1778,7 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
-@test "room: past board_open_max the upsert holds new rows and says why; #requested is never held; under it files" {
+@test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
   printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
   export LEDGER_BOARDS="$SANDBOX/agent.md"
@@ -1757,23 +1787,18 @@ check_fixture() {
   assert_failure
   assert_output 'full: board_open 3 past board_open_max 2'
   rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
-  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED $UPSERT_HELD"' _ "$SUBJECT" "$rows" 2>&1; }
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
   run up
-  assert_line --partial '1 added, 0 refreshed, 1 held (full: board_open 3 past board_open_max 2)'
-  assert_line '1 1'
+  assert_line --partial '2 added, 0 refreshed'
+  refute_output --partial held
+  assert_line '2'
   run grep -c ' add ' "$NLOG"
-  assert_output 1
-  run grep ' add ' "$NLOG"
-  assert_output --partial 'fix(x): asked #requested'
-  # Negative control: under the limit the held row files.
+  assert_output 2
+  # Negative control: under the limit the room line says so.
   echo board_open_max=10 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_success
   assert_output 'room: board_open 3 of board_open_max 10'
-  run up
-  assert_line '1 0'
-  run grep -c ' add ' "$NLOG"
-  assert_output 2
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {

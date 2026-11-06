@@ -126,7 +126,7 @@ notes ptask <project> add "<the next action>"           # only the human can: de
 ```
 
 One line, a couple of words; the wrap-up note holds the detail. Check both lanes for the same
-thing first and skip the add if it is already there. A follow-up nobody asked for is `#low`, and while `fleet-bench room` exits 1 (the agent boards are past their WIP limit) it stays in the note and the note says it was held; a `#requested` row is never held. Skip it entirely when the session has no
+thing first and skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
 Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#requested` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #requested`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
