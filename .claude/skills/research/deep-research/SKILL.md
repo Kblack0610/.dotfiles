@@ -97,6 +97,5 @@ Save to the report path and print a tight summary. Structure:
 ## Related
 - `deep-research-agent` (Claude agent) - the per-thread researcher; also usable solo for a single-context investigation.
 - `/sc:research` - single-agent adaptive research command; this skill is its multi-agent + verify superset.
-- `~/.dotfiles/.config/codex/skills/deep-research/SKILL.md` - Codex-side thin methodology (keep conceptually in sync).
 - `Explore` agents - codebase (not web) fan-out.
 - Workflow tool - orchestration substrate for deep/exhaustive runs.
