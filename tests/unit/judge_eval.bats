@@ -145,3 +145,57 @@ ask_fixture() {
   run "$JUDGE_EVAL" --days 0
   assert_failure 2
 }
+
+# --- replay ---------------------------------------------------------------------------------
+
+# replay_stub: a judge that logs its input and scores every ask clear.
+replay_stub() {
+  cat > "$SANDBOX/bin/replay-stub" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HOME/replay.calls"
+printf '{"decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
+  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true},"restates-rule":{"evidence":"","met":false}'
+SH
+  chmod +x "$SANDBOX/bin/replay-stub"
+  export JUDGE_EVAL_REPLAY_CMD=replay-stub
+}
+
+@test "replay: the real judge runs on blind copies, the real asks do not change, and the score is judge-eval's" {
+  replay_stub
+  ask right judge=human answer=yes
+  ask wrong judge=human answer=no
+  ask gated kind=gate judge=human answer=yes
+  ask freetext judge=human 'answer=do something else entirely'
+  local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
+  run --separate-stderr "$JUDGE_EVAL" replay --out "$HOME/replay" --json
+  assert_success
+  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "clear") | [.tp, .fp]' <<<"$output")" '[1,1]'
+  assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
+  # the copy the judge saw has the question and no answer
+  run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
+  assert_output 0
+  assert_equal "$(grep -c '^status: pending' "$HOME/replay/blind/demo/right.md")" 1
+}
+
+@test "replay: an answer left on the copy stops the run before any call (negative control)" {
+  replay_stub
+  ask right judge=human answer=yes
+  JUDGE_EVAL_BLIND_FIELDS=answered_at run "$JUDGE_EVAL" replay
+  assert_failure
+  assert_output --partial 'survived the blinding'
+  [ ! -e "$HOME/replay.calls" ]
+}
+
+@test "replay: --limit caps the calls, and nothing labelled is not an error" {
+  replay_stub
+  ask a judge=human answer=yes created=2026-11-01
+  ask b judge=human answer=yes created=2026-11-02
+  run "$JUDGE_EVAL" replay --limit 1
+  assert_success
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 1
+  rm -f "$HOME"/.agent/asks/demo/*.md
+  run "$JUDGE_EVAL" replay
+  assert_success
+  assert_output --partial 'no labelled asks'
+}
