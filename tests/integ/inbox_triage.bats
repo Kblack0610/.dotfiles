@@ -58,6 +58,19 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
 }
 
+@test "a failed model call keeps its stderr in the log and its own reason in the outcome" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  printf '#!/usr/bin/env bash\necho "You have hit your weekly limit - resets 7pm"\necho "harness: claude exited 1" >&2\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'harness: claude exited 1'
+  assert_output --partial 'model call failed: You have hit your weekly limit - resets 7pm'
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx FAILED "$st/last-outcome"
+  grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
+  inbox | grep -q 'the gun sound is off'
+}
+
 @test "end to end: a typed line is filed word for word, a typed row is left alone, and no model runs" {
   sheet '- [ ] chore(build): drop the old cache #low\n' '- [ ] fix(ui): the menu flickers #high <!-- id:sc-4 -->\n'
   run "$TRIAGE"
