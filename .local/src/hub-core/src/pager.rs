@@ -104,7 +104,11 @@ pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Conf
     keep.sort();
     keep.dedup();
     let page = fresh.first().map(|top| Page {
-        priority: if buzzed < cfg.max_buzz_day { "high" } else { "normal" },
+        priority: if buzzed < cfg.max_buzz_day {
+            "high"
+        } else {
+            "normal"
+        },
         text: text(&fresh, human.len(), cfg.top.max(1)),
         reference: match top.kind {
             Kind::Ask => Some(format!("ask:{}", top.id)),
@@ -194,7 +198,11 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Paths {
-        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let var = |k: &str| {
+            std::env::var_os(k)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         Paths {
             config: var("COMMS_CHANNELS")
@@ -284,7 +292,10 @@ mod tests {
 
     #[test]
     fn the_shipped_channels_file_carries_the_pager_numbers() {
-        let f = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../.config/comms-lint/channels.toml");
+        let f = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../.config/comms-lint/channels.toml"
+        );
         let c = config(&std::fs::read_to_string(f).unwrap()).unwrap();
         assert!(c.min_score > 0 && c.top > 0);
         assert_eq!(c.buzz, ["high", "urgent"]);
@@ -342,7 +353,9 @@ mod tests {
 
     #[test]
     fn a_long_page_folds_its_tail_into_more() {
-        let mut needs: Vec<Need> = (0..6).map(|i| row(Kind::Ask, &format!("a{i}"), true, 100)).collect();
+        let mut needs: Vec<Need> = (0..6)
+            .map(|i| row(Kind::Ask, &format!("a{i}"), true, 100))
+            .collect();
         for n in &mut needs {
             n.text = "word ".repeat(40);
         }
@@ -355,7 +368,9 @@ mod tests {
     fn the_cap_counts_this_senders_buzzes_in_the_last_day() {
         let now = 1_793_898_000;
         let line = |at: i64, prio: &str, title: &str| {
-            let t = chrono::DateTime::from_timestamp(at, 0).unwrap().to_rfc3339();
+            let t = chrono::DateTime::from_timestamp(at, 0)
+                .unwrap()
+                .to_rfc3339();
             format!("{t}\t{prio}\t{title}\tmsg\task:x\n")
         };
         let ledger = [
@@ -379,7 +394,8 @@ mod tests {
     }
 
     fn paths(name: &str) -> Paths {
-        let dir = std::env::temp_dir().join(format!("hub-core-pager-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hub-core-pager-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("channels.toml");
@@ -388,34 +404,63 @@ mod tests {
             "[report]\nbuzz = [\"high\", \"urgent\"]\n[pager.needs]\nmin_score = 60\nmax_buzz_day = 6\ntop = 3\n",
         )
         .unwrap();
-        Paths { config, ledger: dir.join("log"), paged: dir.join("state/needs-paged") }
+        Paths {
+            config,
+            ledger: dir.join("log"),
+            paged: dir.join("state/needs-paged"),
+        }
     }
 
     #[test]
     fn run_pages_once_then_stays_quiet_and_its_page_passes_comms_lint() {
         let p = paths("once");
-        let needs = [row(Kind::Ask, "a1", true, 600), row(Kind::Session, "s1", true, 90)];
+        let needs = [
+            row(Kind::Ask, "a1", true, 600),
+            row(Kind::Session, "s1", true, 90),
+        ];
         let r = Record(Default::default(), None);
         let page = run(&needs, 0, &p, &r).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(&p.paged).unwrap(), "a1\ns1\n");
-        assert_eq!(run(&needs, 60, &p, &r).unwrap(), None, "the second pass has told the human");
+        assert_eq!(
+            run(&needs, 60, &p, &r).unwrap(),
+            None,
+            "the second pass has told the human"
+        );
         let sent = r.0.into_inner();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0][..7], ["agent-notify", "-p", "high", "-t", TITLE, "-r", "ask:a1"]);
+        assert_eq!(
+            sent[0][..7],
+            ["agent-notify", "-p", "high", "-t", TITLE, "-r", "ask:a1"]
+        );
         assert_eq!(sent[0][7], page.text);
         // comms-standard rule 12: the page as sent passes the page channel's lint.
         // The repo's channels file, not the stowed one: CI has no ~/.config.
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let mut c = std::process::Command::new(repo.join(".local/bin/comms-lint"))
-            .env("COMMS_CHANNELS", repo.join(".config/comms-lint/channels.toml"))
-            .args(["--channel", "page", "--priority", "high", "--title", TITLE, "-"])
+            .env(
+                "COMMS_CHANNELS",
+                repo.join(".config/comms-lint/channels.toml"),
+            )
+            .args([
+                "--channel",
+                "page",
+                "--priority",
+                "high",
+                "--title",
+                TITLE,
+                "-",
+            ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         use std::io::Write;
-        c.stdin.take().unwrap().write_all(page.text.as_bytes()).unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(page.text.as_bytes())
+            .unwrap();
         let out = c.wait_with_output().unwrap();
         let said = [out.stdout, out.stderr].concat();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&said));
@@ -426,7 +471,10 @@ mod tests {
         let p = paths("fail");
         let needs = [row(Kind::Ask, "a1", true, 600)];
         assert!(run(&needs, 0, &p, &Record(Default::default(), Some("down"))).is_err());
-        assert!(!p.paged.exists(), "nothing is marked told when the page did not go out");
+        assert!(
+            !p.paged.exists(),
+            "nothing is marked told when the page did not go out"
+        );
         // Negative control: a paged file that cannot be read pages nothing, never every row.
         std::fs::create_dir_all(&p.paged).unwrap();
         let r = Record(Default::default(), None);
