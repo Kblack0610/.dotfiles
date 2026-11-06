@@ -27,7 +27,7 @@ use app::{App, Msg, Tab, PROM_REFRESH};
 use fit::plain;
 use notify::{RecursiveMode, Watcher};
 
-const USAGE: &str = "usage: hub [--once] [--tab TAB]
+const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
        hub actions --since WHEN [--json | --records]
@@ -36,6 +36,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
           lands on its new tab; jobs, ci and machines open that section of Infra
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
+  --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
           over its open rows)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
@@ -49,6 +50,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut once = false;
+    let mut popup = false;
     let mut tab = None;
     let mut it = args.iter().peekable();
     if it.peek().map(|a| a.as_str()) == Some("tab") {
@@ -75,6 +77,7 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--once" => once = true,
+            "--popup" => popup = true,
             "--tab" => {
                 tab = Some(
                     it.next()
@@ -93,7 +96,7 @@ fn main() {
     let start = tabreq::take(&tabreq::dir())
         .or(tab)
         .unwrap_or((Tab::Home, None));
-    if let Err(e) = run(start) {
+    if let Err(e) = run(start, popup) {
         die(&format!("hub: {e}"));
     }
 }
@@ -290,10 +293,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     i32::from(failed)
 }
 
-fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
+fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tab, tx.clone());
-    app.open_project(query);
+    app.popup = popup;
+    // The same reader as `hub tab`: an Infra section on Infra, else a project.
+    app.open_query(query);
 
     let input = tx.clone();
     std::thread::spawn(move || {
