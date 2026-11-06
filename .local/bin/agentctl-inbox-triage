@@ -3,7 +3,7 @@
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
 #
-# `#p:` outbox lines and typed inbox lines need no model; the rest of a sweep goes to ONE model
+# `#p:` outbox lines, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
 # call (the conf's MODEL), which only proposes rows, a dup, a skip, and whether to plan first.
 # Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
 # edits a sheet, and a skipped or refused line stays put, recorded in the ingest record so later
@@ -97,6 +97,25 @@ move_out() {
   fi
 }
 
+# An outbox line that answers an open row: `<id>: <words>`.
+# shellcheck disable=SC2016 # jq source, not shell
+ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
+
+# answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
+# join the open row as a dup does (moved to the row's project, then `file --dup`, which keeps them
+# as the row's `was:` line), and a decide row is closed by it. No open row is `left`, with why.
+answer() {
+  local id="$1" raw="$2" text="$3" row p lane ty
+  row="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id and (.lane == "human" or .lane == "agent"))
+    | [.project, .lane, (.type // "-")] | join("\u001f")) // ""' <<<"$4")"
+  [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
+  IFS=$'\x1f' read -r p lane ty <<<"$row"
+  move_out "$p" "$raw" "$text" || return 1
+  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
+  [ "$ty" = decide ] || return 0
+  pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
+}
+
 # The flag every notes inbox writer touches (`ptask add`, the Focus sweep): its stamp, or empty.
 flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 
@@ -130,7 +149,7 @@ route() {
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
@@ -163,9 +182,9 @@ $open"
         if [ "$action" = dup ]; then
           id="$(clean 40 <<<"$id")"
           [ -n "$id" ] || { left "$from" "$text" "dup of no row"; continue; }
-          args=(--dup "$id")
-          # A dup's project is the open row's, never the model's word for it.
+          # A dup's project and lane are the open row's, never the model's word for them.
           dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$board")"
+          args=(--dup "$id" --lane "$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .lane) // "human"' <<<"$board")")
         else
           IFS=$'\x1e' read -r -a rowv <<<"$rows"
           for r in "${rowv[@]}"; do
@@ -236,7 +255,7 @@ backlog_batch() {
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
@@ -342,8 +361,14 @@ pass() {
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  # A `<id>: <words>` line answers its open row, with no model.
+  [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
+    answer "$p" "$raw" "$text" "$board" || rc=1
+  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" ".[] | select((.project | not) and (.text | test(\$re)))
+    | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
   all='[]'
-  [ -z "$ONLY" ] && all="$(jq -c '[.[] | select(.project | not) | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
+  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" '[.[] | select((.project | not) and (.text | test($re) | not))
+    | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

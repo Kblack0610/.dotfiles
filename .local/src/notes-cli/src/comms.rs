@@ -77,6 +77,7 @@ pub(crate) fn comms_page(summary: Option<&str>, lines: &[String]) -> status::Pag
         .collect();
     status::Page {
         feed: status::Feed::Comms,
+        lead: Vec::new(),
         more: Vec::new(),
         stat: summary.map(str::to_string),
         rows,

@@ -10,6 +10,7 @@ Install: the installer's `build_local_rust_tools` builds it and links `~/.local/
 hub                              the board, on the Home tab
 hub --tab fleet                  start on another tab (home, queue, infra, sessions, today, history, fleet, projects; a retired name such as overview, board, forecast, watch, shepherd, jobs, ci or machines lands on its new tab)
 hub --tab 'infra ci'             start on a section of Infra (health, red, machines, ci, jobs, cloud, governor); `--tab ci` is the same, and `jobs` opens the jobs table
+hub --popup --tab queue          a floating window (the waybar clicks): Esc with nothing left to close quits
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
 hub tab projects agent-runtime   the same, opening one project's rows under its card (what tmux Prefix p sends); a name no card has opens All searched for it
 hub --once                       print Home and Infra as plain text at $COLUMNS, then exit
@@ -42,6 +43,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | Key | Does |
 |---|---|
 | `1`-`9`, `0`, Tab, Shift-Tab | Switch tab: 1 Home, 2 Queue, 3 Infra, 4 Infra at CI, 5 Infra at Machines, 6 Sessions, 7 Today, 8 History, 9 Fleet, 0 Projects. Tab cycles the eight tabs |
+| Esc | With `--popup`, once nothing is left to close (a pane, filter, prompt, confirm or the jobs table), quit; without it Esc never quits |
 | `r` | Re-read now |
 | `o` | Open this tab's Grafana dashboard (in the jobs table: the selected row's URL) |
 | `j`/`k`, PgUp/PgDn, space, `g`/`G` | Scroll a page; in the jobs table, move the selection |

@@ -922,11 +922,16 @@ const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"
 /// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
 const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
 
-/// The work and human-only types a row title starts with (README "The task row").
+/// The work and human-only types a row title starts with (README "The task row"), and
+/// THE list of row kinds: `--stats --json` counts by it and `fleet-dispatch`'s kinds.json is
+/// checked against it. A bug is a `fix` row; its severity is the row's priority tag.
 pub(crate) const ROW_TYPES: &[&str] = &[
-    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "run", "decide", "check",
-    "epic",
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "research", "design",
+    "market", "legal", "run", "decide", "check", "epic",
 ];
+
+/// The `by_kind` key of a row with no well-formed `type(area):` prefix.
+pub(crate) const UNTYPED: &str = "untyped";
 
 /// A title longer than this belongs on a detail line under the row.
 pub(crate) const TITLE_MAX: usize = 80;
@@ -2718,6 +2723,29 @@ pub(crate) struct Progress {
     /// The weight of this version's rows filed in the last 28 days (`filed:` or `#cMMDD`):
     /// scope growth, read beside `closed_weight_28d` before trusting an ETA.
     pub filed_weight_28d: u32,
+    /// The same rows split by row type ([`ROW_TYPES`], or [`UNTYPED`]). Bugs are `fix`.
+    pub by_kind: std::collections::BTreeMap<String, KindCount>,
+}
+
+/// One row kind's share of a [`Progress`].
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct KindCount {
+    pub open: usize,
+    pub open_weight: u32,
+    /// Open rows per priority tag; a row with none counts in no bucket.
+    pub urgent: usize,
+    pub high: usize,
+    pub low: usize,
+    pub done: usize,
+    pub closed_28d: usize,
+    pub closed_weight_28d: u32,
+    /// Rows of this kind filed in the last 28 days, open or closed.
+    pub filed_28d: usize,
+}
+
+/// A row's `by_kind` key: its type, or [`UNTYPED`].
+fn row_kind(line: &str) -> String {
+    row_type_area(line).map_or_else(|| UNTYPED.to_string(), |(ty, _)| ty)
 }
 
 /// A row's weight from its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); `None` when it has
@@ -2751,7 +2779,17 @@ fn in_version(line: &str, cur: Option<V>, ver: Option<V>) -> bool {
 }
 
 impl Progress {
-    fn close(&mut self, on: Option<chrono::NaiveDate>, weight: u32, today: chrono::NaiveDate) {
+    fn kind(&mut self, kind: &str) -> &mut KindCount {
+        self.by_kind.entry(kind.to_string()).or_default()
+    }
+
+    fn close(
+        &mut self,
+        kind: &str,
+        on: Option<chrono::NaiveDate>,
+        weight: u32,
+        today: chrono::NaiveDate,
+    ) {
         let Some(age) = on.map(|d| (today - d).num_days()) else {
             return;
         };
@@ -2762,6 +2800,9 @@ impl Progress {
         if (0..28).contains(&age) {
             self.closed_28d += 1;
             self.closed_weight_28d += weight;
+            let k = self.kind(kind);
+            k.closed_28d += 1;
+            k.closed_weight_28d += weight;
         }
     }
 
@@ -2772,6 +2813,7 @@ impl Progress {
             .or_else(|| md::find_since(line, today));
         if on.is_some_and(|d| (0..28).contains(&(today - d).num_days())) {
             self.filed_weight_28d += weight;
+            self.kind(&row_kind(line)).filed_28d += 1;
         }
     }
 
@@ -2797,6 +2839,16 @@ impl Progress {
             self.open_weight += w;
             if size.is_none() {
                 self.unsized_open += 1;
+            }
+            let prio = md::task_priority(l);
+            let k = self.kind(&row_kind(l));
+            k.open += 1;
+            k.open_weight += w;
+            match prio {
+                Some("#urgent") => k.urgent += 1,
+                Some("#high") => k.high += 1,
+                Some("#low") => k.low += 1,
+                _ => {}
             }
             self.filed(l, w, today);
         }
@@ -2824,7 +2876,9 @@ impl Progress {
             if size.is_none() {
                 self.unsized_done += 1;
             }
-            self.close(project_tasks::done_on(l), w, today);
+            let kind = row_kind(l);
+            self.kind(&kind).done += 1;
+            self.close(&kind, project_tasks::done_on(l), w, today);
             self.filed(l, w, today);
         }
     }
@@ -2862,7 +2916,7 @@ impl Progress {
                 continue;
             }
             if let Ok(d) = chrono::NaiveDate::parse_from_str(when, "%Y-%m-%d") {
-                self.close(Some(d), size_weight(task), today);
+                self.close(&row_kind(task), Some(d), size_weight(task), today);
             }
         }
     }
@@ -3781,6 +3835,11 @@ Goal: the board reads itself
         let ix = crate::epics::Index::default();
         p.sheet(PROGRESS_SHEET, cur, cur, &ix, today);
         p.note(PROGRESS_NOTE, &ix, today);
+        let by_kind = std::mem::take(&mut p.by_kind);
+        assert_eq!(by_kind.keys().collect::<Vec<_>>(), ["fix", UNTYPED]);
+        // the Proof table's fix row closed inside 28 days; the older one is out
+        assert_eq!(by_kind["fix"].closed_weight_28d, 8);
+        assert_eq!(by_kind[UNTYPED].open, 3);
         assert_eq!(
             p,
             Progress {
@@ -3799,6 +3858,7 @@ Goal: the board reads itself
                 unsized_open: 1,
                 unsized_done: 1,
                 filed_weight_28d: 0,
+                by_kind: Default::default(),
             }
         );
         assert_eq!(goal_line(PROGRESS_SHEET), "the board reads itself");
@@ -3878,15 +3938,76 @@ Goal: the board reads itself
         assert_eq!(r[1].progress.unsized_open, 1);
     }
 
+    const KIND_SHEET: &str = "\
+# demo
+Version: v0.2.0
+
+## Tasks
+- [ ] fix(audio): a bug #urgent #size/m #c1101
+- [ ] fix(audio): another #low #c0901
+- [ ] feat(ui): a feature #size/l
+- [ ] research(market): who buys this #c1104
+- [ ] a row with no type
+- [ ] fix(audio): next release #v0.3.0
+- [x] fix(net): closed this week #c1030 <!-- done:2026-11-03 pr:1 -->
+- [x] fix(net): dropped <!-- done:2026-11-04 dropped: stale -->
+";
+
+    #[test]
+    fn by_kind_counts_bugs_as_fix_rows_and_splits_them_by_priority() {
+        // NEGATIVE CONTROL: before by_kind, a fix row and a feat row were one undivided count.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let cur = Some((0, 2, 0));
+        let mut p = Progress::default();
+        p.sheet(KIND_SHEET, cur, cur, &crate::epics::Index::default(), today);
+        assert_eq!(
+            p.by_kind["fix"],
+            KindCount {
+                // the later-version row and the dropped row are out
+                open: 2,
+                open_weight: 4,
+                urgent: 1,
+                high: 0,
+                low: 1,
+                done: 1,
+                closed_28d: 1,
+                closed_weight_28d: 1,
+                // #c1101 and #c1030; #c0901 is older than 28 days
+                filed_28d: 2,
+            }
+        );
+        assert_eq!(
+            (p.by_kind["feat"].open, p.by_kind["feat"].open_weight),
+            (1, 8)
+        );
+        assert_eq!(p.by_kind["research"].filed_28d, 1);
+        assert_eq!(p.by_kind[UNTYPED].open, 1);
+        assert_eq!(p.by_kind.len(), 4);
+    }
+
+    #[test]
+    fn the_new_kinds_parse_as_row_types() {
+        for ty in ["research", "design", "market", "legal"] {
+            let row = format!("- [ ] {ty}(store): a title");
+            assert_eq!(
+                row_type_area(&row).map(|(t, _)| t),
+                Some(ty.to_string()),
+                "{ty}"
+            );
+        }
+        // a bug is a fix row, not a type of its own
+        assert_eq!(row_type_area("- [ ] bug(store): a title"), None);
+    }
+
     #[test]
     fn a_close_window_counts_today_and_stops_at_its_edge() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
         let mut p = Progress::default();
         for ago in [0, 6, 7, 27, 28] {
-            p.close(Some(today - chrono::Days::new(ago)), 1, today);
+            p.close("fix", Some(today - chrono::Days::new(ago)), 1, today);
         }
-        p.close(Some(today + chrono::Days::new(1)), 1, today);
-        p.close(None, 1, today);
+        p.close("fix", Some(today + chrono::Days::new(1)), 1, today);
+        p.close("fix", None, 1, today);
         assert_eq!((p.closed_7d, p.closed_28d), (2, 4));
     }
 
