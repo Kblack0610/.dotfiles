@@ -24,7 +24,8 @@
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
-#                                KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS;
+#                                KPIs over 7d and 28d of human sessions (the token ones from the
+#                                nightly token-usage snapshots), against KPI_THRESHOLDS;
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
@@ -166,6 +167,7 @@ set -uo pipefail
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
+: "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${BENCH_JUDGE_CMD:=judge-eval}"                 # the judge lanes scored against their ground truth: `kpi --json`
@@ -1506,7 +1508,9 @@ ask_kpi() {
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
-# rows, $c the CI rows and $k the canary score rows (slurped). Older lines have no runner field;
+# rows, $c the CI rows and $k the canary score rows (slurped). The token KPIs are sums over the
+# nightly token-usage snapshots ($tk) of the whole days in the window, all sessions, so a token lever
+# gets the same kpi, improve and effect verdicts as a process one. Older lines have no runner field;
 # _runner is where headless runs are filed. A canary session is an eval, not work: it leaves the
 # human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 KPI_DEFS="$JQ_LIB"'
@@ -1520,6 +1524,10 @@ KPI_DEFS="$JQ_LIB"'
     | ($k | map(select(.epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
+    | ($since | strflocaltime("%Y-%m-%d")) as $d0 | ($t | strflocaltime("%Y-%m-%d")) as $d1
+    | ($tk | map(select((.date // "") >= $d0 and .date < $d1))) as $tw
+    | ($tw | map(select(.merged_prs | numbers))) as $tp
+    | ($tw | map(select(.context_split.start | numbers))) as $ts
     | {sessions: ($s | length), prs_per_session: ratio($prs; $s | length),
        revert_rate: ratio(($s | total(.reverted_7d)); $prs),
        interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
@@ -1529,16 +1537,35 @@ KPI_DEFS="$JQ_LIB"'
        canary_runs: ($kw | length), canary_pass_rate: ratio(($kw | map(select(.pass == true)) | length); $kw | length),
        canary_cost_per_task: ratio(($ks | total(.cost_usd)); $ks | length),
        canary_min_per_task: ratio(($ks | total(.duration_s)) / 60; $ks | length),
-       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length)};
+       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length),
+       responses_per_merged_pr: ratio(($tp | total(.totals.responses)); $tp | total(.merged_prs)),
+       context_per_merged_pr: (ratio(($tp | total(.totals.context)); $tp | total(.merged_prs)) | if . then round else . end),
+       tool_chars_per_call: ratio(($tw | total(.totals.tool_chars)); $tw | total(.totals.tool_calls)),
+       locate_read_share: ratio(($tw | total(.reads.locate_then_read)); $tw | total(.reads.reads)),
+       reread_share: ratio(($tw | total(.reads.reread_same_lines)); $tw | total(.reads.reads)),
+       cache_write_share: ratio(($tw | total(.totals.cache_write)); $tw | total(.totals.context)),
+       start_share: ratio(($ts | total(.context_split.start)); $ts | total(.totals.context)),
+       compactions_per_session: ratio(($tw | total(.compactions)); $tw | total(.sessions))};
   # which way is better: -1 lower, 1 higher, 0 neither (sessions is volume, not quality)
   def better: {sessions: 0, prs_per_session: 1, revert_rate: -1, interrupts_per_session: -1,
                cost_per_pr: -1, ci_red_per_pr: -1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
-               canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1};'
+               canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1,
+               responses_per_merged_pr: -1, context_per_merged_pr: -1, tool_chars_per_call: -1,
+               locate_read_share: -1, reread_share: -1, cache_write_share: -1, start_share: -1,
+               compactions_per_session: -1};'
 
 # kpi_ci -> the CI rows file, or /dev/null when there are none
 kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
 # kpi_canary -> the canary score rows file, or /dev/null when there are none
 kpi_canary() { [ -s "$CANARY" ] && printf '%s' "$CANARY" || printf /dev/null; }
+# kpi_tokens -> each nightly token-usage snapshot (agent-usage tokens snapshot is its one writer), cut
+# to the token KPIs' inputs, one a line; nothing when there are none
+kpi_tokens() {
+  local f=("$BENCH_TOKENS_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json)
+  [ -e "${f[0]}" ] || return 0
+  jq -c '{date, merged_prs, compactions, context_split, reads, sessions: ([.by_kind[]?.sessions | numbers] | add),
+           totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
+}
 
 # kpi_json <now> <ledger counts> [historic] -> one object keyed by KPI, in table order. historic=1
 # (kpi --at) leaves the comms and the counted-now KPIs null: nothing records them as of a past time.
@@ -1546,7 +1573,7 @@ kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
-  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" \
+  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
      --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
@@ -1569,7 +1596,7 @@ kpi_json() {
 # kpi_trend <now> <days> -> one object a day, oldest first: {date, <kpi>: its 7d value as of that
 # day's end}. The outcome rows are the history, so a trend needs no store of its own.
 kpi_trend() {
-  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
+  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     range($n - 1; -1; -1) as $i | ($t - $i * 86400) as $at
     | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7)'
 }
@@ -1974,7 +2001,7 @@ cmd_effect() {
   fi
   local out
   out=$(jq -n --argjson t "$t" --argjson d "$days" --argjson now "$(now)" --argjson flat "$BENCH_EFFECT_FLAT" \
-        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" "$KPI_DEFS"'
+        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     win($t; $d) as $b | win($t + $d * 86400; $d) as $a | ($now >= $t + $d * 86400) as $done
     | {ref: $ref, at: ($t | todate), days: $d, kpis: [$b | keys_unsorted[] as $k | better[$k] as $dir
         | {kpi: $k, before: $b[$k], after: (if $done then $a[$k] else null end),
