@@ -103,7 +103,7 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # retro and triage file. jq (Oniguruma) regex, matched case-insensitively against the row body.
 : "${DISPATCH_NIGHT_OBSERVER:=#kpi/|^[a-z]+\((kpi|lesson|watch|runner|unit|logs)\):}"
 # The AI systems: in these projects a row whose kind is cleanup in kinds.json (fix, chore, a deletion
-# refactor) is cleanup (cleanup_row). Cleanup ranks behind a red and ahead of everything else, promotes as high whatever its #low, and a tier-3 one merges behind the red-fix gate
+# refactor) is cleanup (cleanup_row). Cleanup ranks ahead of every other board row (a red is a queue item, which runs before the board), promotes as high whatever its #low, and a tier-3 one merges behind the red-fix gate
 # at any hour (the human's asks of 2026-11-05 and 2026-11-06). Empty turns it off.
 : "${DISPATCH_CLEANUP_PROJECTS=agent-runtime notes-cockpit}"
 # A row that touches what policy.md's tier 3 calls shared infrastructure is never cleanup, whatever
@@ -113,9 +113,6 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # Runnable `cleanup` items under which a pass tops cleanup rows up from the board even above the low
 # water: a full queue of other work kept every cleanup row off the board (2026-11-06). 0 turns it off.
 : "${DISPATCH_CLEANUP_FLOOR:=2}"
-# A red on the board: the typed finding row `fleet-bench triage` files (triage_rows, triage_red_rows,
-# the one home of that grammar). It ranks ahead of everything; a red queue item carries the `red` tag.
-: "${DISPATCH_RED_ROWS:=^(fix\((runner|unit|logs)\)|check\((watch|red)\)): }"
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
@@ -181,8 +178,8 @@ prio_of() {
   sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
 }
 
-# The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a red (red_row), then
-# cleanup of an AI system (cleanup_row), then the project's priority,
+# The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): cleanup of an AI system
+# (cleanup_row), then the project's priority,
 # then the row's due date (overdue, today, within 3 days, later or none), then what the human asked
 # for (#requested, as fill_night ranks it), then worker
 # order, then the row's priority, then its kind (kinds.json `rank`: a bug first), then stage, then
@@ -203,8 +200,7 @@ def rank_fields($today; $pprio):
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
-  | . + {why: ([(if .red == 0 then "red" else empty end),
-                (if .cleanup == 0 then "cleanup" else empty end),
+  | . + {why: ([(if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
                  elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
@@ -214,7 +210,7 @@ def rank_fields($today; $pprio):
                 (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
-def rank: sort_by((.red // 1), (.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wrank // 0), .prio, (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+def rank: sort_by((.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wrank // 0), .prio, (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -339,13 +335,6 @@ cleanup_row() {
   c=${KIND_CLEANUP[${k:-_}]:-}
   body=${body#- \[?\] }
   if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
-}
-
-# red_row <row text> -> 0 when the row is a red triage filed (DISPATCH_RED_ROWS), else 1: RANK_JQ's `red`.
-red_row() {
-  local body="${1%%<!--*}"
-  body=${body#- \[?\] }
-  if [[ "$body" =~ $DISPATCH_RED_ROWS ]]; then echo 0; else echo 1; fi
 }
 
 # nobody_why <workers> <project> <lane> <row text> -> why no worker takes a row row_worker turned
@@ -751,12 +740,12 @@ cmd_candidates() {
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text" "$name")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson red "$(red_row "$text")" --arg nobody "$nobody" --argjson active "$active" \
+            --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, cleanup: $cleanup, red: $red, details: $details, dsig: $dsig, planned: ($planned == 1),
+              worker: $worker, wrank: $wrank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
@@ -778,10 +767,11 @@ judge() {
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
-  # Reds, then cleanup, go ahead of the rounds, so a policy edit that voids every verdict re-judges them first.
+  # Within a round a cleanup row goes first, and rank already puts it first in its project; ahead of
+  # the rounds it took every slot from a project with no cleanup (review of #1222).
   cands=$(jq -sc "$RANK_JQ"'rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
-      | sort_by((.row.red // 1), (.row.cleanup // 1), .round, .i) | .[].row' <<<"$cands" |
+      | sort_by(.round, (.row.cleanup // 1), .i) | .[].row' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   prompt="## Rows to judge
@@ -2577,10 +2567,10 @@ night_rows() {
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
         --arg profile "$DISPATCH_NIGHT_PROFILE" --arg rsize "$(row_size "$text")" \
-        --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson red "$(red_row "$text")" \
+        --argjson cleanup "$(cleanup_row "$name" "$text")" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, row_size: $rsize,
-          cleanup: $cleanup, red: $red,
+          cleanup: $cleanup,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'
     done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)

@@ -633,17 +633,17 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low')" low
 }
 
-@test "rank: a red goes first, then cleanup, then due and #requested rows; a lookalike tag is not #requested" {
-  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" --argjson red "${5:-1}" \
-    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, red: $red, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+@test "rank: cleanup goes first, then due and #requested rows; a lookalike tag is not #requested" {
+  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
   cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#low'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'
-    c lookalike 1 1 '#requested-ish'; c reds 3 1 '#low' 0)
+    c lookalike 1 1 '#requested-ish')
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'reds cleanup due asked urgent lookalike'
+  assert_output 'cleanup due asked urgent lookalike'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
   assert_output 'requested, #low, beta'
-  run jq -sr "$RANK_JQ"'rank[] | select(.key == "reds") | .why' <<<"$cands"
-  assert_output --regexp '^red, '
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "cleanup") | .why' <<<"$cands"
+  assert_output --regexp '^cleanup, '
 }
 
 @test "suggest: says so when no project has an open agent row" {
@@ -2677,6 +2677,18 @@ J
 {"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}'
   assert_success
   # Rank alone would send p1, p2, p3 and never a1.
+  assert_equal "$(grep -o '"key":"[a-z0-9]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd, -)" 'p1,a1,p2'
+}
+
+@test "judge: a cleanup row goes first within a round, never ahead of it; a project with no cleanup row still gets its slot" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
+  DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1,"cleanup":0}
+{"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1,"cleanup":0}
+{"project":"p","stage":"prod","lane":"human","key":"p3","text":"- [ ] p3","prio":1,"cleanup":0}
+{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}'
+  assert_success
+  # Cleanup ahead of the rounds sent p1, p2, p3 and never a1.
   assert_equal "$(grep -o '"key":"[a-z0-9]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd, -)" 'p1,a1,p2'
 }
 
