@@ -288,7 +288,7 @@ test("a tick writes [x] on its line and an untick [ ]; nothing else in the note 
   const sent = putting();
   ctx.input = { dataset: { ln: "8" }, checked: true };
   await run("tickRow(input)");
-  assert.equal(sent[0].t, "daily");
+  assert.equal(sent[0].t, "daily:2026-11-05", "the day's own target, not the alias that moves at midnight");
   assert.equal(sent[0].base, "aa");
   const want = lines(NOTE); want[8] = "- [x] fix the menu #p:demo #urgent";
   assert.deepEqual(lines(sent[0].text), want);
@@ -305,8 +305,24 @@ test("remove takes the row and its children, and Undo puts the note back over th
   assert.deepEqual(lines(sent[0].text).slice(7, 10), ["### Urgent", "- [/] wire the bar", ""]);
   assert.match(box("d-note").innerHTML, /<span class="muted">Removed &quot;fix the menu&quot;<\/span><button class="btn sm" data-f="undo">Undo<\/button>/);
   await run("undoRemove()");
-  assert.deepEqual(sent[1], { t: "daily", base: "h1", text: NOTE });
+  assert.deepEqual(sent[1], { t: "daily:2026-11-05", base: "h1", text: NOTE });
   assert.doesNotMatch(box("d-note").innerHTML, /data-f="undo"/);
+  // A child after a blank line is still the row's; the next row at its depth is not.
+  const loose = "## Focus\n### Urgent\n- [ ] parent\n\n  - [ ] child\n- [ ] next\n";
+  draw({ ...live, note: { ...live.note, markdown: loose } });
+  await run("removeRow(2)");
+  assert.deepEqual(lines(sent[2].text), ["## Focus", "### Urgent", "- [ ] next", ""]);
+});
+
+test("a row action while one is saving writes nothing and says so", async () => {
+  draw(live);
+  const sent = putting();
+  ctx.input = { dataset: { ln: "8" }, checked: true };
+  await run("fcs.busy = true");
+  assert.equal(await run("tickRow(input)"), false);
+  await run("fcs.busy = false");
+  assert.equal(sent.length, 0);
+  assert.match(box("d-note").innerHTML, /Still saving the last change/);
 });
 
 test("+ adds an open task at the end of its lane, tagged as the lane unless it names a priority", async () => {
@@ -351,4 +367,15 @@ test("the day's briefing is read with it and drawn as one open fold after the la
   ctx.input = day.note.links.filter((l) => !/briefing/.test(l.target));
   await run("readBrief(input)");
   assert.equal(run("fcs.brief"), null, "a day with no briefing draws none");
+});
+
+test("a briefing read that finishes after the page moved to another day is not drawn on it", async () => {
+  const release = {};
+  ctx.fetch = (url) => new Promise((res) => { release[/2026-11-0\d/.exec(url)[0]] = () => res(reply(200, { note: { target: url, exists: true }, sections: [] })()); });
+  const link = (d) => [{ target: `journal/refs/${d}/briefing`, exists: true }];
+  ctx.a = link("2026-11-04"); ctx.b = link("2026-11-05");
+  const slow = run("readBrief(a)"), fast = run("readBrief(b)");
+  release["2026-11-05"](); await fast;
+  release["2026-11-04"](); await slow;
+  assert.match(run("fcs.brief.note.target"), /2026-11-05/);
 });

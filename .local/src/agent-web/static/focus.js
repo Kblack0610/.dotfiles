@@ -21,8 +21,8 @@
 
 // `links` are the last day note's links (null until one is read), which the nav lists while
 // another note is open.
-// `brief` is the day's briefing note, `undo` the note as it was before the last row removed.
-const fcs = { data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null, links: null, brief: null, busy: false, undo: null };
+// `brief` is the day's briefing note (`briefFor` the target last asked for), `undo` the note as it was before the last row removed.
+const fcs = { briefFor: null, data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null, links: null, brief: null, busy: false, undo: null };
 
 const DRAFT = "focus-draft:";
 function loadDraft(path) { try { return JSON.parse(localStorage.getItem(DRAFT + path) || "null"); } catch { return null; } }
@@ -63,8 +63,12 @@ async function readBrief(links) {
   const l = links.find((x) => x.exists && /(^|\/)briefing$/.test(x.target));
   // Another day's briefing is not shown while this one's is read.
   if (!l || (fcs.brief && fcs.brief.note.target !== l.target)) fcs.brief = null;
+  fcs.briefFor = l ? l.target : null;
   if (!l) return;
-  try { fcs.brief = await readNote(l.target); } catch { fcs.brief = null; }
+  let b = null;
+  try { b = await readNote(l.target); } catch { /* no briefing drawn */ }
+  // A read that finished after the page moved to another day is not this day's.
+  if (fcs.briefFor === l.target) fcs.brief = b;
 }
 
 function briefFold() {
@@ -293,13 +297,21 @@ async function saveEdit(base) {
 const TASK = /^(\s*[-*+]\s+\[)([ xX/])(\]\s)/;
 async function rowEdit(change, removed, base) {
   const v = fcs.data;
-  if (!v || fcs.busy || !liveRows()) { renderFocus(); return false; }
+  if (!v || !liveRows()) { renderFocus(); return false; }
+  if (fcs.busy) { fcs.err = "Still saving the last change; do that again in a moment."; renderFocus(); return false; }
+  // A day's own target, never the `daily` alias, which names another day after midnight.
+  const t = v.note.date ? "daily:" + v.note.date : v.note.target;
   const before = v.note.markdown, lines = change(before.split("\n"));
-  if (!lines) { fcs.err = "That row is not where the page drew it; here is the note as it is now."; renderFocus(); refreshFocus(); return false; }
+  if (!lines) {
+    try { fcs.data = await readNote(t); } catch { /* the page keeps what it has */ }
+    fcs.err = "That row is not where the page drew it; here is the note as it is now.";
+    renderFocus();
+    return false;
+  }
   let ok = false;
   fcs.busy = true; fcs.undo = null;
   try {
-    const { doc: view, stale: conflict } = await putNote(focusTarget(), base || v.note.hash, lines.join("\n"), v.note.rel);
+    const { doc: view, stale: conflict } = await putNote(t, base || v.note.hash, lines.join("\n"), v.note.rel);
     fcs.data = view;
     fcs.err = conflict ? "The note changed somewhere else, so nothing was written; here it is as it is now." : null;
     if (!conflict && removed) fcs.undo = { path: view.note.path, what: removed, text: before, base: view.note.hash };
@@ -327,8 +339,13 @@ function removeRow(n) {
   const m = TASK.exec(ls[n] || "");
   if (!m) return rowEdit(() => null);
   const ind = (l) => l.length - l.trimStart().length;
+  // Its children run while lines are deeper than it; a blank line inside them does not end them.
   let end = n + 1;
-  while (end < ls.length && ls[end].trim() && ind(ls[end]) > ind(ls[n])) end++;
+  for (let j = n + 1; j < ls.length; j++) {
+    if (!ls[j].trim()) continue;
+    if (ind(ls[j]) <= ind(ls[n])) break;
+    end = j + 1;
+  }
   const what = ls[n].slice(m[0].length).replace(/\s#[\w:/-]+/g, "").trim().slice(0, 60);
   return rowEdit((l) => (l.splice(n, end - n), l), `"${what}"`);
 }
@@ -445,10 +462,13 @@ $("d-nav").addEventListener("click", (e) => {
 OUTBOX.changed = () => { if (st.tab === "daily") dayNav(); };
 
 // A page opened straight on the outbox or another note has not read the day yet: its links are
-// the nav's places all the same.
-async function dayLinks() {
-  try { const d = await readNote("daily"); if (!fcs.links) fcs.links = d.note.links || []; } catch { return; }
-  if (st.tab === "daily") dayNav();
+// the nav's places all the same. One read at a time; a failed one is tried again on the next show.
+let dayLinksRead = null;
+function dayLinks() {
+  dayLinksRead = dayLinksRead || readNote("daily").then((d) => {
+    if (!fcs.links) fcs.links = d.note.links || [];
+    if (st.tab === "daily") dayNav();
+  }, () => { dayLinksRead = null; });
 }
 
 $("d-note").addEventListener("toggle", (e) => {

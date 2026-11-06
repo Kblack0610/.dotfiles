@@ -90,6 +90,9 @@ const putOutbox = (base, text) => putBase("/api/outbox", { base, text }, "the ou
 // One read or write at a time: a reply from an older state merged after a newer one would bring
 // back lines the sweep took.
 const sync = coalesce(async () => {
+  // Send asks for this one save only; a failed read must not leave it on for the next autosave.
+  const flush = obx.flush;
+  obx.flush = false;
   try {
     if (obx.wantRead || !obx.view) {
       obx.wantRead = false;
@@ -98,13 +101,13 @@ const sync = coalesce(async () => {
       else { obx.view = v; adopt(v.doc); }
       renderHandled();
     }
-    const cursor = focused() && !obx.flush ? box().selectionStart : -1;
-    obx.flush = false;
     // A 409 is the sweep landing between our read and write: merge and go again, at most twice.
+    // The cursor is read each try, since a merge moves it.
     for (let tries = 0; tries < 3; tries++) {
-      const out = outgoing(box().value, cursor, norm(obx.baseText));
+      const out = outgoing(box().value, focused() && !flush ? box().selectionStart : -1, norm(obx.baseText));
       obx.held = out.held;
-      if (norm(out.text).join("\n") === norm(obx.baseText).join("\n")) break;
+      // Send with nothing new still says when the outbox last had everything.
+      if (norm(out.text).join("\n") === norm(obx.baseText).join("\n")) { if (flush) obx.savedAt = Date.now(); break; }
       const r = await putOutbox(obx.base, out.text);
       adopt(r.doc);
       if (!r.stale) { obx.savedAt = Date.now(); break; }
