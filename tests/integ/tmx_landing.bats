@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
-# `tmx root <world>` -- Prefix+H / Prefix+N (worlds set by WORLD_H / WORLD_N in .tmux.conf), "take me to the top of this world".
+# `tmx root <world> [<session>]` -- Prefix+N (hub's landing page, today's daily) and Prefix+H
+# (`root hub lab`, the projects index), "take me to this page".
 #
 # integ tier: servers.sh runs as a subprocess against the recording tmux stub, so every
 # assertion is "which tmux command did it actually issue". Nothing here needs a real
@@ -263,4 +264,50 @@ boards_declared() {
   run "$TMX" open hub "$BASE/nope.md"
   assert_failure
   assert_output --partial 'no such file'
+}
+
+# --- a page that is not the world's landing session (Prefix+H, 2026-11-05) ---
+#
+# The lab notes moved to hub as session `lab`, the second entry, and the lab world kept
+# only on-demand entries. These pin the shape the real manifests now have.
+
+notes_on_hub() {
+  printf 'hub %s nvim "$(fake_notes_path)"\nlab %s nvim "%s"\n' "$BASE" "$BASE" "$LAB_PAGE" \
+    > "$TMUX_SERVERS_DIR/hub.conf"
+  printf '?platform %s\n@agents\n' "$BASE" > "$TMUX_SERVERS_DIR/lab.conf"
+}
+
+@test "root hub lab restores the projects index, not today's daily" {
+  notes_on_hub
+  in_landing hub lab
+  STUB_PANE_CMD=nvim run "$TMX" land hub root.lab
+  assert_success
+  run calls
+  assert_output --partial ":e $(vim_path "$LAB_PAGE")"
+  refute_output --partial "$(vim_path "$HUB_PAGE")"
+  assert_output --partial "attach -t =lab"
+}
+
+@test "root with a session hops to the world that declares it" {
+  # Pressed from the lab world: the session's manifest wins, as in goto.
+  notes_on_hub
+  export TMUX="/tmp/tmux-1000/lab,1,0"
+  STUB_SOCKET=/tmp/tmux-1000/lab STUB_SESSION=dotfiles-agent-1 STUB_WINDOW_INDEX=1 \
+    run "$TMX" root lab lab
+  assert_success
+  run calls
+  assert_output --partial "land hub root.lab"
+}
+
+@test "an on-demand entry is never a world's landing page" {
+  # Before the fix _landing returned `?platform` literally and root attached to a session
+  # by that name. A world with no booted entry resumes instead.
+  notes_on_hub
+  printf 'dotfiles-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  STUB_PANE_CMD=nvim run "$TMX" land lab root
+  assert_success
+  run calls
+  refute_output --partial "?platform"
+  refute_output --partial ":e "
+  assert_output --partial "attach -t =dotfiles-agent-1"
 }
