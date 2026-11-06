@@ -41,8 +41,9 @@ spent() {
 }
 
 @test "over the day budget, the call is not made: exit 75, the reason, BLOCKED" {
-  spent judge 6 "$(date -Iseconds -d '-3 hours')"
-  spent judge 5 "$(date -Iseconds -d '-2 hours')"
+  # Today's first seconds, not "-3 hours": that is yesterday from midnight to 03:00.
+  spent judge 6 "$(date -Iseconds -d 'today 00:00:01')"
+  spent judge 5 "$(date -Iseconds -d 'today 00:00:02')"
   spent other 50 "$(date -Iseconds)"
   run "$RUN" --agent judge -p x
   assert_failure 75

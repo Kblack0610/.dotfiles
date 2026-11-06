@@ -235,12 +235,6 @@ rollup_prom() {
       gauge("agent_usage_cost_per_merged_pr_usd"; "Cost per merged PR on the last finished day (token-usage snapshot)."; [{}, $a.cost_per_merged_pr]),
       gauge("agent_usage_sessions_no_pr"; "Sessions with no PR on the last finished day (session-outcomes)."; [{}, $a.outcomes.no_pr]),
       gauge("agent_day_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
-      gauge("agent_queue_flow"; "Queue items reaching each stage on the last finished day.";
-        ($w.queue // {}) as $q | ("queued", "started", "waiting", "done", "failed") | [{stage: .}, $q[.]]),
-      gauge("agent_queue_minutes"; "Queue lead, wait and run time on the last finished day, minutes.";
-        ($w.queue // {}) as $q | ("lead", "wait", "run") | . as $s | $q["\(.)_minutes"] // {} | quantiles({stage: $s})),
-      gauge("agent_board_rows"; "Agent board rows opened and closed on the last finished day, and open at its end.";
-        ($w.board // {}) | [{event: "opened"}, .opened], [{event: "closed"}, .closed], [{event: "open"}, .open_end]),
       gauge("agent_phases_ticked"; "Plan phases ticked on the last finished day (fleet-bench flow)."; [{}, $w.phases.ticked]),
       gauge("agent_week_value"; "A week metric over the last 7 finished days (day-log week).";
         ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.value]),

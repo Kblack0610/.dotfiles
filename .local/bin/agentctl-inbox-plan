@@ -24,6 +24,8 @@ LIB="$HERE/../lib"
 . "$LIB/agent-proof.sh"
 # shellcheck source=/dev/null
 . "$LIB/md-render.sh"
+# shellcheck source=/dev/null
+. "$LIB/inbox-epics.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
@@ -53,12 +55,13 @@ refused() {
 
 # plan_row <row json> <board json>: one model call and its writes.
 plan_row() {
-  local row="$1" board="$2" p id lane text raw details open repo sub prompt out rc wd err ans first
+  local row="$1" board="$2" p id lane text raw details open epics epic repo sub prompt out rc wd err ans first
   p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
   text="$(jq -r .text <<<"$row")"; raw="$(jq -r .raw <<<"$row")"
   details="$(jq -r '.details[]?' <<<"$row")"
   open="$(jq -r --arg p "$p" --arg l "$lane" --arg id "$id" '.rows[]
     | select(.project == $p and .lane == $l and .state != "done" and .id != $id) | "\(.id)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  epics="$(epics_open "$board")"
   repo="$(project_repo_path "$p")"; sub="$(project_field "$p" path)"
   [ -n "$repo" ] && [ -d "$repo" ] || repo=""
   local -a lanes=() add=()
@@ -69,11 +72,13 @@ The row: $text
 ${details:+Its detail lines:
 $details
 }
-Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci run decide check, title under 80 characters. Do not split into a row the open rows below already hold.
+Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci research design market legal run decide check, title under 80 characters. Do not split into a row the open rows below already hold. epic is the id of the one epic below this row plainly belongs to, else empty.
 
 Answer with one JSON object between a line INBOX-PLAN-START and a line INBOX-PLAN-END, nothing else between them:
-{\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": []}
+{\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": [], \"epic\": \"\"}
 
+## Open epics of this project (id, project, title)
+$(epics_of "$p" "$epics")
 ## Open rows on this board (id, text)
 $open"
   [ -n "$repo" ] && add=(--add-dir "$repo")
@@ -110,6 +115,8 @@ $open"
   if [[ "$size" =~ ^[sml]$ ]]; then
     new="$(sed -E 's/(^| )#size\/[a-z]+( |$)/ /g; s/  +/ /g; s/ $//' <<<"$new") #size/$size"
   fi
+  epic="$(jq -r '.epic // "" | tostring' <<<"$ans")"
+  if [[ " $new " != *" #of/"* ]] && epic_known "$epic" "$p" "$epics"; then new="$new #of/$epic"; fi
   if [ "$DRY" = 1 ]; then
     printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
   fi

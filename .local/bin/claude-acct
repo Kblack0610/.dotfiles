@@ -187,6 +187,8 @@ cmd_pick() {
 WEEK=604800
 PACE_SLACK_PCT="${CLAUDE_ACCT_PACE_SLACK_PCT:-5}"   # how far past the pace line an automatic start may go
 RESERVE_PCT="${CLAUDE_ACCT_RESERVE_PCT:-15}"        # the last of each account, kept for the human
+# shellcheck source=../lib/machine-mode.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"   # level_scale, for room
 # Points of its week one live session uses an hour, when Prometheus cannot say: 0.06 to 0.08 on
 # every account over 2026-11-01..04, so percents compare across accounts.
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-0.07}"
@@ -401,11 +403,13 @@ cmd_textfile() {
 # and a hand start are never refused. An expired token means the account has been idle for hours,
 # and launching it is what refreshes it, so it has room, as in pick. An account its live sessions
 # already empty before its reset has none, however far under pace: the next start there would stop
-# on the limit or push one of them off it.
+# on the limit or push one of them off it. The machine-mode level scales slack and reserve here, and
+# only here: pick's rank, which `cl` uses, keeps the conf's own reserve.
 cmd_room() {
-    local rows row
+    local rows row slack reserve
+    read -r slack reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$RESERVE_PCT")
     rows=$(usage_json nospend | jq -s .)
-    row=$(jq -c --argjson slack "$PACE_SLACK_PCT" --argjson reserve "$RESERVE_PCT" '
+    row=$(jq -c --argjson slack "$slack" --argjson reserve "$reserve" '
         [.[] | select(.state != "unread")
              | select((.week_used == null) or
                       (.week_used <= .week_gone + $slack and .week_used < 100 - $reserve))
@@ -424,7 +428,7 @@ cmd_room() {
     # Name the account a start would fall back to (pick's best) and why room refused it, from its
     # own row: "no account has room" alone read as every account being full (2026-11-05).
     local name why run_out resets t=""
-    IFS=$'\037' read -r name why run_out resets < <(jq -r --argjson slack "$PACE_SLACK_PCT" --argjson reserve "$RESERVE_PCT" '
+    IFS=$'\037' read -r name why run_out resets < <(jq -r --argjson slack "$slack" --argjson reserve "$reserve" '
         def pts: ceil | "\(.) point\(if . == 1 then "" else "s" end)";
         [.[] | select(.state != "unread")] | sort_by(.rank) | first // empty
         | [.name,
@@ -432,7 +436,7 @@ cmd_room() {
             elif .week_used >= 100 then "out of its week"
             elif .week_used >= 100 - $reserve then "\(.week_used | floor)% of its week used, inside the last \($reserve)% kept for the human"
             elif .week_used > .week_gone + $slack then
-              "\(.week_used - .week_gone - $slack | pts) over its weekly pace (\(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, \($slack) points of slack)"
+              "\(.week_used - .week_gone - $slack | pts) over its weekly pace (\(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, \($slack | pts) of slack)"
             elif (.five_hour // 0) >= 100 - $reserve then "its 5h window at \(.five_hour | floor)%"
             else "its \(.live) live sessions use the rest of its week before the reset" end),
            (.run_out // "-"), (.resets // "-")] | map(tostring)

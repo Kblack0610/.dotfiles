@@ -652,6 +652,32 @@ STUB
   assert_failure 1
 }
 
+@test "room: the machine-mode level scales slack and reserve; pick, which cl uses, does not move" {
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 88 50
+  week alt 15 152   # 1 point past mid's 5 of slack
+  run --separate-stderr "$ACCT" pick
+  local mid_pick="$output"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  mkdir -p "$HOME/.agent"
+  echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"   # high: 10 of slack
+  run --separate-stderr "$ACCT" room
+  assert_success
+  assert_output "$ALT"
+  run --separate-stderr "$ACCT" pick
+  assert_output "$mid_pick"
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 20 kept back
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'5 points over its weekly pace (15% used, 9% of its week gone, 1 point of slack)'* ]] || fail "$stderr"
+  week main 82 2
+  week alt 90 100
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'82% of its week used, inside the last 20% kept for the human'* ]] || fail "$stderr"
+}
+
 @test "room: the reserve holds late in the week, even under pace" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 85 2

@@ -57,6 +57,27 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-plan/last-outcome"
 }
 
+@test "a plan puts its row under an open epic it names, and an epic it invents costs only the tag" {
+  sheet '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] fix(audio): the gun sound #size/s #plan <!-- id:sc-1 -->\n'
+  answer '{"goal": "the gun plays on time", "approach": ["trace it"], "checks": ["it plays"], "size": "s", "split": [], "epic": "sc-9"}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  run cat "$SHEET"
+  assert_output --regexp 'fix\(audio\): the gun sound .*#of/sc-9 .*id:sc-1'
+  grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/args.txt" || fail "the epics never reached the model"
+  grep -q 'research design market legal' "$NOTES_FIXTURE/args.txt" || fail "the split types are stale"
+
+  sheet '- [ ] fix(audio): the gun sound #size/s #plan <!-- id:sc-1 -->\n'
+  answer '{"goal": "the gun plays on time", "approach": ["trace it"], "checks": ["it plays"], "size": "s", "split": [], "epic": "sc-404"}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  run cat "$SHEET"
+  refute_output --partial '#of/'
+  assert_output --partial '  goal: the gun plays on time'
+}
+
 @test "a plan with no goal is refused, recorded, and not asked for again" {
   sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n'
   answer '{"approach": ["something"]}'

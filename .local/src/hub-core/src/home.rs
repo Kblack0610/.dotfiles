@@ -6,6 +6,10 @@
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
 //! by their tmux session name, the one name an ask, a queue item and a state row all carry.
+//!
+//! `needs` is the one ranking of that list: every surface, `hub needs --json`, fleet-bench's asks
+//! digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
+//! from facts (who can act, what it holds, how long it waited), never a model's number.
 
 use std::collections::HashSet;
 
@@ -25,11 +29,11 @@ pub const DOMAINS: [&str; 11] = [
 pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
-/// How many rows of a list Home shows before the rest fold under "+N older" (dashboards rule: a
+/// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
 /// long list is capped, never unbounded at top level).
 pub const SHOWN: usize = 8;
 
-/// What a row is. The order here is the order Home lists them in.
+/// What a row is. Conditions (Nightly, Red) list after every scored row, in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -60,6 +64,65 @@ pub struct Need {
     /// When it started waiting, unix seconds, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
+    /// An ask's recommended option, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommend: Option<String>,
+    /// What the row counted, for an ask, a session or a queue item; a nightly or red-now row is
+    /// a condition, not a wait, and has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<Score>,
+}
+
+/// What a row of NEEDS YOU counted, so it says why it sits where it does (dashboards rule 6).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Score {
+    /// Only the human can act. False only for an ask the judge said a machine could answer.
+    pub human: bool,
+    /// It holds a live session.
+    pub session: bool,
+    /// Plan phases left in that session.
+    pub phases: u64,
+    /// Queued items that start only after this one (their `after:`).
+    pub dependents: u64,
+    /// Minutes it has waited, by the state document's clock.
+    pub age_min: i64,
+    /// `(1 + session + phases + dependents) x age_min`: what a wait costs, the rank among rows
+    /// with the same `human`.
+    pub value: i64,
+    /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
+    pub holds: String,
+}
+
+impl Score {
+    pub fn new(human: bool, session: bool, phases: u64, dependents: u64, age_min: i64) -> Score {
+        let mut words = Vec::new();
+        if session {
+            words.push("session".to_string());
+        }
+        if phases > 0 {
+            words.push(format!("{phases} phase{}", if phases == 1 { "" } else { "s" }));
+        }
+        if dependents > 0 {
+            words.push(format!("{dependents} queued"));
+        }
+        let holds = 1 + u64::from(session) + phases + dependents;
+        Score {
+            human,
+            session,
+            phases,
+            dependents,
+            age_min,
+            value: i64::try_from(holds).unwrap_or(i64::MAX).saturating_mul(age_min),
+            holds: words.join(", "),
+        }
+    }
+}
+
+/// An ask the judge said a machine could answer (`take-recommend`, `answer:<text>`). A gate or
+/// an approval is the human's whatever the verdict says; an error or no verdict is the human's.
+fn machine_can_answer(kind: &str, judge: &str) -> bool {
+    !matches!(kind, "gate" | "approval")
+        && (judge == "take-recommend" || judge.starts_with("answer:"))
 }
 
 /// One running queue item, with its plan's progress when its session has a checklist.
@@ -163,9 +226,6 @@ fn dir_name(cwd: &str) -> String {
         .to_string()
 }
 
-/// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
-/// read). Needs come asks first, then sessions, queue items, nightly reds and red-now items,
-/// each newest first.
 /// The tmux target of session `name` in `sessions`, when exactly one window carries it.
 fn target_in(sessions: &[&Value], name: &str) -> Option<String> {
     let mut m = sessions
@@ -203,16 +263,26 @@ pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
         .collect()
 }
 
-pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Home {
-    let mut h = Home {
-        shown: SHOWN,
-        ..Home::default()
+/// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue and infra (None
+/// until read), ranked: the asks, sessions and queue items only the human can act on by what
+/// their wait costs (`Score::value`), then those the judge said a machine could answer, then
+/// nightly reds and red-now items. Ages are by the state's own clock, so the order is pure.
+pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec<Need> {
+    let now = state["generated_epoch"].as_i64();
+    let age_min = |since: Option<i64>| {
+        now.zip(since)
+            .map_or(0, |(n, s)| (n - s).max(0) / 60)
     };
-    let generated = state["generated_epoch"].as_i64();
     let sessions: Vec<&Value> = state["sessions"]
         .as_array()
         .map(|a| a.iter().collect())
         .unwrap_or_default();
+    let phases = boards::phases(state);
+    let left = |target: Option<&String>| {
+        target
+            .and_then(|t| phases.get(t))
+            .map_or(0, |p| p.total.saturating_sub(p.done))
+    };
     let target_of = |name: &str| target_in(&sessions, name);
     let items: Vec<&Item> = queue.map(|q| q.items.iter().collect()).unwrap_or_default();
     let item_of = |name: &str| {
@@ -221,29 +291,41 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
                 && i.session.as_deref().is_some_and(|s| tmux_name(s) == name)
         })
     };
+    // The Rust twin of `agent-queue dependents`: queued items whose `after:` is this one.
+    let dependents = |slug: Option<&str>| {
+        slug.map_or(0, |slug| {
+            items
+                .iter()
+                .filter(|i| i.state == State::Queued && i.after.as_deref() == Some(slug))
+                .count() as u64
+        })
+    };
+    let mut out = Vec::new();
     let mut shown: HashSet<String> = HashSet::new();
 
-    if state.is_null() {
-        h.errors
-            .push("no fleet state yet (fleet-state.timer writes it every minute)".into());
-    }
-    let unread = state["unreadable"].as_array().into_iter().flatten();
-    if unread.filter_map(Value::as_str).any(|u| u == "agent-ask") {
-        h.errors
-            .push("agent-ask could not be read, so no asks are shown".into());
-    }
     for a in state["asks"].as_array().into_iter().flatten() {
         let session = str_of(a, "session");
         if !session.is_empty() {
             shown.insert(session.to_string());
         }
-        h.needs.push(Need {
+        let target = (!session.is_empty()).then(|| target_of(session)).flatten();
+        let since = ts(str_of(a, "created"));
+        let recommend = str_of(a, "recommend");
+        out.push(Need {
             kind: Kind::Ask,
             project: str_of(a, "project").into(),
             text: short(str_of(a, "question")),
             id: str_of(a, "id").into(),
-            target: (!session.is_empty()).then(|| target_of(session)).flatten(),
-            since: ts(str_of(a, "created")),
+            score: Some(Score::new(
+                !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
+                target.is_some(),
+                left(target.as_ref()),
+                dependents(item_of(session).map(|i| i.slug.as_str())),
+                age_min(since),
+            )),
+            recommend: (!recommend.is_empty()).then(|| recommend.into()),
+            target,
+            since,
         });
     }
     for s in &sessions {
@@ -254,15 +336,24 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         }
         shown.insert(name.to_string());
         let item = item_of(name);
-        h.needs.push(Need {
+        let since = now
+            .zip(s["idle_min"].as_i64())
+            .map(|(g, m)| g - m * 60);
+        out.push(Need {
             kind: Kind::Session,
             project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
             text: short(&item.map_or_else(|| str_of(s, "reason").to_string(), |i| i.title())),
             id: target.into(),
             target: Some(target.into()),
-            since: generated
-                .zip(s["idle_min"].as_i64())
-                .map(|(g, m)| g - m * 60),
+            since,
+            recommend: None,
+            score: Some(Score::new(
+                true,
+                true,
+                left(Some(&target.to_string())),
+                dependents(item.map(|i| i.slug.as_str())),
+                age_min(since),
+            )),
         });
     }
     for i in items.iter().filter(|i| i.state == State::Waiting) {
@@ -273,23 +364,35 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
             continue;
         }
         let waited = i.extra.get("waiting").and_then(Value::as_str);
-        h.needs.push(Need {
+        let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
+        let since = waited.or(i.started.as_deref()).and_then(ts);
+        out.push(Need {
             kind: Kind::Queue,
             project: i.project.clone(),
             text: short(&i.title()),
             id: i.slug.clone(),
-            target: i.session.as_deref().and_then(|s| target_of(tmux_name(s))),
-            since: waited.or(i.started.as_deref()).and_then(ts),
+            score: Some(Score::new(
+                true,
+                target.is_some(),
+                left(target.as_ref()),
+                dependents(Some(&i.slug)),
+                age_min(since),
+            )),
+            target,
+            since,
+            recommend: None,
         });
     }
     for m in state["main"].as_array().into_iter().flatten() {
-        h.needs.push(Need {
+        out.push(Need {
             kind: Kind::Nightly,
             project: str_of(m, "repo").into(),
             text: short(str_of(m, "reason")),
             id: str_of(m, "repo").into(),
             target: None,
             since: None,
+            recommend: None,
+            score: None,
         });
     }
     if let Some(inf) = infra.filter(|i| i.ok) {
@@ -302,24 +405,45 @@ pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Hom
         red.sort();
         red.dedup();
         for r in red {
-            h.needs.push(Need {
+            out.push(Need {
                 kind: Kind::Red,
                 project: String::new(),
                 text: r.into(),
                 id: r.into(),
                 target: None,
                 since: None,
+                recommend: None,
+                score: None,
             });
         }
     }
-    // Stable: same kind keeps its newest first, unknown ages last, so the fold holds the oldest.
-    h.needs.sort_by_key(|n| {
+    // Stable: equal waits keep their read order (asks, sessions, queue items); conditions last.
+    out.sort_by_key(|n| {
         (
-            n.kind,
-            n.since.is_none(),
-            std::cmp::Reverse(n.since.unwrap_or(0)),
+            n.score.is_none(),
+            n.score.as_ref().map(|s| (!s.human, std::cmp::Reverse(s.value))),
         )
     });
+    out
+}
+
+/// Home from fleet-sessions' `state.json` (null when missing), the queue and infra (None until
+/// read): NEEDS YOU in `needs` order, the running items, the headline numbers and the chips.
+pub fn build(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Home {
+    let mut h = Home {
+        shown: SHOWN,
+        ..Home::default()
+    };
+    if state.is_null() {
+        h.errors
+            .push("no fleet state yet (fleet-state.timer writes it every minute)".into());
+    }
+    let unread = state["unreadable"].as_array().into_iter().flatten();
+    if unread.filter_map(Value::as_str).any(|u| u == "agent-ask") {
+        h.errors
+            .push("agent-ask could not be read, so no asks are shown".into());
+    }
+    h.needs = needs(state, queue, infra);
 
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
@@ -413,9 +537,12 @@ mod tests {
         }
     }
 
+    /// 2026-11-05T09:00:00-0800, an hour after the fixture's ask.
+    const NOW: i64 = 1_793_898_000;
+
     fn state() -> Value {
         json!({
-            "generated_epoch": 10_000,
+            "generated_epoch": NOW,
             "counts": {"WORKING": 2, "NEEDS": 2, "STALLED": 0},
             "sessions": [
                 {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo"},
@@ -459,7 +586,7 @@ mod tests {
         assert_eq!(ask.target.as_deref(), Some("lab/repo-agent-1:1"));
         // The session row takes its queue item's words, and its age from the idle minutes.
         assert_eq!(h.needs[1].text, "Do dialog");
-        assert_eq!(h.needs[1].since, Some(10_000 - 180));
+        assert_eq!(h.needs[1].since, Some(NOW - 180));
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
@@ -478,23 +605,75 @@ mod tests {
         assert!(!ok.errors.iter().any(|e| e.contains("agent-ask")));
     }
 
+    fn score(n: &Need) -> (bool, bool, u64, u64, i64, i64) {
+        let s = n.score.as_ref().unwrap();
+        (s.human, s.session, s.phases, s.dependents, s.age_min, s.value)
+    }
+
     #[test]
-    fn asks_list_newest_first_so_the_fold_holds_the_oldest() {
+    fn needs_rank_by_what_they_hold_times_how_long_they_waited() {
         let mut st = state();
+        st["sessions"] = json!([
+            {"target": "lab/big-agent-1:1", "bucket": "NEEDS", "idle_min": 30,
+             "phases_done": 1, "phases_total": 4, "cwd": "/w/big"},
+        ]);
         st["asks"] = json!([
+            // Ten days old, but the judge said a machine can answer it: below every human row.
+            {"id": "auto", "question": "q", "kind": "question", "judge": "take-recommend",
+             "recommend": "yes", "created": "2026-10-26T09:00:00-0800"},
+            // A gate is the human's whatever the judge said.
+            {"id": "gate", "question": "q", "kind": "gate", "judge": "take-recommend",
+             "created": "2026-11-05T08:50:00-0800"},
             {"id": "old", "question": "q", "created": "2026-11-05T08:00:00-0800"},
-            {"id": "new", "question": "q", "created": "2026-11-05T09:00:00-0800"},
             {"id": "undated", "question": "q"},
         ]);
-        let h = build(&st, None, None);
-        let ids: Vec<&str> = h
-            .needs
-            .iter()
-            .filter(|n| n.kind == Kind::Ask)
-            .map(|n| n.id.as_str())
-            .collect();
-        assert_eq!(ids, ["new", "old", "undated"]);
+        st["main"] = json!([]);
+        let mut parent = item("parent", State::Waiting, None);
+        parent.started = Some("2026-11-05T08:40:00-0800".into());
+        let kid = |slug: &str| {
+            let mut i = item(slug, State::Queued, None);
+            i.after = Some("parent".into());
+            i
+        };
+        let q = Queue {
+            items: vec![parent, kid("k1"), kid("k2")],
+            ..Default::default()
+        };
+        let h = build(&st, Some(&q), None);
+        let ids: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["lab/big-agent-1:1", "old", "parent", "gate", "undated", "auto"]
+        );
+        // (1 + session + 3 phases left) * 30 min.
+        assert_eq!(score(&h.needs[0]), (true, true, 3, 0, 30, 150));
+        assert_eq!(h.needs[0].score.as_ref().unwrap().holds, "session, 3 phases");
+        assert_eq!(score(&h.needs[1]), (true, false, 0, 0, 60, 60));
+        // (1 + 2 queued after it) * 20 min.
+        assert_eq!(score(&h.needs[2]), (true, false, 0, 2, 20, 60));
+        assert_eq!(h.needs[2].score.as_ref().unwrap().holds, "2 queued");
+        assert_eq!(score(&h.needs[3]), (true, false, 0, 0, 10, 10));
+        assert_eq!(score(&h.needs[4]).5, 0);
+        let auto = &h.needs[5];
+        assert_eq!(score(auto), (false, false, 0, 0, 14_400, 14_400));
+        assert_eq!(auto.recommend.as_deref(), Some("yes"));
         assert_eq!(h.shown, SHOWN);
+    }
+
+    #[test]
+    fn conditions_follow_every_scored_row_and_carry_no_score() {
+        let i = infra(vec![], &["watch:a"]);
+        let h = build(&state(), None, Some(&i));
+        let kinds: Vec<Kind> = h.needs.iter().map(|n| n.kind).collect();
+        assert_eq!(
+            kinds,
+            [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]
+        );
+        assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
+        // An ask from the future (a skewed clock) waits zero minutes, never negative.
+        let mut st = state();
+        st["asks"][0]["created"] = json!("2026-11-06T09:00:00-0800");
+        assert_eq!(score(&build(&st, None, None).needs[1]).4, 0);
     }
 
     #[test]

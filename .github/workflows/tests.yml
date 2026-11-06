@@ -154,8 +154,8 @@ jobs:
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
           NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
-      - name: Inbox triager, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=integ/inbox_triage.bats BATS_FLAGS="--print-output-on-failure"
+      - name: Inbox triager and planner, on the real notes
+        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)

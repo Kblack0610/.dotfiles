@@ -40,6 +40,17 @@ refs = [
 buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
 # The buzzes-a-day target is buzzes_per_day_max in ~/.config/agentctl/kpi-thresholds.
 
+# The needs pager (`hub needs --page`, hub-core pager.rs): one grouped page for the rows of
+# hub Home's NEEDS YOU that only the human can act on and that crossed min_score since the
+# last page. A score is (1 + session + plan phases left + queued items after it) x minutes
+# waited, so 60 is an hour alone or 15 minutes holding a session and 2 phases. Past
+# max_buzz_day high pages a day the page still goes out, at normal. top is how many rows one
+# page names before "+N more".
+[pager.needs]
+min_score = 60
+max_buzz_day = 6
+top = 3
+
 # A push to the phone. The lock screen shows the title and about two lines.
 [channel.page]
 max_chars = 300
