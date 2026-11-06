@@ -889,7 +889,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
 
 /// Every profile's project dirs, by name: the ingest record is the machine's, so a filing can
 /// land in any profile's project.
-fn all_project_dirs() -> Vec<(String, PathBuf)> {
+pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
     crate::config::all_profile_names()
         .unwrap_or_default()
         .iter()
