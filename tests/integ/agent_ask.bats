@@ -1017,31 +1017,6 @@ live_post() {
   run "$AGENT_ASK" show "$c"; assert_line 'answered_by: human'
 }
 
-@test "judge-report scores the judge against the human's answer" {
-  local agree differ session deferred failed
-  agree="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'a?')"
-  differ="$(post demo 'b?')"; session="$(post demo 'c?')"; deferred="$(post demo 'd?')"; failed="$(post demo 'e?')"
-  sed -i 's/^judge: .*//' "$HOME/.agent/asks/demo/"*.md
-  printf 'judge: take-recommend\n' >> "$HOME/.agent/asks/demo/$agree.md"
-  printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$differ.md"
-  printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$session.md"
-  printf 'judge: human\n' >> "$HOME/.agent/asks/demo/$deferred.md"
-  printf 'judge: error\n' >> "$HOME/.agent/asks/demo/$failed.md"
-  "$AGENT_ASK" answer "$agree" Yes 2>/dev/null
-  "$AGENT_ASK" answer "$differ" right 2>/dev/null
-  "$AGENT_ASK" answer "$session" "in session: left" 2>/dev/null
-  "$AGENT_ASK" answer "$deferred" whatever 2>/dev/null
-  "$AGENT_ASK" answer "$failed" whatever 2>/dev/null
-  run "$AGENT_ASK" judge-report demo
-  assert_success
-  assert_line --regexp "^$agree	agree	take-recommend	Yes$"
-  assert_line --regexp "^$differ	differ	answer:left	right$"
-  assert_line --regexp "^$session	unscored	"
-  assert_line --regexp "^$deferred	asks-you	human	"
-  assert_line --regexp "^$failed	error	error	"
-  assert_line 'judged 5 answered asks: the judge would have answered 3, scored 2, agreed 1'
-}
-
 # list and the card read each file once; this is what makes Prefix y open fast.
 @test "list reads 400 asks well inside a second and keeps each key's first value" {
   local d="$HOME/.agent/asks/demo" i

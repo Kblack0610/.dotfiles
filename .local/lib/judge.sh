@@ -20,22 +20,26 @@ judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 # judge_call_id: a fresh call id, in the form agentctl-run gives its own.
 judge_call_id() { calls_new_id; }
 
+# judge_ask_docs <asks root>: every ask file under <root>/<project>/ as one JSON object of its
+# `key: value` fields, the first line of a key winning (agent-ask's `field`). One jq for all.
+judge_ask_docs() {
+  local files=()
+  [ -d "$1" ] && mapfile -t files < <(find "$1" -mindepth 2 -maxdepth 2 -name '*.md' 2>/dev/null)
+  [ "${#files[@]}" -gt 0 ] || return 0
+  jq -cRn '[inputs | {f: input_filename} + (capture("^(?<k>[a-z_]+): (?<v>.*)$") // {})]
+    | group_by(.f)[] | map(select(.k) | {(.k): .v}) | reverse | add' "${files[@]}" 2>/dev/null
+  return 0
+}
+
 # judge_verdicts <asks root> <verdicts.jsonl>: every verdict that names its call, one JSON line
 # each: {agent, subject, project, value, rule, reason, judge_call, at}. A gate the ask judge
 # never sent to the model has no call and is left out; so is every verdict written before
 # judge_call existed.
 judge_verdicts() {
-  local asks="$1" verdicts="$2" files=()
-  [ -d "$asks" ] && mapfile -t files < <(find "$asks" -mindepth 2 -maxdepth 2 -name '*.md' 2>/dev/null)
-  if [ "${#files[@]}" -gt 0 ]; then
-    jq -cRn '[inputs | {f: input_filename} + (capture("^(?<k>[a-z_]+): (?<v>.*)$") // {})]
-      | group_by(.f)[]
-      | map(select(.k) | {(.k): .v}) | reverse | add
-      | select(.judge_call // "" | length > 0)
-      | {agent: "ask-judge", subject: .id, project, value: (.judge | sub(":.*"; "")),
-         rule: (.judge_rule // ""), reason: (.judge_reason // ""), judge_call, at: .judged_at}' \
-      "${files[@]}" 2>/dev/null
-  fi
+  local asks="$1" verdicts="$2"
+  judge_ask_docs "$asks" | jq -c 'select(.judge_call // "" | length > 0)
+    | {agent: "ask-judge", subject: .id, project, value: (.judge | sub(":.*"; "")),
+       rule: (.judge_rule // ""), reason: (.judge_reason // ""), judge_call, at: .judged_at}'
   [ -f "$verdicts" ] && jq -c 'select(.judge_call // "" | length > 0)
     | {agent: "dispatch-judge", subject: "\(.project)/\(.lane)/\(.key)", project, value: .verdict,
        rule: (.rule // ""), reason: (.reason // ""), judge_call, at}' "$verdicts" 2>/dev/null
