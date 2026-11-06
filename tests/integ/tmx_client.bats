@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # tmx from the desktop: with no $TMUX and no terminal of its own (a Hyprland key, a waybar
-# click), a hop drives the terminal you typed in last instead of attaching where it stands,
-# and `tmx client` names that terminal for display-popup -c. Recording tmux stub; sockets are
-# real files so panel_live_servers sees the worlds; kitty, setsid and hyprctl are stubs.
+# click), a hop drives the terminal you typed in last instead of attaching where it stands;
+# `tmx client` names that terminal and `tmx popup` shows a command on it. Recording tmux stub;
+# sockets are real files so panel_live_servers sees the worlds; kitty, setsid, hyprctl stubbed.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -97,4 +97,28 @@ client() { printf '%s %s %s %s\n' "$2" "$1" "$3" "$4" >> "$NOTES_FIXTURE/tmux.cl
   WAYLAND_DISPLAY=wayland-1 run "$TMX" goto lab work < /dev/null
   assert_success
   assert_called "setsid -f kitty -e $TMX land lab work"
+}
+
+@test "tmx popup shows the command on the terminal typed in last and focuses it" {
+  sleep 300 & local child=$!
+  client hub 100 /dev/pts/1 11
+  client lab 300 /dev/pts/5 "$child"
+  printf '[{"pid": %s}]\n' "$$" > "$NOTES_FIXTURE/hypr.clients"
+  HYPRLAND_INSTANCE_SIGNATURE=test run "$TMX" popup agent-notify pick
+  kill "$child"
+  assert_success
+  assert_called 'tmux -L lab display-popup -c /dev/pts/5 -E -w 95% -h 95% agent-notify pick'
+  assert_called "hyprctl dispatch focuswindow pid:$$"
+  assert_not_called 'kitty'
+}
+
+@test "tmx popup with no terminal attached opens one floating kitty, and fails with no display" {
+  WAYLAND_DISPLAY=wayland-1 run "$TMX" popup agent-panel
+  assert_success
+  assert_called 'setsid -f kitty --class floating-term -e agent-panel'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$TMX" popup agent-panel
+  assert_failure
+  assert_output --partial 'no display'
+  assert_not_called 'kitty'
 }
