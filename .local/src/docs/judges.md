@@ -23,7 +23,9 @@ A judge is a model call that decides something a human would otherwise decide: t
 - A shadow class goes live only past one bar for every lane: `AGENT_ASK_LIVE_BAR` (30) scored answers at `AGENT_ASK_LIVE_PRECISION` (90%) precision, read from agent-ask. `judge-eval` shows the 95% interval beside it. Why: at 30 answers a 90% estimate still has a lower bound near 74%, and the interval says how sure the bar is. Test: `judge_eval.bats` "precision carries its 95% Wilson interval".
 - An override among a live class's first 30 answers demotes the class, and so does precision falling under the bar after them. Why: a class that goes live on a lucky streak must come back the first time the human disagrees. Tests: `agent_ask.bats` "override: the human's next message ..." and "override: past the first 30 live answers ...".
 - Each verdict names its call (`judge_call`, one `calls.jsonl` line), so latency and cost per verdict are the call's, shared across the rows one call judged. Why: estimated costs drift, and a dispatch call judges many rows at once. Test: `judge_eval.bats` "dispatch-judge: the newest verdict per row" (cost per verdict).
-- The judge KPIs (`judge_errors`, `judge_precision`, `ask_false_defer_pct`, `ask_unclear_pct`) are fleet-bench KPIs with thresholds in `~/.config/agentctl/kpi-thresholds`, so `fleet-bench retro` files a row when one trips. `judge_precision` is the lowest precision among rules with 10 or more scored answers. Why: a judge drifting wrong was visible only to someone who went looking. Test: `tests/unit/fleet_bench.bats` "kpi: the judge KPIs come from judge-eval kpi".
+- The judge KPIs (`judge_errors`, `judge_precision`, `ask_answered_pct`, `ask_false_defer_pct`, `ask_unclear_pct`) are fleet-bench KPIs with thresholds in `~/.config/agentctl/kpi-thresholds`, so `fleet-bench retro` files a row when one trips. `judge_precision` is the lowest precision among rules with 10 or more scored answers. Why: a judge drifting wrong was visible only to someone who went looking. Test: `tests/unit/fleet_bench.bats` "kpi: the judge KPIs come from judge-eval kpi".
+
+- Every answer verdict is listed, not only the misses: `judge-eval log`, and `verdicts` in `--json`, which Log's Judges' verdicts section shows on both surfaces. The list and its 7-day line take any prompt, because they say what happened rather than score a policy. Why: the human could only see where the judge disagreed, never what it said yes to or why it passed (2026-11-05). Test: `judge_eval.bats` "the verdict list".
 
 ## Replay
 
@@ -41,4 +43,5 @@ Each verdict is one of: TP (answered, right), FP (answered, wrong), FN (deferred
 | kappa | Cohen's kappa over the TP, FP, FN, TN table |
 | p50, p95 | each scored verdict's call `duration_ms` |
 | cost per verdict | each call's `cost_usd` divided by the verdicts it made, averaged |
+| `ask_answered_pct` | asks the judge really answered (`answered_by: judge`) / (ask verdicts - errors) |
 | `ask_unclear_pct` | `unclear-ask` verdicts / (ask verdicts - errors) |

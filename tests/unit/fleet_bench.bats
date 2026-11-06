@@ -750,13 +750,14 @@ kpi_fixture() {
 
 @test "kpi: the judge KPIs come from judge-eval kpi, and retro files the one past its threshold" {
   kpi_setup
-  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
+  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_answered_pct_min=50 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | - | - | max 0 | - |'
-  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
+  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_answered_pct":{"7d":52,"28d":0},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | 0 | 2 | max 0 | ok |'
   assert_line '| judge_precision | 75 | 80 | min 90 | past |'
+  assert_line '| ask_answered_pct | 52 | 0 | min 50 | ok |'
   assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
   assert_line '| ask_unclear_pct | - | - | - | - |'
   run "$SUBJECT" retro

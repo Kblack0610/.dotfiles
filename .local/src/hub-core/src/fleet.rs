@@ -27,8 +27,6 @@ const DAY: i64 = 24 * 3600;
 const WEEK: i64 = 7 * DAY;
 /// Verdicts listed, newest first.
 const RECENT_VERDICTS: usize = 30;
-/// Disagreements listed, newest first.
-const RECENT_DISAGREE: usize = 10;
 /// How much of the end of each append-only log is read. verdicts.jsonl grows about 400 bytes a
 /// verdict, so 1 MiB is several weeks; a tail that still starts inside the week says so.
 const VERDICT_TAIL: u64 = 1 << 20;
@@ -265,19 +263,58 @@ pub struct Judge {
     pub kappa: Option<f64>,
     /// The judge prompt the counts are under (its git blob, short).
     pub prompt: String,
-    pub disagreements: Vec<Disagreement>,
+    /// The last 7 days under any prompt, what a reader asks first.
+    pub week: JudgeWeek,
+    /// Every verdict, newest first and under any prompt, as judge-eval lists them.
+    pub verdicts: Vec<AskVerdict>,
 }
 
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-pub struct Disagreement {
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct JudgeWeek {
+    /// Asks the judge really answered, in percent of its verdicts.
+    pub live_pct: Option<f64>,
+    /// Asks it answered or would answer.
+    pub coverage: Option<f64>,
+    pub precision: Option<f64>,
+}
+
+/// The answer judge's filters on its verdict list, the first showing them all.
+pub const ASK_FILTERS: [&str; 5] = ["all", "answered", "would answer", "passed", "wrong"];
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct AskVerdict {
     pub id: String,
     pub project: String,
     pub question: String,
-    /// What the judge would have answered.
+    /// The class of the question, on verdicts that record one.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub rule: String,
+    /// answered, would answer, passed or error.
+    pub said: String,
+    /// The option it answered or would answer.
     pub judge: String,
     pub reason: String,
-    pub answer: String,
-    pub answered_at: Option<i64>,
+    /// The quote from the ask behind the call.
+    pub evidence: String,
+    /// What the human did: their answer, kept, or pending.
+    pub you: String,
+    /// right, wrong, needless (a pass where the human took the recommendation), pending or -.
+    pub score: String,
+    pub at: Option<i64>,
+}
+
+impl AskVerdict {
+    /// Whether this row is under one of `ASK_FILTERS`.
+    pub fn shown(&self, filter: &str) -> bool {
+        match filter {
+            "all" => true,
+            "wrong" => self.score == "wrong",
+            said => self.said == said,
+        }
+    }
 }
 
 /// The Prometheus part, cached apart by a server.
@@ -854,7 +891,9 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
         prompt_sha: String,
         total: Total,
         #[serde(default)]
-        misses: Vec<Miss>,
+        week: JudgeWeek,
+        #[serde(default)]
+        verdicts: Vec<AskVerdict>,
         #[serde(default)]
         live: Vec<String>,
         #[serde(default)]
@@ -874,16 +913,6 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
         pending: u32,
         unscorable: u32,
         kappa: Option<f64>,
-    }
-    #[derive(Deserialize)]
-    struct Miss {
-        id: String,
-        project: String,
-        question: Option<String>,
-        judge: Option<String>,
-        reason: Option<String>,
-        answer: Option<String>,
-        answered_at: Option<i64>,
     }
     let all: All = serde_json::from_str(json).map_err(|e| format!("judge-eval: {e}"))?;
     let mut evals = HashMap::new();
@@ -914,20 +943,8 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
         precision: t.score.precision,
         kappa: t.kappa,
         prompt: a.prompt_sha.chars().take(7).collect(),
-        disagreements: a
-            .misses
-            .into_iter()
-            .take(RECENT_DISAGREE)
-            .map(|m| Disagreement {
-                id: m.id,
-                project: m.project,
-                question: m.question.unwrap_or_default(),
-                judge: m.judge.unwrap_or_default(),
-                reason: m.reason.unwrap_or_default(),
-                answer: m.answer.unwrap_or_default(),
-                answered_at: m.answered_at,
-            })
-            .collect(),
+        week: a.week,
+        verdicts: a.verdicts,
     };
     Ok((judge, evals))
 }
@@ -1175,8 +1192,10 @@ mod tests {
         let json = r#"{"at":1,"agents":[
           {"agent":"ask-judge","prompt_sha":"60c840b1234","total":{"verdicts":9,"tp":2,"fp":1,"fn":3,"tn":1,
             "deferred":4,"pending":1,"unscorable":2,"precision":66.7,"kappa":0.12},
-           "misses":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
-             "answer":"no","rule":"r","answered_at":1700000000}]}]}"#;
+           "week":{"live_pct":25.0,"coverage":40.0,"precision":90.0},
+           "verdicts":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
+             "you":"no","rule":"r","type":"ship_deploy","said":"would answer","score":"wrong","at":1700000000},
+             {"id":"Ab2","said":"passed","score":"needless","at":null}]}]}"#;
         let (j, evals) = judges(json).unwrap();
         assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
         assert_eq!(
@@ -1192,8 +1211,25 @@ mod tests {
         );
         assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
         assert_eq!(j.prompt, "60c840b");
-        assert_eq!(j.disagreements[0].judge, "yes");
-        assert_eq!(j.disagreements[0].answered_at, Some(1_700_000_000));
+        assert_eq!(j.week.live_pct, Some(25.0));
+        let v = &j.verdicts[0];
+        assert_eq!(
+            (v.kind.as_str(), v.you.as_str(), v.at),
+            ("ship_deploy", "no", Some(1_700_000_000))
+        );
+        for (filter, want) in [
+            ("all", 2),
+            ("would answer", 1),
+            ("passed", 1),
+            ("answered", 0),
+            ("wrong", 1),
+        ] {
+            assert_eq!(
+                j.verdicts.iter().filter(|v| v.shown(filter)).count(),
+                want,
+                "{filter}"
+            );
+        }
     }
 
     #[test]

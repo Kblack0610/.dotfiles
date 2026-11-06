@@ -1225,7 +1225,7 @@ cmd_ledger() {
 
 KPI_NOW="runners_bad asks_stale board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
-KPI_JUDGE="judge_errors judge_precision ask_false_defer_pct ask_unclear_pct"
+KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct"
 
 # comms_kpi -> the comms snapshot's KPI object, or {} when there is none or it is stale, so both
 # KPIs show - rather than an old number
