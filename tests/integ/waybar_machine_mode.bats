@@ -76,6 +76,6 @@ mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME
   assert_output 1
   run grep -c '^mode|.*|custom/machine-mode$' "$REPO_ROOT/.config/waybar/modules.registry"
   assert_output 1
-  run grep -c '"custom/machine-mode",$' "$REPO_ROOT/.config/waybar/config.base"
+  run grep -c '"custom/machine-mode",\?$' "$REPO_ROOT/.config/waybar/config.base"
   assert_output 1
 }
