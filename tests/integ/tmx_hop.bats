@@ -34,6 +34,43 @@ at() {
   export STUB_SOCKET="/tmp/tmux-1000/$1" STUB_SESSION="$2" STUB_WINDOW_INDEX="$3"
 }
 
+# ── hop: only to a world that exists ─────────────────────────────────────────
+
+@test "an unknown verb says so and leaves the client attached" {
+  at hub daily 0
+  run "$TMX" back
+  assert_success
+  assert_called "display-message"
+  assert_not_called "detach-client"
+  assert_not_called "land back"
+}
+
+@test "an unknown world outside tmux fails instead of booting a server" {
+  unset TMUX
+  run "$TMX" hop nosuchworld
+  assert_failure
+  assert_output --partial "no world or command 'nosuchworld'"
+  assert_not_called "new-session"
+}
+
+@test "a world with a manifest still hops" {
+  printf 'client ~\n' > "$TMUX_SERVERS_DIR/client.conf"
+  at hub daily 0
+  run "$TMX" client
+  assert_success
+  assert_called "land client last"
+}
+
+@test "a running server with no manifest still hops" {
+  export TMUX_TMPDIR="$SANDBOX/sockets"
+  mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/stranded"
+  at hub daily 0
+  run "$TMX" stranded
+  assert_success
+  assert_called "land stranded last"
+}
+
 # ── toggle: Prefix+C-h, the other world ──────────────────────────────────────
 
 @test "toggle from hub goes to lab" {
