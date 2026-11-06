@@ -401,11 +401,13 @@ asks_for() {
   done
 }
 
-# tmux sessions holding a heavy process (fleet-assess rows), one per line.
-heavy_sessions() {
+# Panes (<server>/<pane id>, agent-panel's .pane) holding a heavy process, one per line, from
+# fleet-assess's PANE column. Keyed on the pane, not the tmux session: one session's windows
+# are separate agents, and a build in one is not work in the others (ar-290).
+heavy_panes() {
   local fa
   fa="$(command -v fleet-assess || echo "$(dirname "$0")/fleet-assess")"
-  "$fa" 2>/dev/null | awk 'f && $5 != "-" { print $5 } /^PID /{ f = 1 }' | sort -u
+  "$fa" 2>/dev/null | awk 'f && NF == 0 { exit } f && $8 != "" && $8 != "-" { print $8 } /^PID /{ f = 1 }' | sort -u
 }
 
 # repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
@@ -703,7 +705,7 @@ item_of() {
 collect() {
   local now heavy line
   now="$(date +%s)"
-  heavy="$(heavy_sessions)"
+  heavy="$(heavy_panes)"
   local panel items qjson qall qitems
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
@@ -744,7 +746,7 @@ collect() {
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     askids="$(asks_for "$sid" | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
-    hv=0; grep -qxF "$tsess" <<<"$heavy" && hv=1
+    hv=0; [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
