@@ -241,6 +241,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" account)" = main ]
 }
 
+@test "move back to queued drops where the item ran and keeps who worked it" {
+  "$AQ" add --project game --running --session game-agent-1 --slug b "b"
+  "$AQ" set b origin=run account=main
+  "$AQ" claim b --sid s1 && "$AQ" claim b --sid s2
+  "$AQ" move b waiting
+  run "$AQ" move b queued
+  assert_success
+  f="$(item queued b)"
+  for k in session window started waiting origin; do [ -z "$(field "$f" "$k")" ] || { echo "$k left"; return 1; }; done
+  [ "$(field "$f" sessions)" = "s1 s2" ]
+  [ "$(field "$f" account)" = main ]
+  [ "$(field "$f" slug)" = b ]
+  [ -n "$(sed -n '/^---$/,$p' "$f" | sed 1d)" ]
+}
+
 @test "set refuses identity fields and records the rest, on a done item too" {
   "$AQ" add --project game --slug s "s"
   run "$AQ" set s slug=other
