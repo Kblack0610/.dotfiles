@@ -2,7 +2,7 @@
 # skill-drift --lint: the STATIC checks, which are the ones CI can run.
 #
 # A CI runner has no ~/.claude/skills, no private overlay and no CLAUDE.md, so the
-# environmental checks (DEADPATH, NOCMD, UNDEPLOYED, GHOST, UNLISTED, STALE, UNUSED)
+# environmental checks (DEADPATH, NOCMD, UNDEPLOYED, GHOST, STALE, UNUSED, LISTBUDGET)
 # cannot even be attempted there. --lint is the subset decidable from a checkout, and
 # this file is the proof that each check FAILS on a bad skill rather than waving it
 # through - a lint nobody has watched fail is a lint nobody should trust.
@@ -42,7 +42,7 @@ mkskill() {
     for line in "$@"; do echo "$line"; done
     echo "---"
     echo
-    echo "## When to Use"
+    echo "## Scope and triggers"
     echo
     echo "- when testing"
   } > "$d/SKILL.md"
@@ -82,7 +82,7 @@ lint() { run "$DRIFT" --lint "$REPO"; }
 
 @test "NOFRONTMATTER: frontmatter without a description" {
   d=$(mkskill ops nodesc)
-  printf -- '---\nname: nodesc\n---\n\n## When to Use\n' > "$d/SKILL.md"
+  printf -- '---\nname: nodesc\n---\n\n## Scope and triggers\n' > "$d/SKILL.md"
   lint
   assert_failure
   assert_output --partial "NOFRONTMATTER"
@@ -274,12 +274,357 @@ PY
   refute_output --partial "FAIL  NONASCII      legacy"
 }
 
+@test "NOHEADING: a skill without the required heading fails" {
+  d=$(mkskill ops headless)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "NOHEADING"
+}
+
+@test "NOHEADING: a When to Use heading does not stand in for it" {
+  d=$(mkskill ops oldstyle)
+  sed -i 's/^## Scope and triggers/## When to Use/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "NOHEADING"
+}
+
+@test "NOHEADING: a frozen finding passes" {
+  d=$(mkskill ops headless)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  echo "NOHEADING|headless" > "$SKILL_LINT_BASELINE"
+  lint
+  assert_success
+}
+
+# ── the baseline holds old debt only, and says when a line has gone stale ─────
+
+@test "the baseline cannot freeze a check that was clean when it landed" {
+  d=$(mkskill ops verbose)
+  sed -i "s/^description: .*/description: $(desc 301)/" "$d/SKILL.md"
+  echo "LONGDESC|verbose" > "$SKILL_LINT_BASELINE"
+  lint
+  assert_failure
+  assert_output --partial "LONGDESC"
+}
+
+@test "--write-lint-baseline freezes every frozen-eligible finding and no other" {
+  d=$(mkskill ops debtor)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  printf 'em dash \xe2\x80\x94 here\n' >> "$d/SKILL.md"
+  mkentry commands "my/go" "description: \"$(desc 301)\""
+  d=$(mkskill ops verbose)
+  sed -i "s/^description: .*/description: $(desc 301)/" "$d/SKILL.md"
+  run "$DRIFT" --write-lint-baseline "$REPO"
+  assert_success
+  run cat "$SKILL_LINT_BASELINE"
+  assert_output "LONGDESC|command:my/go
+NOHEADING|debtor
+NONASCII|debtor"
+}
+
+@test "a stale baseline line is reported and does not fail the lint" {
+  mkskill ops fixed >/dev/null
+  echo "NOHEADING|fixed" > "$SKILL_LINT_BASELINE"
+  lint
+  assert_success
+  assert_output --partial "stale baseline line, delete it: NOHEADING|fixed"
+}
+
+@test "a baseline line with live debt is not called stale" {
+  d=$(mkskill ops headless)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  echo "NOHEADING|headless" > "$SKILL_LINT_BASELINE"
+  lint
+  assert_success
+  refute_output --partial "stale"
+}
+
+# ── --ratchet: the baseline only shrinks ─────────────────────────────────────
+#
+# A real repo with a real merge base, because that comparison is the whole check.
+# ratchet_repo <baseline-lines>: main holds them, HEAD is a branch off it.
+ratchet_repo() {
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" config user.name t
+  git -C "$REPO" config user.email t@example.com
+  mkdir -p "$REPO/tests"
+  printf '%s' "$1" > "$REPO/tests/skill-lint.baseline"
+  git -C "$REPO" add tests
+  git -C "$REPO" commit -qm base
+  git -C "$REPO" checkout -qb work
+}
+
+# The baseline under test is the repo's own, so drop the suite's empty one.
+ratchet() { SKILL_LINT_BASELINE="" run "$DRIFT" --ratchet "$REPO" main; }
+
+commit_baseline() {
+  printf '%s' "$1" > "$REPO/tests/skill-lint.baseline"
+  git -C "$REPO" commit -qam "${2:-change the baseline}"
+}
+
+@test "--ratchet: an added baseline line fails" {
+  ratchet_repo $'NONASCII|old\n'
+  commit_baseline $'NONASCII|new\nNONASCII|old\n'
+  ratchet
+  assert_failure 1
+  assert_output --partial "ADDED  NONASCII|new"
+  refute_output --partial "ADDED  NONASCII|old"
+}
+
+@test "--ratchet: an unchanged or shorter baseline passes" {
+  ratchet_repo $'NONASCII|a\nNONASCII|b\n'
+  ratchet
+  assert_success
+  commit_baseline $'NONASCII|a\n'
+  ratchet
+  assert_success
+}
+
+@test "--ratchet: a line added to an EMPTY baseline fails, so a drained one stays drained" {
+  ratchet_repo ''
+  commit_baseline $'NONASCII|new\n'
+  ratchet
+  assert_failure 1
+}
+
+@test "--ratchet: a baseline the merge base never had counts every line as added" {
+  ratchet_repo $'NONASCII|a\n'
+  git -C "$REPO" checkout -q main
+  git -C "$REPO" rm -q tests/skill-lint.baseline
+  git -C "$REPO" commit -qm 'drop it'
+  git -C "$REPO" checkout -qB work
+  mkdir -p "$REPO/tests"
+  printf 'NONASCII|a\n' > "$REPO/tests/skill-lint.baseline"
+  git -C "$REPO" add tests
+  git -C "$REPO" commit -qm 'first freeze'
+  ratchet
+  assert_failure 1
+}
+
+@test "--ratchet: a line main dropped after the branch was cut is not an added line" {
+  ratchet_repo $'NONASCII|a\nNONASCII|b\n'
+  git -C "$REPO" checkout -q main
+  commit_baseline $'NONASCII|a\n'
+  git -C "$REPO" checkout -q work
+  ratchet
+  assert_success
+}
+
+@test "--ratchet: a Skill-Baseline-Raise trailer allows the line and prints why" {
+  ratchet_repo ''
+  commit_baseline $'NOHEADING|old\n' $'freeze\n\nSkill-Baseline-Raise: a new check has debt to freeze'
+  ratchet
+  assert_success
+  assert_output --partial "a new check has debt to freeze"
+}
+
+@test "--ratchet: the word in a commit body is not a trailer" {
+  ratchet_repo ''
+  commit_baseline $'NOHEADING|old\n' $'freeze\n\nSkill-Baseline-Raise: in a paragraph\nthat goes on in prose, which is no trailer block.'
+  ratchet
+  assert_failure 1
+}
+
+@test "--ratchet: an unknown base is exit 2, never a pass" {
+  ratchet_repo $'NONASCII|a\n'
+  SKILL_LINT_BASELINE="" run "$DRIFT" --ratchet "$REPO" no-such-ref
+  assert_failure 2
+  assert_output --partial "refusing to report success"
+}
+
+# ── commands and agents ──────────────────────────────────────────────────────
+
+# mkentry <commands|agents> <path-without-.md> <frontmatter-line>...
+mkentry() {
+  local kind="$1" rel="$2"; shift 2
+  local f="$REPO/.claude/$kind/$rel.md"
+  mkdir -p "$(dirname "$f")"
+  {
+    echo "---"
+    for line in "$@"; do echo "$line"; done
+    echo "---"
+    echo
+    echo "Body."
+  } > "$f"
+}
+
+@test "a valid command and agent pass, and alone they are not an empty corpus" {
+  mkentry commands my/go "description: Proceed at this checkpoint."
+  mkentry agents reviewer "name: reviewer" "description: Reviews a diff."
+  lint
+  assert_success
+  assert_output --partial "2 command or agent file(s)"
+}
+
+@test "a command with no description fails" {
+  mkskill ops one >/dev/null
+  mkentry commands my/go "allowed-tools: Bash"
+  lint
+  assert_failure
+  assert_output --partial "command:my/go"
+  assert_output --partial "missing description"
+}
+
+@test "an agent with no description fails" {
+  mkskill ops one >/dev/null
+  mkentry agents reviewer "name: reviewer"
+  lint
+  assert_failure
+  assert_output --partial "agent:reviewer"
+  assert_output --partial "missing description"
+}
+
+@test "an agent with no name fails, a command needs none" {
+  mkskill ops one >/dev/null
+  mkentry agents reviewer "description: Reviews a diff."
+  mkentry commands go "description: Go."
+  lint
+  assert_failure
+  assert_output --partial "agent:reviewer"
+  assert_output --partial "missing name"
+  refute_output --partial "command:go"
+}
+
+@test "a command with no frontmatter fails once, on that" {
+  mkskill ops one >/dev/null
+  mkdir -p "$REPO/.claude/commands"
+  printf '# prose: with a colon\nmore: prose\n' > "$REPO/.claude/commands/bare.md"
+  lint
+  assert_failure
+  assert_output --partial "NOFRONTMATTER"
+  refute_output --partial "BADYAML"
+}
+
+@test "a command with unparseable frontmatter fails" {
+  mkskill ops one >/dev/null
+  mkentry commands daily/report "description: x" "argument-hint: [--a?] [--b?]"
+  lint
+  assert_failure
+  assert_output --partial "BADYAML"
+}
+
+@test "a description over the budget fails on a command and an agent" {
+  mkskill ops one >/dev/null
+  mkentry commands long "description: $(desc 301)"
+  mkentry agents wordy "name: wordy" "description: $(desc 301)"
+  lint
+  assert_failure
+  assert_output --regexp 'LONGDESC +agent:wordy'
+  assert_output --regexp 'LONGDESC +command:long'
+}
+
+@test "non-ASCII fails in a command and in an agent" {
+  mkskill ops one >/dev/null
+  mkentry commands dashy "description: x"
+  mkentry agents dashy "name: dashy" "description: x"
+  printf 'em dash \xe2\x80\x94 here\n' >> "$REPO/.claude/commands/dashy.md"
+  printf 'em dash \xe2\x80\x94 here\n' >> "$REPO/.claude/agents/dashy.md"
+  lint
+  assert_failure
+  assert_output --regexp 'NONASCII +agent:dashy'
+  assert_output --regexp 'NONASCII +command:dashy'
+}
+
+@test "command and agent debt freezes through the baseline, by file" {
+  mkentry commands legacy "allowed-tools: Bash"
+  mkentry commands fresh "allowed-tools: Bash"
+  echo "NOFRONTMATTER|command:legacy" > "$SKILL_LINT_BASELINE"
+  lint
+  assert_failure
+  assert_output --partial "command:fresh"
+  refute_output --partial "command:legacy"
+}
+
+# ── --profile project: a game repo's flat skills ─────────────────────────────
+
+# mkflat <name> [extra-body-line]: the frontmatter a game repo has, no metadata block.
+mkflat() {
+  local d="$REPO/.claude/skills/$1"
+  mkdir -p "$d"
+  printf -- '---\nname: %s\ndescription: A project skill.\n---\n\n## Scope and triggers\n\n%s\n' "$1" "${2:-Body.}" > "$d/SKILL.md"
+  printf '%s' "$d"
+}
+
+project() { run "$DRIFT" --lint "$REPO" --profile project; }
+
+@test "project profile: a flat skill with no metadata passes, and full refuses it" {
+  mkflat build >/dev/null
+  project
+  assert_success
+  assert_output --partial "1 skill(s) valid"
+  lint
+  assert_failure
+  assert_output --partial "BADMETA"
+}
+
+@test "project profile: a category outside the dotfiles set is no finding" {
+  mkskill gameplay spawn >/dev/null
+  project
+  assert_success
+}
+
+@test "project profile: a bad heading fails" {
+  d=$(mkflat build)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  project
+  assert_failure
+  assert_output --partial "NOHEADING"
+}
+
+@test "project profile: name, description budget and ASCII still hold" {
+  d=$(mkflat build)
+  sed -i 's/^name: build/name: other/' "$d/SKILL.md"
+  d=$(mkflat wordy)
+  sed -i "s/^description: .*/description: $(desc 301)/" "$d/SKILL.md"
+  mkflat dashy $'em dash \xe2\x80\x94 here' >/dev/null
+  mkdir -p "$REPO/.claude/skills/nodesc"
+  printf -- '---\nname: nodesc\n---\n\n## Scope and triggers\n' > "$REPO/.claude/skills/nodesc/SKILL.md"
+  project
+  assert_failure
+  assert_output --partial "BADNAME"
+  assert_output --partial "LONGDESC"
+  assert_output --partial "NONASCII"
+  assert_output --partial "NOFRONTMATTER"
+}
+
+@test "project profile: commands and agents are linted too" {
+  mkflat build >/dev/null
+  mkentry commands go "allowed-tools: Bash"
+  project
+  assert_failure
+  assert_output --partial "command:go"
+}
+
+@test "project profile: an empty corpus is still a failure" {
+  project
+  assert_failure 2
+}
+
+@test "--write-lint-baseline honours the profile" {
+  mkflat build >/dev/null
+  d=$(mkflat headless)
+  sed -i '/^## Scope and triggers/d' "$d/SKILL.md"
+  run "$DRIFT" --write-lint-baseline "$REPO" --profile project
+  assert_success
+  project
+  assert_success
+}
+
+@test "an unknown profile is exit 2, never another contract" {
+  mkskill ops one >/dev/null
+  run "$DRIFT" --lint "$REPO" --profile fulll
+  assert_failure 2
+  assert_output --partial "unknown profile"
+}
+
 # ── the flat layout still lints, so the gate works before AND after a migration ──
 
 @test "a flat skill (no category dir) still gets its frontmatter checked" {
   d="$REPO/.claude/skills/flatty"
   mkdir -p "$d"
-  printf -- '---\nname: WRONG\ndescription: x\n---\n\n## When to Use\n' > "$d/SKILL.md"
+  printf -- '---\nname: WRONG\ndescription: x\n---\n\n## Scope and triggers\n' > "$d/SKILL.md"
   lint
   assert_failure
   assert_output --partial "BADNAME"
@@ -318,6 +663,13 @@ codex_report() {
   printf -- '---\nname: dashy\ndescription: x\n---\n\nprose \xe2\x80\x94 here\n' > "$REPO/codex/dashy/SKILL.md"
   codex_report
   refute_output --partial "NONASCII"
+}
+
+@test "codex: a skill with no Scope and triggers heading is NOT flagged" {
+  mkdir -p "$REPO/codex/plain"
+  printf -- '---\nname: plain\ndescription: a codex skill\n---\n\n# Plain\n' > "$REPO/codex/plain/SKILL.md"
+  codex_report
+  refute_output --partial "NOHEADING"
 }
 
 # The checks that mean something anywhere still fire, starting with a skill that
@@ -361,4 +713,75 @@ JSONL
   assert_output --regexp 'UNUSED +idle '
   refute_output --regexp 'UNUSED +by-slash '
   refute_output --regexp 'UNUSED +by-tool '
+}
+
+# ── LISTBUDGET: the whole listing, over the deployed tree ────────────────────
+#
+# Environmental, so it runs in the report, and --lint never sees it.
+
+# mkdeployed <name> <frontmatter-line>...
+mkdeployed() {
+  local d="$HOME/empty/skills/$1"; shift
+  mkdir -p "$d"
+  {
+    echo "---"
+    echo "name: $(basename "$d")"
+    for line in "$@"; do echo "$line"; done
+    echo "---"
+  } > "$d/SKILL.md"
+}
+
+# listing_report <budget>: a deployed tree in the sandbox and nothing else.
+listing_report() {
+  mkdir -p "$HOME/empty/skills" "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx" "$HOME/empty/commands" "$REPO/codex"
+  : > "$HOME/empty/CLAUDE.md"
+  CLAUDE_SKILLS="$HOME/empty/skills" CLAUDE_COMMANDS="$HOME/empty/commands" \
+  DOTFILES="$HOME/empty/pub" DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
+  CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
+  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" SKILL_LISTING_MAX="$1" \
+    run "$DRIFT" "${@:2}"
+}
+
+@test "LISTBUDGET: a listing over the budget reports its size" {
+  mkdeployed big "description: $(desc 200)"
+  mkdeployed bigger "description: $(desc 200)"
+  listing_report 400
+  assert_output --regexp 'LISTBUDGET +listing +419B'
+}
+
+@test "LISTBUDGET: a listing inside the budget does not report" {
+  mkdeployed big "description: $(desc 200)"
+  listing_report 400
+  refute_output --partial "LISTBUDGET"
+}
+
+@test "LISTBUDGET: commands share the listing" {
+  mkdeployed big "description: $(desc 200)"
+  mkdir -p "$HOME/empty/commands/my"
+  printf -- '---\ndescription: %s\n---\n' "$(desc 200)" > "$HOME/empty/commands/my/go.md"
+  listing_report 400
+  assert_output --regexp 'LISTBUDGET +listing +418B'
+}
+
+@test "LISTBUDGET: paths: and disable-model-invocation: true are not listed" {
+  mkdeployed big "description: $(desc 200)"
+  mkdeployed gated "description: $(desc 200)" "paths:" '  - "Assets/**"'
+  mkdeployed draft "description: $(desc 200)" "disable-model-invocation: true"
+  listing_report 400
+  refute_output --partial "LISTBUDGET"
+}
+
+@test "LISTBUDGET stays out of --lint, which has no deployed tree" {
+  mkskill ops one >/dev/null
+  SKILL_LISTING_MAX=1 lint
+  assert_success
+}
+
+# A parser error quotes the text it choked on; the nightly reads this report as JSON.
+@test "--json stays valid when a finding carries quotes" {
+  mkdir -p "$HOME/empty/pub/.claude/commands"
+  printf -- '---\ndescription: x\nargument-hint: [--a?] [--b?]\n---\n' > "$HOME/empty/pub/.claude/commands/bad.md"
+  listing_report 1000 --json
+  assert_failure
+  echo "$output" | jq -e '.findings[] | select(.type == "BADYAML")'
 }
