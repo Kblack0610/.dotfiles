@@ -332,9 +332,6 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 .tbl tr.jr, .tbl tr.wr, .tbl tr.prop { cursor: pointer; }
 .tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td { background: var(--bg); }
 .tbl tr.jr.sel td, .tbl tr.wr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-/* Fleet: a runner's expanded registry row (fleet.js workerDetail). */
-.tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
-.tbl tr.wdet .tbl { margin-top: 6px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
   .board { padding: 12px; }

@@ -124,6 +124,8 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             Span::styled(
                 if h.proposals_failed {
                     "could not read them, see above"
+                } else if h.proposals_unread {
+                    "reading"
                 } else {
                     "nothing proposed"
                 },

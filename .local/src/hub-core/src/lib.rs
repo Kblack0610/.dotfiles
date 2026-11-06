@@ -30,3 +30,4 @@ pub mod session_table;
 pub mod table;
 pub mod tasks;
 pub mod text;
+pub mod vocab;

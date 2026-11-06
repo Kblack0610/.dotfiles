@@ -66,8 +66,8 @@ pub const TABS: [Tab; 8] = [
     Tab {
         id: "fleet",
         title: "Fleet",
-        question: "Can I afford more agents, and are the judges right?",
-        sections: &["accounts", "workers", "judges"],
+        question: "Who is working, on what, and can I afford it?",
+        sections: &["workers", "accounts"],
     },
 ];
 

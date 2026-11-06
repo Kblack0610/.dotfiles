@@ -15,6 +15,7 @@ use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::Queue;
 use crate::text::{age, cap};
+use crate::vocab::Vocab;
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
 const ASK_MAX: usize = 44;
@@ -25,8 +26,6 @@ const LINE_MAX: usize = 12 + ASK_MAX;
 const PROJECTS: usize = 3;
 /// How many KPIs the over-limit row names, beside the count of all of them: one line at 4x4.
 const KPIS: usize = 2;
-/// Fleet-state buckets of a session that has stopped, so its ETA means nothing.
-const FINISHED: [&str; 3] = ["DONE", "LANDED", "PARKED"];
 /// KPI names that do not read as words once the underscores go.
 const KPI_LABELS: [(&str, &str); 2] =
     [("ci_red_per_pr", "CI reds per PR"), ("board_open", "board")];
@@ -138,10 +137,11 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
 
 /// "14 past ETA, worst 21h, next done 10:12", from the sessions still live.
 fn etas(state: &Value, now: i64) -> Option<String> {
+    let vocab = Vocab::from_state(state);
     let etas: Vec<i64> = state["sessions"]
         .as_array()?
         .iter()
-        .filter(|s| !FINISHED.contains(&s["bucket"].as_str().unwrap_or("")))
+        .filter(|s| vocab.in_progress(s["bucket"].as_str().unwrap_or("")))
         .filter_map(|s| s["eta_epoch"].as_i64())
         .collect();
     let late: Vec<i64> = etas.iter().copied().filter(|e| *e < now).collect();
@@ -520,6 +520,8 @@ mod tests {
                 {"id": "aB2", "project": ".dotfiles", "question": "Keep it?", "session": ""},
             ],
             "main": [{"repo": ".dotfiles", "reason": "red"}],
+            "vocab": {"buckets": ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
+                      "in_progress": ["WORKING", "NEEDS", "STALLED"]},
             "sessions": [
                 {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200},
                 {"target": "w/s3:1", "bucket": "NEEDS", "cwd": "/x/trader", "idle_min": 30,

@@ -13,21 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::fleet::ts;
-use crate::home::{dir_name, str_of};
+use crate::home::str_of;
 use crate::queue::{self, Item};
 use crate::session_actions::{argv, Runner, Session};
 use crate::table::{Row, Val};
 use crate::text::headline;
-
-/// Buckets in the order the table lists them: what needs the human first.
-const RANK: [&str; 7] = [
-    "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED",
-];
-
-/// A bucket's place in RANK; an unknown one sorts last.
-pub fn rank(b: &str) -> usize {
-    RANK.iter().position(|r| *r == b).unwrap_or(RANK.len())
-}
+use crate::vocab::Vocab;
 
 /// How far back outcome rows go. Outcomes are written once a night, so this reaches over the
 /// last run rather than a calendar day, which would be empty for most of it.
@@ -189,13 +180,17 @@ pub struct Feed {
     pub errors: Vec<String>,
 }
 
-/// The state document's `sessions`, empty when it is missing or unreadable.
-pub fn read_state(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
+/// The state document's `sessions` and its bucket vocabulary, empty when it is missing or
+/// unreadable.
+pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
+    let doc = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["sessions"].as_array().cloned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (
+        doc["sessions"].as_array().cloned().unwrap_or_default(),
+        Vocab::from_state(&doc),
+    )
 }
 
 /// The session registry's root, `~/.agent/sessions`.
@@ -273,7 +268,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
     SessionRow {
         key: str_of(s, "target").to_string(),
         bucket: str_of(s, "bucket").to_string(),
-        project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
+        project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
@@ -392,10 +387,15 @@ fn outcome_row(e: &Ended) -> SessionRow {
     }
 }
 
-/// Every row in the table's own order: live sessions by bucket, what needs the human first and
-/// then by target, then the ended ones, newest first. An item or session that still has a live
+/// Every row in the table's own order: live sessions by the vocabulary's bucket order (what needs
+/// the human first), then by target, then the ended ones, newest first. An item or session that still has a live
 /// row shows only there, and a session counted through its queue item shows only there.
-pub fn rows(state: &[Value], feed: &Feed, agents: &[(Agent, Session)]) -> Vec<SessionRow> {
+pub fn rows(
+    state: &[Value],
+    vocab: &Vocab,
+    feed: &Feed,
+    agents: &[(Agent, Session)],
+) -> Vec<SessionRow> {
     let items: HashMap<&str, &Item> = feed.items.iter().map(|i| (i.slug.as_str(), i)).collect();
     let mut live: Vec<SessionRow> = state.iter().map(|s| live_row(s, feed, &items)).collect();
     let strays: Vec<SessionRow> = agents
@@ -413,7 +413,9 @@ pub fn rows(state: &[Value], feed: &Feed, agents: &[(Agent, Session)]) -> Vec<Se
             r.account = s.account.clone();
         }
     }
-    live.sort_by(|a, b| (rank(&a.bucket), &a.target).cmp(&(rank(&b.bucket), &b.target)));
+    live.sort_by(|a, b| {
+        (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
+    });
     let live_items: HashSet<&str> = live.iter().map(|r| r.item.as_str()).collect();
     let mut seen: HashSet<String> = live.iter().map(|r| r.session_id.clone()).collect();
     let mut ended: Vec<SessionRow> = vec![];
@@ -471,17 +473,22 @@ mod tests {
         )
     }
 
+    fn vocab() -> Vocab {
+        Vocab::from_state(&json!({"vocab": {"buckets": [
+            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]}}))
+    }
+
     fn state() -> Vec<Value> {
         vec![
-            json!({"target":"lab/d:1","bucket":"WORKING","session_id":"s1","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:1","bucket":"WORKING","session_id":"s1","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"a topic","pr":"-","account":"a","idle_min":3,"phases_done":2,"phases_total":4,
                 "item":{"slug":"own","is":"own","origin":"run"}}),
-            json!({"target":"lab/d:2","bucket":"NEEDS","session_id":"s2","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:2","bucket":"NEEDS","session_id":"s2","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"fix(mqtt) lock wait","pr":"12","pr_state":"OPEN","ci":"green","account":"a",
                 "idle_min":1980,"item":null}),
-            json!({"target":"lab/d:3","bucket":"WORKING","session_id":"s3","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:3","bucket":"WORKING","session_id":"s3","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"shepherd","labels":["shepherd"],"pr":"-","item":null}),
-            json!({"target":"lab/d:4","bucket":"DONE","session_id":"s4","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:4","bucket":"DONE","session_id":"s4","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"wound down","pr":"-","item":{"slug":"still-here","is":"own","origin":"hand"}}),
         ]
     }
@@ -529,15 +536,39 @@ mod tests {
         let mut f = feed();
         f.items[0].extra.insert("sessions".into(), "s0,s1".into());
         f.cost.insert("s0".into(), 3.0);
-        let r = rows(&state(), &f, &[]);
+        let r = rows(&state(), &vocab(), &f, &[]);
         let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
         assert_eq!(own.cost_usd, Some(1.2));
         assert_eq!(own.item_cost_usd, Some(4.2));
     }
 
     #[test]
+    fn a_session_with_no_item_shows_the_project_its_row_carries() {
+        let s = vec![
+            json!({"target":"lab/freqtrade_trading_attempt-agent-1:1","bucket":"WORKING",
+            "session_id":"f1","cwd":"/w/freqtrade_trading_attempt-agent-1","project":"trader","item":null}),
+        ];
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        assert_eq!(r[0].project, "trader");
+    }
+
+    #[test]
+    fn the_vocabulary_orders_the_buckets_not_a_list_here() {
+        let swapped = Vocab::from_state(&json!({"vocab": {"buckets": ["WORKING", "NEEDS"]}}));
+        let by = |v: &Vocab| {
+            rows(&state(), v, &feed(), &[])
+                .iter()
+                .map(|r| r.bucket.clone())
+                .take(2)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(by(&swapped)[0], "WORKING");
+        assert_eq!(by(&vocab())[0], "NEEDS");
+    }
+
+    #[test]
     fn a_live_row_takes_its_task_and_project_from_the_item() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
         assert_eq!(own.task, "the item title");
         assert_eq!(own.project, "dotfiles");
@@ -552,7 +583,7 @@ mod tests {
 
     #[test]
     fn needs_sorts_first_and_ended_rows_last_newest_first() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys: Vec<&str> = r.iter().map(|x| x.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -562,7 +593,7 @@ mod tests {
 
     #[test]
     fn an_ended_row_names_its_source_and_each_session_shows_once() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let q = r.iter().find(|x| x.key == "ucp-394").unwrap();
         assert_eq!(q.source, Source::Queue);
         assert_eq!(q.bucket, "DONE");
@@ -598,7 +629,12 @@ mod tests {
         };
         let known = agent("lab/d:1", "s1");
         let moved = agent("lab/d:77", "s2");
-        let r = rows(&state(), &feed(), &[known, moved, agent("lab/d:9", "s77")]);
+        let r = rows(
+            &state(),
+            &vocab(),
+            &feed(),
+            &[known, moved, agent("lab/d:9", "s77")],
+        );
         let parked: Vec<_> = r.iter().filter(|x| x.bucket == "PARKED").collect();
         assert_eq!(
             parked.len(),
@@ -619,7 +655,9 @@ mod tests {
     fn an_item_finished_by_a_session_that_moved_on_still_shows() {
         let mut f = feed();
         f.items.push(done("earlier", "s1", "2026-11-06T16:00:00Z"));
-        assert!(rows(&state(), &f, &[]).iter().any(|x| x.key == "earlier"));
+        assert!(rows(&state(), &vocab(), &f, &[])
+            .iter()
+            .any(|x| x.key == "earlier"));
     }
 
     #[test]
@@ -629,13 +667,13 @@ mod tests {
             json!({"slug":"bad","project":"p","state":"done","task":"t",
             "sessions":"s7","status":"failed","finished":"2026-11-06T19:00:00Z"}),
         ));
-        let r = rows(&[], &f, &[]);
+        let r = rows(&[], &vocab(), &f, &[]);
         assert_eq!(r.iter().find(|x| x.key == "bad").unwrap().ended, "failed");
     }
 
     #[test]
     fn the_chips_split_the_rows() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
         let n: Vec<(&str, usize)> = v.states(&r).iter().map(|c| (c.name, c.n)).collect();
         assert_eq!(
@@ -656,7 +694,7 @@ mod tests {
     fn item_none_lists_what_the_header_counts_so_a_parked_session_is_left_out() {
         let mut s = state();
         s.push(json!({"target":"lab/d:5","bucket":"PARKED","session_id":"s5","item":null}));
-        let unlinked: Vec<_> = rows(&s, &feed(), &[])
+        let unlinked: Vec<_> = rows(&s, &vocab(), &feed(), &[])
             .into_iter()
             .filter(|r| r.unlinked)
             .map(|r| r.key)
@@ -672,7 +710,7 @@ mod tests {
         f.items.push(item(
             json!({"slug":"landed","project":"p","state":"done","task":"t","pr":"o/r#7","status":"ok"}),
         ));
-        let r = rows(&state(), &f, &[]);
+        let r = rows(&state(), &vocab(), &f, &[]);
         let landed = r.iter().find(|x| x.key == "landed").unwrap();
         assert_eq!(landed.source, Source::Queue);
         assert_eq!(landed.pr.as_deref(), Some("7"));
@@ -681,7 +719,7 @@ mod tests {
 
     #[test]
     fn the_query_finds_unlinked_sessions_open_prs_and_sources() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys = |q: &str| -> Vec<String> {
             View::new::<SessionRow>(q, "", "", "")
                 .apply(&r)
@@ -737,7 +775,7 @@ mod tests {
             }
         }
         let f = super::feed(&R, Path::new("/nonexistent"));
-        assert_eq!(rows(&[], &f, &[]).len(), 1);
+        assert_eq!(rows(&[], &vocab(), &f, &[]).len(), 1);
         assert_eq!(f.errors, ["session outcomes: exit 1"]);
     }
 }

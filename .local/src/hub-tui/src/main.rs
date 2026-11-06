@@ -304,9 +304,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");
-            let state = b.watch.state["sessions"].as_array().cloned();
             let f = forecast::Forecast::read();
-            a.controls.read(state, Some(forecast::schedule(&f)));
+            a.controls.read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
             a.read_sessions_now();
         }
@@ -344,6 +343,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             let _ = writeln!(out, "{}", plain(&l));
         }
         return 0;
+    }
+    if matches!(tab, None | Some(Tab::Home)) {
+        a.proposals = Some(hub_core::proposals::read(
+            &hub_core::session_actions::System,
+        ));
     }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {

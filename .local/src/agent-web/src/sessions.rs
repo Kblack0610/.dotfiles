@@ -35,12 +35,15 @@ pub struct TableQuery {
 struct Read {
     rows: Vec<SessionRow>,
     state: Vec<Value>,
+    buckets: Vec<String>,
     errors: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct Shown<'a> {
     rows: Vec<&'a SessionRow>,
+    /// The state document's bucket order, for the page's colours and lanes.
+    buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
 }
@@ -57,6 +60,7 @@ fn render(r: &Read, q: &TableQuery) -> String {
     let (rows, table) = view.summary(&r.rows);
     let out = Shown {
         rows,
+        buckets: &r.buckets,
         errors: &r.errors,
         table,
     };
@@ -75,11 +79,12 @@ impl Cache {
             return Ok(r.clone());
         }
         let r = tokio::task::spawn_blocking(|| {
-            let state = session_table::read_state(&boards::fleet_state());
+            let (state, vocab) = session_table::read_state(&boards::fleet_state());
             let feed = session_table::feed(&System, &session_table::registry());
             Read {
-                rows: session_table::rows(&state, &feed, &actions::gather(&System).agents),
+                rows: session_table::rows(&state, &vocab, &feed, &actions::gather(&System).agents),
                 state,
+                buckets: vocab.buckets().to_vec(),
                 errors: feed.errors,
             }
         })
@@ -166,6 +171,7 @@ mod tests {
                 row("lab/a:1", "NEEDS", Source::Live),
                 row("slug", "DONE", Source::Queue),
             ],
+            buckets: vec!["NEEDS".into(), "DONE".into()],
             errors: vec!["session outcomes: exit 1".into()],
             ..Read::default()
         };
@@ -180,5 +186,29 @@ mod tests {
         assert_eq!(v["errors"][0], "session outcomes: exit 1");
         assert_eq!(v["table"]["state"], "done today");
         assert_eq!(v["table"]["total"], 2);
+    }
+
+    #[test]
+    fn a_freqtrade_worktree_reads_trader_and_the_body_carries_the_bucket_order() {
+        let doc = serde_json::json!({
+            "vocab": {"buckets": ["NEEDS", "WORKING"], "in_progress": ["WORKING"]},
+            "sessions": [{"target": "lab/freqtrade_trading_attempt-agent-1:1", "bucket": "WORKING",
+                "session_id": "f1", "cwd": "/w/freqtrade_trading_attempt-agent-1",
+                "project": "trader", "item": null}]});
+        let dir = std::env::temp_dir().join(format!("agent-web-vocab-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, doc.to_string()).unwrap();
+        let (state, vocab) = session_table::read_state(&path);
+        std::fs::remove_dir_all(&dir).ok();
+        let r = Read {
+            rows: session_table::rows(&state, &vocab, &session_table::Feed::default(), &[]),
+            buckets: vocab.buckets().to_vec(),
+            ..Read::default()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&r, &TableQuery::default())).unwrap();
+        assert_eq!(v["rows"][0]["project"], "trader");
+        assert_eq!(v["buckets"], serde_json::json!(["NEEDS", "WORKING"]));
     }
 }

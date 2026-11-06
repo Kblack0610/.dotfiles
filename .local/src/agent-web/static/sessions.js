@@ -13,7 +13,7 @@ const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"],
 
 const refreshTable = coalesce(async () => {
   const q = tblParams(st.views.sessions).toString();
-  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); sst.err = null; } catch (e) { sst.err = e.message; }
+  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); setBuckets(sst.data.buckets); sst.err = null; } catch (e) { sst.err = e.message; }
   renderOverview();
 });
 const refreshCapacity = coalesce(async () => {

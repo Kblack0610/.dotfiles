@@ -17,6 +17,7 @@ const logTime = (ts) => new Date(ts.replace(" ", "T")).getTime();
 
 const refreshWatch = coalesce(async () => {
   wst.data = await api("/api/watch");
+  setBuckets(wst.data.state && wst.data.state.vocab && wst.data.state.vocab.buckets);
   if (st.tab === "sessions") { renderFacts(); renderOverview(); }
   if (st.tab === "log") renderLogChanges();
 });
@@ -55,7 +56,7 @@ function buildLanes(now) {
     else open(l, s.bucket, l.segs.length ? l.segs[l.segs.length - 1].b : t0);
     close(l, now);
   }
-  const rank = (t) => { const s = live.get(t); return s ? BUCKETS.indexOf(s.bucket) : 99; };
+  const rank = (t) => { const s = live.get(t); return s ? bucketRank(s.bucket) : 99; };
   return { t0, lanes: [...lanes.values()].sort((a, b) => rank(a.target) - rank(b.target) || a.target.localeCompare(b.target)) };
 }
 

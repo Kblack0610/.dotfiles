@@ -11,6 +11,7 @@ use hub_core::capacity::{Capacity, Part};
 use hub_core::session_actions::{available, Action, Session, Snapshot};
 use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
+use hub_core::vocab::Vocab;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -77,6 +78,8 @@ pub struct Controls {
     pub said: Option<Result<String, String>>,
     /// fleet-sessions' session objects (state.json `sessions`), joined to the snapshot by target.
     pub state: Vec<Value>,
+    /// The state document's bucket vocabulary, which orders the rows.
+    vocab: Vocab,
     /// fleet-bench forecast's `schedule` rows: each session's phases and finish p50.
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
@@ -145,7 +148,7 @@ impl Controls {
     fn moved(&mut self, change: impl FnOnce(&mut Self)) {
         let was = self.selected_key();
         change(self);
-        self.all = session_table::rows(&self.state, &self.feed, self.agents());
+        self.all = session_table::rows(&self.state, &self.vocab, &self.feed, self.agents());
         let rows = self.rows();
         self.sel = was
             .and_then(|t| rows.iter().position(|r| r.target == t))
@@ -159,12 +162,17 @@ impl Controls {
     }
 
     /// A new state document or forecast.
-    pub fn read(&mut self, state: Option<Vec<Value>>, schedule: Option<Vec<Value>>) {
+    pub fn read(&mut self, state: Option<&Value>, schedule: Option<Vec<Value>>) {
         if let Some(s) = schedule {
             self.schedule = s;
         }
-        if let Some(s) = state {
-            self.moved(|c| c.state = s);
+        if let Some(doc) = state {
+            let sessions = doc["sessions"].as_array().cloned().unwrap_or_default();
+            let vocab = Vocab::from_state(doc);
+            self.moved(|c| {
+                c.state = sessions;
+                c.vocab = vocab;
+            });
         }
     }
 

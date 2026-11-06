@@ -25,11 +25,7 @@ fn env(k: &str) -> Option<PathBuf> {
 
 /// `fleet-sessions`' state document, by the same variables it resolves.
 pub fn fleet_state() -> PathBuf {
-    env("FLEET_STATE_FILE").unwrap_or_else(|| {
-        env("XDG_STATE_HOME")
-            .unwrap_or_else(|| home().join(".local/state"))
-            .join("fleet/state.json")
-    })
+    agent_panel::vocab::fleet_state_file()
 }
 
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
