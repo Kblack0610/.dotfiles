@@ -794,7 +794,7 @@ For every row above, return one verdict in the structured output. Copy project, 
   rm -rf -- "$wd"
   mkdir -p "$DIR"
   # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
-  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; say "judge $JUDGE_WHY"; return "$rc"; fi
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
   if [ "$rc" != 0 ]; then
     JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
     verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
@@ -1972,8 +1972,8 @@ low_starved() {
 
 # board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
 # was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing. An `error` verdict counts as written: a pass whose judge fails already publishes
-# FAILED (settle), which fleet-liveness reads.
+# else nothing. An `error` verdict counts as written, and so does a budget stop's touch: a pass whose
+# judge fails or stops already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
 board_starved() {
   local judged state mins n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
