@@ -176,6 +176,34 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "at:YYYY-MM-DDTHH:MM"
 }
 
+@test "an ask: tag holds an item until that agent-ask is answered, with that option when one is named (ar-455)" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\n' "$1" "$2" "${3:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  "$AQ" add --project game --slug money --tags "ask:a1=a" "go live"
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" add --project game --slug nope --tags "ask:../x" "x"
+  run "$AQ" next --json
+  assert_failure
+  "$AQ" move nope done --status cancelled
+  ask a1 pending
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'b. stay on paper'
+  run "$AQ" next --json
+  assert_failure
+  ask a1 cancelled
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'A, go live'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = money ]
+  "$AQ" add --project game --slug any --priority urgent --tags "ask:a2" "any answer"
+  ask a2 answered 'whatever'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = any ]
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.

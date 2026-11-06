@@ -436,6 +436,33 @@ prs_for() {
   cat "$key"
 }
 
+# origin_repo <dir> -> "owner/repo" of its origin remote, or nothing.
+origin_repo() {
+  git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#'
+}
+
+# pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> -> true when this
+# session made PR #N of <dir>'s repo: it opened or merged it (session_prs), its plan's Phases name
+# #N, its transcript holds the PR's URL, or it pushed <branch>. Worktrees are shared and recycled,
+# so a PR found by branch name alone may be another session's: trader-real-money-plan read LANDED
+# on #42 of another plan that had used the same branch (2026-11-06).
+pr_made_here() {
+  local repo n="$2" br="$3" t="$5" plan="$6" re
+  repo="$(origin_repo "$1")"
+  jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase) == $r and .number == $n)' \
+    <<<"$4" >/dev/null 2>&1 && return 0
+  [ "$plan" != - ] && [ -f "$plan" ] \
+    && sed -n '/^## Phases/,/^## /p' "$plan" | grep -qE "#$n([^0-9]|$)" && return 0
+  [ -f "$t" ] || return 1
+  [ -n "$repo" ] && grep -qiE "github\.com/$(re_quote "$repo")/pull/$n([^0-9]|$)" "$t" && return 0
+  [ "$br" != - ] || return 1
+  re="$(re_quote "$br")"
+  grep -qE "git push[^\"]*( |:|refs/heads/)$re([^A-Za-z0-9._/-]|$)" "$t"
+}
+
+# re_quote <text> -> <text> with ERE metacharacters escaped.
+re_quote() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
+
 # sibling_pr <dir> <session_prs JSON> -> "repo \t number \t ci \t head_oid" for the last OPEN PR
 # this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
 # can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). Its CI is one
@@ -443,7 +470,7 @@ prs_for() {
 # (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
 sibling_pr() {
   local own repo n file failed view
-  own="$(git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#')"
+  own="$(origin_repo "$1")"
   IFS=$'\t' read -r repo n < <(jq -r --arg own "${own,,}" \
     'map(select(.state == "OPEN" and (.repo | ascii_downcase) != $own)) | last // empty | [.repo, .number] | @tsv' <<<"$2")
   [ -n "${n:-}" ] || return 0
@@ -804,6 +831,13 @@ collect() {
       item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
     fi
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
+    # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
+    if [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
+       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf"; then
+      [ "$inpr" = 1 ] && ahead=0
+      pr=- state=- ci=- oid=-
+    fi
     # No PR for this branch here: an open PR of its own in another repo is the row's PR. Its
     # conflict is not this clone's to measure, so it is unknown (-).
     local xr=- xpr xci xoid

@@ -22,7 +22,8 @@
 #                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
-#                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
+#                          page), re-page the human on escalated rows left unchanged (remind_sample),
+#                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
 #                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
@@ -109,6 +110,11 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # the smaller of its idle and age (an epoch-0 idle on a new session cannot fire it early), and
 # then it gets one wind-down nudge. The human set 24h when approving the CHAT bucket, 2026-11-05.
 : "${FLEET_CHAT_CLOSE_H:=24}"
+# A row nudged and escalated that still sits unchanged this long pages the human again, in plain
+# words naming the one decision that closes it, once per fact per day (remind_sample).
+# trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
+: "${FLEET_SHEPHERD_REMIND_H:=4}"
+REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns each shared red episode
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
@@ -526,6 +532,52 @@ budget_mark() {
 }
 budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev/null 2>&1 || true; }
 
+# remind_sample: a DONE, LANDED, STALLED or CHAT row the shepherd nudged and escalated, idle and
+# unchanged FLEET_SHEPHERD_REMIND_H since that escalation, pages the human again with the one
+# decision that closes it. Once per fact per day: $REMINDED keeps only today's lines. NEEDS is left
+# out: its ask already waits in the human's NEEDS YOU list.
+remind_sample() {
+  local today now min sid target bucket fact reason pr next plan at when decision
+  today="$(date +%F)" now="$(date +%s)" min=$((FLEET_SHEPHERD_REMIND_H * 60))
+  touch "$REMINDED" 2>/dev/null || return 0
+  awk -F'\t' -v d="$today" '$1 == d' "$REMINDED" > "$REMINDED.tmp" && mv "$REMINDED.tmp" "$REMINDED"
+  while IFS=$'\t' read -r sid target bucket fact reason pr next plan; do
+    case "$sid" in ''|*/*|.|..) continue ;; esac
+    awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
+    at="$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null | head -1)"
+    when="$(date -d "$at" +%s 2>/dev/null)" || continue
+    [ $((now - when)) -ge $((min * 60)) ] || continue
+    decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
+    agent-notify -p high -t "$target: one decision closes it" -r "tmux:$target" \
+      "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || true
+    printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
+    cmd_log "remind: $target ($reason): $decision" >/dev/null
+  done < <(jq -r --argjson min "$min" '(.sessions // [])[]
+    | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
+        and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
+    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-"), (.next_phase // "-"),
+       (.plan_file // "-" | sub(".*/"; ""))]
+    | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
+# remind_decision <bucket> <reason> <pr> <next phase> <plan> -> the one decision, in plain words.
+remind_decision() {
+  local pr="#$3"
+  case "$1:$2" in
+    DONE:*) echo "nothing is left; close its window" ;;
+    LANDED:*) echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan" ;;
+    CHAT:*) echo "close the chat, or label it manual to keep it" ;;
+    *"green, not merged"*) echo "merge PR $pr or close it" ;;
+    *"CI red"*) echo "have PR $pr fixed, or close it" ;;
+    *"closed without merging"*) echo "reopen PR $pr or discard the branch" ;;
+    *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
+    *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
+    *"dirty file"*) echo "land the dirty files or discard them" ;;
+    *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
+    *) echo "act on: $2" ;;
+  esac
+}
+
 # shared_items -> {fact: item slug} from $SHARED_ITEMS, as JSON for cmd_due.
 shared_items() {
   [ -s "$SHARED_ITEMS" ] || { echo '{}'; return; }
@@ -631,6 +683,8 @@ cmd_check() {
   cmd_holds 2>/dev/null && budget_sample
   # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
   cmd_holds 2>/dev/null && shared_sample
+  # And so is a reminder: one writer of $REMINDED.
+  cmd_holds 2>/dev/null && remind_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"

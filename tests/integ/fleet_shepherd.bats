@@ -217,6 +217,40 @@ chat() { row "$1" CHAT "$2" "$3" | jq -c --argjson i "$4" --argjson a "${5:-5000
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
 
+@test "check re-pages an escalated row left unchanged for hours, once per fact per day, naming the decision (ar-455)" {
+  ago() { date -Iseconds -d "@$(( $(date +%s) - $1 * 3600 ))"; }
+  row() { jq -n --arg sid "$1" --arg b "$2" --arg r "$3" --argjson n "$4" --argjson e "$5" --argjson i "$6" --argjson l "${7:-[]}" \
+    '{session_id: $sid, target: "lab/\($sid):1", bucket: $b, reason: $r, fact: "\($b) \($r)", nudged: $n, escalated: $e,
+      idle_min: $i, labels: $l, pr: "12", next_phase: "Phase 4: live money", plan_file: "/p/calm-lagoon.md"}'; }
+  doc "[$(row s-landed LANDED 'PR #12 merged, tree clean, next phase: Phase 4: live money' true true 400),
+        $(row s-green STALLED 'PR #12 green, not merged' true true 400),
+        $(row s-young STALLED 'PR #12 CI red' true true 400),
+        $(row s-manual DONE 'clean, nothing on the branch' true true 400 '["manual"]'),
+        $(row s-open DONE 'clean, nothing on the branch' true false 400),
+        $(row s-busy DONE 'clean, nothing on the branch' true true 30)]"
+  for s in s-landed s-green s-manual s-open s-busy; do printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 5)" > "$FLEET_SHEPHERD_DIR/$s"; done
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 1)" > "$FLEET_SHEPHERD_DIR/s-young"
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 2
+  run grep 'lab/s-landed:1: one decision' "$HOME/pages"
+  assert_output --partial "decide phase 'Phase 4: live money' of calm-lagoon.md: queue it, hold it on an ask, or defer it"
+  assert_output --partial 'tmux:lab/s-landed:1'
+  run grep 'lab/s-green:1: one decision' "$HOME/pages"
+  assert_output --partial 'merge PR #12 or close it'
+  grep -q 'remind: lab/s-green:1' "$FLEET_SHEPHERD_DIR/log.md"
+  # The same facts the same day page nothing more.
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 2
+  # The next day they page again, once.
+  sed -i "s/^$(date +%F)/2000-01-01/" "$FLEET_SHEPHERD_DIR/.remind"
+  "$SH" check >/dev/null || true
+  "$SH" check >/dev/null || true
+  run grep -c 'one decision closes it' "$HOME/pages"
+  assert_output 4
+}
+
 @test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {
   doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
   printf 'q3\t1\tparked\nq2\t1\textended\n' > "$FLEET_SHEPHERD_DIR/.budget"
