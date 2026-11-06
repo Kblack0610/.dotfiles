@@ -117,22 +117,36 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   ! grep -q '^agent-notify' "$NOTES_FIXTURE/calls.log"
 }
 
-@test "settle-session answers an ask with options only when the message names exactly one" {
-  local id both
-  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' --recommend go 'run the cleanup now?')"
-  # Negative controls: an unrelated message, a word that only contains an option, and a message
-  # naming both options all leave it pending.
-  "$AGENT_ASK" settle-session sid-1 answered "whats going on here?"
-  "$AGENT_ASK" settle-session sid-1 answered "ok how many phases left?"
-  "$AGENT_ASK" settle-session sid-1 answered "go now or later, you pick"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'
+@test "settle-session: a reply answers an ask with options when it names exactly one, and cancels it otherwise" {
+  local opts='go=run it now|later=run it later' a b c d
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend go 'run the cleanup now?')"
   run "$AGENT_ASK" settle-session sid-1 answered "Go, run it"
   assert_success
-  run "$AGENT_ASK" show "$id"
+  run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'
   assert_line 'answer: go'
   assert_line 'answered_by: human'
+  # A reply naming no option, a word that only contains one, or both options records no answer,
+  # but still takes the ask off the list: 2026-11-06 "I already clicked that" left one pending.
+  for msg in "sorry i already clicked that" "ok how many phases left?" "go now or later, you pick"; do
+    b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'run the cleanup now?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$b"
+    assert_line 'status: cancelled'
+    assert_line "closed_reason: replied in session: $msg"
+    assert_line 'answer: '
+  done
+  # A board's typed-in answer settles nothing: `answer` already closed its ask (2026-11-05 it
+  # stamped "a" on every other ask of the session).
+  c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'one?')"
+  d="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'two?')"
+  sed -i 's/^claude_session: .*/claude_session: sid-1/' "$HOME/.agent/asks/demo/$d.md"
+  "$AGENT_ASK" answer "$c" a 2>/dev/null
+  "$AGENT_ASK" settle-session sid-1 answered "Answer to ask $c: a"
+  run "$AGENT_ASK" show "$d"
+  assert_line 'status: pending'
+  run "$AGENT_ASK" count demo
+  assert_output 1
 }
 
 @test "settle-session closes only that session's pending asks" {
@@ -1507,26 +1521,18 @@ SH
   run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'
 }
 
-@test "delay override: a message naming no option disarms for good, and a later pick still counts" {
+@test "delay override: a message naming no option cancels the armed ask, so nothing assumes it" {
   delay_setup
-  local id f; id="$(armed sid-1 'fix the flake?')"; f="$HOME/.agent/asks/demo/$id.md"
+  local id; id="$(armed sid-1 'fix the flake?')"
   "$AGENT_ASK" settle-session sid-1 answered "what is going on here?"
   run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'
+  assert_line 'status: cancelled'
   assert_line --regexp '^assume_disarmed: .+'
-  assert_line 'assume_answer: fix'
   refute_line --partial 'assume_at:'
-  # neither assume-due nor a sweep answers or arms it again
+  # neither assume-due nor a sweep answers it
   "$AGENT_ASK" assume-due
-  run "$AGENT_ASK" sweep demo
-  assert_line --regexp "^demo	$id	yours	"
-  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
-  # nor does a type at 0
   AGENT_ASK_DELAY_RULES=ship_deploy=0 "$AGENT_ASK" sweep demo >/dev/null
-  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
-  "$AGENT_ASK" settle-session sid-1 answered "wait"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'judge_override: wait'; assert_line 'answer: wait'
+  run "$AGENT_ASK" show "$id"; assert_line 'status: cancelled'; assert_line 'answer: '
 }
 
 @test "delay override: after it fires, a later session pick still overrides, past an unrelated first message" {
