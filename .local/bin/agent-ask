@@ -38,8 +38,6 @@
 #                                       it and answers a LIVE_RULES class at once
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
 #                                       (model, time, cost, prompt sha, raw) and Langfuse link
-#   agent-ask judge-report [project|--all]
-#                                       the judge's call against the human's answer
 #
 # One file per ask: ~/.agent/asks/{project}/{id}.md  (flat `key: value`, like the
 # checkpoint/watch state). {project} is ALWAYS the canonical name (project-name.sh),
@@ -1167,35 +1165,6 @@ judge_record() {
   queue_changed
 }
 
-# judge-report [project|--all]: every judged ask a human answered, with the judge's call against
-# that answer. agree/differ only where the judge would have answered; an answer typed in the
-# session ("in session: ...") is free text and is not scored.
-# A call that failed (`error`) neither asks you nor answers.
-cmd_judge_report() {
-  local key="${1:-}" f judge by ans want verdict n=0 would=0 scored=0 agree=0
-  [ -n "$key" ] || key="$(resolve_project)"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    judge="$(field "$f" judge)"; by="$(field "$f" answered_by)"
-    [ -n "$judge" ] && [ "$(field "$f" status)" = answered ] && [ "${by:-human}" = human ] || continue
-    ans="$(field "$f" answer)"
-    n=$((n + 1))
-    case "$judge" in
-      human) verdict="asks-you" ;;
-      error) verdict=error ;;
-      *)
-        would=$((would + 1))
-        if [ "$judge" = take-recommend ]; then want="$(field "$f" recommend)"; else want="${judge#answer:}"; fi
-        if [[ "$ans" == "in session:"* ]]; then verdict=unscored
-        elif [ "${ans,,}" = "${want,,}" ]; then verdict=agree; scored=$((scored + 1)); agree=$((agree + 1))
-        else verdict=differ; scored=$((scored + 1)); fi ;;
-    esac
-    printf '%s\t%s\t%s\t%s\n' "$(field "$f" id)" "$verdict" "$judge" "$ans"
-  done < <(ask_files "$key")
-  printf 'judged %s answered asks: the judge would have answered %s, scored %s, agreed %s\n' \
-    "$n" "$would" "$scored" "$agree"
-}
-
 # --- trace -----------------------------------------------------------------
 
 # trace <id> [--json]: one ask's whole record, the Full log behind a card. The timeline (posted,
@@ -1293,7 +1262,6 @@ case "$sub" in
   mark-resumed) cmd_mark_resumed "$@" ;;
   settle-session) cmd_settle_session "$@" ;;
   judge)        cmd_judge "$@" ;;
-  judge-report) cmd_judge_report "$@" ;;
   trace)        cmd_trace "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;

@@ -271,19 +271,19 @@ fn dispatch_list(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
     out
 }
 
+/// judge-eval's numbers as it gives them; nothing is recounted here.
 fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
-    let scored = j.agree + j.disagree;
-    let share = if scored > 0 {
-        format!(" ({}% of scored)", (100 * j.agree + scored / 2) / scored)
-    } else {
-        String::new()
-    };
+    let share = j
+        .precision
+        .map(|x| format!(" ({x}% precision)"))
+        .unwrap_or_default();
+    let prompt = if j.prompt.is_empty() { "none" } else { j.prompt.as_str() };
     clip_line(
         heading(
             "ANSWER JUDGE",
             format!(
-                "  agree {}{share}  disagree {}  deferred {}  pending {}  unscored {}",
-                j.agree, j.disagree, j.deferred, j.pending, j.unscored
+                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  false-defer {}  pending {}  unscored {}",
+                j.agree, j.disagree, j.deferred, j.false_defer, j.pending, j.unscored
             ),
             p,
         ),
@@ -409,6 +409,10 @@ pub mod tests {
                 deferred: 2,
                 pending: 1,
                 unscored: 5,
+                false_defer: 1,
+                precision: Some(75.0),
+                kappa: Some(0.2),
+                prompt: "60c840b".into(),
                 disagreements: vec![Disagreement {
                     id: "abc".into(),
                     project: "dotfiles".into(),
@@ -448,7 +452,7 @@ pub mod tests {
             "none 7d",
             "dispatch 2 (9+ in 7d)  skip 0 (4+ in 7d)  started 2  reaped 1",
             "fix the flaky bats test",
-            "agree 3 (75% of scored)  disagree 1  deferred 2  pending 1  unscored 5",
+            "prompt 60c840b  agree 3 (75% precision)  disagree 1  deferred 2  false-defer 1  pending 1  unscored 5",
             "land the fleet tab now?",
             "verdict lists: 7 Log, v",
         ] {
