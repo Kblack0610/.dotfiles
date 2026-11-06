@@ -1,30 +1,46 @@
 "use strict";
-// The rows under the Projects tab (projects.js opens them for one project or for all): every
-// project's open rows from `notes board --json` (/api/board): the human sheet, the agent board,
-// playtest; each profile's Focus is a count linking to the Daily tab. Add, start, done, drop, move (to a
-// project or a version), a release sooner or later, edit and tags go through
-// `notes ptask --exact` with the row's raw line (POST /api/board), so a
-// row changed elsewhere since this page read it fails the write, and the page says so and
-// re-reads. Nothing watches the notes vault, so the tab reads when shown, after each write, on
-// resync, and on Refresh.
+// The rows under the Projects tab (projects.js opens them for one project or for all): the
+// shared table (table.js) over every project's open rows from `notes board --json` (/api/board,
+// which filters and sorts by the view in the tab's URL query): the human sheet, the agent board,
+// playtest; each profile's Focus is a count linking to the Daily tab. A row opens under itself
+// with its actions: add, start, done, drop, move (to a project or a version), a release sooner
+// or later, edit and tags go through `notes ptask --exact` with the row's raw line (POST
+// /api/board), so a row changed elsewhere since this page read it fails the write, and the page
+// says so and re-reads. Nothing watches the notes vault, so the tab reads when shown, after each
+// write, on resync, and on Refresh.
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
+// All holds thousands of rows, so the table stops here until asked.
+const B_OPEN = 200;
 const bst = {
   feed: null, err: null, busy: false, msg: "",
-  filter: { profile: "", project: "", lane: "", priority: "", q: "" },
   draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  // `form` is the one row whose done, drop, move, edit or tags form is open: { k, kind }.
-  open: {}, form: null, controlsKey: "",
+  // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
+  // is open: { k, kind }.
+  sel: null, form: null, all: false, controlsKey: "",
 };
 
+// `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
+// table always comes from. An answer for a project no longer open is dropped, and pOpen's own
+// read follows it.
 const refreshBoard = coalesce(async () => {
-  try { bst.feed = await api("/api/board"); bst.err = null; } catch (e) { bst.err = e.message; }
+  const scope = pst.open;
+  const p = scope ? tblParams(st.views.projects) : new URLSearchParams();
+  if (scope && scope !== "all") p.set("scope", scope);
+  const q = p.toString();
+  try {
+    const got = await api("/api/board" + (q ? "?" + q : ""));
+    if (scope === pst.open) { bst.feed = got; bst.err = null; }
+  } catch (e) { if (scope === pst.open) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
 const bKey = (r) => r.sheet + "\n" + r.raw;
+// An opened row with an id stays open through a write that rewrites its line; one with no id
+// closes, its line being all that names it.
+const bSel = (r) => r.sheet + "\n" + (r.id || r.raw);
 const bProjKey = (p) => p.profile + "/" + p.project;
 const bOpt = (list, cur, label) => list.map((v) => {
   const [val, text] = Array.isArray(v) ? v : [v, v];
@@ -32,9 +48,7 @@ const bOpt = (list, cur, label) => list.map((v) => {
 }).join("");
 
 function bControls() {
-  const f = bst.filter, d = bst.draft, projects = bst.feed.projects;
-  const profiles = [...new Set(projects.map((p) => p.profile))].sort();
-  const keys = projects.map(bProjKey);
+  const d = bst.draft, keys = bst.feed.projects.map(bProjKey);
   const playtest = d.lane === "playtest";
   return `<div class="card qadd badd">` +
     `<input id="b-text" placeholder="New row, one line (Enter to add)" value="${esc(d.text)}">` +
@@ -46,28 +60,10 @@ function bControls() {
       ? `<input id="b-game" placeholder="game (optional)" value="${esc(d.game)}">`
       : `<input id="b-to" placeholder="version vX.Y.Z (optional)" value="${esc(d.to)}">`) +
     `<button class="btn primary" id="b-add"${bst.busy ? " disabled" : ""}>${bst.busy ? "Adding..." : "Add"}</button>` +
-    `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>` +
-    `<div class="card bfilter"><div class="opts">` +
-    `<input id="bf-q" placeholder="filter text, #tag" value="${esc(f.q)}">` +
-    `<select id="bf-profile"><option value="">every profile</option>${bOpt(profiles, f.profile)}</select>` +
-    `<select id="bf-project"><option value="">every project</option>${bOpt(keys, f.project)}</select>` +
-    `<select id="bf-lane"><option value="">every lane</option>${bOpt(B_LANES, f.lane)}</select>` +
-    `<select id="bf-priority"><option value="">any priority</option>${bOpt(B_PRIORITIES, f.priority)}</select>` +
-    `<button class="btn sm" id="b-refresh">Refresh</button>` +
-    `</div></div>`;
+    `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>`;
 }
 
-function bMatch(r) {
-  const f = bst.filter;
-  if (r.state === "done") return false;
-  if (f.profile && r.profile !== f.profile) return false;
-  if (f.project && (r.profile + "/" + r.project) !== f.project) return false;
-  if (f.lane && r.lane !== f.lane) return false;
-  if (f.priority && r.priority !== f.priority) return false;
-  const q = f.q.trim().toLowerCase();
-  return !q || r.raw.toLowerCase().includes(q);
-}
-
+// The opened row, under its line in the table: its whole text and tags, then its actions.
 function bRow(r, i) {
   const k = bKey(r);
   const tags = [r.version, r.tier && "tier " + r.tier, r.worker && "worker " + r.worker,
@@ -125,50 +121,39 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-// The matching rows, split: what the triager filed today (by the feed's own clock) and,
-// once each, the rest by group.
-function bGroups() {
-  const groups = new Map(), filed = [];
-  bst.feed.rows.forEach((r, i) => {
-    if (!bMatch(r)) return;
-    if (r.filed && r.filed === bst.feed.today) return filed.push([r, i]);
-    const g = r.profile + "/" + r.project;
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push([r, i]);
-  });
-  return { groups, filed };
+const B_COLS = { priority: ["priority"], project: ["project"], lane: ["lane"], state: ["state"], id: ["id"], version: ["version"], size: ["size"], tier: ["tier", "n"], since: ["since"], text: ["text"] };
+const B_SPAN = Object.keys(B_COLS).length;
+const bDash = (v) => esc(v == null || v === "" ? "-" : v);
+
+// One line of the table, and the opened record under it.
+function bLine(r, i) {
+  const open = bSel(r) === bst.sel;
+  const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
+    `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td><td>${bDash(r.project)}</td><td>${esc(r.lane)}</td>` +
+    `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td><code>${bDash(r.id)}</code></td>` +
+    `<td>${bDash(r.lane === "playtest" ? r.game : r.version)}</td><td>${bDash(r.size)}</td><td class="n">${bDash(r.tier)}</td>` +
+    `<td>${bDash((r.since || "").slice(5))}</td><td><div class="btext">${esc(r.text)}</div></td></tr>`;
+  return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
 function drawBoardList() {
   const el = $("b-list");
   if (!el) return;
-  const { groups, filed } = bGroups();
-  const narrowed = bst.filter.project || bst.filter.q.trim();
-  let n = 0, html = bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "";
-  // What the triager filed from the inboxes today, to check: Edit... rewrites a row, Drop...
-  // rejects it with a why. A reworded row keeps the human's words as its `was:` line.
-  const waiting = bst.feed.projects.reduce((s, p) => s + (p.inbox || 0), 0);
-  if (filed.length || waiting) {
-    n += filed.length;
-    const open = bst.open["filed-today"] != null ? bst.open["filed-today"] : true;
-    html += `<details data-k="filed-today"${open ? " open" : ""}><summary><h2 class="sec">Filed today ` +
-      `<span class="muted">${filed.length} from the inboxes${waiting ? `, ${waiting} still waiting` : ""}</span></h2></summary>` +
-      (filed.length ? filed.map(([r, i]) => bRow(r, i)).join("") : `<div class="card muted">Nothing filed yet today.</div>`) +
-      `</details>`;
-  }
-  for (const [g, list] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
-    n += list.length;
-    const urgent = list.filter(([r]) => r.priority === "urgent").length;
-    const open = bst.open[g] != null ? bst.open[g] : !!narrowed;
-    html += `<details data-k="${esc(g)}"${open ? " open" : ""}><summary><h2 class="sec">${esc(g)} ` +
-      `<span class="muted">${list.length}${urgent ? `, <span class="qprio urgent">${urgent} urgent</span>` : ""}</span></h2></summary>` +
-      list.map(([r, i]) => bRow(r, i)).join("") + `</details>`;
-  }
+  const t = bst.feed.table, shown = bst.feed.rows, one = pst.open !== "all";
+  const rows = bst.all ? shown : shown.slice(0, B_OPEN);
+  const more = shown.length - rows.length;
+  // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
+  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === pst.open).reduce((s, p) => s + (p.inbox || 0), 0);
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
-  const focus = bst.filter.project ? [] : bst.feed.focus || [];
+  const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  html = `<div class="muted qstats">${n} open rows in ${groups.size + (filed.length ? 1 : 0)} groups ${fbadge}</div>` +
-    (n ? html : html + `<div class="card muted">No row matches.</div>`);
+  const html = `<div class="muted qstats">${t.shown} of ${t.total} open rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
+    ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
+    (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
+    (shown.length
+      ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table>` +
+        (more ? `<button class="btn sm" data-all="1">+${more} more</button>` : "") + `</div>`
+      : `<div class="card muted">${t.total ? "No row matches." : "No open rows."}</div>`);
   const y = $("projects").scrollTop;
   el.innerHTML = html;
   $("projects").scrollTop = y;
@@ -177,17 +162,32 @@ function drawBoardList() {
 function renderBoard() {
   const el = $("board");
   if (!bst.feed) { el.innerHTML = `<div class="empty">${bst.err ? esc(bst.err) : "Loading..."}</div>`; return; }
-  // The controls are drawn once per project list, so a re-read never eats what is being typed.
+  // The add form is drawn once per project list, so a re-read never eats what is being typed.
   const key = bst.feed.projects.map(bProjKey).join(",");
   if (key !== bst.controlsKey || !$("b-list")) {
     bst.controlsKey = key;
-    el.innerHTML = bControls() + `<div id="b-list"></div>`;
+    el.innerHTML = bControls() + `<div id="b-bar"></div><div id="b-list"></div>`;
   } else {
     $("b-msg").textContent = bst.msg;
     $("b-add").disabled = bst.busy;
     $("b-add").textContent = bst.busy ? "Adding..." : "Add";
   }
+  // A re-read must not take the search box or an open dropdown from under the human.
+  const f = document.activeElement, t = bst.feed.table;
+  if (f?.id === "board-q" || (f?.dataset?.tq !== undefined && f.closest?.("#b-bar"))) {
+    if (f.id === "board-q") paint($("board-facets"), tblFacets(t));
+    paint($("board-chips"), tblChips(t));
+  } else {
+    paint($("b-bar"), tblBar("board", t, "search, or lane:agent priority:high size:s -tag:ai"));
+  }
   drawBoardList();
+}
+
+// The view changed: the URL follows it and the server applies it.
+function bView(patch) {
+  setQuery(tblSet(st.views.projects, patch));
+  bst.all = false;
+  refreshBoard();
 }
 
 function bSaveDraft() {
@@ -198,13 +198,6 @@ function bSaveDraft() {
   if ($("b-game")) d.game = $("b-game").value;
   const lane = $("b-lane").value;
   if (lane !== d.lane) { d.lane = lane; bst.controlsKey = ""; renderBoard(); }
-}
-
-function bSaveFilter() {
-  const f = bst.filter;
-  f.q = $("bf-q").value; f.profile = $("bf-profile").value; f.project = $("bf-project").value;
-  f.lane = $("bf-lane").value; f.priority = $("bf-priority").value;
-  drawBoardList();
 }
 
 // One write; the reply is notes' own line, and any failure (a stale row most often) is shown
@@ -248,8 +241,19 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
+  if (d.all) { bst.all = true; drawBoardList(); return; }
+  const v = tblPatch(e);
+  if (v) { bView(v); return; }
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
-  if (!r) return;
+  if (!r) {
+    const line = t.closest("tr[data-row]");
+    if (!line) return;
+    const k = bSel(rows[line.dataset.row]);
+    bst.sel = bst.sel === k ? null : k;
+    bst.form = null;
+    drawBoardList();
+    return;
+  }
   const k = bKey(r);
   if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
   if (d.promote || d.demote) {
@@ -291,21 +295,19 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign(body, bTarget(r)), ok);
   }
 });
-$("board").addEventListener("change", (e) => {
-  if (e.target.closest(".badd")) bSaveDraft();
-  else if (e.target.closest(".bfilter")) bSaveFilter();
-});
-$("board").addEventListener("input", (e) => {
-  if (e.target.closest(".badd")) bSaveDraft();
-  else if (e.target.id === "bf-q") bSaveFilter();
-});
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
+for (const ev of ["input", "change"]) {
+  $("board").addEventListener(ev, (e) => {
+    if (e.target.closest(".badd")) { bSaveDraft(); return; }
+    const v = tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    bView(v);
+  });
+}
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
   const i = e.target.dataset.forminput || e.target.dataset.formremove;
   if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
-$("board").addEventListener("toggle", (e) => {
-  if (e.target.dataset && e.target.dataset.k) bst.open[e.target.dataset.k] = e.target.open;
-}, true);
-

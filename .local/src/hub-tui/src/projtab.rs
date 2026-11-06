@@ -1,7 +1,7 @@
 //! The Projects tab: one card per lab project with its open version's progress, built by
 //! `hub_core::projects` (the same cards and words as agent-web's Projects tab), in flight
 //! first, under an All entry. j/k pick a card, Enter opens its rows (tasktab.rs, every row key
-//! works there), `/` opens All with a search; in the rows Esc clears a filter first and then
+//! works there), `/` opens All with a search; in the rows Esc clears the view first and then
 //! comes back here, as Backspace does at once. `P` steps the selected project's priority
 //! (normal, focus, high, low); app.rs runs the write. This file reads and writes nothing.
 
@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, wrap};
 use crate::fmt::Palette;
-use crate::tasktab::{Kind, Prompt, TaskView};
+use crate::tasktab::TaskView;
 
 /// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
 #[derive(Debug)]
@@ -36,7 +36,7 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened card's folded sections are open (`f`).
+    /// The opened card's folded sections are open (`F`).
     pub folds: bool,
 }
 
@@ -51,7 +51,7 @@ impl ProjView {
         if tv.project.is_none() {
             self.card = 0;
         }
-        tv.search.clear();
+        tv.table.clear();
         tv.said = None;
         tv.sel = 0;
         self.open = true;
@@ -78,7 +78,7 @@ impl ProjView {
             None => {
                 self.card = 0;
                 self.open(tv, cards);
-                tv.search = name.to_string();
+                tv.table.view.q = name.to_string();
             }
         }
     }
@@ -99,11 +99,7 @@ impl ProjView {
             KeyCode::Char('/') => {
                 self.card = 0;
                 self.open(tv, cards);
-                tv.prompt = Some(Prompt {
-                    kind: Kind::Search,
-                    text: String::new(),
-                    row: None,
-                });
+                tv.table.typing = Some(String::new());
             }
             _ => return false,
         }
@@ -203,14 +199,14 @@ fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line
         Span::styled(format!("  {says}"), p.dim()),
     ];
     if !folds {
-        spans.push(Span::styled("  f opens it", p.dim()));
+        spans.push(Span::styled("  F opens it", p.dim()));
     }
     clip_line(Line::from(spans), w)
 }
 
 /// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
 /// open), then Build by system, Next stage, Shipped, In flight and the Agent note as folded
-/// heads with their counts, which `f` opens together. `page` is None while it is read.
+/// heads with their counts, which `F` opens together. `page` is None while it is read.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
@@ -339,15 +335,12 @@ pub fn page(
     }
     out.push(Line::raw(""));
     let rows = feed.map_or("reading notes board".to_string(), |f| {
-        format!("{} open rows", f.rows.len())
+        format!("{} open rows", f.open_rows(None).len())
     });
     let mut all = clip_line(
         Line::from(vec![
             Span::styled("ALL PROJECTS", p.head()),
-            Span::styled(
-                format!("  {rows}; / searches them, l steps the lane"),
-                p.dim(),
-            ),
+            Span::styled(format!("  {rows}; / searches them"), p.dim()),
         ]),
         w,
     );
@@ -501,11 +494,11 @@ pub(crate) mod tests {
             [
                 "NEEDS YOU  1",
                 "  verify: Saves (4 of 4 rows landed, no live proof)",
-                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  f opens it",
-                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  f opens it",
-                "SHIPPED  none yet  f opens it",
-                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  f opens it",
-                "AGENT NOTE  model-written, 2026-11-05  f opens it",
+                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  F opens it",
+                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  F opens it",
+                "SHIPPED  none yet  F opens it",
+                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
+                "AGENT NOTE  model-written, 2026-11-05  F opens it",
             ]
         );
         let open = draw(Some(&pg), true).join("\n");
@@ -517,7 +510,7 @@ pub(crate) mod tests {
         ] {
             assert!(open.contains(s), "{s} in {open}");
         }
-        assert!(!open.contains("f opens it"));
+        assert!(!open.contains("F opens it"));
         let reading = draw(None, true);
         assert_eq!(reading.last().unwrap(), "  reading the page...");
         let mut c = pr.cards[0].clone();
@@ -546,7 +539,7 @@ pub(crate) mod tests {
         assert_eq!(pv.card, 2, "back on the card it opened");
         pv.key(&mut tv, k('/'), &pr.cards, 10);
         assert!(pv.open && tv.project.is_none());
-        assert_eq!(tv.prompt.as_ref().map(|p| p.kind), Some(Kind::Search));
+        assert!(tv.typing());
         assert!(!pv.key(&mut tv, k('x'), &pr.cards, 10));
 
         pv.go(&mut tv, &pr.cards, "personal/Garden");
@@ -556,7 +549,7 @@ pub(crate) mod tests {
         );
         pv.go(&mut tv, &pr.cards, "menu");
         assert_eq!(
-            (pv.card, tv.project.clone(), tv.search.as_str()),
+            (pv.card, tv.project.clone(), tv.table.view.q.as_str()),
             (0, None, "menu")
         );
     }

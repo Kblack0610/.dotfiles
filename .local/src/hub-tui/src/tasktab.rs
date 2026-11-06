@@ -1,19 +1,22 @@
 //! The rows under the Projects tab (projtab.rs): one project's open rows, or every project's
 //! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
-//! same feed and writes as agent-web's Projects tab. Rows are grouped by profile and project
-//! and their text wraps, so a row shows whole; All names each profile's open Focus count, whose
-//! rows are the Daily tab's (focustab.rs); j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
-//! e, t/T, + and - add, start, finish, drop (with why, or the id it duplicates), move (to a
-//! project or a version), edit, tag and untag, and step a row a release sooner or later through
-//! `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
-//! the read fails in `notes` and the page re-reads.
-
-use std::collections::BTreeMap;
+//! same feed and writes as agent-web's Projects tab. They are one table on `DataTable`, whose
+//! text wraps so a row shows whole; All names each profile's open Focus count, whose rows are
+//! the Daily tab's (focustab.rs).
+//!
+//! j/k pick a row, `/` searches (`lane:agent`, `-tag:ai`), `f` steps the chip, `S` flips the sort,
+//! Esc clears the view. A row's own keys come first: a, s, d/D, x/X, m, e, t/T, + and - add,
+//! start, finish, drop (with why, or the id it duplicates), move (to a project or a version),
+//! edit, tag and untag, and step a row a release sooner or later through `notes ptask --exact`,
+//! so `c` sorts here where DataTable's `s` would, and Esc clears where its `x` would. `o` opens
+//! the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row
+//! edited since the read fails in `notes` and the page re-reads.
 
 use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
+use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
@@ -32,7 +35,6 @@ pub enum Ask {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
-    Search,
     Add,
     Proof,
     Unverified,
@@ -44,23 +46,25 @@ pub enum Kind {
     Untag,
 }
 
-/// A line being typed at the status line, and the row it is about (none for a search).
+/// A line being typed at the status line, and the row it is about.
 #[derive(Debug)]
 pub struct Prompt {
     pub kind: Kind,
     pub text: String,
-    pub row: Option<Row>,
+    pub row: Row,
 }
 
-/// `l` steps through these; None shows every lane.
-const LANES: [Option<&str>; 4] = [None, Some("human"), Some("agent"), Some("playtest")];
+/// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
+const HEADER: [&str; 10] = [
+    "PRIORITY", "PROJECT", "LANE", "STATE", "ID", "VERSION", "SIZE", "TIER", "SINCE", "TEXT",
+];
 
 #[derive(Debug, Default)]
 pub struct TaskView {
     /// Index into `shown`.
     pub sel: usize,
-    pub search: String,
-    pub lane: Option<&'static str>,
+    /// The search, chip and sort over the rows.
+    pub table: DataTable,
     /// One project's rows, as (profile, project); None shows every project's.
     pub project: Option<(String, String)>,
     pub prompt: Option<Prompt>,
@@ -70,36 +74,24 @@ pub struct TaskView {
     pub said: Option<Result<String, String>>,
 }
 
-/// A row's group, as agent-web titles it.
+/// A row's `profile/project`, as a write's label says it.
 fn group(r: &Row) -> String {
     format!("{}/{}", r.profile, r.project.as_deref().unwrap_or_default())
 }
 
-/// The rows the filters leave, grouped and in group order, each group in the feed's order.
-pub fn groups<'a>(f: &'a Feed, v: &TaskView) -> Vec<(String, Vec<&'a Row>)> {
-    let q = v.search.to_lowercase();
-    let mut g: BTreeMap<String, Vec<&Row>> = BTreeMap::new();
-    for r in &f.rows {
-        if v.lane.is_some_and(|l| r.lane != l) {
-            continue;
-        }
-        if let Some((profile, project)) = &v.project {
-            if r.profile != *profile || r.project.as_ref() != Some(project) {
-                continue;
-            }
-        }
-        let hay = format!("{} {} {}", group(r), r.text, r.tags.join(" ")).to_lowercase();
-        if !q.is_empty() && !hay.contains(&q) {
-            continue;
-        }
-        g.entry(group(r)).or_default().push(r);
-    }
-    g.into_iter().collect()
+/// The open rows of the project in view, before the search and the chip.
+fn scoped<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
+    f.open_rows(
+        v.project
+            .as_ref()
+            .map(|(profile, project)| (profile.as_str(), project.as_str())),
+    )
 }
 
-/// The rows j/k move over, in the page's order.
+/// The rows the view keeps, in the table's order: what j/k move over.
 pub fn shown<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
-    groups(f, v).into_iter().flat_map(|(_, r)| r).collect()
+    let rows = scoped(f, v);
+    v.table.view.apply(&rows).into_iter().copied().collect()
 }
 
 /// A write on a row, or None for a row with no project (the feed has none).
@@ -113,6 +105,18 @@ fn on(r: &Row, verb: Verb) -> Option<Write> {
 }
 
 impl TaskView {
+    /// A line is being typed, a prompt's or the search: every key is text.
+    pub fn typing(&self) -> bool {
+        self.prompt.is_some() || self.table.typing.is_some()
+    }
+
+    /// One key for the table; the selection goes to the top when the view changed.
+    fn table_key(&mut self, code: KeyCode) {
+        if self.table.key::<Row>(code) == Took::View {
+            self.sel = 0;
+        }
+    }
+
     pub fn selected<'a>(&self, f: &'a Feed) -> Option<&'a Row> {
         shown(f, self).get(self.sel).copied()
     }
@@ -159,14 +163,9 @@ impl TaskView {
     }
 
     fn submit(&mut self, p: Prompt) -> Ask {
-        let Some(r) = p.row else {
-            self.search = p.text.trim().to_string();
-            self.sel = 0;
-            return Ask::Done;
-        };
+        let r = p.row;
         let at = group(&r);
         let (label, verb) = match p.kind {
-            Kind::Search => unreachable!("a search has no row"),
             Kind::Add => (
                 format!("add to {at} ({})", r.lane),
                 Verb::Add {
@@ -263,19 +262,17 @@ impl TaskView {
                     let p = self.prompt.take().unwrap();
                     return self.submit(p);
                 }
-                KeyCode::Esc => {
-                    if p.kind == Kind::Search {
-                        self.search.clear();
-                        self.sel = 0;
-                    }
-                    self.prompt = None;
-                }
+                KeyCode::Esc => self.prompt = None,
                 KeyCode::Backspace => {
                     p.text.pop();
                 }
                 KeyCode::Char(c) => p.text.push(c),
                 _ => {}
             }
+            return Ask::Done;
+        }
+        if self.table.typing.is_some() {
+            self.table_key(k.code);
             return Ask::Done;
         }
         let Some(f) = f else { return Ask::Pass };
@@ -289,33 +286,32 @@ impl TaskView {
             })
         };
         match k.code {
+            KeyCode::Char('/' | 'f' | 'S') => self.table_key(k.code),
+            // The table's `s`, which is Start here; past HEADER are terms with no column to mark.
+            KeyCode::Char('c') => {
+                self.table_key(KeyCode::Char('s'));
+                while self
+                    .table
+                    .mark::<Row>()
+                    .is_some_and(|(at, _)| at >= HEADER.len())
+                {
+                    self.table_key(KeyCode::Char('s'));
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.sel = (self.sel + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => self.sel = self.sel.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => self.sel = (self.sel + n).min(last),
             KeyCode::PageUp => self.sel = self.sel.saturating_sub(n),
             KeyCode::Char('g') | KeyCode::Home => self.sel = 0,
             KeyCode::Char('G') | KeyCode::End => self.sel = last,
-            KeyCode::Char('/') => {
-                self.prompt = Some(Prompt {
-                    kind: Kind::Search,
-                    text: self.search.clone(),
-                    row: None,
-                })
-            }
-            KeyCode::Char('l') => {
-                let at = LANES.iter().position(|l| *l == self.lane).unwrap_or(0);
-                self.lane = LANES[(at + 1) % LANES.len()];
-                self.sel = 0;
-            }
             KeyCode::Esc => {
-                self.search.clear();
-                self.lane = None;
+                self.table.clear();
                 self.said = None;
                 self.sel = 0;
             }
             KeyCode::Char('a') => {
                 if let Some(r) = self.target(f, true) {
-                    self.prompt = prompt(Kind::Add, Some(r));
+                    self.prompt = prompt(Kind::Add, r);
                 }
             }
             KeyCode::Char('s') => {
@@ -331,24 +327,24 @@ impl TaskView {
                     } else {
                         Kind::Unverified
                     };
-                    self.prompt = prompt(kind, Some(r));
+                    self.prompt = prompt(kind, r);
                 }
             }
             KeyCode::Char(c @ ('x' | 'X')) => {
                 if let Some(r) = self.target(f, true) {
                     let kind = if c == 'x' { Kind::Why } else { Kind::Dup };
-                    self.prompt = prompt(kind, Some(r));
+                    self.prompt = prompt(kind, r);
                 }
             }
             KeyCode::Char('m') => {
                 if let Some(r) = self.target(f, false) {
-                    self.prompt = prompt(Kind::Move, Some(r));
+                    self.prompt = prompt(Kind::Move, r);
                 }
             }
             KeyCode::Char(c @ ('t' | 'T')) => {
                 if let Some(r) = self.target(f, false) {
                     let kind = if c == 't' { Kind::Tag } else { Kind::Untag };
-                    self.prompt = prompt(kind, Some(r));
+                    self.prompt = prompt(kind, r);
                 }
             }
             KeyCode::Char('e') => {
@@ -356,7 +352,7 @@ impl TaskView {
                     self.prompt = Some(Prompt {
                         kind: Kind::Edit,
                         text: r.text.clone(),
-                        row: Some(r),
+                        row: r,
                     });
                 }
             }
@@ -395,11 +391,6 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         "high" => p.warn(),
         _ => p.dim(),
     };
-    let version = if r.lane == "playtest" {
-        r.game.clone()
-    } else {
-        r.version.clone()
-    };
     let state = if r.state == "doing" {
         cell("doing", p.good())
     } else {
@@ -409,26 +400,25 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
     if r.requested {
         text += "  #requested";
     }
+    let or_dash = |s: Option<&str>| s.unwrap_or("-").to_string().into();
     vec![
         cell(r.priority.clone(), prio),
+        or_dash(r.project.as_deref()),
         r.lane.clone().into(),
-        version.unwrap_or_default().into(),
         state,
+        or_dash(r.id.as_deref()),
+        or_dash(r.release()),
+        or_dash(r.size.as_deref()),
+        r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
+        or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
         text.into(),
     ]
 }
 
 /// The page, and the line the selected row is on (the app keeps it in view).
 pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>, Option<usize>) {
-    let gs = groups(f, v);
-    let n: usize = gs.iter().map(|(_, r)| r.len()).sum();
-    let mut filter = String::new();
-    if let Some(l) = v.lane {
-        filter += &format!("  lane {l}");
-    }
-    if !v.search.is_empty() {
-        filter += &format!("  search \"{}\"", v.search);
-    }
+    let all = scoped(f, v);
+    let rows = v.table.view.apply(&all);
     let mut out = vec![
         clip_line(
             heading(
@@ -437,11 +427,12 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
                 } else {
                     "ALL PROJECTS"
                 },
-                format!("  {n} open rows in {} groups{filter}", gs.len()),
+                format!("  {} of {} open rows", rows.len(), all.len()),
                 p,
             ),
             w,
         ),
+        clip_line(Line::from(v.table.status(&all, p)), w),
         status_line(v, p, w),
     ];
     if v.project.is_none() && !f.focus.is_empty() {
@@ -459,44 +450,31 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             w,
         ));
     }
-    if gs.is_empty() {
-        out.push(Line::raw(""));
+    out.push(Line::raw(""));
+    if rows.is_empty() {
         out.push(Line::styled("No open rows match.", p.dim()));
         return (out, None);
     }
-    let sel = v.selected(f).map(|r| (r.sheet.clone(), r.raw.clone()));
-    let mut at = None;
-    for (title, rows) in gs {
-        let urgent = rows.iter().filter(|r| r.priority == "urgent").count();
-        out.push(Line::raw(""));
-        let mut rest = format!("  {}", rows.len());
-        if urgent > 0 {
-            rest += &format!(", {urgent} urgent");
-        }
-        out.push(clip_line(heading(&title.to_uppercase(), rest, p), w));
-        let (mut t, starts) = Table {
-            header: vec!["PRIO", "LANE", "VERSION", "STATE", "TEXT"],
-            rows: rows.iter().map(|r| row(r, p)).collect(),
-            keep: vec![0, 3, 1, 2],
-            flex: Some(4),
-            flexmin: 20,
-            flexkeep: true,
-            cap: vec![(2, 16)],
-            ..Default::default()
-        }
-        .fit_wrapped(w, p.head());
-        if let Some(i) = rows
-            .iter()
-            .position(|r| sel.as_ref() == Some(&(r.sheet.clone(), r.raw.clone())))
-        {
-            let end = starts.get(i + 1).copied().unwrap_or(t.len());
-            for l in &mut t[starts[i]..end] {
-                l.style = p.sel();
-            }
-            at = Some(out.len() + starts[i]);
-        }
-        out.append(&mut t);
+    let (mut t, starts) = Table {
+        header: HEADER.to_vec(),
+        rows: rows.iter().map(|r| row(r, p)).collect(),
+        keep: vec![0, 3, 2, 1, 5, 4, 6, 8, 7],
+        flex: Some(9),
+        flexmin: 20,
+        flexkeep: true,
+        cap: vec![(5, 16)],
+        mark: v.table.mark::<Row>(),
+        ..Default::default()
     }
+    .fit_wrapped(w, p.head());
+    let at = starts.get(v.sel).copied().map(|start| {
+        let end = starts.get(v.sel + 1).copied().unwrap_or(t.len());
+        for l in &mut t[start..end] {
+            l.style = p.sel();
+        }
+        out.len() + start
+    });
+    out.append(&mut t);
     (out, at)
 }
 
@@ -575,22 +553,20 @@ pub fn preview(r: &Row, p: Palette, w: usize) -> Vec<Line<'static>> {
 
 fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
-        let what = match (pr.kind, &pr.row) {
-            (Kind::Search, _) => "Search: ".to_string(),
-            (Kind::Add, Some(r)) => format!(
+        let what = match pr.kind {
+            Kind::Add => format!(
                 "Add to {} ({}), #urgent or #low to set it: ",
-                group(r),
-                r.lane
+                group(&pr.row),
+                pr.row.lane
             ),
-            (Kind::Proof, _) => "Done, the proof (pr:N or a URL): ".into(),
-            (Kind::Unverified, _) => "Done unverified, because: ".into(),
-            (Kind::Why, _) => "Drop it, because: ".into(),
-            (Kind::Dup, _) => "Drop it as a duplicate of id: ".into(),
-            (Kind::Move, _) => "Move to a project, a version vX.Y.Z, or both: ".into(),
-            (Kind::Edit, _) => "New text (tags stay): ".into(),
-            (Kind::Tag, _) => "Add tags (size/s, requested; a new size replaces the old): ".into(),
-            (Kind::Untag, _) => "Remove tags: ".into(),
-            (_, None) => String::new(),
+            Kind::Proof => "Done, the proof (pr:N or a URL): ".into(),
+            Kind::Unverified => "Done unverified, because: ".into(),
+            Kind::Why => "Drop it, because: ".into(),
+            Kind::Dup => "Drop it as a duplicate of id: ".into(),
+            Kind::Move => "Move to a project, a version vX.Y.Z, or both: ".into(),
+            Kind::Edit => "New text (tags stay): ".into(),
+            Kind::Tag => "Add tags (size/s, requested; a new size replaces the old): ".into(),
+            Kind::Untag => "Remove tags: ".into(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
     } else if let Some(r) = &v.running {
@@ -675,14 +651,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rows_group_by_profile_and_project_under_the_focus_count() {
+    fn the_rows_are_one_table_most_urgent_first_under_the_focus_count() {
         let f = fixture();
         let v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("ALL PROJECTS  4 open rows in 2 groups"), "{s}");
-        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("BNB/DEMO  3, 1 urgent"));
-        assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
+        assert!(s.contains("ALL PROJECTS  4 of 4 open rows"), "{s}");
+        assert!(
+            s.contains("all 4  in progress 0  filed today 0  urgent 1"),
+            "{s}"
+        );
+        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("PRIORITY"));
+        assert!(
+            at("PROJECT") < at("LANE") && at("SINCE") < at("TEXT"),
+            "{s}"
+        );
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
         // j/k follow the page's order, not the feed's.
         let order: Vec<&str> = shown(&f, &v).iter().map(|r| r.text.as_str()).collect();
@@ -696,7 +679,7 @@ pub(crate) mod tests {
             ]
         );
         let (_, line) = page(&f, &v, Palette { no_color: true }, 120);
-        // heading, status, focus count, blank, group heading, table header, then the first row.
+        // heading, chips, status, focus count, blank, table header, then the first row.
         assert_eq!(line, Some(6));
         let one = TaskView {
             project: Some(("bnb".into(), "demo".into())),
@@ -709,27 +692,61 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn search_and_the_lane_filter_narrow_the_rows() {
+    fn the_view_keys_go_through_the_table_and_the_row_keys_stay_the_rows() {
         let f = fixture();
         let mut v = TaskView::default();
         v.key(key('/'), Some(&f), 10);
+        assert!(v.typing());
         typed(&mut v, &f, "GARDEN");
-        assert!(text(&f, &v, 120).contains("Search: GARDEN_"));
+        assert!(text(&f, &v, 120).contains("/GARDEN_"));
         assert_eq!(enter(&mut v, &f), Ask::Done);
         assert_eq!(shown(&f, &v).len(), 1);
         v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
-        assert_eq!(shown(&f, &v).len(), 4, "Esc clears the filters");
-        v.key(key('l'), Some(&f), 10);
-        v.key(key('l'), Some(&f), 10);
-        assert_eq!(v.lane, Some("agent"));
+        assert_eq!(shown(&f, &v).len(), 4, "Esc clears the view");
+
+        v.key(key('/'), Some(&f), 10);
+        typed(&mut v, &f, "lane:agent");
+        enter(&mut v, &f);
         assert_eq!(shown(&f, &v)[0].text, "sweep the logs");
-        assert!(text(&f, &v, 120).contains("lane agent"));
-        for _ in 0..2 {
-            v.key(key('l'), Some(&f), 10);
+        assert!(text(&f, &v, 120).contains("1 of 4 open rows"));
+        v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
+
+        // f steps the chips, c the sort column, S its direction; s is still Start.
+        v.key(key('f'), Some(&f), 10);
+        assert_eq!(v.table.view.state, "in progress");
+        v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "priority");
+        for _ in 0..=HEADER.len() {
+            v.key(key('c'), Some(&f), 10);
+            assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
-        assert_eq!(v.lane, None, "l comes back round to every lane");
-        v.search = "nothing like it".into();
+        assert_eq!(v.table.view.sort, "priority", "c comes back round");
+        assert!(text(&f, &v, 120).contains("PRIORITY v"));
+        v.key(key('S'), Some(&f), 10);
+        assert_eq!(shown(&f, &v)[0].text, "water the beds");
+        assert!(matches!(v.key(key('s'), Some(&f), 10), Ask::Write(..)));
+        v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
+        assert_eq!(
+            v.key(key('l'), Some(&f), 10),
+            Ask::Pass,
+            "the lane filter is /lane:"
+        );
+
+        v.table.view.q = "nothing like it".into();
         assert!(text(&f, &v, 120).contains("No open rows match."));
+    }
+
+    #[test]
+    fn a_write_after_a_search_lands_on_the_row_on_screen() {
+        let f = fixture();
+        let mut v = TaskView::default();
+        v.table.view.q = "garden".into();
+        let Ask::Write(label, w) = v.key(key('s'), Some(&f), 10) else {
+            panic!("start runs")
+        };
+        assert_eq!(label, "start in personal/garden");
+        assert_eq!(tasks::argv(&w).unwrap()[7], "- [ ] water the beds");
     }
 
     #[test]
@@ -959,11 +976,11 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert_eq!(shown(&f, &v).len(), 3, "only bnb/demo's rows");
-        let s = text(&f, &v, 50);
-        assert!(s.contains("OPEN ROWS  3 open rows in 1 groups"), "{s}");
+        let s = text(&f, &v, 60);
+        assert!(s.contains("OPEN ROWS  3 of 3 open rows"), "{s}");
         assert!(!s.contains('~'), "nothing is clipped:\n{s}");
         assert!(
-            s.contains("returns to the map"),
+            s.contains("the menu") && s.contains("map"),
             "the text wraps whole:\n{s}"
         );
         // The selected row is lit on every line it wraps onto.

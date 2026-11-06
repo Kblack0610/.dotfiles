@@ -1428,13 +1428,13 @@ impl App {
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
-        if self.tv.prompt.is_none() && self.tv.project.is_some() && k.code == KeyCode::Char('f') {
+        if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
             self.pv.folds = !self.pv.folds;
             return true;
         }
-        if self.tv.prompt.is_none() {
+        if !self.tv.typing() {
             let v = &self.tv;
-            let filtered = !v.search.is_empty() || v.lane.is_some() || v.said.is_some();
+            let filtered = !v.table.is_default() || v.said.is_some();
             if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
                 self.pv.close(&mut self.tv);
                 self.scroll = 0;
@@ -1445,7 +1445,7 @@ impl App {
         if self.board_key(k) {
             return true;
         }
-        if k.code == KeyCode::Esc && self.tv.prompt.is_none() {
+        if k.code == KeyCode::Esc && !self.tv.typing() {
             self.pv.close(&mut self.tv);
             return true;
         }
@@ -2001,12 +2001,12 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn g/G ^d/^u pick  c cancel  +/- priority  f candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects if self.tv.prompt.is_some() => {
+            Tab::Projects if self.tv.typing() => {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  l lane  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "f page sections  " } else { "" }
+                "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
+                if self.tv.project.is_some() { "F page sections  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
@@ -3187,15 +3187,15 @@ mod tests {
         assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
         let s = screen(&mut a, 140, 40);
         assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
-        assert!(s.contains("f opens it"), "{s}");
-        assert!(s.lines().last().unwrap().contains("f page sections"), "{s}");
-        a.handle(key('f'));
+        assert!(s.contains("F opens it"), "{s}");
+        assert!(s.lines().last().unwrap().contains("F page sections"), "{s}");
+        a.handle(key('F'));
         assert!(a.pv.folds);
-        assert!(!screen(&mut a, 140, 40).contains("f opens it"));
-        a.handle(key('f'));
+        assert!(!screen(&mut a, 140, 40).contains("F opens it"));
+        a.handle(key('F'));
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 of 3 open rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");

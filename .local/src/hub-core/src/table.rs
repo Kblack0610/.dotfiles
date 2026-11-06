@@ -67,6 +67,39 @@ pub trait Row {
             .join("\n")
             .to_lowercase()
     }
+    /// What a `col:value` term tries, any of which will do: a column with many values at once
+    /// (a row's tags) lists them here.
+    fn vals(&self, col: &str) -> Vec<Val> {
+        vec![self.val(col)]
+    }
+    /// What the sort orders `col` by, when that is not what it shows (`urgent` above `high`).
+    fn rank(&self, col: &str) -> Val {
+        self.val(col)
+    }
+}
+
+/// A table over rows borrowed from a longer list: a surface narrows to its scope first (one
+/// project's rows) and hands the references to the view.
+impl<T: Row> Row for &T {
+    const COLUMNS: &'static [&'static str] = T::COLUMNS;
+    const STATES: &'static [&'static str] = T::STATES;
+    const FACETS: &'static [&'static str] = T::FACETS;
+
+    fn val(&self, col: &str) -> Val {
+        (*self).val(col)
+    }
+    fn in_state(&self, state: &str) -> bool {
+        (*self).in_state(state)
+    }
+    fn text(&self) -> String {
+        (*self).text()
+    }
+    fn vals(&self, col: &str) -> Vec<Val> {
+        (*self).vals(col)
+    }
+    fn rank(&self, col: &str) -> Val {
+        (*self).rank(col)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -171,7 +204,10 @@ fn term(key: &str, value: &str) -> String {
 impl Term {
     fn hits<R: Row>(&self, r: &R, text: &mut Option<String>) -> bool {
         match self.key {
-            Some(k) => r.val(k).text().is_some_and(|t| t.starts_with(&self.value)),
+            Some(k) => r
+                .vals(k)
+                .iter()
+                .any(|v| v.text().is_some_and(|t| t.starts_with(&self.value))),
             None => text.get_or_insert_with(|| r.text()).contains(&self.value),
         }
     }
@@ -276,7 +312,7 @@ impl View {
             return kept.collect();
         }
         let mut keyed: Vec<(Val, &R)> = kept
-            .map(|r| match r.val(&self.sort) {
+            .map(|r| match r.rank(&self.sort) {
                 Val::Text(t) => (Val::Text(t.to_lowercase()), r),
                 v => (v, r),
             })
