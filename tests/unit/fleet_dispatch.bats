@@ -2709,6 +2709,19 @@ board_item() {
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
 }
 
+@test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
+  queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
+  notes() { echo '{"rows":[{"lane":"agent"},{"lane":"agent"},{"lane":"human"},{"lane":"playtest"},{"lane":"focus"}]}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '{board_agent, board_human, board_playtest}' <<<"$output")" '{"board_agent":2,"board_human":1,"board_playtest":1}'
+  notes() { return 1; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c 'has("board_agent")' <<<"$output")" false
+}
+
 @test "stats fails, saying so, when the queue is unreadable" {
   stub agent-queue 'exit 1'
   run cmd_stats
