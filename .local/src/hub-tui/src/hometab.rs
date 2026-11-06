@@ -66,6 +66,7 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             p.head(),
         ));
         let t = Table {
+            mark: None,
             header: vec!["KIND", "PROJECT", "AGE", "HOLDS", "WHAT", "ID"],
             rows: h
                 .needs
@@ -128,6 +129,7 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             p.head(),
         ));
         let t = Table {
+            mark: None,
             header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
             rows: h
                 .running

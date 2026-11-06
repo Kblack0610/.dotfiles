@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const draw = (data, err = null) => vm.runInContext(`qpl.data = ${JSON.stringify(data)}; qpl.err = ${JSON.stringify(err)}; qPipeline()`, ctx);
 

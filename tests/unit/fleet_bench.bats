@@ -472,6 +472,17 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"W
   assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | - | $9.99 |'
 }
 
+@test "scorecard: a rule's problem line keeps its = sign, and the counts become bullets" {
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench" RULES_REGISTER="$HOME/rules.jsonl"
+  echo gone > "$HOME/r.md"
+  jq -nc --arg s "$HOME/r.md" '{source: $s, anchor: "a=b left its source", kind: "invariant"}' > "$RULES_REGISTER"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" scorecard
+  assert_success
+  run grep -E '^- (stale|rules):' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output "$(printf -- '- rules: 1\n- stale: r.md: a=b left its source')"
+}
+
 @test "sessions --json is the scorecard's rows as data, with the plan name day-log shows" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes"
   mkdir -p "$BENCH_OUTCOMES_DIR/game"

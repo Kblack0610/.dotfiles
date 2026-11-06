@@ -5,6 +5,7 @@
 mod app;
 mod board;
 mod controls;
+mod datatable;
 mod day;
 mod fit;
 mod fleet;

@@ -10,6 +10,8 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 GEMINI_HOME="${GEMINI_HOME:-$HOME/.gemini}"
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 RULESYNC_BIN="${RULESYNC_BIN:-}"
+RULES_CLAUDE_MD="${RULES_CLAUDE_MD:-$CLAUDE_HOME/CLAUDE.md}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 START_MARKER="# >>> dotfiles codex managed start >>>"
 END_MARKER="# <<< dotfiles codex managed end <<<"
@@ -66,6 +68,9 @@ if [ ! -s "$stage_dir/.rulesync/rules/overview.md" ]; then
     echo "  (source: $RULESYNC_ROOT — check for dangling symlinks)" >&2
     exit 1
 fi
+
+# The shared sections live only in the global CLAUDE.md: overview.md names them with markers.
+python3 "$SCRIPT_DIR/splice-shared-rules.py" "$stage_dir/.rulesync/rules/overview.md" "$RULES_CLAUDE_MD"
 
 (
     cd "$stage_dir"

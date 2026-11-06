@@ -49,13 +49,15 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `o` | Open this tab's Grafana dashboard (in the jobs table: the selected row's URL) |
 | `j`/`k`, PgUp/PgDn, space, `g`/`G` | Scroll a page; in the jobs table, move the selection |
 | `n` / `N` | Infra: the next / previous section |
-| Enter, Esc | Infra: open the jobs table; at the table's root (no log, history, search or filter), back to the summary |
-| `s` / `f` | Jobs table: cycle the source / state filter |
-| `/` | Jobs table: search name, detail, result and source (Enter applies, Esc cancels) |
+| Enter, Esc | Infra: open the jobs table; at the table's root (no log, history, query, state or sort), back to the summary |
+| `/` | Jobs table: type a query (Enter applies, Esc drops the draft and keeps the query in force): words AND, `key:value` matches a column by prefix (`source:ci`, `result:failure`), a repeated key ORs, `-key:value` excludes, a bare word matches name, detail, result and source |
+| `f` | Jobs table: cycle the state chip (all, running, queued, done, failed) |
+| `s` / `S` | Jobs table: sort by the next column (descending, the header carries ` v` or ` ^`) / flip the direction |
+| `x` | Jobs table: clear the query, chip and sort |
 | `h` | Jobs table: every run of the selected job, unfolded (again to go back) |
 | Enter | Jobs table: open the selected row's log (follows the tail) |
 | `J`/`K`, PgUp/PgDn | Jobs table, log open: scroll the log |
-| Esc | Jobs table: close the log, then history, then clear the filters |
+| Esc | Jobs table: close the log, then history, then clear the view |
 | `[` / `]`, `t` | Log: the day before / after, back to today. Daily: the day before / after that has a note, back to today |
 | `o`, Esc, Enter | Daily: show the outbox, `o` or Esc back to the note; on the outbox, Enter opens it in `$EDITOR` in a new tmux window |
 | `[` / `]`, Enter, Esc | Fleet: pick a runner, open its page; on a page, step to the previous / next runner, Esc back to all runners |
