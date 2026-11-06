@@ -81,6 +81,8 @@ panel_conf_bindings() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ && /display-popup/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       table = "root"
       if (match(line, /-T[[:space:]]+[^[:space:]]+/)) {
         t = substr(line, RSTART, RLENGTH); sub(/-T[[:space:]]+/, "", t); table = t
@@ -290,6 +292,8 @@ root_binds() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       if (line ~ /^[[:space:]]*(bind|bind-key)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-T[[:space:]]/) next
       n = split(line, F, /[[:space:]]+/)
       key = ""

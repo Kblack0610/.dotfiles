@@ -13,6 +13,11 @@ Sources and what each one is trusted for:
                here) and the account, read from the transcript path's account dir.
   outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window.
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
+  queue        $AGENT_QUEUE_DIR/**/*.md. A session's origin (plan, or the item's `origin:` hand,
+               run, resume), item and #size/ tag. Joined by the item's `sessions:` ids, else by
+               its tmux `session:` name matching the worktree the session ran in while the item
+               ran (items older than `sessions:` carry only that). A session no item names is
+               a runner when headless, else interactive.
   requests     the api-request-shape and api-request-blob lines Claude Code writes before a
                session's first response: what that first request carried, part by part, in
                chars (first_request_parts). Chars, because only the request total has a
@@ -39,6 +44,7 @@ WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
+ITEM_LEAD = 600      # seconds a session may start before its item records `started:`
 
 # Where each part of the first request's system-role text starts. Text before the first
 # marker is system_other.
@@ -151,7 +157,8 @@ def kind_of(path, first):
 def scan(path, start, end, acc):
     seen, last_t, pending, after_compact = set(), None, "human", False
     ctx_by_mid, wait_mids, tools_by_mid = {}, set(), defaultdict(set)
-    sess = acc["session"][session_of(path)]
+    sid = session_of(path)
+    sess = acc["session"][sid]
     first, turns, seq = None, 0, 0  # seq: the session's responses, in the window or not
     shape, blobs = None, []  # the first request, as recorded before the first response
     try:
@@ -219,6 +226,11 @@ def scan(path, start, end, acc):
                 continue
             turns += 1
             kind = kind_of(path, first or {})
+            sess[("s:" if kind == "subagent" else "m:") + model] += 1
+            if kind == "subagent":
+                sess["subagent_turns"] += 1
+            elif sid not in acc["meta"]:
+                acc["meta"][sid] = (kind, (first or {}).get("cwd") or "", ts((first or {}).get("timestamp", "")) or now)
             i, o = u.get("input_tokens", 0), u.get("output_tokens", 0)
             cw, cr = u.get("cache_creation_input_tokens", 0), u.get("cache_read_input_tokens", 0)
             ctx = i + cw + cr
@@ -233,6 +245,8 @@ def scan(path, start, end, acc):
             acc["kind_files"][kind].add(path)
             sess["turns"] += 1
             sess["context"] += ctx
+            if kind == "subagent":
+                sess["subagent_context"] += ctx
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
                 sess["first_turn_context"] = ctx
@@ -336,6 +350,38 @@ def dream_runs(start, end, path):
     return dict(sorted(nights.items()))
 
 
+def queue_items(root):
+    items = []
+    for f in glob.glob(os.path.join(root, "**", "*.md"), recursive=True):
+        try:
+            head, _, body = open(f, errors="ignore").read().partition("\n---\n")
+        except OSError:
+            continue
+        fm = dict(m.groups() for m in re.finditer(r"^([a-z_]+): ?(.*)$", head, re.M))
+        if not fm.get("slug"):
+            continue
+        size = re.search(r"#size/([sml])\b", body + " " + fm.get("title", ""))
+        items.append({"slug": fm["slug"], "mode": fm.get("mode"), "origin": fm.get("origin"),
+                      "sessions": fm.get("sessions", "").split(), "tmux": fm.get("session", "").split(":")[-1],
+                      "started": ts(fm.get("started", "")), "finished": ts(fm.get("finished", "")),
+                      "size": size.group(1) if size else None})
+    return items
+
+
+def origin_of(sid, meta, by_sid, by_tmux):
+    """(origin, item) for a session: a queue item names it, else its kind decides."""
+    kind, cwd, first_t = meta.get(sid, ("?", "", None))
+    it = by_sid.get(sid)
+    if it is None and cwd and first_t:
+        for c in by_tmux.get(os.path.basename(cwd.rstrip("/")), ()):
+            if c["started"] and c["started"] - ITEM_LEAD <= first_t <= (c["finished"] or float("inf")):
+                it = c
+                break
+    if it is not None:
+        return ("plan" if it["mode"] == "plan" else it["origin"] or "queue"), it
+    return ("runner" if kind == "headless" else "interactive"), None
+
+
 def main():
     ap = argparse.ArgumentParser(prog="agent-usage burn")
     ap.add_argument("--days", type=float, default=7)
@@ -362,7 +408,7 @@ def main():
         return Counter()
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
-           "mix": defaultdict(tok), "session": defaultdict(tok),
+           "mix": defaultdict(tok), "session": defaultdict(tok), "meta": {},
            "first_parts": [], "first_tools": Counter(),
            "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
@@ -377,15 +423,43 @@ def main():
     prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
-    sessions = {}
+    by_sid, by_tmux = {}, defaultdict(list)
+    for it in queue_items(env.get("AGENT_QUEUE_DIR", f"{home}/.agent/queue")):
+        for x in it["sessions"]:
+            by_sid[x] = it
+        if it["tmux"]:
+            by_tmux[it["tmux"]].append(it)
+    sessions, by_origin = {}, defaultdict(Counter)
     for sid, v in acc["session"].items():
         if not v["turns"] and not v["compactions"]:
             continue
         r = reg_last.get(sid) or {}
         sp = sorted(prs_by_sess.get(sid, ()))
         c = r.get("cost_usd")
+        origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux)
+        models = Counter()
+        for k, turns in v.items():
+            if k[:2] in ("m:", "s:"):
+                models[k[2:]] += turns
+        models = dict(models.most_common())
+        opus = lambda pre: sum(n for k, n in v.items() if k.startswith(pre) and "opus" in k)  # noqa: E731
+        # The registry's cost is the whole session's, subagents included, so it stays with the
+        # session's origin; the subagent row is subagent threads' turns and context only.
+        o = by_origin[origin]
+        o["sessions"] += 1
+        o["cost_usd"] += c or 0
+        o["turns"] += v["turns"] - v["subagent_turns"]
+        o["context"] += v["context"] - v["subagent_context"]
+        o["opus_turns"] += opus("m:")
+        if v["subagent_turns"]:
+            by_origin["subagent"]["sessions"] += 1
+            by_origin["subagent"]["turns"] += v["subagent_turns"]
+            by_origin["subagent"]["context"] += v["subagent_context"]
+            by_origin["subagent"]["opus_turns"] += opus("s:")
         sessions[sid] = {
             "project": r.get("project") or "?", "cost_usd": round(c, 2) if c is not None else None,
+            "origin": origin, "kind": acc["meta"].get(sid, ("subagent",))[0], "item": it["slug"] if it else None, "size": it["size"] if it else None,
+            "models": models, "subagent_turns": v["subagent_turns"],
             "turns": v["turns"], "context": v["context"],
             "mix": {k: v[k] for k in MIX},
             "wait_share": round(v["wait_context"] / v["context"], 3) if v["context"] else None,
@@ -429,6 +503,8 @@ def main():
         "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
                          "share": round(acc["mix"][k]["turns"] / turns_all, 3) if turns_all else None}
                      for k in MIX},
+        "by_origin": {k: {**v, "cost_usd": round(v["cost_usd"], 2)} if k != "subagent" else dict(v)
+                      for k, v in sorted(by_origin.items(), key=lambda x: (-x[1]["cost_usd"], -x[1]["context"]))},
         "by_session": sessions,
         "cache_write_by_cause": {k: dict(v) for k, v in sorted(acc["cw_cause"].items(), key=lambda x: -x[1]["cache_write"])},
         "idle_wakes_by_trigger": {k: dict(v) for k, v in sorted(acc["idle_wakes"].items(), key=lambda x: -x[1]["wakes"])},
@@ -458,6 +534,8 @@ def main():
     table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
     table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
+    table("by origin (registry cost; subagent row is its threads' tokens, their cost is in the parent's row)",
+          out["by_origin"], ["sessions", "cost_usd", "turns", "context", "opus_turns"])
     f = out["first_turn_context"]
     print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
     r = out["first_request_parts"]
@@ -470,11 +548,11 @@ def main():
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
     print(f"by session (top {a.top} of {len(sessions)}; cost is the session's whole run, from the registry)")
-    print("  " + "\t".join(["session", "project", "cost_usd", "turns", "context", "inv/wait/write/reply",
+    print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:
         print("  " + "\t".join(str(x) for x in (
-            sid[:8], v["project"], "-" if v["cost_usd"] is None else f"{v['cost_usd']:,.2f}", v["turns"],
+            sid[:8], v["project"], v["origin"], next(iter(v["models"]), "-"), "-" if v["cost_usd"] is None else f"{v['cost_usd']:,.2f}", v["turns"],
             m(v["context"]), "/".join(str(v["mix"][k]) for k in MIX), v["wait_share"], v["compactions"],
             v["first_turn_context"] or "-", len(v["merged_prs"]),
             "-" if v["cost_per_merged_pr"] is None else f"{v['cost_per_merged_pr']:,.2f}")))

@@ -21,7 +21,7 @@ setup() {
   IN="batstree$$" OUT="batstreeo$$"
   CONF="$SANDBOX/inner.conf"
   { echo 'set -g detach-on-destroy off'
-    grep -m1 '^bind w choose-tree' "$REPO_ROOT/.tmux.conf"
+    grep -m1 -E '^bind (-N "[^"]*" )?w choose-tree' "$REPO_ROOT/.tmux.conf"
   } > "$CONF"
   tmux -L "$IN" -f "$CONF" new-session -d -s hub -n note -x 120 -y 40
   tmux -L "$IN" new-window -d -t hub: -n board
