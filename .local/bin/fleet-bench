@@ -3292,8 +3292,21 @@ canary_brief() {
 # task whose item exists in any state, so a second retro the same week queues nothing. `from:
 # canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
 # canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
+# a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
+# so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+canary_slug() {
+  local id tail
+  tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
+  id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//')
+  id=$(printf '%s' "${id:0:$((40 - 7 - ${#tail}))}" | sed 's/-*$//')
+  [ -n "$id" ] || return 1
+  printf 'canary-%s%s' "$id" "$tail"
+}
+
 canary_queue() {
   local tasks t id slug week lane="" harness="" model="" added=0 had=0
+  local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
@@ -3302,12 +3315,15 @@ canary_queue() {
     esac
   done
   [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
-  [ -z "$harness" ] || lane="-$harness${model:+-$model}"
+  [ -z "$harness" ] || lane="$harness${model:+-$model}"
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week$lane"
+    id=$(jq -r .id <<<"$t")
+    slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
+    [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
+    seen[$slug]=$id
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${harness:+ $harness${model:+/$model}}" \

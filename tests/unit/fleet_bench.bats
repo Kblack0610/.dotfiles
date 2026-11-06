@@ -3211,7 +3211,7 @@ case "$1" in
   show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
   set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
   add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
-       while [ $# -gt 0 ]; do case "$1" in --slug) slug=$2 ;; --agent) agent=$2 ;; esac; shift; done
+       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; esac; shift; done
        jq -n --arg s "$slug" --arg a "$agent" '{slug: $s, agent: $a}' > "$CQ/$slug.json" ;;
 esac
 STUB
@@ -3312,6 +3312,23 @@ STUB
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
+  # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened and the lane kept whole.
+  jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_success
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/gpt-5.6-sol)"
+  long="canary-dispatc-$week-codex-gpt-5-6-sol"
+  assert_equal "${#long}" 40
+  assert_equal "$(jq -r .model "$CQ/$long.json")" gpt-5.6-sol
+  grep -q "agent-queue move $long done" "$CQ/add.log"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_output "fleet-bench: canary: 0 queued, 2 already queued for $week (codex/gpt-5.6-sol)"
+  # Two ids that shorten to one slug are refused, not queued as one item.
+  jq '.id = "dispatch-requested-day"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long2.json"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_failure 1
+  assert_output --partial 'share the slug'
+  rm "$BENCH_CANARY_DIR/long2.json"
   run "$SUBJECT" canary queue --model sol
   assert_failure 2
   run "$SUBJECT" canary queue --bogus
