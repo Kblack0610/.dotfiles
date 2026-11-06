@@ -16,6 +16,11 @@
 #
 # WEBCAM_DEV_DIR moves the device directory, for the tests.
 
+# Without inotifywait the watch would end at once and the pill would never show: say so, loudly.
+command -v inotifywait >/dev/null || {
+  echo "webcam.sh: inotifywait not found (install inotify-tools)" >&2
+  exit 1
+}
 here="$(dirname "$(readlink -f "$0")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"

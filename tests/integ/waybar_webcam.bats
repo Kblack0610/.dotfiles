@@ -24,6 +24,7 @@ teardown() {
 
 # start: run webcam.sh on $DEV, its lines into fd 4. fd 3 is closed so bats does not wait on it.
 start() {
+  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
   mkfifo "$BATS_TEST_TMPDIR/out"
   WEBCAM_DEV_DIR="$DEV" "$W/webcam.sh" > "$BATS_TEST_TMPDIR/out" 3>&- &
   MOD=$!
