@@ -295,11 +295,74 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
+/// The whole join every surface reads: `notes projects --stats --json`, the inbox feed, fleet
+/// state and the queue, built into cards. agent-web's `/api/projects` and `hub projects --json`
+/// both call this, so the chip, the phone, the web tab and the TUI agree.
+pub fn gather() -> Projects {
+    let runner = crate::session_actions::System;
+    let repos = std::fs::read_to_string(map_path())
+        .map(|t| repos(&t))
+        .unwrap_or_default();
+    let state = std::fs::read_to_string(crate::boards::fleet_state())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let queue = Queue::read(&runner);
+    let feed = crate::tasks::feed(&runner).ok();
+    match stats(&runner) {
+        Ok(stats) => build(&stats, feed.as_ref(), &state, Some(&queue), &repos),
+        Err(e) => Projects {
+            errors: vec![e],
+            ..Default::default()
+        },
+    }
+}
+
+/// The cards as JSON, each with its `summary` line and `in_flight`, so a reader prints the same
+/// words the TUI does and computes nothing.
+pub fn to_json(p: &Projects) -> Value {
+    let mut v = serde_json::to_value(p).unwrap_or_default();
+    if let Some(cards) = v["cards"].as_array_mut() {
+        for (j, c) in cards.iter_mut().zip(&p.cards) {
+            j["summary"] = summary(c).into();
+            j["in_flight"] = c.in_flight().into();
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn each_card_carries_the_summary_the_tui_prints() {
+        let c = Card {
+            name: "demo".into(),
+            version: Some("v0.1.0".into()),
+            progress: Progress {
+                open: 1,
+                done: 1,
+                open_weight: 3,
+                done_weight: 1,
+                ..Default::default()
+            },
+            percent: Some(25),
+            ..Default::default()
+        };
+        let v = to_json(&Projects {
+            cards: vec![c.clone()],
+            ..Default::default()
+        });
+        assert_eq!(v["cards"][0]["summary"], summary(&c));
+        assert!(v["cards"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("v0.1.0 25% (1 of 4 by size)"));
+        assert_eq!(v["cards"][0]["in_flight"], false);
+    }
 
     struct Argv(std::cell::RefCell<Vec<String>>);
     impl Runner for Argv {
