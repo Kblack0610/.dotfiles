@@ -868,6 +868,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     });
     status::Page {
         feed: status::Feed::Watches,
+        lead: Vec::new(),
         more: Vec::new(),
         stat,
         rows: rows
@@ -1098,11 +1099,88 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
             }
         )),
         rows,
+        lead: vec![status::Section {
+            heading: "Decisions for you".into(),
+            guide: Some("Answer in the outbox: `<id>: <your answer>`".into()),
+            lines: decisions(dirs, &name),
+        }],
         more: vec![
             ("Waiting in project inboxes".into(), inboxes),
             ("Sheet actions".into(), sheet_actions(&events)),
         ],
     }
+}
+
+/// Decisions listed by name; past this many the rest are counted per project.
+const DECISIONS_SHOWN: usize = 10;
+
+/// Every open `decide(...)` row of every project, both lanes, as page lines
+/// `<id> <project>[ (agent board)]: <words> (<priority>, <age>d)`: the highest priority first,
+/// then the oldest. Past [`DECISIONS_SHOWN`] one line counts the rest per project. The rows are
+/// read where `notes board` reads them; the page is the one place that lists them all.
+fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) -> Vec<String> {
+    use crate::agent_sheet::Lane;
+    let today = Local::now().date_naive();
+    // (priority rank, since, id, project, line)
+    let mut found: Vec<(usize, NaiveDate, String, &str, String)> = Vec::new();
+    for (n, d) in dirs {
+        for lane in [Lane::Human, Lane::Agent] {
+            let Some(open) = crate::project_tasks::current_rows_for_dir(&lane.dir(d)) else {
+                continue;
+            };
+            for (_, l) in &open.rows {
+                if crate::projects::row_type_area(l).is_none_or(|(t, _)| t != "decide") {
+                    continue;
+                }
+                let Some(id) = md::row_id(l) else { continue };
+                let tag = md::task_priority(l).unwrap_or(md::default_priority());
+                let rank = md::PRIORITIES
+                    .iter()
+                    .position(|(_, t, _)| *t == tag)
+                    .unwrap_or(1);
+                let since = md::find_since(l, today).unwrap_or(today);
+                let tags: Vec<String> = md::find_hashtags(l)
+                    .into_iter()
+                    .map(|t| format!("#{t}"))
+                    .collect();
+                let text = md::task_text(l);
+                let words: Vec<&str> = text
+                    .split_once("): ")
+                    .map_or(text.as_str(), |(_, r)| r)
+                    .split_whitespace()
+                    .filter(|w| !tags.contains(&w.to_lowercase()))
+                    .collect();
+                let board = if lane == Lane::Agent {
+                    " (agent board)"
+                } else {
+                    ""
+                };
+                let line = format!(
+                    "{id} {}{board}: {} ({}, {}d)",
+                    name(n, lane.name()),
+                    words.join(" "),
+                    md::PRIORITIES[rank].0,
+                    (today - since).num_days()
+                );
+                found.push((rank, since, id, n.as_str(), line));
+            }
+        }
+    }
+    found.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+    found.dedup_by(|a, b| a.2 == b.2);
+    let rest = found.split_off(found.len().min(DECISIONS_SHOWN));
+    let mut lines: Vec<String> = found.into_iter().map(|f| f.4).collect();
+    if !rest.is_empty() {
+        let mut per: std::collections::BTreeMap<&str, usize> = Default::default();
+        for f in &rest {
+            *per.entry(f.3).or_default() += 1;
+        }
+        let mut per: Vec<(&str, usize)> = per.into_iter().collect();
+        per.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let by: Vec<String> = per.iter().map(|(p, c)| format!("{p} {c}")).collect();
+        lines.push(format!("... and {} more: {}", rest.len(), by.join(", ")));
+    }
+    lines
 }
 
 /// Past this many, the page lists the newest and points at `notes log`.
@@ -2522,6 +2600,60 @@ mod tests {
         assert_eq!(lines.len(), SHEET_ACTIONS_SHOWN + 1);
         assert_eq!(lines[0], "+2 older: notes log");
         assert!(lines[1].ends_with("row 2"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn the_inbox_page_lists_open_decisions_from_both_lanes_highest_first_and_counts_the_rest() {
+        let root = std::env::temp_dir().join(format!("inbox-decide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let demo = root.join("demo");
+        std::fs::create_dir_all(demo.join("agent")).unwrap();
+        std::fs::write(
+            demo.join("README.md"),
+            "## Tasks\n\
+             - [ ] decide(squad): followers that fight with you #low #size/m <!-- id:dm-1 -->\n\
+             - [x] decide(old): a settled one <!-- id:dm-2 -->\n\
+             - [ ] feat(ui): not a decision <!-- id:dm-3 -->\n\
+             - [ ] decide(server): run a home server or not #urgent <!-- id:dm-4 -->\n",
+        )
+        .unwrap();
+        std::fs::write(
+            demo.join("agent").join("README.md"),
+            "## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:dm-9 -->\n",
+        )
+        .unwrap();
+        let bare = |n: &str, _: &str| n.to_string();
+        let dirs = vec![("demo".to_string(), demo.clone())];
+        assert_eq!(
+            decisions(&dirs, &bare),
+            vec![
+                "dm-4 demo: run a home server or not (urgent, 0d)",
+                "dm-9 demo (agent board): which lane a game takes (high, 0d)",
+                "dm-1 demo: followers that fight with you (low, 0d)",
+            ]
+        );
+        // Past the cap the rest are counted per project, most first.
+        let big = root.join("big");
+        std::fs::create_dir_all(&big).unwrap();
+        let rows: String = (1..=12)
+            .map(|i| format!("- [ ] decide(x): question {i} <!-- id:bg-{i} -->\n"))
+            .collect();
+        std::fs::write(big.join("README.md"), format!("## Tasks\n{rows}")).unwrap();
+        let both = vec![dirs[0].clone(), ("big".to_string(), big)];
+        let lines = decisions(&both, &bare);
+        assert_eq!(lines.len(), DECISIONS_SHOWN + 1);
+        assert_eq!(lines[0], "dm-4 demo: run a home server or not (urgent, 0d)");
+        assert_eq!(lines[DECISIONS_SHOWN], "... and 5 more: big 3, demo 2");
+        // On the page: its own section after Needs you, the answer form first.
+        let out = status::render(&p.root, &p.daily, &inbox_page_in(&p, &dirs));
+        let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("{h} missing:\n{out}"));
+        assert!(at("## Needs you") < at("## Decisions for you"));
+        assert!(at("## Decisions for you") < at("## Handled today"));
+        assert!(out.contains(
+            "## Decisions for you\nAnswer in the outbox: `<id>: <your answer>`\n\n- dm-4 [["
+        ));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
