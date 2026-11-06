@@ -962,10 +962,69 @@ watch() {
   watch drift OK -90000 normal
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial 'no runner, unit or watch at fault'
+  assert_output --partial 'no runner, unit, watch or log error at fault'
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+# errlog <runner> <finished offset> <line>...: one run's stderr appended to <runner>.stderr.log with
+# its runs.jsonl err byte range, as agentctl writes them
+errlog() {
+  local n=$1 off=$2 f="$AGENTCTL_STATE_DIR/$1.stderr.log" a b; shift 2
+  a=$(stat -c %s "$f" 2>/dev/null || echo 0); printf '%s\n' "$@" >> "$f"; b=$(stat -c %s "$f")
+  jq -cn --arg n "$n" --argjson f $((T0 + off)) --argjson a "$a" --argjson b "$b" \
+    '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
+# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty causes table
+log_triage_setup() {
+  triage_setup
+  mkdir -p "$AGENTCTL_STATE_DIR"; PLOG="$SANDBOX/promote.log"
+  export TRIAGE_CAUSES="$SANDBOX/triage-causes" TRIAGE_PROMOTE_CMD=promote-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
+  chmod +x "$SANDBOX/bin/promote-stub"
+  # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
+  # outside the window, and a range the log rotation took away
+  errlog alpha -7200 '[2026-11-05T01:00:00-08:00] error: lock /run/a/1.lock held by pid 4411' 'just noise'
+  errlog alpha -3600 '[2026-11-05T02:00:00-08:00] error: lock /run/b/2.lock held by pid 98' 'fatal: only once'
+  errlog alpha -200000 'error: lock /run/c.lock held by pid 7'
+  jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
+@test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
+  log_triage_setup
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+  assert_equal "$(grep -c . <<<"$output")" 1
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  [ ! -s "$PLOG" ]
+}
+
+@test "triage: a row a known cause explains is queued once as a night fix; no match queues nothing" {
+  log_triage_setup
+  printf '# comment\nnot in any row\tnever used\n' > "$TRIAGE_CAUSES"
+  printf 'lock .* held by pid\tclear the stale lock #2 in alpha\n' >> "$TRIAGE_CAUSES"
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; known cause: clear the stale lock no\.2 in alpha #low \(queued as a night fix\)$'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as night fixes'
+  run cat "$PLOG"
+  assert_output --regexp '^--agent --project agent-runtime --tags night --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*known cause'
+  # started on the board: never queued twice
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  printf 'nothing matches\tx\n' > "$TRIAGE_CAUSES"
+  rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
+  run "$SUBJECT" triage
+  [ ! -s "$PLOG" ]
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0

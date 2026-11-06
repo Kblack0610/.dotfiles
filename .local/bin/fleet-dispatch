@@ -6,7 +6,7 @@
 #   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] --raw LINE  queue one board row as it stands: the Board tab's Start
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item (night)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
@@ -1820,18 +1820,18 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] --raw LINE -- queue one row as the human saw it: the
+# cmd_promote --project P [--profile X] [--agent] [--tags T] --raw LINE -- queue one row as the human saw it: the
 # Board tab's Start. A row that changed since, or is already started, is refused. No gate: the item
 # starts like any board item: when the human is away, or within the present trickle.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' board key
+  local project='' prof='' lane=human raw='' tags='' board key
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
-      --project | --profile | --raw) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
+      --project | --profile | --raw | --tags) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;
     esac
-    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; esac
+    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; --tags) tags=$2 ;; esac
     shift 2
   done
   [ -n "$project" ] && [ -n "$raw" ] || { say "promote: --project and --raw are required"; return 2; }
@@ -1839,7 +1839,7 @@ cmd_promote() {
   key=$(R="$raw" awk -F'\t' 'substr($0, length($1) + 2) == ENVIRON["R"] { print $1; exit }' <<<"$board")
   [ -n "$key" ] || { say "promote: not on the $project $lane board as given, so it changed: $raw"; return 1; }
   promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" \
-    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "" "$(sed 's/^- \[.\] //' <<<"$raw")"
+    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "$tags" "$(sed 's/^- \[.\] //' <<<"$raw")"
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
