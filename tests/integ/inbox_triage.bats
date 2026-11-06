@@ -215,8 +215,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed sc-1 in \[\[[^]]*\|scratch\]\] \(human\): chore\(build\): drop the old cache'
-  assert_output --partial '  - from: outbox'
+  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
+  refute_output --partial '  - from: outbox'
   assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
@@ -321,7 +321,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ -n "$page" ] || fail "no inbox page"
   key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
   [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
-  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 ' "$page" || fail "$(cat "$page")"
+  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] ' "$page" || fail "$(cat "$page")"
   run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
   assert_failure
   assert_output --partial 'no ingest event'
@@ -330,11 +330,11 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
   run cat "$page"
   assert_output --partial '- +1 reviewed'
-  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed sc-1 '
-  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 '
+  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
+  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
   run "$NOTES_BIN" inbox ack --undo -- "$key"
   assert_success
   run cat "$page"
   refute_output --partial '- +1 reviewed'
-  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed sc-1 '
+  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }

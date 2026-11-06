@@ -55,15 +55,14 @@ impl Feed {
     pub fn guide(&self) -> Option<&'static str> {
         match self {
             Feed::Inbox => Some(
-                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why - tick a handled row once read and it folds into +N reviewed",
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why - tick a handled row once read and it folds into +N reviewed",
             ),
             _ => None,
         }
     }
 
     /// Whether rows in the second bucket show their sub-lines. A healthy watch's `at:` and
-    /// `do:` are noise; a handled inbox line's `from:` and `was:` are the record of what
-    /// changed.
+    /// `do:` are noise; a planned inbox row's `added:` says what the planner wrote.
     pub fn quiet_detail(&self) -> bool {
         matches!(self, Feed::Inbox)
     }
