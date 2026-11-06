@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [unity, ci, nightly, playground, queue]
-  reviewed: 2026-11-05
+  reviewed: 2026-11-06
 ---
 
 # Playground nightly fix
@@ -26,7 +26,7 @@ Not for one PR's gate red (`/my:fix-ci`) or for CI time (`ci-cost`).
 3. **Drop what main already fixed.** `git fetch` and `git log origin/main --since=<nightly time> -- <test file>`; a likely fix gets a gate-only check item.
 4. **One row per cause.** Group by cause (content, code, multiplayer, host). Before `notes ptask ... --agent add`, grep the board for the class or the host name and fold into the open row. Each row names its runs and says "under <owner row>".
 5. **One queue item per cause.** `agent-queue add --project unity-core-playground --priority urgent|high --from board:unity-core-playground:<row> --slug nightly-fix-<cause>-<row>` with a brief that carries: the classes and run ids, the main commits since the nightly, "root cause before fix" for a cause a fix already missed (dispatch `root-cause-analyst`), the negative control (gate the class on `origin/main` first), quarantine with an expiry when it cannot be fixed today, which human decisions to ask via `agent-ask` (secrets, hosts), and "close your row, never the owner row". Let fleet-dispatch start them; start one by hand (`fleet-dispatch start --item <slug>`) only when `fleet-dispatch headroom` has room.
-6. **Queue the validation.** `agent-queue add --project unity-core-playground --priority high --tags "at:<next day>T09:45" --slug nightly-validate-<date> "<brief>"`. Tests starts 02:00 and Multi 04:30 PST with a 5 h cap, so 09:45 is after both. The brief: read both scheduled runs; FAIL-free and every fix item closed: close the fix rows with `--proof run:<id>` and queue one more validation for the next night; any red: run this skill from step 2, then queue the next validation.
+6. **Queue the validation.** `agent-queue add --project unity-core-playground --priority high --tags "at:<next day>T00:00 nightly:unity-core-playground" --slug nightly-validate-<date> "<brief>"`. The `at:` tag makes it the next night's runs; `nightly:` holds until that day's scheduled runs have finished, or passed their cron plus timeout with no end (QUEUE.md, Holds). The brief: read both scheduled runs; FAIL-free and every fix item closed: close the fix rows with `--proof run:<id>` and queue one more validation for the next night; any red: run this skill from step 2, then queue the next validation.
 7. **Close.** Two scheduled nights in a row with no FAIL line in Tests or Multi (or every remaining red quarantined with an expiry and a row): `notes ptask ... --agent done <owner row> --proof run:<tests id>,run:<multi id>`, `agent-queue move nightly-green-<id> done`. A merge alone is never the proof; a hand-started full run does not clear the Sentinel watch, which reads scheduled runs only.
 
 ## Gotchas
@@ -34,5 +34,5 @@ Not for one PR's gate red (`/my:fix-ci`) or for CI time (`ci-cost`).
 - A class reading `ok` in one night is not closed: two nights, and an `UNCONFIRMED` line is not a pass.
 - A runner red repeats per run id on the board; grep the host name before filing.
 - `fleet-dispatch` never gives a `ci:`-prefixed row a merging session, so name test and content fixes `fix(test)`/`fix(content)`.
-- No queue hold waits for a workflow run; the `at:` time is the hold, and the validation item must check the runs are finished before judging (a late or cancelled run is a red to triage).
+- `nightly:` also releases on a run that never came or never finished by its cron plus timeout, so the validation still reads each run's status before judging: a missing, late or cancelled run is a red to triage.
 - A bare `agent-land <N>` closes the session's own item and its board row. The owner session lands each of its PRs on an item of its own (`agent-queue add --running ...`, then `agent-land <N> --item <slug>`), so the owner row stays open until step 7.

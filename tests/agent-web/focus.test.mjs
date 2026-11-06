@@ -113,14 +113,15 @@ test("Raw is the note's markdown, escaped, with Copy; a missing day says so and 
 
 test("a hash routes to its tab and the note it opens, decoded", () => {
   const r = (h) => JSON.parse(vm.runInContext(`JSON.stringify(route(${JSON.stringify(h)}))`, ctx));
-  assert.deepEqual(r("#daily/journal/refs/2026-11-05/briefing"), { name: "daily", tab: "daily", arg: "journal/refs/2026-11-05/briefing" });
-  assert.deepEqual(r("#daily/daily%3A2026-11-04"), { name: "daily", tab: "daily", arg: "daily:2026-11-04" });
-  assert.deepEqual(r("#focus/status/inbox"), { name: "focus", tab: "daily", arg: "status/inbox" }, "an old Focus link still opens its note");
-  assert.deepEqual(r("#outbox"), { name: "outbox", tab: "daily", arg: "outbox" }, "the retired Outbox tab is Daily's outbox");
-  assert.deepEqual(r("#projects/notes-cockpit"), { name: "projects", tab: "projects", arg: "notes-cockpit" });
-  assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "" });
-  assert.deepEqual(r(""), { name: "", tab: "home", arg: "" }, "the landing tab is the first");
-  assert.deepEqual(r("#nope"), { name: "nope", tab: "home", arg: "" });
+  assert.deepEqual(r("#daily/journal/refs/2026-11-05/briefing"), { name: "daily", tab: "daily", arg: "journal/refs/2026-11-05/briefing", query: "" });
+  assert.deepEqual(r("#daily/daily%3A2026-11-04"), { name: "daily", tab: "daily", arg: "daily:2026-11-04", query: "" });
+  assert.deepEqual(r("#focus/status/inbox"), { name: "focus", tab: "daily", arg: "status/inbox", query: "" }, "an old Focus link still opens its note");
+  assert.deepEqual(r("#outbox"), { name: "outbox", tab: "daily", arg: "outbox", query: "" }, "the retired Outbox tab is Daily's outbox");
+  assert.deepEqual(r("#projects/notes-cockpit"), { name: "projects", tab: "projects", arg: "notes-cockpit", query: "" });
+  assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "", query: "" });
+  assert.deepEqual(r(""), { name: "", tab: "home", arg: "", query: "" }, "the landing tab is the first");
+  assert.deepEqual(r("#fleet?lane=deliver&s=failed"), { name: "fleet", tab: "fleet", arg: "", query: "lane=deliver&s=failed" }, "after a ? is the tab's view state");
+  assert.deepEqual(r("#nope"), { name: "nope", tab: "home", arg: "", query: "" });
 });
 
 test("Daily writes nothing to the outbox; #daily/outbox shows the outbox view in the note's place", () => {

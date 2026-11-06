@@ -14,21 +14,29 @@ const el = () => new Proxy({}, {
   set: (t, k, v) => { t[k] = v; return true; },
 });
 let click = null;
-const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") click = f; } });
+const on = {};
+const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { on[ev] = f; if (ev === "click") click = f; } });
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
-const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
+const parts = { "fw-body": part(), "fw-chips": part(), "fleet-head": part(), "fleet-tail": part() };
+const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
+  URLSearchParams,
+  setInterval: () => 0,
+  clearInterval() {},
+  location: { pathname: "/", hash: "" },
+  history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "board.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
-  name, lane: "observe", description: "", schedule: "", enabled: true, running_since: null, last: null,
+  name, lane: "observe", description: "", schedule: "", enabled: true, state: "idle", running_since: null, usual_s: null, overdue: false, last: null,
   runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null,
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
@@ -164,7 +172,7 @@ test("the score cell ends each row in both orders, its title what it counted, an
     f.tonight = tonight;
     ctx.renderFleet();
     const h = box.innerHTML;
-    assert.match(h, /<th class="n">\$ 24h<\/th><th>score 7d<\/th><\/tr>/);
+    assert.match(h, /\$ 24h<\/(button><\/)?th><th>score 7d<\/th><\/tr>/);
     assert.match(h, /<td title="7d, 41 of 44 right, 3 pending, triage-untouched">93% untouched<\/td><\/tr>/, `tonight=${tonight}`);
     assert.match(h, /data-key="dream">.*?<td class="muted">-<\/td><\/tr>/, `tonight=${tonight}`);
   }
@@ -180,4 +188,132 @@ test("an empty night says so and draws no count", () => {
   assert.match(box.innerHTML, /No runner runs before morning\./);
   assert.doesNotMatch(box.innerHTML, /other timers/);
   f.tonight = false;
+});
+
+// The Workers filter. The rows here are in hub-core's default order, exceptions first.
+const row = (name, o) => ({ ...worker(name), ...o });
+const fleet = {
+  ...data,
+  tonight: { until: data.at + 6 * 3600, other_timers: 0, slots: [{ name: "stuck", at: data.at + 60, under: "" }, { name: "calm", at: data.at + 120, under: "" }] },
+  workers: [
+    row("broke", { lane: "deliver", state: "idle", failed_24h: 2, runs_24h: 5, cost_24h: 0.5, why: { word: "FAILED", text: "no gateway route", at: 10, ok: false }, last: { word: "FAILED", at: 900, ok: false } }),
+    row("stuck", { lane: "deliver", state: "running", running_since: data.at - 900, usual_s: 120, overdue: true, runs_24h: 9, cost_24h: 2, description: "hangs on the pool" }),
+    row("calm", { lane: "observe", state: "idle", runs_24h: 1, last: { word: "OK", at: 500, ok: true } }),
+    row("parked", { lane: "", state: "off", enabled: false }),
+  ],
+};
+const st = vm.runInContext("st", ctx);
+const show = (query) => {
+  st.tab = "fleet";
+  st.views.fleet = query;
+  vm.runInContext("fst", ctx).data = fleet;
+  vm.runInContext("fst", ctx).tonight = false;
+  ctx.renderFleet();
+  return box.innerHTML;
+};
+const names = (html) => [...html.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
+const press = (attr, key, val) => click({ target: { closest: (sel) => (sel === `[data-${attr}]` ? { dataset: { [key]: val } } : null) } });
+const chip = (html, label) => html.match(new RegExp(`${label} <span class="n">(\\d+)`))?.[1];
+
+test("a linked view opens filtered, and only a real tab reads as one", () => {
+  const r = ctx.route("#fleet?lane=deliver&s=failed");
+  assert.deepEqual([r.tab, r.arg, r.query], ["fleet", "", "lane=deliver&s=failed"]);
+  assert.equal(ctx.route("#daily/status/inbox").query, "");
+  assert.deepEqual(names(show(r.query)), ["broke"]);
+  assert.match(box.innerHTML, /<option value="deliver" selected>/);
+  assert.deepEqual(names(show("s=nonsense&sort=nonsense")), ["broke", "stuck", "calm", "parked"]);
+});
+
+test("a chip and a sort write the hash, and the plain view is a bare #fleet", () => {
+  show("");
+  press("fstate", "fstate", "failed");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=failed");
+  press("fsort", "fsort", "cost");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=failed&sort=cost");
+  press("fstate", "fstate", "all");
+  press("fsort", "fsort", "cost");
+  press("fsort", "fsort", "cost");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet");
+});
+
+test("a tab hop keeps the view and a bare link clears it", () => {
+  show("s=off");
+  ctx.setTab("home");
+  assert.equal(vm.runInContext("history", ctx).url, "/");
+  ctx.setTab("fleet");
+  assert.equal(st.views.fleet, "s=off");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=off");
+  ctx.setTab("fleet", "", "");
+  assert.equal(st.views.fleet, "");
+});
+
+test("each chip counts under the search and lane, whichever chip is on", () => {
+  let h = show("");
+  assert.deepEqual(["All", "Failed 24h", "Running", "Idle", "Off"].map((l) => chip(h, l)), ["4", "1", "1", "2", "1"]);
+  h = show("lane=deliver&s=running");
+  assert.deepEqual(names(h), ["stuck"]);
+  assert.deepEqual(["All", "Failed 24h", "Running", "Idle", "Off"].map((l) => chip(h, l)), ["2", "1", "1", "1", "0"]);
+  assert.match(h, /<button class="on" data-fstate="running">/);
+});
+
+test("the search reads name, description and why, and an empty result says so", () => {
+  assert.deepEqual(names(show("q=CAL")), ["calm"]);
+  assert.deepEqual(names(show("q=pool")), ["stuck"]);
+  assert.deepEqual(names(show("q=gateway")), ["broke"]);
+  assert.match(show("q=zzz"), /No runner matches this filter/);
+});
+
+test("the lane list is built from the data and keeps a linked lane", () => {
+  const h = show("lane=gone");
+  assert.deepEqual([...h.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]), ["", "deliver", "gone", "observe"]);
+});
+
+test("a sort goes biggest first then smallest, a runner with no value last both ways", () => {
+  assert.deepEqual(names(show("sort=cost")), ["stuck", "broke", "calm", "parked"]);
+  assert.match(box.innerHTML, /aria-sort="descending"><button class="thsort" data-fsort="cost"[^>]*>\$ 24h v</);
+  assert.deepEqual(names(show("sort=cost&dir=asc")), ["broke", "stuck", "calm", "parked"]);
+  assert.deepEqual(names(show("sort=runs")), ["stuck", "broke", "calm", "parked"]);
+  assert.deepEqual(names(show("sort=last")), ["stuck", "broke", "calm", "parked"]);
+});
+
+test("a row still opens under a filter and a sort", () => {
+  show("s=failed&sort=cost");
+  click({ target: { closest: (sel) => (sel === "tr.wr" ? { dataset: { key: "broke" } } : null) } });
+  assert.match(box.innerHTML, /<tr class="wr sel" data-key="broke">/);
+  assert.equal((box.innerHTML.match(/class="wdet"/g) || []).length, 1);
+  click({ target: { closest: (sel) => (sel === "tr.wr" ? { dataset: { key: "broke" } } : null) } });
+});
+
+test("Tonight keeps its own order: the filter applies, the headers do not sort", () => {
+  show("sort=cost");
+  vm.runInContext("fst", ctx).tonight = true;
+  ctx.renderFleet();
+  assert.deepEqual(names(box.innerHTML), ["stuck", "calm"]);
+  assert.doesNotMatch(box.innerHTML, /data-fsort/);
+  st.views.fleet = "s=running";
+  ctx.renderFleet();
+  assert.deepEqual(names(box.innerHTML), ["stuck"]);
+  vm.runInContext("fst", ctx).tonight = false;
+});
+
+test("typing repaints the rows and leaves the search box in place", () => {
+  const before = show("");
+  doc.activeElement = { id: "fw-q" };
+  on.input({ target: { id: "fw-q", value: "stuck" } });
+  assert.equal(box.innerHTML, before);
+  assert.deepEqual(names(parts["fw-body"].innerHTML), ["stuck"]);
+  assert.equal(chip(parts["fw-chips"].innerHTML, "All"), "1");
+  assert.equal(st.views.fleet, "q=stuck");
+  ctx.renderFleet();
+  assert.equal(box.innerHTML, before);
+  assert.match(parts["fleet-head"].innerHTML, /Claude accounts/, "a refresh still reaches the rest of the page");
+  assert.match(parts["fleet-tail"].innerHTML, /Answer judge/);
+  doc.activeElement = null;
+  on.change({ target: { id: "fw-lane", value: "deliver" } });
+  assert.equal(st.views.fleet, "q=stuck&lane=deliver");
+});
+
+test("a run past its usual length says so", () => {
+  const h = show("q=stuck");
+  assert.match(h, /<td class="warn">running since [^<]*, over its usual 2m<\/td>/);
 });
