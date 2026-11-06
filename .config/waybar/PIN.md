@@ -114,8 +114,8 @@ bar on every toggle, which is why they are out of scope.
 
 `SIGRTMIN+10` is the shared contract: every gated module listens on it. An unhandled
 RT signal is a harmless no-op to Waybar, so signalling a bar that predates this is
-safe. Note `gungan` still fires `RTMIN+9` at a module that no longer exists - keep
-new modules off 9. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
+safe. `RTMIN+9` belongs to `custom/gungan` (the red mic while a voice take runs), fired by
+`gungan` on every start and stop. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
 removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 `custom/passthrough` (`passthrough.sh`), fired by the Hyprland passthrough toggles.
 
