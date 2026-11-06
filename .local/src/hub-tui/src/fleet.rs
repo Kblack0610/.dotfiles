@@ -15,16 +15,6 @@ use crate::fmt::{older, Palette};
 /// Changes listed under the table; watch.log keeps them all.
 use hub_core::layout::FOLD_ROWS;
 
-/// Buckets in the order the board lists them: what needs the human first.
-const RANK: [&str; 7] = [
-    "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED",
-];
-
-/// A bucket's place in RANK; an unknown one sorts last.
-pub fn rank(b: &str) -> usize {
-    RANK.iter().position(|r| *r == b).unwrap_or(RANK.len())
-}
-
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
@@ -83,7 +73,7 @@ fn stage_style(p: Palette, b: &str) -> Style {
     }
 }
 
-fn ci_style(p: Palette, c: &str) -> Style {
+pub fn ci_style(p: Palette, c: &str) -> Style {
     match c {
         "fail" | "failure" => p.bad(),
         "pass" | "success" => p.good(),
@@ -218,34 +208,11 @@ pub fn page(
         ));
         out.extend(table);
     } else {
-        let sessions: Vec<&Value> = st["sessions"]
-            .as_array()
-            .map(|a| a.iter().collect())
-            .unwrap_or_default();
-        let mut counts: Vec<(usize, &str, usize)> = vec![];
-        for x in &sessions {
-            let b = s(x, "bucket");
-            match counts.iter_mut().find(|c| c.1 == b) {
-                Some(c) => c.2 += 1,
-                None => counts.push((rank(b), b, 1)),
-            }
-        }
-        counts.sort();
         let at = st["generated_epoch"].as_i64().unwrap_or(0);
-        let mut head = vec![Span::styled(
-            format!("SESSIONS  {}", sessions.len()),
-            p.head(),
-        )];
-        for (_, b, n) in &counts {
-            head.push(Span::raw("  "));
-            head.push(Span::styled(format!("{b} {n}"), stage_style(p, b)));
-        }
-        let old = now - at;
-        head.push(Span::styled(
-            format!("   state {} old", ago(at, now)),
-            if old > 300 { p.warn() } else { p.dim() },
+        out.push(Line::styled(
+            format!("SESSIONS   state {} old", ago(at, now)),
+            if now - at > 300 { p.warn() } else { p.dim() },
         ));
-        out.push(clip_line(Line::from(head), w));
         out.extend(table);
         if let Some(u) = st["unreadable"].as_array().filter(|u| !u.is_empty()) {
             let names: Vec<&str> = u.iter().filter_map(Value::as_str).collect();
@@ -400,12 +367,14 @@ pub mod tests {
         let dot = out.find("dotfiles  ").unwrap();
         let agent = out.find("unity-core-playground-agent-10").unwrap();
         assert!(dot < agent, "{out}");
-        assert!(out.contains("SESSIONS  2  NEEDS 1  WORKING 1"), "{out}");
+        assert!(out.contains("SESSIONS   state 2m old"), "{out}");
         assert!(
             out.contains("cargo test") && !out.contains("Bash: cargo"),
             "{out}"
         );
-        assert!(out.contains("#1645 open") && out.contains("1/4") && out.contains("21:30 s3"));
+        assert!(
+            out.contains("#1645 open PENDING") && out.contains("1/4") && out.contains("21:30 s3")
+        );
         assert!(out.contains("unity-core-playground red: Shots"), "{out}");
         assert!(out.contains("ggK2ey") && out.contains("rename?"));
     }

@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod boards;
+pub mod capacity;
 pub mod epics;
 pub mod fleet;
 pub mod focus;
@@ -23,6 +24,7 @@ pub mod prom;
 pub mod queue;
 pub mod reds;
 pub mod session_actions;
+pub mod session_table;
 pub mod table;
 pub mod tasks;
 pub mod text;
