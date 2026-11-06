@@ -48,8 +48,8 @@
 #                                a week (retro runs it), start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
 #                                once per run; verify proves each oracle fails at base, passes at merge
-#   fleet-bench room             whether the agent boards take a row nobody asked for: exit 1 while
-#                                board_open is past board_open_max (retro, triage and research-pick hold)
+#   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
+#                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
@@ -1222,9 +1222,9 @@ scheduled_runner() {
 # board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
 board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
 
-# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS, the WIP
-# limit that keeps intake at throughput. A filer holds a row nobody asked for (no #requested)
-# while it is full and says so; no threshold is no limit.
+# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
+# only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
+# board-open watch alerts on; no threshold is no limit.
 intake_room() {
   local n max
   n=$(board_open_count)
@@ -2003,12 +2003,14 @@ def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
 effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
-# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
+# board_open is never picked: a full board is the board-open watch's alert, and a session whose job
+# is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and .key != "board_open" and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
@@ -2208,20 +2210,16 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A new row with no #requested is held while intake_room says full. A row whose
-# condition cleared is left for whoever owns it. Every row is #size/s. Leaves the counts in
-# UPSERT_ADDED, UPSERT_EDITED, UPSERT_HELD and UPSERT_FULL (intake_room's line); FAILED is reported here.
+# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
+# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
-  local board p text pri have rc added=0 edited=0 held=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0
-  UPSERT_FULL=$(intake_room) && UPSERT_FULL=''
+  local board p text pri have rc added=0 edited=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
-    if [ -z "$have" ] && [ -n "$UPSERT_FULL" ] && [[ " $text $pri " != *' #requested '* ]]; then
-      held=$((held + 1))
-    elif [ -z "$have" ]; then
+    if [ -z "$have" ]; then
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
       case $rc in
@@ -2235,16 +2233,15 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_HELD=$held
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
-  [ "${UPSERT_HELD:-0}" -eq 0 ] || did+=", $UPSERT_HELD held ($UPSERT_FULL)"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_HELD:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -2558,7 +2555,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
   h=$(triage_human "$rows")
   q=$(triage_promote "$rows")
   upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
