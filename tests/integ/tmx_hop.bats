@@ -153,10 +153,11 @@ bound_command() {
   done
 }
 
-# ── Prefix+L: the last session, across a world hop too ───────────────────────
+# ── Prefix+L: the last place, across a world hop too ─────────────────────────
 #
-# Asked 2026-11-06: after Prefix i or N, L did not go back. Both hopped by detach plus a fresh
-# attach even within one server, and a fresh client has no last session for tmux to use.
+# Asked 2026-11-06: after Prefix i or N, L did not go back, then after an agent-panel window
+# jump L went to another session. A hop within one server must switch the client, and the
+# way back is the last place (session and window), not tmux's per-server last session.
 
 @test "a hop within one server switches the client instead of re-attaching it" {
   at hub notes 1
@@ -175,49 +176,107 @@ bound_command() {
   assert_not_called "detach-client"
 }
 
-@test "back returns across the last hop this terminal made" {
-  export STUB_CLIENT_TTY=/dev/pts/3
-  at lab work 4
-  run "$TMX" goto hub notes
+# The way back is a per-terminal record of the last two places, written by tmux hooks on
+# every arrival (attach, session change, window change), so it holds whichever mover got you
+# there: a world hop, the agent panel's window jump, a picker. Keyed by client tty, which
+# survives the detach and fresh attach a world hop is.
+
+places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
+
+@test "mark keeps where you are now and where you were before" {
+  run "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
   assert_success
-  assert_called "land hub notes"
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  run places /dev/pts/3
+  assert_line --index 0 $'hub\tdotfiles\t@7'
+  assert_line --index 1 $'lab\twork\t@4'
+}
+
+@test "a second mark of the same place does not lose where you were before" {
+  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  run places /dev/pts/3
+  assert_line --index 1 $'lab\twork\t@4'
+}
+
+@test "a window change with no tty marks every terminal on that session" {
+  printf '/dev/pts/3\n/dev/pts/4\n' > "$NOTES_FIXTURE/tmux.clients.hub"
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7
+  run places /dev/pts/3
+  assert_line --index 0 $'hub\tdotfiles\t@7'
+  run places /dev/pts/4
+  assert_line --index 0 $'hub\tdotfiles\t@7'
+}
+
+@test "back to a window in the same session selects it and switches, no re-attach" {
+  export STUB_CLIENT_TTY=/dev/pts/3
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
+  printf '@5\n@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @5 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  at hub dotfiles 2
+  run "$TMX" back
+  assert_success
+  assert_called "select-window -t dotfiles:@5"
+  assert_called "switch-client -t =dotfiles"
+  assert_not_called "detach-client"
+}
+
+@test "back returns across a world hop, to the window you were on" {
+  export STUB_CLIENT_TTY=/dev/pts/3
   printf 'work\nprojects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  printf '@4\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
   at hub notes 0
-  : > "$NOTES_FIXTURE/calls.log"
   run "$TMX" back
   assert_success
   assert_called "detach-client -E"
-  assert_called "land lab work"
+  assert_called "land lab work:@4"
 }
 
-@test "another terminal's hop is not this terminal's way back" {
+@test "back to a window that has closed goes to its session" {
   export STUB_CLIENT_TTY=/dev/pts/3
-  at lab work 4
-  run "$TMX" goto hub notes
+  printf 'work\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  printf '@9\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
+  at hub notes 0
+  run "$TMX" back
+  assert_success
+  assert_called "land lab work"
+  assert_not_called "work:@4"
+}
+
+@test "another terminal's moves are not this terminal's way back" {
+  printf 'work\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
   export STUB_CLIENT_TTY=/dev/pts/4
   at hub notes 0
-  : > "$NOTES_FIXTURE/calls.log"
   run "$TMX" back
   assert_success
   assert_called "display-message"
   assert_not_called "detach-client"
+  assert_not_called "switch-client"
 }
 
 @test "back to a session that has gone says so instead of hopping" {
   export STUB_CLIENT_TTY=/dev/pts/3
-  at lab work 4
-  run "$TMX" goto hub notes
   printf 'projects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
   at hub notes 0
-  : > "$NOTES_FIXTURE/calls.log"
   run "$TMX" back
   assert_success
   assert_called "display-message"
   assert_not_called "detach-client"
 }
 
-@test "Prefix+L is stock switch-client -l, and tmx back only when the client has no last session" {
+@test "Prefix+L is tmx back, and every arrival hook marks the place" {
   run grep -E '^bind (-N "[^"]*" )?L ' "$REPO_ROOT/.tmux.conf"
-  assert_success
-  assert_output --partial 'if -F "#{client_last_session}" "switch-client -l" "run-shell '"'"'tmx back'"'"'"'
+  assert_output --partial 'run-shell "tmx back"'
+  run grep -E '^set-hook -g (client-attached|client-session-changed|session-window-changed)\[1\] .*tmx mark' "$REPO_ROOT/.tmux.conf"
+  assert_equal "${#lines[@]}" 3
 }
