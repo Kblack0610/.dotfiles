@@ -9,6 +9,6 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 # clause, which a whole-command exemption would have let through.
 CHECK=$(echo "$CMD" | sed -E 's/(^|[[:space:]]|&&|;|\|)uv[[:space:]]+pip[[:space:]]+install/\1uv-pip-install/g')
 if echo "$CHECK" | grep -qE '(^|[[:space:]]|&&|;|\|)pip[3]?[[:space:]]+install'; then
-  jq -nc '{hookSpecificOutput: {hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:"Use `uv add <pkg>` or `uv pip install <pkg>` instead of bare pip."}}'
+  jq -nc '{hookSpecificOutput: {hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:"block-pip: Use `uv add <pkg>` or `uv pip install <pkg>` instead of bare pip."}}'
 fi
 exit 0
