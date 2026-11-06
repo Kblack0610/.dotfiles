@@ -141,7 +141,8 @@ resolve_project() {
   fi
 }
 
-now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+# now_iso [<date -d spec>]: the one timestamp format, now or at an offset ("+30 minutes").
+now_iso() { date -d "${1:-now}" +%Y-%m-%dT%H:%M:%S%z; }
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
@@ -173,13 +174,15 @@ find_ask() {
 # queue_changed: the queue's one change signal. fleet-state.path watches this file, so a post,
 # answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
-# drop_field <file> <key>: remove the key's line, so a stale value cannot outlive its verdict.
+# drop_field <file> <key>...: remove those keys' lines in one locked rewrite, so a stale value
+# cannot outlive its verdict.
 drop_field() {
-  local f="$1" k="$2" tmp
+  local f="$1" tmp; shift
   tmp="$(mktemp)"
   (
     command -v flock >/dev/null 2>&1 && flock 9
-    awk -v k="$k" '$0 !~ "^" k ": "' "$f" > "$tmp" && mv "$tmp" "$f"
+    awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
+      { p = index($0, ": ") } !(p && substr($0, 1, p - 1) in k)' "$@" "$f" > "$tmp" && mv "$tmp" "$f"
   ) 9>"$(dirname "$f")/.lock"
 }
 
@@ -680,6 +683,9 @@ delay_rows() {
 # live_rules: the types the judge answers now, one per line.
 live_rules() { delay_rows | cut -d' ' -f1; }
 
+# delay_of <rule>: the minutes that type waits; fails when the judge does not answer it.
+delay_of() { delay_rows | awk -v r="$1" '$1 == r { print $2; found = 1 } END { exit !found }'; }
+
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
 # anything else: a gate, a human or error call, a shadow rule, an ask the human disarmed. The one
 # place that decides.
@@ -693,7 +699,7 @@ live_answer() {
     answer:*) ans="${judge#answer:}" ;;
     *) return 1 ;;
   esac
-  [ -n "$ans" ] && [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 1
+  [ -n "$ans" ] && [ -n "$rule" ] && delay_of "$rule" >/dev/null || return 1
   printf '%s\n' "$ans"
 }
 
@@ -702,16 +708,16 @@ live_answer() {
 # its clock, a different one starts a full window. `assume_at` stays on a fired ask as its record.
 live_due() {
   local f="$1" ans="$2" wait
-  wait="$(delay_rows 2>/dev/null | awk -v r="$(field "$f" judge_rule)" '$1 == r { print $2 }')"
+  wait="$(delay_of "$(field "$f" judge_rule)" 2>/dev/null)"
   [ "${wait:-0}" -gt 0 ] || return 0
   [ -n "$(field "$f" assume_at)" ] && [ "$(field "$f" assume_answer)" = "$ans" ] && return 1
-  set_field "$f" assume_answer "$ans" assume_at "$(date -d "+$wait minutes" +%Y-%m-%dT%H:%M:%S%z)"
+  set_field "$f" assume_answer "$ans" assume_at "$(now_iso "+$wait minutes")"
   queue_changed
   return 1
 }
 
 # drop_arm <file>: the ask is not armed any more, and keeps no answer to assume.
-drop_arm() { drop_field "$1" assume_at; drop_field "$1" assume_answer; }
+drop_arm() { drop_field "$1" assume_at assume_answer; }
 
 # judge_said <file> <answer>: the line that tells a session the judge answered and why.
 judge_said() {
@@ -751,20 +757,19 @@ cmd_sweep() {
 # drops the arm: the human keeps the ask, and only a hand-run sweep arms it again. A session in a
 # dialog stays armed for the next pass, because deliver_to_session would drop the answer unseen.
 cmd_assume_due() {
-  local f id ans due now; now="$(date +%s)"
+  local f ans due now; now="$(date +%s)"
   while IFS= read -r f; do
-    [ "$(field "$f" status)" = pending ] || continue
-    due="$(field "$f" assume_at)"; [ -n "$due" ] || continue
-    due="$(date -d "$due" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
-    id="$(field "$f" id)"
-    if ! ans="$(live_answer "$f")" || [ "$ans" != "$(field "$f" assume_answer)" ]; then
+    load_ask "$f"
+    due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
+    if ! ans="$(live_answer "$f")" || [ "$ans" != "${ASK[assume_answer]:-}" ]; then
       drop_arm "$f"; queue_changed
-      echo "agent-ask: $id not assumed: its verdict moved inside the window, so it stays with the human" >&2
+      echo "agent-ask: ${ASK[id]} not assumed: its verdict moved inside the window, so it stays with the human" >&2
       continue
     fi
-    [ "$(live_row "$(field "$f" claude_session)" | jq -r .status 2>/dev/null)" = waiting ] && continue
-    cmd_answer --by judge "$id" "$ans"
-  done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: ' 2>/dev/null)
+    in_dialog "$(live_row "${ASK[claude_session]:-}")" && continue
+    cmd_answer --by judge "${ASK[id]}" "$ans"
+  done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
+    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
 }
 
 # judge_demote_check <file>: after an override on this live answer, take its rule out of the
@@ -777,7 +782,7 @@ cmd_assume_due() {
 judge_demote_check() {
   local f="$1" rule id n over
   rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
-  [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 0
+  [ -n "$rule" ] && delay_of "$rule" >/dev/null || return 0
   # The type's live answers as "<answered_at> <0|1 overridden>", newest last, then the window.
   read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
     function out() {
@@ -864,13 +869,17 @@ live_row() {
   agent-panel list --json 2>/dev/null | jq -c --arg s "$1" 'select(.session_id == $s)' | head -1
 }
 
+# in_dialog <live row>: the session sits in a permission/question dialog, where a paste would
+# answer the dialog by accident.
+in_dialog() { [ -n "$1" ] && [ "$(jq -r .status <<< "$1" 2>/dev/null)" = waiting ]; }
+
 # deliver_to_session <file> <answer> <live row>: an ask from a live attended session is answered
 # in that session too, so a board answer and a typed answer reach the same place. Skipped when
 # the session sits in a permission/question dialog that a paste would answer by accident.
 deliver_to_session() {
   local f="$1" answer="$2" row="$3" pane
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
-  [ "$(jq -r .status <<< "$row")" = waiting ] && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
+  in_dialog "$row" && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
   # agent-panel send owns typing into a pane: it waits for the paste to be drawn before Enter
   # (Claude Code drops an Enter on the heels of a paste) and says when the Enter was not taken.
   pane="$(jq -r .pane <<< "$row")"
@@ -1164,9 +1173,12 @@ review_judge_answer() {
     queue_changed
     judge_demote_check "$f"
   elif [ -n "$pending" ] && [ -z "$pick" ]; then
-    [ -n "${ASK[assume_disarmed]:-}" ] || set_field "$f" assume_disarmed "$(now_iso)"
-    drop_field "$f" assume_at
-    queue_changed
+    # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
+    if [ -z "${ASK[assume_disarmed]:-}" ]; then
+      set_field "$f" assume_disarmed "$(now_iso)"
+      drop_field "$f" assume_at
+      queue_changed
+    fi
   elif [ -n "$pending" ] || [ "$where" = "in session" ]; then
     set_field "$f" judge_override none
   fi
@@ -1296,7 +1308,7 @@ cmd_judge() {
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
-  local k; for k in judge_rule judge_type judge_met judge_evidence judge_call; do drop_field "$f" "$k"; done
+  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call
   case "$(field "$f" kind)" in
     gate|approval)
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""

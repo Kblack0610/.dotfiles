@@ -1306,12 +1306,9 @@ live_answer_file() {
 # ── assume on delay: a DELAY_RULES wait arms an ask, assume-due fires it ────────
 
 # armed <sid> <question>: a ship_deploy ask armed at post with a 30 minute wait. Prints its id.
-armed() {
-  CLAUDE_CODE_SESSION_ID="$1" "$AGENT_ASK" post --project demo \
-    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix "$2" 2>/dev/null
-}
+armed() { live_post "$@" 2>/dev/null; }
 # due <id>: its wait has passed.
-due() { sed -i 's/^assume_at: .*/assume_at: 2026-01-01T00:00:00+0000/' "$HOME/.agent/asks/demo/$1.md"; }
+due() { sed -i 's/^assume_at: .*/assume_at: 2026-01-01T00:00:00+0000/' "$(ask_file "$1")"; }
 
 delay_setup() {
   unset AGENT_ASK_NO_JUDGE
