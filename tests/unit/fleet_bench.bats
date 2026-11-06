@@ -761,9 +761,9 @@ kpi_fixture() {
   assert_line '| ask_unclear_pct | - | - | - | - |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: judge_precision past threshold' "$BOARD"
+  run grep -c 'check(kpi): judge_precision past threshold' "$BOARD"
   assert_output 1
-  run grep -c 'kpi: judge_errors\|kpi: ask_false_defer_pct' "$BOARD"
+  run grep -c 'check(kpi): judge_errors\|check(kpi): ask_false_defer_pct' "$BOARD"
   assert_output 0
 }
 
