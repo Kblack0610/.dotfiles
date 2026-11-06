@@ -144,6 +144,7 @@ agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
 agent_bench_kpi{kpi="human_answered_per_day",window="7d"} 0
 agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
+agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
@@ -966,6 +967,22 @@ watch() {
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage --bogus
   assert_failure 2
+
+@test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
+  kpi_setup
+  mkdir -p "$AGENTCTL_STATE_DIR/alpha" "$AGENTCTL_STATE_DIR/beta"
+  at() { date -d "@$((T0 - $1))" -Is; }
+  {
+    echo "[$(at 60)] outcome=FAILED why: unrecorded"
+    echo "[$(at 120)] outcome=STALLED 3 left why: unrecorded"
+    echo "[$(at 180)] outcome=FAILED why: route: the model returned no answer block"
+    echo "[$(at 240)] outcome=WORKED routed 4"
+    echo "[$(at 90000)] outcome=FAILED why: unrecorded"
+  } > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  echo "[$(at 300)] outcome=BLOCKED budget: day why: unrecorded" > "$AGENTCTL_STATE_DIR/beta/activity.log"
+  echo failed_unexplained_max=0 >> "$KPI_THRESHOLDS"
+  BENCH_NOW=$T0 run "$SUBJECT" kpi
+  assert_line '| failed_unexplained (now) | 3 | - | max 0 | past |'
 }
 
 # errlog <runner> <finished offset> <line>...: one run's stderr appended to <runner>.stderr.log with

@@ -118,7 +118,7 @@ publish() {
   [ -z "${id:-}" ] || agentctl report --name "$NAME" "item=pass ${id:0:8}: $ATTACH" >/dev/null 2>&1 || true
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
-  proof_report "$NAME" "$1" "$2" 2>/dev/null || true
+  proof_outcome "$NAME" "$1" "$2" 2>/dev/null || true
 }
 
 # lease: "<holder> <epoch> <session id>". The runner exports FLEET_SHEPHERD_HOLDER=runner to its

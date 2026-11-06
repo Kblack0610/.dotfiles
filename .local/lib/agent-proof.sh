@@ -26,6 +26,7 @@
 #   proof_watch "$dreams_md" "$staging_json"      # BEFORE the run
 #   ... run the agent, tee its output to $LOG ...
 #   proof_verdict "$LOG" "$rc"                    # -> one of AGENT_VERDICTS
+#   proof_why "<reason>"                          # each reason a failure has
 #   proof_report nightly-sync "$verdict"          # -> last-outcome file
 #
 # proof_verdict exits non-zero on FAILED and STALLED so a wrapper can `|| exit 1`
@@ -57,6 +58,19 @@ AGENT_VERDICTS='WORKED NOOP BLOCKED FAILED STALLED'
 
 _AGENT_PROOF_PRE=""
 _AGENT_PROOF_T0=""
+_AGENT_PROOF_WHY=()
+# How many distinct reasons one outcome line carries; the rest are counted.
+: "${AGENT_PROOF_WHY_MAX:=3}"
+
+# proof_why REASON - record why this pass failed, stalled or was blocked, in a few plain words.
+# The one way a runner gives a reason: proof_report carries every distinct one given since the
+# last report. Call it in the runner's own shell, not inside $( ), where it would be lost.
+proof_why() {
+  local r="$*" x
+  [ -n "$r" ] || return 0
+  for x in "${_AGENT_PROOF_WHY[@]}"; do [ "$x" = "$r" ] && return 0; done
+  _AGENT_PROOF_WHY+=("$r")
+}
 
 # proof_watch FILE... — record a fingerprint of each artifact before the run.
 # mtime AND size: two writes inside the same second are common for small files,
@@ -141,17 +155,39 @@ proof_state_dir() {
   printf '%s' "${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"
 }
 
+# A FAILED, STALLED or BLOCKED line ends `why: <reasons>` from proof_why, or `why: unrecorded`
+# when the runner gave none: a missing reason is a counted defect (fleet-bench
+# failed_unexplained), never silence. The reasons are cleared for the next pass.
 proof_report() {
-  local name="$1" verdict="$2" detail="${3:-}"
+  local name="$1" verdict="$2" detail="${3:-}" why="" i
   local dir="$(proof_state_dir)/$name"
   # A word outside the vocabulary is a caller bug. Record it as FAILED, loudly, rather
   # than store a value no reader's trip list knows (a runner's free-text FAILED once sat
   # invisible to fleet-liveness for exactly this reason).
   case " $AGENT_VERDICTS " in
     *" $verdict "*) ;;
-    *) detail="invalid verdict '$verdict'${detail:+: $detail}"; verdict=FAILED ;;
+    *) proof_why "invalid verdict '$verdict'"; verdict=FAILED ;;
   esac
+  case "$verdict" in
+    FAILED|STALLED|BLOCKED)
+      for ((i = 0; i < ${#_AGENT_PROOF_WHY[@]} && i < AGENT_PROOF_WHY_MAX; i++)); do
+        why+="${why:+; }${_AGENT_PROOF_WHY[i]}"
+      done
+      [ "${#_AGENT_PROOF_WHY[@]}" -gt "$AGENT_PROOF_WHY_MAX" ] && why+=" (+$((${#_AGENT_PROOF_WHY[@]} - AGENT_PROOF_WHY_MAX)) more)"
+      detail+="${detail:+ }why: ${why:-unrecorded}"
+      ;;
+  esac
+  _AGENT_PROOF_WHY=()
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
+}
+
+# proof_outcome NAME VERDICT WORDS - for a runner whose one line of words is its reason when the
+# pass failed, stalled or was blocked, and its summary otherwise.
+proof_outcome() {
+  case "$2" in
+    FAILED|STALLED|BLOCKED) proof_why "${3:-}"; proof_report "$1" "$2" ;;
+    *) proof_report "$1" "$2" "${3:-}" ;;
+  esac
 }

@@ -160,7 +160,7 @@ proof_lib() {
   [ -f "$lib" ] && . "$lib"
 }
 
-report_outcome() { proof_lib && proof_report "$NAME" "$@"; }
+report_outcome() { proof_lib && proof_outcome "$NAME" "$@"; }
 
 now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
@@ -1148,6 +1148,14 @@ ledger_counts() {
   # awk, not cat: last-outcome has no trailing newline, so cat runs every verdict into one word
   echo "verdict_words=$([ -n "$sd" ] && awk '{print $1}' "$sd"/*/last-outcome 2>/dev/null | sort -u | grep -c .)"
   t=$(now)
+  # proof_report writes "why: unrecorded" on a FAILED, STALLED or BLOCKED line its runner gave no
+  # reason for; this counts those of the last 24h (local times, compared as text)
+  if [ -n "$sd" ]; then
+    echo "failed_unexplained=$(awk -v s="$(date -d "@$((t - 86400))" +%FT%T)" \
+      'substr($1, 2, 19) > s && / outcome=(FAILED|STALLED|BLOCKED) / && / why: unrecorded$/' "$sd"/*/activity.log 2>/dev/null | grep -c .)"
+  else
+    echo "failed_unexplained=?"
+  fi
   if rows=$(ask_rows "$t" 2>/dev/null); then
     jq -r --argjson d "$ASK_STALE_DAYS" '"asks_pending=\(length)", "asks_stale=\(map(select(.age_h > $d * 24)) | length)"' <<<"$rows"
   else
@@ -1244,7 +1252,7 @@ cmd_ledger() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad board_open loop_dark $KPI_CHAIN"
+KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"

@@ -65,7 +65,7 @@ LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
 
 die_stalled() {
   echo "$NAME: $1" >&2
-  proof_report "$NAME" STALLED "$1"
+  proof_outcome "$NAME" STALLED "$1"
   exit 1
 }
 

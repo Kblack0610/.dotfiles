@@ -1448,6 +1448,8 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure
   assert_equal "$(outcome)" FAILED
+  grep -q 'outcome=FAILED why: could not judge the new rows (the reply had no verdicts)' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
 }
 
 @test "a dry run publishes nothing, past a gate or at one" {

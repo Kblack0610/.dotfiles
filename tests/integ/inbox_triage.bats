@@ -71,6 +71,42 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   inbox | grep -q 'the gun sound is off'
 }
 
+@test "a reply with no answer block names that reason in the outcome" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  echo 'I could not decide.' >"$NOTES_FIXTURE/model.out"
+  run "$TRIAGE"
+  assert_failure
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx FAILED "$st/last-outcome"
+  grep -q 'outcome=FAILED .*why: route: the model returned no answer block$' "$st/activity.log" \
+    || fail "$(cat "$st/activity.log")"
+}
+
+@test "a call stopped at its per-call cap halves the batch and the next pass asks again at that size" {
+  sheet '- one\n- two\n- three\n- four\n- five\n' ''
+  answer '{"n": 1, "action": "skip", "why": "a note"}' '{"n": 2, "action": "skip", "why": "a note"}'
+  # Capped (calls.sh's CALLS_RC_CAPPED) on any call of more than two lines.
+  printf '%s\n' '#!/usr/bin/env bash' 'echo called >> "$NOTES_FIXTURE/model.log"' 'cat > "$NOTES_FIXTURE/prompt.txt"' \
+    'if [ "$(grep -cE "^[0-9]+\. \[" "$NOTES_FIXTURE/prompt.txt")" -gt 2 ]; then exit 76; fi' \
+    'cat "$NOTES_FIXTURE/model.out"' >"$SANDBOX/bin/model-stub"
+  INBOX_TRIAGE_MAX=8 INBOX_TRIAGE_PASSES=2 run "$TRIAGE"
+  assert_success
+  assert_output --partial 'route: the call stopped at its per-call cap with 5 items; the next carries 2'
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 2 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  [ "$(grep -cE '^[0-9]+\. \[' "$NOTES_FIXTURE/prompt.txt")" = 2 ] || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  # The clean full call of two grew it a quarter, rounded up.
+  assert_output --partial 'batch 3'
+}
+
+@test "a failed call that is not a cap leaves the batch at its max (negative control)" {
+  sheet '- one\n- two\n- three\n' ''
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  INBOX_TRIAGE_MAX=8 run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'batch 8'
+  [ ! -e "$HOME/.local/state/agentctl/inbox-triage/batch" ] || fail "a plain failure resized the batch"
+}
+
 @test "end to end: a typed line is filed word for word, a typed row is left alone, and no model runs" {
   sheet '- [ ] chore(build): drop the old cache #low\n' '- [ ] fix(ui): the menu flickers #high <!-- id:sc-4 -->\n'
   run "$TRIAGE"

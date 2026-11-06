@@ -497,7 +497,7 @@ judge() {
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
       | sort_by(.round, .i) | .[].row' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
-  [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
+  [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   prompt="## Rows to judge
 
 $(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
@@ -517,8 +517,9 @@ For every row above, return one verdict in the structured output. Copy project, 
   rm -rf -- "$wd"
   mkdir -p "$DIR"
   if [ "$rc" != 0 ]; then
-    verdict_errors "$cands" "call failed (exit $rc): $err" "$cid" >> "$VERDICTS"
-    say "judge call failed"; return 1
+    JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
+    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
+    say "judge $JUDGE_WHY"; return 1
   fi
   rules=$(judge_rules "$DISPATCH_POLICY" | jq -Rsc 'split("\n") | map(select(length > 0))')
   # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
@@ -536,7 +537,8 @@ For every row above, return one verdict in the structured output. Copy project, 
               at, policy, line, judge_call} end')
   # A pass that could not judge must not read as "no row qualifies".
   if [ -z "$verdicts" ]; then
-    verdict_errors "$cands" "the reply had no verdicts" "$cid" >> "$VERDICTS"
+    JUDGE_WHY="the reply had no verdicts"
+    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
     say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
   fi
   missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
@@ -1666,21 +1668,25 @@ gate() {
   out=$(printf '%s; ' "${why[@]}"); echo "${out%; }"
 }
 
+# judge_failed -- the words a pass whose judge failed carries, with the judge's own reason.
+judge_failed() { printf 'could not judge the new rows%s' "${JUDGE_WHY:+ ($JUDGE_WHY)}"; }
+
 # settle <outcome> <why>: say what this pass did and publish it for fleet-liveness. agentctl turns
-# a run that publishes nothing into STALLED. A dry run is not a run.
+# a run that publishes nothing into STALLED. A dry run is not a run. A FAILED or BLOCKED pass's
+# words are its reason (proof_outcome).
 settle() {
   # What the night fill promoted, or its judge failing, is part of the pass whatever stopped it after.
   [ "${NIGHT_FILLED:-0}" = 0 ] || [ "$DRY" = 1 ] || set -- "$1" "queued $NIGHT_FILLED for the night; $2"
   case "${JUDGE_RC:-0}:$1:$2" in
     0:* | *:"could not judge"*) ;;
-    *:NOOP:* | *:BLOCKED:*) set -- FAILED "could not judge the new rows; $2" ;;
-    *) set -- "$1" "could not judge the new rows; $2" ;;
+    *:NOOP:* | *:BLOCKED:*) set -- FAILED "$(judge_failed); $2" ;;
+    *) set -- "$1" "$(judge_failed); $2" ;;
   esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
-  proof_report fleet-dispatch "$1" "$2" 2>/dev/null || true
+  proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
 }
 
 # settle_board <outcome> <why> -- settle a pass on its board step. A pass that came here past held
@@ -1699,7 +1705,7 @@ cmd_run() {
   flock -n 9 || { settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= NIGHT_FILLED=0
+  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
   # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED.
@@ -1737,7 +1743,7 @@ cmd_run() {
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
   load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
-  fill_day "$want" || { settle FAILED "could not judge the new rows"; return 1; }
+  fill_day "$want" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ $(( FILLED + NIGHT_FILLED )) -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.

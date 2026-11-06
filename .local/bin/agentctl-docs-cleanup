@@ -23,7 +23,7 @@ NAME="${AGENTCTL_NAME:-docs-cleanup}"
 SLUG=docs-cleanup-pass
 DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 # A dry run publishes no outcome: it is a look, not a run.
-report() { [ "$DRY" = 1 ] || proof_report "$NAME" "$@"; }
+report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
 fail() { report FAILED "$1"; echo "$1" >&2; exit 1; }
 INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/docs-cleanup}"
 LESSONS="${DOCS_CLEANUP_LESSONS:-$HOME/.agent/lessons}"
