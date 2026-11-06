@@ -1,5 +1,6 @@
 "use strict";
-// The Home tab, the front page: what needs you, what runs, the numbers and the health strip.
+// The Home tab, the front page: what needs you, what analysis proposes, what runs, the numbers
+// and the health strip.
 // The list and the numbers are hub_core::home (/api/home), the same join the hub TUI's Home tab
 // draws; this file only lays them out. An ask or an open dialog is drawn with waiting.js's
 // answer card, so it is answered in place.
@@ -7,12 +8,58 @@
 // Prometheus pushes nothing, so the open tab also re-reads on the board's cadence; the fleet
 // state, the queue and the asks push file events and re-read on those.
 const HOME_REFRESH_MS = 60e3;
-const hst = { data: null, err: null };
+// `prop`: the proposal row opened and the id whose accept or reject is in flight.
+const hst = { data: null, err: null, prop: { open: null, busy: null, err: null, all: false } };
 
 const refreshHome = coalesce(async () => {
-  try { hst.data = await api("/api/home"); hst.err = null; } catch (e) { hst.err = e.message; }
+  const view = tblParams(st.views.home).toString();
+  try { hst.data = await api("/api/home" + (view ? "?" + view : "")); hst.err = null; } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
 });
+
+const PROP_COLS = { stream: ["stream"], project: ["project"], proposal: ["proposal"], created: ["age", "n"], verb: ["action", "n"] };
+
+// One row, and under it when opened the record: why, the evidence and what accept runs.
+function propRow(p) {
+  const busy = hst.prop.busy === p.id ? " disabled" : "";
+  const row = `<tr class="prop" data-prop="${esc(p.id)}"><td>${esc(p.stream)}</td><td>${esc(p.project)}</td>` +
+    `<td class="wrap">${esc(p.title)}${p.error ? ` <span class="cchip warn">accept failed</span>` : ""}</td><td class="n" title="${esc(p.created)}">${esc(ago(p.created))}</td>` +
+    `<td class="n"><button class="btn sm primary" data-accept="${esc(p.id)}"${busy}>Accept</button> ` +
+    `<button class="btn sm" data-reject="${esc(p.id)}"${busy}>Reject</button></td></tr>`;
+  if (hst.prop.open !== p.id) return row;
+  const link = /^https?:\/\//.test(p.evidence) ? `<a href="${esc(p.evidence)}" target="_blank" rel="noopener">${esc(p.evidence)}</a>` : esc(p.evidence);
+  const line = (k, v) => v ? `<div><b>${k}</b> ${v}</div>` : "";
+  return row + `<tr class="wdet"><td colspan="5">${line("Why", esc(p.why))}${line("Evidence", link)}` +
+    `${line("Accept runs", `<code>${esc(p.does)}</code>`)}${line("Last accept failed", esc(p.error || ""))}${line("Expires", esc(p.expires))}</td></tr>`;
+}
+
+// The section: one line when nothing is open, else the shared table. The search box keeps
+// focus across a refresh because only what is around it repaints (home-prop-*).
+function propBody(h) {
+  const t = h.proposals_table;
+  const rows = h.proposals.slice(0, hst.prop.all ? undefined : h.shown), more = h.proposals.length - rows.length;
+  const err = hst.prop.err ? `<div class="cline warn">${esc(hst.prop.err)}</div>` : "";
+  return err + (h.proposals.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, PROP_COLS)}${rows.map(propRow).join("")}</table>` +
+      (more ? `<button class="btn sm" data-propall="1">+${more} more</button>` : "") + `</div>`
+    : `<div class="panel">No proposal matches.</div>`);
+}
+
+function propSection(h) {
+  const t = h.proposals_table;
+  if (!t.total) return `<h2 class="sec">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  return `<h2 class="sec">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
+    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${propBody(h)}</div>`;
+}
+
+// Accept or reject through agent-propose. What it says on failure stays on the page.
+async function propDecide(verb, id) {
+  hst.prop.busy = id; hst.prop.err = null;
+  renderHome();
+  try { await post("/api/proposals/" + verb, { id }); } catch (e) { hst.prop.err = e.message; }
+  hst.prop.busy = null;
+  refreshHome();
+}
 
 // The Needs you kind of a row hub_core::home sent (waiting.js NEED_KINDS): an ask is a
 // question, a session its open dialog's kind, a waiting queue item blocked, a human-sheet row
@@ -103,13 +150,37 @@ function drawHome() {
   // The two summary lines lead, so a long Needs list never buries them.
   paint(el, errs + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
     sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) +
-    sec("Needs you", h.needs.length, needs) + sec("Running", h.running.length, running), askst.open);
+    sec("Needs you", h.needs.length, needs) + propSection(h) + sec("Running", h.running.length, running), askst.open);
 }
-// Session events re-render this often; keep a reply that is being typed.
-const renderHome = () => keepTyping("#home .card", drawHome);
+// Session events re-render this often; keep a reply that is being typed, and the proposal
+// search or dropdown in use, around which only the rows and chips repaint.
+const renderHome = () => {
+  const h = hst.data;
+  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) return;
+  keepTyping("#home .card", drawHome);
+};
+
+// The view changed: the URL follows it and the server applies it.
+function propView(patch) {
+  setQuery(tblSet(st.views.home, patch));
+  hst.prop.all = false;
+  refreshHome();
+}
 
 $("home").addEventListener("click", (e) => {
   if (e.target.closest("summary")) return;
+  const t = e.target;
+  if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
+  if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
+  if (t.dataset.propall) { hst.prop.all = true; renderHome(); return; }
+  const v = tblPatch(e);
+  if (v) { propView(v); return; }
+  const prow = t.closest("tr.prop");
+  if (prow && !t.closest("a")) {
+    hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;
+    renderHome();
+    return;
+  }
   const open = e.target.dataset.open;
   if (open) {
     const a = st.agents.find((x) => x.target === open);
@@ -120,6 +191,7 @@ $("home").addEventListener("click", (e) => {
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) answerCard(card, e).then(refreshHome);
 });
+tblListen($("home"), propView);
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {
   askTrace(e, renderHome);
@@ -129,5 +201,5 @@ $("home").addEventListener("toggle", (e) => {
 const pollHome = poll("home", refreshHome, HOME_REFRESH_MS);
 TABS.home = {
   show() { renderHome(); pollHome(); },
-  onEvent(ev) { if (st.tab === "home" && ["watch", "queue", "asks", "resync"].includes(ev.kind)) refreshHome(); },
+  onEvent(ev) { if (st.tab === "home" && ["watch", "queue", "asks", "proposals", "resync"].includes(ev.kind)) refreshHome(); },
 };

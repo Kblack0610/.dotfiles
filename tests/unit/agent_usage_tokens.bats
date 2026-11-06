@@ -16,6 +16,7 @@ setup() {
   AU="$REPO_ROOT/.local/bin/agent-usage"
   export TOKENS_RECALL_CMD="$REPO_ROOT/.local/bin/claude-recall tool-output" TOKENS_BURN_CMD="$AU burn"
   export TOKENS_CALLS_CMD="$REPO_ROOT/.local/bin/claude-recall tool-calls"
+  export TOKENS_LANGFUSE_CMD="sh -c 'echo null' langfuse"
   cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
 }
 
@@ -187,4 +188,16 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   TOKENS_TODAY=2026-01-05 run "$AU" tokens check
   assert_failure 2
   assert_output --partial 'the nightly agentctl token-usage run stopped'
+}
+
+@test "snapshot: the langfuse section is what the reader printed" {
+  echo '{"gateway":{"calls":3}}' > "$BATS_TEST_TMPDIR/lf.json"
+  TOKENS_LANGFUSE_CMD="sh -c 'cat $BATS_TEST_TMPDIR/lf.json' langfuse" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '.langfuse.gateway.calls')" 3
+}
+
+@test "snapshot: Langfuse down leaves a null section, a named error and a good exit" {
+  TOKENS_LANGFUSE_CMD=false run "$AU" tokens snapshot
+  assert_success
+  assert_equal "$(snap '[.langfuse, .totals.responses > 0, (.errors | map(select(startswith("langfuse: "))) | length)]')" '[null,true,1]'
 }

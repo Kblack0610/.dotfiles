@@ -6,7 +6,7 @@
   agent-usage tokens json --date D                       the day's snapshot, for day-log
   agent-usage tokens check                               the newest day against the 7 before it
 
-No scanner of its own: every number comes from one of the two counted tools, so this file only
+No scanner of its own: every number comes from one of the counted tools, so this file only
 joins them. Who owns which number:
   claude-recall tool-output  per-response tokens, context per response, tool output and its
                              carried cost, by project, tool and Bash command head, and
@@ -14,6 +14,8 @@ joins them. Who owns which number:
                              cache write by cause, the context split (start, tool,
                              conversation), responses per session, hook-forced turns
   claude-recall tool-calls   read discipline and read triggers (reads), hot_targets
+  agent-usage langfuse       tool latency, tool errors by class, gateway calls, cost and errors;
+                             null when Langfuse cannot answer
   agent-usage burn           cost (registry), merged PRs and cost per merged PR, start context
                              (first-turn median), compactions, tokens by model
 A day is the local calendar day, the window both tools are given exactly.
@@ -40,6 +42,7 @@ DIR = Path(ENV.get("TOKENS_DIR", Path.home() / ".agent" / "token-usage"))
 RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
 CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
+LANGFUSE = shlex.split(ENV.get("TOKENS_LANGFUSE_CMD", "agent-usage langfuse"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
 SUSPECT_PCT = float(ENV.get("TOKENS_SUSPECT_PCT", "50"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
@@ -84,7 +87,8 @@ def snapshot(day):
             "recall --by command": recall + ["command", "--top", str(TOP_COMMANDS)],
             "recall --by session,tool": recall + ["session,tool", "--top", "0"],
             "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
-            "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"]}
+            "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
+            "langfuse": LANGFUSE + ["--since", s, "--until", e]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
@@ -140,6 +144,7 @@ def snapshot(day):
         "by_account": burn.get("by_account"),
         "by_kind": burn.get("by_kind"),
         "long_runs": long_runs or None,
+        "langfuse": got["langfuse"][0],
     }
     out["line"] = line_of(out)
     DIR.mkdir(parents=True, exist_ok=True)

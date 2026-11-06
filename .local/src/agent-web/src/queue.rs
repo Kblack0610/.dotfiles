@@ -100,8 +100,11 @@ pub async fn candidates() -> ApiResult<Json<serde_json::Value>> {
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
-/// Cancel or bump through hub-core, which checks the slug and priority and runs agent-queue.
-async fn act(f: impl FnOnce() -> Result<String, String> + Send + 'static) -> ApiResult<StatusCode> {
+/// One hub-core action off the async workers: hub-core checks the input and runs the CLI, and
+/// what the CLI says on failure is the answer.
+pub async fn act(
+    f: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> ApiResult<StatusCode> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
