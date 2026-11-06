@@ -5,12 +5,12 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
-  reviewed: 2026-11-05
+  reviewed: 2026-11-06
 ---
 
 # shepherd
 
-The delivery role of `fleet-lead` (Binks). It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
+The delivery role of `fleet-lead` (Binks). Binks aims at measured improvement of the fleet, one KPI at a time with a check (`fleet-lead`, step 3); this role is the means. It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
 
 ## Verb: `status`
 
@@ -18,7 +18,7 @@ Run `fleet-sessions` and show its table. It sorts every live Claude session into
 
 The buckets (PARKED, NEEDS, STALLED, WORKING, LANDED, DONE, CHAT and NIGHTLY) are defined once, each with its entry facts, exit, actor, action and pinning test, in the bucket table of `~/.local/src/docs/fleet-states.md`. Read it there; `tests/unit/fleet_states_doc.bats` keeps it equal to what `fleet-sessions` emits.
 
-**The rule.** Every row's `blockers` lists each reason it is not DONE; quote them when you report a row. A session is DONE when its plan's `## Phases` checklist has no `- [ ]` left (`[x] <name> (#PR)` landed, `[-] <name>: <why>, <board row>` deferred by the human), no ask, prompt or plan approval of its own is open, and nothing it made is unlanded. A plan with no checklist, or no plan file, is one phase: its merged PR with a clean tree is DONE. Then, and only then, it winds down. A phase is a queue item: `agent-queue add --plan` turns a plan's unchecked phases into items chained with `after:`, each started in its own session, so a session whose remaining phases are items is DONE once its own phase lands. Until its phases are queued a merged phase is LANDED, and the shepherd tells it to queue them.
+**The rule.** Every row's `blockers` lists each reason it is not DONE; quote them when you report a row. A session is DONE when its plan's `## Phases` checklist has no `- [ ]` left (`[x] <name> (#PR)` landed, `[-] <name>: <why>, <board row>` deferred by the human), no ask, prompt or plan approval of its own is open, and nothing it made is unlanded. A plan with no checklist, or no plan file, is one phase: its merged PR with a clean tree is DONE. A non-code kind (`kinds.json` `exit` doc+ask: research, design, legal) never makes a PR: its session is DONE once its item records the doc it wrote (`report=`) and the ask it filed (`ask=`), and that ask is the human's to answer, not the session's blocker. Then, and only then, it winds down. A phase is a queue item: `agent-queue add --plan` turns a plan's unchecked phases into items chained with `after:`, each started in its own session, so a session whose remaining phases are items is DONE once its own phase lands. Until its phases are queued a merged phase is LANDED, and the shepherd tells it to queue them.
 
 Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every dirty file is its own, but in a repo's main checkout only the files it edited count (`edited_files` from agent-panel), so the human's half-done config does not stall every session in that checkout. The reason names the first 3 dirty paths (`FLEET_DIRTY_NAMES`), so the nudge says what to land or restore. Ahead counts files whose content is not on the default branch, not commits, so a squash merge or a local merge of landed work reads 0.
 
@@ -30,7 +30,7 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 
 ## Verb: `nudge`
 
-What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue` and `nightly red` due lines. The code (`fleet-shepherd due`) applies the same rules to the state document, so a due line is the row this verb would act on.
+What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue`, `nightly red` and `shared red` due lines. The code (`fleet-shepherd due`) applies the same rules to the state document, so a due line is the row this verb would act on.
 
 1. `fleet-dispatch reap`, which moves each queue item by its session: to `waiting/` when the session waits on the human (a pending ask counts only once the session is neither busy nor in a shell), to `done/` when the session is gone, un-starting a board item's row when it ended without a PR. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished` (DONE's work conditions alone, ignoring status and idle, so a session can check its own row mid-turn; wind-down step 0 reads it), `owners`, `dispatch` (the row it was started for, or null), `main_red` (its repo's default branch is red: a NIGHTLY row exists for it; the field name is kept for its JSON readers), and `labels`. NIGHTLY rows come first and lead the report: a nightly red is the most important thing on the board.
 2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).

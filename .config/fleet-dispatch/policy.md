@@ -4,6 +4,10 @@ You are judging rows from project boards. A row you mark `dispatch` gets a new, 
 
 A row carrying `#worker/<name>` was assigned to that unattended worker. An agent-lane row with no `#worker` tag was filed by an agent and nobody has checked it. Each row's `tier` is its `#tier/N` tag, or the highest tier allowed for it when it has none. Your job is to check that the row really is no higher than that tier, and clear and confined enough to run with nobody watching.
 
+A row's kind is its type prefix (`fix(area):` and so on), and `kinds.json` beside this file routes each kind. Rows of a kind it turns off, epics, and parent rows whose children are still open never reach you: today that is `decide`, `epic`, `research`, `design`, `legal` and `market`, which go to the human or, once enabled, to a session that drafts a doc and files an ask (its `propose` rung), never to one that merges.
+
+A row that comes with `size` carries that size as its own `#size/` tag. Use it as the size; do not judge the size again.
+
 A row tagged `#requested` holds the human's own words or a plan they approved, and an agent assigned it after checking it. The ask is already decided, so do not skip it for wish wording ("ideally", "would be cool", "maybe"). Size, clarity, tier and every other skip below still apply, and a design choice the row leaves open still means skip.
 
 ## Tier
@@ -12,8 +16,8 @@ This section is the one definition of the tiers. Humans tagging rows, agents fil
 
 - `1`: cannot break anything others depend on. Docs, copy and text, one contained bug fix or a new test in one product module.
 - `2`: an ordinary product change in product code, a small feature or bug fix that the row fully describes.
-- `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Tier 3 never gets a merging session, whatever the row is tagged.
-- Tier 3 may run unattended to an open PR only, as a `night` queue item, never past it (human decision 2026-11-02). `fleet-dispatch fill` promotes those rows from `tier3_only` below; your verdict for a tier 3 row is still `skip`.
+- `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Tier 3 never gets a merging session, whatever the row is tagged, except a `red` item (below).
+- Tier 3 may run unattended to an open PR only, as a `night` queue item, never past it (human decision 2026-11-02). A `red` item, a fix `fleet-bench triage` queued from a route, runs at any hour and merges its own PR after a code review and green checks, because a fix held at a PR keeps the fleet red too (human decisions 2026-11-06); `fleet-bench reds` records whether each merged fix held. `fleet-dispatch fill` promotes those rows from `tier3_only` below; your verdict for a tier 3 row is still `skip`.
 
 Judge the tier from what the change touches, not from the tag. A row tagged `#tier/1` that changes a test gate is tier 3.
 
@@ -33,11 +37,11 @@ Each row comes with its project's stage, its lane and its tagged tier:
 
 - (tier3) Anything tier 3: CI, gates, test runners, builds, deploys, harness and tooling, dependencies. Including fixes to them, including "small" ones.
 - (needs-person) Playtests, device, pad or headset runs, anything that needs a person to look, play or listen.
-- (release) Store listings, releases, tags, signing keys, payments, purchases, pricing, ads.
+- (release) Releases, tags, signing keys, payments, purchases. A store listing, pricing or ads change is `market` work, which a merging session never does.
 - (prod-write) Production data or infrastructure writes: backfills, migrations run against prod, DNS, secrets, flipping a flag on in prod.
-- (compliance) Anything touching health information, compliance, privacy or legal review.
-- (question) Rows that start with `decide:` or ask a question, and wishes ("would be cool", "should i", "maybe", "ideally", "investigate whether"), unless the row is `#requested`.
-- (design) Anything that needs a product or design decision the row does not already make.
+- (compliance) Anything touching health information, compliance or privacy. A legal review is `legal` work, which a merging session never does.
+- (question) Rows that ask a question, and wishes ("would be cool", "should i", "maybe", "ideally", "investigate whether"), unless the row is `#requested`.
+- (design) Anything that needs a product or design decision the row does not already make: that decision is `design` work, which a merging session never does.
 - (personal) Anything about the human's personal machine or personal config.
 - (bundle) Rows that bundle several tasks, or that are long lists of things to check.
 - (multi-area) Rows spanning more than one area (see Fields).

@@ -48,6 +48,21 @@ world_entries() {
   done < "$1"
 }
 
+# world_declared -- "<session> <manifest>" for every session any manifest declares, hidden
+# worlds included: a name the human works in is never a disposable session, wherever it is
+# declared. `?name` is declared on demand, `name:window` declares a window of session name.
+world_declared() {
+  local f name dir cmd
+  for f in "$MANIFEST_DIR"/*.conf; do
+    [ -r "$f" ] || continue
+    while read -r name dir cmd; do
+      name="${name#\?}"
+      printf '%s %s\n' "${name%%:*}" "$f"
+    done < <(world_entries "$f")
+  done
+  return 0
+}
+
 # world_rows -- "<world> <session> <dir>" for every session the manifests declare, booted or
 # on demand (`?name`). A `session:window` line adds a window and owns no directory.
 world_rows() {

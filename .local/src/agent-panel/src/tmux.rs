@@ -199,7 +199,7 @@ pub fn current_target() -> Option<String> {
 
 /// Jump to a target. Within the server we are already in, that is `switch-client`.
 /// Anything else is a cross-server hop, which tmux has no command for; `tmx goto`
-/// owns it (detach-client -E + attach, and it records the Prefix+L way back), so
+/// owns it (detach-client -E + attach), so
 /// this delegates rather than growing a second copy of the hop.
 pub fn jump(target: &str) {
     let (server, local) = split(target);

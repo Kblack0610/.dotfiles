@@ -686,6 +686,66 @@ SH
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
+@test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {
+  # ar-185: one test red on several agents' gates at once is a shared cause, and each session chased it alone.
+  landed_fixture
+  local now f doc="$XDG_STATE_HOME/fleet/state.json"
+  now="$(date +%s)" f="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv"
+  mkdir -p "${f%/*}"
+  # T.Shared: an episode from 2.5h ago (gaps under 2h), red on feat/x (this session's worktree), a
+  # detached agent-3 (counted by its worktree) and feat/b twice. T.Two has two branches, T.Old three
+  # outside the window; a future line and a malformed one are skipped.
+  printf '%s\t%s\t%s\t%s\n' \
+    $((now - 9000)) old feat/old T.Shared  $((now - 3600)) wt feat/x T.Shared \
+    $((now - 1800)) uc-agent-3 - T.Shared  $((now - 600)) uc-b feat/b T.Shared  $((now - 300)) uc-b feat/b T.Shared \
+    $((now - 600)) uc-b feat/b T.Two  $((now - 500)) wt feat/x T.Two \
+    $((now - 9000)) a feat/a T.Old  $((now - 8900)) b feat/b T.Old  $((now - 8800)) c feat/c T.Old \
+    $((now + 600)) z feat/z T.Two  junk wt feat/x T.Two > "$f"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -s length <<<"$shared")" = 1 ]
+  [ "$(jq -r .target <<<"$shared")" = T.Shared ]
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 3 branches in 2h: feat/x, uc-agent-3, feat/b' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 9000))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+  # the session keeps its own bucket: the red is not its work
+  [ "$(jq -r 'select(.bucket != "SHARED") | .bucket' <<<"$output")" = LANDED ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line SHARED
+  assert_output --partial 'T.Shared red on 3 branches in 2h'
+
+  # the state document lists it under shared, never as a session
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.shared | length' "$doc")" = 1 ]
+  [ "$(jq -r '.shared[0] | "\(.test) \(.id) \(.escalated)"' "$doc")" = 'T.Shared shared-T_Shared false' ]
+  [ "$(jq -r '[.sessions[].bucket] | join(",")' "$doc")" = LANDED ]
+  [ "$(jq -r '.counts | has("SHARED")' "$doc")" = false ]
+
+  # escalated once; a fourth branch in the same episode is the same fact, so it does not page again
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate shared-T_Shared "SHARED T.Shared @$((now - 9000))"
+  printf '%s\tuc-c\tfeat/c\tT.Shared\n' $((now - 60)) >> "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 4 branches in 2h: feat/x, uc-agent-3, feat/b, feat/c' ]
+  [ "$(jq -r .escalated <<<"$shared")" = true ]
+
+  # a quiet gap longer than the window ends the episode: the same test red again is a new fact
+  printf '%s\t%s\t%s\t%s\n' $((now - 20000)) old feat/old T.Shared \
+    $((now - 900)) wt feat/x T.Shared $((now - 800)) uc-b feat/b T.Shared $((now - 700)) uc-c feat/c T.Shared > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 900))" ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+
+  # negative control: a higher bar makes no row
+  FLEET_SHARED_RED_BRANCHES=4 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
 @test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
   # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
   git init -q --bare "$SANDBOX/origin.git"
@@ -785,6 +845,45 @@ clean_fixture() {
   [ "$(jq -r .reason <<<"$output")" = 'its worktree was removed' ]
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+}
+
+# research_item <state> <type> -- a queue item of session sid-9 on lab:s1 that recorded a doc and an ask.
+research_item() {
+  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
+  mkdir -p "$d"
+  printf 'slug: research-engine\nproject: apociseum\nmode: oneshot\npriority: high\ntype: %s\narea: game\nfrom: board:apociseum:ar-9\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: sid-9\nreport: %s\nask: Rq1\nfinished: %s\n---\n%s(game): which engine\n' \
+    "$2" "$SANDBOX/doc.md" "$(date -u +%FT%TZ)" "$2" > "$d/20261103-100000-research-engine.md"
+}
+
+@test "end to end: a doc+ask kind whose doc exists and ask is filed is DONE; its ask is handed over, not open" {
+  clean_fixture
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json" ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum"
+  printf 'id: Rq1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq1.md"
+  touch "$SANDBOX/doc.md"
+  research_item done research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item research-engine handed off its doc doc.md and ask Rq1' ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  # still running here: the same hand-off
+  rm -r "$HOME/.agent/queue/done"; research_item running research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # another open question of its own still waits on the human
+  printf 'id: Rq2\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  rm "$ASK_ROOT/apociseum/Rq2.md"
+  # no doc on disk: its ask is an open question (NEEDS), as at HEAD
+  rm "$SANDBOX/doc.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  # a kind whose exit is a PR: its ask is an open question too
+  touch "$SANDBOX/doc.md"; rm -r "$HOME/.agent/queue/running"; research_item running fix
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
 }
 
 @test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
@@ -1459,6 +1558,21 @@ SH
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
   # no temp file left beside it
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
+}
+
+@test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  printf '#!/usr/bin/env bash\n[ "$*" = "stopped --json" ] && cat "$HOME/stopped.json" 2>/dev/null && exit 1; exit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -c .stopped "$doc")" = '[]' ]
+  echo '{"runner":"fleet-dispatch","since":1000,"why":"load 40","line":"Dispatch stopped 2h: load 40. Clears when the machine'"'"'s load falls."}' > "$HOME/stopped.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.stopped[0].line' "$doc")" = "Dispatch stopped 2h: load 40. Clears when the machine's load falls." ]
+  [ "$(jq -r '.stopped[0].since' "$doc")" = 1000 ]
 }
 
 @test "--write: a pass older than the document on disk leaves it alone" {

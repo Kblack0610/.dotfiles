@@ -23,7 +23,9 @@ A project with no stage sorts between dev and draft and is dispatched like a dra
 
 ## Requirements
 
-Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s]` runs the rows: `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
+Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s] [--json]` runs the rows (`--json` gives met, total, fail, human, todo, the gate and each row, for a page to read): `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
+
+A gap becomes work with `--file` (with `--stage s`, or `--systems`): each FAIL row is filed as a `#size/s` story on the agent board under the open epic for its target, an `epic(stage): <stage> ...` row for a stage (with no `--stage`, that epic names the target) or an `epic(<system>): ...` row for a system. It never files the epic, which only the human, the session whose plan they just approved, or an answered ask does, and never a row already on either sheet under the same title, open, done or dropped. With no epic it lists what it would file and writes nothing. The nightly `project-index` pass runs it for each project whose sheet carries `#prio/focus` (`notes projects --prio <name> --set focus`).
 
 Enforced from: 2026-11-19
 
@@ -42,7 +44,7 @@ The `Check` cell is one of three things:
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
 | dev | base | CI green on the default branch | not yet: needs the forge API |
 | dev | base | The `docs` system meets its `systems.md` criteria: a README with build, run and test, `docs/architecture.md`, a standards file or a link to the shared one | `project-stage-check "$NAME" --system docs` |
-| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | not yet |
+| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | `[ "$ROOT" = "$REPO" ] \|\| { g="$(basename "$ROOT")"; [ -f "$REPO/scripts/build/games/$(printf %s "$g" \| tr '[:upper:]' '[:lower:]').json" ] && git -C "$REPO" ls-files \| grep -qi "/$g[a-z0-9]*PlayTests\.cs$"; }` |
 | dev | app | Typecheck, lint and unit tests in the shared CI config | `jq -e '.scripts.typecheck and .scripts.lint and .scripts.test' "$REPO/package.json"` |
 | alpha | base | A deploy workflow green to the private target on every merge | not yet: needs the forge API |
 | alpha | base | Its secrets listed by name and synced to every destination | not yet: P4 `secrets-sync --check` |
@@ -54,7 +56,7 @@ The `Check` cell is one of three things:
 | beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
 | beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
 | beta | base | A Sentinel health watch | not yet |
-| beta | base | A STATUS line under 14 days old | `regen-anchor.sh` marks it STALE |
+| beta | base | A STATUS line under 14 days old | `d="$(notes projects --stats --json \| jq -r --arg n "$NAME" '.[] \| select(.name == $n) \| .status_date')"; [ -n "$d" ] && [[ ! "$(date -d "$d 14 days" +%F)" < "$(date +%F)" ]]` |
 | beta | game | Content rating done (`content-rating`) | not yet |
 | beta | game | A finished playtest on this version | human |
 | beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet |
@@ -91,7 +93,7 @@ These are never automated; each one is a `human` row, which the gate lists for t
 
 A game in the playground carries the same ladder as its `status` field (`Draft`, `Dev`, `Alpha`, `Beta`, `Prod`). The rules for moving one game up live with the game code, in the playground's `docs/authoring/adding-a-game.md`; this doc does not repeat them.
 
-A game project's lab stage must equal its game's `status` on the default branch. `project-map-doctor` compares the two (check 6d) and FAILs on a mismatch, naming both places to fix.
+A per-game row (a build profile, a play test) is judged on each game's own project, so the playground project, which is the whole repo, passes it. A game project's lab stage must equal its game's `status` on the default branch. `project-map-doctor` compares the two (check 6d) and FAILs on a mismatch, naming both places to fix.
 
 ## Changing this doc
 

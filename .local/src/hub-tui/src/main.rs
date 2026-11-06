@@ -35,6 +35,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub needs --json | --page
        hub projects --json
+       hub projects --page NAME
        hub tabs
   TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
@@ -54,6 +55,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
+  projects --page NAME
+          one project's page, what its card shows when opened: the flow line, what needs you,
+          the epics by system with each system's criteria, the next stage and shipped versions
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -89,7 +93,19 @@ fn main() {
     }
     if it.peek().map(|a| a.as_str()) == Some("projects") {
         it.next();
-        if it.cloned().collect::<Vec<_>>() != ["--json"] {
+        let rest: Vec<String> = it.cloned().collect();
+        if let [flag, name] = rest.as_slice() {
+            if flag != "--page" {
+                die(USAGE);
+            }
+            let sys = hub_core::session_actions::System;
+            match hub_core::page::named(&sys, name, hub_core::jobs::now()) {
+                Ok(p) => println!("{}", hub_core::page::to_json(&p)),
+                Err(e) => die(&format!("hub projects --page: {e}")),
+            }
+            return;
+        }
+        if rest != ["--json"] {
             die(USAGE);
         }
         let p = hub_core::projects::gather();
@@ -335,9 +351,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tasks = Some(hub_core::tasks::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
-        // `--tab 'projects <name>'` prints that project's card over its rows, what Enter shows:
-        // the Prefix+p preview.
+        // `--tab 'projects <name>'` prints that project's opened card, its page read here, over
+        // its rows, what Enter shows: the Prefix+p preview.
         a.open_project(section);
+        a.read_proj_page_now(&sys);
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -359,6 +376,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
+    // Red fixes are read off-thread in the live app; a printed page has no next frame, so read
+    // them here or Infra prints "reading".
+    if matches!(tab, None | Some(Tab::Infra)) {
+        a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
+    }
     let tabs = match tab {
         Some(t) => vec![t],
         None => vec![Tab::Home, Tab::Infra],
@@ -457,6 +479,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Fleet {
         app.read_fleet();
+    }
+    if app.tab == Tab::Infra {
+        app.read_reds();
     }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {

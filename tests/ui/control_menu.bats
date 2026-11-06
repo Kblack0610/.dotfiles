@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Tier 3: the control menu (leader Space) through real fzf on a real tmux server. The first
 # chip's hover is in the preview on open, moving the cursor moves the preview to the next chip,
-# Enter runs that chip's click and closes, Esc closes; typing finds a window row, whose Enter
-# dispatches its bind. Container only.
+# Enter runs that chip's click and closes, Esc closes; a dropdown chip's Enter runs it in this
+# window and comes back to the list; typing finds a window row, whose Enter dispatches its bind.
+# Container only.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -17,7 +18,7 @@ setup() {
   mkdir -p "$W"
   cp "$REPO_ROOT/.config/waybar/pango.sh" "$W/"
   export FX="$BATS_TEST_TMPDIR"
-  printf 'ok|A good chip|custom/ok\nbad|A failing chip|custom/bad\n' > "$W/modules.registry"
+  printf 'ok|A good chip|custom/ok\nbad|A failing chip|custom/bad\nterm|A dropdown chip|custom/term\n' > "$W/modules.registry"
   cat > "$FX/ok.sh" <<'EOF'
 #!/usr/bin/env bash
 jq -cn '{text: "OK 3", tooltip: "<b>Good hover</b> line one\nline two", class: "ok"}'
@@ -34,7 +35,8 @@ EOF
   cat > "$W/config.base" <<EOF
 {
     "custom/ok": {"exec": "\$HOME/.config/waybar/modules.sh gate custom/ok $FX/ok.sh", "on-click": "echo left > $FX/clicked"},
-    "custom/bad": {"exec": "$FX/bad.sh"}
+    "custom/bad": {"exec": "$FX/bad.sh"},
+    "custom/term": {"exec": "$FX/ok.sh", "on-click": "kitty --class floating-term -e sh -c 'echo inline >> $FX/inline'"}
 }
 EOF
 }
@@ -49,7 +51,7 @@ gone() { ! _tm has-session 2>/dev/null; }
   open_menu
   wait_until 'screen_has "Good hover line one"'
   wait_until 'screen_matches "A good chip +OK 3"'
-  screen_has "enter click   alt-enter right-click"
+  screen_has "enter click (a dropdown opens here, esc comes back)"
   keep_screen open
   tmux_keys Down
   wait_until 'screen_has "custom/bad: exit 4, no output"'
@@ -66,6 +68,19 @@ gone() { ! _tm has-session 2>/dev/null; }
   wait_until gone
   wait_until '[ -s "$FX/clicked" ]'
   assert_equal "$(cat "$FX/clicked")" left
+}
+
+@test "a dropdown chip's Enter runs in this window and the list comes back" {
+  open_menu
+  wait_until 'screen_has "Good hover"'
+  tmux_type dropdown
+  wait_until 'screen_matches "A dropdown chip"'
+  tmux_keys Enter
+  wait_until '[ -s "$FX/inline" ]'
+  wait_until 'screen_has "control>"'
+  ! gone
+  tmux_keys Escape
+  wait_until gone
 }
 
 @test "typing finds a window row; its preview names the bind and Enter dispatches it" {

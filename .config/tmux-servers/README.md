@@ -7,7 +7,6 @@ A world is a tmux server on its own socket. The `.conf` files here are the only 
 | What | World | Why |
 |---|---|---|
 | The human's home and config repos on their base checkout: notes, dotfiles, home-config | hub | named in `hub.conf` |
-| The lab notes, `~/.notes/lab` (session `lab`, on the projects index; Prefix+H) | hub | named in `hub.conf`; they are notes, not a build |
 | Any other repo nothing claims | hub | `@repos` in `hub.conf` |
 | The shepherd's pass | hub | window `hub:shepherd`, owned by `fleet-shepherd run`, not declared in `hub.conf`: each pass replaces the last in that pane, so no run makes or closes a window there |
 | Every agent worktree of every project, `<repo>-agent-N`, whoever started it | lab | `@agents` in `lab.conf` |
@@ -40,7 +39,6 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 |---|---|
 | Prefix+f, `sessionizer.sh <dir>` | `world_route` |
 | Prefix+F, `wt new`, `wt pick` | `@agents`, inside tmux or out; `--server` overrides |
-| Prefix+S, `tmx pick-session` | the world's own rows, generated at pick time |
 | `tmx ensure <world> <session>`, `tmx goto <world> <session>` | the world that declares the session, whichever was named |
 | `fleet-dispatch start` | `@agents`; `--server` is for `--resume` only, to put a session back where it was |
 | `agent-queue add --running` | records its session only on the `@agents` world |
@@ -56,5 +54,4 @@ An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and th
 | `fleet-dispatch: start: no world declares @agents` | the `@agents` world is in `hidden`, or the line is gone | put it back or unhide that world; dispatch will not guess |
 | `tmux-world: command not found` after a pull | the link in `~/.local/bin` is per file | `dotfiles-deploy --apply` |
 | A work repo opens on hub | the catch-all took it | add `@repos <dir>` to the work world's manifest |
-| Two nvims on `projects/index.md` (swap-file prompt) after the 2026-11-05 move | the old `lab` session is still up on the lab server; hub's `lab` replaced it | save, then `tmux -L lab kill-session -t =lab` once |
 | A `shepherd` server or session still up | left from when passes had their own world (2026-11-04 to 2026-11-05) | `tmux -L shepherd kill-server` and `tmux -L hub kill-session -t =shepherd` once no pass there is talking to you; nothing reads them, and Prefix o goes to `hub:shepherd` |

@@ -1585,8 +1585,8 @@ mod tests {
     fn each_judge_gets_its_per_rule_table_from_the_one_judge_eval_read() {
         let json = r#"{"agents":[
           {"agent":"ask-judge","prompt_sha":"aaaaaaaaa","total":{"verdicts":40,"tp":6,"fp":0,"fn":0,"tn":0},
-           "live":["restates-rule"],
-           "rules":[{"rule":"restates-rule","verdicts":9,"errors":0,"scored":6,"precision":100.0,
+           "live":["ship_deploy"],
+           "rules":[{"rule":"ship_deploy","verdicts":9,"errors":0,"scored":6,"precision":100.0,
                      "false_defer_pct":null,"live":true,"bar":{"labels":6,"need":30,"met":false}},
                     {"rule":"taste","verdicts":31,"scored":28,"precision":null,"false_defer_pct":18.0,
                      "live":false}],
@@ -1594,7 +1594,7 @@ mod tests {
           {"agent":"dispatch-judge","prompt_sha":"bbbbbbbbb","total":{"verdicts":16,"errors":2,"tp":0,"fp":0,"fn":0,"tn":0}}]}"#;
         let (_, evals, _) = judges(json).unwrap();
         let a = &evals["ask-judge"];
-        assert_eq!(a.live, vec!["restates-rule".to_string()]);
+        assert_eq!(a.live, vec!["ship_deploy".to_string()]);
         assert_eq!(a.total.verdicts, 40);
         assert_eq!(
             (
@@ -1603,7 +1603,7 @@ mod tests {
                 a.rules[0].precision,
                 a.rules[0].live
             ),
-            ("restates-rule", 6, Some(100.0), true)
+            ("ship_deploy", 6, Some(100.0), true)
         );
         assert_eq!(
             a.rules[0].bar,

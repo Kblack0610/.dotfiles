@@ -20,7 +20,7 @@ setup() {
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
   *new-window*) echo %9 ;;
@@ -107,6 +107,20 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial ' d '
   refute_output --partial ' e '
   refute_output --partial r2
+}
+
+@test "due lists an unescalated shared red with the escalate call that answers it" {
+  jq -n '{schema: 1, sessions: [], main: [], shared: [
+      {test: "T.A", id: "shared-T_A", reason: "T.A red on 3 branches in 2h: a, b, c", fact: "SHARED T.A @100", escalated: false},
+      {test: "T.B", id: "shared-T_B", reason: "T.B red on 3 branches in 2h: a, b, c", fact: "SHARED T.B @100", escalated: true}]}' > "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  assert_line 'shared red: T.A red on 3 branches in 2h: a, b, c; then: fleet-sessions escalate shared-T_A "SHARED T.A @100"'
+  refute_output --partial T.B
+  # the shepherd role answers it, keyed without the call, as every `; then:` line is
+  "$SH" check >/dev/null
+  run awk -F'\t' '$4 ~ /^shared red/ { print $2 "|" $1 }' "$FLEET_SHEPHERD_DIR/.due"
+  assert_output 'shepherd|shared red: T.A red on 3 branches in 2h: a, b, c'
 }
 
 @test "a manual row is never due, and an all-quiet document exits 1" {
@@ -734,6 +748,15 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output 'infra: no k3s status series'
 }
 
+@test "a watch with a live red item raises no line; a tag that only contains red still does" {
+  doc "[$(row a DONE false false)]"
+  stub agent-queue 'printf "%s\n" "{\"tags\":\"red cause:ab\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}" "{\"tags\":\"reddish\",\"task\":\"check(watch): queue-starved tripped since x\"}"'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[]'
+  run "$SH" run
+  refute_output --partial 'watch: home-k3s-node-disk'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
@@ -837,9 +860,37 @@ finding() {
 
 @test "findings that cannot be read say so, instead of reading as none" {
   doc "[]"
-  STUB_BENCH_FAIL=1 run "$SH" due
+  STUB_BENCH_FAIL=1 STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
   assert_success
   assert_output --partial 'fleet-bench findings unreadable'
+  refute_output --partial 'improve:'
+}
+
+@test "the KPI improve picks is one line after the sessions, with no value in it, so its key holds while the number moves" {
+  doc "[$(row a DONE false false)]"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
+  assert_success
+  assert_line --index 0 'nudge DONE: a f-a'
+  assert_line --index 1 'improve: revert_rate past max 0.1, no live row; then: fleet-bench improve file revert_rate "<defined fix>", or claim revert_rate <id> when a row or plan already owns it'
+  local first="$output"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.4,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
+  assert_equal "$output" "$first"
+  # the row that did not move it is named
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":{"subject":"ar-139","verdict":"flat"}}' run "$SH" due
+  assert_line --index 1 --partial 'improve: revert_rate past max 0.1, no live row, last ar-139 flat; then:'
+  # Negative control: nothing due from improve (exit 1) is no line.
+  doc "[]"
+  run "$SH" due
+  assert_failure
+  refute_output --partial 'improve:'
+}
+
+@test "an improve line is fleet-lead's own: it loads no role skill" {
+  doc "[]"
+  STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" run
+  run prompt
+  assert_line 'Roles due: none'
+  assert_output --partial 'improve: revert_rate past max 0.1'
 }
 
 # phase <sid> <reason> <phase_min> <age_min> [done/total] [bucket] [activity]: a state row (WORKING,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """agent-usage tokens: one JSON per day of token use, its one-line row, and a drift check.
 
-  agent-usage tokens snapshot [--date D] [--no-verify]   write $TOKENS_DIR/<D>.json (default yesterday)
+  agent-usage tokens snapshot [--date D]                 write $TOKENS_DIR/<D>.json (default yesterday)
   agent-usage tokens line [--date D]                     the day's one-line row (default newest)
   agent-usage tokens json --date D                       the day's snapshot, for day-log
   agent-usage tokens check                               the newest day against the 7 before it
@@ -9,15 +9,15 @@
 No scanner of its own: every number comes from one of the two counted tools, so this file only
 joins them. Who owns which number:
   claude-recall tool-output  per-response tokens, context per response, tool output and its
-                             carried cost, by project, command head and token-filter method, and
+                             carried cost, by project, tool and Bash command head, and
                              the stretches that ran longest without a compaction (long_runs)
   agent-usage burn           cost (registry), merged PRs and cost per merged PR, start context
                              (first-turn median), compactions, tokens by model
-  token-filter verify        the nightly rtk replay; --apply adds a local skip per failing shape
 A day is the local calendar day, the window both tools are given exactly.
 
-check exits 0 when every watched number is within TOKENS_DRIFT_PCT of the median of the
-TOKENS_BASELINE_DAYS days before it, 1 on a drift, 2 when there is no fresh snapshot. It only
+check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
+median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
+(a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
 reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Agent runtime").
 """
 import argparse
@@ -36,16 +36,19 @@ ENV = os.environ
 DIR = Path(ENV.get("TOKENS_DIR", Path.home() / ".agent" / "token-usage"))
 RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
-VERIFY = shlex.split(ENV.get("TOKENS_VERIFY_CMD", "token-filter verify --apply --json"))
+CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
+SUSPECT_PCT = float(ENV.get("TOKENS_SUSPECT_PCT", "50"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
 MIN_BASELINE = 3      # fewer earlier days than this and there is no median to compare with
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
 TOP_COMMANDS = 20
-# The watched numbers: (key, label). Each is a ratio, so a busy or a quiet day alone moves none.
-WATCHED = (("context_per_response", "context per response"),
-           ("carried_share", "carried share"),
-           ("start_context_median", "start-context median"))
+TOP_TARGETS = 20      # the files whose reads cost the most responses that day
+# The watched numbers: (key, label, worse), worse the sign of a move for the worse. Each is a ratio,
+# so a busy or a quiet day alone moves none.
+WATCHED = (("context_per_response", "context per response", 1),
+           ("carried_share", "carried share", 1),
+           ("start_context_median", "start-context median", 1))
 
 
 def run_json(cmd, timeout=3600):
@@ -70,22 +73,20 @@ def day_window(day):
     return start, end
 
 
-def snapshot(day, verify):
+def snapshot(day):
     start, end = day_window(day)
     s, e = start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
     recall = RECALL + ["--since", s, "--until", e, "--json", "--by"]
     jobs = {"recall --by project": recall + ["project", "--top", "0"],
             "recall --by command": recall + ["command", "--top", str(TOP_COMMANDS)],
-            "recall --by method": recall + ["method", "--top", "0"],
+            "recall --by tool": recall + ["tool", "--top", "0"],
+            "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"]}
-    if verify:
-        jobs["token-filter verify"] = VERIFY
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
-    proj, cmd, meth, burn = (got[k][0] or {} for k in
-                             ("recall --by project", "recall --by command", "recall --by method", "burn"))
-    tf = got.get("token-filter verify", (None, None))[0]
+    proj, cmd, tool, calls, burn = (got[k][0] or {} for k in ("recall --by project", "recall --by command",
+                                                             "recall --by tool", "tool-calls", "burn"))
 
     t = proj.get("totals") or {}
     tu = usage(t)
@@ -96,6 +97,9 @@ def snapshot(day, verify):
     for k, v in (burn.get("by_project") or {}).items():
         by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=round(v.get("cost_usd") or 0, 2))
     long_runs = proj.get("long_runs") or {}
+    rd = (calls.get("buckets") or {}).get("all") or {}
+    reads = {k: rd.get(k, 0) for k in ("reads", "locate_then_read", "reread_same_lines",
+                                       "locate_then_read_ctx", "reread_same_lines_ctx")}
     out = {
         "schema": 1,
         "date": day.isoformat(),
@@ -113,17 +117,21 @@ def snapshot(day, verify):
         "merged_prs": prs,
         "cost_per_merged_pr": per_pr.get("cost_usd"),
         "context_per_merged_pr": ctx // prs if prs else None,
+        "responses_per_merged_pr": round(turns / prs, 1) if prs else None,
+        "tool_chars_per_call": tu["tool_chars"] // t["calls"] if t.get("calls") else None,
+        "reads": reads if rd else None,
+        "locate_read_share": round(reads["locate_then_read"] / reads["reads"], 4) if reads["reads"] else None,
+        "reread_share": round(reads["reread_same_lines"] / reads["reads"], 4) if reads["reads"] else None,
+        "hot_targets": [{"path": g["key"], "sessions": g["calls"], "ctx": g["ctx"]}
+                        for g in (calls.get("groups") or {}).get("hot_target") or []][:TOP_TARGETS] or None,
         "compactions": burn.get("compactions"),
         "by_project": dict(sorted(by_project.items(), key=lambda kv: -(kv[1].get("context") or 0))),
-        "by_command": [{"head": r["key"], "calls": r["calls"], "chars": r["chars"], "carried_tokens": r["carried"] // 4}
-                       for r in cmd.get("rows") or []],
-        "by_method": {r["key"]: {**usage(r), "bash_calls": r.get("bash_calls", 0), "filtered": r.get("rewritten", 0)}
-                      for r in meth.get("rows") or []},
+        "by_tool": split(tool, "tool"),
+        "by_command": split(cmd, "head"),
         "by_model": burn.get("by_model"),
         "by_account": burn.get("by_account"),
         "by_kind": burn.get("by_kind"),
         "long_runs": long_runs or None,
-        "token_filter": verify_summary(tf),
     }
     out["line"] = line_of(out)
     DIR.mkdir(parents=True, exist_ok=True)
@@ -141,12 +149,10 @@ def usage(r):
             "tool_chars": r.get("chars", 0), "carried_tokens": r.get("carried", 0) // 4}
 
 
-def verify_summary(tf):
-    if tf is None:
-        return None
-    out = {k: tf.get(k) for k in ("method", "replayed", "rewritten", "ok", "bad", "saved_pct", "skips_added")}
-    out["bad_cmds"] = [{"cmd": (b.get("cmd") or "")[:120], "verdict": b.get("verdict")} for b in tf.get("bad_cmds") or []]
-    return out
+def split(recall, name):
+    """A recall --by tool or --by command result as [{<name>, calls, chars, carried_tokens}]."""
+    return [{name: r["key"], "calls": r["calls"], "chars": r["chars"], "carried_tokens": r["carried"] // 4}
+            for r in recall.get("rows") or []]
 
 
 def human(n):
@@ -165,15 +171,12 @@ def line_of(s):
         return f"tokens {s['date']}: unreadable ({'; '.join(s.get('errors') or []) or 'no totals'})"
     pr = s.get("cost_per_merged_pr")
     lr = s.get("long_runs") or {}
-    tf = s.get("token_filter")
     parts = [f"tokens {s['date']}: {human(t['context'])} context over {t['responses']:,} responses",
              f"{human(s['context_per_response'])}/response",
              f"carried {100 * (s['carried_share'] or 0):.0f}% ({s['carried_x'] or '?'}x its size)",
              f"start median {human(s['start_context_median'])}",
              f"${pr:,.2f}/merged PR ({s['merged_prs']})" if pr is not None else f"{s.get('merged_prs') or 0} merged PRs",
              f"{lr.get('long', 0)} long runs without compaction"]
-    if tf:
-        parts.append(f"token-filter {tf.get('ok')}/{tf.get('rewritten')} ok, {len(tf.get('skips_added') or [])} skips added")
     if s.get("errors"):
         parts.append(f"{len(s['errors'])} source errors")
     return ", ".join(parts)
@@ -208,8 +211,8 @@ def check():
         print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the nightly agentctl token-usage run stopped")
         return 2
     base = [x for x in (load(p) for p in files[-1 - BASELINE_DAYS:-1]) if x]
-    drift, said = [], []
-    for key, label in WATCHED:
+    drift, suspect, said = [], [], []
+    for key, label, worse in WATCHED:
         now = newest.get(key)
         vals = [x[key] for x in base if x.get(key) is not None]
         if now is None or len(vals) < MIN_BASELINE:
@@ -219,10 +222,14 @@ def check():
         pct = 100 * (now - med) / med if med else 0.0
         txt = f"{label} {num(now)} vs 7-day median {num(med)} ({pct:+.0f}%)"
         said.append(txt)
-        if abs(pct) > DRIFT_PCT:
+        if pct * worse > DRIFT_PCT:
             drift.append(txt)
-    if drift:
-        print(f"{newest['date']}: drift past {DRIFT_PCT:.0f}%: " + "; ".join(drift))
+        elif -pct * worse > SUSPECT_PCT:
+            suspect.append(txt)
+    out = ([f"worse past {DRIFT_PCT:.0f}%: " + "; ".join(drift)] if drift else []) \
+        + ([f"better past {SUSPECT_PCT:.0f}%, measurement suspect: " + "; ".join(suspect)] if suspect else [])
+    if out:
+        print(f"{newest['date']}: " + "; ".join(out))
         return 1
     print(f"{newest['date']}: " + "; ".join(said))
     return 0
@@ -234,7 +241,6 @@ def main():
     sub = ap.add_subparsers(dest="verb", required=True)
     sp = sub.add_parser("snapshot")
     sp.add_argument("--date", type=dt.date.fromisoformat)
-    sp.add_argument("--no-verify", action="store_true", help="skip token-filter verify --apply")
     lp = sub.add_parser("line")
     lp.add_argument("--date", type=dt.date.fromisoformat)
     jp = sub.add_parser("json")
@@ -245,7 +251,7 @@ def main():
         day = a.date or today() - dt.timedelta(days=1)
         if day >= today():
             ap.error(f"{day} is not over yet; a snapshot is of a finished day")
-        path, out = snapshot(day, not a.no_verify)
+        path, out = snapshot(day)
         print(path)
         print(out["line"])
         return 1 if out["totals"] is None else 0

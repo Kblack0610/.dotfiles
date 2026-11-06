@@ -24,9 +24,10 @@ rows() {
 }
 
 # emitted <fleet-sessions> -> each bucket word it prints: `echo "WORD ...` in session_bucket and its
-# helpers, and `printf 'NIGHTLY\t...` for the per-repo row (its other printf lines are caches)
+# helpers, and `printf 'NIGHTLY\t...` and `printf 'SHARED\t...` for the rows that are not sessions
+# (its other printf lines are caches)
 emitted() {
-  grep -oE "echo \"[A-Z]{4,} |printf 'NIGHTLY" "$1" | grep -oE '[A-Z]{4,}' | sort -u
+  grep -oE "echo \"[A-Z]{4,} |printf '(NIGHTLY|SHARED)" "$1" | grep -oE '[A-Z]{4,}' | sort -u
 }
 
 check_words() { # <doc> <fleet-sessions>
@@ -63,7 +64,7 @@ check_shepherd() { # <doc> <fleet-shepherd>
 @test "the bucket table names exactly the buckets fleet-sessions emits" {
   run check_words "$DOC" "$SESSIONS"
   assert_success
-  assert_equal "$(rows "$DOC" | cut -d$'\037' -f1 | paste -sd' ')" "PARKED NEEDS STALLED WORKING LANDED DONE CHAT NIGHTLY"
+  assert_equal "$(rows "$DOC" | cut -d$'\037' -f1 | paste -sd' ')" "PARKED NEEDS STALLED WORKING LANDED DONE CHAT NIGHTLY SHARED"
 }
 
 @test "every bucket row has an actor, an action and a pinning test that exists" {

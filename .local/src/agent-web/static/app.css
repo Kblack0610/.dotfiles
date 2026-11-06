@@ -235,11 +235,11 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
 .pcard .psum { font-size: var(--fs-xs); color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; margin-bottom: 8px; }
 .pcard .pgoal { font-size: var(--fs-md); margin-bottom: 8px; overflow-wrap: anywhere; }
-.pcard .pcounts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .pcard .prun { list-style: none; margin: 0 0 8px; padding: 0; }
 .pcard .prun li { display: flex; flex-direction: column; padding: 6px 0 6px 10px; border-left: 3px solid var(--b-working); margin-bottom: 4px; font-size: var(--fs-sm); }
 .pcard .prt { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .pcard .prm { color: var(--muted); font-size: var(--fs-xs); }
+.pcard .pep { padding-left: 12px; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
 .pcard .pstat { font-size: var(--fs-sm); margin-bottom: 8px; overflow-wrap: anywhere; }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 9px; font: 600 11px var(--mono); color: #fff; background: var(--c); }
 .chip.sm { padding: 0 6px; font-size: 10px; }
@@ -399,7 +399,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
    plan c5, question c1, permission c6, your turn ink; blocked is stalled amber, failing red. */
 /* One colour per need kind, shared by the card stripe and the tally chip. */
 .k-plan { --k: var(--c5); } .k-ask { --k: var(--c1); } .k-perm { --k: var(--c6); }
-.k-turn { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red { --k: var(--b-needs); }
+.k-turn { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
 .need { border-left: 5px solid var(--k, var(--muted)); }
 .nband { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
 .nkind { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }

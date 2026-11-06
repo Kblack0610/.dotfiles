@@ -3,7 +3,7 @@
 #
 # The snapshot runs the REAL claude-recall tool-output and agent-usage burn over the burn
 # fixture (tests/fixtures/burn/home: one day, 2026-01-01 UTC), so it pins the join, not a copy
-# of either scanner. token-filter is a stub: verify replays live commands. The check runs over
+# of either scanner. The check runs over
 # hand-written snapshots, with a day inside the band as the negative control.
 
 setup() {
@@ -12,17 +12,11 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export TZ=UTC TOKENS_TODAY=2026-01-02 TOKENS_DIR="$HOME/.agent/token-usage"
-  export CLAUDE_TRANSCRIPTS="$HOME/.claude/projects" TOKEN_FILTER_STATE="$HOME/tf" TOKEN_FILTER_CACHE="$HOME/tfc"
+  export CLAUDE_TRANSCRIPTS="$HOME/.claude/projects"
   AU="$REPO_ROOT/.local/bin/agent-usage"
   export TOKENS_RECALL_CMD="$REPO_ROOT/.local/bin/claude-recall tool-output" TOKENS_BURN_CMD="$AU burn"
+  export TOKENS_CALLS_CMD="$REPO_ROOT/.local/bin/claude-recall tool-calls"
   cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
-  # token-filter verify --apply --json, canned: one shape went bad and got a skip
-  cat > "$SANDBOX/bin/token-filter" <<'EOF'
-#!/usr/bin/env bash
-[ "$*" = "verify --apply --json" ] || exit 9
-echo '{"method":"rtk","replayed":10,"rewritten":4,"ok":3,"bad":1,"saved_pct":12.5,"skips_added":["(^|[;&|(] *)ls\\b"],"bad_cmds":[{"cmd":"ls -t","verdict":"grew","why":"x"}]}'
-EOF
-  chmod +x "$SANDBOX/bin/token-filter"
 }
 
 snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
@@ -36,9 +30,11 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_equal "$(snap '[.window.start, .window.end, .errors]')" '["2026-01-01T00:00:00+00:00","2026-01-02T00:00:00+00:00",[]]'
 }
 
-@test "snapshot: by command head, by method, cost by project, and the stretches between compactions" {
+@test "snapshot: by tool, by command head, cost by project, and the stretches between compactions" {
   "$AU" tokens snapshot >/dev/null
-  assert_equal "$(snap '[.by_command[0].head, (.by_method | keys), .by_project.demo.cost_usd]')" '["sleep",["off"],5.0]'
+  assert_equal "$(snap '[.by_command[0].head, .by_project.demo.cost_usd]')" '["sleep",5.0]'
+  # every tool call lands in exactly one by_tool row, so the rows sum to the total
+  assert_equal "$(snap '[(.by_tool | map(.calls) | add) == .totals.tool_calls, (.by_tool[0] | keys)]')" '[true,["calls","carried_tokens","chars","tool"]]'
   assert_equal "$(snap '.long_runs | [.turns_over, .stretches, .long]')" '[150,4,0]'
 }
 
@@ -52,28 +48,28 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_failure 1
 }
 
-@test "snapshot: token-filter verify --apply is run and its summary kept" {
+@test "snapshot: the one-line row" {
   "$AU" tokens snapshot >/dev/null
-  assert_equal "$(snap '.token_filter | [.ok, .rewritten, .skips_added, .bad_cmds]')" \
-    '[3,4,["(^|[;&|(] *)ls\\b"],[{"cmd":"ls -t","verdict":"grew"}]]'
-  assert_equal "$(snap '.line')" '"tokens 2026-01-01: 179.0k context over 6 responses, 29.8k/response, carried 0% (2x its size), start median 27.0k, $2.50/merged PR (2), 0 long runs without compaction, token-filter 3/4 ok, 1 skips added"'
+  assert_equal "$(snap '.line')" '"tokens 2026-01-01: 179.0k context over 6 responses, 29.8k/response, carried 0% (2x its size), start median 27.0k, $2.50/merged PR (2), 0 long runs without compaction"'
+  assert_equal "$(snap 'has("token_filter") or has("by_method")')" false
 }
 
-@test "snapshot --no-verify leaves token-filter alone" {
-  rm "$SANDBOX/bin/token-filter"
-  run "$AU" tokens snapshot --no-verify
-  assert_success
-  assert_equal "$(snap '[.token_filter, .errors]')" '[null,[]]'
+@test "snapshot: responses per merged PR, chars per call, and the read-discipline counts from tool-calls" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[.responses_per_merged_pr == 3, .tool_chars_per_call, .reads.reads, .locate_read_share]')" '[true,4,0,null]'
+  printf '%s' '{"buckets":{"all":{"reads":8,"locate_then_read":4,"reread_same_lines":1,"locate_then_read_ctx":400,"reread_same_lines_ctx":90}},"groups":{"hot_target":[{"key":"~/a.md","calls":3,"ctx":700}]}}' > "$BATS_TEST_TMPDIR/calls.json"
+  TOKENS_CALLS_CMD="sh -c 'cat $BATS_TEST_TMPDIR/calls.json' calls" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[.reads.locate_then_read_ctx, .locate_read_share, .reread_share, .hot_targets]')" '[400,0.5,0.125,[{"path":"~/a.md","sessions":3,"ctx":700}]]'
 }
 
 @test "snapshot: a source that fails is named, and the rest of the day is still written" {
-  TOKENS_BURN_CMD=false run "$AU" tokens snapshot --no-verify
+  TOKENS_BURN_CMD=false run "$AU" tokens snapshot
   assert_success
   assert_equal "$(snap '[.totals.responses, .merged_prs, (.errors | length), (.errors[0] | startswith("burn: "))]')" '[6,null,1,true]'
 }
 
 @test "snapshot: no recall totals is a failed run, and the row says unreadable" {
-  TOKENS_RECALL_CMD=false run "$AU" tokens snapshot --no-verify
+  TOKENS_RECALL_CMD=false run "$AU" tokens snapshot
   assert_failure 1
   assert_line --index 1 --partial 'tokens 2026-01-01: unreadable (recall --by project'
 }
@@ -86,7 +82,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
 @test "line: the newest snapshot's row, or a named day; none is an error" {
   run "$AU" tokens line
   assert_failure 1
-  "$AU" tokens snapshot --no-verify >/dev/null
+  "$AU" tokens snapshot >/dev/null
   run "$AU" tokens line
   assert_success
   assert_output --partial 'tokens 2026-01-01: 179.0k context'
@@ -109,15 +105,26 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   assert_output --partial 'carried share 0.17 vs 7-day median 0.15 (+13%)'
 }
 
-@test "check: a change past the band against the 7-day median trips, naming the number" {
+@test "check: a rise past the band against the 7-day median trips, naming the number" {
   week; day 2026-01-01 100000 0.3 40000
   run "$AU" tokens check
   assert_failure 1
-  assert_output '2026-01-01: drift past 25%: carried share 0.3 vs 7-day median 0.15 (+100%)'
-  day 2026-01-01 60000 0.15 40000
+  assert_output '2026-01-01: worse past 25%: carried share 0.3 vs 7-day median 0.15 (+100%)'
+  day 2026-01-01 127000 0.15 40000
   run "$AU" tokens check
   assert_failure 1
-  assert_output --partial 'context per response 60,000 vs 7-day median 100,000 (-40%)'
+  assert_output --partial 'worse past 25%: context per response 127,000 vs 7-day median 100,000 (+27%)'
+}
+
+@test "check: a drop is an improvement and stays quiet, unless it is past 50% and reads as a broken counter" {
+  week; day 2026-01-01 73000 0.15 40000
+  run "$AU" tokens check
+  assert_success
+  assert_output --partial 'context per response 73,000 vs 7-day median 100,000 (-27%)'
+  day 2026-01-01 40000 0.15 40000
+  run "$AU" tokens check
+  assert_failure 1
+  assert_output --partial 'better past 50%, measurement suspect: context per response 40,000 vs 7-day median 100,000 (-60%)'
 }
 
 @test "check: fewer than 3 earlier days is a baseline still building, not a drift" {

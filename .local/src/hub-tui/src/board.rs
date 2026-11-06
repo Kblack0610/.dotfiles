@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use hub_core::infra::Infra;
 use hub_core::prom::Series;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
@@ -1069,6 +1070,67 @@ pub fn extra_hosts() -> Vec<String> {
         .collect()
 }
 
+/// RED FIXES, under RED NOW: each red the triage queued as a fix in the last week
+/// (`hub_core::reds`, which orders the open rows worst first and words the summary), the open
+/// rows one a line and the settled ones folded to a count. The app reads it on its own, so a
+/// failed read is this section's error alone, never an empty list that reads as all fixed.
+pub fn fixes(
+    reds: Option<&Result<hub_core::reds::Reds, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let head = |rest: String, style| {
+        Line::from(vec![
+            Span::styled("RED FIXES", p.head()),
+            Span::styled(format!("  {rest}"), style),
+        ])
+    };
+    let r = match reds {
+        None => return vec![head("reading fleet-bench reds".into(), p.dim())],
+        Some(Err(e)) => {
+            return vec![
+                head("read failed".into(), p.bad()),
+                clip_line(Line::styled(format!("  {e}"), p.bad()), w),
+            ]
+        }
+        Some(Ok(r)) => r,
+    };
+    let mut out = vec![clip_line(head(r.summary.clone(), Style::default()), w)];
+    for f in &r.open {
+        let style = match f.outcome.as_str() {
+            "came back" | "still red" | "no fix" => p.bad(),
+            "needs merge" => p.warn(),
+            _ => Style::default(),
+        };
+        // The number only: a URL or `owner/repo#N` would push the age off a narrow line.
+        let pr = f.pr.as_deref().map_or(String::new(), |n| {
+            let n = n.trim_end_matches('/');
+            let tail = n.rsplit(['#', '/']).next().unwrap_or(n);
+            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+                format!("  #{tail}")
+            } else {
+                format!("  PR {n}")
+            }
+        });
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("  {:<11}", f.outcome.to_uppercase()), style),
+                Span::raw(format!("  {}  {}{pr}  ", f.red, f.slug)),
+                Span::styled(f.age(now), p.dim()),
+            ]),
+            w,
+        ));
+    }
+    if !r.settled.is_empty() {
+        out.push(Line::styled(
+            format!("  +{} settled", r.settled.len()),
+            p.dim(),
+        ));
+    }
+    out
+}
+
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
 pub type Section = (&'static str, Vec<Line<'static>>);
 
@@ -1458,13 +1520,14 @@ pub(crate) mod tests {
             .into_iter()
             .map(|s| s.0)
             .collect();
-        // Jobs is the app's, drawn from its own job list between CI and Cloud runners.
+        // Jobs and Red fixes are the app's, each drawn from its own read: Jobs between CI and
+        // Cloud runners, Red fixes under Red now.
         let want: Vec<_> = hub_core::layout::resolve("infra")
             .unwrap()
             .sections
             .iter()
             .copied()
-            .filter(|s| *s != "jobs")
+            .filter(|s| !["jobs", "fixes"].contains(s))
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
@@ -1474,6 +1537,50 @@ pub(crate) mod tests {
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
         assert!(at("RUNNING") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
         assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RECENT RUNS"));
+    }
+
+    #[test]
+    fn red_fixes_shows_open_rows_worst_first_folds_settled_and_says_a_failed_read() {
+        let p = Palette { no_color: true };
+        let text = |ls: Vec<Line<'static>>| ls.iter().map(plain).collect::<Vec<_>>().join("\n");
+        let rows = [
+            r#"{"slug":"ar-1","red":"watch a","queued":"2026-11-06T10:00:00Z","merged":"x","fix_min":34,"pr":"Kblack0610/.dotfiles#1185","outcome":"fixed"}"#,
+            r#"{"slug":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
+            r#"{"slug":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
+            r#"{"slug":"ar-4","red":"watch b","queued":"2026-11-06T09:00:00Z","outcome":"cancelled"}"#,
+        ]
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+        let reds = hub_core::reds::split(rows);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
+            .unwrap()
+            .timestamp();
+        let s = text(fixes(Some(&Ok(reds)), p, now, 160));
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(
+            lines[0],
+            "RED FIXES  2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m"
+        );
+        assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
+        assert_eq!(
+            lines[2],
+            "  QUEUED       watch playground-nightly  ar-2  1h"
+        );
+        assert_eq!(lines[3], "  +2 settled");
+        assert_eq!(lines.len(), 4, "settled rows fold to their count: {s}");
+        // A failed read is the error, never an empty list that reads as all fixed.
+        let s = text(fixes(
+            Some(&Err("reds: cannot read the queue".into())),
+            p,
+            now,
+            160,
+        ));
+        assert_eq!(s, "RED FIXES  read failed\n  reds: cannot read the queue");
+        assert_eq!(
+            text(fixes(None, p, now, 160)),
+            "RED FIXES  reading fleet-bench reds"
+        );
     }
 
     #[test]

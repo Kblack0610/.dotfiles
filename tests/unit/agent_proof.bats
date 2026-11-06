@@ -73,6 +73,24 @@ _ask() {  # _ask <agent> <status>
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/demo-runner/last-outcome")" BLOCKED
 }
 
+@test "held_since stands from the first BLOCKED pass, FAILED keeps it, PROOF_HELD_KEEP keeps it, and an open pass clears it" {
+  export AGENTCTL_STATE_DIR="$SANDBOX/state"
+  local d="$AGENTCTL_STATE_DIR/demo-runner"
+  proof_outcome demo-runner BLOCKED "no account has room"
+  echo 1000 > "$d/held_since"
+  proof_outcome demo-runner BLOCKED "load 40 on 16 cores"
+  assert_equal "$(cat "$d/held_since")" 1000
+  assert_equal "$(cat "$d/held_why")" "load 40 on 16 cores"
+  proof_outcome demo-runner FAILED "judge died"
+  assert_equal "$(cat "$d/held_since")" 1000
+  PROOF_HELD_KEEP=1 proof_report demo-runner WORKED "started on the run floor"
+  assert_equal "$(cat "$d/held_since")" 1000
+  # Negative control: a pass past an open gate ends the hold.
+  proof_report demo-runner NOOP "queue empty"
+  assert [ ! -e "$d/held_since" ]
+  assert [ ! -e "$d/held_why" ]
+}
+
 @test "proof_report records a word outside the vocabulary as FAILED, naming it" {
   export AGENTCTL_STATE_DIR="$SANDBOX/state"
   proof_report demo-runner DONE "all good"

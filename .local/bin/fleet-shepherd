@@ -23,8 +23,8 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
-#                          and ends the turn on 1, so a quiet tick costs one call, not a pass
+#                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
+#                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -185,13 +185,15 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
-# survived, is escalated once. PARKED is fleet-pace's, below.
+# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, a nudged row whose fact
+# survived, or a test red on several branches (shared), is escalated once. PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
+  , ( (.shared // [])[] | select(.escalated | not)
+      | "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\"" )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
@@ -230,6 +232,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(overdue_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(improve_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
   b="$(findings_due)"
   [ -z "$b" ] || out="$b${out:+$'\n'}$out"
@@ -258,6 +262,20 @@ findings_due() {
     | [("finding-\(.rule)-\(.scope)" | gsub("/"; "-")), "\(.fact) \(.decision_class)",
        "\(.decision_class): \(.rule) \(.scope): \(.conclusion)" + (if (.cost // "") != "" then " (\(.cost))" else "" end)]
     | @tsv' <<<"$rows")
+}
+
+# improve_due -> one line for the KPI furthest past its threshold that no live row owns
+# (`fleet-bench improve`), so a pass files a defined row with a check, or claims the row or plan
+# that already owns it. The line carries no measured value, so its due_key holds still while the
+# number moves. Silent when fleet-bench fails: findings_due already names it unreadable.
+improve_due() {
+  local pick
+  pick="$(fleet-bench improve --json 2>/dev/null)" || return 0
+  [ -n "$pick" ] || return 0
+  jq -r '"improve: \(.kpi) past \(.bound) \(.threshold), no live row"
+    + (if .last then ", last \(.last.subject) \(.last.verdict)" else "" end)
+    + "; then: fleet-bench improve file \(.kpi) \"<defined fix>\", or claim \(.kpi) <id> when a row or plan already owns it"' \
+    <<<"$pick" 2>/dev/null || true
 }
 
 # overdue_due -> a line per WORKING session, or NEEDS one carrying on past its question, not
@@ -425,11 +443,17 @@ cmd_infra() {
 
 # infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears (high and
 # urgent, `watch-companion-loop tripped`). On 2026-11-04 queue-starved was high, so the shepherd
-# never heard that dispatch had started nothing for 7.5h.
+# never heard that dispatch had started nothing for 7.5h. A watch with a live `red` item has an
+# owner (fleet-bench triage), so it raises no line.
 infra_sample() {
+  local owned
+  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red "))) | .task' \
+    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
   {
     infra_now
-    watch-companion-loop tripped 2>/dev/null | awk -F'\t' 'NF { printf "watch: %s tripped (%s)\n", $1, $2 }'
+    watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
+      BEGIN { n = split(owned, o, "\n"); for (i = 1; i <= n; i++) has[o[i]] = 1 }
+      NF && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
 }
 
@@ -548,7 +572,7 @@ settle() {
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
-# check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
+# check: the refresh and gate a pass starts with, shared by the runner and a fleet-lead pass.
 # Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
 # a quiet fleet.
 cmd_check() {
@@ -637,11 +661,11 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
-# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding and
-# infra lines are fleet-lead's own.
+# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding, infra
+# and improve lines are fleet-lead's own.
 line_role() {
   case "${1#unhandled: }" in
-    nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
+    nudge*|escalate*|overdue*|"nightly red"*|"shared red"*) echo shepherd ;;
     pace:*|blocked:*|limit:*) echo fleet-pace ;;
     "watch: queue-starved "*) echo fleet-dispatch ;;   # its "Starved queue" self-heal
     *) echo fleet-lead ;;

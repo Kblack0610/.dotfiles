@@ -30,6 +30,7 @@ const dialog = (q) => DIALOG[q.kind] || "turn";
 // card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
 // amber, failing is red; the three dialog kinds take categorical colours.
 const NEED_KINDS = {
+  stopped: "Stopped",
   plan: "Plan to approve",
   ask: "Question",
   perm: "Permission",
@@ -66,14 +67,17 @@ function sessionCard(a) {
 
 // The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card: what
 // it did or would do, the rule that decided it, then its reason. A deferral shows too, so the
-// card says why the judge left the ask to you. Empty only for an ask it never judged.
+// card says why the judge left the ask to you, and an armed ask says when its answer goes out.
+// Empty only for an ask it never judged.
 function judgeText(a) {
   const j = a.judge || "";
   if (!j) return "";
   const live = a.answered_by === "judge", ans = j.startsWith("answer:") ? `"${j.slice(7)}"` : "";
+  const unproven = ", type not proven";
+  const assumes = a.assume_at ? `assumes ${ans || `"${a.recommend}"`} at ${a.assume_at.slice(11, 16)} unless you reply` : "";
   const what = j === "human" ? "deferred"
-    : j === "take-recommend" ? (live ? "answered" : "would take the recommendation")
-    : ans ? `${live ? "answered" : "would answer"} ${ans}` : j;
+    : j === "take-recommend" ? (live ? "answered" : assumes || `would take the recommendation${unproven}`)
+    : ans ? (live ? `answered ${ans}` : assumes || `would answer ${ans}${unproven}`) : j;
   return esc(`Judge: ${what}${a.rule ? ` (${a.rule})` : ""}${a.reason ? ` - ${a.reason}` : ""}`);
 }
 

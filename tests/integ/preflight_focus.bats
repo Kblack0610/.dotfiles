@@ -16,6 +16,8 @@ setup() {
 exit 1
 EOF
   chmod +x "$SANDBOX/bin/gh"
+  # The lessons ranker, as stow deploys it onto PATH. CI has no stow.
+  ln -s "$REPO_ROOT/.local/bin/lessons" "$SANDBOX/bin/lessons"
 
   # A disposable repo to be the project dir, so the git section has something to read.
   REPO="$SANDBOX/repo"
@@ -306,10 +308,12 @@ seed_anchor_sized() {
     for i in $(seq 1 "$1"); do echo "- blocker $i $pad"; done
     echo "## Active plans (most recent)"
     echo "- \`a-plan.md\`"
-    echo "## Recent lessons (digest)"
-    echo "- a digest lesson"
-    for i in $(seq 2 "$2"); do echo "- lesson $i $pad"; done
   } > "$a"
+  mkdir -p "$HOME/.agent/lessons"
+  {
+    echo "- a digest lesson"
+    for i in $(seq 2 "$2"); do echo "- lesson $i $(printf 'word %.0s' $(seq 1 40))"; done
+  } > "$HOME/.agent/lessons/toolrepo.md"
 }
 
 # fat_board_stub <rows> <bytes-per-row>
@@ -340,6 +344,8 @@ EOF
   [[ "$out" == *"Decisions log: 40 entries"* ]]
   [[ "$out" == *"+ omitted to fit the 9000 B turn-1 budget:"* ]]
   [[ "$out" == *"lessons digest ("* ]]
+  # A digest that did not reach the context is not a delivery.
+  [ ! -e "$HOME/.agent/lessons/_delivered" ]
 }
 
 @test "small inputs omit nothing, and the lessons digest and plans arrive" {
@@ -353,9 +359,30 @@ EOF
   assert_success
   refute_output --partial 'omitted to fit'
   assert_output --partial 'Left in flight'
-  assert_output --partial '## Recent lessons (digest)'
+  assert_output --partial '## Lessons (newest 1; nothing matched this work)'
   assert_output --partial 'a digest lesson'
   assert_output --partial 'a-plan.md'
-  # Each generated section once: from its own slot, not also inside the anchor.
-  [ "$(grep -c 'a digest lesson' <<<"$output")" -eq 1 ]
+  [ "$(grep -c 'a-plan.md' <<<"$output")" -eq 1 ]
+}
+
+@test "lessons that match the queue item's task come first, and only the matched one is logged" {
+  cp "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  mkdir -p "$HOME/.agent/lessons"
+  {
+    echo "- **2026-01-01** A waybar chip costs width on the bar."
+    for i in 1 2 3 4 5 6; do echo "- **2026-02-0$i** unrelated lesson number $i."; done
+  } > "$HOME/.agent/lessons/toolrepo.md"
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' \
+    "'{\"title\":\"some-plan P2: make the waybar chip narrower\"}'" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_ITEM=some-plan-p2
+
+  run context
+  assert_success
+  assert_output --partial '## Lessons for this work (1 matched on: waybar, chip; 4 newest)'
+  [ "$(grep -A1 '## Lessons for this work' <<<"$output" | tail -1)" = "- **2026-01-01** A waybar chip costs width on the bar." ]
+  refute_output --partial 'unrelated lesson number 1.'
+  run cat "$HOME/.agent/lessons/_delivered/$(date +%Y-%m).tsv"
+  assert_output --regexp "^$(date +%F)	toolrepo	[0-9a-f]{8}$"
 }

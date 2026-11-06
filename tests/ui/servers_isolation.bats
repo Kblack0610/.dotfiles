@@ -326,15 +326,14 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   refute_output --partial "$SRV_A               1 session(s)"
 }
 
-# ── rows / preview: the cross-server view (prefix A) ─────────────────────────
+# ── rows: the cross-server view (prefix H) ──────────────────────────
 #
-# `rows` is the data behind `pick-all`, split out from the fzf call precisely so it can be
+# `rows` is the data behind `pick`, split out from the fzf call precisely so it can be
 # asserted without a terminal. Field layout is <server> <session> <window> <display>, and
 # the window field is what distinguishes a session header row from a window row.
 
-@test "rows reaches ACROSS servers - the one thing choose-tree and sesh cannot do" {
-  # The whole point of the view. prefix w is server-scoped by construction and sesh follows
-  # $TMUX into one server, so a list containing BOTH worlds is the only new capability here.
+@test "rows reaches ACROSS servers - the one thing choose-tree cannot do" {
+  # The whole point of the view. prefix w is server-scoped by construction, so a list containing BOTH worlds is the only new capability here.
   manifest "$SRV_A" "alpha-only $MDIR"
   manifest "$SRV_B" "beta-only $MDIR"
   "$TMX" ensure "$SRV_A"
@@ -387,27 +386,31 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 
 @test "rows offers the server itself, so one list also replaces the server picker" {
   # A server row is the only row with BOTH the session and window fields empty; that is
-  # what tells pick-all to hop the whole world rather than land on a session.
+  # what tells pick to treat it as a world rather than a session.
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
   run bash -c "'$TMX' rows | awk -F'\t' '\$1==\"$SRV_A\" && \$2==\"\" && \$3==\"\"' | wc -l"
   assert_output '1'
 }
 
-@test "both views exist: ls feeds the compact picker, rows feeds the full one" {
-  # They answer different questions - "which world" vs "where is that window" - so
-  # neither may quietly absorb the other. `pick` was deleted once as superseded and
-  # had to come back; this is the assertion that stops that happening silently.
+@test "the picker opens collapsed to the worlds, and opening one shows its sessions" {
+  # One picker answers both "which world" and "where is that window": collapsed it is the
+  # compact view, open it is the full one. Neither may quietly vanish.
   manifest "$SRV_A" "one $MDIR" "two $MDIR"
   "$TMX" ensure "$SRV_A"
+  export TMX_PICK_DIR="$BATS_TEST_TMPDIR/pick"
+  mkdir -p "$TMX_PICK_DIR"
+  "$TMX" rows > "$TMX_PICK_DIR/rows"
+  : > "$TMX_PICK_DIR/open"
 
-  run "$TMX" ls                       # the compact view's data: one row per SERVER
+  run bash -c "'$TMX' tree-rows | cut -f4"
   assert_success
-  assert_output --partial "$SRV_A"
-  refute_output --partial 'one'       # sessions are the preview, not the list
+  assert_output --partial "+ $SRV_A"
+  refute_output --partial '  one'
 
-  run "$TMX" rows                     # the full view's data: sessions AND windows
-  assert_success
+  "$TMX" tree-enter "$SRV_A" >/dev/null
+  run bash -c "'$TMX' tree-rows | cut -f4"
+  assert_output --partial "- $SRV_A"
   assert_output --partial 'one'
   assert_output --partial 'two'
 }

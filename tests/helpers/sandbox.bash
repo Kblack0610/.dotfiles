@@ -41,7 +41,9 @@ GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 # The chain event writer agent-queue, fleet-dispatch and agent-land share, same reason again.
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB
+# The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
+PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -120,6 +122,10 @@ sandbox_init() {
   # and an item satisfies the focus gate.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 
+  # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
+  # that as "detach through systemd-run", which would start a real transient scope.
+  unset INVOCATION_ID
+
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
   # to assert exactly that behaviour.
@@ -131,8 +137,9 @@ sandbox_init() {
 
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
-  # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included.
-  unset NTFY_URL NTFY_TOKEN DISPLAY
+  # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included. The
+  # display ones keep a subject from opening a real window or driving the real compositor.
+  unset NTFY_URL NTFY_TOKEN DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the

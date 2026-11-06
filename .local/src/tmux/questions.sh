@@ -5,12 +5,19 @@
 # d then enter drops it, g goes to the asking session (reopening it when it has ended). Data
 # and delivery are agent-ask's (list, card, answer, cancel, target).
 #
+# Below the questions, one row per session the fleet state document has in NEEDS for a prompt
+# open in its own terminal (a permission, an AskUserQuestion, a plan to approve): agent-ask
+# never sees those, yet the agents chip counts them in its !N, so a list of asks alone read 8
+# beside a chip of 12. Such a row's card is the session and the bottom of its pane; it is
+# answered in the session, so g goes there and the answer keys say so.
+#
 # Usage: questions.sh [verb]
 #
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
-#                     then oldest
+#                     then oldest, then the sessions at a terminal prompt (id @<target>)
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
+#   card <id>         the card for one row (agent-ask card, or a prompt's session and pane)
 #   --help, -h        this text
 #   (no verb)         open the panel
 
@@ -20,6 +27,10 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../../.config/shared-hooks/project-name.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
+# fleet-sessions' state document, the one place a session's NEEDS reason is decided.
+FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+# The reason session_bucket gives a session waiting on its own terminal.
+PROMPT_REASON='waiting on a prompt or permission'
 # The armed choice between a key and its enter: "<mode> <option> <id>". The picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scroll card . C-/ layout . esc close'
@@ -29,10 +40,25 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scrol
 # beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
+# prompt_list: the sessions at a terminal prompt, "<target>\t<project>\t<idle min>\t<doing>\t<topic>",
+# the project resolved from the session's directory the way an ask's is.
+prompt_list() {
+  [ -r "$FLEET_STATE_FILE" ] || return 0
+  local t cwd rest
+  jq -r --arg r "$PROMPT_REASON" '.sessions[]? | select(.bucket == "NEEDS" and .reason == $r)
+    | [.target, (.cwd // ""), (.idle_min // 0),
+       (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
+    "$FLEET_STATE_FILE" 2>/dev/null |
+    while IFS=$'\t' read -r t cwd rest; do
+      printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
+    done
+}
+
 cmd_rows() {
-  local list here live epochs names name slugs="" titles
+  local list prompts here live epochs names name slugs="" titles
   list="$("$QUESTIONS_ASK" list --all --pending)"
-  [ -n "$list" ] || return 0
+  prompts="$(prompt_list)"
+  [ -n "$list$prompts" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
   live="$("$QUESTIONS_ASK" live-sessions 2>/dev/null | tr '\n' ' ')"
   titles="$(cut -f16 <<<"$list" | sort -u | "$QUESTIONS_ASK" titles 2>/dev/null)"
@@ -40,10 +66,12 @@ cmd_rows() {
   # ages go blank rather than shift onto the wrong rows.
   epochs="$(cut -f12 <<<"$list" | date -f - +%s 2>/dev/null)" || epochs=""
   [ "$(grep -c . <<<"$epochs")" = "$(grep -c . <<<"$list")" ] || epochs="$(sed 's/.*//' <<<"$list")"
-  # One slug per project named (a row with no project goes by its session's name).
-  names="$(awk -F'\t' '{ n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) } print n }' <<<"$list" | sort -u)"
-  while IFS= read -r name; do slugs+="$name=$(project_slug "$name");"; done <<<"$names"
-  paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") |
+  # One slug per project named (a row with no project goes by its session's name; a prompt
+  # row always does).
+  names="$({ awk -F'\t' 'NF { n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) } print n }' <<<"$list"
+    awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
+  while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
+  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
       function age(e,   d) {
@@ -57,8 +85,28 @@ cmd_rows() {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
       }
-      # The first file is the registry titles, "<claude session>\t<title>".
-      FNR == NR { T[$1] = $2; next }
+      # The files are the registry titles, "<claude session>\t<title>", then the prompts
+      # (prompt_list), then the asks on stdin.
+      FNR == 1 { part++ }
+      part == 1 { T[$1] = $2; next }
+      part == 2 {
+        if ($1 == "") next
+        s = $1; sub(/^[^\/]*\//, "", s); sub(/:[0-9]+$/, "", s)
+        n = $2; if (n == "") { n = s; sub(/-agent-[0-9]+$/, "", n) }
+        who = slug(n)
+        # The agent number, or on a hub session the window, since a hub session holds several.
+        if (match(s, /agent-[0-9]+$/)) who = who ":" substr(s, RSTART + 6)
+        else if (match($1, /:[0-9]+$/)) who = who substr($1, RSTART)
+        k = "p" FNR; W[k] = who; if (length(who) > w) w = length(who)
+        e = now - $3 * 60
+        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e)
+        tool = $4; sub(/:.*/, "", tool)
+        if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval in its terminal"
+        else if (tool == "AskUserQuestion") Q[k] = "question waiting in its terminal"
+        else Q[k] = "prompt waiting in its terminal" ($4 != "" ? ": " $4 : "")
+        S[k] = ($5 != "") ? faint $5 off : ""
+        next
+      }
       {
         n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) }
         who = slug(n)
@@ -78,11 +126,12 @@ cmd_rows() {
           if (S[i] != "") printf "\037%*s%s", w + 6, "", S[i]
           print ""
         }
-      }' <(printf '%s\n' "$titles") - |
+      }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
-# rows_count: how many questions cmd_rows printed (one NUL per row).
-rows_count() { tr -cd '\000' | wc -c | tr -d ' '; }
+# rows_count: "<questions> <prompts>" in what cmd_rows printed (a row is NUL-ended; a prompt's
+# id starts with @).
+rows_count() { tr '\n\000' '\037\n' | awk '/^@/ { p++; next } { q++ } END { print q + 0, p + 0 }'; }
 
 # One handler for every answer key. It prints fzf actions; the state file carries an armed
 # choice to the enter that sends it, so a stray key never sends anything. Texts go inside
@@ -140,12 +189,37 @@ after() {
   local n
   n="$(cmd_rows | rows_count)"
   st_write ""
-  printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting "$n")"
-  if [ "$n" = 0 ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
+  printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting $n)"
+  if [ "$n" = "0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
-header_count() { printf 'change-header~%s~+' "$(waiting "$(cmd_rows | rows_count)")"; }
-waiting() { if [ "$1" = 0 ]; then echo "no questions waiting"; else echo "$1 waiting"; fi; }
+header_count() { printf 'change-header~%s~+' "$(waiting $(cmd_rows | rows_count))"; }
+# waiting <questions> <prompts>: the header, "8 questions . 4 prompts waiting".
+waiting() {
+  local q="${1:-0}" p="${2:-0}" out=""
+  ((q + p == 0)) && { echo "no questions waiting"; return; }
+  ((q > 0)) && out="$q question$( ((q == 1)) || echo s)"
+  ((p > 0)) && out+="${out:+ . }$p prompt$( ((p == 1)) || echo s)"
+  echo "$out waiting"
+}
+
+# prompt_card <target>: a prompt row's card, the session from the state document and the bottom
+# of its pane, where the question or plan it waits on is drawn.
+prompt_card() {
+  local t="$1" world local_t
+  world="${t%%/*}" local_t="${t#*/}"
+  jq -r --arg t "$t" '.sessions[]? | select(.target == $t)
+    | "\(.target)  \(.reason)", "topic  \(.topic // "-")", "doing  \(.doing // "-")",
+      "said   \(.said // "-")"' "$FLEET_STATE_FILE" 2>/dev/null
+  printf '\n'
+  tmux -L "$world" capture-pane -p -J -t "$local_t" 2>/dev/null | sed -e 's/[[:space:]]*$//' | awk 'NF { last = NR } { l[NR] = $0 } END { for (i = (last > 30 ? last - 29 : 1); i <= last; i++) print l[i] }'
+}
+cmd_card() {
+  case "${1:-}" in
+  @*) prompt_card "${1#@}" ;;
+  *) "$QUESTIONS_ASK" card "$@" ;;
+  esac
+}
 
 cmd_key() {
   local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid=""
@@ -171,6 +245,8 @@ cmd_key() {
   g)
     if [ "$mode" = typing ]; then printf 'put(g)'; return 0; fi
     [ -n "$id" ] || return 0
+    # A prompt row names its session already; agent-panel owns the hop.
+    if [[ "$id" == @* ]]; then printf 'execute-silent(agent-panel jump %s)+abort' "$(printf '%q' "${id#@}")"; return 0; fi
     # agent-ask resolves the session (its live_row) and reopens an ended one through
     # fleet-dispatch; agent-panel owns the cross-server hop.
     local to
@@ -181,6 +257,7 @@ cmd_key() {
   [1-9] | d | t)
     if [ "$mode" = typing ]; then printf 'put(%s)' "$k"; return 0; fi
     [ -n "$id" ] || return 0
+    if [[ "$id" == @* ]]; then footer "answer this one in its session . g goes there"; return 0; fi
     ask_load "$id"
     # A key pressed before the reload after a send lands on the row just answered: refresh.
     if [ "$A_STATUS" != pending ]; then
@@ -258,9 +335,9 @@ cmd_pick() {
   fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" <"$rows" \
     --read0 --no-wrap --no-input --disabled --with-nth=2.. \
     --border-label=' questions ' --border-label-pos=3 \
-    --header="$(waiting "$(rows_count <"$rows")")" \
+    --header="$(waiting $(rows_count <"$rows"))" \
     --footer="$QUESTIONS_KEYS" \
-    --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $(printf '%q' "$QUESTIONS_ASK") card {1}" \
+    --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $me card {1}" \
     "${binds[@]}" \
     --bind="enter:transform($me key enter {1} {q})" \
     --bind="esc:transform($me key esc {1})" \
@@ -276,6 +353,7 @@ cmd_pick() {
 case "${1:-}" in
 rows) cmd_rows ;;
 key) shift; cmd_key "$@" ;;
+card) shift; cmd_card "$@" ;;
 '') cmd_pick ;;
 -h | --help) panel_usage ;;
 *) panel_die "unknown verb: $1 (try --help)" ;;

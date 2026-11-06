@@ -61,9 +61,9 @@ const data = {
   workers: [
     worker("ask-judge", {
       eval: {
-        prompt_sha: "3fa1c2d", live: ["restates-rule"], total: {},
+        prompt_sha: "3fa1c2d", live: ["ship_deploy"], total: {},
         rules: [
-          { rule: "restates-rule", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true, bar: { labels: 6, need: 30, met: false } },
+          { rule: "ship_deploy", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true, bar: { labels: 6, need: 30, met: false } },
           { rule: "taste", verdicts: 31, errors: 0, scored: 28, precision: null, false_defer_pct: 18, live: false, bar: { labels: 6, need: 30, met: false } },
         ],
       },
@@ -94,7 +94,7 @@ test("an open judge shows its role, prompt, 24h calls with Langfuse links, and i
   assert.match(h, /trigger called by its caller \| 24h: 14 calls, <span class="bad">1 errors<\/span>, \$0.12, 865k tokens, p95 7s/);
   assert.match(h, /<a href="https:\/\/lf\/project\/P\/sessions\/s1" target="_blank" rel="noopener">Langfuse<\/a>/);
   assert.match(h, /<td class="bad">error<\/td><td><span class="muted">s2<\/span>/, "a call with no session shows its id");
-  assert.match(h, /<td>restates-rule<\/td><td class="n">9<\/td><td class="n">6<\/td><td class="n">100%<\/td><td class="n">-<\/td><td>yes<\/td>/);
+  assert.match(h, /<td>ship_deploy<\/td><td class="n">9<\/td><td class="n">6<\/td><td class="n">100%<\/td><td class="n">-<\/td><td>yes<\/td>/);
   assert.match(h, /<td>taste<\/td>.*<td class="n">18%<\/td><td>no \(6\/30 to bar\)<\/td>/);
   open("ask-judge");
 });

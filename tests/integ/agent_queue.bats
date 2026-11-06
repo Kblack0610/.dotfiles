@@ -811,6 +811,21 @@ EOF
   assert_equal "$(jq -c '.recent | [.failed_1h, .failed_6h, .failed_24h, .started_1h, .started_6h, .started_24h]' <<<"$output")" '[0,1,1,1,2,3]'
 }
 
+@test "stats done_today counts ok items since local midnight, never the UTC day or a failed item" {
+  export TZ=Etc/GMT+8 # west of UTC: last night's 23:59 local is already today in UTC
+  today="$(date +%F)"
+  at() { date -u -d "@$(date -d "$1" +%s)" +%FT%TZ; } # -u alone would read $1 as UTC
+  for spec in "a|$today 00:00:01|ok" "b|$(date -d yesterday +%F) 23:59:59|ok" "c|$today 00:00:02|failed"; do
+    IFS='|' read -r slug when status <<<"$spec"
+    "$AQ" add --project game --slug "$slug" "$slug"
+    "$AQ" move "$slug" done --status "$status"
+    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")"
+  done
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c .recent.done_today <<<"$output")" 1
+}
+
 @test "a slug is matched exactly, never as the tail of a longer one" {
   "$AQ" add --project game --slug x-first "x"
   "$AQ" add --project game --slug second --after first-missing "y" 2>/dev/null || true
@@ -904,6 +919,16 @@ EOF
   assert_failure; assert_output --partial "no item: nope"
 }
 
+@test "credit-of prints what attribute would record and writes nothing" {
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Arena/B.cs\nAssets/Level/L.cs'
+  assert_success; assert_output $'arena\tarena level'
+  run "$AQ" credit-of game <<<$'Assets/Arena/A.cs\nAssets/Level/L.cs'
+  assert_output $'\tarena level'
+  run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
+  assert_success; assert_output ''
+  [ ! -e "$AGENT_QUEUE_DIR" ]
+}
+
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture
@@ -951,6 +976,19 @@ case " $* " in
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
+}
+
+@test "a canary item files no story row, and --from takes only the known origins" {
+  story_notes
+  run "$AQ" add --project level --from canary --tags 'night canary' --slug c1 "check(canary): greet 2026w45"
+  assert_success
+  refute_output --partial 'story'
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ "$(field "$(item queued c1)" from)" = canary ]
+  run "$AQ" add --project game --from robot --slug c2 "x"
+  assert_failure
+  assert_output --partial 'human, shepherd, canary or board'
 }
 
 @test "add files a started story row under the item's epic and links it as row:" {

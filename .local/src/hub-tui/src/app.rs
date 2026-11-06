@@ -33,6 +33,9 @@ use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
 /// evaluate every 30-60s anyway.
 pub const PROM_REFRESH: Duration = Duration::from_secs(60);
+/// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
+/// Red fixes only this often; entering Infra and `r` still read it at once.
+pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -200,6 +203,8 @@ pub enum Msg {
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
+    /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
+    Reds(Result<hub_core::reds::Reds, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
@@ -227,6 +232,8 @@ pub enum Msg {
     TasksActed(Result<String, String>),
     /// `notes projects --stats --json` and the project map, for the Projects tab's cards.
     Projects(Box<projtab::Loaded>),
+    /// The opened card's page (hub_core::page).
+    ProjPage(Box<hub_core::page::Page>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -266,6 +273,8 @@ pub struct App {
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
+    /// Infra's Red fixes section; None until the first read.
+    pub reds: Option<Result<hub_core::reds::Reds, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
@@ -300,6 +309,10 @@ pub struct App {
     /// The Projects tab's card inputs; None until the first read.
     pub projects: Option<projtab::Loaded>,
     pub pv: ProjView,
+    /// The opened card's page, read on open and on r, never for the list (dashboards rule 10).
+    pub proj_page: Option<hub_core::page::Page>,
+    /// The project the last page read was started for.
+    proj_page_for: Option<String>,
     /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -336,6 +349,9 @@ pub struct App {
     boards_read: Read,
     forecast_read: Read,
     ranked_read: Read,
+    reds_read: Read,
+    /// When the last Red fixes read finished, for `REDS_REFRESH`.
+    reds_at: Option<std::time::Instant>,
     actions_read: Read,
     fleet_read: Read,
     pipeline_read: Read,
@@ -346,6 +362,7 @@ pub struct App {
     candidates_read: Read,
     tasks_read: Read,
     projects_read: Read,
+    proj_page_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -369,6 +386,7 @@ impl App {
             boards: None,
             forecast: None,
             ranked: None,
+            reds: None,
             fleet: None,
             pipeline: None,
             focus: None,
@@ -409,6 +427,8 @@ impl App {
             boards_read: Read::default(),
             forecast_read: Read::default(),
             ranked_read: Read::default(),
+            reds_read: Read::default(),
+            reds_at: None,
             actions_read: Read::default(),
             fleet_read: Read::default(),
             pipeline_read: Read::default(),
@@ -419,6 +439,9 @@ impl App {
             candidates_read: Read::default(),
             tasks_read: Read::default(),
             projects_read: Read::default(),
+            proj_page_read: Read::default(),
+            proj_page: None,
+            proj_page_for: None,
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -474,6 +497,17 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
+            });
+        }
+    }
+
+    /// fleet-bench reds writes no file to watch, so Infra reads it on entering, on `r` and on
+    /// the tick while it is shown, at most every `REDS_REFRESH`.
+    pub fn read_reds(&mut self) {
+        if self.reds_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Reds(hub_core::reds::read(runner.as_ref())));
             });
         }
     }
@@ -667,6 +701,51 @@ impl App {
         self.read_cards();
     }
 
+    /// The open card's name and stage; None on the list or with All open.
+    fn open_card(&self) -> Option<(String, String)> {
+        if !self.pv.open {
+            return None;
+        }
+        let (profile, name) = self.tv.project.as_ref()?;
+        self.cards()
+            .cards
+            .into_iter()
+            .find(|c| c.profile == *profile && c.name == *name)
+            .map(|c| (c.name, c.stage))
+    }
+
+    /// Read the open card's page in a worker; it comes back as Msg::ProjPage.
+    fn read_proj_page(&mut self) {
+        let Some((name, stage)) = self.open_card() else {
+            return;
+        };
+        self.proj_page_for = Some(name.clone());
+        if self.proj_page_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let pg = hub_core::page::read(runner.as_ref(), &name, &stage, jobs::now());
+                let _ = tx.send(Msg::ProjPage(Box::new(pg)));
+            });
+        }
+    }
+
+    /// Read the open card's page here and now, for `--once`.
+    pub fn read_proj_page_now(&mut self, runner: &dyn Runner) {
+        if let Some((name, stage)) = self.open_card() {
+            self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
+        }
+    }
+
+    /// Read the page when the open card is not the one last asked for.
+    fn want_proj_page(&mut self) {
+        if let Some((name, _)) = self.open_card() {
+            if self.proj_page_for.as_deref() != Some(name.as_str()) {
+                self.read_proj_page();
+            }
+        }
+    }
+
     fn read_cards(&mut self) {
         if self.projects_read.want() {
             let tx = self.tx.clone();
@@ -697,7 +776,7 @@ impl App {
         };
         let null = serde_json::Value::Null;
         let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
-        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), &l.repos)
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref())
     }
 
     /// Open the project a `hub tab projects <name>` named, once the cards are read.
@@ -777,6 +856,11 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
+                if self.tab == Tab::Infra
+                    && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
+                {
+                    self.read_reds();
+                }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
                     self.read_boards();
@@ -834,6 +918,13 @@ impl App {
                 self.ranked = Some(r);
                 if self.ranked_read.done() {
                     self.read_ranked();
+                }
+            }
+            Msg::Reds(r) => {
+                self.reds = Some(r);
+                self.reds_at = Some(std::time::Instant::now());
+                if self.reds_read.done() && self.tab == Tab::Infra {
+                    self.read_reds();
                 }
             }
             Msg::Fleet(f) => {
@@ -954,8 +1045,15 @@ impl App {
             Msg::Projects(l) => {
                 self.projects = Some(*l);
                 self.open_wanted();
+                self.want_proj_page();
                 if self.projects_read.done() {
                     self.read_cards();
+                }
+            }
+            Msg::ProjPage(pg) => {
+                self.proj_page = Some(*pg);
+                if self.proj_page_read.done() {
+                    self.read_proj_page();
                 }
             }
         }
@@ -969,6 +1067,20 @@ impl App {
     fn key(&mut self, k: KeyEvent) {
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
             self.quit = true;
+            return;
+        }
+        // Ctrl-d/Ctrl-u: vim's half page, ahead of every tab's own keys so a tab's plain d or u
+        // (a Sessions action, Fleet's details) never sees them. Queue moves its selection.
+        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d' | 'u'))
+        {
+            let half = (self.page / 2).max(1);
+            if self.tab == Tab::Queue {
+                self.queue_key(k);
+            } else if k.code == KeyCode::Char('d') {
+                self.scroll += half;
+            } else {
+                self.scroll = self.scroll.saturating_sub(half);
+            }
             return;
         }
         if self.tab == Tab::Infra && self.infra_key(k) {
@@ -987,6 +1099,7 @@ impl App {
             return;
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
+            self.want_proj_page();
             return;
         }
         if self.tab == Tab::Fleet && self.fleet_key(k) {
@@ -1011,6 +1124,9 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
+                if self.tab == Tab::Infra {
+                    self.read_reds();
+                }
                 if self.tab == Tab::Queue {
                     self.read_candidates();
                     self.read_pipeline();
@@ -1030,6 +1146,7 @@ impl App {
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
+                    self.read_proj_page();
                 }
             }
             KeyCode::Char('o') => {
@@ -1144,6 +1261,9 @@ impl App {
         if t == Tab::Fleet {
             self.read_fleet();
         }
+        if t == Tab::Infra {
+            self.read_reds();
+        }
         if t == Tab::Daily {
             self.daily_outbox = false;
             self.read_focus();
@@ -1175,6 +1295,10 @@ impl App {
                 return true;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
+        }
+        if self.tv.prompt.is_none() && self.tv.project.is_some() && k.code == KeyCode::Char('f') {
+            self.pv.folds = !self.pv.folds;
+            return true;
         }
         if self.tv.prompt.is_none() {
             let v = &self.tv;
@@ -1216,14 +1340,23 @@ impl App {
         }
     }
 
-    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item or a candidate, c arms
-    /// a cancel, +/- move its priority, f folds the candidates and p promotes one. The page
-    /// scrolls with PgUp/PgDn, space and g/G.
+    /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
+    /// pick an active item or a candidate, c arms a cancel, +/- move its priority, f folds the
+    /// candidates and p promotes one. The draw keeps the selected row in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
-        match self
-            .qv
-            .key(k, self.queue.as_ref(), cands_of(&self.candidates))
-        {
+        // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
+        // which keeping the selected row in view alone would stop short of.
+        match k.code {
+            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
+            _ => {}
+        }
+        match self.qv.key(
+            k,
+            self.queue.as_ref(),
+            cands_of(&self.candidates),
+            self.page,
+        ) {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
@@ -1626,8 +1759,12 @@ impl App {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
-            // The Projects tab's one section is its selected card or row, kept in view.
-            if let (Tab::Projects, Some(&(_, at))) = (self.tab, sections.first()) {
+            // Clamped first, so a jump to the end (G) is the last page before the selection is
+            // kept in view on it.
+            let max = lines.len().saturating_sub(body.height as usize);
+            self.scroll = self.scroll.min(max);
+            // The Projects and Queue tabs' one section is the selected card or row, kept in view.
+            if let (Tab::Projects | Tab::Queue, Some(&(_, at))) = (self.tab, sections.first()) {
                 let h = (body.height as usize).max(1);
                 if at < self.scroll {
                     self.scroll = at.saturating_sub(2);
@@ -1643,7 +1780,6 @@ impl App {
                 }
             }
             self.sections = sections;
-            let max = lines.len().saturating_sub(body.height as usize);
             self.scroll = self.scroll.min(max);
             f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)), body);
         }
@@ -1706,7 +1842,7 @@ impl App {
         let tabs = "1-8";
         match self.tab {
             Tab::Infra if !self.infra_jobs => format!(
-                "n/N section  Enter jobs table  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+                "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
             Tab::Infra if self.jv.log.is_some() => {
@@ -1725,38 +1861,39 @@ impl App {
             Tab::Fleet => {
                 let d = if self.fleet_details { "hide" } else { "show" };
                 let t = if self.fleet_tonight { "default order" } else { "tonight" };
-                format!("/ search  f state  l lane  s sort  Esc clear  d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                format!("/ search  f state  l lane  s sort  Esc clear  d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
-                "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Daily if self.focus_day.is_some() => {
-                "[ ] day  t today  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "[ ] day  t today  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Daily => {
-                "[ ] day  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "[ ] day  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Log if self.log_days => {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit",
+                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
-                "j/k pick  c cancel  +/- priority  f candidates  p promote  o Grafana  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn g/G ^d/^u pick  c cancel  +/- priority  f candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
+                "j/k pick  / search  l lane  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
+                if self.tv.project.is_some() { "f page sections  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
+            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -1832,7 +1969,8 @@ impl App {
                             .iter()
                             .find(|c| c.profile == *profile && c.name == *name)
                         {
-                            l = projtab::card_lines(c, self.p, w);
+                            let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
+                            l = projtab::open_lines(c, pg, self.pv.folds, self.p, w);
                             l.push(Line::raw(""));
                         }
                     }
@@ -1844,8 +1982,8 @@ impl App {
             },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
-                Some(q) => (
-                    queuetab::page(
+                Some(q) => {
+                    let (l, at) = queuetab::page(
                         q,
                         &self.qv,
                         self.candidates.as_ref(),
@@ -1856,9 +1994,9 @@ impl App {
                         self.p,
                         now,
                         w,
-                    ),
-                    vec![],
-                ),
+                    );
+                    (l, at.map(|a| ("", a)).into_iter().collect())
+                }
             },
             // One row per session (its controls, stage and ETA), the selected one's detail and
             // the asks; the changes, the forecast and the ranked sessions are Log's.
@@ -1920,6 +2058,14 @@ impl App {
             // Infra's sections in hub_core::layout order, a blank line between them.
             (_, _, Some(i)) => {
                 let mut secs = board::infra(i, self.p, now, w, &self.hosts);
+                // Red fixes is read on its own, so it goes in under Red now (or last, when a
+                // failed Prometheus read left only the error).
+                let at = secs
+                    .iter()
+                    .position(|s| s.0 == "red")
+                    .map_or(secs.len(), |n| n + 1);
+                let fixes = board::fixes(self.reds.as_ref(), self.p, now, w);
+                secs.insert(at, ("fixes", fixes));
                 let at = secs
                     .iter()
                     .position(|s| s.0 == "cloud")
@@ -2205,7 +2351,8 @@ mod tests {
             queuetab::QueueView::default().key(
                 KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
                 Some(&queuetab::tests::fixture()),
-                &[]
+                &[],
+                10
             ),
             queuetab::Ask::Pass
         );
@@ -2228,6 +2375,98 @@ mod tests {
         assert!(top(&mut a)[0].starts_with("pipeline  reading"));
         a.handle(Msg::Pipeline(Ok(None)));
         assert_eq!(top(&mut a)[0], "pipeline -");
+    }
+
+    /// A queue longer than any screen: `n` queued items, item-0 first.
+    fn long_queue(n: usize) -> hub_core::queue::Queue {
+        let jsonl: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"slug":"item-{i}","project":"dotfiles","mode":"oneshot","priority":"high","queued":"2026-11-03T10:{:02}:00Z","state":"queued","task":"Task {i}"}}"#, i % 60))
+            .collect();
+        hub_core::queue::Queue {
+            items: hub_core::queue::parse(&jsonl.join("\n")),
+            stats: None,
+            errors: vec![],
+        }
+    }
+
+    fn ctrl(c: char) -> Msg {
+        Msg::Input(Event::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL,
+        )))
+    }
+
+    #[test]
+    fn the_queue_page_follows_the_selection_past_the_bottom() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        assert!(!screen(&mut a, 80, 20).contains("item-30"));
+        for _ in 0..30 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 80, 20);
+        assert_eq!(a.qv.sel, 30);
+        assert!(a.scroll > 0, "the page scrolled with the selection");
+        assert!(s.contains("item-30"), "the selected row is on screen:\n{s}");
+        a.handle(key('k'));
+        assert!(screen(&mut a, 80, 20).contains("item-29"));
+    }
+
+    #[test]
+    fn g_and_shift_g_jump_the_queue_selection_and_the_page_with_it() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        screen(&mut a, 80, 20);
+        a.handle(key('G'));
+        let s = screen(&mut a, 80, 20);
+        assert_eq!(a.qv.sel, 39);
+        assert!(s.contains("item-39"), "{s}");
+        assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
+        a.handle(key('g'));
+        let s = screen(&mut a, 80, 20);
+        assert_eq!((a.qv.sel, a.scroll), (0, 0));
+        assert!(s.contains("item-0"), "{s}");
+        // PgDn and space move the selection a page; the page follows rather than snapping back.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::PageDown))));
+        assert_eq!(a.qv.sel, a.page);
+        let want = format!("item-{}", a.page);
+        assert!(screen(&mut a, 80, 20).contains(&want));
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_move_the_queue_selection_half_a_page() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        screen(&mut a, 80, 20);
+        let half = a.page / 2;
+        assert!(half > 0);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.sel, half);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.sel, 2 * half);
+        a.handle(ctrl('u'));
+        assert_eq!(a.qv.sel, half);
+        // NEGATIVE CONTROL: a plain d or u is no move.
+        a.handle(key('d'));
+        a.handle(key('u'));
+        assert_eq!(a.qv.sel, half);
+    }
+
+    #[test]
+    fn ctrl_d_scrolls_any_other_page_half_a_page_and_is_not_its_plain_d() {
+        let mut a = app(Tab::Fleet);
+        a.page = 20;
+        let details = a.fleet_details;
+        a.handle(ctrl('d'));
+        assert_eq!(a.scroll, 10);
+        assert_eq!(a.fleet_details, details, "Ctrl-d is not Fleet's d");
+        a.handle(ctrl('u'));
+        assert_eq!(a.scroll, 0);
+        a.handle(key('d'));
+        assert_ne!(
+            a.fleet_details, details,
+            "plain d still toggles the details"
+        );
     }
 
     fn app(tab: Tab) -> App {
@@ -2703,7 +2942,6 @@ mod tests {
                 stat("personal", "garden", 1, 1),
                 stat("bnb", "demo", 1, 3),
             ]),
-            repos: Default::default(),
         }
     }
 
@@ -2793,8 +3031,34 @@ mod tests {
 
         // The card's numbers stay on top of its rows.
         a.handle(key('j'));
+        let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
+        assert!(
+            !ran(&fake).contains("fleet-bench"),
+            "the list reads no page"
+        );
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.tv.project, Some(("bnb".into(), "demo".into())));
+        // Opening it reads its page once, in a worker; it draws as heads with counts, f opens them.
+        assert!(screen(&mut a, 140, 30).contains("reading the page..."));
+        loop {
+            match rx.recv().unwrap() {
+                Msg::ProjPage(pg) => {
+                    assert_eq!(pg.project, "demo");
+                    a.handle(Msg::ProjPage(pg));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
+        let s = screen(&mut a, 140, 40);
+        assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
+        assert!(s.contains("f opens it"), "{s}");
+        assert!(s.lines().last().unwrap().contains("f page sections"), "{s}");
+        a.handle(key('f'));
+        assert!(a.pv.folds);
+        assert!(!screen(&mut a, 140, 40).contains("f opens it"));
+        a.handle(key('f'));
         let s = screen(&mut a, 140, 30);
         assert!(
             at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
@@ -3255,6 +3519,42 @@ mod tests {
     /// The first body line under the tab bar.
     fn top(s: &str) -> &str {
         s.lines().nth(1).unwrap_or("")
+    }
+
+    #[test]
+    fn entering_infra_reads_red_fixes_and_draws_them_under_red_now() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        a.infra = Some(board::tests::fixture());
+        a.handle(Msg::Tab(Tab::Infra, None));
+        // The read went through the app's runner (the Fake), never a real fleet-bench.
+        let m = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(matches!(m, Msg::Reds(Ok(_))));
+        a.handle(Msg::Reds(Err("reds: cannot read the queue".into())));
+        let s = screen(&mut a, 160, 80);
+        let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
+        assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
+        assert!(at("RED FIXES") < at("MACHINE "), "{s}");
+        assert!(s.contains("reds: cannot read the queue"), "{s}");
+    }
+
+    #[test]
+    fn the_tick_rereads_red_fixes_only_after_reds_refresh_and_r_reads_at_once() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Infra, tx);
+        a.handle(Msg::Reds(Err("x".into())));
+        assert!(!a.reds_read.busy);
+        // A fresh answer: the tick leaves it alone (one read is about 2s of fleet-bench).
+        a.handle(Msg::Tick);
+        assert!(!a.reds_read.busy, "the tick re-read a fresh answer");
+        // r always reads.
+        a.handle(key('r'));
+        assert!(a.reds_read.busy, "r did not read red fixes");
+        a.reds_read.done();
+        // An answer older than REDS_REFRESH is re-read on the tick.
+        a.reds_at = std::time::Instant::now().checked_sub(REDS_REFRESH);
+        a.handle(Msg::Tick);
+        assert!(a.reds_read.busy, "the tick did not re-read a stale answer");
     }
 
     #[test]
