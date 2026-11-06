@@ -21,14 +21,21 @@ const ctx = vm.createContext({
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "home.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+// In the page's own order: a script that calls another at load needs it loaded first.
+const page = readFileSync(new URL("../src/index.html", dir), "utf8");
+const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "waiting.js", "home.js", "queue.js"]);
+for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
 function draw(home, agents = [], asks = []) {
   ctx.input = { home, agents, asks };
   return vm.runInContext(`st.agents = input.agents; st.asks = input.asks; hst.data = input.home; hst.err = null; drawHome(); $("home").innerHTML`, ctx);
 }
-const home = (o) => ({ needs: [], running: [], numbers: [], health: [], errors: [], shown: 8, ...o });
+const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown: n, states: [{ name: "all", n }], facets: [],
+  columns: ["stream", "project", "proposal", "created", "verb"].map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })) });
+const home = (o) => ({ needs: [], proposals: [], proposals_head: "", proposals_table: table(0), running: [], numbers: [], health: [], errors: [], shown: 8, ...o });
+const prop = (id, o) => ({ id, stream: "dream", project: "dotfiles", title: `Keep ${id}`, why: "said twice", evidence: "", verb: "queue",
+  does: "agent-queue add --project dotfiles -- x", created: "2026-11-05T10:00:00Z", expires: "2026-12-05T10:00:00Z", error: null, ...o });
 
 test("an ask or an open dialog on Needs you is its answer card; a red nightly is a plain card", () => {
   const html = draw(home({
@@ -121,4 +128,67 @@ test("a retired tab name lands on its new tab, and anything unknown on the landi
   assert.equal(of("focus"), "daily");
   assert.equal(of(""), "home");
   assert.equal(of("nope"), "home");
+});
+
+test("Proposals is one line when empty and sits between Needs you and Running", () => {
+  const html = draw(home());
+  assert.match(html, /Nothing proposed\./);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") < html.indexOf("Running"), html);
+  assert.doesNotMatch(html, /home-prop-q/);
+});
+
+test("a proposal row carries both actions; the rest fold under +N more", () => {
+  const rows = Array.from({ length: 10 }, (_, i) => prop(`p${i}`));
+  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: table(10) }));
+  assert.match(html, /Proposals <span class="muted">10 from 1 stream<\/span>/);
+  assert.match(html, /data-accept="p0".*data-reject="p0"/s);
+  assert.equal((html.match(/data-accept=/g) || []).length, 8);
+  assert.match(html, /\+2 more/);
+});
+
+test("an opened proposal says why and exactly what accept runs, and escapes it", () => {
+  const p = prop("aa", { why: "<b>why</b>", evidence: "https://x.test/r", error: "boom" });
+  ctx.input = p.id;
+  vm.runInContext("hst.prop.open = input", ctx);
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  vm.runInContext("hst.prop.open = null", ctx);
+  assert.match(html, /Accept runs.*agent-queue add --project dotfiles -- x/s);
+  assert.match(html, /&lt;b&gt;why&lt;\/b&gt;/);
+  assert.match(html, /href="https:\/\/x\.test\/r"/);
+  assert.match(html, /Last accept failed<\/b> boom/);
+});
+
+test("evidence that is not a web link is text, never an href", () => {
+  const p = prop("aa", { evidence: "javascript:alert(1)" });
+  ctx.input = p.id;
+  vm.runInContext("hst.prop.open = input", ctx);
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  vm.runInContext("hst.prop.open = null", ctx);
+  assert.doesNotMatch(html, /href="javascript/);
+});
+
+test("accept and reject post the id to their own route, and a refusal stays on the page", async () => {
+  const sent = [];
+  const reply = { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) };
+  const before = ctx.fetch;
+  ctx.fetch = async (path, o) => {
+    if (!path.startsWith("/api/proposals/")) return { ...reply, json: async () => home({ proposals: [prop("a1")], proposals_table: table(1) }) };
+    sent.push([path, o.body]);
+    return path.endsWith("/reject") ? { ok: false, status: 500, statusText: "", text: async () => "already decided" } : reply;
+  };
+  try {
+    await vm.runInContext(`propDecide("accept", "a1")`, ctx);
+    assert.equal(vm.runInContext("hst.prop.err", ctx), null);
+    await vm.runInContext(`propDecide("reject", "a1")`, ctx);
+  } finally { ctx.fetch = before; }
+  assert.deepEqual(sent, [["/api/proposals/accept", '{"id":"a1"}'], ["/api/proposals/reject", '{"id":"a1"}']]);
+  assert.match(vm.runInContext("hst.prop.err", ctx), /already decided/);
+  assert.equal(vm.runInContext("hst.prop.busy", ctx), null);
+  vm.runInContext("hst.prop.err = null", ctx);
+});
+
+test("a failed proposals read does not say nothing is proposed", () => {
+  const html = draw(home({ proposals_failed: true, errors: ["no jq, so no proposals are shown"] }));
+  assert.match(html, /Could not read proposals/);
+  assert.doesNotMatch(html, /Nothing proposed/);
 });
