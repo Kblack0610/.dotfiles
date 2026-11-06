@@ -17,7 +17,7 @@ The repo's CI doc owns what a red means, quarantine, and stop-the-line (`docs/op
 ## When to Use
 
 - When the user asks why CI is red so often, what keeps failing, or whether something is flaky.
-- When a nightly or main is red and the cause is not obvious from one log.
+- When a nightly or main is red and the cause is not obvious from one log. Fixing a red playground nightly end to end: `playground-nightly-fix`.
 - Before choosing which red to fix first, or when a red has no owner.
 - After a fix lands, to show its signature stopped.
 
