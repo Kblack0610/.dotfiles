@@ -17,8 +17,6 @@
 # What survives the split, verified:
 #   - Inside a `-L foo` session $TMUX is set, so a bare `tmux ls` reports foo's
 #     sessions, not the default server's.
-#   - `sesh` shells out to plain `tmux`, so it follows the enclosing server with no
-#     config change. Its session list is generated from that world's manifest.
 #
 # What does NOT survive: tmux cannot move a live session between servers. There is no
 # `move-session -L`. Switching a session to another server means recreating it.
@@ -40,7 +38,7 @@
 #        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
 #        · land <name> <last|root|session[:window]>
-#        · pick-session · reload
+#        · reload
 
 set -uo pipefail
 
@@ -199,36 +197,6 @@ cmd_ensure() {
 
   printf 'tmx: %s — %d created, %d already up, %d skipped (no dir), %d on demand\n' \
     "$srv" "$made" "$kept" "$skipped" "$deferred"
-}
-
-# pick-session -- the Prefix+S dispatch. Scoped to this world: its live sessions plus what its
-# manifest declares, so it can only open something that belongs here. sesh reads a TOML file, so
-# the list is generated from the manifest at each pick, and -z stays off because the zoxide
-# database is global and would put other worlds' directories in the list.
-#
-# The unnamed default server is nobody's world, so a pick there goes to the sessionizer, whose
-# route decides where it lands. sesh would create the session on the default socket.
-cmd_pick_session() {
-  local srv cfg
-  srv="$(tmux display-message -p '#{socket_path}' 2>/dev/null)"
-  srv="${srv##*/}"
-  [ -n "$srv" ] && [ "$srv" != default ] || exec "${SELF%/*}/sessionizer.sh"
-  command -v sesh >/dev/null 2>&1 || die "sesh not installed"
-  cfg="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/sesh-$srv.toml"
-  mkdir -p "${cfg%/*}"
-  _sesh_config "$srv" > "$cfg"
-  sesh -C "$cfg" picker -i -d -c -t
-}
-
-# _sesh_config <world> -- that world's declared sessions as a sesh config. Only directories this
-# machine has: a manifest stays identical everywhere, and sesh cannot open what is missing.
-_sesh_config() {
-  local world name dir
-  printf '[default_session]\npreview_command = "eza --all --git --icons --color=always {}"\n'
-  while read -r world name dir; do
-    [ "$world" = "$1" ] && [ -d "$dir" ] || continue
-    printf '\n[[session]]\nname = "%s"\npath = "%s"\n' "$name" "$dir"
-  done <<< "$(world_rows)"
 }
 
 # The world's root page: the FIRST booted entry in its manifest. `root` attaches to it and
@@ -688,8 +656,7 @@ _row() {
 # _all_rows -- every world, session and window, in one list, what needs a look first.
 #
 # This is the one view no other tool here can give you. choose-tree (Prefix+w) is
-# server-scoped by construction, and sesh shells out to plain `tmux` so it follows
-# $TMUX into whichever single server you are already in. Seeing hub and lab at once
+# server-scoped by construction. Seeing hub and lab at once
 # has to be assembled from outside both, which is what this does.
 #
 # There is no preview pane. Everything worth knowing is ON the row, because a preview
@@ -931,7 +898,6 @@ main() {
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
-    pick-session) cmd_pick_session ;;
     pick)         cmd_pick ;;
     rows)         _all_rows ;;
     tree-rows)    shift; _tree_rows "${1:-}" ;;
