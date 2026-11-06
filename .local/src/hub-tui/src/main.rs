@@ -176,12 +176,14 @@ fn phone(args: Vec<String>) -> i32 {
         (queue, infra.join().unwrap_or_default())
     });
     let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
         &hub_core::phone::Inputs {
             state: &state,
             queue: Some(&queue),
             infra: Some(&infra),
+            projects: Some(&projects),
             merged: hub_core::phone::merged_today(),
             now: chrono::Utc::now().timestamp(),
         },
