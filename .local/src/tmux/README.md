@@ -127,7 +127,7 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), lab (the lab notes, on `~/.notes/lab/projects/index.md`), dotfiles, home-config (on demand) | today's daily note |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles and home-config (on demand) | today's daily note |
 | `lab` - building | every agent worktree, platform and unity-core-playground (on demand) | no landing page: root resumes the last agent session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
@@ -170,7 +170,6 @@ The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-
 | `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
 | `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/.notes/lab` | `hub`, session `lab` | hub.conf declares it; a declared directory inside a repo wins over the repo |
 | `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
 | `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
