@@ -861,3 +861,96 @@ EOF
   run "$AQ" attribute nope </dev/null
   assert_failure; assert_output --partial "no item: nope"
 }
+
+# story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
+# every call lands in calls.log; `ptask ... add` prints its row with id lv-9 and exits 0, or, with
+# story.rc set, prints story.out on stderr and exits story.rc (3 is ptask's "already open").
+story_notes() {
+  jq '.trackers.level.lab = "bnb" | .trackers.arena.lab = "bnb"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json"
+  mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
+  cat > "$SANDBOX/bin/notes" <<'STUB'
+#!/usr/bin/env bash
+printf 'notes %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+case " $* " in
+*' add '*)
+  rc=$(cat "$NOTES_FIXTURE/story.rc" 2>/dev/null || echo 0)
+  if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
+  exit "$rc" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/notes"
+}
+
+@test "add files a started story row under the item's epic and links it as row:" {
+  story_notes
+  run "$AQ" add --project game --epic lv-3 --priority low --slug menus "feat(menu): live main menus #night"
+  assert_success
+  assert_line "story lv-9 on the level agent board, under lv-3"
+  run grep '^notes' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 0 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent start lv-9'
+  f="$(item queued menus)"
+  [ "$(field "$f" project)" = level ]
+  [ "$(field "$f" row)" = level:lv-9 ]
+  [ "$(field "$f" lane)" = agent ]
+  [ "$(field "$f" profile)" = bnb ]
+  [ "$(jq -r .row <<<"$("$AQ" show menus --json)")" = level:lv-9 ]
+}
+
+@test "a plan item's story takes the plan's epic and a heavy item is sized m" {
+  story_notes
+  printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"
+  run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
+  assert_success
+  run grep -c -- '--agent add -- lv P1: P1 one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
+}
+
+@test "an epic of another project is not linked, and a long title becomes the row's detail" {
+  story_notes
+  long="fix(menu): $(printf 'word%.0s ' {1..20})end"
+  "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
+  run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "--agent add --detail $long -- fix(menu): word"
+  refute_output --partial '#of/'
+  [ "${#long}" -gt 80 ]
+}
+
+@test "an open twin row is linked, and started only when no item has started it" {
+  story_notes
+  echo 3 > "$NOTES_FIXTURE/story.rc"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): twin #size/s <!-- id:lv-4 -->' > "$NOTES_FIXTURE/story.out"
+  run "$AQ" add --project level --slug twin "feat(menu): twin"
+  assert_success
+  [ "$(field "$(item queued twin)" row)" = level:lv-4 ]
+  run grep -c -- '--agent start lv-4' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  echo 'already open on /x/agent/README.md: - [/] feat(menu): taken <!-- id:lv-5 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug taken "feat(menu): taken"
+  [ "$(field "$(item queued taken)" row)" = level:lv-5 ]
+  run grep -c -- '--agent start lv-5' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "a failed story write never stops the add: the item is written with no row" {
+  story_notes
+  echo 1 > "$NOTES_FIXTURE/story.rc"
+  echo 'error: no such project' > "$NOTES_FIXTURE/story.out"
+  run "$AQ" add --project level --slug no-sheet "x"
+  assert_success
+  assert_output --partial "no story row filed on level: error: no such project"
+  [ -z "$(field "$(item queued no-sheet)" row)" ]
+}
+
+@test "a board item and a project with no lab sheet file no story; a board item's row is its origin" {
+  story_notes
+  "$AQ" add --project game --from board:level:lv-2 --slug promoted "x"
+  "$AQ" add --project game --slug no-lab "y"
+  run grep -c '^notes' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ "$(jq -r .row <<<"$("$AQ" show promoted --json)")" = level:lv-2 ]
+  [ "$(jq -r '.row // "none"' <<<"$("$AQ" show no-lab --json)")" = none ]
+  run "$AQ" add --project game --epic menus --slug bad "z"
+  assert_failure; assert_output --partial "--epic is a row id"
+}
