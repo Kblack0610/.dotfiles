@@ -12,6 +12,10 @@
 
 AGENTCTL_CALLS="${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}"
 CALLS_RAW_MAX=4096
+# A call that stopped at its per-call cap (--max-budget-usd; the result's subtype
+# error_max_budget_usd) exits this, so a caller can shrink its batch on the code, never on text.
+# 75 is budget_stop's: the call was not made at all.
+CALLS_RC_CAPPED=76
 
 # calls_name -> the name a call is recorded (and budgeted) under, empty for a hand run
 calls_name() { printf '%s' "${AGENTCTL_AGENT:-${AGENTCTL_NAME:-}}"; }
@@ -23,7 +27,8 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 # reply to stdout as the plain run would, append the call line, and return the command's exit
 # code. The reply is .structured_output as one JSON line when the agent has a SCHEMA, else
 # .result (claude) or the first choice's content (raw). A schema run that ended without valid
-# output has no such field, so its prose goes out and the caller's parse fails visibly.
+# output has no such field, so its prose goes out and the caller's parse fails visibly. A capped
+# call returns CALLS_RC_CAPPED.
 calls_record() {
   local harness="$1" id t0 t1 out rc=0 text
   shift
@@ -51,7 +56,7 @@ calls_record() {
      "gen_ai.request.model": $model,
      "gen_ai.response.model": ((($r.modelUsage // {}) | keys | first) // $r.model),
      prompt: $prompt, prompt_sha: $sha,
-     session_id: $r.session_id,
+     session_id: $r.session_id, subtype: $r.subtype,
      is_error: (if $r | has("is_error") then $r.is_error elif $r | has("error") then true else null end),
      "gen_ai.usage.input_tokens": ($r.usage.input_tokens // $r.usage.prompt_tokens),
      "gen_ai.usage.output_tokens": ($r.usage.output_tokens // $r.usage.completion_tokens),
@@ -61,5 +66,6 @@ calls_record() {
      raw: ($text | .[0:$max])}
     | with_entries(select(.value != null and .value != ""))' \
     | flock "$AGENTCTL_CALLS" tee -a "$AGENTCTL_CALLS" >/dev/null || true
+  [ "$(jq -r '.subtype? // ""' <<<"$out" 2>/dev/null)" = error_max_budget_usd ] && rc=$CALLS_RC_CAPPED
   return "$rc"
 }

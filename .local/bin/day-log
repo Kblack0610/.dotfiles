@@ -345,7 +345,7 @@ nightly() {
   # STALLED, which trips fleet-liveness every night.
   if [ -n "${AGENTCTL_NAME:-}" ]; then
     local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
-    proof_report "$AGENTCTL_NAME" "$verdict" "day-log nightly $day rc=$rc"
+    proof_outcome "$AGENTCTL_NAME" "$verdict" "day-log nightly $day rc=$rc"
   fi
   return "$rc"
 }
