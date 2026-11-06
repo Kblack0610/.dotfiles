@@ -375,7 +375,6 @@ fn spend_part(r: &SessionRow, budget: Option<&(String, f64)>) -> Part {
     Part::new("Spend", text).warn(over)
 }
 
-/// One ask a session filed.
 /// The asks `session` filed, as `boards::asks` reads them.
 fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<Value>, String> {
     let argv = ["agent-ask", "list", "--all"].map(String::from);

@@ -1195,7 +1195,7 @@ cmd_stuck() {
   return 1
 }
 
-# cmd_budget <item>: its size and budget, for the session page
+# cmd_budget <task text>: its size and budget, for the session page
 cmd_budget() {
   [ $# -eq 1 ] || die "usage: fleet-shepherd budget <task text>"
   item_budget "$(jq -n --arg task "$1" '{$task}')"
