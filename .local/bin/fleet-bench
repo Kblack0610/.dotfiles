@@ -398,11 +398,11 @@ def forecast_score($b; $t; $hz): . as $p | $b.made_epoch as $m
   + ($p | flow($m; $end) | {in, ticked, in_per_h: .net_in_per_h, in_per_h_frozen: $b.drain.in_per_h});
 '
 
-# sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY rows have no session)
+# sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY and SHARED rows have no session)
 sample_rows() {
   local t="$1"
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
-    select(type == "object" and (.session_id // "") != "" and .bucket != "NIGHTLY")
+    select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "SHARED") | not))
     | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
        context_tokens, nudged, escalated, pr, plan_file}'

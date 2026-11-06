@@ -185,13 +185,15 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
-# survived, is escalated once. PARKED is fleet-pace's, below.
+# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, a nudged row whose fact
+# survived, or a test red on several branches (shared), is escalated once. PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
+  , ( (.shared // [])[] | select(.escalated | not)
+      | "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\"" )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
@@ -657,7 +659,7 @@ cmd_skip() {
 # and improve lines are fleet-lead's own.
 line_role() {
   case "${1#unhandled: }" in
-    nudge*|escalate*|overdue*|"nightly red"*) echo shepherd ;;
+    nudge*|escalate*|overdue*|"nightly red"*|"shared red"*) echo shepherd ;;
     pace:*|blocked:*|limit:*) echo fleet-pace ;;
     "watch: queue-starved "*) echo fleet-dispatch ;;   # its "Starved queue" self-heal
     *) echo fleet-lead ;;
