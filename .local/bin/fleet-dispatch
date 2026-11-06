@@ -865,7 +865,8 @@ verdict_errors() {
 
 # plan_skips -- tag #plan each open agent row the judge skipped by one of DISPATCH_PLAN_RULES (not
 # defined enough to start), and each cleanup row (cleanup_row) it read as not clear or size L or XL
-# whatever its verdict (a tier-3 skip hid both, so those rows never moved: 87 on 2026-11-06), that
+# under a dispatch or a tier-3 skip (that skip hid both, so those rows never moved: 87 on
+# 2026-11-06; a needs-person, release, prod-write or decide skip waits on the human, not a plan), that
 # inbox-plan never planned (no `goal:` detail), while fewer than DISPATCH_PLAN_BACKLOG #plan rows
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
 # with the plan. A design or question skip waits on the human, not a plan. Sets PLAN_TAGGED.
@@ -882,6 +883,7 @@ plan_skips() {
     ($rules | split(" ") | map(select(length > 0))) as $r
     | ($v | map(select(.lane == "agent" and .policy == $sig and (.verdict == "skip" or .verdict == "dispatch")))
        | map(. + {why: (if .verdict == "skip" and (.rule as $u | $r | index($u)) then "rule"
+                        elif .verdict == "skip" and .rule != "tier3" and .tier3_only != true then empty
                         elif .clear == false then "unclear" else "size:" + ((.size // "") | ascii_upcase) end)})
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))

@@ -355,7 +355,7 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
-@test "plan_skips: a cleanup row read as not clear or size L goes to inbox-plan whatever its rule; a feature or a clear M cleanup row does not" {
+@test "plan_skips: a cleanup row read as not clear or size L under a tier-3 skip goes to inbox-plan; a feature, a clear M row, or a human-only skip does not" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CLEANUP_PROJECTS=game
   row game agent ga-8 "- [ ] chore(game): prune the cache $T <!-- id:ga-8 -->"
@@ -363,19 +363,26 @@ ptask game --agent tag --add plan ga-7'
   row game agent ga-10 "- [ ] feat(game): a new page $T <!-- id:ga-10 -->"
   row game agent ga-11 "- [ ] chore(game): drop the dead flag $T <!-- id:ga-11 -->"
   row game agent ga-12 "- [ ] fix(game): the score $T #size/m <!-- id:ga-12 -->"
+  row game agent ga-13 "- [ ] fix(game): the headset drops the pad $T <!-- id:ga-13 -->"
+  row game agent ga-14 "- [ ] chore(game): remove the old store build $T <!-- id:ga-14 -->"
   : > "$NOTES_FIXTURE/board.rows"
-  for k in ga-8 ga-9 ga-10 ga-11 ga-12; do board_row game agent "$k" '[]' '[]'; done
+  for k in ga-8 ga-9 ga-10 ga-11 ga-12 ga-13 ga-14; do board_row game agent "$k" '[]' '[]'; done
   t3() { verdict game agent "$1" skip "$2" 3; jq -c --argjson c "$3" 'if .key == "'"$1"'" then .rule = "tier3" | .tier3_only = true | .clear = $c else . end' \
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   t3 ga-8 S false; t3 ga-9 L true; t3 ga-10 S false; t3 ga-11 M true; t3 ga-12 L true
+  # unclear or L, but held by a rule only the human clears: a device run, a release
+  human() { verdict game agent "$1" skip L 3; jq -c 'if .key == "'"$1"'" then .rule = "'"$2"'" | .tier3_only = false | .clear = false else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  human ga-13 needs-person; human ga-14 release
   stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
   plan_skips
   assert_equal "$PLAN_TAGGED" 2
   run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
   assert_output 'ptask game --agent tag --add plan ga-8
 ptask game --agent tag --add plan ga-9'
-  # negative controls: a feature (not cleanup), a clear M cleanup row, and an L verdict the row's own #size/m overrides
-  run grep -E 'tag --add plan (ga-10|ga-11|ga-12)' "$NOTES_FIXTURE/calls.log"
+  # negative controls: a feature (not cleanup), a clear M cleanup row, an L verdict the row's own
+  # #size/m overrides, and unclear L rows a needs-person or release skip holds for the human
+  run grep -E 'tag --add plan (ga-10|ga-11|ga-12|ga-13|ga-14)' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
