@@ -1235,6 +1235,76 @@ SH
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
 }
 
+@test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
+  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/gh.log"
+[ -n "${VIEW_FAIL:-}" ] && exit 1
+echo '{"headRefOid":"abc123","statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"PENDING"}]}'
+SH
+  chmod +x "$SANDBOX/bin/gh"; export SANDBOX FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  local prs='[{"repo":"o/one","number":5,"state":"OPEN"},{"repo":"o/three","number":3,"state":"OPEN"},{"repo":"o/two","number":9,"state":"MERGED"}]'
+  # o/one is this clone's own repo (GitHub names are case-blind), and o/two's PR is not open.
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_success
+  assert_output "$(printf 'o/three\t3\tPENDING\tabc123')"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
+  assert_output ''
+  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  export VIEW_FAIL=1 FLEET_MAIN_TTL=0
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output ''
+  run sibling_pr "$SANDBOX/one" "$prs"
+  [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
+  grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+}
+
+@test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  # The cwd's repo has no PR for feat/x; o/other's #42 is open with the CI in $SANDBOX/ci.
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  api*) echo "[]" ;;
+  *"pr list --repo o/other"*) echo '[{"number":42,"state":"OPEN","mergedAt":null}]' ;;
+  *"pr view 42 --repo o/other"*) printf '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"%s"}]}\n' "$(cat "$SANDBOX/ci")" ;;
+esac
+SH
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  echo FAILURE > "$SANDBOX/ci"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .reason, .pr, .pr_state, .ci, .conflicts]' <<<"$output")" = '["STALLED","PR o/other#42 CI red","42","OPEN","FAIL",null]' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED PR o/other#42 CI red @feat/x@feedface0000' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI FAIL","no plan file and nothing merged"]' ]
+
+  echo IN_PROGRESS > "$SANDBOX/ci"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["WORKING","PR o/other#42 CI running"]' ]
+
+  # Without its PR in the transcript the same clean branch is the human's conversation, as before.
+  : > "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
 @test "json_rows: the newer fields, with a row that predates them still parsing" {
   run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x' 70 80)
   assert_success
