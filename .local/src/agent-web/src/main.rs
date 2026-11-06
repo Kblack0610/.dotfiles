@@ -1002,7 +1002,8 @@ async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::H
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&infra))
+        let board = hub_core::tasks::feed(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
     })
     .await
     .map(Json)
