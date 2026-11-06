@@ -730,7 +730,8 @@ impl App {
 
     /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
     /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
-    /// the Projects tab, on `r`, after a write, and on the tick while shown. The vault has no
+    /// the Projects tab, on `r`, after a write, and on the tick while shown. Home reads the rows
+    /// too, for NEEDS YOU's sheet rows. The vault has no
     /// watch here; `notes` is its writer.
     pub fn read_tasks(&mut self) {
         if self.tasks_read.want() {
@@ -931,6 +932,9 @@ impl App {
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
+                }
+                if self.tab == Tab::Home {
+                    self.read_tasks();
                 }
             }
             Msg::Files => {
@@ -1204,6 +1208,9 @@ impl App {
                     self.read_projects();
                     self.read_proj_page();
                 }
+                if self.tab == Tab::Home {
+                    self.read_tasks();
+                }
             }
             KeyCode::Char('o') => {
                 let g = self.infra.as_ref().and_then(|i| i.grafana.clone());
@@ -1396,6 +1403,9 @@ impl App {
         }
         if t == Tab::Projects {
             self.read_projects();
+        }
+        if t == Tab::Home {
+            self.read_tasks();
         }
     }
 
@@ -2067,7 +2077,12 @@ impl App {
             (Tab::Home, b, i) => {
                 let null = serde_json::Value::Null;
                 let state = b.as_ref().map_or(&null, |b| &b.watch.state);
-                let home = hub_core::home::build(state, self.queue.as_ref(), i.as_ref());
+                let home = hub_core::home::build(
+                    state,
+                    self.queue.as_ref(),
+                    self.tasks.as_ref(),
+                    i.as_ref(),
+                );
                 (hometab::page(&home, self.p, now, w), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {

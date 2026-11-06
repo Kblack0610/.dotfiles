@@ -140,6 +140,10 @@ sandbox_init() {
   # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included. The
   # display ones keep a subject from opening a real window or driving the real compositor.
   unset NTFY_URL NTFY_TOKEN DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+  # Detach from the host's model transport: every name agentctl-run scrubs (an OPENAI_API_KEY in
+  # the human's shell, say), so a subject sees the clean environment CI gives it.
+  # shellcheck disable=SC2046
+  unset $(awk '/^\[/ { s = ($0 == "[scrub]") } s && /^[A-Z_]+([[:space:]]|$)/ { print $1 }' "$REPO_ROOT/.local/src/agent-run/lib/scrub.list")
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the

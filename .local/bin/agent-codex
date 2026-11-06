@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# agent-codex - run a queue item on the Codex CLI, and say whether the ChatGPT plan has room.
+#
+#   agent-codex run [codex exec args...]   codex exec --json in this pane: claims the thread on
+#                                          $AGENT_QUEUE_ITEM when it starts (the outcome join),
+#                                          prints messages and commands as they finish
+#   agent-codex room [--json]              the plan's 5h and weekly use from the newest rollout;
+#                                          exit 1 when either is spent or the week is over pace
+#
+# Codex has no usage endpoint we read; every rollout's token_count event carries the plan's
+# rate_limits as of that call, so the newest one is the freshest reading there is.
+set -euo pipefail
+
+CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_SESSIONS="${CODEX_SESSIONS:-${CODEX_HOME:-$HOME/.codex}/sessions}"
+# Points of weekly use allowed ahead of the week's elapsed share before a start is refused.
+CODEX_ROOM_SLACK="${CODEX_ROOM_SLACK:-10}"
+
+
+cmd_run() {
+  local item="${AGENT_QUEUE_ITEM:-}" rc
+  set +e
+  "$CODEX_BIN" exec --json "$@" </dev/null 2>&1 | while IFS= read -r line; do
+    case "$line" in
+      '{"type":"thread.started"'*)
+        tid=$(jq -r .thread_id <<<"$line")
+        printf 'codex thread %s\n' "$tid"
+        [ -z "$item" ] || agent-queue claim "$item" --sid "$tid" >/dev/null ||
+          printf 'agent-codex: could not claim %s on %s\n' "$tid" "$item" >&2 ;;
+      '{'*)
+        jq -r 'select(.type == "item.completed") | .item
+          | if .type == "agent_message" then "\n\(.text)\n"
+            elif .type == "command_execution" then "$ \(.command) (exit \(.exit_code))"
+            elif .type == "file_change" then "~ \([.changes[]?.path] | join(" "))"
+            else empty end' <<<"$line" 2>/dev/null || printf '%s\n' "$line" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+  rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+# room_json -> {plan, five_h, week, week_gone, resets} from the newest rollout, null fields when
+# no rollout has a reading. A window whose reset has passed reads as unused.
+room_json() {
+  local f now
+  now=$(date +%s)
+  f=$(find "$CODEX_SESSIONS" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- |
+    while IFS= read -r f; do grep -q '"rate_limits"' "$f" && { echo "$f"; break; }; done)
+  [ -n "$f" ] || { echo '{"plan":null}'; return 0; }
+  grep '"rate_limits"' "$f" | tail -1 | jq -c --argjson now "$now" '.payload.rate_limits as $r
+    | def used(w): if w == null then null elif (w.resets_at // 0) <= $now then 0 else w.used_percent end;
+    {plan: $r.plan_type, five_h: used($r.primary), week: used($r.secondary),
+     week_gone: (if $r.secondary == null then null
+                 else (100 - (($r.secondary.resets_at - $now) / 60 / $r.secondary.window_minutes * 100)) | if . > 100 then 100 else . end | floor end),
+     resets: $r.secondary.resets_at, reached: $r.rate_limit_reached_type}'
+}
+
+cmd_room() {
+  local j
+  j=$(room_json)
+  [ "${1:-}" = --json ] && { echo "$j"; }
+  jq -e '.plan != null' <<<"$j" >/dev/null || { [ "${1:-}" = --json ] || echo "codex: no reading yet (no rollout with rate limits); room assumed"; return 0; }
+  jq -r --argjson slack "$CODEX_ROOM_SLACK" '
+    if .reached != null then "codex (\(.plan)): limit reached (\(.reached))"
+    elif .five_h >= 100 then "codex (\(.plan)): 5h window spent"
+    elif .week >= 100 then "codex (\(.plan)): week spent"
+    elif .week > .week_gone + $slack then "codex (\(.plan)): over pace, week \(.week)% used, \(.week_gone)% gone"
+    else "codex (\(.plan)): room, 5h \(.five_h)%, week \(.week)% used, \(.week_gone)% gone" end' <<<"$j" |
+    { read -r msg; [ "${1:-}" = --json ] || echo "$msg"; case "$msg" in *": room,"*) return 0 ;; *) return 1 ;; esac; }
+}
+
+case "${1:-}" in
+  run) shift; cmd_run "$@" ;;
+  room) shift; cmd_room "$@" ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

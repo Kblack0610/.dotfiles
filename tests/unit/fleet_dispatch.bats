@@ -3642,7 +3642,8 @@ harness_ready() {
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
       "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
-      opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}}}}' > "$SANDBOX/harnesses.json"
+      opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
+      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
@@ -3766,6 +3767,39 @@ harness_ready() {
   assert_failure
   assert_output --partial "cannot read the opencode key's budget"
   assert_not_called 'wt new'
+}
+
+# A plan-billed harness: agent-codex room says whether the ChatGPT plan has use left (default yes).
+codex_room() { stub agent-codex "echo \"agent-codex \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '${2:-codex (plus): room}'; exit ${1:-0}"; }
+
+@test "--harness codex runs agent-codex on the plan login, gated by room and not the gateway, with a headless brief" {
+  harness_ready
+  codex_room
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_success
+  assert_called 'agent-codex room'
+  assert_not_called 'curl'
+  assert_called 'AGENT_QUEUE_ITEM=fix-menu env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY timeout 120m agent-codex run -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox'
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
+  assert_called 'Run agent-land in the foreground'
+  assert_not_called '/one-shot Fix'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol chatgpt'
+}
+
+@test "codex refuses a spent plan and a plan item, and the item stays queued" {
+  harness_ready
+  codex_room 1 'codex (plus): week spent'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_failure
+  assert_output --partial 'codex has no room: codex (plus): week spent'
+  codex_room
+  agent-queue add --project game --slug planned --mode plan --priority high "Think" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned --harness codex --model sol
+  assert_failure
+  assert_output --partial 'codex runs to its end and cannot wait on a plan'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
 }
 
 @test "resume refuses an item that ran on a gateway harness" {
