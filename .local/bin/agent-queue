@@ -19,7 +19,8 @@
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see item_weight.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
-# and pr:<owner>/<repo>#<N> (until that PR merges). A start on a later day is the dated form, never a held session.
+# pr:<owner>/<repo>#<N> (until that PR merges) and nightly:<repo> (until today's scheduled runs of that repo
+# have finished; see nightly_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -41,6 +42,8 @@ AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
+# A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
+AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 ACTIVE="queued running waiting"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
@@ -221,8 +224,20 @@ hold_for() {
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { HOLD="$tag"; return; } ;;
       at:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]) [[ ! "$stamp" < "${tag#at:}" ]] || { HOLD="$tag"; return; } ;;
       pr:?*/?*#[0-9]*) [ "$(pr_state "${tag#pr:}")" = MERGED ] || { HOLD="$tag not merged"; return; } ;;
+      nightly:?*)
+        memo "nightly:${tag#nightly:}" nightly_pending "${tag#nightly:}" "$stamp"
+        [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
     esac
   done
+}
+
+# nightly_pending <repo> <local stamp> -> what today's scheduled runs of that repo still wait for, or
+# nothing when every one has finished or passed its slot plus timeout (a missing run is the triage's red).
+# A missing or stale state file, or schedules-sync failing, holds.
+nightly_pending() {
+  local out
+  out="$(SCHEDULES_NOW="$(date -d "${2/T/ }" +%s)" "$AQ_SCHEDULES" pending "$1" 2>/dev/null)" && return 0
+  printf '%s\n' "${out:-schedules state unreadable}"
 }
 
 # pr_state <owner/repo#N> -> the PR's state from gh (MERGED, OPEN, CLOSED), or nothing when gh
@@ -478,6 +493,7 @@ cmd_add() {
       at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
         die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
+      nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
     esac
   done
   # A hand-started session records itself and its window, on the agent world only.
@@ -975,7 +991,8 @@ cmd_stats() {
     def ready: [.queued, ($closed[.after // ""] // empty)] | max;
     def waits: [.[] | mins(ready; .started)];
     def waited: waits | map(select(. > 0));
-    # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged".
+    # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged",
+    # "nightly:repo (..)".
     def hold_kind: split(" ")[0] | split(":")[0];
     def source: (.from // "human") | split(":")[0];
     def count_by(f): group_by(f) | map({key: (.[0] | f), value: length}) | from_entries;
