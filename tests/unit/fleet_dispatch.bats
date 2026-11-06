@@ -3492,6 +3492,22 @@ board_item() {
   assert_output '{"error":"agent-queue unreadable"}'
 }
 
+@test "a started session's launch line labels its spans with the project and queue item" {
+  # A pane gets the tmux server's environment, so only the launch line can say this; off the LAN
+  # the snippet defines nothing, and every other start test here runs that way.
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  stub getent 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called 'OTEL_RESOURCE_ATTRIBUTES='
+  assert_called 'project=game'
+}
+
 @test "start --resume --window opens a window of a live session, keeps a plan mode, and leaves its label alone" {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
