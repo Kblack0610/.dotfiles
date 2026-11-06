@@ -105,10 +105,7 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
   run headless_launches "$REPO_ROOT/.local"
-  # The one known HTTP call with no registered agent, until it moves behind one (judges plan,
-  # phase 7). Pinned, so a second one fails here instead of joining it.
-  assert_output --regexp '^[^ ]*/\.local/bin/notes-version-summary:[0-9]+: .*chat/completions'
-  assert_equal "${#lines[@]}" 1
+  assert_output ''
   run headless_launches "$REPO_ROOT/.config"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"
@@ -167,4 +164,14 @@ exec claude "$@"
   assert_line --partial 'http:4:'
   refute_output --partial 'runner:2:'
   refute_output --partial 'http:2:'
+}
+
+@test "only agent-run's own harnesses may call a model's HTTP API (negative control)" {
+  local d="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$d/src/agent-run/harnesses" "$d/src/agent-run/lib"
+  printf '#!/bin/sh\ncurl -s "${LLM_BASE_URL%%/}/chat/completions" -d @-\n' > "$d/src/agent-run/harnesses/raw.sh"
+  cp "$d/src/agent-run/harnesses/raw.sh" "$d/src/agent-run/lib/sneak.sh"
+  run headless_launches "$d"
+  assert_line --partial 'lib/sneak.sh:2:'
+  refute_output --partial 'harnesses/raw.sh'
 }
