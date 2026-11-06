@@ -11,6 +11,7 @@ hub                              the board, on the Home tab
 hub --tab fleet                  start on another tab (home, queue, infra, sessions, today, history, fleet, projects; a retired name such as overview, board, forecast, watch, shepherd, jobs, ci or machines lands on its new tab)
 hub --tab 'infra ci'             start on a section of Infra (health, red, machines, ci, jobs, cloud, governor); `--tab ci` is the same, and `jobs` opens the jobs table
 hub --popup --tab queue          a floating window (the waybar clicks): Esc with nothing left to close quits
+hub tabs                         the landed tabs as id, title and question (control-menu's hub rows)
 hub tab today                    ask the running hub to switch tab (the next hub to start takes it when none runs)
 hub tab projects agent-runtime   the same, opening one project's rows under its card (what tmux Prefix p sends); a name no card has opens All searched for it
 hub --once                       print Home and Infra as plain text at $COLUMNS, then exit
