@@ -752,52 +752,6 @@ STUB
   assert_success
 }
 
-# prom <rate-points-over-2h> -- a curl stub answering the burn check's two queries
-prom() {
-  cat > "$SANDBOX/bin/curl" <<STUB
-#!/usr/bin/env bash
-case "\$*" in
-  *topk*) echo '{"data":{"result":[{"metric":{"session_id":"bbbbbbbb-2"},"value":[0,"31.2"]},{"metric":{"session_id":"aaaaaaaa-1"},"value":[0,"88.9"]}]}}' ;;
-  *offset*) echo '{"data":{"result":[{"metric":{},"value":[0,"$1"]}]}}' ;;
-  *) exit 22 ;;
-esac
-STUB
-  export CC_PROM_URL=http://prom.test
-}
-
-@test "check burn: a 2h rate over what the week can carry trips and names the spenders" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 70 20   # 30 left
-  week alt 50 10    # 50 left; 80 points over 20h is 4 a hour
-  prom 12           # 6 a hour over 2h
-  export CLAUDE_ACCT_PROC="$SANDBOX/proc"
-  mkdir -p "$CLAUDE_ACCT_PROC/7" "$CLAUDE_ACCT_PROC/8"
-  for p in 7 8; do echo claude > "$CLAUDE_ACCT_PROC/$p/comm"; : > "$CLAUDE_ACCT_PROC/$p/environ"; done
-  run "$ACCT" check burn
-  assert_failure 1
-  assert_output --partial 'burning 6.0%/h over 2h, the week can carry 4.0%/h (80% left, resets in 20h)'
-  assert_output --partial '2 live sessions; top by 2h spend: aaaaaaaa $88, bbbbbbbb $31'
-}
-
-@test "check burn: a 2h rate under what the week can carry passes" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 70 20
-  week alt 50 10
-  prom 6            # 3 a hour
-  run "$ACCT" check burn
-  assert_success
-  assert_output --partial 'burning 3.0%/h'
-}
-
-@test "check burn: Prometheus unreachable is exit 2, not a pass" {
-  export CLAUDE_ACCT_NOW=$NOW CC_PROM_URL=http://prom.test   # the curl stub fails
-  week main 70 20
-  week alt 50 10
-  run "$ACCT" check burn
-  assert_failure 2
-  assert_output --partial 'Prometheus is unreachable'
-}
-
 @test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash

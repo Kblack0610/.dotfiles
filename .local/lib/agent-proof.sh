@@ -180,6 +180,16 @@ proof_report() {
   _AGENT_PROOF_WHY=()
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
+  # The standing hold: held_since is the first BLOCKED pass of an unbroken run, held_why the latest
+  # one's reason, and a WORKED or NOOP pass ends the run. A pass that went past the hold without
+  # proving it gone (a run-floor start, a pass that never read the gates) sets PROOF_HELD_KEEP=1.
+  # FAILED and STALLED leave it: they say nothing about the gate. Readers: fleet-dispatch stopped.
+  case "$verdict" in
+    BLOCKED)
+      [ -s "$dir/held_since" ] || date +%s > "$dir/held_since" 2>/dev/null
+      printf '%s' "${why:-unrecorded}" > "$dir/held_why" 2>/dev/null || true ;;
+    WORKED | NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || rm -f "$dir/held_since" "$dir/held_why" ;;
+  esac
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
 }
 
