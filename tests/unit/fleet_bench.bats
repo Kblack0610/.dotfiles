@@ -899,6 +899,75 @@ ask_row() {
   assert_line '| runners_bad (now) | 1 | - | max 0 | past |'
 }
 
+# triage_setup: kpi_setup plus a canned systemctl (failed units from $SANDBOX/failed, one
+# "unit Result LoadState" a line) and an empty Sentinel state and manifest dir
+triage_setup() {
+  kpi_setup
+  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches"
+  mkdir -p "$TRIAGE_WATCH_STATE" "$TRIAGE_WATCHES"; : > "$SANDBOX/failed"
+  printf '#!/usr/bin/env bash\nF=%q\n' "$SANDBOX/failed" > "$SANDBOX/bin/systemctl-stub"
+  cat >> "$SANDBOX/bin/systemctl-stub" <<'SC'
+case "$2" in
+  list-units) awk '{ print $1, "loaded failed failed", $1 }' "$F" ;;
+  show) awk -v u="$6" -v p="$4" '$1 == u { print (p == "Result" ? $2 : $3) }' "$F" ;;
+esac
+SC
+  chmod +x "$SANDBOX/bin/systemctl-stub"
+}
+
+# watch <name> <state> <since offset from T0> <severity>: one Sentinel watch, state and manifest
+watch() {
+  printf '%s' "$2" > "$TRIAGE_WATCH_STATE/$1.state"; printf '%s' $((T0 + $3)) > "$TRIAGE_WATCH_STATE/$1.since"
+  printf 'name: %s\nwhat: >-\n  %s is healthy. More words.\n  A second line.\nseverity: %s\n' "$1" "$1" "$4" > "$TRIAGE_WATCHES/$1.yaml"
+}
+
+@test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
+  triage_setup
+  printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
+  printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
+  for n in alpha gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  printf '[2026-10-30T03:00:00-07:00] outcome=STALLED lock held 40m\n' > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
+  printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
+  echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
+  watch spend TRIP -25200 urgent    # 7h: a row
+  watch nightly TRIP -3600 high     # 1h: inside the flap window, no row
+  watch drift OK -90000 normal      # OK: no row
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
+  assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
+  assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
+  assert_equal "$(grep -c . <<<"$output")" 3
+  [ ! -s "$NLOG" ]
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(runner): alpha is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
+  assert_output 3
+  run outcome
+  assert_output WORKED
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
+  run outcome
+  assert_output NOOP
+}
+
+@test "triage: nothing at fault is a NOOP that never reads the board" {
+  triage_setup
+  watch drift OK -90000 normal
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'no runner, unit or watch at fault'
+  [ ! -s "$NLOG" ]
+  run "$SUBJECT" triage --bogus
+  assert_failure 2
+}
+
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
 frow() {
   mkdir -p "$FLEET_BENCH_DIR"
