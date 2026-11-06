@@ -24,7 +24,8 @@
 #                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
 # Buckets: PARKED, NEEDS, STALLED, WORKING, LANDED, DONE and CHAT, one per session, plus one NIGHTLY
-# row per repo whose default branch is red. Each is defined once, with its entry facts, exit,
+# row per repo whose default branch is red and one SHARED row per test red on several branches at
+# once. Each is defined once, with its entry facts, exit,
 # actor, action and pinning test, in the bucket table of .local/src/docs/fleet-states.md, and
 # tests/unit/fleet_states_doc.bats fails when the words emitted here differ from that table.
 # The --json `finished` field is DONE without the idle and status checks, so a session can check
@@ -55,7 +56,14 @@ set -uo pipefail
                            # ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on
                            # 2026-10-29 the fleet spent GitHub's 5,000/hr REST limit; a nightly's red
                            # is no less true five minutes later
+# One test failing on this many branches within this many minutes is a SHARED row: a shared cause
+# (the base, a runner, a flaky test), not any one branch's work. 3 in 2h hit about 4 tests a day in
+# the week to 2026-11-06.
+: "${FLEET_SHARED_RED_BRANCHES:=3}"
+: "${FLEET_SHARED_RED_MIN:=120}"
 MAIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/fleet"
+# The local gate's per-test failures, one line each: epoch, worktree, branch (- when detached), test.
+TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
@@ -799,6 +807,7 @@ collect() {
         printf '%s\t%s\n' "$(repo_slug "$cwd")" "$sid" >> "$CACHE/owners"
       fi
     fi
+    printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -825,6 +834,7 @@ collect() {
       "$(plan_phase_list "$planf")" "${acct:--}"
   done
   main_rows
+  shared_rows
 }
 
 # One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
@@ -843,6 +853,41 @@ main_rows() {
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
     e=0; escalated "$sid" "NIGHTLY $reason" && e=1
     printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+  done
+}
+
+# One SHARED row per test that failed on FLEET_SHARED_RED_BRANCHES branches (a detached checkout
+# counts by its worktree) within the last FLEET_SHARED_RED_MIN minutes of $TEST_FAILURES. No session
+# owns it: it escalates once, paged high (ar-185). Its fact is the episode's first failure, an
+# episode ending at a quiet gap longer than the window, so one more branch is not a new page and the
+# same test red again tomorrow is. Owners are the live sessions in the failing worktrees.
+shared_rows() {
+  [ -n "$(find "$TEST_FAILURES" -mmin -"$FLEET_SHARED_RED_MIN" 2>/dev/null)" ] || return 0   # nothing new in the window
+  local test start n keys owners sid reason fact e win="${FLEET_SHARED_RED_MIN}m"
+  [ $(( FLEET_SHARED_RED_MIN % 60 )) = 0 ] && win="$(( FLEET_SHARED_RED_MIN / 60 ))h"
+  : >> "$CACHE/cwds"
+  sort -t$'\t' -k1,1n "$TEST_FAILURES" | awk -F'\t' -v OFS='\t' -v now="$(date +%s)" -v cw="$CACHE/cwds" \
+      -v w="$(( FLEET_SHARED_RED_MIN * 60 ))" -v min="$FLEET_SHARED_RED_BRANCHES" '
+    FILENAME == cw { sids[$1] = sids[$1] " " $2; next }
+    $1 !~ /^[0-9]+$/ || $1 > now || $4 == "" { next }
+    {
+      t = $4; k = ($3 == "-" || $3 == "") ? $2 : $3
+      if (!(t in last) || $1 - last[t] > w) start[t] = $1
+      last[t] = $1
+      if ($1 < now - w) next
+      if (!((t, k) in seen)) { seen[t, k] = 1; n[t]++; keys[t] = keys[t] (n[t] > 1 ? ", " : "") k }
+      if (!((t, $2) in wt)) {
+        wt[t, $2] = 1; m = split(sids[$2], s, " ")
+        for (i = 1; i <= m; i++) if (!((t, s[i]) in own)) { own[t, s[i]] = 1; o[t] = o[t] (o[t] == "" ? "" : ",") s[i] }
+      }
+    }
+    END { for (t in n) if (n[t] >= min) print t, start[t], n[t], keys[t], (o[t] == "" ? "-" : o[t]) }' "$CACHE/cwds" - | sort |
+  while IFS=$'\t' read -r test start n keys owners; do
+    sid="shared-$(printf '%s' "$test" | tr -c 'A-Za-z0-9' _)"
+    reason="$test red on $n branches in $win: $keys"
+    fact="SHARED $test @$start"
+    e=0; escalated "$sid" "$fact" && e=1
+    printf 'SHARED\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$test" "$sid" "$reason" "$e" "$owners" "$fact"
   done
 }
 
@@ -866,8 +911,8 @@ eta_cells() {
 # Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
 # changing, and reason rides along to explain a stage change. Newer cells come last so a
 # watch.state written before them still lines up. now is what WHY shows: on a WORKING row, the
-# session's last action (its reason only says busy or shell), else the reason. NIGHTLY rows are
-# rendered separately.
+# session's last action (its reason only says busy or shell), else the reason. NIGHTLY and SHARED
+# rows are rendered separately.
 board_cells() {
   awk -F'\t' -v OFS='\t' -v etaf="${1:-}" '
     # minutes -> 45m, 3h12m, 2d4h; "-" when the session start is unknown
@@ -893,7 +938,7 @@ board_cells() {
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
-    $1 == "NIGHTLY" { next }
+    $1 == "NIGHTLY" || $1 == "SHARED" { next }
     {
       t = $2; sub(/^[^\/]*\//, "", t)
       git = ($5 != "-")
@@ -1044,10 +1089,12 @@ write_state() {
          | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          unreadable: ($unread | split("\n") | map(select(length > 0))),
-         sessions: ($r | map(select(.bucket != "NIGHTLY")
+         sessions: ($r | map(select(.bucket | IN("NIGHTLY", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket == "NIGHTLY")
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
+         shared: ($r | map(select(.bucket == "SHARED")
+                     | {test: .target, id: .session_id, reason, fact, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
@@ -1127,7 +1174,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in NIGHTLY NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
+  for b in NIGHTLY SHARED NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do
