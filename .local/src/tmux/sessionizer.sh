@@ -201,7 +201,7 @@ go() {
   read -r world name <<< "$(world_route "$dir")"
 
   # It lives somewhere else: hand the hop to tmx, which owns crossing worlds
-  # (detach-client -E, the back-crumb, and `ensure` on the far side). `goto` and not `land`
+  # (detach-client -E and `ensure` on the far side). `goto` and not `land`
   # -- land is the far side and would skip the detach; see servers.sh:_enter.
   #
   # This is reached from inside a display-popup, which is fine and is not new: Prefix+H
