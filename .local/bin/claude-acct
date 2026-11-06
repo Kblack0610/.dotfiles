@@ -13,6 +13,8 @@
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
 #   claude-acct check usage|burn  # one line, exit 1 when tripped (the Sentinel watch probes)
+#   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
+#                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
@@ -224,6 +226,18 @@ spend_24h() {
     out=$(prom_q 'sum by (user_email) (increase(claude_code_cost_usage_USD_total[24h]))' |
         jq -c '[.data.result[] | {key: (.metric.user_email // ""), value: (.value[1] | tonumber)}] | from_entries' 2>/dev/null)
     echo "${out:-null}"
+}
+
+# cost -> {"<session id>": dollars} for every session with spend in the window. increase(), not
+# the counter's value, so a session resumed in a new process (its counter restarted) still sums
+# its whole spend. Exit 2 when Prometheus cannot be read: no answer is not "spent nothing".
+cmd_cost() {
+    local out
+    out=$(prom_q "sum by (session_id) (increase(claude_code_cost_usage_USD_total[${CLAUDE_ACCT_COST_WINDOW:-7d}]))" |
+        jq -ce '[.data.result[] | select(.metric.session_id != null)
+                 | {key: .metric.session_id, value: (.value[1] | tonumber * 100 | round / 100)}] | from_entries' 2>/dev/null) ||
+        { echo "claude-acct: cost: cannot read Prometheus" >&2; return 2; }
+    printf '%s\n' "$out"
 }
 
 # session_rate [nospend] -> points of an account's week one live session uses an hour: the fleet's
@@ -1094,6 +1108,7 @@ case "${1:-}" in
     textfile) shift; cmd_textfile "$@" ;;
     room)   cmd_room ;;
     check)  shift; cmd_check "$@" ;;
+    cost)   cmd_cost ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;
     park)   shift; cmd_park "$@" ;;

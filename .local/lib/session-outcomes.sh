@@ -261,5 +261,5 @@ so_langfuse_events() {
         timestamp: $r.observed,
         body: { id: "so:\($r.session_id):\(.[0])", sessionId: $r.session_id,
                 name: .[0], value: .[1], dataType: "NUMERIC",
-                metadata: { project: $r.project, runner: $r.runner, final: $r.final } } }'
+                metadata: { project: $r.project, runner: $r.runner, agent: $r.agent, final: $r.final } } }'
 }

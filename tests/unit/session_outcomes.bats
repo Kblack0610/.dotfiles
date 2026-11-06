@@ -144,6 +144,19 @@ EOF
   assert_equal "$(field d .runner)" true
   assert_equal "$(field d .corrections)" null
   assert_equal "$(field c .runner)" false
+  # no calls.jsonl line names it, so its agent is unknown rather than guessed
+  assert_equal "$(field d .agent)" null
+}
+
+@test "a runner session carries the agent calls.jsonl names for it; a human session never does" {
+  mkdir -p "$AGENTCTL_STATE_DIR"
+  # sess-c is interactive: a stray call line on its id must not make it a runner
+  printf '%s\n' '{"id":"c1","agent":"dream","session_id":"sess-d"}' '{"id":"c2","agent":"ask-judge","session_id":"sess-c"}' \
+    '{"id":"c3","agent":"dream"}' > "$AGENTCTL_STATE_DIR/calls.jsonl"
+  AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl" "$SUBJECT" run
+  assert_equal "$(field d .agent)" dream
+  assert_equal "$(field c .agent)" null
+  assert_equal "$(field a .agent)" null
 }
 
 @test "revert in a body: #241 Reverts #240" {
@@ -490,6 +503,7 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-c" and .body.name == "friction") | .body.value')" 5
   assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-a" and .body.name == "prs_merged") | .body.id')" so:sess-a:prs_merged
   assert_equal "$(posted | jq -r 'select(.body.name == "nudges")' | wc -l)" 0   # no bench row, no score
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-d" and .body.name == "friction") | .body.metadata | has("agent")')" true
   assert_equal "$(mark)" 2026-10-20T00:00:00Z
 }
 
