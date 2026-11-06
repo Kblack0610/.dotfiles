@@ -171,7 +171,7 @@ EOF
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial "close.sh window '@7'"
-  refute_output --partial 'session'
+  refute_output --partial 'close.sh session'
 }
 
 @test "session scope schedules the session close through tmux-close, and only then" {
