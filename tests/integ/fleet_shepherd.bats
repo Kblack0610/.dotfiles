@@ -249,6 +249,11 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   "$SH" check >/dev/null || true
   run grep -c 'one decision closes it' "$HOME/pages"
   assert_output 4
+  # A page agent-notify refused is not recorded as sent: the next check tries again.
+  : > "$FLEET_SHEPHERD_DIR/.remind"
+  stub agent-notify 'exit 1'
+  "$SH" check >/dev/null || true
+  [ ! -s "$FLEET_SHEPHERD_DIR/.remind" ]
 }
 
 @test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {

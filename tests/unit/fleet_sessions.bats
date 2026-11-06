@@ -1414,6 +1414,9 @@ SH
   assert_success
   run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/other","number":875}]' "$SANDBOX/t.jsonl" -
   assert_failure
+  phases_plan '- [x] Phase 1: work (o/other#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_failure
   phases_plan '- [x] Phase 1: work (#875)'
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
   assert_success
@@ -1426,6 +1429,12 @@ SH
   echo '{"input":{"command":"git push -u origin feat/xy"}}' > "$SANDBOX/t.jsonl"
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
   assert_failure
+  echo '{"content":"   abc..def  feat/x -> origin/feat/x"}' > "$SANDBOX/t.jsonl" # a pull, not a push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"To github.com:o/r.git\n * [new branch]      HEAD -> feat/x\n"}' > "$SANDBOX/t.jsonl" # a bare git push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_success
   for c in 'git push -u origin feat/x' 'git push origin HEAD:feat/x' 'git push origin refs/heads/feat/x'; do
     printf '{"input":{"command":"%s"}}\n' "$c" > "$SANDBOX/t.jsonl"
     run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -

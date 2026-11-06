@@ -243,13 +243,16 @@ hold_for() {
 # session: on 2026-11-06 trader-real-money-plan sat 6h+ refusing to queue phases that would have
 # started on their own. Pending, cancelled, another answer or no such ask all hold.
 ask_pending() {
-  local id="${1%%=*}" want="" f st ans
+  local id="${1%%=*}" want="" f st by ans
   [[ "$1" == *=* ]] && want="${1#*=}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "not an ask id"; return; }
   f="$(compgen -G "$AQ_ASKS/*/$id.md" | head -1)"
   [ -n "$f" ] || { echo "no such ask"; return; }
   st="$(sed -n 's/^status: //p' "$f" | head -1)"
   [ "$st" = answered ] || { echo "${st:-unreadable}"; return; }
+  # A judge or shepherd answer is not the human's decision; legacy answers carry an empty by.
+  by="$(sed -n 's/^answered_by: *//p' "$f" | head -1)"
+  [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
   [ "${ans,,}" = "${want,,}" ] || echo "answered ${ans:-nothing}, not $want"
@@ -518,6 +521,8 @@ cmd_add() {
         die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
+      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
+        aid="${tag#ask:}"; compgen -G "$AQ_ASKS/*/${aid%%=*}.md" >/dev/null || die "$tag: no agent-ask has that id; post the ask first" ;;
     esac
   done
   # A hand-started session records itself and its window, on the agent world only.

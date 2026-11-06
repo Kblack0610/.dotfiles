@@ -443,7 +443,8 @@ origin_repo() {
 
 # pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> -> true when this
 # session made PR #N of <dir>'s repo: it opened or merged it (session_prs), its plan's Phases name
-# #N, its transcript holds the PR's URL, or it pushed <branch>. Worktrees are shared and recycled,
+# #N (bare, not <repo>#N), its transcript holds the PR's URL, or it pushed <branch> (the command,
+# or git's `-> <branch>` line for a bare `git push`). Worktrees are shared and recycled,
 # so a PR found by branch name alone may be another session's: trader-real-money-plan read LANDED
 # on #42 of another plan that had used the same branch (2026-11-06).
 pr_made_here() {
@@ -452,12 +453,12 @@ pr_made_here() {
   jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase) == $r and .number == $n)' \
     <<<"$4" >/dev/null 2>&1 && return 0
   [ "$plan" != - ] && [ -f "$plan" ] \
-    && sed -n '/^## Phases/,/^## /p' "$plan" | grep -qE "#$n([^0-9]|$)" && return 0
+    && sed -n '/^## Phases/,/^## /p' "$plan" | grep -qE "(^|[^A-Za-z0-9_./-])#$n([^0-9]|$)" && return 0
   [ -f "$t" ] || return 1
   [ -n "$repo" ] && grep -qiE "github\.com/$(re_quote "$repo")/pull/$n([^0-9]|$)" "$t" && return 0
   [ "$br" != - ] || return 1
   re="$(re_quote "$br")"
-  grep -qE "git push[^\"]*( |:|refs/heads/)$re([^A-Za-z0-9._/-]|$)" "$t"
+  grep -qE "(git push[^\"]*( |:|refs/heads/)| -> )$re([^A-Za-z0-9._/-]|$)" "$t"
 }
 
 # re_quote <text> -> <text> with ERE metacharacters escaped.
