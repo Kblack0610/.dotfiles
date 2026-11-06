@@ -80,6 +80,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |---------|------|-----|
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/board-observe.sh` | Record a sprint-board stage transition when the board is edited |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
+| ExitPlanMode | `~/.claude/hooks/plan-approved.sh` | Record the approved plan in `~/.agent/plans/approved.jsonl`, so `fleet-dispatch reap` can queue its open phases once its session is gone |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when an always-loaded file passes its budget: `MEMORY.md` 8 KB (or a line over 200 chars), global `CLAUDE.md` 20 KB, repo root `CLAUDE.md`/`AGENTS.md` 12 KB |
 
 | Bash (PostToolUse and PostToolUseFailure) | `~/.claude/hooks/token-filter.sh` | When a rewritten command's output shows an rtk error, log it, feed the breaker, and tell the model the `RTK_DISABLED=1` re-run |

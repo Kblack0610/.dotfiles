@@ -1629,6 +1629,61 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 
 # --- reap --------------------------------------------------------------------------------
 
+# approved_plan <name> <session> [phases] -- a plan file and its ledger line, as plan-approved.sh writes it.
+approved_plan() {
+  export PLAN_LEDGER="$SANDBOX/approved.jsonl"
+  printf '# Plan\n\n## Phases\n\n%b\n' "${3:-- [x] one\n- [ ] two\n- [ ] three}" > "$SANDBOX/$1.md"
+  jq -nc --arg p "$SANDBOX/$1.md" --arg s "$2" --argjson e "$(date +%s)" \
+    '{epoch: $e, plan: $p, project: "game", session: $s, cwd: "/x"}' >> "$PLAN_LEDGER"
+}
+
+@test "reap queues the open phases of an approved plan whose session is gone, as night items, and starts nothing" {
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  run reconcile_plans
+  assert_success
+  run agent-queue list --json --state queued
+  assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
+  assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
+  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'shepherd'
+  grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
+}
+
+@test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
+  stub agent-ask 'echo live-session'
+  approved_plan live live-session
+  approved_plan fresh fresh-session
+  mkdir -p "$HOME/.claude-x/projects/p"; : > "$HOME/.claude-x/projects/p/fresh-session.jsonl"
+  approved_plan finished gone-session '- [x] one\n- [-] two'
+  approved_plan none gone-session 'no checklist here'
+  approved_plan named gone-session
+  agent-queue add --project game --from shepherd --slug peer "carry on with $SANDBOX/named.md" >/dev/null
+  run reconcile_plans
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" peer
+}
+
+@test "reap acts on nothing when it cannot read the sessions, or when reconcile is off" {
+  approved_plan orphan gone-session
+  stub agent-ask 'exit 1'
+  run reconcile_plans
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  stub agent-ask 'echo other-session'
+  DISPATCH_PLAN_RECONCILE=0 run reconcile_plans
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+}
+
+@test "reap queues a plan once: a phase that failed or was cancelled does not come back" {
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  reconcile_plans
+  agent-queue cancel orphan-p3 >/dev/null
+  agent-queue cancel orphan-p2 >/dev/null
+  run reconcile_plans
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+}
+
 @test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
@@ -2009,6 +2064,15 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   fill
   assert_success
   assert_equal "$(night_keys)" 'requested row,untagged'
+}
+
+@test "night: a #requested row takes a slot ahead of a subtract-or-fix row" {
+  night_ready
+  row agent-runtime agent 'retire the hook' '- [ ] retire the dead hook #high'
+  row agent-runtime agent 'route the reds' '- [ ] route the reds to owners #requested #low'
+  night_verdict 'retire the hook' timers; night_verdict 'route the reds' reds
+  fill --dry-run --json
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'route the reds,retire the hook'
 }
 
 @test "night: at most 3 active, one an area: subtract or fix first, then observer rows, then oldest #high" {
@@ -2707,6 +2771,19 @@ board_item() {
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
+}
+
+@test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
+  queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
+  notes() { echo '{"rows":[{"lane":"agent"},{"lane":"agent"},{"lane":"human"},{"lane":"playtest"},{"lane":"focus"}]}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '{board_agent, board_human, board_playtest}' <<<"$output")" '{"board_agent":2,"board_human":1,"board_playtest":1}'
+  notes() { return 1; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c 'has("board_agent")' <<<"$output")" false
 }
 
 @test "stats fails, saying so, when the queue is unreadable" {

@@ -938,7 +938,7 @@ ASK-JUDGE-END'
   check taste human taste
   check unclear-ask human unclear-ask
   check not-reversible human reversible
-  check not-grounded human grounded
+  check not-grounded take-recommend ship_deploy
   check against-precedent human against-precedent
   check ship_deploy take-recommend ship_deploy
   check other take-recommend other
@@ -960,6 +960,23 @@ ASK-JUDGE-END'
   run "$AGENT_ASK" show "$id"
   assert_line 'status: answered'
   assert_line 'judge_evidence: q grounded'
+}
+
+@test "judge: grounded is noted, never a stop: a live type answers, a shadow type only says so" {
+  export AGENT_ASK_LIVE_RULES=ship_deploy
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(SCORE_TYPE=ship_deploy score not-grounded)"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answered_by: judge'
+  assert_line 'judge_met: reversible'
+  # negative control: the same score on a type that is not live stays with the human
+  fake_judge "$(SCORE_TYPE=ci_capacity_ops score not-grounded)"
+  id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'quarantine it?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_line 'judge_rule: ci_capacity_ops'
 }
 
 @test "judge: other is never live, even when LIVE_RULES names it" {

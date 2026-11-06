@@ -99,6 +99,8 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # ranks ahead of the rest of its project-priority and due-date bucket, day and night (the human's ask
 # of 2026-11-05 that cleanup of the AI systems be the most urgent work). Empty turns it off.
 : "${DISPATCH_CLEANUP_PROJECTS:=agent-runtime notes-cockpit}"
+# 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
+: "${DISPATCH_PLAN_RECONCILE:=1}"
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
@@ -184,6 +186,8 @@ def rank: sort_by((.pprio // 2), (.due // 3), (.cleanup // 1), (.wrank // 0), .p
 # The registry's own resolver (project-name.sh), reading DISPATCH_PROJECT_MAP.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../lib/plan-phases.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
@@ -1605,14 +1609,17 @@ last_run_start() {
 # all and by urgent/high; the low water and whether runnable is under it; the present trickle's rate
 # and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
 # reap moves in the last hour, and the items moved
-# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
+# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily); the open board rows
+# by lane, left out when the board is unreadable, so the chip reads - and never 0.
 cmd_stats() {
-  local now q aq since started pass=null starved=false hr=null
+  local now q aq since started pass=null starved=false hr=null board
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   # The last pass's headroom, while it is younger than three passes: an old one is no answer.
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
+  board=$(notes board --json 2>/dev/null | jq -c '.rows | {board_agent: map(select(.lane == "agent")) | length,
+    board_human: map(select(.lane == "human")) | length, board_playtest: map(select(.lane == "playtest")) | length}' 2>/dev/null)
   cmd_starved >/dev/null 2>&1 || starved=true
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
   # shellcheck source=/dev/null
@@ -1624,7 +1631,7 @@ cmd_stats() {
     $4 == "reaped" { print "settle", "-"; next }
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
-      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" \
+      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select((.priority == "urgent" or .priority == "high") and (.waits | not)))) as $u
@@ -1638,6 +1645,7 @@ cmd_stats() {
          could_start: ($hr.could_start // null),
          low_water: $low, under_low_water: (if ($q | length) < $low then 1 else 0 end),
          present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length)}
+      + ($board // {})
       # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
       + (if $aq == null then {} else
           ($aq.sitting.held_by // {}) as $h
@@ -1683,7 +1691,29 @@ cmd_reap() {
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
   unstart_orphans
+  reconcile_plans
   return 0
+}
+
+# reconcile_plans -- queue the open phases of an approved plan its session left behind. They run as
+# `night` items: a plan's phases carry no tier, so unattended they stop at an open PR. Once only: a
+# plan the queue has held before is its items' to finish, or a failing phase would re-queue every
+# pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
+reconcile_plans() {
+  [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
+  local orphans c plan project held out
+  orphans=$(plans_orphaned) || return 0
+  [ -n "$orphans" ] || return 0
+  held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
+  while IFS= read -r c; do
+    plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
+    grep -qxF -- "$plan" <<<"$held" && continue
+    if out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --tags night --from shepherd 2>&1); then
+      logline "queued the open phases of $(basename "$plan") for the night: its session is gone"
+    else
+      say "could not queue the phases of $plan: $out"
+    fi
+  done <<<"$orphans"
 }
 
 # waiting_sessions -> "<server>/<tmux session>" for each Claude waiting on its human (agent-panel),
@@ -2007,7 +2037,8 @@ cmd_fill() {
 
 # night_rows <judged> -> the open agent-lane rows of the night projects that no merging session may
 # take because of tier alone: no tier tag below 3 and none of DISPATCH_NIGHT_SKIP. `order` is the
-# row's place on its board, newest first; `rank` puts subtract-or-fix rows, then observer rows, first.
+# row's place on its board, newest first; `rank` puts what the human asked for, then subtract-or-fix
+# rows, then observer rows, first.
 night_rows() {
   local judged="$1" name sheet stage repo key text body t line n x planned dj dsig
   local -A DET=() PLN=()
@@ -2041,7 +2072,8 @@ night_rows() {
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0,
           details: $details, dsig: $dsig, planned: ($planned == 1),
-          rank: (if ($body | test($first; "i")) then 0 elif ($body | test($obs; "i")) then 1 else 2 end)}'
+          rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($first; "i")) then 0
+                 elif ($body | test($obs; "i")) then 1 else 2 end)}'
     done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
   done
 }
@@ -2049,7 +2081,7 @@ night_rows() {
 # night_picks <rows> -> up to DISPATCH_NIGHT_MAX rows whose verdict, under the current policy and for
 # the row's current text, says tier 3 is the only reason a merging session may not take it, and
 # that it is S or M, clear, agent-only and in one area. One row an area, so a night's PRs do not
-# collide. Subtract or fix first, then observer rows, then most urgent, then oldest.
+# collide. Human asks first, then subtract or fix, then observer rows, then most urgent, then oldest.
 night_picks() {
   [ -n "$1" ] || return 0
   jq -sc --arg sig "$(policy_sig)" --argjson max "$NIGHT_MAX" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
