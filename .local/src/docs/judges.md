@@ -24,7 +24,9 @@ A judge is a model call that decides something a human would otherwise decide: t
 - A live type goes back to shadow when `DEMOTE_OVERRIDES` (2) of its last `DEMOTE_WINDOW` (10) live answers were overridden, numbers in `ask-judge.conf`. Why: at 92% right a type meets one override in 30 answers almost surely, so a first-override rule would pull every type, and a type gone wrong still comes back within ten answers. Tests: `agent_ask.bats` "override: the human's next message ..." and "override: only overrides among ...".
 - The answer judge reads the human's disagreements decided before the ask was posted, and one covering the same decision sends the ask to the human (`against-precedent`). Why: a disagreement changes the next verdict the same day with no rule written, and a replayed ask can never read its own answer. Test: `agent_ask.bats` "precedents: a disagreement older than the ask ...".
 - Each verdict names its call (`judge_call`, one `calls.jsonl` line), so latency and cost per verdict are the call's, shared across the rows one call judged. Why: estimated costs drift, and a dispatch call judges many rows at once. Test: `judge_eval.bats` "dispatch-judge: the newest verdict per row" (cost per verdict).
-- The judge KPIs (`judge_errors`, `judge_precision`, `ask_false_defer_pct`, `ask_unclear_pct`) are fleet-bench KPIs with thresholds in `~/.config/agentctl/kpi-thresholds`, so `fleet-bench retro` files a row when one trips. `judge_precision` is the lowest precision among rules with 10 or more scored answers. Why: a judge drifting wrong was visible only to someone who went looking. Test: `tests/unit/fleet_bench.bats` "kpi: the judge KPIs come from judge-eval kpi".
+- The judge KPIs (`judge_errors`, `judge_precision`, `ask_answered_pct`, `ask_false_defer_pct`, `ask_unclear_pct`) are fleet-bench KPIs with thresholds in `~/.config/agentctl/kpi-thresholds`, so `fleet-bench retro` files a row when one trips. `judge_precision` is the lowest precision among rules with 10 or more scored answers. Why: a judge drifting wrong was visible only to someone who went looking. Test: `tests/unit/fleet_bench.bats` "kpi: the judge KPIs come from judge-eval kpi".
+
+- Every answer verdict is listed, not only the misses: `judge-eval log`, and `verdicts` in `--json`, which Log's Judges' verdicts section shows on both surfaces. The list and its 7-day line take any prompt, because they say what happened rather than score a policy. Why: the human could only see where the judge disagreed, never what it said yes to or why it passed (2026-11-05). Test: `judge_eval.bats` "the verdict list".
 
 ## Replay
 
@@ -42,4 +44,5 @@ Each verdict is one of: TP (answered, right), FP (answered, wrong), FN (deferred
 | kappa | Cohen's kappa over the TP, FP, FN, TN table |
 | p50, p95 | each scored verdict's call `duration_ms` |
 | cost per verdict | each call's `cost_usd` divided by the verdicts it made, averaged |
+| `ask_answered_pct` | asks the judge really answered (`answered_by: judge`) / (ask verdicts - errors) |
 | `ask_unclear_pct` | `unclear-ask` verdicts / (ask verdicts - errors) |

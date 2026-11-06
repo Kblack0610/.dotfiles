@@ -36,7 +36,8 @@
 # its PR merged with the tree clean is DONE.
 # A background shell keeps a session WORKING up to FLEET_SHELL_STALE_MIN, unless its plan is finished.
 # A pending ask (NEEDS; the one record of waiting on the human, which a Stop check makes an
-# attended session file) and a ready open PR that conflicts with the default branch (STALLED)
+# attended session file; `, carrying on` while the session is busy or in a gate shell, which keeps
+# WORKING's overdue check) and a ready open PR that conflicts with the default branch (STALLED)
 # decide before the session's status, so none can hide behind WORKING or read as DONE.
 # Facts come from agent-panel, git, gh and the ask queue; no model. The shepherd skill's
 # `status` and `nudge` verbs read this. Thresholds are the FLEET_* block below.
@@ -107,7 +108,17 @@ session_bucket() {
   # moves until it is unparked.
   [ "$st" = parked ] && { echo "PARKED claude exited to save usage; claude-acct unpark resumes it"; return; }
   [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
-  [ "$3" -gt 0 ] && { echo "NEEDS $3 pending ask(s)"; return; }
+  # A session with an open question carries on with what does not depend on the answer. The
+  # bucket stays NEEDS (the human still owes the answer), but one whose activity alone would read
+  # WORKING busy or shell says so, and keeps WORKING's overdue check. Asking the rules below with no
+  # ask keeps one definition of working.
+  if [ "$3" -gt 0 ]; then
+    case "$(session_bucket "$1" "$2" 0 "${@:4}")" in
+      "WORKING busy"* | "WORKING shell"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
+      *) echo "NEEDS $3 pending ask(s)" ;;
+    esac
+    return
+  fi
   if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
     case "${11}" in
       PASS) echo "STALLED PR #$9 conflicts with the default branch"; return ;;
@@ -771,7 +782,8 @@ collect() {
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
     # only a branch that took the base in (was clean) and conflicts again is a new one.
-    fact="$bucket"; [ "$pr" != - ] && fact="$fact @$branch"
+    # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
+    fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
