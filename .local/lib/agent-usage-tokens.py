@@ -10,7 +10,10 @@ No scanner of its own: every number comes from one of the two counted tools, so 
 joins them. Who owns which number:
   claude-recall tool-output  per-response tokens, context per response, tool output and its
                              carried cost, by project, tool and Bash command head, and
-                             the stretches that ran longest without a compaction (long_runs)
+                             the stretches that ran longest without a compaction (long_runs),
+                             cache write by cause, the context split (start, tool,
+                             conversation), responses per session, hook-forced turns
+  claude-recall tool-calls   read discipline and read triggers (reads), hot_targets
   agent-usage burn           cost (registry), merged PRs and cost per merged PR, start context
                              (first-turn median), compactions, tokens by model
 A day is the local calendar day, the window both tools are given exactly.
@@ -96,7 +99,8 @@ def snapshot(day):
     long_runs = proj.get("long_runs") or {}
     rd = (calls.get("buckets") or {}).get("all") or {}
     reads = {k: rd.get(k, 0) for k in ("reads", "locate_then_read", "reread_same_lines",
-                                       "locate_then_read_ctx", "reread_same_lines_ctx")}
+                                       "locate_then_read_ctx", "reread_same_lines_ctx",
+                                       "read_after_compaction", "read_after_subagent", "read_rule_doc")}
     out = {
         "schema": 1,
         "date": day.isoformat(),
@@ -122,6 +126,10 @@ def snapshot(day):
         "hot_targets": [{"path": g["key"], "sessions": g["calls"], "ctx": g["ctx"]}
                         for g in (calls.get("groups") or {}).get("hot_target") or []][:TOP_TARGETS] or None,
         "compactions": burn.get("compactions"),
+        "context_split": proj.get("context_split"),
+        "cache_write_by_cause": proj.get("cache_write_by_cause"),
+        "responses_per_session": proj.get("sessions"),
+        "hook_turns": proj.get("hook_turns"),
         "by_project": dict(sorted(by_project.items(), key=lambda kv: -(kv[1].get("context") or 0))),
         "by_tool": split(tool, "tool"),
         "by_command": split(cmd, "head"),

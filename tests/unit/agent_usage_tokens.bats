@@ -38,6 +38,12 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_equal "$(snap '.long_runs | [.turns_over, .stretches, .long]')" '[150,4,0]'
 }
 
+@test "snapshot: the burn map keys add up to the totals they split" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.context_split | add) == .totals.context, (.cache_write_by_cause | add) == .totals.cache_write]')" '[true,true]'
+  assert_equal "$(snap '[(.responses_per_session | keys), (.hook_turns | keys), (.reads | has("read_rule_doc"))]')" '[["count","p50","p90","single"],["stop_feedback","tool_denied"],true]'
+}
+
 @test "snapshot: sessions by kind and by account, and json serves the day for day-log" {
   "$AU" tokens snapshot >/dev/null
   assert_equal "$(snap '[(.by_kind | to_entries | map(.value.sessions) | add > 0), (.by_account | length > 0)]')" '[true,true]'
