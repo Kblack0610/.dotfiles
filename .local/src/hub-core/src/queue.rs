@@ -134,14 +134,14 @@ impl Item {
         if pr.is_empty() {
             return None;
         }
-        if pr.starts_with("http") {
-            return Some((
-                format!("#{}", pr.rsplit('/').next().unwrap_or(pr)),
-                Some(pr.into()),
-            ));
+        if pr.starts_with("https://") || pr.starts_with("http://") {
+            let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
+            return Some((format!("#{n}"), Some(pr.into())));
         }
         match pr.split_once('#') {
-            Some((repo, n)) if !repo.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            Some((repo, n))
+                if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+            {
                 let short = repo.rsplit('/').next().unwrap_or(repo);
                 Some((
                     format!("{short}#{n}"),
@@ -150,6 +150,18 @@ impl Item {
             }
             _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
         }
+    }
+
+    /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
+    /// recorded` when `agent-land` wrote no merge commit beside it.
+    pub fn pr_words(&self) -> Option<String> {
+        let (label, _) = self.pr_link()?;
+        let merge = if self.merged() {
+            "merged"
+        } else {
+            "merge not recorded"
+        };
+        Some(format!("PR {label} {merge}"))
     }
 
     /// Whether the ledger recorded the merge: `agent-land` writes `merged` (the merge commit)
@@ -322,7 +334,7 @@ pub struct DayTotal {
     pub done: usize,
     pub failed: usize,
     pub cost: f64,
-    /// Items with no cost, left out of `cost`, so a total never reads as complete when it is not.
+    /// Items that ran but have no cost, left out of `cost`, so a total never reads as complete when it is not.
     pub unpriced: usize,
 }
 
@@ -334,7 +346,9 @@ impl DayTotal {
             t.failed += usize::from(i.status.as_deref() == Some("failed"));
             match i.cost() {
                 Some(c) => t.cost += c,
-                None => t.unpriced += 1,
+                // A cancelled item never ran, so it has no price to miss.
+                None if i.status.as_deref() != Some("cancelled") => t.unpriced += 1,
+                None => {}
             }
         }
         t
@@ -377,6 +391,22 @@ pub fn day_of(stamp: &str) -> Option<String> {
             .format("%Y-%m-%d")
             .to_string(),
     )
+}
+
+/// A day (`YYYY-MM-DD`) as the Queue headings word it, by the same clock `day_of` uses: Today,
+/// Yesterday, else `Thu 6 Nov`.
+pub fn day_label(day: &str) -> String {
+    let today = chrono::Local::now().date_naive();
+    let Ok(d) = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+        return day.into();
+    };
+    if d == today {
+        "Today".into()
+    } else if Some(d) == today.pred_opt() {
+        "Yesterday".into()
+    } else {
+        d.format("%a %-d %b").to_string()
+    }
 }
 
 /// Each day's finished items totalled, by the day they finished. An item with no readable
@@ -1042,6 +1072,24 @@ mod tests {
         let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
         assert!(!bare.merged() && !bare.unproven());
+        assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
+        assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
+        // Nothing odd reaches a link: no number is a bare label, a slash is trimmed.
+        let odd = |pr: &str| {
+            item(&format!(
+                r#"{{"slug":"x","state":"done","pr":"{pr}","task":"t"}}"#
+            ))
+            .pr_link()
+        };
+        assert_eq!(odd("o/r#"), Some(("#o/r#".into(), None)));
+        assert_eq!(
+            odd("https://h/o/r/pull/7/"),
+            Some(("#7".into(), Some("https://h/o/r/pull/7/".into())))
+        );
+        assert_eq!(
+            odd("javascript:alert(1)"),
+            Some(("#javascript:alert(1)".into(), None))
+        );
         // No PR and no report is flagged; a report, a canary or a failure is not.
         let flagged = item(r#"{"slug":"c","state":"done","status":"ok","task":"t"}"#);
         assert!(flagged.unproven());
@@ -1126,6 +1174,9 @@ mod tests {
         let d = &days[&day_of("2026-11-06T12:00:00Z").unwrap()];
         assert_eq!((d.done, d.failed, d.cost), (2, 1, 3.0));
         assert_eq!(day_of("not a time"), None);
+        assert_eq!(day_label(&days_ago(0)), "Today");
+        assert_eq!(day_label(&days_ago(1)), "Yesterday");
+        assert_eq!(day_label("2026-11-04"), "Wed 4 Nov");
     }
 
     #[test]

@@ -213,19 +213,15 @@ function qTiles() {
 }
 
 // Done items under a heading per day, newest day first. The day and its totals are hub-core's
-// (`day`, `day_total`), so the page sums nothing; an item with no readable finish groups apart.
+// (`day`, `day_label`, `day_total`, all on the server's clock), so the page sums nothing; an item with no readable finish groups apart.
 function qDoneDays(rows) {
-  const ymd = (d) => d.toLocaleDateString("en-CA");
-  const today = ymd(new Date()), yday = ymd(new Date(Date.now() - 864e5));
-  const sorted = [...rows].sort((a, b) => tms(b.finished) - tms(a.finished));
+  const sorted = [...rows].sort((a, b) => (b.day || "").localeCompare(a.day || "") || (tms(b.finished) || 0) - (tms(a.finished) || 0));
   let html = "", last;
   for (const i of sorted) {
     const d = i.day || "";
     if (d !== last) {
       last = d;
-      const label = !d ? "Undated" : d === today ? "Today" : d === yday ? "Yesterday"
-        : new Date(`${d}T12:00:00`).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
-      html += `<h3 class="qday">${label}${i.day_total ? ` <span class="muted">${esc(i.day_total)}</span>` : ""}</h3>`;
+      html += `<h3 class="qday">${esc(i.day_label || "Undated")}${i.day_total ? ` <span class="muted">${esc(i.day_total)}</span>` : ""}</h3>`;
     }
     html += qItem(i);
   }

@@ -183,15 +183,10 @@ fn state(i: &Item, p: Palette) -> Cell {
             let st = i.status.clone().unwrap_or_default();
             let style = if st == "ok" { p.good() } else { p.bad() };
             let mut out = st;
-            if let Some((label, _)) = i.pr_link() {
-                out += &format!(", PR {label}");
-                if i.merged() {
-                    out += " merged";
-                }
+            if let Some(w) = i.pr_words() {
+                out += &format!(", {w}");
             }
-            if let Some(c) = i.cost() {
-                out += &format!(" {}", money(c));
-            }
+            out += &format!(" {}", i.cost().map_or("-".into(), money));
             if i.unproven() {
                 out += ", ! no PR, no proof";
             }
@@ -545,7 +540,7 @@ pub(crate) mod tests {
         )));
         let s = text(&q, &QueueView::default(), 200);
         assert!(s.contains("ok, PR r#7 merged $6.10"), "{s}");
-        assert!(s.contains("ok, ! no PR, no proof"), "{s}");
+        assert!(s.contains("ok -, ! no PR, no proof"), "{s}");
         assert!(s.contains("DONE TODAY  3  $6.10, 2 unpriced"), "{s}");
         assert!(!s.contains("$0"), "{s}");
     }
@@ -561,7 +556,7 @@ pub(crate) mod tests {
         assert!(s.contains("4 done (3 ok, 0 failed, 1 cancelled)"), "{s}");
         assert!(s.contains("to PR median 95m"), "{s}");
         assert!(s.contains("waits: night (01:00-06:00)"), "{s}");
-        assert!(s.contains("ok, PR #812"), "{s}");
+        assert!(s.contains("ok, PR #812 merge not recorded -"), "{s}");
         assert!(
             s.contains("plan heavy"),
             "the weight shows beside the mode\n{s}"

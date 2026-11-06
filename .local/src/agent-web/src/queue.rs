@@ -55,7 +55,7 @@ pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
 
 /// The item as agent-queue printed it plus what a row shows: `cost` (dollars, absent when
 /// unknown), the PR's label and link, `pr_merged` (the merge was recorded), `unproven`, and for a
-/// done item its `day` and that day's `day_total` line, so the page sums and words nothing.
+/// done item its `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
 fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
     if let Some(c) = i.cost() {
@@ -75,6 +75,7 @@ fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
             if let Some(t) = days.get(&d) {
                 v["day_total"] = t.line().into();
             }
+            v["day_label"] = hub_queue::day_label(&d).into();
             v["day"] = d.into();
         }
     }
@@ -278,6 +279,10 @@ mod tests {
         assert_eq!(a["merged"], "abc", "the ledger's own key is left alone");
         assert_eq!(a["day_total"], "2 done, $6.10, 1 unpriced");
         assert_eq!(a["day_total"], b["day_total"]);
+        assert_eq!(
+            a["day_label"],
+            hub_queue::day_label(a["day"].as_str().unwrap())
+        );
         assert!(a.get("unproven").is_none());
         assert_eq!(b["unproven"], true, "no PR and no report");
         assert!(b.get("cost").is_none(), "a ledger 0 is not a price");

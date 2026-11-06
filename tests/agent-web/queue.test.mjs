@@ -70,12 +70,16 @@ test("a PR with no recorded merge says so, and a bare older PR number keeps its 
 
 test("Done days carry hub-core's day total in the heading, one per day", () => {
   const rows = [
-    done({ slug: "a", day: "2026-11-06", day_total: "2 done, 1 failed, $9.12" }),
-    done({ slug: "b", day: "2026-11-06", day_total: "2 done, 1 failed, $9.12", finished: "2026-11-06T11:00:00Z" }),
-    done({ slug: "c", day: "2026-11-04", day_total: "1 done, $4.00", finished: "2026-11-04T12:00:00Z" }),
+    done({ slug: "a", day: "2026-11-06", day_label: "Today", day_total: "2 done, 1 failed, $9.12" }),
+    done({ slug: "b", day: "2026-11-06", day_label: "Today", day_total: "2 done, 1 failed, $9.12", finished: "2026-11-06T11:00:00Z" }),
+    done({ slug: "c", day: "2026-11-04", day_label: "Wed 4 Nov", day_total: "1 done, $4.00", finished: "2026-11-04T12:00:00Z" }),
   ];
   const html = vm.runInContext(`qDoneDays(${JSON.stringify(rows)})`, ctx);
   assert.equal((html.match(/<h3 class="qday">/g) || []).length, 2);
   assert.match(html, /<span class="muted">2 done, 1 failed, \$9\.12<\/span>/);
   assert.match(html, /<span class="muted">1 done, \$4\.00<\/span>/);
+  assert.match(html, /Today <span[\s\S]*Wed 4 Nov <span/);
+  // Undated rows sort together under one heading, never NaN-interleaved.
+  const un = [done({ slug: "u1", finished: undefined }), done({ slug: "d", day: "2026-11-06", day_label: "Today" }), done({ slug: "u2", finished: undefined })];
+  assert.equal((vm.runInContext(`qDoneDays(${JSON.stringify(un)})`, ctx).match(/Undated/g) || []).length, 1);
 });
