@@ -357,6 +357,20 @@ SH
   refute_output --partial 'sess-a'
 }
 
+@test "ended lists the window's sessions newest first and leaves out the runners" {
+  "$SUBJECT" run
+  run "$SUBJECT" ended --days 3650
+  assert_success
+  refute_output --partial '"project":"_runner"'
+  assert_equal "$(printf '%s\n' "$output" | jq -s 'length > 0')" true
+  assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
+    '["account","cost_usd","project","prs_merged","prs_open","session_id","title","updated_epoch"]'
+  SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" ended --days 1
+  assert_success
+  assert_output ''
+}
+
 # bench_fx: fleet-bench stats rows for A (2 nudges, 1 CI red before merge, 30 lines) and for
 # a session the registry does not know, which must not become a row.
 bench_fx() {
