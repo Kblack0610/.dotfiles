@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync GitHub scheduled-run facts (schedules-sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/schedules-sync
+StandardOutput=null
+TimeoutStartSec=600
