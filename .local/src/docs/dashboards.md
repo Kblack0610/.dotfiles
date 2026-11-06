@@ -46,8 +46,8 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | 5 | Sessions | What is each agent doing? Act on it. | landed (#961): one row per session, grouped by bucket on the web and ranked by bucket in the TUI, with task, PR and CI, phases, ETA, idle and account. TUI: Enter opens the detail pane with the session's forecast timeline, i p u m x c a act. Web: the shepherd's pass is the list's first line and its session is pinned first; with no session open the detail pane is the overview (bucket tiles that filter the list, then the last 24h and Shepherd, folded); an open session shows its fleet-state card folded above the transcript, which loads only then. |
 | 6 | Infra | Is the machinery healthy? | landed (#971): `hub_core::infra` on both surfaces, sections health, red now, machines (one table in place of POOLS, CI by machine and the Machines tab), CI (running, queued, failed 24h; green is one line), jobs (TUI: 8 rows, Enter opens the table; web: the table), cloud runners, governor. |
 | 7 | Focus | What is my day? | landed: `hub_core::focus` over `notes show --json`, the daily note's `## Focus` lanes (Urgent, High, Low open; Done, the rollup and the other sections folded). Web: Rendered or Raw with Copy, prev and next day, and `[[wikilinks]]` open the linked note in the same view at `#focus/<target>` (Back returns); `#p:<name>` opens `#projects/<name>`; the head links to Outbox. Edit and Save rewrite the note through `notes put --base` (a stale hash writes nothing and shows both versions; the draft stays on the device). The Projects board lists no Focus rows, only a count linking here. TUI: read-only, `[` `]` step a day, `t` today |
-| 8 | Log | What happened? | landed (#PRNUM): the day from `day-log`, its history (TUI `h` lists the days; web the per-day bars), then folded sections, each read when it opens and capped at `FOLD_ROWS` (50) with a `+N older` line: Actions, Changes, Rundowns, Judges' verdicts, Forecast (TUI only: the web never had one) and Ranked sessions (a row opens the session's full card). TUI keys a c s v f w |
-| 9 | Fleet | Can I afford more agents; are the judges right? | landed (#PRNUM): Claude accounts, workers (one row per agentctl runner) and the judges' counts; their verdict lists are Log's |
+| 8 | Log | What happened? | landed (#1077): the day from `day-log`, its history (TUI `h` lists the days; web the per-day bars), then folded sections, each read when it opens and capped at `FOLD_ROWS` (50) with a `+N older` line: Actions, Changes, Rundowns, Judges' verdicts, Forecast (TUI only: the web never had one) and Ranked sessions (a row opens the session's full card). TUI keys a c s v f w |
+| 9 | Fleet | Can I afford more agents; are the judges right? | landed (#1077): Claude accounts, workers (one row per agentctl runner) and the judges' counts; their verdict lists are Log's |
 
 ### What moves, and why
 
@@ -61,8 +61,8 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | TUI CI and Machines, web Jobs | Infra sections | One question: is the machinery healthy (rule 1) |
 | TUI Today and History | Log | One question: what happened |
 | Web Focus "Add to outbox" box | Outbox tab: the whole outbox as an editable doc | One place writes the outbox from the hub, and it shows what intake did with each line (2026-11-05) |
-| Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections (#PRNUM; folded at the bottom of Sessions from #961 until then) | Audit trails behind a click (rule 3) |
-| New: ranked sessions and the session card (`agentctl-session-outcomes worst`, `card`) | Log, folded section (#PRNUM) | Asked for 2026-11-04 (session telemetry); one reader, `hub_core::outcomes`, for both surfaces (rule 8) |
+| Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections (#1077; folded at the bottom of Sessions from #961 until then) | Audit trails behind a click (rule 3) |
+| New: ranked sessions and the session card (`agentctl-session-outcomes worst`, `card`) | Log, folded section (#1077) | Asked for 2026-11-04 (session telemetry); one reader, `hub_core::outcomes`, for both surfaces (rule 8) |
 | Web Shepherd pass card | Sessions, one line | It is one status line, too small for a tab |
 | Web Shepherd chat | Sessions: the shepherd session pinned first, opened like any session | The chat is that session's transcript and compose box, which Sessions already has |
 
@@ -75,9 +75,9 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `overview` (TUI, `hub --tab overview`) | Home | #929 |
 | `waiting`, `asks` (agent-web `#waiting`, `#asks`) | Home | #929 |
 | `board` (agent-web `#board`, `hub --tab board`, `hub tab board`) | Projects | #949 |
-| `forecast` (TUI, `hub --tab forecast`) | Log, scrolled to the Forecast fold (Sessions from #961) | #PRNUM |
-| `today`, `history` (TUI `hub --tab today`, `hub --tab history`, keys 7 and 8; agent-web `#today`, `#history`) | Log; `history` opens the TUI day list | #PRNUM |
-| `actions` (agent-web `#actions`, the tab) | Log, its Actions section | #PRNUM |
+| `forecast` (TUI, `hub --tab forecast`) | Log, scrolled to the Forecast fold (Sessions from #961) | #1077 |
+| `today`, `history` (TUI `hub --tab today`, `hub --tab history`, keys 7 and 8; agent-web `#today`, `#history`) | Log; `history` opens the TUI day list | #1077 |
+| `actions` (agent-web `#actions`, the tab) | Log, its Actions section | #1077 |
 | `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
 | `jobs`, `ci`, `machines` (TUI `hub --tab jobs`, `hub --tab ci`, `hub --tab machines`, keys 4 and 5; agent-web `#jobs`) | Infra, scrolled to that section; `jobs` opens the TUI jobs table | #971 |
 
