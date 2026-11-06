@@ -332,9 +332,8 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
 # asserted without a terminal. Field layout is <server> <session> <window> <display>, and
 # the window field is what distinguishes a session header row from a window row.
 
-@test "rows reaches ACROSS servers - the one thing choose-tree and sesh cannot do" {
-  # The whole point of the view. prefix w is server-scoped by construction and sesh follows
-  # $TMUX into one server, so a list containing BOTH worlds is the only new capability here.
+@test "rows reaches ACROSS servers - the one thing choose-tree cannot do" {
+  # The whole point of the view. prefix w is server-scoped by construction, so a list containing BOTH worlds is the only new capability here.
   manifest "$SRV_A" "alpha-only $MDIR"
   manifest "$SRV_B" "beta-only $MDIR"
   "$TMX" ensure "$SRV_A"

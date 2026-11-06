@@ -58,7 +58,7 @@ _session() { tmux display-message -p '#{session_name}' 2>/dev/null; }
 #
 # session_path first, because that is the directory the session was BORN in, which is the
 # project root for everything that creates sessions here: the manifests in
-# .config/tmux-servers/ (`new-session -c "$dir"`), sessionizer.sh, and sesh. The pane's
+# .config/tmux-servers/ (`new-session -c "$dir"`) and sessionizer.sh. The pane's
 # path is a worse answer - it is wherever you happened to cd - so it is only consulted when
 # the session has none, and then via its git root rather than raw.
 _root_dir() {

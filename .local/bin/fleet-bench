@@ -41,12 +41,18 @@
 #   fleet-bench retro            a verdict on each claim whose PR landed BENCH_EFFECT_DAYS ago (a
 #                                regression files a revert row), and one agent-board row per lesson
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row)
+#   fleet-bench room             whether the agent boards take a row nobody asked for: exit 1 while
+#                                board_open is past board_open_max (retro, triage and research-pick hold)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
 #                                cc:red_now item nothing here reads; TRIAGE_ROUTES decides where
 #                                each one goes, and an agent route queues a red fix
+#   fleet-bench reds [--json] [--days N]
+#                                each red fix queued in the last N days (REDS_DAYS) and what came
+#                                of it: fixing, needs merge, fixed (merged, not red now), still red,
+#                                came back (red again after the merge), cleared or no fix
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -132,6 +138,7 @@ set -uo pipefail
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
 : "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: days a queued fix keeps its cause from being queued again
+: "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
@@ -1194,6 +1201,23 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
+# board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
+board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
+
+# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS, the WIP
+# limit that keeps intake at throughput. A filer holds a row nobody asked for (no #requested)
+# while it is full and says so; no threshold is no limit.
+intake_room() {
+  local n max
+  n=$(board_open_count)
+  max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
+  if [ -z "$max" ]; then echo "room: board_open $n, no board_open_max"; return 0; fi
+  if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
+    echo "full: board_open $n past board_open_max $max"; return 1
+  fi
+  echo "room: board_open $n of board_open_max $max"
+}
+
 # ledger_counts -> key=value lines
 ledger_counts() {
   local c n_conf=0 n_on=0 n_bad=0 n_call=0 t rows src sd="" name
@@ -1231,7 +1255,7 @@ ledger_counts() {
   else
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
-  echo "board_open=$(compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] ')"
+  echo "board_open=$(board_open_count)"
   echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
   chain_counts "$t"
 }
@@ -1248,11 +1272,12 @@ ledger_counts() {
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # routes_unresolved: standing watches and runners no triage-routes line resolves (triage_coverage).
+# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
@@ -1301,6 +1326,7 @@ chain_counts() {
   local orphans
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
+  reds_counts "$1"
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
     (.steps[] | select(.step | IN("backlog", "queued", "running", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)")'
@@ -1424,7 +1450,7 @@ cmd_ledger() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item"
+KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item red_fix_min_p50"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -2077,16 +2103,20 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
-# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
+# it counts as filed. A new row with no #requested is held while intake_room says full. A row whose
+# condition cleared is left for whoever owns it. Every row is #size/s. Leaves the counts in
+# UPSERT_ADDED, UPSERT_EDITED, UPSERT_HELD and UPSERT_FULL (intake_room's line); FAILED is reported here.
 board_upsert() {
-  local board p text pri have rc added=0 edited=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0
+  local board p text pri have rc added=0 edited=0 held=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0
+  UPSERT_FULL=$(intake_room) && UPSERT_FULL=''
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
-    if [ -z "$have" ]; then
+    if [ -z "$have" ] && [ -n "$UPSERT_FULL" ] && [[ " $text $pri " != *' #requested '* ]]; then
+      held=$((held + 1))
+    elif [ -z "$have" ]; then
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
       case $rc in
@@ -2100,14 +2130,16 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_HELD=$held
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
 upsert_report() {
-  local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed${2:+, $2}"
+  local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
+  [ "${UPSERT_HELD:-0}" -eq 0 ] || did+=", $UPSERT_HELD held ($UPSERT_FULL)"
+  did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_HELD:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -2319,6 +2351,84 @@ triage_coverage() {
   [ -z "$rows" ] || triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
 }
 
+# reds_live -> the row key of each thing red right now, one a line: every triage row, plus every
+# watch at TRIP whatever its age, so a fix that came back counts before triage would file it.
+reds_live() {
+  local f
+  { triage_rows; triage_log_rows; triage_red_rows; } | cut -f1
+  for f in "$TRIAGE_WATCH_STATE"/*.state; do
+    [ -e "$f" ] && [ "$(cat "$f")" = TRIP ] || continue
+    f=${f##*/}
+    printf 'check(watch): %s tripped since\n' "${f%.state}"
+  done
+}
+
+# reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS: what
+# was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
+# fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
+# after the merge is "came back", red the whole time is "still red". Counted, never judged.
+reds_json() {
+  local t="$1" items live watches='{}' f n
+  items=$($TRIAGE_ITEMS_CMD --since "$(date -d "@$((t - REDS_DAYS * 86400))" +%F)" 2>/dev/null |
+    jq -cs '[.[] | select((" " + (.tags // "") + " ") | contains(" red "))]') || return 1
+  live=$(reds_live | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
+  for f in "$TRIAGE_WATCH_STATE"/*.since; do
+    [ -e "$f" ] || continue
+    n=${f##*/} n=${n%.since}
+    watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
+  done
+  jq -c --argjson live "$live" --argjson w "$watches" '
+    def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;
+    .[] | (.title // .task // "") as $t
+    | ($t | capture("^(?<kind>[a-z]+)\\((?<area>[a-z]+)\\): (?<name>[^ ,;]+)") // {}) as $r
+    | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
+    | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
+    | (.finished | ep) as $fin
+    | {slug, red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+       queued, finished, pr, merged,
+       fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
+       outcome: (
+         if .state == "queued" then "queued"
+         elif .state == "running" or .state == "waiting" then "fixing"
+         elif .state == "cancelled" then "cancelled"
+         elif .merged != null then
+           (if $red | not then "fixed"
+            elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
+            else "still red" end)
+         elif .pr != null then "needs merge"
+         elif .status == "ok" then "cleared"
+         else "no fix" end)}' <<<"$items"
+}
+
+# reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
+# and the median minutes from queued to merged (red_fix_min_p50), ? when the queue cannot be read
+reds_counts() {
+  local rows
+  rows=$(reds_json "$1" | jq -cs .) || { echo "reds_unfixed=?"; echo "red_fix_min_p50=?"; return 0; }
+  jq -r '"reds_unfixed=\([.[] | select(.outcome == "still red" or .outcome == "came back")] | length)",
+    "red_fix_min_p50=\([.[] | .fix_min // empty] | sort | if length == 0 then "?" else .[(length - 1) / 2 | floor] end)"' <<<"$rows"
+}
+
+cmd_reds() {
+  local json=0 rows
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --days) REDS_DAYS="${2:?--days needs a count}"; shift ;;
+      *) say "usage: fleet-bench reds [--json] [--days N]"; return 2 ;;
+    esac
+    shift
+  done
+  [[ "$REDS_DAYS" =~ ^[1-9][0-9]*$ ]] || { say "reds: --days takes a day count"; return 2; }
+  rows=$(reds_json "$(now)") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
+  if [ "$json" = 1 ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
+  [ -n "$rows" ] || { echo "no red fix queued in the last $REDS_DAYS days"; return 0; }
+  jq -rs --arg d "$REDS_DAYS" '
+    "\(length) red fix\(if length == 1 then "" else "es" end) in \($d)d: " + (group_by(.outcome) | map("\(length) \(.[0].outcome)") | join(", ")),
+    "", "| item | red | outcome | queued | fix min | PR |", "|---|---|---|---|---|---|",
+    (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
+}
+
 cmd_triage() {
   local rows filed dry=0 q h
   case "${1:-}" in
@@ -2343,7 +2453,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0; fi
   h=$(triage_human "$rows")
   q=$(triage_promote "$rows")
   upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
@@ -3134,7 +3244,9 @@ main() {
     effect) shift; cmd_effect "$@" ;;
     improve) shift; cmd_improve "$@" ;;
     retro) cmd_retro ;;
+    room) intake_room ;;
     triage) shift; cmd_triage "$@" ;;
+    reds) shift; cmd_reds "$@" ;;
     findings) shift; cmd_findings "$@" ;;
     respond) shift; cmd_respond "$@" ;;
     loop) shift; cmd_loop "$@" ;;

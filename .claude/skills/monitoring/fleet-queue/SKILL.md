@@ -41,7 +41,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 
 1. `agent-queue list --state queued`: the sixth column is the hold. Holds are `after <slug>` (that slug must be done ok; a failed predecessor never releases it), `night` (only inside the night window, `AGENT_QUEUE_NIGHT`, default 01:00-06:00), `at:HH:MM` (not before that time TODAY; once the time of day has passed it holds nothing, so use `at:YYYY-MM-DDTHH:MM` for a later day), and `pr:<owner>/<repo>#N` (until the PR is MERGED; a failing `gh` also holds).
 2. No hold: it is a dispatch gate. `fleet-dispatch stopped` names it in one line, and `fleet-dispatch run --dry-run` shows what a pass would pick. Common ones: no account has room (`fleet-accounts`), load or `fleet-assess` HOLD (`fleet-pace`), run units full (heavy holds 2 units, light 1; `fleet-dispatch headroom`). A pass starts at most `DISPATCH_PER_PASS` (the conf sets 3).
-3. Tags: `red` is read by `fleet-dispatch`, not by `agent-queue`: it starts the item PR-only, sorts it first, and exempts it from the board waiting while the human is present. `cause:<sig>` marks a red item `fleet-bench triage` filed for a recurring failure (routes in `~/.config/agentctl/triage-routes`); a queued fix keeps its cause from being filed again for `TRIAGE_FIX_DAYS`, and `TRIAGE_FIX_CAP` limits new ones a day.
+3. Tags: `red` is read by `fleet-dispatch`, not by `agent-queue`: it sorts the item first, briefs it on the `fix-red` skill, which reviews and merges its own PR, and exempts it from the board waiting while the human is present. `cause:<sig>` marks a red item `fleet-bench triage` filed for a recurring failure (routes in `~/.config/agentctl/triage-routes`); a queued fix keeps its cause from being filed again for `TRIAGE_FIX_DAYS`, and `TRIAGE_FIX_CAP` limits new ones a day.
 4. A running item whose session is dead is the shepherd's to nudge or reap (`shepherd`).
 
 ## Land and close
@@ -49,7 +49,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 1. `agent-land <pr>` runs fetch, item-line, checks, merge, proof, item, board, plan. Add `--item <slug>` when the session records more than one item, `--plan <file> --phase "<text>"` to tick a plan phase, `--dry-run` to see the steps.
 2. The item is `--item`, then `$AGENT_QUEUE_ITEM`, then `agent-queue mine`. With none it refuses before any gh call; add one with `agent-queue add --running`.
 3. Exit 0 landed, 1 a step failed (fix it and re-run; an already merged PR skips checks and merge, so the re-run finishes the record step), 2 usage (more than one item without `--item`, or the removed `--project` and `--title`), 3 behind origin base or a catch-up conflict (merge the base, re-run).
-4. A `night` or `red` item stops at the open PR. Close it by hand: `agent-queue set <slug> pr=<N>`, then `agent-queue move <slug> done --status ok`.
+4. A `night` item stops at the open PR. Close it by hand: `agent-queue set <slug> pr=<N>`, then `agent-queue move <slug> done --status ok`.
 
 ## Do NOT
 

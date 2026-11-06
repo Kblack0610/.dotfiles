@@ -19,6 +19,8 @@ setup() {
     list) grep -q unreadable "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null && exit 1; cat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null ;;
     add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
+  # The intake limit: room unless ROOM_FULL is set, like `fleet-bench room`.
+  stub fleet-bench '[ "$1" = room ] || exit 9; [ -z "$ROOM_FULL" ] || { echo "full: board_open 9 past board_open_max 2"; exit 1; }; echo "room: board_open 1 of board_open_max 2"'
   repo hot 6; repo cold 1; repo other 1
   mkdir -p "$SANDBOX/excluded"
   jq -n --arg s "$SANDBOX" '{paths: {($s + "/hot"): "hot", ($s + "/cold"): "cold", ($s + "/other"): "other", ($s + "/excluded"): "excluded", ($s + "/gone"): "gone"}}' > "$RESEARCH_MAP"
@@ -93,6 +95,14 @@ repo() {
   assert_success
   assert_output --partial 'coverage: new uncovered, a roster row is already open'
   assert_not_called 'research(roster)'
+}
+
+@test "a full board holds the roster row and says why; the facet is still queued" {
+  ROOM_FULL=1 run "$PICK" run
+  assert_success
+  assert_output --partial 'coverage: other uncovered, held: full: board_open 9 past board_open_max 2'
+  assert_not_called 'research(roster)'
+  assert_called 'agent-queue add'
 }
 
 @test "--dry-run prints the rows and writes nothing" {
