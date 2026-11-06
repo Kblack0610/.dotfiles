@@ -70,7 +70,8 @@ agent-ask target [--reopen] <id>             the live asking session as an agent
 agent-ask live-sessions                      the Claude session ids running now; the questions panel marks the rest ended
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
-agent-ask judge <id>                         the answer judge's call on one ask (post runs it in the foreground)
+agent-ask judge <id>                         the answer judge's call on one pending ask, replacing any older verdict (post runs it in the foreground); an answered ask is refused
+agent-ask sweep [project|--all]              judge every pending ask again and answer each live one as the judge through `answer`'s delivery; prints `<project> <id> answered <x>|yours <rule> <reason>` per ask. Run after a policy or LIVE_RULES change
 agent-ask cancel <id>                        status->cancelled
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
 agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); an ask with options closes only when the text names exactly one of them, recorded as the answer
@@ -123,11 +124,13 @@ The input also carries the human's latest disagreements (`agent-ask precedents <
 
 A rule in `LIVE_RULES` of the private `~/.config/agentctl/agents/ask-judge.conf` is answered live when the call is `take-recommend` or `answer` and the ask is not a gate or approval. `post` then records the answer with `answered_by: judge` and prints, on stderr, `Answered by the judge (<rule>): <option> - <reason>. Proceed; the human can override in this session.` The asker reads it there, so nothing is typed into its pane and no board row is filed. Every other rule is shadow, and an answerable one shows "type not proven": the card and agent-web's ask card show `Judge: would ...` and `judge-eval` scores the call against the human's answer.
 
-The human's next message in that session reviews the live answer (`settle-session`, from the UserPromptSubmit hook). A message naming exactly one other option records `judge_override: <option>`; anything else records `none`, so later messages about other things cannot read as an override. An override demotes the type when `DEMOTE_OVERRIDES` (2) of its last `DEMOTE_WINDOW` (10) live answers were overridden, both numbers in the conf. A demote appends the rule to `~/.local/state/agent-ask/demoted` (runtime state, so no script edits the tracked conf), pages high, and files a `check(judge):` row on the agent-runtime board. The type is shadow from then until its line is deleted there (re-promote) or it is dropped from `LIVE_RULES` by PR.
+The human's next message in that session reviews the live answer (`settle-session`, from the UserPromptSubmit hook). A message naming exactly one other option records `judge_override: <option>`; anything else records `none`, so later messages about other things cannot read as an override. An override demotes the type when precision over its last `AGENT_ASK_LIVE_BAR` (30) live answers falls under `AGENT_ASK_DEMOTE_PRECISION` (85%), counted once it has `AGENT_ASK_DEMOTE_MIN` (10). A demote appends the rule to `~/.local/state/agent-ask/demoted` (runtime state, so no script edits the tracked conf), pages high, and files a `check(judge):` row on the agent-runtime board. The type is shadow from then until its line is deleted there (re-promote) or it is dropped from `LIVE_RULES` by PR.
 
-Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`). A shadow type goes live only on the human's answer, once `judge-eval` shows the live set past the bar, by adding it to `LIVE_RULES`.
+A pending ask is judged again whenever `judge` runs on it, so a verdict made under an older policy never pins it. `agent-ask sweep` does that for the whole queue and answers each live one with `answer --by judge`: typed into the live asking session as `Answer to ask <id>: <option> (the judge, <rule>: <reason>; the human can override in this session)`, otherwise filed as a board row, then `resume`. What is left pending is the human's, and its card says why.
 
-`AGENT_ASK_NO_JUDGE=1` skips the call, and `AGENT_ASK_<key>` replaces the conf's `LIVE_RULES`, `PRECEDENTS`, `DEMOTE_OVERRIDES` or `DEMOTE_WINDOW`; the test sandbox sets the first.
+Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`). A type goes live on the human's call, by adding it to `LIVE_RULES`; `judge-eval` shows it against the bar to inform that call.
+
+`AGENT_ASK_NO_JUDGE=1` skips the call, and `AGENT_ASK_<key>` replaces the conf's `LIVE_RULES` or `PRECEDENTS`; the test sandbox sets the first.
 
 ## Producer / consumer wiring
 
