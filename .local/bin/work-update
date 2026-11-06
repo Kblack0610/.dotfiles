@@ -3,8 +3,9 @@
 
   work-update config <job>                          the job's merged config, as JSON
   work-update facts <job> eod|weekly [--date D]     what the draft is written from: the job's
-                                                    merged PRs (day-log), its daily notes, and for
-                                                    a weekly the week's saved EODs
+                                                    merged PRs (day-log), its work items with their
+                                                    minutes (the agent-queue ledger), its daily
+                                                    notes, and for a weekly the week's saved EODs
   work-update save <job> eod|weekly [--date D] <file|->   lint the draft on the job's channel and
                                                     save it to <updates>/<D>-<kind>.md; never sends
   work-update kept <job> eod|weekly [--date D] <file|->   save the text that was sent next to the
@@ -20,6 +21,7 @@ import datetime as dt
 import difflib
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -27,6 +29,7 @@ import tomllib
 
 JOBS = os.path.expanduser(os.environ.get("WORK_UPDATE_JOBS", "~/.config/comms-lint/jobs"))
 DAYLOG = os.path.expanduser(os.environ.get("DAYLOG_DIR", "~/.agent/daylog"))
+QUEUE = os.environ.get("WORK_UPDATE_QUEUE", "agent-queue")
 KINDS = ("eod", "weekly")
 # The comms-lint beside this script: the repo copy in a checkout, ~/.local/bin once stowed.
 COMMS_LINT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comms-lint")
@@ -80,6 +83,37 @@ def merged_prs(cfg, day):
     return [p for p in rec.get("merged", []) if p.get("repo") in repos]
 
 
+def work_items(cfg, days):
+    """The job's work items finished in the window, from the work ledger: each item whose pr: is
+    owner/<repo>#N in one of the job's repos, keyed by its local finish day. None when the ledger
+    cannot be read."""
+    try:
+        out = subprocess.run([QUEUE, "list", "--json", "--state", "all", "--since", days[0].isoformat()],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    repos, want, items = set(cfg.get("repos", [])), set(days), {}
+    for line in out.stdout.splitlines():
+        try:
+            i = json.loads(line)
+            day = dt.datetime.fromisoformat(i["finished"].replace("Z", "+00:00")).astimezone().date()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        m = re.fullmatch(r"[^#/ ]+/([^#/ ]+)#(\d+)", i.get("pr") or "")
+        if m and m.group(1) in repos and day in want:
+            items.setdefault(day, []).append({**i, "repo": m.group(1), "number": m.group(2)})
+    return items
+
+
+def minutes(i):
+    try:
+        return int(float(i.get("work_min")))
+    except (TypeError, ValueError):
+        return None
+
+
 def read(path):
     try:
         with open(path) as f:
@@ -102,6 +136,19 @@ def facts(cfg, kind, day):
             continue
         for p in prs:
             out.append(f"- {d.isoformat()} [{names.get(p['repo'], p['repo'])}] {p['title']} ({p['url']})")
+    out += ["", "## Work items"]
+    items = work_items(cfg, days)
+    if items is None:
+        out.append("- (the work ledger could not be read)")
+    for d in days if items is not None else []:
+        for i in sorted(items.get(d, []), key=lambda i: -(minutes(i) or 0)):
+            m = minutes(i)
+            out.append(f"- {d.isoformat()} [{names.get(i['repo'], i['repo'])}] {i.get('title') or i['slug']}"
+                       f" ({m if m is not None else '?'} min, #{i['number']}, {i['slug']})")
+        if items.get(d):
+            known = [minutes(i) for i in items[d] if minutes(i) is not None]
+            out.append(f"- {d.isoformat()} total: {sum(known)} min over {len(items[d])} item(s)"
+                       + ("" if len(known) == len(items[d]) else f", {len(items[d]) - len(known)} with no time"))
     daily_dir = notes_path(cfg, "daily-dir")
     out += ["", "## Daily notes"]
     for d in days:
