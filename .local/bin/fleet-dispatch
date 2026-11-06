@@ -87,7 +87,7 @@ HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session,
 # whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
 # spent 50 minutes on a `ci:` row. Raising this is a conversation, not a config edit.
-# Tier 3 may run unattended to an open PR only, as a `night` item, never past it (human decision 2026-11-02): see fill_now.
+# Tier 3 may run unattended to an open PR only, as a `night` item, never past it (human decision 2026-11-02): see fill_night.
 UNATTENDED_TIER_CEILING=2
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
@@ -212,8 +212,10 @@ row_worker() {
 
 sig() { sha256sum | cut -c1-12; }
 
-# policy_sig -> changes whenever the policy or the worker registry does, so both re-judge.
-policy_sig() { cat "$DISPATCH_POLICY" "$DISPATCH_WORKERS" 2>/dev/null | sig; }
+# policy_sig -> changes whenever the policy does, so a policy edit re-judges every row. The worker
+# registry is not in it: picks re-reads workers.json and the tier ceiling on every pass, and with it in
+# the sig each workers edit (2b0819b1) threw away every verdict while the judge's cap re-judged a few.
+policy_sig() { cat "$DISPATCH_POLICY" 2>/dev/null | sig; }
 
 # np <profile> <args...> -> notes, under that profile, or notes' own default when it is empty
 # (a hand `start` may leave the profile to the CLI).
@@ -375,8 +377,11 @@ cmd_candidates() {
 judge() {
   local cands="$1" prompt out verdicts wd rc
   [ -n "$cands" ] || return 0
-  # Over the cap, the best-ranked rows first (RANK_JQ).
-  cands=$(jq -sc "$RANK_JQ"'rank[]' <<<"$cands" |
+  # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
+  # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
+  cands=$(jq -sc "$RANK_JQ"'rank | to_entries | group_by(.value.project)
+      | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
+      | sort_by(.round, .i) | .[].row' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { say "no policy at $DISPATCH_POLICY"; return 1; }
   prompt="## Rows to judge
@@ -1100,10 +1105,11 @@ cmd_starved() {
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$items$board$low" ] || return 0
+  # Held by load only when every closed gate is a load gate: one other (an account) still starves.
   why=$(gate)
-  case "$why" in
-    'fleet-assess says HOLD' | 'load '* | 'real idle '*) echo "held by load ($why), so nothing is starved"; return 0 ;;
-  esac
+  if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )'; then
+    echo "held by load ($why), so nothing is starved"; return 0
+  fi
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
     last=$(tail -n 1 "$(proof_state_dir)/fleet-dispatch/activity.log" 2>/dev/null)
@@ -1348,36 +1354,50 @@ firing_findings() {
 # here: one is about a pool or a repo, so pick_item asks them per item.
 # A nightly red is deliberately not here: nightlies stay red while sessions merge normally, so it
 # would stop everything, and the shepherd's NIGHTLY row handles it.
+# Every gate is read and every closed one named, joined by "; ": naming the first only hid a load
+# hold behind an account hold for a whole day. A hold stops the reading: nothing else matters then.
 gate() {
-  local load cores infra github idle
+  local load cores infra github idle acct rc out why=()
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
-  claude-acct room >/dev/null 2>&1
-  case $? in
+  # room's own last stderr line says which account is short and why; keep it.
+  acct=$(claude-acct room 2>&1 >/dev/null); rc=$?
+  acct=$(tail -n 1 <<<"$acct"); acct=${acct#claude-acct: }
+  case $rc in
     0) ;;
-    1) echo "no account has room under its weekly pace"; return ;;
-    *) echo "account usage unreadable"; return ;;
+    1) why+=("${acct:-no account has room under its weekly pace}") ;;
+    *) why+=("account usage unreadable${acct:+ ($acct)}") ;;
   esac
-  fleet-assess --watch-probe >/dev/null 2>&1 || { echo "fleet-assess says HOLD"; return; }
+  fleet-assess --watch-probe >/dev/null 2>&1 || why+=("fleet-assess says HOLD")
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  infra="$(fleet-shepherd infra 2>/dev/null)" && { echo "$infra"; return; }
+  infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   awk -v l="${load:-0}" -v c="$cores" -v m="$DISPATCH_MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
-    { echo "load ${load} on ${cores} cores is over the ${DISPATCH_MAX_LOAD} pace"; return; }
+    why+=("load ${load} on ${cores} cores is over the ${DISPATCH_MAX_LOAD} pace")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
-    '' | *unreadable*) echo "github budget unreadable"; return ;;
-    *LOW*) echo "$github"; return ;;
+    '' | *unreadable*) why+=("github budget unreadable") ;;
+    *LOW*) why+=("$github") ;;
   esac
   idle=$(real_idle)
-  [ -n "$idle" ] || { echo "real idle unreadable"; return; }
-  awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }' &&
-    echo "real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%"
+  if [ -z "$idle" ]; then why+=("real idle unreadable")
+  elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
+    why+=("real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%")
+  fi
+  [ "${#why[@]}" -eq 0 ] && return
+  out=$(printf '%s; ' "${why[@]}"); echo "${out%; }"
 }
 
 # settle <outcome> <why>: say what this pass did and publish it for fleet-liveness. agentctl turns
 # a run that publishes nothing into STALLED. A dry run is not a run.
 settle() {
+  # What the night fill promoted, or its judge failing, is part of the pass whatever stopped it after.
+  [ "${NIGHT_FILLED:-0}" = 0 ] || [ "$DRY" = 1 ] || set -- "$1" "queued $NIGHT_FILLED for the night; $2"
+  case "${JUDGE_RC:-0}:$1:$2" in
+    0:* | *:"could not judge"*) ;;
+    *:NOOP:* | *:BLOCKED:*) set -- FAILED "could not judge the new rows; $2" ;;
+    *) set -- "$1" "could not judge the new rows; $2" ;;
+  esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
   # shellcheck source=/dev/null
@@ -1401,19 +1421,23 @@ cmd_run() {
   flock -n 9 || { settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
+  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= NIGHT_FILLED=0
+  # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
+  # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
+  # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED.
+  agent-hold check dispatch >/dev/null 2>&1 && fill_night
   live=$(live_units)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   room=$UNITS_FREE
   [ "$room" -gt "$DISPATCH_PER_PASS" ] && room=$DISPATCH_PER_PASS
   # A full fleet is working, not blocked: NOOP.
-  if [ "$room" -le 0 ]; then settle NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged.
   local items rc depth want; items=$(next_items)
-  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT=
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD" ]; then
@@ -1434,8 +1458,8 @@ cmd_run() {
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
   load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
-  fill_now "$want" || { settle FAILED "could not judge the new rows"; return 1; }
-  if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
+  fill_day "$want" || { settle FAILED "could not judge the new rows"; return 1; }
+  if [ "$DRY" = 1 ]; then [ $(( FILLED + NIGHT_FILLED )) -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items)
@@ -1450,32 +1474,60 @@ cmd_run() {
 # unjudged_rows -> the open rows no verdict covers yet, day candidates and night rows, once each.
 unjudged_rows() { { cmd_candidates; night_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]'; }
 
-# fill_now <room> -- judge the new rows, then promote the picks into the queue, `from: board:`:
-# up to <room> rows a merging session may take, and tier-3 rows (night_picks) tagged
-# `night`, which run to an open PR only, up to DISPATCH_NIGHT_MAX active at once.
+# fill_now <room> -- `fill` by hand: the night picks (fill_night), then up to <room> day picks (fill_day).
 fill_now() {
-  local room="$1" picked night active c
+  fill_night || return 1
+  fill_day "$1" || return 1
+  FILLED=$(( FILLED + NIGHT_FILLED ))
+}
+
+# judge_once -- judge the open rows no verdict covers, once a pass, however many fills ask. A dry
+# run never judges: it names what the cache says, and verdicts.jsonl stays as it was.
+judge_once() {
+  if [ -z "${JUDGE_RC:-}" ]; then
+    JUDGE_RC=0
+    [ "$DRY" = 1 ] || { judge "$(unjudged_rows)"; JUDGE_RC=$?; }
+  fi
+  return "$JUDGE_RC"
+}
+
+# fill_day <room> -- promote up to <room> rows a merging session may take into the queue, `from: board:`.
+fill_day() {
+  local picked c
   FILLED=0
-  judge "$(unjudged_rows)" || return 1
+  judge_once || return 1
   # Every open row again, judged ones included: a row judged on an earlier pass can be picked now.
-  picked=$(picks "$(all_open)" "$room")
-  active=$(agent-queue list --json --state active 2>/dev/null |
-    jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
-  active=$(( DISPATCH_NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
-  night=$(night_picks "$(night_rows '')" | head -n "$active")
+  picked=$(picks "$(all_open)" "$1")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
     if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$c")"
     else promote "$c" "" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')"; fi
   done <<<"$picked"
+  return 0
+}
+
+# fill_night -- promote tier-3 rows (night_picks) tagged `night`, which run to an open PR only, up to
+# DISPATCH_NIGHT_MAX active at once. A run pass calls it before the queue's depth and the gates:
+# promoting is not starting (agent-queue holds a night item to its window, start_items gates every
+# start). Behind the day fill's low water and gates (4458b2f1, 2026-11-03), no night item was queued
+# in three days while eligible rows sat on the board, and no pass judged.
+fill_night() {
+  local active night c jrc=0
+  NIGHT_FILLED=0
+  # A judge that fails still leaves the cached verdicts to pick from; the failure is returned after.
+  judge_once || jrc=1
+  active=$(agent-queue list --json --state active 2>/dev/null |
+    jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
+  active=$(( DISPATCH_NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
+  night=$(night_picks "$(night_rows '')" | head -n "$active")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    FILLED=$(( FILLED + 1 ))
+    NIGHT_FILLED=$(( NIGHT_FILLED + 1 ))
     if [ "$DRY" = 1 ]; then echo "would queue for the night: $(jq -r '"\(.project) \(.area): \(.key)"' <<<"$c")"
     else promote "$c" night "$(night_brief "$c")"; fi
   done <<<"$night"
-  return 0
+  return "$jrc"
 }
 
 # promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue under its

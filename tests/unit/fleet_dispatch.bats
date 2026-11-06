@@ -1136,7 +1136,7 @@ held_game_app_row() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
   echo '0.1 0.1 0.1 1/1 1' > "$DISPATCH_LOADAVG"
-  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; exit 0'
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.held, .held_kind] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess'
 }
@@ -1753,6 +1753,93 @@ J
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "fill --dry-run queued an item"
 }
 
+@test "night: a run pass promotes night rows past a shut account gate and a full queue; a decision row and a dispatch hold stay out" {
+  night_ready
+  project game beta "$SANDBOX/repos/game"
+  for n in 1 2 3 4; do agent-queue add --project game --slug "work-$n" --priority high "work $n" >/dev/null; done
+  stub claude-acct '[ "$1" = room ] && { echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2; exit 1; }; exit 0'
+  row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3'
+  row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
+  night_verdict 'wt done never reaps' wt
+  night_verdict 'decide: fold it' fold
+
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queued 1 for the night; '
+  assert_equal "$(night_keys)" 'wt done never reaps'
+  assert_equal "$(outcome)" BLOCKED
+  assert_not_called 'wt new'
+
+  # Negative control: the same row under a dispatch hold is not promoted.
+  row agent-runtime agent 'drop the dead timer' '- [ ] drop the dead timer #tier/3'
+  night_verdict 'drop the dead timer' timer
+  stub agent-hold 'echo "dispatch held"; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(night_keys)" 'wt done never reaps'
+}
+
+@test "a pass whose judge fails still starts its queue item, and says it could not judge" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' "- [ ] fix crash $T"
+  echo 'no markers' > "$NOTES_FIXTURE/judge.out"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'could not judge the new rows'
+  assert_called 'judge called'
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
+  # The pass then tops the queue up from the board, where the failed judge is its last word.
+  assert_equal "$(outcome)" FAILED
+}
+
+@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'judged' "- [ ] judged $T"
+  verdict game agent 'judged' skip
+  echo '{"fleet": {"max_tier": 1, "lane": "agent"}}' > "$DISPATCH_WORKERS"
+  run cmd_candidates
+  assert_output ''
+  echo 'policy v3' > "$DISPATCH_POLICY"
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output")" 'judged'
+}
+
+@test "judge shares a capped batch across projects: each project's best row, then each one's next" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'
+  DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1}
+{"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1}
+{"project":"p","stage":"prod","lane":"human","key":"p3","text":"- [ ] p3","prio":1}
+{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}'
+  assert_success
+  # Rank alone would send p1, p2, p3 and never a1.
+  assert_equal "$(grep -o '"key":"[a-z0-9]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd, -)" 'p1,a1,p2'
+}
+
+@test "run --dry-run never calls the judge and leaves verdicts.jsonl as it was" {
+  game_ready
+  night_ready
+  row game human 'add a new map' "- [ ] add a new map $T"
+  row agent-runtime agent 'unjudged night' '- [ ] fix the unjudged night row #tier/3'
+  cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/verdicts.before"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial 'would queue: game (beta) human, fleet, fix crash on load'
+  assert_not_called 'judge called'
+  cmp -s "$SANDBOX/verdicts.before" "$FLEET_DISPATCH_DIR/verdicts.jsonl" || fail "a dry run wrote verdicts"
+}
+
+@test "gate names every closed gate, room's own reason included; a dispatch hold is the only answer when it holds" {
+  stub claude-acct '[ "$1" = room ] && { echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2; exit 1; }; exit 0'
+  echo '99.00 99.00 99.00 1/1 1' > "$DISPATCH_LOADAVG"
+  run gate
+  assert_output --regexp '^no account has room under its weekly pace and after its live sessions; load 99.00 on [0-9]+ cores is over the [0-9.]+ pace$'
+  stub claude-acct 'exit 2'
+  run gate
+  assert_output --partial 'account usage unreadable; load 99.00'
+  stub agent-hold 'exit 1'
+  run gate
+  assert_output 'held (agent-hold dispatch)'
+}
+
 # --- the queue ---------------------------------------------------------------------------
 
 qfield() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
@@ -2050,10 +2137,17 @@ queued_item() {
   assert_success
   assert_output --partial 'held by load (load 30.00 on'
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; exit 0'
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   run cmd_starved
   assert_success
   assert_output --partial 'held by load (fleet-assess says HOLD)'
+  # Load plus any other closed gate is not held by load: it still starves.
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
+  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  run cmd_starved
+  assert_failure
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub claude-acct 'exit 0'
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub claude-acct 'exit 1'
   run cmd_starved
