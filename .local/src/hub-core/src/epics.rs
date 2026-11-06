@@ -5,7 +5,6 @@
 //! agent-web and the hub TUI print the same words and compute nothing.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::session_actions::Runner;
 
@@ -79,6 +78,8 @@ pub struct Eta {
 pub struct Epic {
     pub id: String,
     pub title: String,
+    /// The system it builds, the area in its `epic(<system>):` row; empty from an older reader.
+    pub system: String,
     pub version: String,
     /// `open` or `closed`.
     pub state: String,
@@ -152,13 +153,6 @@ pub fn flow_line(f: &Flow) -> String {
         "ideas {} | briefs {} | plans {} | epics {} | rows {} | landed {} | verified {}",
         f.ideas, f.briefs, f.plans, f.epics, f.rows, f.landed, f.verified
     )
-}
-
-/// The chain as JSON with its `flow_line`, so a reader prints the words the TUI will.
-pub fn to_json(c: &Chain) -> Value {
-    let mut v = serde_json::to_value(c).unwrap_or_default();
-    v["flow_line"] = flow_line(&c.flow).into();
-    v
 }
 
 #[cfg(test)]
@@ -235,16 +229,5 @@ mod tests {
             assert!(chain(&r, bad).is_err(), "{bad}");
         }
         assert!(r.1.borrow().is_empty());
-    }
-
-    #[test]
-    fn the_json_carries_the_flow_line_every_surface_prints() {
-        let c = chain(&Fixed(OUT, Default::default()), "agent-runtime").unwrap();
-        let v = to_json(&c);
-        assert_eq!(
-            v["flow_line"],
-            "ideas 19 | briefs 2 | plans 1 | epics 1 | rows 13 | landed 0 | verified 0"
-        );
-        assert_eq!(v["epics"][0]["step"], "rows");
     }
 }

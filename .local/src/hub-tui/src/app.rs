@@ -227,6 +227,8 @@ pub enum Msg {
     TasksActed(Result<String, String>),
     /// `notes projects --stats --json` and the project map, for the Projects tab's cards.
     Projects(Box<projtab::Loaded>),
+    /// The opened card's page (hub_core::page).
+    ProjPage(Box<hub_core::page::Page>),
 }
 
 /// One background read: never two at once, and a request during one runs once after it.
@@ -296,6 +298,10 @@ pub struct App {
     /// The Projects tab's card inputs; None until the first read.
     pub projects: Option<projtab::Loaded>,
     pub pv: ProjView,
+    /// The opened card's page, read on open and on r, never for the list (dashboards rule 10).
+    pub proj_page: Option<hub_core::page::Page>,
+    /// The project the last page read was started for.
+    proj_page_for: Option<String>,
     /// The Sessions tab's session list, selection and confirm.
     pub controls: Controls,
     /// Runs a session action's commands; tests swap in a fake.
@@ -342,6 +348,7 @@ pub struct App {
     candidates_read: Read,
     tasks_read: Read,
     projects_read: Read,
+    proj_page_read: Read,
     log_gen: u64,
     /// The body's last height, for paging.
     page: usize,
@@ -413,6 +420,9 @@ impl App {
             candidates_read: Read::default(),
             tasks_read: Read::default(),
             projects_read: Read::default(),
+            proj_page_read: Read::default(),
+            proj_page: None,
+            proj_page_for: None,
             log_gen: 0,
             page: 20,
             watch_failed: None,
@@ -659,6 +669,51 @@ impl App {
     pub fn read_projects(&mut self) {
         self.read_tasks();
         self.read_cards();
+    }
+
+    /// The open card's name and stage; None on the list or with All open.
+    fn open_card(&self) -> Option<(String, String)> {
+        if !self.pv.open {
+            return None;
+        }
+        let (profile, name) = self.tv.project.as_ref()?;
+        self.cards()
+            .cards
+            .into_iter()
+            .find(|c| c.profile == *profile && c.name == *name)
+            .map(|c| (c.name, c.stage))
+    }
+
+    /// Read the open card's page in a worker; it comes back as Msg::ProjPage.
+    fn read_proj_page(&mut self) {
+        let Some((name, stage)) = self.open_card() else {
+            return;
+        };
+        self.proj_page_for = Some(name.clone());
+        if self.proj_page_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let pg = hub_core::page::read(runner.as_ref(), &name, &stage, jobs::now());
+                let _ = tx.send(Msg::ProjPage(Box::new(pg)));
+            });
+        }
+    }
+
+    /// Read the open card's page here and now, for `--once`.
+    pub fn read_proj_page_now(&mut self, runner: &dyn Runner) {
+        if let Some((name, stage)) = self.open_card() {
+            self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
+        }
+    }
+
+    /// Read the page when the open card is not the one last asked for.
+    fn want_proj_page(&mut self) {
+        if let Some((name, _)) = self.open_card() {
+            if self.proj_page_for.as_deref() != Some(name.as_str()) {
+                self.read_proj_page();
+            }
+        }
     }
 
     fn read_cards(&mut self) {
@@ -948,8 +1003,15 @@ impl App {
             Msg::Projects(l) => {
                 self.projects = Some(*l);
                 self.open_wanted();
+                self.want_proj_page();
                 if self.projects_read.done() {
                     self.read_cards();
+                }
+            }
+            Msg::ProjPage(pg) => {
+                self.proj_page = Some(*pg);
+                if self.proj_page_read.done() {
+                    self.read_proj_page();
                 }
             }
         }
@@ -981,6 +1043,7 @@ impl App {
             return;
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
+            self.want_proj_page();
             return;
         }
         if self.tab == Tab::Fleet && k.code == KeyCode::Char('d') {
@@ -1029,6 +1092,7 @@ impl App {
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
+                    self.read_proj_page();
                 }
             }
             KeyCode::Char('o') => {
@@ -1137,6 +1201,10 @@ impl App {
                 return true;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
+        }
+        if self.tv.prompt.is_none() && self.tv.project.is_some() && k.code == KeyCode::Char('f') {
+            self.pv.folds = !self.pv.folds;
+            return true;
         }
         if self.tv.prompt.is_none() {
             let v = &self.tv;
@@ -1712,7 +1780,8 @@ impl App {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
+                "j/k pick  / search  l lane  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
+                if self.tv.project.is_some() { "f page sections  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
@@ -1793,7 +1862,8 @@ impl App {
                             .iter()
                             .find(|c| c.profile == *profile && c.name == *name)
                         {
-                            l = projtab::card_lines(c, self.p, w);
+                            let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
+                            l = projtab::open_lines(c, pg, self.pv.folds, self.p, w);
                             l.push(Line::raw(""));
                         }
                     }
@@ -2746,8 +2816,34 @@ mod tests {
 
         // The card's numbers stay on top of its rows.
         a.handle(key('j'));
+        let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
+        assert!(
+            !ran(&fake).contains("fleet-bench"),
+            "the list reads no page"
+        );
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.tv.project, Some(("bnb".into(), "demo".into())));
+        // Opening it reads its page once, in a worker; it draws as heads with counts, f opens them.
+        assert!(screen(&mut a, 140, 30).contains("reading the page..."));
+        loop {
+            match rx.recv().unwrap() {
+                Msg::ProjPage(pg) => {
+                    assert_eq!(pg.project, "demo");
+                    a.handle(Msg::ProjPage(pg));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
+        let s = screen(&mut a, 140, 40);
+        assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
+        assert!(s.contains("f opens it"), "{s}");
+        assert!(s.lines().last().unwrap().contains("f page sections"), "{s}");
+        a.handle(key('f'));
+        assert!(a.pv.folds);
+        assert!(!screen(&mut a, 140, 40).contains("f opens it"));
+        a.handle(key('f'));
         let s = screen(&mut a, 140, 30);
         assert!(
             at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),

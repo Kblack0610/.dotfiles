@@ -20,7 +20,13 @@ const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
-  fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
+  // A path in `answers` gets that body (a string is a 502 with it as the text); the rest get [].
+  answers: {},
+  fetch: async (u) => {
+    const a = ctx.answers[u];
+    if (typeof a === "string") return { ok: false, status: 502, statusText: "Bad Gateway", text: async () => a, headers: { get: () => "text/plain" } };
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
+  },
 });
 for (const f of ["ui.js", "charts.js", "app.js", "board.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
@@ -46,21 +52,54 @@ function draw(data, open = null) {
   return { cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, rows: box("b-list").innerHTML };
 }
 
-test("the cards list All first, then each card with its bar, summary, goal and counts", () => {
+test("the cards list All first, then each card with its stage, queue, bar and summary only", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw({ cards: [card({ running, in_flight: true }), card({ profile: "personal", name: "garden", percent: null, summary: "no version no rows" })], unlinked: ["dotfiles: tidy"], errors: [] });
+  const { cards } = draw({ cards: [card({ running, queued: 2, in_flight: true, status: "landed it", status_date: "2026-11-05" }), card({ profile: "personal", name: "garden", percent: null, summary: "no version no rows" })], unlinked: ["dotfiles: tidy"], errors: [] });
   assert.match(cards, /2 projects, 1 in flight; progress is the open version's rows by size/);
   assert.match(cards, /All projects.*2 open rows.*>demo<.*>garden</s);
-  assert.match(cards, /<span class="ctitle">demo<\/span><span class="cchip ">alpha<\/span><span class="cchip running">1 running<\/span><\/div>/);
+  assert.match(cards, /<span class="ctitle">demo<\/span><span class="cchip ">alpha<\/span><span class="cchip running">1 running<\/span><span class="cchip ">2 queued<\/span><\/div>/, "a zero count is no chip");
   assert.match(cards, /<span style="width:25\.0%[^"]*"><\/span><\/span><span class="ppct">25%<\/span><\/div><div class="psum">v0\.1\.0 25% \(1 of 4 by size\)/);
-  assert.match(cards, /<div class="pgoal">ship the menu/);
-  assert.match(cards, /<li><span class="prt">wire the bar<\/span><span class="prm">1\/3 phases, next: web<\/span><\/li>/);
-  assert.match(cards, /<div class="pcounts"><span class="cchip ">1 #requested<\/span><span class="cchip ">2 in the inbox<\/span><\/div>/, "a zero count is no chip");
-  const many = Array.from({ length: 5 }, (_, i) => ({ slug: `s${i}`, title: `job ${i}`, project: "demo" }));
-  const capped = draw({ cards: [card({ running: many })], unlinked: [], errors: [] }).cards;
-  assert.match(capped, /job 2<\/span><\/li><\/ul><div class="cline">\+2 more running; Open rows shows them all<\/div>/);
-  assert.match(draw({ cards: [card({ running: many })], unlinked: [], errors: [] }, "bnb/demo").head, /job 4/, "the rows view shows them all");
+  for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested"]) {
+    assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
+  }
   assert.match(cards, /Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
+});
+
+const page = {
+  project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
+  needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
+  systems: [{ id: "ui", head: "ui  criteria 5 of 7", epics: [{ id: "gm-1", step: "rows", line: "Menus  [rows]  behind", behind: true }], closed: "+1 closed, 1 verified" }],
+  no_epic: "(2 rows with no epic)", next_stage: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
+  next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }], shipped: [], errors: [],
+};
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("an opened card reads its page once and shows Needs you, then folds with their counts", async () => {
+  ctx.answers = { "/api/projects/demo/page": page };
+  const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
+  let { head } = draw({ cards: [c], unlinked: [], errors: [] }, "bnb/demo");
+  assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="muted">Reading the page\.\.\.<\/div>/);
+  await settle();
+  head = box("p-head").innerHTML;
+  assert.match(head, /flow: ideas 3 \| briefs 1/);
+  assert.match(head, /Needs you <span class="muted">1<\/span><\/h2><div class="card"><div class="qlate">verify: Saves/);
+  assert.match(head, /data-k="pg:systems"><summary><b>Build by system<\/b> <span class="muted">1 systems, 1 open epics \(2 rows with no epic\)<\/span>/);
+  assert.match(head, /<div class="pep qlate">Menus  \[rows\]  behind<\/div><div class="pep muted">\+1 closed, 1 verified/);
+  assert.match(head, /Next stage<\/b> <span class="muted">beta  4 of 12 met.*<b>FAIL<\/b> a soak test/s);
+  assert.match(head, /Shipped<\/b> <span class="muted">none yet/);
+  assert.match(head, /In flight<\/b> <span class="muted">1 running, 0 waiting, 0 queued; 1 rows #requested.*wire the bar/s);
+  assert.match(head, /Agent note<\/b> <span class="muted">model-written, 2026-11-05.*landed it/s);
+  assert.doesNotMatch(head, /<details[^>]* open/, "every fold starts shut");
+});
+
+test("a page that cannot be read says why, and a card with no goal says so", async () => {
+  ctx.answers = { "/api/projects/demo/page": "fleet-bench epics lists no project demo" };
+  draw({ cards: [card({ goal: "", counts: "" })], unlinked: [], errors: [] }, "bnb/demo");
+  await settle(); await settle();
+  const head = box("p-head").innerHTML;
+  assert.match(head, /<span class="muted">no goal set<\/span>/);
+  assert.match(head, /panel down">Could not read projects \(HTTP 502\): fleet-bench epics lists no project demo/);
 });
 
 test("opening a card shows its rows under it, with Tags... among the row actions", () => {

@@ -2805,7 +2805,7 @@ epics_json() {
                           factor: $f, cal_p50: (if $f == null then null else ($t + ($p50 - $t) * $f | floor) end)}, why: null}
                end end) as $x
         | $B[$k] as $b
-        | {id: $e.id, title: $e.title, version: $e.version, state: $e.state, verified: $e.verified, proof: $e.proof,
+        | {id: $e.id, title: $e.title, system: ($e.system // ""), version: $e.version, state: $e.state, verified: $e.verified, proof: $e.proof,
            open: $e.open, done: $e.done, open_weight: $e.open_weight, done_weight: $e.done_weight,
            progress: ratio($e.done_weight; $e.open_weight + $e.done_weight), step: $step, brief: $brief, plans: $ep,
            rows: ($er | map({id, kind, title, size, state, prs})), items: $ei,

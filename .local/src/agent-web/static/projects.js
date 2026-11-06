@@ -1,11 +1,13 @@
 "use strict";
 // The Projects tab: one card per lab project (/api/projects, hub_core::projects, the cards the
 // hub TUI's Projects tab draws) with its open version's progress by size, its pace and ETA, and
-// what is in flight on it, in flight first. "Open rows" shows that project's rows under its
-// card, with every row action board.js has; "All projects" shows every project's rows. The
-// numbers are counted, never judged: the summary line is hub_core's, word for word.
+// its queue, in flight first. "Open rows" opens the card: its page (/api/projects/{name}/page,
+// hub_core::page, read only then), then that project's rows with every row action board.js has;
+// "All projects" shows every project's rows. The numbers are counted, never judged: every line
+// is hub_core's, word for word.
 
-const pst = { data: null, err: null, open: null, unlinked: false };
+// page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open.
+const pst = { data: null, err: null, open: null, unlinked: false, page: {}, folds: {} };
 
 const refreshProjects = coalesce(async () => {
   try { pst.data = await api("/api/projects"); pst.err = null; } catch (e) { pst.err = e.message; }
@@ -13,10 +15,6 @@ const refreshProjects = coalesce(async () => {
 });
 
 const pKey = (c) => c.profile + "/" + c.name;
-
-// The sessions running on a project, a card shows the first PRUNNING_SHOWN of; its rows view
-// shows them all.
-const PRUNNING_SHOWN = 3;
 
 // One running item: its title (two lines at most), then its phases and estimate.
 function pRunning(r) {
@@ -27,25 +25,63 @@ function pRunning(r) {
 // A count chip, only when there is something to count.
 const pCount = (n, what, cls) => (n ? cchip(cls || "", `${n} ${what}`) : "");
 
-// A project card: its name and stage, the open version's progress (hub_core's summary word for
-// word under the meter), its goal, what it holds as counts, then what runs on it.
-function pCard(c, rowsOpen) {
-  const chips = [cchip("", esc(c.stage || "no stage")), pCount(c.running.length, "running", "running"), pCount(c.waiting, "waiting", "waiting")];
-  const counts = [pCount(c.queued, "queued"), pCount(c.requested, "#requested"), pCount(c.inbox, "in the inbox")].join("");
-  const shown = rowsOpen ? c.running : c.running.slice(0, PRUNNING_SHOWN);
-  const more = c.running.length - shown.length;
-  return `<div class="card qitem pcard"${rowsOpen ? "" : ` data-open="${esc(pKey(c))}"`}>` +
+// A project card in the list: its name, stage and queue, then the open version's progress
+// (hub_core's summary word for word under the meter). The rest is the opened card's (pOpened).
+function pCard(c) {
+  const chips = [cchip("", esc(c.stage || "no stage")), pCount(c.running.length, "running", "running"),
+    pCount(c.waiting, "waiting", "waiting"), pCount(c.queued, "queued")];
+  return `<div class="card qitem pcard" data-open="${esc(pKey(c))}">` +
     cardHead(c.name, chips.filter(Boolean)) +
     cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
     `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
     `<div class="psum">${esc(c.summary)}</div>` +
-    (c.goal ? `<div class="pgoal">${esc(c.goal)}</div>` : "") +
-    (counts ? `<div class="pcounts">${counts}</div>` : "") +
-    (shown.length ? `<ul class="prun">${shown.map(pRunning).join("")}</ul>` : "") +
-    (more ? `<div class="cline">+${more} more running; Open rows shows them all</div>` : "") +
-    (c.status ? `<div class="pstat"><span class="muted">${esc(c.status_date)}</span> ${esc(c.status)}</div>` : "") +
-    (rowsOpen ? "" : `<div class="opts"><button class="btn sm" data-open="${esc(pKey(c))}">Open rows</button></div>`) +
+    `<div class="opts"><button class="btn sm" data-open="${esc(pKey(c))}">Open rows</button></div>` +
     `</div>`;
+}
+
+// A fold of the opened card: its title and what it holds, kept open across redraws by pst.folds.
+const pFold = (k, title, says, inner) =>
+  cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds);
+const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
+
+// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
+// shown), then Build by system, Next stage, Shipped, In flight and the Agent note as folds whose
+// heads carry their counts, the TUI's opened card word for word.
+function pOpened(c) {
+  const chips = [cchip("", esc(c.stage || "no stage"))];
+  let html = `<div class="card qitem pcard">` + cardHead(c.name, chips) +
+    cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
+    `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
+    `<div class="psum">${esc(c.summary)}</div>` +
+    `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
+  const got = pst.page[c.name];
+  if (!got) return html + `<div class="muted">Reading the page...</div></div>`;
+  if (got.err) return html + `<div class="panel down">${esc(got.err)}</div></div>`;
+  const pg = got.data;
+  if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
+  html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
+  html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
+  if (pg.needs.length) html += `<div class="card">${pLines(pg.needs, "qlate")}</div>`;
+  const epics = pg.systems.reduce((n, s) => n + s.epics.length, 0);
+  html += pFold("systems", "Build by system", `${pg.systems.length} systems, ${epics} open epics${pg.no_epic ? " " + pg.no_epic : ""}`,
+    pg.systems.map((s) => `<div><b>${esc(s.head)}</b></div>` +
+      s.epics.map((e) => `<div class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</div>`).join("") +
+      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : "")).join(""));
+  html += pFold("next", "Next stage", pg.next_stage || "no stage after this one",
+    pg.next_rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join(""));
+  html += pFold("shipped", "Shipped", pg.shipped.length ? `${pg.shipped.length} versions` : "none yet", pLines(pg.shipped));
+  html += pFold("flight", "In flight", c.counts,
+    c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`);
+  html += pFold("note", "Agent note", c.status ? `model-written, ${c.status_date}` : "none",
+    c.status ? `<div class="pstat">${esc(c.status)}</div>` : "");
+  return html;
+}
+
+// Read the opened card's page, once per open (it runs fleet-bench and the stage check).
+async function pReadPage(name) {
+  try { pst.page[name] = { data: await api(`/api/projects/${encodeURIComponent(name)}/page`) }; }
+  catch (e) { pst.page[name] = { err: e.message }; }
+  if (st.tab === "projects" && pst.open) renderProjects();
 }
 
 function pCards() {
@@ -59,7 +95,7 @@ function pCards() {
     cardHead("All projects", [cchip("", open == null ? "reading notes board" : `${open} open rows`)]) +
     cardLine(["every project's rows, filtered by text, #tag, lane or priority"]) +
     `<div class="opts"><button class="btn sm" data-open="all">Open rows</button></div></div>`;
-  html += cards.map((c) => pCard(c, false)).join("");
+  html += cards.map(pCard).join("");
   if (d.unlinked && d.unlinked.length) {
     html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary><h2 class="sec">Not on a card ` +
       `<span class="muted">${d.unlinked.length} active queue items no project claims</span></h2></summary>` +
@@ -84,7 +120,11 @@ function pOpen(key) {
   const all = key === "all";
   bst.filter.project = all ? "" : key;
   bst.filter.q = "";
-  if (!all) bst.draft.key = key;
+  if (!all) {
+    bst.draft.key = key;
+    const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
+    if (c) { delete pst.page[c.name]; pReadPage(c.name); }
+  }
   bst.form = null; bst.msg = ""; bst.controlsKey = "";
   $("projects").scrollTop = 0;
   renderProjects();
@@ -100,8 +140,8 @@ function renderProjects() {
     return;
   }
   const c = pst.open !== "all" && pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
-  $("p-head").innerHTML = `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
-    (c ? pCard(c, true) : `<h2 class="sec">All projects</h2>`);
+  paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
+    (c ? pOpened(c) : `<h2 class="sec">All projects</h2>`), pst.folds);
   renderBoard();
 }
 
@@ -115,7 +155,9 @@ $("projects").addEventListener("click", (e) => {
   if (o && !e.target.closest("#board")) pOpen(o.dataset.open);
 });
 $("projects").addEventListener("toggle", (e) => {
-  if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
+  const k = e.target.dataset && e.target.dataset.k;
+  if (k === "unlinked") pst.unlinked = e.target.open;
+  else if (k && k.startsWith("pg:")) pst.folds[k] = e.target.open;
 }, true);
 
 TABS.projects = {

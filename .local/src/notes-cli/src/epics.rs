@@ -90,6 +90,8 @@ struct Node {
     version: Option<V>,
     /// An epic's title; `None` marks a row that is not an epic.
     title: Option<String>,
+    /// An epic's system, the area in `epic(<system>):`; empty on any other row.
+    system: String,
     /// What closed the row, empty while open.
     proof: String,
     /// Where the row is, for a doctor line: `sheet line 12`.
@@ -101,6 +103,8 @@ struct Node {
 pub(crate) struct EpicProgress {
     pub id: String,
     pub title: String,
+    /// The system it builds, the area in `epic(<system>):`, so a page can group epics by system.
+    pub system: String,
     /// The release the epic is aimed at; empty when it spans releases.
     pub version: String,
     pub open: usize,
@@ -219,6 +223,11 @@ impl Index {
             target: sheet::target(line),
             version,
             title: is_epic(line).then(|| projects::row_title(line)),
+            system: if is_epic(line) {
+                projects::row_type_area(line).map_or_else(String::new, |(_, a)| a)
+            } else {
+                String::new()
+            },
             proof: proof_of(line),
             at,
         });
@@ -284,6 +293,7 @@ impl Index {
         let mut p = EpicProgress {
             id: e.id.clone().unwrap_or_default(),
             title: e.title.clone().unwrap_or_default(),
+            system: e.system.clone(),
             version: e.target.map(fmt_version).unwrap_or_default(),
             childless: !e.id.as_deref().is_some_and(|id| self.is_parent(id)),
             proof: if e.open {
@@ -475,6 +485,7 @@ Version: v1.4.0 #alpha
             vec![EpicProgress {
                 id: "dm-1".into(),
                 title: "one estimate per release".into(),
+                system: "rollup".into(),
                 open: 1,
                 done: 1,
                 open_weight: 3,
@@ -577,6 +588,12 @@ Version: v1.4.0 #alpha
         let e = ix.epics();
         assert!(e.iter().all(|e| e.childless && e.open_weight == 21));
         assert_eq!(e[1].version, "v1.5.0");
+        let systems: Vec<&str> = e.iter().map(|e| e.system.as_str()).collect();
+        assert_eq!(
+            systems,
+            vec!["spread", "soon"],
+            "each epic carries the system its epic(<system>): prefix names"
+        );
         let ids: Vec<String> = ix.epics_in(V15).into_iter().map(|e| e.id).collect();
         assert_eq!(ids, vec!["dm-2"]);
     }

@@ -295,6 +295,26 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
+/// The card's queue in one line, on the list card's first line: `1 running, 0 waiting, 2 queued`.
+pub fn queue(c: &Card) -> String {
+    format!(
+        "{} running, {} waiting, {} queued",
+        c.running.len(),
+        c.waiting,
+        c.queued
+    )
+}
+
+/// The opened card's In flight counts: the queue, then rows #requested and the inbox.
+pub fn counts(c: &Card) -> String {
+    format!(
+        "{}; {} rows #requested, {} in the inbox",
+        queue(c),
+        c.requested,
+        c.inbox
+    )
+}
+
 /// The whole join every surface reads: `notes projects --stats --json`, the inbox feed, fleet
 /// state and the queue, built into cards. agent-web's `/api/projects` and `hub projects --json`
 /// both call this, so the chip, the phone, the web tab and the TUI agree.
@@ -325,6 +345,8 @@ pub fn to_json(p: &Projects) -> Value {
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["summary"] = summary(c).into();
+            j["queue"] = queue(c).into();
+            j["counts"] = counts(c).into();
             j["in_flight"] = c.in_flight().into();
         }
     }
@@ -362,6 +384,11 @@ mod tests {
             .unwrap()
             .starts_with("v0.1.0 25% (1 of 4 by size)"));
         assert_eq!(v["cards"][0]["in_flight"], false);
+        assert_eq!(v["cards"][0]["queue"], "0 running, 0 waiting, 0 queued");
+        assert_eq!(
+            v["cards"][0]["counts"],
+            "0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox"
+        );
     }
 
     struct Argv(std::cell::RefCell<Vec<String>>);
