@@ -74,8 +74,8 @@ claude() {
 # Claude Code reads OTEL_RESOURCE_ATTRIBUTES once, at start, so the project of the directory
 # it starts in is added here, per launch (claude-telemetry.sh says why not at shell start).
 _claude_launch() {
-    if command -v claude_telemetry_project >/dev/null 2>&1; then
-        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)" command claude "$@"
+    if command -v claude_telemetry_launch >/dev/null 2>&1; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)" command claude "$@"
     else
         command claude "$@"
     fi
@@ -94,8 +94,8 @@ cl() {
         --lazer)
             shift
             ( unset CLAUDE_CONFIG_DIR
-              command -v claude_telemetry_project >/dev/null 2>&1 \
-                  && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"
+              command -v claude_telemetry_launch >/dev/null 2>&1 \
+                  && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"
               claude-lazer --dangerously-skip-permissions "$@" )
             return ;;
     esac

@@ -271,7 +271,10 @@ git -C . rev-parse --verify --quiet refs/remotes/origin/main
 git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{commit}
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
+notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
+notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --ticket  --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
+notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --ticket  --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
 EOF
 }

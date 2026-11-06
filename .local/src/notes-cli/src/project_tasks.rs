@@ -1365,6 +1365,7 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("swept {name}'s tasks"));
     let mut ev = crate::ingest::Event::new("swept", name, "", &report.join("; "));
+    ev.stage = Some("backlog".into());
     ev.lane = lane.name().into();
     crate::ingest::record(p, &ev);
     println!("{}", sheet.display());
@@ -1477,6 +1478,7 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         &format!("archived {n} done rows ({name}) -> {}", note.display()),
     );
     let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+    ev.stage = Some("backlog".into());
     ev.lane = lane.name().into();
     crate::ingest::record(p, &ev);
     println!("moved {n} done rows -> {}", note.display());
@@ -1554,6 +1556,9 @@ where
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
             let mut ev = crate::ingest::Event::row(verb, name, "", lane.name(), &matched);
+            if verb == "done" {
+                ev = ev.proof(why.unwrap_or_default());
+            }
             ev.why = why.map(str::to_string);
             if verb == "edited" {
                 ev.row = after.into_inner().map(|l| md::task_text(&l));

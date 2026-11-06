@@ -924,7 +924,9 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
 fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     use crate::agent_sheet::Lane;
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let events = crate::ingest::on_day(p, &today);
+    // The queue, dispatch and land steps share the record but are not intake.
+    let mut events = crate::ingest::on_day(p, &today);
+    events.retain(crate::ingest::Event::is_intake);
     let week = crate::ingest::since(p, KEPT_DAYS);
     let ids: std::collections::HashSet<&str> = week
         .iter()
@@ -2736,6 +2738,16 @@ mod tests {
         agent_filed.id = Some("dm-7".into());
         agent_filed.row = Some("test(x): a follow-up".into());
         record(&p, &agent_filed);
+        // The queue, dispatch and land steps share the record and stay off the page.
+        for (stage, action) in [
+            ("queue", "item-moved"),
+            ("dispatch", "started"),
+            ("land", "merged"),
+        ] {
+            let mut chain = Event::new(action, "demo", "running", "a queued task");
+            chain.stage = Some(stage.into());
+            record(&p, &chain);
+        }
         record(
             &p,
             &Event::new("moved", "focus", "demo", "still in the inbox"),

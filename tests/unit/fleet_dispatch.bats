@@ -2067,6 +2067,12 @@ pr_item() {
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
   assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  # The reap and the settle are on the chain log, as the runner's own writes.
+  run grep -o 'stage dispatch --action [a-z]* --from game --item fix-crash.* -- .*' "$NOTES_FIXTURE/calls.log"
+  assert_output - <<OUT
+stage dispatch --action reaped --from game --item fix-crash --why item was running --by fleet-dispatch -- session game-agent-1 gone
+stage dispatch --action settled --from game --item fix-crash --id fix crash --pr o/game#12 --sha $OID --by fleet-dispatch -- row closed on merge proof
+OUT
 }
 
 @test "reap: a merged PR whose commit is not on origin/main closes the item but never the row" {
@@ -2075,7 +2081,7 @@ pr_item() {
   assert_success
   refute_output --partial 'closed game'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
-  run grep -c ' done ' "$NOTES_FIXTURE/calls.log"
+  run grep -c 'ptask .* done ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
 }

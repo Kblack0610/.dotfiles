@@ -166,6 +166,11 @@ def rank: sort_by((.pprio // 2), (.due // 3), (.wrank // 0), .prio, ({"prod": 0,
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+# dispatch_event <action> <project> <text> [record flags...] -> this runner's start, reap or
+# settle on the chain log; it has no queue item or session of its own, so it names itself.
+dispatch_event() { chain_event dispatch "$@" --by fleet-dispatch; }
 
 # tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
 # Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
@@ -690,6 +695,7 @@ cmd_start() {
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     agent-queue set "$item" "session=$server:$session" "account=$(basename "${acct:-main}")" "origin=$origin" "model=$model" >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
+    dispatch_event started "$project" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" --item "$item" --to "$server:$session" --why "$model on $(basename "${acct:-main}")"
     exec 7>&-
   fi
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready"
@@ -877,6 +883,7 @@ close_row() {
   np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
     { logline "queue item $1: closing $project row $key failed"; return 0; }
   logline "closed $project $lane row on merge proof ($out): $key"
+  dispatch_event settled "$project" "row closed on merge proof" --item "$1" --id "$key" --pr "$pr" --sha "$oid"
   echo "closed $project: $key (queue item $1, PR $pr merged)"
 }
 
@@ -896,6 +903,7 @@ settle_row() {
   jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
     '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
   logline "settled queue item $1: $project $lane row un-started: $key"
+  dispatch_event settled "$project" "row un-started: item ended $(jq -r .status <<<"$it")" --item "$1" --id "$key"
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
 }
 
@@ -931,6 +939,7 @@ unstart_orphans() {
         jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
           '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
         logline "un-started orphan $name agent row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
+        dispatch_event settled "$name" "orphan row un-started: ${DISPATCH_ORPHAN_HOURS}h with no queue item" --id "$key"
         echo "un-started $name: $key (started with no queue item)"
       done < <(rows "$prof" "$name" agent)
     done < <(np "$prof" projects 2>/dev/null)
@@ -948,6 +957,7 @@ unstart_orphans() {
 settle_item() {
   local st pr info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
+  dispatch_event reaped "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.project // empty')" "session $2 gone" --item "$1" --why "item was $st"
   pr=$(agent-queue show "$1" --json 2>/dev/null | jq -r '.pr // empty')
   if [[ "$pr" == */*#* ]]; then
     info=$(gh pr view "${pr##*#}" -R "${pr%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null) || info=''
