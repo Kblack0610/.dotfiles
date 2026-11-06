@@ -99,6 +99,13 @@ impl DataTable {
     /// The state chips with their counts (the one in force in the head style), the query and
     /// the sort.
     pub fn status<R: Row>(&self, rows: &[R], p: Palette) -> Vec<Span<'static>> {
+        let mut out = self.chips(rows, p);
+        out.extend(self.asked::<R>(p));
+        out
+    }
+
+    /// The state chips with their counts, the one in force in the head style.
+    pub fn chips<R: Row>(&self, rows: &[R], p: Palette) -> Vec<Span<'static>> {
         let mut out = vec![];
         for (i, c) in self.view.states(rows).iter().enumerate() {
             let on = if i == 0 {
@@ -113,6 +120,13 @@ impl DataTable {
                 Span::raw(text)
             });
         }
+        out
+    }
+
+    /// The query, or the draft being typed, and the sort: a table whose chips can fill the line
+    /// draws these on their own, so what is typed is never clipped.
+    pub fn asked<R: Row>(&self, p: Palette) -> Vec<Span<'static>> {
+        let mut out = vec![];
         if let Some(t) = &self.typing {
             out.push(Span::styled(format!(" | /{t}_"), p.head()));
         } else if !self.view.q.is_empty() {

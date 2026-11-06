@@ -72,6 +72,8 @@ function ageMin(min) {
 }
 // How long ago a time was, as ageMin words.
 const ago = (t) => ageMin((Date.now() - tms(t)) / 60000);
+// How long since a time, exact: the dur words.
+const waited = (t) => dur(Math.max(0, Date.now() - tms(t)) / 60000);
 // "3m", "2h 5m", "4d 3h".
 function dur(min) {
   if (min == null || isNaN(min)) return "-";

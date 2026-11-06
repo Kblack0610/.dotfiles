@@ -273,6 +273,8 @@ mod tests {
     fn row(kind: Kind, id: &str, human: bool, value: i64) -> Need {
         Need {
             kind,
+            need: crate::home::NeedKind::Ask,
+            rank: 0,
             project: "dotfiles".into(),
             text: format!("Question {id}?"),
             id: id.into(),

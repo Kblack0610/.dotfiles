@@ -49,6 +49,7 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
     if !state.is_object() {
         return state;
     }
+    dialogs(&mut state, agent_panel::session::jsonl_path);
     let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
     match r.run(&argv) {
         Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
@@ -61,6 +62,25 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
         }
     }
     state
+}
+
+/// Each NEEDS session's open dialog, read live from the end of its transcript (`path`, by session
+/// id and cwd) into the row's `dialog`, so `home::needs` stays pure over this document. A row
+/// whose transcript has nothing pending or cannot be read gets none.
+fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
+    let sessions = state.get_mut("sessions").and_then(Value::as_array_mut);
+    for s in sessions.into_iter().flatten() {
+        if s["bucket"] != "NEEDS" {
+            continue;
+        }
+        let at = path(
+            s["session_id"].as_str().unwrap_or(""),
+            s["cwd"].as_str().unwrap_or(""),
+        );
+        if let Ok(Some(q)) = crate::transcript::pending_question(&at) {
+            s["dialog"] = q.kind.into();
+        }
+    }
 }
 
 /// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
@@ -884,6 +904,24 @@ mod tests {
             assert_eq!(argv.join(" "), "agent-ask list --all --pending");
             self.0.clone()
         }
+    }
+
+    #[test]
+    fn a_needs_session_takes_its_transcripts_open_dialog() {
+        let dir = std::env::temp_dir().join(format!("hub-core-dialogs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"do it"}}]}}"#;
+        std::fs::write(dir.join("p.jsonl"), format!("{plan}\n")).unwrap();
+        let mut s = json!({"sessions": [
+            {"bucket": "NEEDS", "session_id": "p", "cwd": "/w"},
+            {"bucket": "WORKING", "session_id": "p", "cwd": "/w"},
+            {"bucket": "NEEDS", "session_id": "gone", "cwd": "/w"},
+        ]});
+        dialogs(&mut s, |id, _| dir.join(format!("{id}.jsonl")));
+        assert_eq!(s["sessions"][0]["dialog"], "plan");
+        assert_eq!(s["sessions"][1]["dialog"], Value::Null, "only NEEDS rows");
+        assert_eq!(s["sessions"][2]["dialog"], Value::Null, "no transcript");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

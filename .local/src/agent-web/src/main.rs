@@ -28,7 +28,6 @@ mod queue;
 mod reds;
 mod sessions;
 mod shepherd;
-mod transcript;
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -46,8 +45,10 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use hub_core::boards;
+use hub_core::home::{Home, Need};
 use hub_core::session_actions::{self as actions, Action};
+use hub_core::table::{Summary, View};
+use hub_core::{boards, transcript};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -1001,15 +1002,47 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// `/api/home`'s view keys, the ones the page keeps in its URL.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct HomeQuery {
+    q: String,
+    s: String,
+    sort: String,
+    dir: String,
+}
+
+/// Home with a view on Needs you, and the controls that drew it.
+#[derive(Serialize)]
+struct HomeShown {
+    #[serde(flatten)]
+    home: Home,
+    table: Summary,
+}
+
+/// The view narrows `needs` here and nowhere else: `build` and everything else that reads Home's
+/// needs (the TUI's counts, waybar, the phone) keep the whole list, and so does `table`'s total.
+fn home_shown(mut home: Home, q: &HomeQuery) -> HomeShown {
+    let view = View::new::<Need>(&q.q, &q.s, &q.sort, &q.dir);
+    let (rows, table) = view.summary(&home.needs);
+    let rows = rows.into_iter().cloned().collect();
+    home.needs = rows;
+    HomeShown { home, table }
+}
+
 /// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
 /// Prometheus answer, the same join the hub TUI's Home draws.
-async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+async fn home_board(
+    State(s): State<Shared>,
+    Query(q): Query<HomeQuery>,
+) -> ApiResult<Json<HomeShown>> {
     let infra = s.infra.infra().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
         let board = hub_core::tasks::feed(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
+        let home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+        home_shown(home, &q)
     })
     .await
     .map(Json)
@@ -1133,6 +1166,35 @@ async fn events_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_on_home_narrows_the_needs_it_sends_and_nothing_else() {
+        let state = serde_json::json!({
+            "sessions": [
+                {"bucket": "NEEDS", "target": "hub/a:1", "cwd": "/w/a", "idle_min": 9},
+                {"bucket": "NEEDS", "target": "hub/b:1", "cwd": "/w/b", "idle_min": 1},
+            ],
+        });
+        let home = hub_core::home::build(&state, None, None, None);
+        assert_eq!(home.needs.len(), 2);
+        let (numbers, shown) = (home.numbers.clone(), home.shown);
+        let q = HomeQuery {
+            q: "project:b".into(),
+            ..Default::default()
+        };
+        let out = serde_json::to_value(home_shown(home, &q)).unwrap();
+        assert_eq!(out["needs"].as_array().unwrap().len(), 1);
+        assert_eq!(out["needs"][0]["project"], "b");
+        assert_eq!(
+            out["needs"][0]["rank"], 2,
+            "a row keeps its place in the list"
+        );
+        assert_eq!(out["table"]["shown"], 1);
+        assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
+        assert_eq!(out["table"]["q"], "project:b");
+        assert_eq!(out["shown"], shown, "flattened beside the rows");
+        assert_eq!(out["numbers"], serde_json::to_value(numbers).unwrap());
+    }
 
     #[test]
     fn only_a_dir_directly_under_projects_is_a_new_project() {

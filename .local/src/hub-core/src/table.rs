@@ -51,6 +51,9 @@ pub trait Row {
     const STATES: &'static [&'static str];
     /// The columns whose values the web offers as dropdowns, each value a `key:value` term.
     const FACETS: &'static [&'static str];
+    /// A chip no row is under is left out, unless it is the one in force: for a table with
+    /// more kinds than usually have a row.
+    const HIDE_EMPTY: bool = false;
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -306,6 +309,9 @@ impl View {
                     kept.iter().filter(|r| r.in_state(s)).count()
                 },
             })
+            .enumerate()
+            .filter(|(i, c)| !R::HIDE_EMPTY || *i == 0 || c.n > 0 || c.name == self.state)
+            .map(|(_, c)| c)
             .collect()
     }
 

@@ -391,8 +391,6 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .ntitle { font-weight: 600; font-size: var(--fs-lg); line-height: 1.35; overflow-wrap: anywhere; margin-bottom: 8px; }
 .need .q.planq { max-height: none; overflow: visible; margin: 10px 0; }
 .need .opts { margin-bottom: 8px; }
-.ntally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 auto 10px; }
-.nchip { font-size: var(--fs-sm); font-weight: 600; padding: 2px 10px; border-radius: 12px; color: var(--k, var(--muted)); background: color-mix(in srgb, var(--k, var(--muted)) 13%, transparent); }
 /* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
 .actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
 .aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
