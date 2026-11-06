@@ -11,7 +11,8 @@
 # on origin/<base>, by agent-merge-proof.sh), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok), board (the
-# item's row when it came from the board, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
+# item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
+# promoted from, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
@@ -145,9 +146,9 @@ case "$(jq -r --arg pr "$pr" 'if .state == "done" and ((.pr // "") | sub(".*#"; 
 running | waiting | queued | rerun) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
-# The notes argv that closes a `from: board:<project>:<key>` item's row, one word a line,
-# as fleet-dispatch reads it; empty for any other item.
-row=$(jq -r 'select(.from | startswith("board:")) | (.from | ltrimstr("board:") | split(":")) as $r
+# The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
+# definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
+row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
   | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
     + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
     + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
@@ -197,7 +198,7 @@ credit() {
   [ -z "$out" ] || echo ", $out"
 }
 
-# board_cmd -> the notes argv that closes the item's row, one word a line; none for an item not from the board.
+# board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
 # Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
 if [ -n "$plan$phase" ]; then
