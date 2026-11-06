@@ -411,8 +411,8 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   export CC_PROM_URL=http://prom.test
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .*\$600 +m@x$'
-  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +a@x$'
+  assert_line --regexp '^main +- +30% +50% +under .*\$600 +0 +0\.83 +now +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +a@x$'
 }
 
 @test "status: Prometheus down leaves the percents and blanks only the dollars" {
@@ -422,7 +422,7 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   export CC_PROM_URL=http://prom.test   # the curl stub fails
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .* - +m@x$'
+  assert_line --regexp '^main +- +30% +50% +under .* - +0 +0\.83 +now +m@x$'
 }
 
 @test "live sessions count per account, only claude processes" {
@@ -461,6 +461,9 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   refute_line --partial 'five_hour'
   assert_line 'claude_account_read_ok{account="alt"} 0'
   refute_line --partial 'week_used_percent{account="alt"}'
+  # negative control: an unread account publishes no burn or pace figure
+  refute_line --regexp '(burn|sustain|on_pace).*account="alt"'
+  assert_line --regexp '^claude_account_sustain_points_per_hour\{account="main"\} 0\.833'
   [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
 }
 
@@ -813,4 +816,45 @@ seen_claude() {
   assert_output "$ALT|-c"
   run --separate-stderr "$ACCT" run --acct nope
   assert_failure
+}
+
+@test "back on pace: over pace and burning past the line is never at this burn, and the idle time is the clock catching up" {
+  # 2026-11-06: 39 live burned 4.5 points an hour against the 1.4 the three weeks could carry
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 30 84   # under pace: on pace now either way
+  week alt 80 84    # 30 points over, half the week gone
+  live "$ALT" 10    # 1.0 an hour, over the 0.595 the week refills
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .on_pace_idle <<<"$output")" = "$NOW" ]
+  [ "$(field main .on_pace_burn <<<"$output")" = "$NOW" ]
+  [ "$(field alt .on_pace_burn <<<"$output")" = null ]
+  # 30 points at 100 a week is 50.4h
+  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 181440))" ]
+  [ "$(field alt '.sustain * 84 | round' <<<"$output")" = 20 ]
+}
+
+@test "back on pace: a burn under the line closes the gap, and one that closes after the reset says null" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 55 84   # 5 points over
+  week alt 80 84    # 30 points over: 101.6h at this burn, past the reset in 84h
+  live "" 3
+  live "$ALT" 3     # 0.3 an hour: the gap closes at 0.295 an hour
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  # 5 / (100/168 - 0.3) = 16.935h
+  [ "$(field main '.on_pace_burn - '$NOW' | . >= 60960 and . <= 60970' <<<"$output")" = true ]
+  [ "$(field alt .on_pace_burn <<<"$output")" = null ]
+}
+
+@test "status: the fleet line sums live, burn and what the weeks carry, and names the first back on pace" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 80 84
+  week alt 80 84
+  live "" 10
+  live "$ALT" 10
+  run "$ACCT" status
+  assert_success
+  assert_line --partial 'after-reset'
+  assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.5/h sustainable \(4\.2x, carries ~4\), back on pace: not at this burn; if idle (main|alt) '
 }
