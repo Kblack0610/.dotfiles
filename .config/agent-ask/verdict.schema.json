@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reason", "rule", "call", "answer"],
+  "properties": {
+    "reason": {"type": "string", "description": "One short sentence, written before the call"},
+    "rule": {"type": "string", "description": "The id of the policy rule that decided it"},
+    "call": {"type": "string", "enum": ["human", "take-recommend", "answer"]},
+    "answer": {"type": "string", "description": "Your answer when call is answer, else empty"}
+  }
+}
