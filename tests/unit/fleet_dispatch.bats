@@ -355,6 +355,37 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a cleanup row read as not clear or size L under a tier-3 skip goes to inbox-plan; a feature, a clear M row, or a human-only skip does not" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_CLEANUP_PROJECTS=game
+  row game agent ga-8 "- [ ] chore(game): prune the cache $T <!-- id:ga-8 -->"
+  row game agent ga-9 "- [ ] fix(game): the sweep never retries $T <!-- id:ga-9 -->"
+  row game agent ga-10 "- [ ] feat(game): a new page $T <!-- id:ga-10 -->"
+  row game agent ga-11 "- [ ] chore(game): drop the dead flag $T <!-- id:ga-11 -->"
+  row game agent ga-12 "- [ ] fix(game): the score $T #size/m <!-- id:ga-12 -->"
+  row game agent ga-13 "- [ ] fix(game): the headset drops the pad $T <!-- id:ga-13 -->"
+  row game agent ga-14 "- [ ] chore(game): remove the old store build $T <!-- id:ga-14 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in ga-8 ga-9 ga-10 ga-11 ga-12 ga-13 ga-14; do board_row game agent "$k" '[]' '[]'; done
+  t3() { verdict game agent "$1" skip "$2" 3; jq -c --argjson c "$3" 'if .key == "'"$1"'" then .rule = "tier3" | .tier3_only = true | .clear = $c else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  t3 ga-8 S false; t3 ga-9 L true; t3 ga-10 S false; t3 ga-11 M true; t3 ga-12 L true
+  # unclear or L, but held by a rule only the human clears: a device run, a release
+  human() { verdict game agent "$1" skip L 3; jq -c 'if .key == "'"$1"'" then .rule = "'"$2"'" | .tier3_only = false | .clear = false else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  human ga-13 needs-person; human ga-14 release
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 2
+  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-8
+ptask game --agent tag --add plan ga-9'
+  # negative controls: a feature (not cleanup), a clear M cleanup row, an L verdict the row's own
+  # #size/m overrides, and unclear L rows a needs-person or release skip holds for the human
+  run grep -E 'tag --add plan (ga-10|ga-11|ga-12|ga-13|ga-14)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
 @test "plan_skips: stops at DISPATCH_PLAN_BACKLOG open #plan rows, and 0 turns it off" {
   plan_fixture
   DISPATCH_PLAN_BACKLOG=2 plan_skips
@@ -572,7 +603,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(jq -r 'select(.key == "app row") | .active' <<<"$output")" false
 }
 
-@test "rank: a fix or cleanup row of an AI system outranks the rest of its bucket; a feature there, or a fix elsewhere, does not" {
+@test "rank: a cleanup kind (kinds.json) of an AI system outranks the rest of its bucket; a feature, docs or an adding refactor there, or a fix elsewhere, does not" {
   echo '{"personal": {"max_tier": 2, "projects": ["game", "app"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
   export DISPATCH_CLEANUP_PROJECTS="app"
   project game beta "$SANDBOX/repos/game"
@@ -581,24 +612,38 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   row app agent 'app feat' "- [ ] feat(app): a new page #urgent"
   row app agent 'app fix' "- [ ] fix(app): the sweep never retries #low"
   row app agent 'app stale' "- [ ] chore(app): prune the stale cache #low"
+  row app agent 'app docs' "- [ ] docs(app): explain the sweep #urgent"
+  row app agent 'app split' "- [ ] refactor(app): split the loader #urgent"
+  row app agent 'app delete' "- [ ] refactor(app): delete the old loader #low"
   run cmd_suggest --json
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale game fix app feat'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale app delete game fix app feat app docs app split'
   assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, bug, beta'
   assert_equal "$(jq -r 'select(.key == "game fix") | .cleanup' <<<"$output")" 1
   # Empty scope turns it off: back to row priority.
   DISPATCH_CLEANUP_PROJECTS="" run cmd_suggest --json
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app fix app stale'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app docs app split app fix app stale app delete'
 }
 
-@test "rank: a #requested row goes ahead of a cleanup row and a more urgent one in its due bucket; a due row stays ahead of it" {
+@test "row_priority: a cleanup row of an AI system promotes as high whatever its #low; a feature there stays low" {
+  export DISPATCH_CLEANUP_PROJECTS="app"
+  assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low' app)" high
+  assert_equal "$(row_priority '- [ ] feat(app): a new page #low' app)" low
+  assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low' game)" low
+  assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low')" low
+}
+
+@test "rank: cleanup goes first, then due and #requested rows; a lookalike tag is not #requested" {
   c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
     "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
-  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#high'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'; c lookalike 1 1 '#requested-ish')
+  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#low'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'
+    c lookalike 1 1 '#requested-ish')
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'due asked cleanup urgent lookalike'
+  assert_output 'cleanup due asked urgent lookalike'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
   assert_output 'requested, #low, beta'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "cleanup") | .why' <<<"$cands"
+  assert_output --regexp '^cleanup, '
 }
 
 @test "suggest: says so when no project has an open agent row" {
@@ -1453,9 +1498,9 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
   assert_equal "$(outcome)" WORKED
 }
 
-@test "run at or over DISPATCH_LOW_WATER does not read the board, and 0 reads it only for an empty queue" {
+@test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, does not read the board, and 0 reads it only for an empty queue" {
   game_ready
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0
   agent-queue add --project game --slug one "one"
   agent-queue add --project game --slug two "two"
   agent-queue add --project game --slug three "three"
@@ -1467,6 +1512,46 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
   export DISPATCH_LOW_WATER=0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   [ -z "$(qitem queued gm-1)" ] || fail "low water 0 read the board with items runnable"
+}
+
+@test "run over DISPATCH_LOW_WATER still tops cleanup rows up to DISPATCH_CLEANUP_FLOOR, as high, and nothing else" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  project game beta "$SANDBOX/repos/game"
+  row game human 'new map' "- [ ] feat(game): a new map #high $T"
+  row game human 'crash' "- [ ] fix(game): crash on load #low $T"
+  verdict game human 'new map' dispatch S 1 maps
+  verdict game human 'crash' dispatch S 1 crash
+  agent-queue add --project game --slug one "one"
+  agent-queue add --project game --slug two "two"
+  agent-queue add --project game --slug three "three"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'runnable cleanup 0 is under the floor 2, topping cleanup up from the board'
+  f=$(qitem queued gm-1)
+  [ -n "$f" ] || fail "the floor did not promote the cleanup row"
+  assert_equal "$(qfield "$f" title) | $(qfield "$f" priority) | $(qfield "$f" tags)" 'fix(game): crash on load | high | cleanup tier1'
+  [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
+}
+
+@test "the cleanup floor's fill reads and judges only cleanup rows of the cleanup projects; a plain fill judges them all" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PROFILES=bnb
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game human 'new map' "- [ ] feat(game): a new map $T"
+  row game human 'crash' "- [ ] fix(game): crash on load $T"
+  row app human 'app crash' "- [ ] fix(app): crash on open $T"
+  stub judge-stub 'printf "%s\n" "$@" > "$NOTES_FIXTURE/judge.prompt"; echo "{\"verdicts\":[]}"'
+  DRY=0 JUDGE_RC='' fill_day 2 cleanup || true
+  run cat "$NOTES_FIXTURE/judge.prompt"
+  assert_output --partial '"key":"crash"'
+  refute_output --partial '"key":"new map"'
+  refute_output --partial '"key":"app crash"'
+  # negative control: without the floor, the same fill judges every row
+  rm -f "$NOTES_FIXTURE/judge.prompt"
+  DRY=0 JUDGE_RC='' fill_day 2 || true
+  run cat "$NOTES_FIXTURE/judge.prompt"
+  assert_output --partial '"key":"new map"'
+  assert_output --partial '"key":"app crash"'
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
@@ -2333,20 +2418,79 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_not_called 'judge called'
 }
 
-@test "night: a tier-3 row never becomes a merging item, even with a dispatch verdict" {
+@test "night: a tier-3 row that is not cleanup never becomes a merging item, even with a dispatch verdict" {
   night_ready
   echo '{"board": {"max_tier": 9, "projects": ["agent-runtime"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
-  row agent-runtime agent 'drop the dead timer' '- [ ] drop the dead timer #tier/3'
-  verdict agent-runtime agent 'drop the dead timer' dispatch S 3 timer
-  night_verdict 'drop the dead timer' timer
+  row agent-runtime agent 'add the timer panel' '- [ ] feat(timer): add a timer panel #tier/3'
+  verdict agent-runtime agent 'add the timer panel' dispatch S 3 timer
+  night_verdict 'add the timer panel' timer
 
   run cmd_candidates
   assert_output ''
   run picks "$(all_open)" 5
   assert_output ''
   fill
-  assert_equal "$(night_keys)" 'drop the dead timer'
+  assert_equal "$(night_keys)" 'add the timer panel'
   assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 1
+}
+
+@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and night rows are not" {
+  night_ready
+  export AGENT_QUEUE_NIGHT=01:00-06:00 AGENT_QUEUE_NOW=12:00
+  row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3 #low'
+  row agent-runtime agent 'prune the hooks' '- [ ] refactor(hooks): prune the dead hooks #tier/3'
+  row agent-runtime agent 'add a panel' '- [ ] feat(panel): add a timer panel #tier/3'
+  # A chore that bumps a dependency is shared infrastructure (DISPATCH_CLEANUP_NOT), not cleanup.
+  row agent-runtime agent 'bump jq' '- [ ] chore(deps): bump jq to 1.8 #tier/3'
+  night_verdict 'drop the dead timer' timer; night_verdict 'prune the hooks' hooks true L; night_verdict 'add a panel' panel; night_verdict 'bump jq' jq
+
+  fill --dry-run --json
+  assert_equal "$(jq -r 'select(.state == "ready") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
+  fill
+  assert_success
+  f=$(agent-queue list --json --state queued | jq -r 'select(.title | test("drop the dead timer")) | .slug')
+  [ -n "$f" ] || fail "the cleanup row was not queued"
+  run agent-queue show "$f" --json
+  assert_equal "$(jq -r '"\(.tags) | \(.priority) | \(.hold // "")"' <<<"$output")" 'cleanup tier3 | high | '
+  run item_brief "$output"
+  refute_output --partial -- '--pr-only'
+  assert_output --partial 'agent-land refuses a tier-3 PR without that line'
+  assert_output --partial 'Merge with agent-land'
+  # The L cleanup row is neither merging nor night: plan_skips sends it to inbox-plan.
+  [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
+  assert_equal "$(night_keys)" 'add a panel,bump jq'
+}
+
+@test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
+  night_ready
+  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
+  row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
+  night_verdict 'drop the dead timer' timer
+  run t3_cleanup_picks "$(night_rows '')"
+  assert_success
+  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
+}
+
+@test "item_tier: an untiered item on a harness project is tier 3, whoever queued it; a tier tag, the text, or another project says otherwise" {
+  t() { jq -cn --arg p "$1" --arg tags "$2" --arg title "$3" '{slug: "s", mode: "oneshot", project: $p, tags: $tags, title: $title, task: $title}'; }
+  assert_equal "$(item_tier "$(t agent-runtime '' 'chore(hooks): prune them')")" 3
+  assert_equal "$(item_tier "$(t notes-cockpit '' 'fix: x')")" 3
+  assert_equal "$(item_tier "$(t agent-runtime 'cleanup tier2' 'fix: x')")" 2
+  assert_equal "$(item_tier "$(t agent-runtime '' 'fix: x #tier/1')")" 1
+  assert_equal "$(item_tier "$(t game '' 'fix: x')")" 1
+  assert_equal "$(item_tier "$(t game 'night' 'fix: x')")" 3
+  # A hand-added harness item is told the gate at start, and agent-land reads the same answer.
+  run item_brief "$(t agent-runtime '' 'chore(hooks): prune them')"
+  assert_output --partial 'This is tier 3 (harness or tooling)'
+  run item_brief "$(t game '' 'fix: x')"
+  refute_output --partial 'This is tier 3'
+  agent-queue add --project agent-runtime --slug hand "chore(hooks): prune them" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" item-tier hand
+  assert_success
+  assert_output 3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" item-tier nosuch
+  assert_failure
 }
 
 @test "night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out" {
@@ -2370,7 +2514,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(night_keys)" 'requested row,untagged'
 }
 
-@test "night: a #requested row takes a slot ahead of a subtract-or-fix row" {
+@test "night: a #requested row takes a slot ahead of an older #high row" {
   night_ready
   row agent-runtime agent 'retire the hook' '- [ ] retire the dead hook #high'
   row agent-runtime agent 'route the reds' '- [ ] route the reds to owners #requested #low'
@@ -2379,7 +2523,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'route the reds,retire the hook'
 }
 
-@test "night: at most 3 active, one an area: subtract or fix first, then observer rows, then oldest #high" {
+@test "night: at most 3 active, one an area: observer rows first, then #high, newest first" {
   night_ready
   row agent-runtime agent 'add a panel' '- [ ] add a panel for y #high'
   row agent-runtime agent 'shorter briefs' '- [ ] shorter briefs for night items #kpi/board_open #high'
@@ -2391,13 +2535,13 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   night_verdict 'retire the timer' timers; night_verdict 'retire the hook' timers; night_verdict 'add w'
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'retire the hook,shorter briefs,add a column'
+  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | paste -sd,)" 'shorter briefs,add a column,add a panel'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
-  [ "$(state_of 'retire the hook')" = '- [ ]' ] || fail "fill --dry-run started a row"
+  [ "$(state_of 'shorter briefs')" = '- [ ]' ] || fail "fill --dry-run started a row"
   fill
   assert_success
-  assert_equal "$(night_keys)" 'add a column,retire the hook,shorter briefs'
-  [ "$(state_of 'add a panel')" = '- [ ]' ] || fail "a fourth row was started"
+  assert_equal "$(night_keys)" 'add a column,add a panel,shorter briefs'
+  [ "$(state_of 'retire the hook')" = '- [ ]' ] || fail "a fourth row was started"
   fill
   assert_equal "$(agent-queue list --json --state queued | grep -c .)" 3
 }
@@ -2543,6 +2687,18 @@ J
 {"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}'
   assert_success
   # Rank alone would send p1, p2, p3 and never a1.
+  assert_equal "$(grep -o '"key":"[a-z0-9]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd, -)" 'p1,a1,p2'
+}
+
+@test "judge: a cleanup row goes first within a round, never ahead of it; a project with no cleanup row still gets its slot" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
+  DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1,"cleanup":0}
+{"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1,"cleanup":0}
+{"project":"p","stage":"prod","lane":"human","key":"p3","text":"- [ ] p3","prio":1,"cleanup":0}
+{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}'
+  assert_success
+  # Cleanup ahead of the rounds sent p1, p2, p3 and never a1.
   assert_equal "$(grep -o '"key":"[a-z0-9]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd, -)" 'p1,a1,p2'
 }
 
@@ -3750,6 +3906,19 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_output --partial 'queue item ci-first may not spill to Lazer: tier 3 is past the unattended ceiling'
   [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item spilled"
   [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not spill"
+}
+
+@test "spill: an untiered item on a harness project is tier 3 and waits; a red one there still spills" {
+  spill_ready
+  export DISPATCH_CLEANUP_PROJECTS=game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item fix-menu may not spill to Lazer: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued fix-menu)" ] || fail "an untiered harness item spilled"
+  agent-queue add --project game --slug red-sweep --priority urgent --tags 'red cause:ab12' "fix the dead sweep" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item red-sweep on Lazer'
+  [ -n "$(qitem running red-sweep)" ] || fail "a red on a harness project did not spill"
 }
 
 @test "spill holds when the pool is at its line, the key is spent, or the gateway cannot answer" {

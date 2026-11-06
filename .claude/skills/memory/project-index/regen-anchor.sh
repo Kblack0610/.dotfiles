@@ -96,7 +96,7 @@ REPO=""
 if declare -F project_repo_path >/dev/null 2>&1; then
   REPO="$(project_repo_path "$PROJECT")"
 elif command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
-  REPO=$(jq -r --arg n "$PROJECT" '.paths | to_entries[] | select(.value==$n) | .key' "$MAP_FILE" 2>/dev/null | head -1)
+  REPO=$(jq -r --arg n "$PROJECT" 'limit(1; .paths | to_entries[] | select(.value==$n) | .key)' "$MAP_FILE" 2>/dev/null)
 fi
 # tracker line
 TRACKER=""
@@ -130,7 +130,7 @@ for d in docs/decisions docs/architecture/decisions; do
   if [ -n "$REPO" ] && [ -d "$REPO/$d" ]; then ADR_DIR="$REPO/$d"; break; fi
 done
 if [ -n "$ADR_DIR" ]; then
-  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | head -3 \
+  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | sed -n '1,3p' \
     | paste -sd, - | sed 's/,/, /g' || true)"
 fi
 
@@ -212,7 +212,7 @@ auto_block() {
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
     local plans
-    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | grep -vxE 'active|archive|_archive|tasks' | head -5 || true)
+    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | awk '!/^(active|archive|_archive|tasks)$/ && ++n <= 5' || true)
     if [ -n "$plans" ]; then
       echo "$plans" | sed 's/^/- `/; s/$/`/'
     else
