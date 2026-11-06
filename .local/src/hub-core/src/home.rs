@@ -211,6 +211,8 @@ pub struct Home {
     pub proposals: Vec<Proposal>,
     pub proposals_head: String,
     pub proposals_failed: bool,
+    /// No read has answered yet, so nothing can be said about what is open.
+    pub proposals_unread: bool,
     pub running: Vec<Running>,
     pub numbers: Vec<Number>,
     pub health: Vec<Chip>,
