@@ -469,7 +469,7 @@ sweep() {
   [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
   [ "$rc" != 0 ] && verdict=FAILED
   proof_report "$NAME" "$verdict" "$SUMMARY"
-  agentctl report --name "$NAME" "detail=$SUMMARY" >/dev/null 2>&1 || true
+  agentctl report --name "$NAME" "detail=$SUMMARY" next= >/dev/null 2>&1 || true
   return "$rc"
 }
 
@@ -488,7 +488,8 @@ watch_sweep() {
   if [ "$WAIT" = 0 ]; then WAIT=$INBOX_RETRY_S; else WAIT=$((WAIT * 2)); fi
   [ "$WAIT" -le "$INBOX_RETRY_MAX_S" ] || WAIT=$INBOX_RETRY_MAX_S
   say "the sweep failed; it runs again in ${WAIT}s unless a save comes first"
-  agentctl report --name "$NAME" "detail=$SUMMARY; retry $(date -d "+$WAIT seconds" +%H:%M)" >/dev/null 2>&1 || true
+  local at; at=$(($(date +%s) + WAIT))
+  agentctl report --name "$NAME" "detail=$SUMMARY; retry $(date -d "@$at" +%H:%M)" "next=$at" >/dev/null 2>&1 || true
 }
 
 # --watch: a sweep now, then one after each burst of saves, and again on the backoff after a failure. Writers (notes, nvim) replace a file
