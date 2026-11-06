@@ -58,3 +58,36 @@ setup() {
   refute_output --partial 'preview'
   assert_output --partial '--wrap'
 }
+
+# The recall stub, logging each run: a refresh is a claude-recall run.
+logging_recall() {
+  printf '#!/usr/bin/env bash\necho "recall $*" >> "$HOME/recall.log"\n' > "$CLAUDE_RECALL"
+}
+
+@test "a keystroke filters the cached index and never runs claude-recall" {
+  logging_recall
+  run "$SUBJECT" _filter --cached overflow
+  assert_success
+  assert_output --partial "$TITLE"
+  refute [ -e "$HOME/recall.log" ]
+  # Negative control: without --cached the same filter refreshes first.
+  run "$SUBJECT" _filter overflow
+  assert [ -e "$HOME/recall.log" ]
+}
+
+@test "the window opens on the cached index and refreshes it detached, not under the cursor" {
+  logging_recall
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/usr/bin/env bash\necho "$*" > "$HOME/fzf.args"\ncat > "$HOME/fzf.rows"\n' > "$SANDBOX/bin/fzf"
+  printf '#!/usr/bin/env bash\necho "setsid $*" >> "$HOME/setsid.log"\n' > "$SANDBOX/bin/setsid"
+  chmod +x "$SANDBOX/bin/fzf" "$SANDBOX/bin/setsid"
+  run script -qec "$(printf '%q ' "$SUBJECT" search)" /dev/null
+  run cat "$HOME/fzf.rows"
+  assert_output --partial "$TITLE"
+  refute [ -e "$HOME/recall.log" ]
+  run cat "$HOME/setsid.log"
+  assert_output --regexp '^setsid -f .*/sessions index$'
+  run cat "$HOME/fzf.args"
+  assert_output --partial '_filter --cached {q}'
+  refute_output --partial 'start:'
+}

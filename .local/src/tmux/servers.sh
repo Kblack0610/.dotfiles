@@ -649,34 +649,40 @@ _fleet_load() {
     "$file" 2>/dev/null)
 }
 
-# _idle_text <minutes> -> 45m, 8h, 2d.
+# The row helpers set a variable (_IDLE, _COL, _MID, _ROW) instead of printing it: a $(...)
+# is a fork, _all_rows formats every window, and on a loaded machine a fork costs
+# milliseconds, so Prefix+H took seconds to open with thirty agent sessions on lab.
+
+# _idle_text <minutes> -> _IDLE: 45m, 8h, 2d.
 _idle_text() {
-  if [ "$1" -lt 60 ]; then printf '%sm' "$1"
-  elif [ "$1" -lt 1440 ]; then printf '%sh' "$(( $1 / 60 ))"
-  else printf '%sd' "$(( $1 / 1440 ))"
+  if [ "$1" -lt 60 ]; then _IDLE="${1}m"
+  elif [ "$1" -lt 1440 ]; then _IDLE="$(( $1 / 60 ))h"
+  else _IDLE="$(( $1 / 1440 ))d"
   fi
 }
 
-# _fleet_col <target> -> "NEEDS    8h", or nothing for a window with no agent.
+# _fleet_col <target> -> _COL: "NEEDS    8h", or empty for a window with no agent.
 _fleet_col() {
   local v="${FLEET["$1"]:-}"
+  _COL=""
   [ -n "$v" ] || return 0
-  printf '%-7s %3s' "${v%%$'\t'*}" "$(_idle_text "${v##*$'\t'}")"
+  _idle_text "${v##*$'\t'}"
+  printf -v _COL '%-7s %3s' "${v%%$'\t'*}" "$_IDLE"
 }
 
-# _mid <text> <width> -- cut from the middle: the tail of an agent session name is the
+# _mid <text> <width> -> _MID, cut from the middle: the tail of an agent session name is the
 # -agent-N that tells it from its siblings.
 _mid() {
-  if [ "${#1}" -le "$2" ]; then printf '%s' "$1"
-  else printf '%s~%s' "${1:0:$2-11}" "${1: -10}"
+  if [ "${#1}" -le "$2" ]; then _MID="$1"
+  else _MID="${1:0:$2-11}~${1: -10}"
   fi
 }
 
-# _row <server> <session> <window> <display> -- one list row, cut to ROW_WIDTH.
+# _row <server> <session> <window> <display> -> _ROW, one list row cut to ROW_WIDTH, no newline.
 _row() {
   local d="$4"
   [ "${#d}" -le "$ROW_WIDTH" ] || d="${d:0:ROW_WIDTH-1}~"
-  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$d"
+  printf -v _ROW '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$d"
 }
 
 # _all_rows -- every world, session and window, in one list, what needs a look first.
@@ -702,82 +708,102 @@ _row() {
 # only field 4 (--with-nth=4) and the first three are the machine target. A heading has
 # all three empty, and Enter on one does nothing. Kept separate from the fzf call so it
 # can be tested without a terminal.
+#
+# Three tmux calls per world, whatever it holds: list-sessions, list-panes -a and
+# list-windows -a, read into per-session maps before the session loop. Nothing in the loops
+# forks (tests/integ/tmx_rows_cost.bats pins it).
 _all_rows() {
-  local s n sess wins att spath created activity idx wname wact pcmd ptitle
-  local disp mark what col title need body="" rows wrows word known now fleet_ok=0
-  local -a stranded=()
+  local s n sess wins att spath created activity idx wname wact pcmd ptitle line m1
+  local disp mark what col title need body="" rows word known now fleet_ok=0 name f
+  local -a stranded=() sessions=()
+  local -A declared=() what_of=() wrows_of=() col_of=() title_of=() need_of=()
 
-  now="$(date +%s)"
+  printf -v now '%(%s)T' -1
   known=" $(known_servers | tr '\n' ' ') "
-  _fleet_load && fleet_ok=1
+  if _fleet_load; then
+    fleet_ok=1
+    # A session some manifest declares is never stranded, hidden worlds included: the
+    # same list `tmux-close protected` reads, loaded once instead of asked per session.
+    while read -r name f; do declared["$name"]=1; done <<< "$(world_declared)"
+  fi
 
   while IFS= read -r s; do
     [ -n "$s" ] || continue
 
-    n="$(session_count "$s")"
+    mapfile -t sessions < <(tmux -L "$s" list-sessions -F \
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+    n="${#sessions[@]}"
     if [ "$n" -eq 0 ]; then
-      body+="$(_row "$s" '' '' "$s  not running")"$'\n'
+      _row "$s" '' '' "$s  not running"; body+="$_ROW"$'\n'
       continue
     fi
 
-    rows=""; need=0
-    while IFS=$'\t' read -r sess wins att spath created activity; do
-      [ -n "$sess" ] || continue
+    # The simple explanation of a session: WHERE it is and WHAT is running in it. Both are
+    # derived, so an ad-hoc session gets described as well as a declared one and no manifest
+    # has to be kept in sync with this. WHAT is its panes' commands, most common first.
+    what_of=()
+    while IFS=$'\t' read -r sess what; do
+      [ -n "$sess" ] && what_of["$sess"]="$what"
+    done < <(tmux -L "$s" list-panes -a -F "#{session_name}"$'\t'"#{pane_current_command}" 2>/dev/null \
+      | awk -F'\t' -v OFS='\t' '{ n[$1 FS $2]++ } END { for (k in n) { split(k, f, FS); print f[1], n[k], f[2] } }' \
+      | sort -t$'\t' -k1,1 -k2,2nr -k3,3r \
+      | awk -F'\t' '
+          $1 != s { if (NR > 1) { sub(/, $/, "", w); print s "\t" w }; s = $1; w = "" }
+          { c = $3; sub(/[ \t].*/, "", c); w = w c ($2 > 1 ? " x" $2 : "") ", " }
+          END { if (NR) { sub(/, $/, "", w); print s "\t" w } }')
 
-      # The simple explanation of a session: WHERE it is and WHAT is running in it.
-      # Both are derived, so an ad-hoc session gets described as well as a declared
-      # one and no manifest has to be kept in sync with this.
+    # One row per window. pane_current_command and pane_title resolve against the window's
+    # ACTIVE pane, which is what makes these rows worth reading: the command says what is
+    # running, the title is where a program puts its context (claude puts the task there,
+    # nvim the filename). A session's last window also gives its one-row agent state.
+    wrows_of=(); col_of=(); title_of=(); need_of=()
+    while IFS=$'\t' read -r sess idx wname wact pcmd ptitle; do
+      [ -n "$idx" ] || continue
+      mark=' '; [ "$wact" = "1" ] && mark='*'
+      # Window names here are usually git branches, which run long enough to shove every
+      # later column off screen. Truncate rather than let the row wrap.
+      [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
+      ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
+      ptitle="${ptitle#[!a-zA-Z0-9~/]* }" # claude leads with a status glyph
+      _fleet_col "$s/$sess:$idx"
+      col_of["$sess"]="$_COL"; title_of["$sess"]="$ptitle"
+      case "$_COL" in NEEDS*) need_of["$sess"]=$(( ${need_of["$sess"]:-0} + 1 )) ;; esac
+      printf -v disp '      %2s%s %-16s %-11s %s' "$idx" "$mark" "$wname" "${_COL:-$pcmd}" "$ptitle"
+      _row "$s" "$sess" "$idx" "$disp"; wrows_of["$sess"]+="$_ROW"$'\n'
+    # An empty window name would collapse under read, shifting every field after it.
+    done < <(tmux -L "$s" list-windows -a -F \
+      "#{session_name}"$'\t'"#{window_index}"$'\t'"#{?#{==:#{window_name},},-,#{window_name}}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
+      2>/dev/null)
+
+    rows=""; need=0
+    for line in "${sessions[@]}"; do
+      IFS=$'\t' read -r sess wins att spath created activity <<< "$line"
+      [ -n "$sess" ] || continue
       spath="${spath/#$HOME/\~}"
-      what="$(tmux -L "$s" list-panes -s -t "=$sess" -F '#{pane_current_command}' 2>/dev/null \
-        | sort | uniq -c | sort -rn \
-        | awk '{ printf "%s%s, ", $2, ($1 > 1 ? " x" $1 : "") }' | sed 's/, $//')"
+      what="${what_of["$sess"]:-}"
 
       # A session newer than the document cannot be in it yet, so it is not stranded.
       if [ "$fleet_ok" = 1 ] && [ -z "${FLEET_SESSIONS["$s/$sess"]:-}" ] \
-        && [ "$created" -le "$FLEET_EPOCH" ] \
-        && ! "${SELF%/*}/close.sh" protected "$sess" >/dev/null 2>&1; then
-        stranded+=("$(_row "$s" "$sess" '' "$(printf '  %s  %-*s %s  idle %s  stranded' "$s" \
-          "$SESSION_NAME_WIDTH" "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$what" \
-          "$(_idle_text "$(( (now - activity) / 60 ))")")")")
+        && [ "$created" -le "$FLEET_EPOCH" ] && [ -z "${declared["$sess"]:-}" ]; then
+        _mid "$sess" "$SESSION_NAME_WIDTH"; _idle_text "$(( (now - activity) / 60 ))"
+        printf -v disp '  %s  %-*s %s  idle %s  stranded' "$s" "$SESSION_NAME_WIDTH" "$_MID" "$what" "$_IDLE"
+        _row "$s" "$sess" '' "$disp"; stranded+=("$_ROW")
         continue
       fi
 
-      # One row per window. pane_current_command and pane_title resolve against the
-      # window's ACTIVE pane, which is what makes these rows worth reading: the
-      # command says what is running, the title is where a program puts its context
-      # (claude puts the task there, nvim the filename).
-      wrows=""; col=""; title=""
-      while IFS=$'\t' read -r idx wname wact pcmd ptitle; do
-        [ -n "$idx" ] || continue
-        mark=' '; [ "$wact" = "1" ] && mark='*'
-        # Window names here are usually git branches, which run long enough to shove
-        # every later column off screen. Truncate rather than let the row wrap.
-        [ ${#wname} -gt 16 ] && wname="${wname:0:15}~"
-        ptitle="${ptitle% - Nvim}"          # nvim suffixes every title; it says nothing
-        ptitle="${ptitle#[!a-zA-Z0-9~/]* }" # claude leads with a status glyph
-        col="$(_fleet_col "$s/$sess:$idx")"
-        title="$ptitle"
-        case "$col" in NEEDS*) need=$((need + 1)) ;; esac
-        wrows+="$(_row "$s" "$sess" "$idx" "$(printf '      %2s%s %-16s %-11s %s' \
-          "$idx" "$mark" "$wname" "${col:-$pcmd}" "$ptitle")")"$'\n'
-      # An empty window name would collapse under read, shifting every field after it.
-      done < <(tmux -L "$s" list-windows -t "=$sess" -F \
-        "#{window_index}"$'\t'"#{?#{==:#{window_name},},-,#{window_name}}"$'\t'"#{window_active}"$'\t'"#{pane_current_command}"$'\t'"#{pane_title}" \
-        2>/dev/null)
-
+      col="${col_of["$sess"]:-}"; title="${title_of["$sess"]:-}"
+      need=$(( need + ${need_of["$sess"]:-0} ))
+      _mid "$sess" "$SESSION_NAME_WIDTH"
       if [ "$wins" = "1" ] && [ -n "$col" ]; then
-        disp="$(printf '  %-*s %s  %s' "$SESSION_NAME_WIDTH" \
-          "$(_mid "$sess" "$SESSION_NAME_WIDTH")" "$col" "$title")"
+        printf -v disp '  %-*s %s  %s' "$SESSION_NAME_WIDTH" "$_MID" "$col" "$title"
       else
-        disp="$(printf '  %-13s %-22s %2s win  %s' "$(_mid "$sess" "$SESSION_NAME_WIDTH")" \
-          "$(_mid "$spath" "$SESSION_NAME_WIDTH")" "$wins" "$what")"
+        m1="$_MID"; _mid "$spath" "$SESSION_NAME_WIDTH"
+        printf -v disp '  %-13s %-22s %2s win  %s' "$m1" "$_MID" "$wins" "$what"
       fi
       [ "$att" = "1" ] && disp="$disp  (attached)"
-      rows+="$(_row "$s" "$sess" '' "$disp")"$'\n'
-      [ "$wins" = "1" ] || rows+="$wrows"
-
-    done < <(tmux -L "$s" list-sessions -F \
-      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+      _row "$s" "$sess" '' "$disp"; rows+="$_ROW"$'\n'
+      [ "$wins" = "1" ] || rows+="${wrows_of["$sess"]:-}"
+    done
 
     # The server itself, so one list replaces both this and the old server picker.
     word=sessions; [ "$n" = "1" ] && word=session
@@ -786,14 +812,16 @@ _all_rows() {
     case "$known" in
       *" $s "*) ;;
       *) disp="$disp  (no manifest)"
-         [ "$fleet_ok" = 1 ] && stranded+=("$(_row "$s" '' '' "  $s  (no manifest)  stranded")") ;;
+         [ "$fleet_ok" = 1 ] && { _row "$s" '' '' "  $s  (no manifest)  stranded"; stranded+=("$_ROW"); } ;;
     esac
-    body+="$(_row "$s" '' '' "$disp")"$'\n'"$rows"
+    _row "$s" '' '' "$disp"; body+="$_ROW"$'\n'"$rows"
   done < <(_all_servers)
 
-  [ "$fleet_ok" = 1 ] || _row '' '' '' 'fleet state is old: no agent state, no stranded marks'
+  if [ "$fleet_ok" != 1 ]; then
+    _row '' '' '' 'fleet state is old: no agent state, no stranded marks'; printf '%s\n' "$_ROW"
+  fi
   if [ "${#stranded[@]}" -gt 0 ]; then
-    _row '' '' '' "STRANDED  ${#stranded[@]}  no agent, no manifest"
+    _row '' '' '' "STRANDED  ${#stranded[@]}  no agent, no manifest"; printf '%s\n' "$_ROW"
     printf '%s\n' "${stranded[@]}"
   fi
   printf '%s' "$body"
