@@ -53,6 +53,8 @@
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
 #                                day, wait and time to PR, from `agent-queue stats`
+#   fleet-bench models [--json] landed rate, redo rate, reverts and cost per PR by model over
+#                                BENCH_QUEUE_DAYS: queue model= joined to outcomes and model-lane runs
 #   fleet-bench requests [--json] [--since T]
 #                                the human's urgent requests, one row each (a plan chain is one row),
 #                                then those finished since T: the head of every shepherd summary
@@ -61,7 +63,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_ASKS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
@@ -113,6 +115,7 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
+: "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
@@ -732,6 +735,8 @@ cmd_scorecard() {
     time_section "$t"
     echo
     queue_section "$t"
+    echo
+    models_section "$t"
     echo
     echo "## Sessions"
     echo
@@ -1439,6 +1444,60 @@ queue_section() {
       .[$k] | to_entries | sort_by(-.value.done, .key)[] | .key as $n | .value
       | "| \($n) | \(.done) | \(.ok) | \(.failed) | \(.cancelled) | \(.prs) | \(m(.wait_minutes_median)) | \(m(.to_pr_minutes_median)) |"' <<<"$s"
   done
+}
+
+# models_json <now>: per model, the queue items finished in the last BENCH_QUEUE_DAYS days (the
+# model= fleet-dispatch stamped at start) joined to their sessions' outcomes (cost_usd, reverts),
+# and model-lane's runs in the same days by the model they ran on (redo). Landed is done ok with a
+# PR; a cancel counts against no model. This is the evidence a lane graduates or demotes on.
+models_json() {
+  local since; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
+  jq -cn --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
+     --slurpfile items <($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+     --slurpfile outcomes <(outcomes_latest) \
+     --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) '
+    def ratio($a; $b): if $b > 0 then ($a / $b * 100 | round / 100) else null end;
+    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+    ($outcomes[0] // {}) as $o
+    | ($items | map(select(.status != "cancelled") | . + {m: (.model // "unrecorded")})) as $done
+    | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since))) as $rs
+    | ([$done[].m] + [$rs[].ran] | unique) as $models
+    | {days: $days, models: ($models | map(. as $m
+        | ($done | map(select(.m == $m))) as $it
+        | ($it | map(select(.status == "ok" and (.pr // "") != "")) | length) as $landed
+        | ($it | map(sids[] | $o[.] // empty)) as $sess
+        | ($rs | map(select(.ran == $m))) as $r
+        | ($r | map(select(.outcome)) | length) as $rated
+        | ($r | map(select(.outcome == "redo")) | length) as $redo
+        | ($sess | map(.cost_usd // 0) | add // 0) as $cost
+        | {key: $m, value: {done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
+            failed: ($it | map(select(.status == "failed")) | length),
+            runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
+            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
+            cost_usd: ($cost * 100 | round / 100), cost_per_pr: (if $landed > 0 then ($cost / $landed * 100 | round / 100) else null end)}})
+        | from_entries)}'
+}
+
+# models_section <now>: the models table, in the scorecard
+models_section() {
+  local j
+  echo "## Models"
+  echo
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model they started on, joined to their sessions' outcomes; redo is model-lane's runs on that model that were put back in the queue (\`model-lane report\`). Landed is done ok with a PR."
+  echo
+  j=$(models_json "$1") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
+  echo "| Model | Done | Landed | Landed rate | Failed | Runs rated | Redo | Redo rate | Reverts | Cost | Cost per PR |"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|"
+  jq -r 'def d: if . == null then "-" else tostring end;
+    .models | to_entries | sort_by(-.value.done)[] | .key as $m | .value
+    | "| \($m) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | \(.rated) | \(.redo) | \(.redo_rate | d) | \(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) |"' <<<"$j"
+}
+
+cmd_models() {
+  local j
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench models [--json]"; return 2 ;; esac
+  j=$(models_json "$(now)") || { say "the queue or the outcomes are unreadable"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else models_section "$(now)" | sed '1,4d'; fi
 }
 
 wakes_lines() {
@@ -2197,8 +2256,9 @@ main() {
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
-    -h | --help) sed -n '2,59p' "$0" ;;
-    *) sed -n '2,57p' "$0" >&2; return 2 ;;
+    models) shift; cmd_models "$@" ;;
+    -h | --help) sed -n '2,61p' "$0" ;;
+    *) sed -n '2,59p' "$0" >&2; return 2 ;;
   esac
 }
 

@@ -87,6 +87,9 @@ unset _k _v
 # ranks ahead of the rest of its project-priority and due-date bucket, day and night (the human's ask
 # of 2026-11-05 that cleanup of the AI systems be the most urgent work). Empty turns it off.
 : "${DISPATCH_CLEANUP_PROJECTS:=agent-runtime notes-cockpit}"
+# The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
+# and the human approved Sonnet for that (2026-11-05), not Haiku.
+: "${DISPATCH_LANE_FLOOR:=sonnet}"
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
@@ -1196,12 +1199,25 @@ held_by() {
   [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")
 }
 
+# lane_log <slug> <task> <verdict json> <model ran> -- the started item's pick goes in model-lane's
+# log and its run id on the item as lane_run, so the item's close reports the outcome (agent-queue
+# move) and the lane can graduate or demote on evidence. No verdict (model-lane failed) logs nothing:
+# the item ran on opus, and a broken router never blocks a start.
+lane_log() {
+  local id
+  [ -n "$3" ] || return 0
+  id=$(model-lane log --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
+    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" 2>/dev/null) && [ -n "$id" ] ||
+    { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
+  agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
+}
+
 # start_item <item json> -- past the gates: start it, and publish what happened. rc 3 when no
 # account has room, which ends the pass: the next item would find none either. rc 4 when another
 # start (a hand start, say) took the item first: that is not a failed launch, and the pass goes on.
 start_item() {
-  local it="$1" slug acct err why model rc
-  slug=$(jq -r .slug <<<"$it")
+  local it="$1" slug acct err why model rc verdict task
+  slug=$(jq -r .slug <<<"$it"); task=$(jq -r .task <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
   # names the closest account and how far past its pace it is, as in gate.
@@ -1211,10 +1227,12 @@ start_item() {
     settle BLOCKED "queue item $slug waits: ${why#claude-acct: }"; return 3
   fi
   rm -f "$err"
-  model=$(model-lane classify "$(jq -r .task <<<"$it")" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
+  verdict=$(model-lane classify "$task" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null | jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null) || verdict=''
+  model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
   START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --model "${model:-opus}"
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
+    lane_log "$slug" "$task" "$verdict" "${model:-opus}"
     settle WORKED "started queue item $slug"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
