@@ -186,16 +186,6 @@ mod tests {
     }
 
     #[test]
-    fn the_workers_filters_are_hub_cores() {
-        // docs/dashboards.md rule 8: the chips and sorts are the TUI's, in its order.
-        assert_eq!(
-            js_list(FLEET_JS, "W_FILTERS"),
-            hub_core::fleet::WORKER_FILTERS
-        );
-        assert_eq!(js_list(FLEET_JS, "W_SORTS"), hub_core::fleet::WORKER_SORTS);
-    }
-
-    #[test]
     fn the_jobs_headers_are_hub_cores_columns() {
         // Rule 8: the web draws the columns hub_core::table sorts and filters, every one of them.
         use hub_core::table::Row;
@@ -208,6 +198,22 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
+    }
+
+    #[test]
+    fn the_fleet_headers_are_hub_cores_columns() {
+        // Rule 8: the Fleet table draws the columns hub_core::fleet::who sorts and filters.
+        use hub_core::table::Row;
+        let at = FLEET_JS
+            .find("const FLEET_COLS = {")
+            .expect("no FLEET_COLS");
+        let body = &FLEET_JS[at..at + FLEET_JS[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::fleet::who::Who::COLUMNS);
     }
 
     #[test]

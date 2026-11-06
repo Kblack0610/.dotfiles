@@ -267,9 +267,18 @@ const watchFeed = pushed("sessions", ["watch"], refreshWatch);
 const shepFeed = pushed("sessions", ["shepherd", "sessions"], () => refreshShepherd()); // shepherd.js loads after this file
 const logWatchFeed = pushed("log", ["watch"], refreshWatch);
 LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
+// #sessions/<target> opens that session, as a Fleet row does. The agents list may not be
+// loaded yet, so the open waits for it (refreshAgents returns once it has).
+async function openArg() {
+  const target = st.arg;
+  if (!st.agents.length) await refreshAgents();
+  const a = st.agents.find((x) => x.target === target);
+  if (a && st.arg === target && (!st.sel || st.sel.target !== target)) select(a);
+}
 TABS.sessions = {
   show() {
-    if (!st.sel) overview(false);
+    if (st.arg) openArg();
+    else if (!st.sel) overview(false);
     watchFeed.show(!wst.data); shepFeed.show(!shst.data);
   },
   onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); },
