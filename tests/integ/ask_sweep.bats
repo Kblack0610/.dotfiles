@@ -24,6 +24,10 @@ setup() {
   stub model-stub 'b="$(sed -n "1s/^## Messages (\(.*\))$/\1/p" <<<"$2")"; echo "$b" >> "$NOTES_FIXTURE/model.log"; printf "%s" "$2" > "$NOTES_FIXTURE/prompt.$b"
     cat "$NOTES_FIXTURE/model.out.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.out" 2>/dev/null; exit "$(cat "$NOTES_FIXTURE/model.rc.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.rc" 2>/dev/null || echo 0)"'
   touch -d '2 days ago' "$ASK_SWEEP_DIR/first-run"
+  # The board: add files a row, refused as an open twin (exit 3) when that text is open already;
+  # list prints the open rows.
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; rows="$NOTES_FIXTURE/rows.$2"
+    case "$4" in add) grep -qxF -- "$5" "$rows" 2>/dev/null && exit 3; echo "$5" >> "$rows" ;; list) cat "$rows" 2>/dev/null ;; esac; exit 0'
 }
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
@@ -60,16 +64,17 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called 'finish stale'
 }
 
-@test "a row refused as an open twin (exit 3) counts as filed; any other refusal does not" {
+@test "the board is the only memory: an open twin (exit 3) is refused on every run, and nothing is kept on the side" {
   plan twin '1 day ago 1 hour ago' "$OPEN"
-  plan broken '1 day ago 1 hour ago' "$OPEN"
-  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = add ] || exit 0; case "$*" in *twin*) exit 3;; *) exit 1;; esac'
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = add ] && exit 3; exit 0'
   run "$SWEEP" run
   assert_success
-  run grep -qxF twin "$ASK_SWEEP_DIR/plans-filed"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$SWEEP" run
   assert_success
-  run grep -qxF broken "$ASK_SWEEP_DIR/plans-filed"
-  assert_failure
+  assert_called 'ptask board --agent add chore(plan): finish twin'
+  run ls "$ASK_SWEEP_DIR"
+  assert_output 'first-run'
 }
 
 @test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
@@ -131,7 +136,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
 
 @test "the run's cap holds, and the overflow is reported as a count" {
   export ASK_SWEEP_MAX=2
-  plan a '1 day ago 1 hour ago' "$OPEN"; plan b '1 day ago 1 hour ago' "$OPEN"; plan c '1 day ago 1 hour ago' "$OPEN"
+  plan slug-a '1 day ago 1 hour ago' "$OPEN"; plan slug-b '1 day ago 1 hour ago' "$OPEN"; plan slug-c '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
   [ "$(grep -c ' add chore(plan): finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
@@ -251,5 +256,4 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   assert_output --partial 'would file [board] chore(plan): finish stale'
   assert_not_called ' add '
-  [ ! -f "$ASK_SWEEP_DIR/plans-filed" ]
 }
