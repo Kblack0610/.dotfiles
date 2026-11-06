@@ -109,13 +109,13 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   refute_blocks "$(gate s1)"
 }
 
-@test "a focus write during this turn satisfies the gate" {
+@test "a focus write during this turn does not satisfy the gate -- work is tracked in the queue" {
   dirty
   gate s1 >/dev/null                       # first run stamps last_run
   focus '- [ ] open thing (2d)' '- [ ] freshly added (0d)'
   sleep 1
   printf '[%s] [INFO] focus: added "freshly added"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
-  refute_blocks "$(gate s2)"
+  assert_blocks "$(gate s2)"
 }
 
 @test "a ptask write satisfies the gate -- project work need not touch the daily note" {
@@ -176,33 +176,33 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   assert_blocks "$(gate s2)"
 }
 
-@test "a focus write from before the last run does not count" {
+@test "a ptask write from before the last run does not count" {
   dirty
   gate s0 >/dev/null                       # establish a last_run mark
   sleep 1
-  printf '[%s] [INFO] focus: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
 
-@test "on a first run an old focus write does not fail the gate open" {
-  # No state file means no turn window. A bare epoch 0 would make every focus write ever
+@test "on a first run an old ptask write does not fail the gate open" {
+  # No state file means no turn window. A bare epoch 0 would make every ptask write ever
   # logged look like it just happened, silently skipping the gate once per project.
   dirty
-  printf '[%s] [INFO] focus: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
 
-@test "on a first run a focus write from seconds ago still counts" {
+@test "on a first run a ptask write from seconds ago still counts" {
   dirty
-  printf '[%s] [INFO] focus: added "just now"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
+  printf '[%s] [INFO] ptask: added "just now"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   refute_blocks "$(gate s1)"
 }
 
-@test "a notes-today write is not a focus write" {
+@test "a notes-today write is not a ptask write" {
   # Backticks are deliberately absent from this test name: bats evaluates the name string,
   # so a quoted `notes today` in it would actually run the command.
   #
-  # Only `focus:` lines count. `today:` refreshes Watches/Comms on its own schedule and
+  # Only `ptask:` lines count. `today:` refreshes Watches/Comms on its own schedule and
   # would otherwise satisfy the gate without anyone tracking anything.
   dirty
   sleep 1
@@ -316,10 +316,10 @@ gate_t() {
   assert_blocks "$(gate_t s1)"
 }
 
-@test "session: a focus write counts too" {
+@test "session: a focus write is not tracking -- work is tracked in the queue" {
   tcall s1 Write
   tcall s1 Bash 'notes focus start "my thing"'
-  refute_blocks "$(gate_t s1)"
+  assert_blocks "$(gate_t s1)"
 }
 
 @test "session: two concurrent sessions each get their one nudge" {

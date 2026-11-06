@@ -55,7 +55,7 @@ VERBOSE="${CLAUDE_STOP_VERBOSE:-0}"
 # and the linters all put their summary last. The rest stays one `cat "$LOG"` away.
 REPLAY_LINES="${CLAUDE_STOP_REPLAY_LINES:-40}"
 # Guard per check (seconds). A hung check would otherwise run until Claude Code kills the
-# whole hook, and the post phase (session register, eval gate) would never run.
+# whole hook, and the post phase (session register, wind-down) would never run.
 CHECK_TIMEOUT="${CLAUDE_STOP_CHECK_TIMEOUT:-300}"
 
 note() {
