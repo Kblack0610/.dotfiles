@@ -1024,6 +1024,39 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   assert_not_called 'wt new'
 }
 
+# 2026-11-05/06: every account over its pace held dispatch for a day, and each run-floor start
+# cleared the only alarm. The hold is what stopped; a floor start goes past it without ending it.
+@test "a hold stands across a run-floor start, and a start past an open gate ends it" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  two_items
+  export DISPATCH_PER_PASS=1 DISPATCH_RUN_FLOOR=0
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack), runs out Mon 01:08 at this rate" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
+  [ -s "$d/held_since" ] || fail "a BLOCKED pass left no held_since"
+  echo "$(( $(date +%s) - 13 * 3600 - 30 ))" > "$d/held_since"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output 'Dispatch stopped 13h00m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
+  room_on_floor
+  export DISPATCH_RUN_FLOOR=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item fix-game on the run floor'
+  assert_equal "$(outcome)" WORKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --partial 'Dispatch stopped 13h00m: no account has room'
+  # Negative control: an account with room again, and the next start ends the hold.
+  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item fix-app'
+  assert_equal "$(outcome)" WORKED
+  [ ! -e "$d/held_since" ] || fail "a start past an open gate left the hold standing"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_success
+  assert_output ''
+}
+
 @test "the run floor never lifts the load pace or a room refusal it cannot lift" {
   game_ready
   room_on_floor
@@ -2560,6 +2593,62 @@ queued_item() {
   run cmd_starved
   assert_success
   assert_output --partial 'dispatch is held'
+}
+
+# hold_for <minutes ago> <why>: the hold agent-proof.sh keeps for fleet-dispatch.
+hold_for() {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"; mkdir -p "$d"
+  echo "$(( $(date +%s) - $1 * 60 ))" > "$d/held_since"; printf '%s' "$2" > "$d/held_why"
+}
+
+@test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
+  queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  hold_for 30 'no account has room; main is the closest, 5 points over its weekly pace, queue item fresh waits'
+  run cmd_starved
+  assert_success
+  assert_output ''
+  hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item fresh waits'
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s started game-agent-3 on lab (run) for game: queue item other3\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_starved
+  assert_failure
+  assert_line --index 0 'Dispatch stopped 2h05m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
+  # A hold by load alone is fleet-thermal's alarm, as before.
+  stub claude-acct 'exit 0'
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load'
+  # Negative control: no hold, and the same run start clears it.
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  rm "$HOME/.local/state/agentctl/fleet-dispatch/held_since"
+  run cmd_starved
+  assert_success
+}
+
+@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line" {
+  hold_for 90 'queued 2 for the night; finding firing: dbs-7-boss (starved pool:other), house-sleep-dinner (starved pool:other), 5 more, every queue item waits'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 1h30m: finding firing: dbs-7-boss, house-sleep-dinner, 5 more. Clears when its finding stops firing.'
+  hold_for 3000 'no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and a great many more words that will not fit, runs out Fri 10:35 at this rate, queue item x waits'
+  run cmd_stopped
+  assert_failure
+  [ "${#output}" -le 160 ] || fail "${#output} characters: $output"
+  assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
+  run cmd_stopped --json
+  jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+}
+
+@test "stats: held_s is how long the hold has stood, 0 with none" {
+  queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_stats
+  assert_equal "$(jq -c .held_s <<<"$output")" 0
+  hold_for 90 'fleet-assess says HOLD, queue item one waits'
+  run cmd_stats
+  jq -e '.held_s >= 5400 and .held_s < 5500' <<<"$output"
 }
 
 # board_item <slug> <queued>: a queued high item promoted from a board row

@@ -177,6 +177,19 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 1 "<span color='$Y'>the last pass left ready work waiting (BLOCKED)</span>"
 }
 
+@test "a standing hold leads the hover as how long dispatch has stopped and which gate holds it" {
+  feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=7380 summary_dispatch.room_held_account=1
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  assert_line --index 1 "<span color='$Y'>dispatch stopped 2h03m: no account has room under its weekly pace</span>"
+  refute_output --partial "(BLOCKED)"
+  feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=600
+  run "$MODULE"
+  run tip
+  assert_line --index 1 "<span color='$Y'>dispatch stopped 10m: the last pass left ready work waiting</span>"
+}
+
 @test "a flapping item is amber, in the why and the self-heal line" {
   feed summary_dispatch.flapping_items=1
   run "$MODULE"

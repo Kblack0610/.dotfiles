@@ -61,6 +61,16 @@ test("Needs you keeps the server's ranked order and says what each row holds", (
   assert.match(html, /<span class="nchip k-plan">Plan to approve <b>2<\/b><\/span><span class="nchip k-ask">Question <b>1<\/b><\/span><span class="nchip k-blocked">Blocked <b>1<\/b><\/span>/);
 });
 
+test("a stopped dispatch is a Stopped card with its one line, its age and no id", () => {
+  const html = draw(home({ needs: [
+    { kind: "stopped", project: "", text: "Dispatch stopped 13h: no account has room. Clears when an account is back under its pace.", id: "stopped:fleet-dispatch", since: now() - 13 * 3600 },
+    { kind: "ask", project: "p", text: "Ship it?", id: "a1" },
+  ] }));
+  assert.match(html, /<span class="nchip k-stopped">Stopped <b>1<\/b><\/span>/);
+  assert.match(html, /need k-stopped.*<span class="nkind">Stopped<\/span><span>dispatch<\/span><span>13h[^<]*<\/span><\/div><div class="ntitle">Dispatch stopped 13h: no account has room/s, html);
+  assert.doesNotMatch(html, /stopped:fleet-dispatch<\/span>/);
+});
+
 test("a need whose session is gone has no Open button; a waiting queue item opens the queue", () => {
   const html = draw(home({ needs: [
     { kind: "session", project: "p", text: "Stalled", id: "lab/x:1", target: "lab/x:1" },

@@ -12,6 +12,8 @@
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    or board rows no pass has judged in that time while the human was away,
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
+#   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
+#                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--cwd REPO]
@@ -1441,9 +1443,71 @@ start_item() {
 
 # --- verbs ---------------------------------------------------------------------------
 
+# held_state -> "<held_since epoch> <held_why>" from the runner state agent-proof.sh keeps (the first
+# BLOCKED pass of an unbroken run, and the latest one's reason); nothing while no hold stands.
+held_state() {
+  local dir since
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
+  dir="$(proof_state_dir)/fleet-dispatch"
+  since=$(cat "$dir/held_since" 2>/dev/null)
+  [[ "$since" =~ ^[0-9]+$ ]] || return 0
+  printf '%s %s\n' "$since" "$(cat "$dir/held_why" 2>/dev/null)"
+}
+
+# held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the night and
+# plan counts, the item that waits, the run-out forecast and the parentheses.
+held_short() {
+  sed -E 's/^(queued [0-9]+ for the night|tagged [0-9]+ for a plan); //g
+    s/,? (queue item [^ ]+|every queue item) waits$//
+    s/, runs out [^,]* at this rate//
+    s/ \([^)]*\)//g' <<<"$1"
+}
+
+# held_clears <why> -> what ends the hold, in the words of the gate that holds.
+held_clears() {
+  case "$1" in
+    "no account has room"*) echo "Clears when an account is back under its pace" ;;
+    "account usage unreadable"*) echo "Clears when claude-acct reads usage again" ;;
+    "finding firing"*) echo "Clears when its finding stops firing" ;;
+    "fleet-assess says HOLD"* | "load "* | "real idle "*) echo "Clears when the machine's load falls" ;;
+    "github budget"*) echo "Clears when the GitHub API budget refills" ;;
+    *) echo "fleet-dispatch run --dry-run names the gate" ;;
+  esac
+}
+
+# stopped [--json] -- rc 1 and the Stopped line when a hold has stood DISPATCH_STARVED_MIN or longer:
+# "Dispatch stopped 13h05m: <why>. <what clears it>." It is the one line every surface shows (hub Home's
+# Stopped row through fleet-sessions, the briefing, queue-starved's probe), at most 160 characters;
+# --json is {runner, since, line}. A run-floor start does not end the hold, a pass past an open
+# gate does (agent-proof.sh). A hold under the threshold, or none, prints nothing and is rc 0.
+cmd_stopped() {
+  local since why held clears head max line
+  read -r since why < <(held_state) || return 0
+  [ -n "$since" ] || return 0
+  held=$(( $(date +%s) - since ))
+  [ "$held" -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || return 0
+  why=$(held_short "$why"); clears=$(held_clears "$why")
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+  head="Dispatch stopped $(prom_dur "$held"): "
+  max=$(( 160 - ${#head} - ${#clears} - 3 ))
+  # Too long: cut at the last clause that fits.
+  while [ "${#why}" -gt "$max" ] && [[ "$why" == *[,\;]" "* ]]; do why=${why%[,;] *}; done
+  [ "${#why}" -le "$max" ] || why="${why:0:$max}"
+  line="$head$why. $clears."
+  if [ "${1:-}" = --json ]; then
+    jq -nc --arg line "$line" --argjson since "$since" '{runner: "fleet-dispatch", since: $since, line: $line}'
+  else
+    echo "$line"
+  fi
+  return 1
+}
+
 # starved -- rc 1 when urgent or high queue items have been runnable (no hold) for over
 # DISPATCH_STARVED_MIN minutes and no run pass has started a queue item in that time: it names them
-# and the last pass's outcome. A deep queue the passes are moving is not starved, and neither is one
+# and the last pass's outcome. A standing hold past that long trips it too, led by the Stopped line,
+# and no run start clears it then: a run-floor start goes past an account hold, and on 11-05/06 one
+# every hour cleared this while every other pass stopped. A deep queue the passes are moving is not starved, and neither is one
 # held on purpose (agent-hold) or by the load gates, whose alarm is fleet-thermal: a busy machine is
 # not a broken queue, and any other gate still trips. A board item is not starved while it waits for
 # the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
@@ -1455,17 +1519,18 @@ start_item() {
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
-  local items board low last cut started why
+  local items board low last cut started why stopped
   agent-hold check dispatch >/dev/null 2>&1 || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
+  stopped=$(cmd_stopped)
   started=$(last_run_start)
-  if [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then return 0; fi
+  if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then return 0; fi
   items=$(runnable | jq -rs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
-  [ -n "$items$board$low" ] || return 0
+  [ -n "$stopped$items$board$low" ] || return 0
   # Held by load only when every closed gate is a load gate: one other (an account) still starves.
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )'; then
@@ -1474,6 +1539,7 @@ cmd_starved() {
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
     last=$(tail -n 1 "$(proof_state_dir)/fleet-dispatch/activity.log" 2>/dev/null)
+  [ -z "$stopped" ] || echo "$stopped"
   if [ -n "$items" ]; then
     echo "runnable over ${DISPATCH_STARVED_MIN} min and not started:"
     sed 's/^/  /' <<<"$items"
@@ -1605,15 +1671,17 @@ last_run_start() {
 # all and by urgent/high; the low water and whether runnable is under it; the present trickle's rate
 # and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
 # reap moves in the last hour, and the items moved
-# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
+# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily); held_s, how long a
+# hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 cmd_stats() {
-  local now q aq since started pass=null starved=false hr=null
+  local now q aq since started pass=null starved=false hr=null held_since
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   # The last pass's headroom, while it is younger than three passes: an old one is no answer.
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   cmd_starved >/dev/null 2>&1 || starved=true
+  read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
@@ -1625,7 +1693,8 @@ cmd_stats() {
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" \
-      --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" '
+      --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
+      --argjson held "${held_since:-null}" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select((.priority == "urgent" or .priority == "high") and (.waits | not)))) as $u
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
@@ -1637,7 +1706,8 @@ cmd_stats() {
          flapping_items: ($flapping | length), flapping: $flapping,
          could_start: ($hr.could_start // null),
          low_water: $low, under_low_water: (if ($q | length) < $low then 1 else 0 end),
-         present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length)}
+         present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length),
+         held_s: (if $held == null then 0 else $now - $held end)}
       # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
       + (if $aq == null then {} else
           ($aq.sitting.held_by // {}) as $h
@@ -1778,6 +1848,10 @@ settle() {
   esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
+  # A start the run floor let past an account over its pace leaves the hold standing (held_since):
+  # the floor is a trickle, not room. FLOOR_HELD carries it to the pass's later WORKED (under-used).
+  [ "$1" = WORKED ] && [[ "$2" == *"on the run floor"* ]] && ! claude-acct room >/dev/null 2>&1 && FLOOR_HELD=1
+  [ "$1" = WORKED ] && [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
@@ -1796,7 +1870,8 @@ cmd_run() {
   [ "${1:-}" = --dry-run ] && DRY=1
   mkdir -p "$DIR"
   exec 9>"$DIR/.lock"
-  flock -n 9 || { settle NOOP "another pass is running"; return 0; }
+  # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
+  flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
   QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0
@@ -1812,7 +1887,7 @@ cmd_run() {
   room=$UNITS_FREE
   [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP.
-  if [ "$room" -le 0 ]; then settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
@@ -1831,7 +1906,7 @@ cmd_run() {
   # Every gate but presence: promoting is not starting, and start_items holds a present pass to the trickle.
   why=$(gate)
   if [ -n "$why" ]; then
-    settle_board NOOP "$why, starting nothing"
+    PROOF_HELD_KEEP=1 settle_board NOOP "$why, starting nothing"
     [ "$DRY" = 1 ] || return 0
   fi
   room=$(( room - STARTED ))
@@ -2104,12 +2179,13 @@ main() {
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     stats) cmd_stats ;;
+    stopped) shift; cmd_stopped "$@" ;;
     start) shift; cmd_start "$@" ;;
     record) cmd_record ;;
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
-    -h | --help) sed -n '2,34p' "$0" ;;
-    *) sed -n '2,18p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,36p' "$0" ;;
+    *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
 }
 
