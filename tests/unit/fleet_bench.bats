@@ -49,6 +49,10 @@ setup() {
   export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
   printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
   chmod +x "$SANDBOX/bin/judge-stub"
+  # agent-ask list --all, canned: serves $ASKSALL when it exists, else nothing (no asks)
+  export BENCH_ASKS_ALL_CMD=asks-all-stub ASKSALL="$SANDBOX/asksall"
+  printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null; exit 0\n' "$ASKSALL" > "$SANDBOX/bin/asks-all-stub"
+  chmod +x "$SANDBOX/bin/asks-all-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -137,8 +141,9 @@ agent_bench_kpi{kpi="sessions",window="7d"} 0
 agent_bench_kpi{kpi="sessions",window="28d"} 0
 agent_bench_kpi{kpi="ci_red_per_pr",window="7d"} 4.5
 agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
+agent_bench_kpi{kpi="human_answered_per_day",window="7d"} 0
+agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
-agent_bench_kpi{kpi="asks_stale",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
@@ -722,7 +727,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -750,13 +755,14 @@ kpi_fixture() {
 
 @test "kpi: the judge KPIs come from judge-eval kpi, and retro files the one past its threshold" {
   kpi_setup
-  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
+  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_answered_pct_min=50 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | - | - | max 0 | - |'
-  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
+  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_answered_pct":{"7d":52,"28d":0},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | 0 | 2 | max 0 | ok |'
   assert_line '| judge_precision | 75 | 80 | min 90 | past |'
+  assert_line '| ask_answered_pct | 52 | 0 | min 50 | ok |'
   assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
   assert_line '| ask_unclear_pct | - | - | - | - |'
   run "$SUBJECT" retro
@@ -764,6 +770,42 @@ kpi_fixture() {
   run grep -c 'check(kpi): judge_precision past threshold' "$BOARD"
   assert_output 1
   run grep -c 'check(kpi): judge_errors\|check(kpi): ask_false_defer_pct' "$BOARD"
+  assert_output 0
+}
+
+# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ]: one agent-ask list --all line
+ask_row() {
+  local st; st() { [ -n "$1" ] && TZ="${2:-UTC}" date -d "@$1" +%Y-%m-%dT%H:%M:%S%z; }
+  printf '%s\tgame\tdefault\t%s\tchoice\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t\t\t\t%s\n' \
+    "$1" "$2" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "$5" >> "$ASKSALL"
+}
+
+@test "kpi: ask load counts human answers only, ask wait counts pending age, and retro files the one past its threshold" {
+  kpi_setup
+  printf '%s\n' human_answered_per_day_max=0.2 ask_wait_p90_min_max=10000 >> "$KPI_THRESHOLDS"
+  local d=86400
+  ask_row h1 answered $((T0 - 2*d)) $((T0 - 2*d + 3600)) human "" EST5   # -0500 stamps, waited 60 min
+  ask_row h2 answered $((T0 - d)) $((T0 - d + 600)) "" ""               # in-session capture, no answered_by
+  ask_row j1 answered $((T0 - 3*d)) $((T0 - 3*d + 60)) judge ""
+  ask_row c1 cancelled $((T0 - 5*d)) "" "" "$T0"                       # waited 7200 min, then cancelled
+  ask_row o1 answered $((T0 - 20*d)) $((T0 - 20*d + 1800)) human ""     # 28d window only
+  ask_row p1 pending $((T0 - 6*d)) "" "" ""                             # still open: 8640 min and counting
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.human_answered_per_day["7d"], .human_answered_per_day["28d"], .ask_wait_p90_min["7d"], .ask_wait_p90_min["28d"], .human_answered_per_day.status]' <<<"$output"
+  assert_output '[0.3,0.1,8640,8640,"past"]'
+  # negative control: without the pending ask the p90 is the human hour; the cancelled ask and the judge's answer are not in either number
+  grep -v '^p1' "$ASKSALL" > "$ASKSALL.new" && mv "$ASKSALL.new" "$ASKSALL"
+  run "$SUBJECT" kpi
+  assert_line '| human_answered_per_day | 0.3 | 0.1 | max 0.2 | past |'
+  assert_line '| ask_wait_p90_min | 60 | 60 | max 10000 | ok |'
+  run "$SUBJECT" retro
+  assert_success
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'check(kpi): human_answered_per_day past threshold' "$BOARD"
+  assert_output 1
+  run grep -c 'check(kpi): ask_wait_p90_min' "$BOARD"
   assert_output 0
 }
 
@@ -855,7 +897,75 @@ kpi_fixture() {
   echo runners_bad_max=0 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
   assert_line '| runners_bad (now) | 1 | - | max 0 | past |'
-  assert_line '| asks_stale (now) | 0 | - | - | - |'
+}
+
+# triage_setup: kpi_setup plus a canned systemctl (failed units from $SANDBOX/failed, one
+# "unit Result LoadState" a line) and an empty Sentinel state and manifest dir
+triage_setup() {
+  kpi_setup
+  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches"
+  mkdir -p "$TRIAGE_WATCH_STATE" "$TRIAGE_WATCHES"; : > "$SANDBOX/failed"
+  printf '#!/usr/bin/env bash\nF=%q\n' "$SANDBOX/failed" > "$SANDBOX/bin/systemctl-stub"
+  cat >> "$SANDBOX/bin/systemctl-stub" <<'SC'
+case "$2" in
+  list-units) awk '{ print $1, "loaded failed failed", $1 }' "$F" ;;
+  show) awk -v u="$6" -v p="$4" '$1 == u { print (p == "Result" ? $2 : $3) }' "$F" ;;
+esac
+SC
+  chmod +x "$SANDBOX/bin/systemctl-stub"
+}
+
+# watch <name> <state> <since offset from T0> <severity>: one Sentinel watch, state and manifest
+watch() {
+  printf '%s' "$2" > "$TRIAGE_WATCH_STATE/$1.state"; printf '%s' $((T0 + $3)) > "$TRIAGE_WATCH_STATE/$1.since"
+  printf 'name: %s\nwhat: >-\n  %s is healthy. More words.\n  A second line.\nseverity: %s\n' "$1" "$1" "$4" > "$TRIAGE_WATCHES/$1.yaml"
+}
+
+@test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
+  triage_setup
+  printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
+  printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
+  for n in alpha gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  printf '[2026-10-30T03:00:00-07:00] outcome=STALLED lock held 40m\n' > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
+  printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
+  echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
+  watch spend TRIP -25200 urgent    # 7h: a row
+  watch nightly TRIP -3600 high     # 1h: inside the flap window, no row
+  watch drift OK -90000 normal      # OK: no row
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
+  assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
+  assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
+  assert_equal "$(grep -c . <<<"$output")" 3
+  [ ! -s "$NLOG" ]
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(runner): alpha is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
+  assert_output 3
+  run outcome
+  assert_output WORKED
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
+  run outcome
+  assert_output NOOP
+}
+
+@test "triage: nothing at fault is a NOOP that never reads the board" {
+  triage_setup
+  watch drift OK -90000 normal
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'no runner, unit or watch at fault'
+  [ ! -s "$NLOG" ]
+  run "$SUBJECT" triage --bogus
+  assert_failure 2
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0

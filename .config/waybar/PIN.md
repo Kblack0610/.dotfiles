@@ -118,6 +118,8 @@ safe. `RTMIN+9` belongs to `custom/gungan` (the red mic while a voice take runs)
 `gungan` on every start and stop. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
 removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 `custom/passthrough` (`passthrough.sh`), fired by the Hyprland passthrough toggles.
+`custom/webcam` (`webcam.sh`) needs no signal: it stays running on inotify and prints a line
+whenever a `/dev/video*` node gains or loses its holders.
 
 ## Files
 
@@ -128,6 +130,7 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
+- `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds

@@ -40,6 +40,9 @@
 
 set -uo pipefail
 
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
@@ -792,10 +795,16 @@ PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # record <session> <what> -- park, move and unpark change the fleet the way a hold does, so each
 # pages low with a `park: <session>` title, as agent-hold does with `hold:` and `go:`. The
 # ledger is removed on unpark; agent-notify's log is what keeps the history.
+# record <ledger key> <what happened> [parked|unparked <session id>] -- a low page, and with an
+# action a dispatch step on the notes ingest record, under the queue item that session works,
+# so `notes log --item` shows the stop and the resume.
 record() {
-    local by=""
+    local by="" item=""
     [[ -n "${TMUX:-}" ]] && by=$(tmux display-message -p '#S' 2>/dev/null)
     agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
+    [[ -n "${3:-}" ]] || return 0
+    [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" 2>/dev/null)
+    chain_event dispatch "$3" "-" "$2" --item "$item" --why "$1" --by claude-acct
 }
 
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
@@ -999,7 +1008,7 @@ park_flow() {
     mv -f "$tmp" "$PARKED/$key"
     if [[ "$verb" == park ]]; then
         echo "claude-acct: parked $key: $PARKED/$key; claude-acct unpark $key resumes it"
-        record "$key" "parked on $(name_of "$from") ($status)"
+        record "$key" "parked on $(name_of "$from") ($status)" parked "$sid"
         return 0
     fi
     unpark_ledger move "$PARKED/$key" "$to" "$name" "$note"
@@ -1050,10 +1059,10 @@ unpark_ledger() {
     got=$(resumed "$sid" "$pid" "$to")
     if [[ "$verb" == move ]]; then
         echo "claude-acct: moved $what to $name: claude ${got% *}, ${got#* }"
-        record "$what" "moved from $(name_of "$from") to $name"
+        record "$what" "moved from $(name_of "$from") to $name" unparked "$sid"
     else
         echo "claude-acct: unparked $what on $name ($note): claude ${got% *}, ${got#* }"
-        record "$what" "unparked on $name"
+        record "$what" "unparked on $name" unparked "$sid"
     fi
 }
 

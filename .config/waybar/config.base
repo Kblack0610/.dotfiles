@@ -159,6 +159,16 @@
         "tooltip": true,
         "on-click": "[ \"$(~/.local/bin/gungan status | jq -r .tooltip)\" = 'Gungan: Streaming...' ] && ~/.local/bin/gungan stream"
     },
+    // Shown only while a process holds a /dev/video* node open (CAM, the holders on hover). Not
+    // gated: a live camera is a privacy indicator. No interval: webcam.sh stays running on inotify
+    // and prints a line per change.
+    "custom/webcam": {
+        "format": "{}",
+        "return-type": "json",
+        "exec": "$HOME/.config/waybar/webcam.sh",
+        "hide-empty-text": true,
+        "tooltip": true
+    },
     // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.

@@ -710,6 +710,10 @@ game_ready() {
   assert_called 'The PR body carries the line "Item: gm-1" and the line "Task: gm-1".'
   run grep -c 'ptask game done' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # A question blocks one step, and reap, not the session, moves the item to waiting.
+  assert_called 'only that step is blocked, not the task'
+  run grep -cE 'agent-queue move gm-1 waiting|then stop and leave' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
   [ ! -e "$FLEET_DISPATCH_DIR/live" ] || fail "wrote the retired dispatch/live ledger"
   # The session holds a runner slot on its area, read from the item alone.
@@ -1473,17 +1477,21 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 }
 
 # 2026-11-03: a plan item sat in running/ at its plan, and the Overview's "Waiting for you" was empty.
-@test "reap moves an item to waiting while its session waits on the human or owns a pending ask, and back after" {
+@test "reap moves an item to waiting while its session waits on the human or stopped on a pending ask, and back after" {
   project game beta "$SANDBOX/repos/game"
   started_item p lab:game-agent-1
   started_item q lab:game-agent-2
-  printf 'game-agent-1\ngame-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
-  stub agent-ask 'printf "a1\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-2\n"'
+  started_item r lab:game-agent-3
+  started_item s lab:game-agent-4
+  printf 'game-agent-%s\n' 1 2 3 4 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'for x in 1:waiting 2:idle 3:busy 4:shell; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  stub agent-ask 'for n in 2 3 4; do printf "a$n\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-03\tgame-agent-$n\n"; done'
   run cmd_reap
   assert_success
   [ -n "$(qitem waiting p)" ] || fail "the session at its plan is not waiting"
-  [ -n "$(qitem waiting q)" ] || fail "the session with a pending ask is not waiting"
+  [ -n "$(qitem waiting q)" ] || fail "the session stopped on a pending ask is not waiting"
+  # carrying on past its ask: busy, or in a shell (agent-panel's own working pair, so a gate never flaps)
+  [ -n "$(qitem running r)" ] && [ -n "$(qitem running s)" ] || fail "a session still working past its ask moved to waiting"
 
   stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
   stub agent-ask 'exit 0'
@@ -2706,4 +2714,153 @@ restore_setup() {
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+# --- gateway harnesses: `start --harness` ---------------------------------------------------
+
+# A harness map, a key file and a gateway that says $1 of $150 is spent (default 1).
+harness_ready() {
+  game_ready
+  printf 'sk-test\n' > "$SANDBOX/eval.key"
+  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" '{
+    gateway: {url: "https://gw.test", key_file: $k},
+    harnesses: {
+      "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
+      opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}}}}' > "$SANDBOX/harnesses.json"
+  export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  stub tmux 'exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+}
+
+@test "--harness opencode launches a standalone run on the overlay, claims its session and logs under eval" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model qwen
+  assert_success
+  assert_called 'env -u LITELLM_MASTER_KEY timeout 180m opencode run --standalone --auto --session ses_eval'
+  assert_called '--title fix-menu --model litellm/code\ \(qwen-3-coder\) --agent build'
+  assert_called 'OPENCODE_CONFIG='
+  assert_called '</dev/null'
+  assert_not_called 'claude --model'
+  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness opencode --picked qwen --ran qwen'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen gateway run-9'
+  grep -q 'ses_eval' <<<"$(qfield "$f" sessions)" || fail "the run's session id is not on the item"
+  grep -qF "$(qfield "$f" sessions | tr -d '[] ' | cut -d, -f1)" "$NOTES_FIXTURE/calls.log" || fail "claimed id is not the launched one"
+}
+
+@test "the key goes to the gateway on stdin, never on the command line" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_success
+  assert_called 'https://gw.test/key/info'
+  assert_not_called 'sk-test'
+  grep -q 'Bearer sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "curl was not handed the key"
+}
+
+@test "an opencode brief reads the skill and carries its own closing rules, not the ones for a watched pane" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_success
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
+  assert_called 'pr=<owner/repo#N>'
+  assert_called 'Run agent-land in the foreground'
+  assert_not_called '/one-shot Fix'
+  assert_not_called 'agent-ask post'
+}
+
+@test "--harness claude-lazer runs the wrapper on the eval key with the queue tag, off the account" {
+  harness_ready
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness claude-lazer --model sonnet
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY='
+  assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --permission-mode bypassPermissions'
+  assert_called 'model-lane log --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
+  assert_not_called 'claude-acct pick'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer gateway'
+}
+
+@test "an item queued with --agent and a model starts on them with no flags" {
+  harness_ready
+  agent-queue add --project game --slug by-field --agent opencode --priority high "Fix it" >/dev/null
+  agent-queue set by-field model=sonnet >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item by-field
+  assert_success
+  assert_called 'opencode run --standalone'
+}
+
+@test "a claude start is unchanged: no eval log, no gateway read, no claim" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_success
+  assert_called "claude --model opus --permission-mode bypassPermissions \$'/one-shot Fix"
+  assert_not_called 'curl'
+  assert_not_called 'lane eval'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" sessions)" 'claude main '
+}
+
+@test "gateway starts refuse what would mislabel or overspend, and the item stays queued" {
+  harness_ready
+  refuses() { local want="$1"; shift; run "$REPO_ROOT/.local/bin/fleet-dispatch" start "$@"; assert_failure; assert_output --partial "$want"; }
+  refuses 'unknown harness: nope' --item fix-menu --harness nope --model sonnet
+  refuses 'has no model opus' --item fix-menu --harness claude-lazer --model opus
+  refuses 'needs --model' --item fix-menu --harness opencode
+  refuses '--harness needs --item' --project game --harness opencode --model sonnet
+  refuses 'a resume stays on what it ran' --resume abc --harness opencode --model sonnet
+  agent-queue add --project game --slug planned --mode plan --priority high "Think" >/dev/null
+  refuses 'cannot wait on a plan' --item planned --harness opencode --model sonnet
+  rm "$DISPATCH_HARNESSES"
+  refuses 'no harness map' --item fix-menu --harness opencode --model sonnet
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
+}
+
+@test "a spent key and a gateway that cannot answer both refuse the start" {
+  harness_ready 150
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_failure
+  assert_output --partial 'the eval key is spent'
+  stub curl 'exit 22'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_failure
+  assert_output --partial "cannot read the eval key's budget"
+  assert_not_called 'wt new'
+}
+
+@test "resume refuses an item that ran on a gateway harness" {
+  harness_ready
+  started_item gw-run lab:game-agent-1
+  sed -i 's/^agent: claude/agent: opencode/' "$(qitem running gw-run)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item gw-run --resume abc
+  assert_failure
+  assert_output --partial '--resume is for claude'
+}
+
+@test "a pass never starts a gateway item: it goes on to the claude item behind it" {
+  harness_ready
+  agent-queue add --project game --slug gw-first --agent opencode --priority urgent "Eval" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem queued gw-first)" ] || fail "a pass started a gateway item"
+  [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
+}
+
+@test "reap settles a claude-lazer item whose claude exited, like claude's; an opencode one waits for its session to end" {
+  project game beta "$SANDBOX/repos/game"
+  started_item lazer lab:game-agent-1
+  sed -i 's/^agent: claude/agent: claude-lazer/' "$AGENT_QUEUE_DIR"/running/*-lazer.md
+  started_item oc lab:game-agent-2
+  sed -i 's/^agent: claude/agent: opencode/' "$AGENT_QUEUE_DIR"/running/*-oc.md
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
+  stub agent-ask 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lazer.md 2>/dev/null)" ] || fail "a claude-lazer item whose claude exited stayed active"
+  [ -n "$(qitem running oc)" ] || fail "an opencode run was settled while its session lives"
 }
