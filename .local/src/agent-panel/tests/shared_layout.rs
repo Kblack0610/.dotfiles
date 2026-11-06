@@ -84,7 +84,7 @@ fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
         let windows = argv.iter().filter(|a| a.contains("preview-window")).count();
         assert_eq!(windows, 1, "{saved:?}: {argv:?}");
         assert!(
-            want[1].contains("transform(") && want[1].contains(" next agent-panel "),
+            want[1].contains("transform(") && want[1].contains(" next agent-panel)"),
             "{want:?}"
         );
         opened.push(want[0].clone());

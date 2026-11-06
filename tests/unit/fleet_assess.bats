@@ -74,7 +74,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch hold does not" {
+@test "only a machine-resource hold counts as held; a dispatch or mac-desktop hold does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   HOLD_ROOT="$AGENT_HOLD_DIR"
@@ -83,15 +83,18 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   touch "$AGENT_HOLD_DIR/dispatch"
   run holds_set
   assert_failure
+  touch "$AGENT_HOLD_DIR/mac-desktop"
+  run holds_set
+  assert_failure
   touch "$AGENT_HOLD_DIR/unity"
   run holds_set
   assert_success
 }
 
-@test "--watch-probe between the marks: OK with only the dispatch hold, HOLD with a unity hold" {
+@test "--watch-probe between the marks: OK with only the dispatch and mac-desktop holds, HOLD with a unity hold" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
-  touch "$AGENT_HOLD_DIR/dispatch"
+  touch "$AGENT_HOLD_DIR/dispatch" "$AGENT_HOLD_DIR/mac-desktop"
   local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success

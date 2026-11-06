@@ -12,4 +12,5 @@ pub mod procmap;
 pub mod render;
 pub mod send;
 pub mod session;
+pub mod sort;
 pub mod tmux;

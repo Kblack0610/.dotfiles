@@ -399,7 +399,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
    plan c5, question c1, permission c6, your turn ink; blocked is stalled amber, failing red. */
 /* One colour per need kind, shared by the card stripe and the tally chip. */
 .k-plan { --k: var(--c5); } .k-ask { --k: var(--c1); } .k-perm { --k: var(--c6); }
-.k-turn { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
+.k-turn { --k: var(--ink); } .k-todo { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
 .need { border-left: 5px solid var(--k, var(--muted)); }
 .nband { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
 .nkind { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }

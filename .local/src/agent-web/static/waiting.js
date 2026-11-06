@@ -36,6 +36,7 @@ const NEED_KINDS = {
   perm: "Permission",
   turn: "Your turn",
   blocked: "Blocked",
+  todo: "To do",
   red: "Failing",
 };
 const NEED_ORDER = Object.keys(NEED_KINDS);

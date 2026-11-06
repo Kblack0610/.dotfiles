@@ -1,6 +1,7 @@
 //! Project grouping, ANSI fzf rows, and preview formatting.
 
 use crate::chooser::Agent;
+use crate::sort::{Key, Sort};
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
@@ -119,25 +120,49 @@ fn is_shepherd(a: &Agent) -> bool {
     a.tags.split_whitespace().any(|t| t == SHEPHERD)
 }
 
-/// Build the grouped fzf rows (the shepherd first, then projects sorted) and the preview
-/// map-file body. Returns `(rows, map_lines)`.
-pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
-    let mut projects: Vec<&str> =
-        agents.iter().filter(|a| !is_shepherd(a)).map(|a| a.project.as_str()).collect();
-    projects.sort();
-    projects.dedup();
+/// How long a session has been open, 3 columns wide so the targets after it stay aligned:
+/// ` 5m`, `45m`, ` 3h`, ` 2d`. Blank for a row with no start time (a parked one).
+pub fn age(now: u64, started_at: Option<u64>) -> String {
+    let Some(start) = started_at else { return "   ".to_string() };
+    let secs = now.saturating_sub(start);
+    match secs {
+        s if s < 3600 => format!("{:>2}m", s / 60),
+        s if s < 86_400 => format!("{:>2}h", s / 3600),
+        s => format!("{:>2}d", (s / 86_400).min(99)),
+    }
+}
 
-    let shepherd: Vec<&Agent> = agents.iter().filter(|a| is_shepherd(a)).collect();
-    let mut groups: Vec<(&str, Vec<&Agent>)> = Vec::new();
-    if !shepherd.is_empty() {
-        groups.push((SHEPHERD, shepherd));
+/// Build the fzf rows and the preview map-file body, ordered by `sort`. The project sort
+/// groups rows under a header per project (the shepherd first, then projects by name, which
+/// reverse flips); any other sort is one flat list under one header that names it, each
+/// target led by its project since no group header carries it. `now` (epoch seconds) dates
+/// the open column. Returns `(rows, map_lines)`.
+pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) {
+    let mut groups: Vec<(String, Vec<&Agent>)> = Vec::new();
+    if sort.key == Key::Project {
+        let mut projects: Vec<&str> =
+            agents.iter().filter(|a| !is_shepherd(a)).map(|a| a.project.as_str()).collect();
+        projects.sort();
+        projects.dedup();
+        if sort.reverse {
+            projects.reverse();
+        }
+        let shepherd: Vec<&Agent> = agents.iter().filter(|a| is_shepherd(a)).collect();
+        if !shepherd.is_empty() {
+            groups.push((SHEPHERD.to_string(), shepherd));
+        }
+        for project in projects {
+            groups.push((
+                project.to_string(),
+                agents.iter().filter(|a| !is_shepherd(a) && a.project == project).collect(),
+            ));
+        }
+    } else {
+        let mut all: Vec<&Agent> = agents.iter().collect();
+        sort.order(&mut all);
+        groups.push((format!("all, {}", sort.label()), all));
     }
-    for project in projects {
-        groups.push((
-            project,
-            agents.iter().filter(|a| !is_shepherd(a) && a.project == project).collect(),
-        ));
-    }
+    let flat = sort.key != Key::Project;
 
     let mut rows = Vec::new();
     let mut map = Vec::new();
@@ -156,6 +181,12 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             // so targets stay aligned.
             let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
             let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
+            let open = format!("{DIM}{}{RESET}", age(now, a.started_at));
+            let target = if flat {
+                format!("{} {}", a.project, a.short_target)
+            } else {
+                a.short_target.clone()
+            };
             // Window tags (Prefix+t) sit between the target and the summary so
             // the row still reads target-first when a window is untagged.
             let tags = if a.tags.is_empty() {
@@ -165,9 +196,9 @@ pub fn build(agents: &[Agent]) -> (Vec<Row>, Vec<String>) {
             };
             let tags = format!("{}{tags}{}", stage(&a.stage), labels(&a.labels));
             let display = if a.summary.is_empty() {
-                format!(" {g} {mode}{ask} {}{tags}", a.short_target)
+                format!(" {g} {mode}{ask} {open} {target}{tags}")
             } else {
-                format!(" {g} {mode}{ask} {}{tags} {DIM}{}{RESET}", a.short_target, a.summary)
+                format!(" {g} {mode}{ask} {open} {target}{tags} {DIM}{}{RESET}", a.summary)
             };
             rows.push(Row {
                 target: a.target.clone(),
@@ -306,15 +337,16 @@ mod tests {
             agent("s:2", '✓', false, false),
             agent("s:3", '~', true, true),
         ];
-        let (rows, _) = build(&agents);
+        let (rows, _) = build(&agents, Sort::default(), 0);
         let a = format!("{BLUE}A{RESET}");
         let p = format!("{MAGENTA}P{RESET}");
-        assert!(row(&rows, "s:1").contains(&format!("  {a} s:1")));
+        let o = format!("{DIM}   {RESET}"); // no start time: a blank open column
+        assert!(row(&rows, "s:1").contains(&format!("  {a} {o} s:1")));
         // Negative control: no pending ask (answered, cancelled or none) -> no mark,
         // and the blank column keeps the target aligned.
         assert!(!row(&rows, "s:2").contains(&a));
-        assert!(row(&rows, "s:2").contains("    s:2"));
-        assert!(row(&rows, "s:3").contains(&format!("{p}{a} s:3")));
+        assert!(row(&rows, "s:2").contains(&format!("    {o} s:2")));
+        assert!(row(&rows, "s:3").contains(&format!("{p}{a} {o} s:3")));
     }
 
     #[test]
@@ -325,7 +357,7 @@ mod tests {
         stalled.tags = "pinned".into();
         let mut working = agent("s:2", '~', false, false);
         working.stage = "WORKING".into();
-        let (rows, _) = build(&[stalled, working]);
+        let (rows, _) = build(&[stalled, working], Sort::default(), 0);
         let want = format!("s:1 {RED}STALLED{RESET} {ORANGE}[pinned]{RESET} {CYAN}[manual]{RESET}");
         assert!(row(&rows, "s:1").contains(&want), "{}", row(&rows, "s:1"));
         // Negative control: WORKING and no labels add nothing after the target.
@@ -346,15 +378,50 @@ mod tests {
         let mut shep = agent("s:2", '~', false, false);
         shep.project = "zulu".into();
         shep.tags = "pinned shepherd".into();
-        let (rows, _) = build(&[a.clone(), shep]);
+        let (rows, _) = build(&[a.clone(), shep], Sort::default(), 0);
         assert_eq!(headers(&rows), ["shepherd", "alpha"]);
         assert_eq!(rows[1].target, "s:2");
         // Negative control: without the lease tag it sorts into its project like any other row.
         let mut plain = agent("s:2", '~', false, false);
         plain.project = "zulu".into();
         plain.tags = "pinned".into();
-        let (rows, _) = build(&[a, plain]);
+        let (rows, _) = build(&[a, plain], Sort::default(), 0);
         assert_eq!(headers(&rows), ["alpha", "zulu"]);
+    }
+
+    #[test]
+    fn the_open_column_is_three_wide_at_every_unit() {
+        let now = 100_000_000;
+        for (secs, want) in [(0, " 0m"), (59 * 60, "59m"), (3600, " 1h"), (23 * 3600 + 3599, "23h"), (86_400, " 1d"), (200 * 86_400, "99d")] {
+            assert_eq!(age(now, Some(now - secs)), want, "{secs}s");
+        }
+        assert_eq!(age(now, None), "   ");
+        // A start in the future (clock skew) reads as just opened, never a panic.
+        assert_eq!(age(now, Some(now + 10)), " 0m");
+    }
+
+    #[test]
+    fn a_sort_other_than_project_is_one_flat_list_led_by_each_project() {
+        use crate::sort::Key;
+        let mut old = agent("s:1", '✓', false, false);
+        old.project = "zulu".into();
+        old.started_at = Some(100);
+        let mut new = agent("s:2", '~', false, false);
+        new.project = "alpha".into();
+        new.started_at = Some(5000);
+        let open = Sort { key: Key::Open, reverse: false };
+        let (rows, map) = build(&[new.clone(), old.clone()], open, 7300);
+        assert_eq!(headers(&rows), ["all, longest open first"]);
+        assert_eq!((rows[1].target.as_str(), rows[2].target.as_str()), ("s:1", "s:2"));
+        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} zulu s:1")), "{}", row(&rows, "s:1"));
+        assert!(row(&rows, "s:2").contains(&format!("{DIM}38m{RESET} alpha s:2")), "{}", row(&rows, "s:2"));
+        assert!(map[0].starts_with("s:1\t"), "the preview map follows the row order");
+        // Negative control: the project sort keeps one header per project and bare targets.
+        let (rows, _) = build(&[new.clone(), old.clone()], Sort::default(), 7300);
+        assert_eq!(headers(&rows), ["alpha", "zulu"]);
+        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} s:1")));
+        let (rows, _) = build(&[new, old], Sort { key: Key::Project, reverse: true }, 7300);
+        assert_eq!(headers(&rows), ["zulu", "alpha"]);
     }
 
     #[test]

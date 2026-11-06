@@ -44,7 +44,9 @@ In the chooser:
 - The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
 - `C-y` lists only the sessions waiting on you (a pending ask or a prompt), and again lists every session; the prompt reads `Asking only >` while it is on, and the label keys keep the view.
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
-- The list is on top at full width and the preview below it. `C-/` switches the preview to the right of the list, then hides it, then brings it back, and the panel reopens in the layout `C-/` last showed. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its two fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
+- Each row shows how long the session has been open (`45m`, ` 3h`, ` 2d`: since its claude process started, so a resume restarts it; blank on a parked row) before its target. Typing filters on everything a row shows.
+- `C-o` steps the sort: by project (grouped, the default), longest open first, needs you first, stalled first. Any sort but project is one flat list, each target led by its project. `A-o` reverses the sort. The panel reopens in the sort it was left in, saved in `${XDG_STATE_HOME:-~/.local/state}/panels/agent-panel.sort` (`src/sort.rs`).
+- The list is on top at full width and the preview below it. `C-/` steps stacked -> side by side -> hidden -> stacked, and the panel reopens in the layout `C-/` last left it in, hidden included. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its two fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
 - The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
 
 ## Why a binary (replacing the old bash scripts)
@@ -97,6 +99,7 @@ which owns the detach-and-attach hop.
 - `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
+- `sort.rs` - the sort keys, their order and the saved sort
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`
 - `chooser.rs` — orchestration for the three entry points
 - `main.rs` — clap dispatch
