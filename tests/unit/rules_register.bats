@@ -114,7 +114,11 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or (.kind == "provisional" and ((.number // "") == "" or ((.confidence // "") | IN("high", "med", "low") | not) or (.revisit // "") == ""))
       or ((.kind // "") | IN("invariant", "provisional") | not)
       or ((.action // "") | IN("keep", "rewrite", "drop") | not)
-      or ((.action != "keep") and (.why // "") == "")) | .anchor' "$REAL"
+      or ((.action != "keep") and (.why // "") == "")
+      or ((.anchor // "") | length < 12)
+      or (((.anchor // "") + (.measure // "")) | test("\n"))
+      or (.measure != null and .max == null and .min == null)
+      or (.kind == "invariant" and (.measure != null or .max != null or .min != null))) | .anchor' "$REAL"
   assert_output ''
 }
 
@@ -134,9 +138,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   HOME="$REAL_HOME" RULES_REGISTER="$REAL" run "$SUBJECT" rules --json
   assert_success
   local states="$output"
-  # Only this repo's sources: a rule edited in another repo is the scorecard's line, and must not go
-  # red on a session here that only touched fleet-bench.
-  run jq -r '.[] | select((.anchored == false and (.source | startswith("~/.dotfiles/"))) or .dead)
+  # Only this repo's sources: a rule edited or a measure gone elsewhere is the scorecard's line, and
+  # must not go red on a session here that only touched fleet-bench.
+  run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead))
     | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.

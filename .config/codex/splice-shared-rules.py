@@ -36,9 +36,15 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     overview, source = Path(sys.argv[1]), Path(sys.argv[2])
+    text = overview.read_text().splitlines()
+    if not any(MARKER.match(line) for line in text):
+        return 0
+    if not source.is_file():
+        print(f"overview.md has shared markers and there is no {source}", file=sys.stderr)
+        return 1
     lines = source.read_text().splitlines()
     out, missing = [], []
-    for line in overview.read_text().splitlines():
+    for line in text:
         marker = MARKER.match(line)
         if not marker:
             out.append(line)

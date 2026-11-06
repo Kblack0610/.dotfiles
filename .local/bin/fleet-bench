@@ -883,7 +883,7 @@ cmd_scorecard() {
     echo
     echo "Each provisional rule's number, re-measured; a moved one gets a cleanup item (standards.md, the last rule)."
     echo
-    cmd_rules | sed 's/^\(.*\)=\(.*\)$/- \1: \2/; /^- /!s/^/- /'
+    cmd_rules | sed 's/^\([a-z_]*\)=/- \1: /; /^- /!s/^/- /'
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
 }

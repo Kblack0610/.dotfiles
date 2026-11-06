@@ -42,6 +42,21 @@ MD
   assert_output "$(printf '# Top\n## Core Principles\n\n    Simplicity First.\nmine')"
 }
 
+@test "splice: a file with no marker needs no source and stays as it is" {
+  printf '# Top\nmine\n' >"$T/o.md"
+  run "$SPLICE" "$T/o.md" "$T/absent.md"
+  assert_success
+  run cat "$T/o.md"
+  assert_output "$(printf '# Top\nmine')"
+}
+
+@test "splice: a marker with no source file exits 1, naming the file" {
+  printf '<!-- shared: Core Principles -->\n' >"$T/o.md"
+  run "$SPLICE" "$T/o.md" "$T/absent.md"
+  assert_failure 1
+  assert_output --partial "$T/absent.md"
+}
+
 @test "splice: a marker matches a heading by its leading words and keeps subsections" {
   printf '<!-- shared: Writing Style -->\n' >"$T/o.md"
   run "$SPLICE" "$T/o.md" "$T/CLAUDE.md"
@@ -98,6 +113,8 @@ headings() { grep -E '^##+ ' "$1" | sed -E 's/^#+ //; s/ \(.*//'; }
   cp "$o" "$T/o.md"
   "$SPLICE" "$T/o.md" "$PRIV/.claude/CLAUDE.md"
   # rulesync drops the frontmatter and keeps the body, so each spliced line must be in the output.
-  run bash -c "awk '/^---\$/ && f<2 {f++; next} f>=2 && NF' '$T/o.md' | grep -vxFf '$a'"
+  awk '/^---$/ && f<2 {f++; next} f>=2 && NF' "$T/o.md" > "$T/body"
+  [ -s "$T/body" ]
+  run grep -vxFf "$a" "$T/body"
   assert_output ''
 }
