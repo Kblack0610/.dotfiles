@@ -120,6 +120,7 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   run jq -r 'select(
       (.kind == "invariant" and ((.number // "") != "" or (.confidence // "") != "" or (.revisit // "") != ""))
       or (.kind == "provisional" and ((.number // "") == "" or ((.confidence // "") | IN("high", "med", "low") | not) or (.revisit // "") == ""))
+      or (.confidence == "high" and .number == "none on record" and .how == null and .measure == null)
       or ((.kind // "") | IN("invariant", "provisional") | not)
       or ((.action // "") | IN("keep", "rewrite", "drop") | not)
       or ((.action != "keep") and (.why // "") == "")
