@@ -36,7 +36,10 @@ N=$(
 
 case "$N" in
   "$AT"|"$((AT * 2))"|"$((AT * 4))")
-    agent-notify -p normal -t "Agent fan-out: ${CWD##*/}" \
+    # The pane this session runs in, as agent-panel's <server>/<session>:<window>, when in tmux.
+    REF=""
+    [ -n "${TMUX_PANE:-}" ] && REF="$(tmux display-message -p -t "$TMUX_PANE" '#{b:socket_path}/#S:#I' 2>/dev/null)"
+    agent-notify -p normal -t "Agent fan-out: ${CWD##*/}" ${REF:+-r "tmux:$REF"} \
       "Session $SID has made $N $TOOL calls (alert at $AT). Nothing was blocked. cwd: $CWD" \
       >/dev/null 2>&1 || true
     ;;

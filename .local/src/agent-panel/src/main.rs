@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Cycle to the next attention-needed agent (else next in list).
+    /// Jump to the next agent that needs you; with none, say so and stay put.
     Next,
     /// Print one plain TSV row per live agent, for other surfaces to consume.
     List {

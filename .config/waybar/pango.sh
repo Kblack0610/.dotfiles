@@ -31,3 +31,27 @@ paint() { printf "<span color='%s'>%s</span>" "$1" "$2"; }
 emit() {
   jq -cn --arg t "$1" --arg tt "$2" --arg c "$3" '{text: $t, tooltip: $tt, class: $c}'
 }
+
+# pango_ansi: stdin Pango (the tooltips above) to stdout terminal text, for the control menu's
+# preview. <b> is bold, <span color|foreground='#rrggbb'> truecolour, <span alpha> dim, <tt>
+# nothing (the terminal is monospace); a close restores the tags still open. NO_COLOR strips.
+pango_ansi() {
+  perl -CSD -0777 -pe '
+    my @open;
+    s{<(/?)(b|tt|span)\b([^>]*)>}{
+      my ($close, $tag, $attr) = ($1, $2, $3);
+      if ($close) { pop @open; $ENV{NO_COLOR} ? "" : "\e[0m" . join("", @open) }
+      else {
+        my $e = "";
+        if ($tag eq "b") { $e = "\e[1m" }
+        elsif ($tag eq "span" && $attr =~ /(?:color|foreground)=.#([0-9a-fA-F]{6})/) {
+          $e = sprintf("\e[38;2;%d;%d;%dm", map { hex } unpack("A2A2A2", $1));
+        }
+        elsif ($tag eq "span" && $attr =~ /alpha=/) { $e = "\e[2m" }
+        push @open, $e;
+        $ENV{NO_COLOR} ? "" : $e;
+      }
+    }ge;
+    s/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&apos;/\x27/g; s/&#39;/\x27/g; s/&amp;/&/g;
+  '
+}

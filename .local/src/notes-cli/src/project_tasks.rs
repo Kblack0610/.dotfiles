@@ -312,6 +312,7 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
+    refuse_epic_on_board(lane, &[text])?;
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !is_typed(text) {
@@ -330,6 +331,10 @@ pub fn add(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
+    if let Some(open) = open_twin(&content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+        return Ok(3);
+    }
     let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
@@ -342,6 +347,15 @@ pub fn add(
         println!("{l}");
     }
     Ok(0)
+}
+
+/// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
+/// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
+fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+    let key = md::task_key(&format!("- [ ] {text}"));
+    content
+        .lines()
+        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
 }
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
@@ -423,6 +437,12 @@ fn new_rows(
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
+        );
+    }
+    if code.is_none() && texts.iter().any(|t| crate::epics::is_epic(t)) {
+        bail!(
+            "'{name}' has no `code` in project-map.json trackers, so an epic would get no id \
+             for its stories' #of/<id> to name"
         );
     }
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
@@ -590,6 +610,10 @@ pub(crate) fn file(
                 refuse_behind(v, cur)?;
             }
             details.extend(extra.iter().cloned());
+            refuse_epic_on_board(
+                dest_lane,
+                &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+            )?;
             let today = chrono::Local::now().date_naive();
             let block = new_rows(
                 dest_name,
@@ -990,6 +1014,7 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    refuse_open_children(p, name, pick, lane, "finish")?;
     let on = done_token(chrono::Local::now().date_naive());
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
@@ -1103,12 +1128,52 @@ pub fn drop(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
+    refuse_open_children(p, name, pick, lane, "finish or drop")?;
     Ok(
         edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
             Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
         })?
         .0,
     )
+}
+
+/// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
+/// one as a session. `add` and `file` both write rows, so both ask here.
+fn refuse_epic_on_board(lane: Lane, texts: &[&str]) -> Result<()> {
+    if lane == Lane::Agent && texts.iter().any(|t| crate::epics::is_epic(t)) {
+        bail!("an epic belongs on the human sheet: file it on the human lane, not the agent board");
+    }
+    Ok(())
+}
+
+/// Refuse to close the row `pick` names while a child of it (`#of/<its id>`) is open: a
+/// parent weighs what its children weigh, so closing it first would report open work as
+/// done. Checked before the edit, so a refusal writes nothing.
+fn refuse_open_children(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    verb: &str,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    let Some(id) = find_open(&content, pick).and_then(|l| md::row_id(&l)) else {
+        return Ok(());
+    };
+    let dir = projects::project_dir(p, name)?;
+    let open = crate::epics::Index::of(&dir, projects::open_version(&dir)).open_children(&id);
+    if !open.is_empty() {
+        // One line: agent-land reports only a failure's last line.
+        bail!(
+            "{id} has {} open child row(s) ({}); {verb} them first, or re-parent them with \
+             `ptask tag <id> --remove of/{id} --add of/<other>`",
+            open.len(),
+            open.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// The marker a `drop` stamps, or the error saying it needs a reason.
@@ -1761,6 +1826,14 @@ Version: v1.13.0
 
     // THE proof gate. A bare `done` must be refused - if this ever passes, "closed" and
     // "finished" have come apart again and the roll gate above is counting nothing.
+    #[test]
+    fn an_open_twin_is_found_whatever_its_stamps_and_a_done_one_is_not() {
+        let sheet = "## Tasks\n- [ ] fix(x): the thing #c1101 #high <!-- id:ar-1 -->\n- [x] feat(y): shipped #c1101\n";
+        assert!(open_twin(sheet, "fix(x): the thing").is_some());
+        assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
+        assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
     #[test]
     fn done_without_evidence_is_refused() {
         let e = proof_stamp(None, None).unwrap_err().to_string();

@@ -63,7 +63,7 @@ case "${1:-}" in
       --version-of) emit "version-of.${3:-}" ;;
       # `notes projects --stage <name>` -> the bare stage tag, or nothing if undeclared
       --stage) emit "stage.${3:-}" ;;
-      # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done
+      # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done TAB open_weight TAB done_weight TAB unsized_open
       --roadmap) emit "roadmap.${3:-}" ;;
       # `notes projects --stats [--json]` -> every profile's projects with their open
       # counts, as TSV (`stats`) or the JSON array (`stats.json`)

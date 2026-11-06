@@ -23,7 +23,7 @@ unit). The pin is toggle-on-demand and never autostarts.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
 ```
-Super+A                L1 pinbar          t toggle | u utils> | s settings> | esc/q exit
+Super+A                L1 pinbar          space control menu | t toggle | a agents | n pages | o open newest page | h triage newest page | u utils> | s settings> | esc/q exit
   u utils              L2 pinbar-utils    a agents | h ssh | r reload | t timebox> | y sync> | g git> | esc back
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
@@ -33,6 +33,8 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
 
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
+
+**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
@@ -114,7 +116,8 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 ## Files
 
 - `modules.sh`       - module toggles (`gate|list|menu|on|off|toggle`)
-- `modules.registry` - which modules are toggleable (`key|label|ids`)
+- `modules.registry` - which modules are toggleable (`key|label|ids`), and the control menu's chips
+- `pango.sh`         - the chips' markup helpers, and `pango_ansi` (a tooltip as terminal text, for the control menu)
 - `machines.sh`      - fleet probe module (`min|full`) + `pick` ssh chooser
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
@@ -122,7 +125,7 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds
-- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals
+- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals and the `control-menu` window
 
 ## Add a machine
 

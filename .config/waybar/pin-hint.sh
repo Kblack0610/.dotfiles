@@ -19,7 +19,7 @@ show() {
 close() { command -v dunstify >/dev/null 2>&1 && dunstify -C "$ID" 2>/dev/null || true; }
 
 case "${1:-main}" in
-    main)  show " pin leader" "t toggle      a agents\nu utils >     s settings >\nesc/q exit" ;;
+    main)  show " pin leader" "space control menu\nt toggle      a agents\nn pages       o open newest\nh triage newest\nu utils >     s settings >\nesc/q exit" ;;
     utils) show " pin / utils" "a agents      h ssh\nr reload      t timebox >\ny sync >      g git >\nesc back      q exit" ;;
     settings) show " pin / settings" "a hide/show agents\nf hide/show fleet\nt hide/show timebox\nm hide/show machines\nl list...      s size\nesc back      q exit" ;;
     sync)  show " pin / sync" "d restow dotfiles\nn pull notes\nesc back     q exit" ;;
