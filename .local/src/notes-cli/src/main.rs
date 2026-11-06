@@ -558,8 +558,13 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Toggle the first matching task between todo and in-progress (`[ ]` <-> `[/]`)
+    /// Mark the matching task in progress (`[ ]` -> `[/]`); a started row is left as it is
     Start {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Put the matching in-progress task back to todo (`[/]` -> `[ ]`); a todo row is left as it is
+    Unstart {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -985,6 +990,10 @@ fn main() -> Result<()> {
         } => {
             let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
+            let _lock = match op {
+                playtest::Op::List => None,
+                _ => Some(project_tasks::lock(&prof)?),
+            };
             if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
             }
@@ -1002,10 +1011,16 @@ fn main() -> Result<()> {
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
                 let pick = Pick::new(&query.join(" "), exact)?;
-                if let Some(sheet) = &sheet {
-                    pick.sole_in(sheet)?;
+                match &sheet {
+                    Some(sheet) => pick.resolve_in(sheet),
+                    None => Ok(pick),
                 }
-                Ok(pick)
+            };
+            // Every verb that writes holds the ptask lock across its read-modify-write and id
+            // minting, so two writers never lose a row or mint one id twice.
+            let _lock = match &sub {
+                None | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. }) => None,
+                Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
@@ -1069,6 +1084,9 @@ fn main() -> Result<()> {
                 )?,
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
+                }
+                Some(PtaskCmd::Unstart { query }) => {
+                    project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
                 Some(PtaskCmd::File {

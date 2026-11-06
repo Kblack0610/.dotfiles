@@ -17,7 +17,7 @@ pub struct Event {
     pub ts: String,
     /// Intake: `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
     /// for the human) or `refused` (a write the CLI turned down). A verb's write to a row:
-    /// `added`, `edited`, `detailed`, `tagged`, `toggled`, `done`, `dropped`, `placed` (another
+    /// `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `placed` (another
     /// version on the same sheet), `rehomed` (another project), `removed` (left Focus undone),
     /// `swept` or `archived`.
     pub action: String,

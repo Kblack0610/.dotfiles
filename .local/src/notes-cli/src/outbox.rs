@@ -51,28 +51,12 @@ pub(crate) fn ensure(p: &Profile) -> Result<()> {
 /// The outbox's write lock, released when dropped. `add`, `move` and `put` each read, change and
 /// write the whole file, so without it a page's `put` could land between a sweep's read and
 /// write and one of the two writes would be lost.
-struct Lock(#[allow(dead_code)] fs::File);
-
-fn lock(p: &Profile) -> Result<Lock> {
+fn lock(p: &Profile) -> Result<md::FileLock> {
     let dir = p
         .outbox
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(dir)?;
-    let f = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(".outbox.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: flock on a descriptor this function owns; the lock ends when `f` closes.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("locking the outbox: {}", std::io::Error::last_os_error());
-        }
-    }
-    Ok(Lock(f))
+    md::lock_file(&dir.join(".outbox.lock"))
 }
 
 /// The `## Outbox` body as the editor shows it: every line under the heading, blank lines at
@@ -255,6 +239,9 @@ pub fn list(p: &Profile, json: bool) -> Result<i32> {
 /// the line where it is and exits 1.
 pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<i32> {
     let _lock = lock(p)?;
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
+    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    let _sheet = project_tasks::lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");

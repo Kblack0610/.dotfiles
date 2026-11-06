@@ -690,7 +690,8 @@ echo "$*" >> "$L"
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
 case "$4" in
   list) cat "$B" ;;
-  add) k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
+  add) [ -z "$ADD_RC" ] || exit "$ADD_RC"
+       k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
        printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
@@ -741,9 +742,9 @@ kpi_fixture() {
   assert_line '| rows_pass_pct | - | - | - | - |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #high' "$BOARD"
+  run grep -c 'check(kpi): buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #size/s #high' "$BOARD"
   assert_output 1
-  run grep -c 'kpi: comms_pass_pct' "$BOARD"
+  run grep -c 'check(kpi): comms_pass_pct' "$BOARD"
   assert_output 0
 }
 
@@ -929,7 +930,7 @@ loop_fixture() {
   assert_line '| loop_dark (now) | 1 | - | max 0 | past |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: loop_dark past threshold' "$BOARD"
+  run grep -c 'check(kpi): loop_dark past threshold' "$BOARD"
   assert_output 1
 }
 
@@ -1044,8 +1045,8 @@ chain_fixture() {
   assert_success
   run cut -f4 "$BOARD"
   assert_output "$(printf '%s\n' '- [ ] other task #low' \
-    '- [ ] kpi: revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #high' \
-    '- [ ] kpi: interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #low')"
+    '- [ ] check(kpi): revert_rate past threshold: 7d 0.25 (28d 0.2, max 0.1) #size/s #high' \
+    '- [ ] check(kpi): interrupts_per_session past threshold: 7d 2 (28d 1, max 1) #size/s #low')"
   run grep -c ' add ' "$NLOG"
   assert_output 2
   run grep -c -e '--to' "$NLOG"
@@ -1062,12 +1063,12 @@ chain_fixture() {
   run "$SUBJECT" retro
   assert_success
   [ "$(wc -l < "$BOARD")" -eq 3 ]
-  run grep -c 'kpi: revert_rate past threshold' "$BOARD"
+  run grep -c 'check(kpi): revert_rate past threshold' "$BOARD"
   assert_output 1
   run grep 'revert_rate' "$BOARD"
   assert_output --partial '7d 0.5 (28d 0.4, max 0.1)'
   run cat "$NLOG"
-  assert_line 'ptask agent-runtime --agent edit kpi: revert_rate past threshold --text kpi: revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1)'
+  assert_line 'ptask agent-runtime --agent edit check(kpi): revert_rate past threshold --text check(kpi): revert_rate past threshold: 7d 0.5 (28d 0.4, max 0.1) #size/s'
   refute_output --partial ' add '
   refute_output --partial 'interrupts_per_session'
   run head -1 "$BOARD"
@@ -1081,6 +1082,18 @@ chain_fixture() {
   assert_output --partial NOOP
 }
 
+@test "retro reads an add that exits 3 (an open near-dup) as filed, and any other failure as FAILED" {
+  kpi_setup; kpi_fixture
+  ADD_RC=3 run "$SUBJECT" retro
+  assert_success
+  run outcome
+  assert_output --partial NOOP
+  ADD_RC=1 run "$SUBJECT" retro
+  assert_failure
+  run outcome
+  assert_output --partial FAILED
+}
+
 @test "retro keeps one guard row per lesson whose sig recurred in 2+ sessions, refreshed in place; one session is not enough" {
   kpi_setup; rm "$KPI_THRESHOLDS"
   mkdir -p "$SO_LESSONS_DIR"
@@ -1090,7 +1103,7 @@ chain_fixture() {
   out_row game '{session_id: "s2", project: "game", lesson_hits: {"(^|\\s)killall\\s": 2}}'
   run "$SUBJECT" retro
   assert_success
-  run grep -c '^guard ' <(cut -f3 "$BOARD")
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
   assert_output 1
   run grep 'guard ' "$BOARD"
   assert_output --partial 'lesson "never killall node." (dotfiles.md, 2026-10-02) recurred in 2 sessions'
@@ -1099,11 +1112,11 @@ chain_fixture() {
   : > "$NLOG"
   run "$SUBJECT" retro
   assert_success
-  run grep -c '^guard ' <(cut -f3 "$BOARD")
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
   assert_output 1
   run grep 'guard ' "$BOARD"
   assert_output --partial 'recurred in 3 sessions'
-  run grep -c ' edit guard ' "$NLOG"
+  run grep -c ' edit check(lesson): guard ' "$NLOG"
   assert_output 1
   refute grep -q ' add ' "$NLOG"
 }

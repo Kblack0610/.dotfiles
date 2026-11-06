@@ -123,6 +123,17 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial 'logo'
 }
 
+@test "a duplicate of another project's row joins it on that project's board" {
+  sheet '- the logo is blurry on retina\n' ''
+  printf '%s\n' '# other' '' 'Version: v0.1.0' '' '## Inbox' '' '## Tasks' '- [ ] fix(brand): the logo blurs on hi-dpi screens <!-- id:ot-3 -->' >"$PROJ/other/README.md"
+  answer '{"n": 1, "action": "dup", "id": "ot-3"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx '  was: the logo is blurry on retina' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  run inbox
+  refute_output --partial 'blurry'
+}
+
 @test "a duplicate of an agent-board row joins it there" {
   sheet '- which lane should a game take\n' ''
   mkdir -p "$PROJ/scratch/agent"

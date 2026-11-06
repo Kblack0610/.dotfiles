@@ -45,6 +45,37 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// An exclusive `flock` on a lock file, released when dropped (the descriptor closes).
+pub(crate) struct FileLock(#[allow(dead_code)] std::fs::File);
+
+/// Take an exclusive `flock` on `path`, creating it and its directory, waiting for any holder.
+/// The read-modify-write writers (`notes outbox`, `notes ptask`) hold one around each change,
+/// so two writers never interleave a read and a write and lose one of the two.
+pub(crate) fn lock_file(path: &Path) -> Result<FileLock> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening lock {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: flock on a descriptor this function owns; the lock ends when `f` closes.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            anyhow::bail!(
+                "locking {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    Ok(FileLock(f))
+}
+
 /// Marks the start of a generated rollup block inside a section (today: only `## Focus`).
 /// Everything from this line to the end of the section is MIRRORED FROM ANOTHER PROFILE,
 /// not authored here, and `capture` ends the section at it.
@@ -836,9 +867,25 @@ pub fn without_agent_tag(line: &str) -> String {
 }
 
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
+    // Only the dropped words and the space before each go; every other byte stays, so a line
+    // with a double space or a tab is still found by its raw text after the move.
     let indent = &line[..line.len() - line.trim_start().len()];
-    let kept: Vec<&str> = line.split_whitespace().filter(|w| !drop(w)).collect();
-    format!("{indent}{}", kept.join(" "))
+    let mut out = indent.to_string();
+    let mut rest = line.trim_start();
+    let mut gap = "";
+    while let Some(w) = rest.split_whitespace().next() {
+        let after = &rest[w.len()..];
+        if !drop(w) {
+            if out.len() > indent.len() {
+                out.push_str(gap);
+            }
+            out.push_str(w);
+        }
+        let ws = after.len() - after.trim_start().len();
+        gap = &after[..ws];
+        rest = &after[ws..];
+    }
+    out
 }
 
 /// Remove the first inline legacy `[YYYY-MM-DD]` due token, collapsing the surrounding
@@ -1481,6 +1528,14 @@ mod tests {
             without_project_tag("  - [ ] fix the chest #p:apociseum #high"),
             "  - [ ] fix the chest #high"
         );
+        // The rest of the line keeps its bytes: an outbox line moved by `notes outbox move` is
+        // filed next by its raw text, which a collapsed double space or tab would no longer match.
+        assert_eq!(
+            without_project_tag("- [ ] the gun  shot\tis late"),
+            "- [ ] the gun  shot\tis late"
+        );
+        assert_eq!(without_project_tag("#p:demo the gun"), "the gun");
+        assert_eq!(without_agent_tag("- [ ] #agent fix it"), "- [ ] fix it");
     }
 
     fn d(s: &str) -> NaiveDate {
