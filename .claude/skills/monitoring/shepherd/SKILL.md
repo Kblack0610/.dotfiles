@@ -30,7 +30,7 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 
 ## Verb: `nudge`
 
-What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue` and `nightly red` due lines. The code (`fleet-shepherd due`) applies the same rules to the state document, so a due line is the row this verb would act on.
+What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue`, `nightly red` and `shared red` due lines. The code (`fleet-shepherd due`) applies the same rules to the state document, so a due line is the row this verb would act on.
 
 1. `fleet-dispatch reap`, which moves each queue item by its session: to `waiting/` when the session waits on the human (a pending ask counts only once the session is neither busy nor in a shell), to `done/` when the session is gone, un-starting a board item's row when it ended without a PR. Then `fleet-sessions --json`. Each row has `bucket`, `pane`, `fact`, `nudged`, `escalated`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished` (DONE's work conditions alone, ignoring status and idle, so a session can check its own row mid-turn; wind-down step 0 reads it), `owners`, `dispatch` (the row it was started for, or null), `main_red` (its repo's default branch is red: a NIGHTLY row exists for it; the field name is kept for its JSON readers), and `labels`. NIGHTLY rows come first and lead the report: a nightly red is the most important thing on the board.
 2. `ListAgents`, and match each row to a session name by its pane id (`%216` in both).
