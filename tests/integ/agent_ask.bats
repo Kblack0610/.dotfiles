@@ -780,6 +780,27 @@ SH
   export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
 }
 
+@test "a judge budget stop leaves the ask not judged, with no stale verdict; any other exit is an error" {
+  fake_judge "$(score ship_deploy "" "landing is standing authorization")"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_success
+  printf '#!/usr/bin/env bash\nexit 75\n' > "$BATS_TEST_TMPDIR/judge"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure 75
+  run "$AGENT_ASK" show "$id"
+  refute_line --regexp '^judge(_reason|_rule|_call|d_at)?: '
+  assert_line 'status: pending'
+  run env COLUMNS=200 "$AGENT_ASK" card "$id"
+  assert_equal "${lines[-1]}" 'Judge: not judged'
+  # negative control: a call that failed is still an error verdict
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$BATS_TEST_TMPDIR/judge"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure 1
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
+}
+
 @test "judge records its call and reason, and leaves the ask pending" {
   fake_judge "$(score ship_deploy "" "landing is standing authorization")"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
