@@ -672,6 +672,7 @@ kpi_setup() {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src" LEDGER_BOARDS="$SANDBOX/none.md"
   export BENCH_ASKS_CMD=true BENCH_NOW=$T0
+  export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_LESSONS_DIR="$SANDBOX/lessons"
   mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
   printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
   BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
@@ -955,6 +956,33 @@ loop_fixture() {
   assert_output 0
   run outcome
   assert_output --partial NOOP
+}
+
+@test "retro keeps one guard row per lesson whose sig recurred in 2+ sessions, refreshed in place; one session is not enough" {
+  kpi_setup; rm "$KPI_THRESHOLDS"
+  mkdir -p "$SO_LESSONS_DIR"
+  printf -- '- **2026-10-02** **Never killall node.** why <!-- sig:2026-10-02 (^|\\s)killall\\s -->\n' > "$SO_LESSONS_DIR/dotfiles.md"
+  printf -- '- **2026-10-05** **Other.** why <!-- sig:2026-10-05 other-cmd -->\n' >> "$SO_LESSONS_DIR/dotfiles.md"
+  out_row game '{session_id: "s1", project: "game", lesson_hits: {"(^|\\s)killall\\s": 1, "other-cmd": 3}}'
+  out_row game '{session_id: "s2", project: "game", lesson_hits: {"(^|\\s)killall\\s": 2}}'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c '^guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'lesson "never killall node." (dotfiles.md, 2026-10-02) recurred in 2 sessions'
+  assert_output --partial '#low'
+  out_row game '{session_id: "s3", project: "game", lesson_hits: {"(^|\\s)killall\\s": 1}}'
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c '^guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'recurred in 3 sessions'
+  run grep -c ' edit guard ' "$NLOG"
+  assert_output 1
+  refute grep -q ' add ' "$NLOG"
 }
 
 @test "retro with no thresholds file is NOOP and never calls notes" {
