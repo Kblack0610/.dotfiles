@@ -23,7 +23,7 @@ metadata:
 - **Carrying primitive:** skill voice - home here; also voices `daily:summary`, `wind-down`,
   `one-pager`, `lab-sync`
 - **Notify channel:** the notes vault + generated summaries
-- **Registry:** `~/.dotfiles/.claude/PERSONAS.md`
+- **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
 
 The user maintains a git-backed notes repo at `~/.notes`. All **journal logic** goes through the
 `notes` Rust CLI (source `~/.dotfiles/.local/src/notes-cli/`, binary at `~/.local/bin/notes`);
