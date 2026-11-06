@@ -110,12 +110,16 @@ cmd_run() {
     return 0
   fi
 
-  # What the queue knows of a session: the harness it ran on and, for opencode, the PR the brief set.
+  # What the queue knows of a session: the work items whose `sessions:` list it (the ledger join
+  # every reader of a row uses; a session can work several), the harness it ran on and, for
+  # opencode, the PR the brief set.
   local queue_note=""
-  "$QUEUE" list --json --state all 2>/dev/null | jq -cn '[inputs | select(.sessions) | . as $i
-      | (.sessions | split(" "))[] | {key: ., value: {agent: $i.agent, pr: $i.pr}}] | from_entries' > "$work/queue.json" ||
-    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude"; }
+  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
+      | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
+        .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug])})' > "$work/queue.json" ||
+    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude, items unknown"; }
   jq -c --slurpfile q "$work/queue.json" '($q[0][.session_id] // {}) as $i
+      | .items = ($i.items // [])
       | .harness = (.harness // $i.agent // "claude")
       | if .harness == "opencode" then
           .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
@@ -193,6 +197,7 @@ cmd_run() {
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
           harness: $row.harness,
+          items: ($row.items // []),
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),

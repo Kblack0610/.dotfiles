@@ -162,7 +162,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | aim a task at another release | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>`; its detail lines and child rows go with it |
 | tag a task | `ptask <name> tag "<query>" --add=size/s --add=requested --remove=ai`; a row has one size, so a new `size/` replaces the old; a release is `move`'s |
-| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either. `--was` with `--text` is the triager's rewrite: the text must be `type(area): title` with a title of 80 chars or fewer, the old words become a `was:` detail line, and the old row's own tags (`#ask`, `#tier/N`, `#size/x`) carry over unless the new text sets one of the same name; a rewrite to the row's own words writes nothing |
+| change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either. `--was` with `--text` is the triager's rewrite: the text must be `type(area): title` with a title of 80 chars or fewer, the old words become a `was:` detail line, and the old row's own tags (`#requested`, `#tier/N`, `#size/x`) carry over unless the new text sets one of the same name; a rewrite to the row's own words writes nothing |
 | drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
 | name a row exactly | any verb's `<query>` can be the row's id (`ar-142`) |
 | tidy a sheet | `ptask <name> sweep` |
@@ -198,7 +198,7 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 | size | no | `#size/xs` and `#size/s` (small single PR) weigh 1, `#size/m` (one PR) 3, `#size/l` (needs a plan) 8, `#size/xl` 21 (an epic's size only); an unsized row weighs 1 and is counted as unsized. The scale is one const, `epics::WEIGHTS`. There is no hour estimate and no points |
 | parent | no | `#of/<id>`: this row is part of row `<id>`, in either lane. Up to three levels: epic, story, subtask. An epic takes no parent; detail lines are steps, never children |
 | `#tier/N` `#worker/X` `#vX.Y.Z` `#dueMMDD` | no | as the feed above reads them |
-| `#ask` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
+| `#requested` | no | the human asked for this, and only the human drops it undelivered. A question for the human is an `agent-ask`, never a row. |
 | marker | on close | `<!-- ... -->` at the end: `pr:N`, a run id or URL, `unverified: <why>`, `dropped: <why>`, `dup:<id>` |
 
 Epics and parents: a row that another open or closed row names in `#of/` is a parent, read from both lanes and every `versions/` note, so a story whose subtasks were released stays a parent. Only leaves are counted: a parent adds nothing to open, done or closed weight, and its children count in their own versions. A parent never gates or carries in a release (`--release`); its leaves do, and an untagged epic is in no version at all. An epic's percent is its leaves' done weight over their total, across versions. An untagged epic is in no version, so it neither holds up `--release` nor collects `carried:N`; a childless epic with a `#vX.Y.Z` tag counts at its own size in that version. `ptask done` and `ptask drop` refuse a row with open children and name them; re-parent with `ptask tag <id> --remove of/<id> --add of/<other>`.
@@ -216,13 +216,13 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 `notes board --json` prints one object, `{"today": "YYYY-MM-DD", "projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
 - A project is `{profile, project, dir, version, open, agent_open, playtest_open, inbox}`, `inbox` the lines waiting in the sheet's `## Inbox`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, ask, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw}`.
+- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, requested, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
 - `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
-- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `ask` true for an `#ask` row, and `version` the open version every row on the feed belongs to.
+- `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `requested` true for a `#requested` row, and `version` the open version every row on the feed belongs to.
 - `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
-- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, ask, size, version or created tags.
+- `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, requested, size, version or created tags.
 - `marker` is the inner text of the row's `<!-- ... -->` comment: `pr:N`, `ask:ID`, a proof.
 - `filed` is the `YYYY-MM-DD` of the row's `filed:` marker token, the day `ptask file` took it off an inbox (agent-web's Filed today section compares it to the feed's `today`, so the CLI's clock decides).
 - `version` is null for a playtest row, and `game` is null for a sheet row.

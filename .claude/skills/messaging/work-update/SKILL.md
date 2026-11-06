@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [writing, status, work, client]
-  reviewed: "2026-11-05"
+  reviewed: 2026-11-06
 ---
 
 # work-update
@@ -37,7 +37,7 @@ A new job is one file: copy the nearest existing job, set `notes_profile` and `r
 
 ## Steps
 
-1. **Facts.** `work-update facts <job> eod [--date D]` prints the inputs: the job's merged PRs with their section names, the daily note, the channel and the prompt path. For a weekly, `facts <job> weekly` adds each day's EOD, preferring the text that was sent over the draft. Add the human's raw notes for the day when they give them. Where a PR's title is too thin, read its body (`gh pr view`) or its diff before writing about it.
+1. **Facts.** `work-update facts <job> eod [--date D]` prints the inputs: the job's merged PRs with their section names, its work items from the agent-queue ledger (longest first, with minutes and a day total: the time story), the daily note, the channel and the prompt path. For a weekly, `facts <job> weekly` adds each day's EOD, preferring the text that was sent over the draft. Add the human's raw notes for the day when they give them. Where a PR's title is too thin, read its body (`gh pr view`) or its diff before writing about it.
 2. **Draft.** Read the job's prompt file and follow it: one section per project, plain lines, and no line copied from a PR title or commit message without rewriting it. Name the behavior the client can see; leave file names out. The prose rules come from `de-ai-writing` and the shape from `comms-standard`. Never put another job's work, an internal id the client cannot open, or anything from the private fleet into a client update.
 3. **Save and lint.** `work-update save <job> eod [--date D] <file|->`. The draft is saved whatever the result; fix each finding and save again. Exit 1 means findings are still open.
 4. **Hand it over.** Show the draft and its path. The human sends it. Never post to Slack, email or any client channel.

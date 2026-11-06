@@ -59,6 +59,9 @@ pub struct Item {
     /// `human`, `shepherd` or `board:<project>:<key>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// `<project>:<id>`: the board row this item works, the ledger's one link to the backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
     /// `<server>:<tmux session>`, or a bare tmux session on agent-queue's server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,

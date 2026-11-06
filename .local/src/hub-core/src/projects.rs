@@ -4,9 +4,9 @@
 //! arithmetic, and a project with no closes in 28 days has no ETA rather than a guess.
 //!
 //! Queue items name a REPO-side project (`dotfiles`) while cards are LAB projects
-//! (`agent-runtime`, `notes-cockpit`). An item joins a card by its `board:<lab>:` origin, by a
-//! name both share, or by the one lab project whose registry `repo` is the item's project.
-//! Anything else is listed as unlinked, not guessed at.
+//! (`agent-runtime`, `notes-cockpit`). An item joins a card by its ledger `row:`
+//! (`<lab>:<id>`), else by a project name both share. Anything else is listed as unlinked, not
+//! guessed at.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -106,17 +106,6 @@ pub fn map_path() -> PathBuf {
     )
 }
 
-/// Each lab project's repo-side name, from project-map.json `trackers.<lab>.repo`.
-pub fn repos(map: &str) -> HashMap<String, String> {
-    let v: Value = serde_json::from_str(map).unwrap_or_default();
-    v["trackers"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(lab, t)| Some((lab.clone(), t["repo"].as_str()?.to_string())))
-        .collect()
-}
-
 /// One project's card.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Card {
@@ -171,24 +160,13 @@ pub fn eta_days(p: &Progress) -> Option<u32> {
 }
 
 /// The lab project an item belongs to, by the rules in the module doc.
-fn owner(i: &Item, labs: &[&str], repos: &HashMap<String, String>) -> Option<String> {
-    let from_board = i
-        .from
-        .as_deref()
-        .and_then(|f| f.strip_prefix("board:"))
-        .and_then(|f| f.split(':').next())
-        .filter(|p| labs.contains(p));
-    if let Some(p) = from_board {
-        return Some(p.to_string());
-    }
-    if labs.contains(&i.project.as_str()) {
-        return Some(i.project.clone());
-    }
-    let mut by_repo = labs
-        .iter()
-        .filter(|l| repos.get(**l).is_some_and(|r| *r == i.project));
-    let one = by_repo.next()?;
-    by_repo.next().is_none().then(|| one.to_string())
+fn owner(i: &Item, labs: &[&str]) -> Option<String> {
+    let row = i.row.as_deref().and_then(|r| r.split(':').next());
+    [row, Some(i.project.as_str())]
+        .into_iter()
+        .flatten()
+        .find(|p| labs.contains(p))
+        .map(String::from)
 }
 
 /// The cards, in flight first (running, then waiting), then by closes in 7 days, then name.
@@ -197,7 +175,6 @@ pub fn build(
     feed: Option<&Feed>,
     state: &Value,
     queue: Option<&Queue>,
-    repos: &HashMap<String, String>,
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
@@ -245,7 +222,7 @@ pub fn build(
         let by_slug: HashMap<&str, &Item> = q.items.iter().map(|i| (i.slug.as_str(), i)).collect();
         for r in home::running(state, q) {
             let item = by_slug[r.slug.as_str()];
-            match owner(item, &labs, repos).and_then(|o| at(&mut cards, &o)) {
+            match owner(item, &labs).and_then(|o| at(&mut cards, &o)) {
                 Some(k) => cards[k].running.push(r),
                 None => out.unlinked.push(format!("{}: {}", r.project, r.title)),
             }
@@ -255,7 +232,7 @@ pub fn build(
             .iter()
             .filter(|i| matches!(i.state, State::Waiting | State::Queued))
         {
-            match owner(i, &labs, repos).and_then(|o| at(&mut cards, &o)) {
+            match owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
                 Some(k) if i.state == State::Waiting => cards[k].waiting += 1,
                 Some(k) => cards[k].queued += 1,
                 None => out.unlinked.push(format!("{}: {}", i.project, i.title())),
@@ -300,9 +277,6 @@ pub fn summary(c: &Card) -> String {
 /// both call this, so the chip, the phone, the web tab and the TUI agree.
 pub fn gather() -> Projects {
     let runner = crate::session_actions::System;
-    let repos = std::fs::read_to_string(map_path())
-        .map(|t| repos(&t))
-        .unwrap_or_default();
     let state = std::fs::read_to_string(crate::boards::fleet_state())
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -310,7 +284,7 @@ pub fn gather() -> Projects {
     let queue = Queue::read(&runner);
     let feed = crate::tasks::feed(&runner).ok();
     match stats(&runner) {
-        Ok(stats) => build(&stats, feed.as_ref(), &state, Some(&queue), &repos),
+        Ok(stats) => build(&stats, feed.as_ref(), &state, Some(&queue)),
         Err(e) => Projects {
             errors: vec![e],
             ..Default::default()
@@ -405,7 +379,7 @@ mod tests {
         let s: Vec<Stats> =
             serde_json::from_value(json!([{"profile": "bnb", "name": "a", "prio": "focus"}, {"profile": "bnb", "name": "b"}]))
                 .unwrap();
-        let p = build(&s, None, &json!({}), None, &HashMap::new());
+        let p = build(&s, None, &json!({}), None);
         let prio = |n: &str| p.cards.iter().find(|c| c.name == n).unwrap().prio.clone();
         assert_eq!(prio("a"), "focus");
         assert_eq!(prio("b"), "");
@@ -452,43 +426,31 @@ mod tests {
         }
     }
 
-    fn item(slug: &str, state: State, project: &str, from: Option<&str>) -> Item {
+    fn item(slug: &str, state: State, project: &str, row: Option<&str>) -> Item {
         Item {
             slug: slug.into(),
             state,
             project: project.into(),
             task: format!("Do {slug}."),
-            from: from.map(String::from),
+            row: row.map(String::from),
             ..Default::default()
         }
     }
 
     #[test]
-    fn queue_items_join_by_board_origin_name_or_one_repo_and_the_rest_are_unlinked() {
+    fn queue_items_join_by_ledger_row_or_shared_name_and_the_rest_are_unlinked() {
         let stats = [
             st("agent-runtime", 1),
             st("notes-cockpit", 9),
             st("trader", 0),
         ];
-        let repos: HashMap<String, String> = [
-            ("agent-runtime", "dotfiles"),
-            ("notes-cockpit", "dotfiles"),
-            ("trader", "freqtrade"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.into(), b.into()))
-        .collect();
         let q = Queue {
             items: vec![
-                item(
-                    "a",
-                    State::Running,
-                    "dotfiles",
-                    Some("board:agent-runtime:row"),
-                ),
+                item("a", State::Running, "dotfiles", Some("agent-runtime:ar-1")),
                 item("b", State::Running, "trader", None),
-                item("c", State::Waiting, "freqtrade", None),
+                item("c", State::Waiting, "freqtrade", Some("trader:tr-2")),
                 item("d", State::Queued, "dotfiles", None),
+                item("f", State::Queued, "freqtrade", None),
                 item("e", State::Done, "trader", None),
             ],
             ..Queue::default()
@@ -508,7 +470,7 @@ mod tests {
             }],
             ..Feed::default()
         };
-        let p = build(&stats, Some(&feed), &json!({}), Some(&q), &repos);
+        let p = build(&stats, Some(&feed), &json!({}), Some(&q));
         let names: Vec<&str> = p.cards.iter().map(|c| c.name.as_str()).collect();
         // trader runs one and waits one; agent-runtime runs one; notes-cockpit closed most.
         assert_eq!(names, ["trader", "agent-runtime", "notes-cockpit"]);
@@ -521,19 +483,10 @@ mod tests {
         assert_eq!(p.cards[1].running[0].slug, "a");
         assert_eq!(
             p.unlinked,
-            ["dotfiles: Do d"],
-            "two lab projects share dotfiles"
+            ["dotfiles: Do d", "freqtrade: Do f"],
+            "no row and no lab of that name: unlinked, never guessed from the repo"
         );
         assert!(p.cards[0].in_flight() && !p.cards[2].in_flight());
-    }
-
-    #[test]
-    fn repos_read_the_registry_and_skip_entries_without_one() {
-        let map = r#"{"trackers": {"agent-runtime": {"repo": "dotfiles"}, "home-config": {"lab": "personal"}, "x": "y"}}"#;
-        let r = repos(map);
-        assert_eq!(r.len(), 1);
-        assert_eq!(r["agent-runtime"], "dotfiles");
-        assert!(repos("not json").is_empty());
     }
 
     #[test]
