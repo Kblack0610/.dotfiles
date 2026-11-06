@@ -77,6 +77,10 @@ case "$verb" in
       cat "$FIX/tmux.panes"
     fi
     ;;
+  list-clients)
+    # tmux.clients.<server>: that server's clients, each line already in the -F shape asked.
+    [ -n "$server" ] && [ -f "$FIX/tmux.clients.$server" ] && cat "$FIX/tmux.clients.$server"
+    ;;
   has-session)
     # `-L <server>` with a tmux.sessions.<server> fixture answers from that file alone,
     # ahead of the global switches below, so one server can hold a session the current
@@ -104,7 +108,7 @@ case "$verb" in
     # servers.sh `session_count` pipes this to `wc -l`, and cmd_land refuses to attach
     # to a world whose count is 0 ("every manifest entry's directory is missing"). An
     # unmodelled command answers with silence, which reads as that empty world -- so
-    # every hop/back test would die on a guard about a condition it never set up.
+    # every hop test would die on a guard about a condition it never set up.
     #
     # Default is ONE session, matching has-session above: a stub that does not model a
     # command must not change the behaviour of callers that never cared about it. Drop
@@ -156,22 +160,10 @@ case "$verb" in
     # servers.sh `_current_loc` asks for all three at once, on purpose -- the fields have
     # to describe one moment. It must be matched BEFORE socket_path and session_name,
     # both of which it contains; either of those arms would answer a 3-field question
-    # with 1 field and `back` would read a server name as a session.
+    # with 1 field and toggle would read a server name as a session.
     # STUB_SOCKET empty is the "no current client" case: _current_loc must reject it.
     if printf '%s ' "$@" | grep -q 'socket_path.*session_name.*window_index'; then
       printf '%s\t%s\t%s\n' "${STUB_SOCKET:-}" "${STUB_SESSION:-}" "${STUB_WINDOW_INDEX:-}"
-    elif [ "${*: -1}" = '#{window_index}' ]; then
-      # servers.sh `_record_back` asks which window a hop is headed for. Empty by default:
-      # that window does not exist yet.
-      echo "${STUB_DEST_WINDOW_INDEX:-}"
-    elif printf '%s ' "$@" | grep -q 'client_last_session'; then
-      # servers.sh `back` asks which session tmux would return to, to skip the landing
-      # page. Empty by default: the "no last session" a fresh attach has.
-      echo "${STUB_CLIENT_LAST_SESSION:-}"
-    elif printf '%s ' "$@" | grep -q 'tmx_window'; then
-      # servers.sh `_is_board` asks a window's declared identity. Empty by default, which
-      # is an ordinary window; STUB_WINDOW_IDENT=watch makes it a declared board.
-      echo "${STUB_WINDOW_IDENT:-}"
     elif printf '%s ' "$@" | grep -q 'window_activity'; then
       f="$FIX/tmux.activity.$(target_key "$target")"
       [ -f "$f" ] && cat "$f"

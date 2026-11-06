@@ -13,6 +13,7 @@
 #   mine [--session s | --sid id]  the slug of the running or waiting item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
+#   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
@@ -32,6 +33,9 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+# The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
+# shellcheck source=../lib/plan-phases.sh
+. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
@@ -86,8 +90,7 @@ fm_get() { # file key
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
 
 # item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
-# naming the item, its project, its row's key (as item_rec reads `row`), its PR, merge commit and
-# ticket.
+# naming the item, its project, its row's key (as item_rec reads `row`), its PR and merge commit.
 item_event() {
   local action=$1 f=$2 row title
   shift 2
@@ -95,7 +98,7 @@ item_event() {
   [ -n "$row" ] || case "$(fm_get "$f" from)" in board:*) row="$(fm_get "$f" from)" row="${row#board:}" ;; esac
   chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
-    --sha "$(fm_get "$f" merged)" --ticket "$(fm_get "$f" ticket)" "$@"
+    --sha "$(fm_get "$f" merged)" "$@"
 }
 
 slugify() {
@@ -366,11 +369,6 @@ project_resolve() {
 # (the playground's games, dotfiles' agent-runtime and notes-cockpit): project_credit at add,
 # cmd_attribute at land. Both only move an item between projects that share one checkout.
 
-# plan_epic <plan> -> the `<code>-<N>` of the plan's `epic:` line, or nothing.
-plan_epic() {
-  [ -f "$1" ] && sed -nE 's/^epic: *([a-z0-9]+-[0-9]+)([^0-9].*)?$/\1/p' "$1" | head -1
-}
-
 # project_credit <project> <from> <epic> -> the project the item's own evidence names: the sheet its
 # row is on (`from: board:<p>:<key>`), else the sheet whose row code the epic id `<code>-<N>`
 # carries; when that project shares <project>'s checkout. Else <project>.
@@ -562,9 +560,6 @@ item_weight() {
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
 # Every slug is checked before any item is written.
 add_plan() {
-  # The one reader of a plan's `## Phases` checklist, shared with fleet-sessions; only this verb needs it.
-  # shellcheck source=../lib/plan-phases.sh
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || die "cannot read plan-phases.sh"
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
   [ -n "$project" ] || project="$(project_of_cwd)"
@@ -764,7 +759,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged ticket cost_usd gateway_cost_usd work_min report note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged cost_usd gateway_cost_usd work_min report note status area origin lane profile from touches row "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -800,17 +795,7 @@ cmd_attribute() {
   lock
   f="$(find_item "$1" any)"; [ -n "$f" ] || die "no item: $1"
   project="$(fm_get "$f" project)"
-  res="$(jq -nRr --slurpfile m "$AQ_MAP" --arg p "$project" '
-    ($m[0].trackers // {}) as $t
-    | (($t[$p] | objects | .repo) // $p) as $repo
-    | [$t | to_entries[] | select((.value | objects | .repo) == $repo and (.value.path // "") != "")
-       | {key, dir: (.value.path | rtrimstr("/") + "/")}] as $cands
-    | [inputs | select(. != "")] as $files
-    | [$cands[] | .dir as $d | {key, n: ([$files[] | select(startswith($d))] | length)} | select(.n > 0)]
-    | sort_by(-.n, .key)
-    | select(length > 0)
-    | (if length > 1 and .[0].n == .[1].n then "" else .[0].key end) + "\t" + (map(.key) | sort | join(" "))')" ||
-    die "could not read $AQ_MAP"
+  res="$(credit_of "$project")" || die "could not read $AQ_MAP"
   [ -n "$res" ] || return 0
   win="${res%%$'\t'*}" touches="${res#*$'\t'}"
   header_set "$f" touches "$touches"
@@ -820,6 +805,28 @@ cmd_attribute() {
   else
     echo "touches $touches"
   fi
+}
+
+# credit_of <project> < changed-paths -> "<winner>\t<touches>", or nothing when no path matches: the
+# attribution rule itself, shared by `attribute` (which records it) and `credit-of` (which only
+# prints it, for credit-backfill). The winner is empty on a tie.
+credit_of() {
+  jq -nRr --slurpfile m "$AQ_MAP" --arg p "$1" '
+    ($m[0].trackers // {}) as $t
+    | (($t[$p] | objects | .repo) // $p) as $repo
+    | [$t | to_entries[] | select((.value | objects | .repo) == $repo and (.value.path // "") != "")
+       | {key, dir: (.value.path | rtrimstr("/") + "/")}] as $cands
+    | [inputs | select(. != "")] as $files
+    | [$cands[] | .dir as $d | {key, n: ([$files[] | select(startswith($d))] | length)} | select(.n > 0)]
+    | sort_by(-.n, .key)
+    | select(length > 0)
+    | (if length > 1 and .[0].n == .[1].n then "" else .[0].key end) + "\t" + (map(.key) | sort | join(" "))'
+}
+
+cmd_credit_of() {
+  [ $# -eq 1 ] || die "usage: agent-queue credit-of <project> < changed-paths"
+  [ -f "$AQ_MAP" ] || return 0
+  credit_of "$1" || die "could not read $AQ_MAP"
 }
 
 # move <slug> <state> [--status s] [--if <state>] -- --if is the compare in a compare-and-set: the
@@ -900,8 +907,6 @@ phases_ticked() {
   local plan phases
   plan="$(fm_get "$1" plan)" phases="$(fm_get "$1" phases)"
   [ -n "$plan" ] && [ -n "$phases" ] && [ -f "$plan" ] || return 1
-  # shellcheck source=../lib/plan-phases.sh
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || return 1
   plan_phase_list "$plan" | jq -e --arg ph "$phases" '
     . as $all | ($ph | split(" ") | map(tonumber? // empty)) as $n
     | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null
@@ -1049,6 +1054,7 @@ cmd_stats() {
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | attribute | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

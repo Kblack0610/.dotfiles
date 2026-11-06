@@ -30,6 +30,7 @@ const dialog = (q) => DIALOG[q.kind] || "turn";
 // card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
 // amber, failing is red; the three dialog kinds take categorical colours.
 const NEED_KINDS = {
+  stopped: "Stopped",
   plan: "Plan to approve",
   ask: "Question",
   perm: "Permission",
@@ -71,9 +72,10 @@ function judgeText(a) {
   const j = a.judge || "";
   if (!j) return "";
   const live = a.answered_by === "judge", ans = j.startsWith("answer:") ? `"${j.slice(7)}"` : "";
+  const unproven = ", type not proven";
   const what = j === "human" ? "deferred"
-    : j === "take-recommend" ? (live ? "answered" : "would take the recommendation")
-    : ans ? `${live ? "answered" : "would answer"} ${ans}` : j;
+    : j === "take-recommend" ? (live ? "answered" : `would take the recommendation${unproven}`)
+    : ans ? (live ? `answered ${ans}` : `would answer ${ans}${unproven}`) : j;
   return esc(`Judge: ${what}${a.rule ? ` (${a.rule})` : ""}${a.reason ? ` - ${a.reason}` : ""}`);
 }
 

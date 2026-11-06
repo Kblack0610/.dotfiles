@@ -1521,6 +1521,21 @@ SH
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
 }
 
+@test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  printf '#!/usr/bin/env bash\n[ "$*" = "stopped --json" ] && cat "$HOME/stopped.json" 2>/dev/null && exit 1; exit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -c .stopped "$doc")" = '[]' ]
+  echo '{"runner":"fleet-dispatch","since":1000,"why":"load 40","line":"Dispatch stopped 2h: load 40. Clears when the machine'"'"'s load falls."}' > "$HOME/stopped.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.stopped[0].line' "$doc")" = "Dispatch stopped 2h: load 40. Clears when the machine's load falls." ]
+  [ "$(jq -r '.stopped[0].since' "$doc")" = 1000 ]
+}
+
 @test "--write: a pass older than the document on disk leaves it alone" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"

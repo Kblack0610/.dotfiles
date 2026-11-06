@@ -23,7 +23,7 @@ A project with no stage sorts between dev and draft and is dispatched like a dra
 
 ## Requirements
 
-Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s]` runs the rows: `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
+Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s] [--json]` runs the rows (`--json` gives met, total, fail, human, todo, the gate and each row, for a page to read): `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
 
 Enforced from: 2026-11-19
 

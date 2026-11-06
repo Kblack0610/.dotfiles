@@ -81,6 +81,8 @@ panel_conf_bindings() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ && /display-popup/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       table = "root"
       if (match(line, /-T[[:space:]]+[^[:space:]]+/)) {
         t = substr(line, RSTART, RLENGTH); sub(/-T[[:space:]]+/, "", t); table = t
@@ -259,7 +261,7 @@ panel_ratchet() {
     "$fn" "$path" || offenders+=("$path")
   done < <(panel_rows)
 
-  # Uniq: a script bound to two keys (servers.sh is S, C-s and A) must count once.
+  # Uniq: a script bound to two keys (servers.sh is S and H) must count once.
   n="$(printf '%s\n' "${offenders[@]+"${offenders[@]}"}" | sort -u | grep -c . || true)"
 
   if [ "$n" -gt "$max" ]; then
@@ -290,6 +292,8 @@ root_binds() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
       line = $0
+      # A -N note describes the bind; it is neither the key nor the command.
+      sub(/[[:space:]]-N[[:space:]]+"[^"]*"/, "", line)
       if (line ~ /^[[:space:]]*(bind|bind-key)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-T[[:space:]]/) next
       n = split(line, F, /[[:space:]]+/)
       key = ""

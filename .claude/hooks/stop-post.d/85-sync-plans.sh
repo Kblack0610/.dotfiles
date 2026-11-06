@@ -59,6 +59,17 @@ else
 fi
 [ -n "$PROJECT_NAME" ] || exit 0
 
+# plan_epic_dir <plan> -> $PLANS_ROOT/<project> for the project whose registry `code` the plan's
+# `epic: <code>-<N>` line carries, or nothing (no line, no map, an unknown code).
+plan_epic_dir() {
+  local code map proj
+  code=$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$1" 2>/dev/null | head -1)
+  [ -n "$code" ] || return 0
+  map="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+  proj=$(jq -r --arg c "$code" 'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$map" 2>/dev/null)
+  [ -n "$proj" ] && printf '%s\n' "$PLANS_ROOT/$proj"
+}
+
 # Created only when a plan is copied: a session that wrote no plan (a headless run in a
 # mktemp dir, a reaped worktree's husk) must not leave an empty project dir behind.
 DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
@@ -73,12 +84,16 @@ while IFS= read -r f; do
   # (3) first writer wins. A basename already held by ANOTHER project stays
   # there; copying it here is exactly the cross-project fan-out being removed.
   # -print -quit stops at the first hit, so this stays cheap over a large tree.
+  # A plan with an `epic: <code>-<N>` line is filed under the project that epic's row code names,
+  # not the session's: a game's plan written from the playground checkout counts on the game.
+  dest=$(plan_epic_dir "$f")
+  dest=${dest:-$DEST_DIR}
   base=${f##*/}
   owned_elsewhere=$(find "$PLANS_ROOT" -mindepth 2 -type f -name "$base" \
-    -not -path "$DEST_DIR/*" -print -quit 2>/dev/null)
+    -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue
 
-  mkdir -p "$DEST_DIR" 2>/dev/null && cp -p "$f" "$DEST_DIR/" 2>/dev/null || true
+  mkdir -p "$dest" 2>/dev/null && cp -p "$f" "$dest/" 2>/dev/null || true
 done < <(find "$SRC_DIR" -maxdepth 1 -type f -name '*.md' -mtime -1 2>/dev/null)
 
 exit 0

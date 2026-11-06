@@ -87,7 +87,7 @@ Sessions are split across tmux servers, one per socket (`hub`, `lab`, ... see
 live socket in the tmux socket dir, calls each with `tmux -L <server>`, and names a
 target `<server>/<session>:<window>`. A jump inside the current server is a
 `switch-client`; anything else goes through `tmx goto <server> <session:window>`,
-which owns the detach-and-attach hop and the Prefix+L way back.
+which owns the detach-and-attach hop.
 
 ## Layout
 

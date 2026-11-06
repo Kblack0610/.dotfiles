@@ -7,35 +7,45 @@
 # A policy defines its rules as bullets that open with the id in parentheses, `- (gate) ...`;
 # the policy file (the agent conf's PROMPT) is the one list, so a rule added there is valid
 # here with no code change. A dispatch verdict names one, and naming none of them is an `error`;
-# an ask verdict's class is derived from its score (judge_derive). A verdict stays in its subject's store (an ask file's judge_* fields, fleet-dispatch's
+# an ask verdict's rule is derived from its score (judge_derive). A verdict stays in its subject's store (an ask file's judge_* fields, fleet-dispatch's
 # verdicts.jsonl) and carries judge_call, the id of its line in calls.jsonl; the caller passes it
 # to agentctl-run as AGENTCTL_CALL_ID.
 
 # shellcheck source=../src/agent-run/lib/calls.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib/calls.sh"
 
+# JQ_EPOCH: a jq def, an ISO time with its offset to epoch seconds; null on anything else. jq's own
+# date parsers ignore the offset.
+# shellcheck disable=SC2034 # read by agent-ask and judge-eval
+JQ_EPOCH='def epoch: if . == null or . == "" then null else
+    (.[0:19] + "Z" | fromdateiso8601? // null) as $u | if $u == null then null else
+    $u - ((.[19:] | capture("(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})")
+           | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) // 0) end end;'
+
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 
-# judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON with the
-# class that decides it, `rule`, the criteria that held, `met`, and `reason` and `answer`. Nothing
-# on any other reply, so a criterion left out can never read as clear. A bundle counts its worst
-# item: a human criterion on any decision, a needed one missing on any decision.
+# judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON: `rule`,
+# what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
+# type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
+# quote behind `rule` (for an answerable verdict, what grounded it), and `reason` and `answer`.
+# `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
+# Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
+# counts its worst item: a human criterion on any decision, a needed one missing on any decision.
 judge_derive() {
   jq -c '
-    ["knowledge", "external", "taste", "unclear-ask"] as $human
-    | ["reversible", "grounded"] as $needed
-    | ($human + $needed + ["restates-rule"]) as $all
-    | select(type == "object" and (.decisions | type) == "array" and (.decisions | length) > 0
+    ["knowledge", "external", "taste", "unclear-ask", "against-precedent"] as $human
+    | ["reversible"] as $needed
+    | ($human + $needed + ["grounded"]) as $all
+    | select(type == "object" and (.type | type) == "string" and .type != ""
+        and (.decisions | type) == "array" and (.decisions | length) > 0
         and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")))
     | .decisions as $d
     | def holds($c): if ($human | index($c)) then any($d[]; .[$c].met) else all($d[]; .[$c].met) end;
-      {rule: first(
-         ($human[] | select(holds(.))),
-         ($needed[] | select(holds(.) | not)),
-         ("restates-rule" | select(holds(.))),
-         "clear"),
-       met: ([$all[] | select(holds(.))] | join(" ")),
+      first(($human[] | select(holds(.))), ($needed[] | select(holds(.) | not)), null) as $by
+    | {rule: ($by // .type), answerable: ($by == null), type, met: ([$all[] | select(holds(.))] | join(" ")),
+       evidence: ([$d[] | select($by == null or (.[$by].met == (($human | index($by)) != null)))
+                   | .[$by // "grounded"].evidence | select(. != "")] | first // ""),
        reason: (.reason // ""), answer: (.answer // "")}' 2>/dev/null | head -1
 }
 

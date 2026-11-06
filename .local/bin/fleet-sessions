@@ -1074,16 +1074,18 @@ json_rows() {
 # reader never sees half of one, and a pass that started before the one already written
 # (a slow 10-minute pass finishing after an ask-event pass) leaves the newer document alone.
 write_state() {
-  local t="$1" rows="$2" json dir tmp asks prev
+  local t="$1" rows="$2" json dir tmp asks prev stopped
   [ -f "$CACHE/eta" ] || eta_cells > "$CACHE/eta"
   json="$( [ -n "$rows" ] && json_rows <<<"$rows")"
   [ -n "$json" ] && printf '%s\n' "$json"
   dir="$(dirname "$STATE_FILE")"
   mkdir -p "$dir" || return 1
   asks="$(agent-ask list --all --pending 2>/dev/null)" || echo agent-ask >> "$CACHE/unreadable"
+  # A hold that has stopped every dispatch pass (hub Home's Stopped row); rc 1 is "stopped", not a failure.
+  stopped="$(fleet-dispatch stopped --json 2>/dev/null)"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
-       --arg asks "$asks" --arg rows "$json" --rawfile eta "$CACHE/eta" '
+       --arg asks "$asks" --arg rows "$json" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
@@ -1100,7 +1102,8 @@ write_state() {
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
                    session: (if (.[12] // "") == "" then null else .[12] end),
                    recommend: (if (.[10] // "") == "" then null else .[10] end),
-                   judge: (if (.[16] // "") == "" then null else .[16] end)}]}
+                   judge: (if (.[16] // "") == "" then null else .[16] end)}],
+         stopped: [$stopped | split("\n")[] | fromjson? | objects]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
       # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.

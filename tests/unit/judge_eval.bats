@@ -201,13 +201,13 @@ ask_fixture() {
 
 # --- replay ---------------------------------------------------------------------------------
 
-# replay_stub: a judge that logs its input and scores every ask clear.
+# replay_stub: a judge that logs its input and scores every ask an answerable ship_deploy.
 replay_stub() {
   cat > "$SANDBOX/bin/replay-stub" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HOME/replay.calls"
-printf '{"decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
-  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true},"restates-rule":{"evidence":"","met":false}'
+printf '{"type":"ship_deploy","decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
+  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true}'
 SH
   chmod +x "$SANDBOX/bin/replay-stub"
   export JUDGE_EVAL_REPLAY_CMD=replay-stub
@@ -222,13 +222,23 @@ SH
   local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
   run --separate-stderr "$JUDGE_EVAL" replay --out "$HOME/replay" --json
   assert_success
-  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "clear") | [.tp, .fp]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[1,1]'
   assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
   assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
   # the copy the judge saw has the question and no answer
   run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
   assert_output 0
   assert_equal "$(grep -c '^status: pending' "$HOME/replay/blind/demo/right.md")" 1
+}
+
+@test "replay: a copy reads the real store's earlier disagreements, never its own answer" {
+  replay_stub
+  ask early judge=human answer=no created=2026-11-01T10:00:00-0800 answered_at=2026-11-01T11:00:00-0800
+  ask late judge=human answer=no created=2026-11-02T10:00:00-0800 answered_at=2026-11-02T11:00:00-0800
+  run "$JUDGE_EVAL" replay
+  assert_success
+  assert_equal "$(grep -c '^early (demo): ' "$HOME/replay.calls")" 1
+  assert_equal "$(grep -c '^late (demo): ' "$HOME/replay.calls")" 0
 }
 
 @test "replay: an answer left on the copy stops the run before any call (negative control)" {
