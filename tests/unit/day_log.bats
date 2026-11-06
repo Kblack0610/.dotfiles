@@ -41,9 +41,11 @@ EOF
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
-  # queue-stub: agent-queue stats --json serves $SANDBOX/queue, and fails while it is missing
+  # queue-stub: agent-queue list serves $SANDBOX/items (the work ledger), stats serves $SANDBOX/queue;
+  # each fails while its file is missing
   export DAYLOG_QUEUE_CMD=queue-stub
-  printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/queue" > "$SANDBOX/bin/queue-stub"
+  printf '#!/usr/bin/env bash\n[ "$1" = list ] && exec cat "%s"\nexec cat "%s"\n' "$SANDBOX/items" "$SANDBOX/queue" > "$SANDBOX/bin/queue-stub"
+  : > "$SANDBOX/items"
   echo '{"flow":{"2026-10-28":{"queued":4,"started":3,"waiting":1,"done":2,"failed":1,"lead_minutes":{"n":2,"p50":30,"p90":50},"wait_minutes":{"n":1,"p50":10,"p90":10},"run_minutes":{"n":2,"p50":20,"p90":40}}}}' > "$SANDBOX/queue"
   # fleet-stub: fleet-sessions stages --json serves $SANDBOX/stages and logs its args
   export DAYLOG_FLEET_CMD=fleet-stub
@@ -186,24 +188,25 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output "$(printf '%s\n' '3	cfg' '2	tools' '1	raiders-game' '4	cfg')"
 }
 
-@test "a PR is credited to the live session whose worktree is that repo, not a same-number PR elsewhere" {
-  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'feat: y' 2026-10-28T20:00:00Z; } | merged
-  echo '{"sessions":[{"target":"lab/game-agent-3:1","pr":"7","cwd":"/w/game-agent-3"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"
+@test "a merged PR is credited to the work item whose pr: is that repo and number, and takes its scope from the item's area" {
+  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'feat(ci): y' 2026-10-28T20:00:00Z; } | merged
+  printf '%s\n' '{"slug":"raiders-x","pr":"o/game#7","area":"hovercraft"}' '{"slug":"no-pr","pr":null}' \
+    '{"slug":"bad-pr","pr":"7"}' > "$SANDBOX/items"
   run "$SUBJECT" snapshot --date 2026-10-28
-  run rec -c '[.merged[] | {repo, by}]' 2026-10-28
-  assert_output '[{"repo":"game","by":"agent-3"},{"repo":"tools","by":null}]'
+  assert_success
+  run rec -c '[.merged[] | {repo, by, scope}]' 2026-10-28
+  assert_output '[{"repo":"game","by":"raiders-x","scope":"hovercraft"},{"repo":"tools","by":null,"scope":"ci"}]'
 }
 
-@test "a credit seen on an earlier pass is kept after the session has gone, and outcomes fill the rest" {
-  { pr game 7 'feat: x' 2026-10-28T20:00:00Z; pr game 8 'feat: y' 2026-10-28T21:00:00Z; } | merged
-  echo '{"sessions":[{"target":"lab/game-agent-3:1","pr":"7","cwd":"/w/game-agent-3"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"
+@test "a pass that cannot read the ledger keeps the credits its last record held and names it" {
+  pr game 7 'feat: x' 2026-10-28T20:00:00Z | merged
+  echo '{"slug":"raiders-x","pr":"o/game#7"}' > "$SANDBOX/items"
   "$SUBJECT" snapshot --date 2026-10-28
-  echo '{"sessions":[],"main":[],"asks":[]}' > "$DAYLOG_STATE"
-  mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
-  echo '{"session_id":"s","title":"game-agent-9","prs":[{"repo":"O/game","number":8,"state":"MERGED"}]}' > "$DAYLOG_OUTCOMES_DIR/game/2026-10.jsonl"
+  rm "$SANDBOX/items"
   run "$SUBJECT" snapshot --date 2026-10-28
-  run rec -c '[.merged[].by]' 2026-10-28
-  assert_output '["agent-3","game-agent-9"]'
+  assert_success
+  run rec -c '[[.merged[].by], .unreadable]' 2026-10-28
+  assert_output '[["raiders-x"],["queue ledger"]]'
 }
 
 @test "a blind pass keeps the last good merged list and names what it could not read" {

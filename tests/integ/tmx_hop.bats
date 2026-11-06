@@ -54,7 +54,6 @@ at() {
 }
 
 @test "a world with a manifest still hops" {
-  # Not a verb's name (client, popup, ...): a verb wins over a world of the same name.
   printf 'acme ~\n' > "$TMUX_SERVERS_DIR/acme.conf"
   at hub daily 0
   run "$TMX" acme
