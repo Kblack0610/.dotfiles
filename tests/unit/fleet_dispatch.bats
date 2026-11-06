@@ -1282,6 +1282,68 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   assert_not_called 'wt new'
 }
 
+# 2026-11-06: reds sat queued behind a machine held by Unity CI (load 1.4x, 96.5 C), which the run
+# floor does not lift. The human chose a floor of red starts of its own.
+red_held_machine() {
+  project game beta "$SANDBOX/repos/game"
+  room_on_floor
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_RED_FLOOR=2
+}
+
+@test "red floor: a red starts past fleet-assess HOLD, load, real idle and the weekly pace; a plain item does not" {
+  red_held_machine
+  agent-queue add --project game --slug p --priority urgent "plain p" >/dev/null
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
+  # Negative control first: no red floor, the same machine starts nothing.
+  export DISPATCH_RED_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+  export DISPATCH_RED_FLOOR=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r on the red floor (DISPATCH_RED_FLOOR=2)'
+  refute_output --partial 'started queue item p'
+  assert_called 'account=.claude-personal'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {
+  red_held_machine
+  export DISPATCH_RED_FLOOR=1
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project game --slug r2 --tags 'red cause:b' "fix r2" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item r1 on the red floor'
+  assert_output --partial 'the pass stops after 1 started'
+  refute_output --partial 'started queue item r2'
+}
+
+@test "red floor: open only for a red start, under DISPATCH_RED_FLOOR counting live reds and this pass's" {
+  live_reds() { printf '%s\n' "${LIVE[@]}"; }
+  export DISPATCH_RED_FLOOR=2
+  LIVE=(a); RED_PASS=1 run red_floor_open; assert_success
+  LIVE=(a b); RED_PASS=1 run red_floor_open; assert_failure
+  LIVE=(a); RED_STARTED=1 RED_PASS=1 run red_floor_open; assert_failure
+  LIVE=(); RED_PASS=0 run red_floor_open; assert_failure
+  LIVE=(); DISPATCH_RED_FLOOR=0 RED_PASS=1 run red_floor_open; assert_failure
+}
+
+@test "red floor: agent-hold and an account in its reserve still hold a red" {
+  red_held_machine
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  stub agent-hold 'exit 0'
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 90% of its week used, inside the last 15% kept for the human" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'inside the last 15% kept for the human'
+  assert_not_called 'wt new'
+}
+
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
   # the gate's ask finds room; the start's ask, a moment later, finds none

@@ -15,8 +15,9 @@ joins them. Who owns which number:
                              (first-turn median), compactions, tokens by model
 A day is the local calendar day, the window both tools are given exactly.
 
-check exits 0 when every watched number is within TOKENS_DRIFT_PCT of the median of the
-TOKENS_BASELINE_DAYS days before it, 1 on a drift, 2 when there is no fresh snapshot. It only
+check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
+median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
+(a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
 reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Agent runtime").
 """
 import argparse
@@ -37,15 +38,17 @@ RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
 CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
+SUSPECT_PCT = float(ENV.get("TOKENS_SUSPECT_PCT", "50"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
 MIN_BASELINE = 3      # fewer earlier days than this and there is no median to compare with
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
 TOP_COMMANDS = 20
 TOP_TARGETS = 20      # the files whose reads cost the most responses that day
-# The watched numbers: (key, label). Each is a ratio, so a busy or a quiet day alone moves none.
-WATCHED = (("context_per_response", "context per response"),
-           ("carried_share", "carried share"),
-           ("start_context_median", "start-context median"))
+# The watched numbers: (key, label, worse), worse the sign of a move for the worse. Each is a ratio,
+# so a busy or a quiet day alone moves none.
+WATCHED = (("context_per_response", "context per response", 1),
+           ("carried_share", "carried share", 1),
+           ("start_context_median", "start-context median", 1))
 
 
 def run_json(cmd, timeout=3600):
@@ -208,8 +211,8 @@ def check():
         print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the nightly agentctl token-usage run stopped")
         return 2
     base = [x for x in (load(p) for p in files[-1 - BASELINE_DAYS:-1]) if x]
-    drift, said = [], []
-    for key, label in WATCHED:
+    drift, suspect, said = [], [], []
+    for key, label, worse in WATCHED:
         now = newest.get(key)
         vals = [x[key] for x in base if x.get(key) is not None]
         if now is None or len(vals) < MIN_BASELINE:
@@ -219,10 +222,14 @@ def check():
         pct = 100 * (now - med) / med if med else 0.0
         txt = f"{label} {num(now)} vs 7-day median {num(med)} ({pct:+.0f}%)"
         said.append(txt)
-        if abs(pct) > DRIFT_PCT:
+        if pct * worse > DRIFT_PCT:
             drift.append(txt)
-    if drift:
-        print(f"{newest['date']}: drift past {DRIFT_PCT:.0f}%: " + "; ".join(drift))
+        elif -pct * worse > SUSPECT_PCT:
+            suspect.append(txt)
+    out = ([f"worse past {DRIFT_PCT:.0f}%: " + "; ".join(drift)] if drift else []) \
+        + ([f"better past {SUSPECT_PCT:.0f}%, measurement suspect: " + "; ".join(suspect)] if suspect else [])
+    if out:
+        print(f"{newest['date']}: " + "; ".join(out))
         return 1
     print(f"{newest['date']}: " + "; ".join(said))
     return 0

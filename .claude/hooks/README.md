@@ -94,7 +94,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
 - `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
 - `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show; `tokens json --date D` is the day's snapshot, which `day-log` copies into `.agents`.
-- `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 past 25% either way, and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
+- `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 on a rise past 25% (worse) or a drop past 50% (measurement suspect; a drop inside that is an improvement and stays quiet), and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
