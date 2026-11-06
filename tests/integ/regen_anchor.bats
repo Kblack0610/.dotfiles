@@ -334,13 +334,13 @@ EOF
   assert_success
 }
 
-@test "regen-anchor: a long lesson is cut on a word boundary, in ASCII" {
-  # Cut mid-word, `~/.dotfiles-private` became `~/.d` plus an ellipsis: a dead path.
+@test "regen-anchor: the anchor carries no lessons digest; the preflight ranks lessons itself" {
   seed_anchor
-  { printf -- '- **2026-11-05** '; for i in $(seq 1 40); do printf 'word%02d ' "$i"; done; printf '%s\n' '~/.dotfiles-private/x'; } > "$HOME/.agent/lessons/proj.md"
+  echo "- **2026-11-05** a lesson" > "$HOME/.agent/lessons/proj.md"
   run bash "$REGEN" proj
   assert_success
-  run grep -E '^- \*\*2026-11-05' "$ANCHOR"
-  assert_output --regexp 'word[0-9]+\.\.\.$'
-  refute_output --partial '…'
+  run cat "$ANCHOR"
+  refute_output --partial 'Recent lessons'
+  refute_output --partial 'a lesson'
+  assert_output --partial 'Lessons: `~/.agent/lessons/proj.md`'
 }
