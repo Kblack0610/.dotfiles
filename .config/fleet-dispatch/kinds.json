@@ -9,7 +9,7 @@
   "ci": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "stages": ["dev", "alpha", "beta", "prod"], "enabled": true},
   "run": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "stages": ["dev", "alpha", "beta", "prod"], "enabled": true},
   "check": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "stages": ["dev", "alpha", "beta", "prod"], "enabled": true},
-  "research": {"rank": 1, "entry": "/deep-research-code", "rung": "propose", "exit": "doc+ask", "stages": ["dev", "alpha", "beta", "prod"], "enabled": false},
+  "research": {"rank": 1, "entry": "/deep-research-code", "rung": "propose", "exit": "doc+ask", "stages": ["dev", "alpha", "beta", "prod"], "enabled": true},
   "design": {"rank": 1, "entry": "/one-pager", "rung": "propose", "exit": "doc+ask", "stages": ["dev", "alpha", "beta", "prod"], "enabled": false},
   "legal": {"rank": 1, "entry": "/compliance", "rung": "propose", "exit": "doc+ask", "stages": ["dev", "alpha", "beta", "prod"], "enabled": false},
   "market": {"rank": 1, "entry": "", "rung": "propose", "exit": "doc+ask", "stages": [], "enabled": false},
