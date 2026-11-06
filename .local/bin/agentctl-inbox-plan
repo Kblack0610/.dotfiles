@@ -52,11 +52,10 @@ refused() {
 
 # plan_row <row json> <board json>: one model call and its writes.
 plan_row() {
-  local row="$1" board="$2" p id lane text raw sheet line details open repo sub prompt out rc wd ans
+  local row="$1" board="$2" p id lane text raw details open repo sub prompt out rc wd ans
   p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
   text="$(jq -r .text <<<"$row")"; raw="$(jq -r .raw <<<"$row")"
-  sheet="$(jq -r .sheet <<<"$row")"; line="$(jq -r .line <<<"$row")"
-  details="$(sed -n "$((line + 1)),\$p" "$sheet" 2>/dev/null | awk '/^  /{print; next} {exit}')"
+  details="$(jq -r '.details[]?' <<<"$row")"
   open="$(jq -r --arg p "$p" --arg l "$lane" --arg id "$id" '.rows[]
     | select(.project == $p and .lane == $l and .state != "done" and .id != $id) | "\(.id)\t\(.text)"' <<<"$board" | cut -c1-160)"
   repo="$(project_repo_path "$p")"; sub="$(project_field "$p" path)"
