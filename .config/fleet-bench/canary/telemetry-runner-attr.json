@@ -1,0 +1,25 @@
+{
+  "id": "telemetry-runner-attr",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#761",
+  "base": "43860a604f711802d2eb4cbc65d5a607ae58360c",
+  "merge": "586c3dd4315d3660d40fb1428008a98829b8a82b",
+  "task": "feat(claude-telemetry): name the agentctl runner in the OTel resource attributes",
+  "accept": [
+    "a runner's name is a resource attribute, and only a runner has one"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/claude_telemetry.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(a runner's name is a resource attribute, and only a runner has one)$",
+      "tests/unit/claude_telemetry.bats"
+    ]
+  }
+}

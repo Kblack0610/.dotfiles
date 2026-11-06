@@ -2546,6 +2546,18 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'Merge with agent-land <N>'
 }
 
+@test "canary: a canary item starts on its task as written: no /one-shot and no PR or landing lines" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
+  cmd_start --item c >/dev/null || fail "start c"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --regexp 'bypassPermissions Canary\\ eval\\ c:\\ run\\ fleet-bench\\ canary\\ start\\ c$'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'agent-land'
+  refute_output --partial 'PR body'
+}
+
 @test "red: a plain item's brief does not name fix-red" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'

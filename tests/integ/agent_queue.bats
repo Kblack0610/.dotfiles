@@ -978,6 +978,19 @@ STUB
   chmod +x "$SANDBOX/bin/notes"
 }
 
+@test "a canary item files no story row, and --from takes only the known origins" {
+  story_notes
+  run "$AQ" add --project level --from canary --tags 'night canary' --slug c1 "check(canary): greet 2026w45"
+  assert_success
+  refute_output --partial 'story'
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ "$(field "$(item queued c1)" from)" = canary ]
+  run "$AQ" add --project game --from robot --slug c2 "x"
+  assert_failure
+  assert_output --partial 'human, shepherd, canary or board'
+}
+
 @test "add files a started story row under the item's epic and links it as row:" {
   story_notes
   run "$AQ" add --project game --epic lv-3 --priority low --slug menus "feat(menu): live main menus #night"
