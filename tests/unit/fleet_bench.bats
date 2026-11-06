@@ -530,6 +530,8 @@ iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
 # A gh stand-in: pr view and run list served from $GHD, every call logged. agentctl-run is
 # stubbed too, so a test can prove the count never launches a model.
+docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; done; }
+drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 stub_review() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
@@ -539,6 +541,8 @@ echo "gh $*" >> "$D/calls.log"
 case "$1 $2" in
   "pr view") cat "$D/pr-$3.json" ;;
   "run list") cat "$D/runs-$6.json" ;;
+  "pr list") cat "$D/repo-prs.json" ;;
+  "api --paginate") n=${3#repos/o/r/pulls/}; cat "$D/files-${n%%/*}" ;;
 esac
 GH
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
@@ -603,6 +607,194 @@ merged_pr() {
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
   run outcome
   assert_output FAILED
+}
+
+# sections_map: o/r has sections, its gate is the Tests workflow
+sections_map() {
+  export BENCH_PROJECT_MAP="$SANDBOX/project-map.json"
+  jq -cn '{trackers: {_comment_wiring: "a string, not a tracker", plain: {lab: "x"},
+    r: {sections: {repo: "o/r", gate: "Tests", roots: ["Assets/Games/*", "docs"]}}}}' > "$BENCH_PROJECT_MAP"
+  echo '[]' > "$GHD/repo-prs.json"
+}
+
+# gate_runs_of <pr> <t offset>: a red Tests run and a green one on head a, a green one on head
+# b after main moved, and a red lint run, which is not the gate
+gate_runs_of() {
+  local s e; s=$(iso $((T0 - 3500))); e=$(iso $((T0 - 2900)))
+  jq -cn --arg s "$s" --arg e "$e" '
+    {createdAt: $s, startedAt: $s, updatedAt: $e} as $r
+    | [$r + {workflowName: "Tests", conclusion: "failure", headSha: "a"},
+       $r + {workflowName: "Tests", conclusion: "success", headSha: "a"},
+       $r + {workflowName: "Tests", conclusion: "success", headSha: "b"},
+       $r + {workflowName: "Lint", conclusion: "failure", headSha: "b"}]' > "$GHD/runs-b$1.json"
+}
+
+@test "review: a repo with sections gets each PR's sections and gate runs, a path in no root is other" {
+  stub_review
+  sections_map
+  merged_pr s1 7 35 -3000
+  gate_runs_of 7
+  printf '%s\n' Assets/Games/Duel/A.cs Assets/Games/Duel/B.cs Assets/Games/Hub/C.cs docs/ops/x.md \
+    Assets/Games/Loose.meta README.md > "$GHD/files-7"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -c '[.sections, .gate_runs, .gate_red, .gate_min, .green_lost, .ci_runs, .ci_red]' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[["Assets/Games/Duel","Assets/Games/Hub","docs","other"],3,1,30,1,4,2]'
+}
+
+@test "review: a repo with no sections makes no extra call and keeps its row shape" {
+  stub_review
+  merged_pr s1 7 35
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -c 'has("sections")' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output false
+  run grep -cE '^gh (api|pr list)' "$GHD/calls.log"
+  assert_output 0
+}
+
+@test "review: a PR no session claims is counted from the repo, once, with no session" {
+  stub_review
+  sections_map
+  merged_pr s1 7 35
+  merged_pr s1 8 10
+  head -n 1 "$HOME/.agent/outcomes/game/2026-10.jsonl" > "$SANDBOX/o" && mv "$SANDBOX/o" "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  echo '[{"number":7},{"number":8}]' > "$GHD/repo-prs.json"
+  docs_prs 7 8
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .session_id])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,"s1"],[8,""]]'
+  run "$SUBJECT" stats --json
+  refute_output --partial '"session_id":""'
+}
+
+@test "a PR no session claims stays out of the KPIs" {
+  mkdir -p "$FLEET_BENCH_DIR" "$HOME/.agent/outcomes/game"
+  ci_row '{session_id: "s1", repo: "o/r", number: 7, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 1}'
+  ci_row '{session_id: "", repo: "o/r", number: 8, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 9}'
+  BENCH_NOW=$T0 run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '.ci_red_per_pr["7d"]' <<<"$output"
+  assert_output 1
+}
+
+@test "review: a PR a session claims after it was counted takes that session; a recount keeps one outcomes dropped" {
+  stub_review
+  sections_map
+  merged_pr s1 7 35
+  merged_pr s1 8 35
+  cp "$HOME/.agent/outcomes/game/2026-10.jsonl" "$SANDBOX/both"
+  head -n 1 "$SANDBOX/both" > "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  echo '[{"number":7},{"number":8}]' > "$GHD/repo-prs.json"
+  docs_prs 7 8
+  BENCH_NOW=$T0 "$SUBJECT" review
+  cp "$SANDBOX/both" "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .session_id])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,"s1"],[8,"s1"]]'
+  drop_sections
+  : > "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .session_id, .sections])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,"s1",["docs"]],[8,"s1",["docs"]]]'
+}
+
+@test "review: a recount killed part way leaves one row per PR" {
+  stub_review
+  sections_map
+  merged_pr s1 7 35
+  merged_pr s2 8 35
+  echo '[]' > "$GHD/repo-prs.json"
+  docs_prs 7 8
+  BENCH_NOW=$T0 "$SUBJECT" review
+  drop_sections
+  # the second PR's file list kills this one review, as a timeout would; by pid, since the unit
+  # tier runs other reviews beside it
+  cat >> "$SANDBOX/bin/gh" <<'GH'
+[ "$3" != 'repos/o/r/pulls/8/files?per_page=100' ] || kill -TERM "$(cat "$D/pid")"
+GH
+  BENCH_NOW=$T0 run bash -c 'echo $$ > "$1"; exec "$2" review' _ "$GHD/pid" "$SUBJECT"
+  assert_failure 143
+  run jq -sc 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,8]'
+}
+
+@test "review: a full search page fails rather than count a cut list" {
+  stub_review
+  sections_map
+  echo '[{"number":1},{"number":2}]' > "$GHD/repo-prs.json"
+  BENCH_PR_LIST_MAX=2 BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  run outcome
+  assert_output FAILED
+}
+
+@test "review --days recounts rows from before sections and replaces them, and only those" {
+  stub_review
+  merged_pr s0 7 35 -200000                                  # two days back: outside the 24h window
+  merged_pr s1 8 35
+  BENCH_NOW=$T0 "$SUBJECT" review --days 3
+  [ "$(wc -l < "$FLEET_BENCH_DIR/pr-ci.jsonl")" -eq 2 ]
+  sections_map
+  docs_prs 7 8
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .sections])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,null],[8,["docs"]]]'
+  BENCH_NOW=$T0 run "$SUBJECT" review --days 3
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .sections])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,["docs"]],[8,["docs"]]]'
+  BENCH_NOW=$T0 run "$SUBJECT" review --days 3
+  run outcome
+  assert_output NOOP
+  run "$SUBJECT" review --days soon
+  assert_failure 2
+}
+
+@test "sections: joins each PR to the session claiming it now, splits a session's cost, and counts a PR in each section" {
+  mkdir -p "$HOME/.agent/outcomes/game"
+  jq -cn '{session_id: "s1", cost_usd: 10, tokens_total: 1000, time_use: {work_min: 40},
+           prs: [{repo: "o/r", number: 1, state: "MERGED"}, {repo: "o/r", number: 2, state: "MERGED"},
+                 {repo: "o/r", number: 9, state: "OPEN"}]}' > "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  # no price and no time_use: out of those means, never counted as free
+  jq -cn '{session_id: "s2", cost_usd: null, tokens_total: 100, prs: [{repo: "o/r", number: 3, state: "MERGED"}]}' \
+    >> "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  mkdir -p "$FLEET_BENCH_DIR"
+  ci_row '{repo: "o/r", number: 1, session_id: "", merged_epoch: ($t - 60), sections: ["a", "b"], gate_runs: 2, gate_red: 1, gate_min: 60, green_lost: 1}'
+  ci_row '{repo: "o/r", number: 2, session_id: "s1", merged_epoch: ($t - 60), sections: ["a"], gate_runs: 1, gate_red: 0, gate_min: 30, green_lost: 0}'
+  ci_row '{repo: "o/r", number: 3, session_id: "", merged_epoch: ($t - 60), sections: ["b"], gate_runs: 0, gate_red: 0, gate_min: 0, green_lost: 0}'
+  ci_row '{repo: "o/r", number: 4, session_id: "", merged_epoch: ($t - 864000), sections: ["a"], gate_runs: 1, gate_red: 1, gate_min: 900, green_lost: 0}'
+  ci_row '{repo: "o/x", number: 5, session_id: "", merged_epoch: ($t - 60), ci_runs: 1, ci_red: 1}'
+  BENCH_NOW=$T0 run "$SUBJECT" sections --json
+  assert_success
+  json=$output
+  run jq -c '[.all.prs, .all.gated, .all.with_session, .all.first_try, .all.reds_per_pr, .all.gate_min_per_pr]' <<<"$json"
+  assert_output '[3,2,3,0.5,0.5,45]'
+  run jq -c '.sections | map([.section, .prs, .gated, .first_try, .green_lost, .cost_per_pr, .tokens_per_pr, .work_min_per_pr])' <<<"$json"
+  assert_output '[["a",2,2,0.5,1,5,500,20],["b",2,1,0,1,5,300,20]]'
+  BENCH_NOW=$T0 run "$SUBJECT" sections
+  assert_line --partial '| All PRs | 3 | 0.5 |'
+  assert_line --partial 'A PR counts in every section it touches'
+  run "$SUBJECT" sections --days x
+  assert_failure 2
+}
+
+@test "first_pass_share reads a PR's gate where it ran one, else any CI, and skips a PR with no runs" {
+  mkdir -p "$FLEET_BENCH_DIR" "$HOME/.agent/outcomes/game"
+  ci_row '{session_id: "s1", repo: "o/r", number: 1, merged_epoch: ($t - 60), ci_runs: 3, ci_red: 1, gate_runs: 1, gate_red: 0}'
+  ci_row '{session_id: "s1", repo: "o/r", number: 2, merged_epoch: ($t - 60), ci_runs: 3, ci_red: 0, gate_runs: 2, gate_red: 1}'
+  ci_row '{session_id: "s1", repo: "o/x", number: 3, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 0}'
+  ci_row '{session_id: "s1", repo: "o/x", number: 4, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 2}'
+  ci_row '{session_id: "s1", repo: "o/x", number: 5, merged_epoch: ($t - 60), ci_runs: 0, ci_red: 0}'
+  ci_row '{session_id: "s1", repo: "o/r", number: 6, merged_epoch: ($t - 60), ci_runs: 2, ci_red: 0, gate_runs: 0, gate_red: 0}'
+  BENCH_NOW=$T0 run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '.first_pass_share["7d"]' <<<"$output"
+  assert_output 0.5
 }
 
 @test "scorecard and headline carry CI reds, and no review section" {
@@ -789,7 +981,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -931,7 +1123,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | compactions_per_session |'
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | compactions_per_session |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -946,7 +1138,7 @@ ask_row() {
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
   assert_success
   run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
-  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["compactions_per_session",null,null,"-"]]'
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["first_pass_share",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["compactions_per_session",null,null,"-"]]'
   run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
   assert_success
   run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
@@ -1960,7 +2152,7 @@ check_fixture() {
   refute grep -q ' add ' "$NLOG"
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sizes and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sizes, the sections and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -1975,9 +2167,10 @@ check_fixture() {
   assert_line --index 6 '## Epic ETAs'
   assert_line --index 7 '## Models'
   assert_line --index 8 '## Sizes and kinds'
-  assert_line --index 9 '## Sessions'
-  assert_line --index 10 '## Agent depth'
-  assert_line --index 11 '## Session time'
+  assert_line --index 9 '## Sections'
+  assert_line --index 10 '## Sessions'
+  assert_line --index 11 '## Agent depth'
+  assert_line --index 12 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
