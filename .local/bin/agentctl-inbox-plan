@@ -26,6 +26,8 @@ LIB="$HERE/../lib"
 . "$LIB/md-render.sh"
 # shellcheck source=/dev/null
 . "$LIB/inbox-epics.sh"
+# shellcheck source=/dev/null
+. "$HERE/../src/agent-run/lib/budget.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
@@ -89,6 +91,11 @@ $open"
   [ -s "$err" ] && head -n 20 "$err" >&2
   first="$(cat - "$err" <<<"$out" | grep -m1 '[^[:space:]]' | clean 120)"
   rm -rf -- "$wd" "$err"
+  if [ "$rc" = "$EX_BUDGET" ]; then
+    say "$p $id: stopped at its budget"
+    proof_why "stopped at its budget"
+    return "$rc"
+  fi
   if [ "$rc" != 0 ]; then
     say "$p $id: model call failed: ${first:-no output}"
     proof_why "$p $id: model call failed: ${first:-no output}"
@@ -152,7 +159,7 @@ main() {
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
-  local dir board rows rc=0 row summary verdict
+  local dir board rows rc=0 r row summary verdict
   dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
   [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
   if ! board="$(notes board --json 2>/dev/null)"; then
@@ -170,14 +177,22 @@ main() {
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true
-    plan_row "$row" "$board" || rc=1
+    plan_row "$row" "$board"; r=$?
+    # The cap refuses every row after this one too. A row that already failed keeps the pass FAILED.
+    if [ "$r" = "$EX_BUDGET" ]; then
+      [ "$rc" != 0 ] || rc="$r"
+      break
+    fi
+    [ "$r" = 0 ] || rc=1
   done <<<"$rows"
   summary="planned $PLANNED, split into $SPLIT rows, refused $FAILED"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP
   [ "$PLANNED" -gt 0 ] && verdict=WORKED
-  [ "$rc" != 0 ] && verdict=FAILED
+  # "budget: " is what agentctl-briefing reads on the last outcome line.
+  [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
+  [ "$rc" = 1 ] && verdict=FAILED
   proof_report "$NAME" "$verdict" "$summary"
   agentctl report --name "$NAME" "detail=$summary" >/dev/null 2>&1 || true
   return "$rc"

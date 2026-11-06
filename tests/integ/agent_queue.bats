@@ -117,6 +117,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "unknown project: notes"
 }
 
+@test "list puts a red item first, then priority, then a cleanup item within its priority" {
+  "$AQ" add --project game --slug a-high "a"
+  "$AQ" add --project game --slug b-cleanup --tags "cleanup tier3" "b"
+  "$AQ" add --project game --slug c-urgent --priority urgent "c"
+  "$AQ" add --project game --slug d-red-low --priority low --tags "red cause:x" "d"
+  "$AQ" add --project game --slug e-reddish --tags "reddish" "e"
+  "$AQ" add --project game --slug f-cleanup-low --priority low --tags cleanup "f"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # red beats urgent; cleanup beats an older item of its priority, never a higher priority; tags match whole words.
+  assert_output $'d-red-low\nc-urgent\nb-cleanup\na-high\ne-reddish\nf-cleanup-low'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = d-red-low ]
+}
+
 @test "list orders by priority, then queued time, and next is the head" {
   "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"

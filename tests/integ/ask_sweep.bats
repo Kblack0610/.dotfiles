@@ -172,15 +172,26 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   message 'add a slide'
   echo 75 > "$NOTES_FIXTURE/model.rc"
   run "$SWEEP" run
-  assert_failure
+  assert_failure 75
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" BLOCKED
   run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
-  assert_output --partial 'why: board: stopped at its budget'
+  assert_output --regexp 'outcome=BLOCKED budget: .*why: board: stopped at its budget'
   [ ! -s "$ASK_SWEEP_DIR/since/board" ]
   rm "$NOTES_FIXTURE/model.rc"; answer '{"quote":"add a slide","row":"gym: add a slide","tier":2,"size":"M"}'
   run "$SWEEP" run
   assert_success
   assert_called 'gym: add a slide'
+}
+
+@test "a budget stop on one board and a failed call on another is FAILED, exit 1" {
+  message 'add a slide'
+  message 'two words' two
+  printf 'p\t1\tk\t- [ ] a two row\n' > "$NOTES_FIXTURE/ptask.two.list"
+  echo 75 > "$NOTES_FIXTURE/model.rc.board"
+  echo 1 > "$NOTES_FIXTURE/model.rc.two"
+  run "$SWEEP" run
+  assert_failure 1
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
 }
 
 @test "one call per board with its own rows and checkout; a client repo and a repo with no board are never read" {
