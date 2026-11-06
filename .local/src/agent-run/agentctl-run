@@ -45,7 +45,7 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
-agent="" cli_role="" cli_route="" cli_class=""
+agent="" cli_role="" cli_route="" cli_class="" cli_harness=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
     --role)    cli_role="${2:?--role needs a value}"; shift 2 ;;
     --route)      cli_route="${2:?--route needs a value}"; shift 2 ;;
     --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
-    --harness) harness="${2:?--harness needs a value}"; shift 2 ;;
+    --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
@@ -73,9 +73,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   esac
 done
 
-# --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE and
-# DATA_CLASS replace whatever a parent runner's conf left in the environment; only this
-# call's own flags (--role, --route, --data-class) still win over it.
+# --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE,
+# DATA_CLASS and HARNESS replace whatever a parent runner's conf left in the environment;
+# only this call's own flags (--role, --route, --data-class, --harness) still win over it.
 if [ -n "$agent" ]; then
   agent_load "$agent"
   role="$AGENT_ROLE"
@@ -83,9 +83,12 @@ if [ -n "$agent" ]; then
   ROUTE="$AGENT_ROUTE"
   DATA_CLASS="$AGENT_DATA_CLASS"
   AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
-  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA
+  [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
+  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA \
+    AGENT_MAX_TOKENS AGENT_TEMPERATURE
   agent_otel_runner "$agent"
-  if [ -z "$AGENTCTL_EXPLAIN" ]; then
+  # raw sends the PROMPT file as the system message itself (harnesses/raw.sh)
+  if [ -z "$AGENTCTL_EXPLAIN" ] && [ "$harness" != raw ]; then
     agent_prompt_args "${args[@]+"${args[@]}"}"
     args=("${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}")
   fi
