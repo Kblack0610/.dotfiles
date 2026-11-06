@@ -816,15 +816,16 @@ item_brief() {
   echo "If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open."
 }
 
-# item_row <item json> -> "<profile> <project> <lane> <key>", joined by the unit separator, of a
-# `from: board:` item, else nothing. Not a tab: read collapses runs of tabs, so the empty profile of
-# a default-profile row would shift every field after it.
+# item_row <item json> -> "<profile> <project> <lane> <key>", joined by the unit separator, of an
+# item with a row (agent-queue's `row`: its story, or the board row it was promoted from), else
+# nothing. Not a tab: read collapses runs of tabs, so the empty profile of a default-profile row
+# would shift every field after it.
 item_row() {
-  jq -r 'select(.from | startswith("board:")) | (.from | ltrimstr("board:")) as $r
+  jq -r 'select((.row // "") != "") | .row as $r
     | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
-# close_row <slug> -- a board item done ok whose row is still started: the session merged and died
+# close_row <slug> -- an item with a row, done ok, whose row is still started: the session merged and died
 # before agent-land closed it. Closed only on merge proof (agent-merge-proof.sh) of the item's
 # merged: commit in the project's checkout, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged, so a false close never happens.
@@ -847,7 +848,7 @@ close_row() {
   echo "closed $project: $key (queue item $1, PR $pr merged)"
 }
 
-# settle_row <slug> -- a board item that ended failed or cancelled hands its row back: un-start it
+# settle_row <slug> -- an item with a row that ended failed or cancelled hands it back: un-start it
 # and record `failed`, so it is not promoted again until its text
 # changes. Idempotent: a row no longer started is left alone (done by its session, or settled).
 settle_row() {
@@ -866,7 +867,7 @@ settle_row() {
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
 }
 
-# unstart_orphans -- an agent-lane row started with no active queue item naming it (`from: board:`)
+# unstart_orphans -- an agent-lane row started with no active queue item naming it (its `row`)
 # is an orphan: its session never filed an item, or died before reap could see one. A row seen
 # orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so dispatch does not promote it again until its text changes; the grace keeps a
@@ -877,8 +878,8 @@ unstart_orphans() {
   local items linked prof name _rest key text first now seen=''
   items=$(agent-queue list --json 2>/dev/null) || return 0
   mkdir -p "$DIR"
-  linked=$(jq -r 'select(.state != "done" and (.from // "" | startswith("board:")) and (.lane // "agent") == "agent")
-    | .from | ltrimstr("board:") | sub(":"; "\t")' <<<"$items")
+  linked=$(jq -r 'select(.state != "done" and (.row // "") != "" and (.lane // "agent") == "agent")
+    | .row | sub(":"; "\t")' <<<"$items")
   now=$(date +%s)
   for prof in $(printf '%s\n' "${DISPATCH_NIGHT_PROFILE:--}" $DISPATCH_PROFILES | awk '!x[$0]++'); do
     [ "$prof" = - ] && prof=''
@@ -1329,8 +1330,8 @@ cmd_stats() {
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
 }
 
-# reap -- settle the queue items whose session is gone (settle_item, then settle_row for a board
-# item), and keep each live one's state true to its session: waiting/ while it waits on the human
+# reap -- settle the queue items whose session is gone (settle_item, then settle_row for an
+# item with a row), and keep each live one's state true to its session: waiting/ while it waits on the human
 # (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed),
 # running/ again once it does not. A session neither read can see is left where it is.
 cmd_reap() {
@@ -1340,7 +1341,7 @@ cmd_reap() {
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
     agent-queue list --json --state "done" --date "$d" 2>/dev/null |
-      jq -r 'select((.from | startswith("board:")) and .status != "ok") | .slug' 2>/dev/null |
+      jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
   while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids; do
