@@ -646,7 +646,7 @@ game_ready() {
   # The session lands through agent-land, which closes the item and its row: the brief names no ptask.
   assert_called 'Merge with agent-land <N> (AGENT_QUEUE_ITEM=gm-1 is set)'
   assert_called 'promoted from the board row "gm-1"'
-  assert_called 'The PR body carries the line "Task: gm-1".'
+  assert_called 'The PR body carries the line "Item: gm-1" and the line "Task: gm-1".'
   run grep -c 'ptask game done' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
@@ -1952,6 +1952,8 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial '/one-shot --pr-only do n'
   assert_output --partial 'AGENT_QUEUE_ITEM=p claude --model opus --permission-mode plan --allow-dangerously-skip-permissions'
   refute_output --partial '/one-shot plan p'
+  # An item with no board row still names itself in its PR body, and names no Task line.
+  assert_output --partial 'The PR body carries the line "Item: a".'
 }
 
 @test "start --item waits for the new claude's mode footer, answering a trust prompt, and says when it never shows" {

@@ -838,7 +838,7 @@ item_brief() {
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
     echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
-  [ -z "$key" ] || echo "The PR body carries the line \"Task: $key\"."
+  echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   echo "If it needs a decision from the human, ask it here and file it with agent-ask post (your recommendation in --recommend), run agent-queue move $slug waiting, then stop and leave this window open."
 }
 
