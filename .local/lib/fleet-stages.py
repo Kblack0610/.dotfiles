@@ -21,7 +21,6 @@ import argparse
 import functools
 import json
 import math
-import os
 import re
 import statistics
 import sys
@@ -340,7 +339,7 @@ def text(r):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="fleet-sessions stages")
     ap.add_argument("--log", default=str(Path.home() / ".agent/shepherd/watch.log"))
-    ap.add_argument("--state", default=os.environ.get("FLEET_STATE_FILE") or str(Path.home() / ".local/state/fleet/state.json"))
+    ap.add_argument("--state", required=True, help="fleet-sessions' state.json, which carries vocab.finished")
     ap.add_argument("--from", dest="start", type=int)
     ap.add_argument("--to", dest="end", type=int)
     ap.add_argument("--json", action="store_true")
