@@ -30,6 +30,7 @@ const dialog = (q) => DIALOG[q.kind] || "turn";
 // card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
 // amber, failing is red; the three dialog kinds take categorical colours.
 const NEED_KINDS = {
+  stopped: "Stopped",
   plan: "Plan to approve",
   ask: "Question",
   perm: "Permission",
