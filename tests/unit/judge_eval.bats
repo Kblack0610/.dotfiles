@@ -11,10 +11,10 @@ setup() {
   sandbox_init basic
   JUDGE_EVAL="$REPO_ROOT/.local/bin/judge-eval"
   export AGENTCTL_CONF_DIR="$HOME/conf" AGENTCTL_CALLS="$HOME/calls.jsonl" FLEET_DISPATCH_DIR="$HOME/dispatch"
-  unset AGENT_ASK_LIVE_RULES
+  unset AGENT_ASK_DELAY_RULES
   mkdir -p "$AGENTCTL_CONF_DIR" "$FLEET_DISPATCH_DIR" "$HOME/.agent/asks/demo"
   echo 'ask policy v2' > "$HOME/ask-policy.md"; echo 'dispatch policy v1' > "$HOME/dispatch-policy.md"
-  printf 'PROMPT="%s"\nLIVE_RULES=fast\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  printf 'PROMPT="%s"\nDELAY_RULES=fast=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
   printf 'PROMPT="%s"\nSCORE=dispatch-queue\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
   echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
@@ -94,6 +94,20 @@ ask_fixture() {
   # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault); gate and
   # old1 (another prompt) are out
   assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
+}
+
+@test "ask-judge: an answer assumed after its wait is counted, and an override on it is an fp" {
+  ask_fixture
+  ask as_over judge=take-recommend judge_rule=fast answered_by=judge assume_at=2026-11-06T10:00:00-0800 judge_override=no answer=yes
+  ask as_ok judge=take-recommend judge_rule=fast answered_by=judge assume_at=2026-11-06T10:00:00-0800 judge_override=none answer=yes
+  # a human answer inside the wait is the human's, never an assumed one
+  ask as_human judge=take-recommend judge_rule=fast assume_at=2026-11-06T10:00:00-0800 assume_answer=yes answer=no
+  run "$JUDGE_EVAL" ask-judge --json
+  assert_success
+  run jq -c '.agents[0].total | [.assumed, .assumed_overridden]' <<<"$output"
+  assert_output '[2,1]'
+  run "$JUDGE_EVAL" ask-judge
+  assert_line '  assumed 2, 1 overridden'
 }
 
 @test "ask-judge: precision carries its 95% Wilson interval, each rule its live flag and distance to the bar" {
@@ -215,7 +229,7 @@ SH
 
 @test "replay: the real judge runs on blind copies, the real asks do not change, and the score is judge-eval's" {
   replay_stub
-  ask right judge=human answer=yes
+  ask right judge=human assume_at=2026-11-06T10:00:00-0800 assume_answer=yes assume_disarmed=2026-11-06T09:00:00-0800 answer=yes
   ask wrong judge=human answer=no
   ask gated kind=gate judge=human answer=yes
   ask freetext judge=human 'answer=do something else entirely'
@@ -229,6 +243,9 @@ SH
   run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
   assert_output 0
   assert_equal "$(grep -c '^status: pending' "$HOME/replay/blind/demo/right.md")" 1
+  # nor the judge's own arm, which would tell it what it said last time
+  run grep -c '^assume_[a-z]*: .' "$HOME/replay/blind/demo/right.md"
+  assert_output 0
 }
 
 @test "replay: a copy reads the real store's earlier disagreements, never its own answer" {

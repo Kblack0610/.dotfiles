@@ -122,6 +122,10 @@ sandbox_init() {
   # and an item satisfies the focus gate.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 
+  # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
+  # that as "detach through systemd-run", which would start a real transient scope.
+  unset INVOCATION_ID
+
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
   # to assert exactly that behaviour.
