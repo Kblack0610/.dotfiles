@@ -26,7 +26,7 @@ use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
-use crate::{board, day, fleet, fleettab, focustab, hometab, outboxtab};
+use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -112,19 +112,21 @@ impl Tab {
     }
 }
 
-/// Log's folded sections, their keys and headings, in the page's order after the day.
-const FOLDS: [(&str, char, &str); 5] = [
+/// Log's folded sections, their keys and headings, in the page's order after the day and its
+/// history (hub_core::layout's Log sections; `log_folds_are_the_layout` checks).
+const FOLDS: [(&str, char, &str); 6] = [
     ("actions", 'a', "ACTIONS"),
     ("changes", 'c', "CHANGES"),
     ("rundowns", 's', "RUNDOWNS"),
     ("verdicts", 'v', "JUDGES' VERDICTS"),
     ("forecast", 'f', "FORECAST"),
+    ("ranked", 'w', "RANKED SESSIONS"),
 ];
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
 
-/// The files the Fleet, Today and History tabs are read from.
+/// The files the Sessions, Fleet and Log tabs are read from.
 #[derive(Clone)]
 pub struct BoardFiles {
     pub state: PathBuf,
@@ -146,10 +148,16 @@ impl BoardFiles {
     fn watch_log(&self) -> PathBuf {
         self.shepherd.join("watch.log")
     }
+    /// The shepherd's kept rundowns (`fleet-shepherd log --rundown`), one `.md` file each.
+    pub fn rundowns(&self) -> PathBuf {
+        self.shepherd.join("rundowns")
+    }
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
     pub fn is_board_file(&self, p: &Path) -> bool {
         p == self.state
             || p == self.watch_log()
+            || p.parent() == Some(self.rundowns().as_path())
+                && p.extension().is_some_and(|e| e == "md")
             || p.starts_with(&self.asks) && p.extension().is_some_and(|e| e == "md")
             || p.parent() == Some(self.daylog.as_path())
                 && p.file_name()
@@ -165,6 +173,9 @@ pub struct Boards {
     pub days: Vec<String>,
     pub rec: Option<serde_json::Value>,
     pub hist: Vec<DayRow>,
+    /// The shepherd's kept rundowns, newest first, at most `FOLD_ROWS`, and how many there are.
+    pub rundowns: Vec<boards::Rundown>,
+    pub rundowns_total: usize,
 }
 
 impl Boards {
@@ -174,6 +185,8 @@ impl Boards {
             days: boards::days(&f.daylog),
             rec: boards::record(&f.daylog, day),
             hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
+            rundowns: boards::rundowns(&f.rundowns(), hub_core::layout::FOLD_ROWS),
+            rundowns_total: boards::rundown_files(&f.rundowns()).len(),
         }
     }
 }
@@ -194,6 +207,8 @@ pub enum Msg {
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
+    /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
+    Actions(Box<hub_core::actions::Gathered>),
     /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
     Focus(Box<Result<hub_core::focus::View, String>>),
     /// The outbox and today's intake steps (hub_core::outbox), or why the read failed.
@@ -283,14 +298,20 @@ pub struct App {
     pub runner: Arc<dyn Runner + Send + Sync>,
     /// Reads the sessions an action may target; tests swap in a fixture.
     pub gather: fn(&dyn Runner) -> Snapshot,
-    /// The day the Today tab shows; None follows the newest record.
+    /// The day Log shows; None follows the newest record.
     pub day: Option<String>,
-    /// The History tab's selected row, newest first.
+    /// Log's day list (`h`) is open in place of the day.
+    pub log_days: bool,
+    /// The day list's selected row, newest first.
     pub hist_sel: usize,
-    /// Where the page's sections start, from the last draw (n/N jump between them on Today and
-    /// Infra), with Infra's `hub_core::layout` section names.
+    /// Log's open folds, by `FOLDS` name.
+    pub log_open: Vec<&'static str>,
+    /// Log's Actions section; None until it is first opened.
+    pub actions: Option<hub_core::actions::Gathered>,
+    /// Where the page's sections start, from the last draw (n/N jump between them on Log and
+    /// Infra), with the `hub_core::layout` section names.
     sections: Vec<(&'static str, usize)>,
-    /// An Infra section to scroll to once the page draws (`hub --tab ci`, key 4).
+    /// A section to scroll to once the page draws (`hub --tab ci`, `hub --tab actions`).
     seek: Option<&'static str>,
     /// Infra's Jobs section opened as the whole jobs table.
     pub infra_jobs: bool,
@@ -305,6 +326,7 @@ pub struct App {
     boards_read: Read,
     forecast_read: Read,
     ranked_read: Read,
+    actions_read: Read,
     fleet_read: Read,
     focus_read: Read,
     outbox_read: Read,
@@ -353,7 +375,10 @@ impl App {
             runner: Arc::new(actions::System),
             gather: actions::gather,
             day: None,
+            log_days: false,
             hist_sel: 0,
+            log_open: vec![],
+            actions: None,
             sections: vec![],
             seek: None,
             infra_jobs: false,
@@ -366,6 +391,7 @@ impl App {
             boards_read: Read::default(),
             forecast_read: Read::default(),
             ranked_read: Read::default(),
+            actions_read: Read::default(),
             fleet_read: Read::default(),
             focus_read: Read::default(),
             outbox_read: Read::default(),
@@ -387,6 +413,7 @@ impl App {
         let mut v = vec![
             (self.paths.agentctl.clone(), true),
             (self.files.shepherd.clone(), false),
+            (self.files.rundowns(), false),
             (self.files.daylog.clone(), false),
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
@@ -429,6 +456,31 @@ impl App {
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
             });
+        }
+    }
+
+    /// The actions ledger has no one file to watch, so Log's Actions section reads it when it
+    /// opens, on `r` and on the tick while it is open, as agent-web's feed does.
+    pub fn read_actions(&mut self) {
+        if self.actions_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let g = hub_core::actions::read(jobs::now() - logtab::ACTIONS_HOURS * 3600);
+                let _ = tx.send(Msg::Actions(Box::new(g)));
+            });
+        }
+    }
+
+    /// Log reads only what its open folds show (the day and changes come with the board files).
+    fn read_log_folds(&mut self) {
+        for name in self.log_open.clone() {
+            match name {
+                "actions" => self.read_actions(),
+                "verdicts" => self.read_fleet(),
+                "forecast" => self.read_forecast(),
+                "ranked" => self.read_ranked(),
+                _ => {}
+            }
         }
     }
 
@@ -698,6 +750,9 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
                 }
+                if self.tab == Tab::Log {
+                    self.read_log_folds();
+                }
                 if self.tab == Tab::Focus {
                     self.read_focus();
                 }
@@ -710,7 +765,9 @@ impl App {
             }
             Msg::Files => {
                 self.read_jobs();
-                if self.tab == Tab::Fleet {
+                if self.tab == Tab::Fleet
+                    || self.tab == Tab::Log && self.log_open.contains(&"verdicts")
+                {
                     self.read_fleet();
                 }
             }
@@ -744,6 +801,12 @@ impl App {
                 self.fleet = Some(*f);
                 if self.fleet_read.done() {
                     self.read_fleet();
+                }
+            }
+            Msg::Actions(g) => {
+                self.actions = Some(*g);
+                if self.actions_read.done() {
+                    self.read_actions();
                 }
             }
             Msg::Focus(v) => {
@@ -866,7 +929,7 @@ impl App {
         if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
-        if self.tab == Tab::Today && self.today_key(k) {
+        if self.tab == Tab::Log && self.log_key(k) {
             return;
         }
         if self.tab == Tab::Focus && self.focus_key(k) {
@@ -881,9 +944,6 @@ impl App {
                 Some(p) => edit_in_tmux(&p, 1),
                 None => Err("the outbox has not been read yet: press r".into()),
             });
-            return;
-        }
-        if self.tab == Tab::History && self.history_key(k) {
             return;
         }
         if self.tab == Tab::Sessions && self.sessions_key(k) {
@@ -901,13 +961,10 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             // Every tab's own Esc (a pane, filter, prompt or table) ran above and kept the key.
             KeyCode::Esc if self.popup => self.quit = true,
-            // Each digit opens what DIGITS says, as on the tab bar.
-            KeyCode::Char(c @ '0'..='9') => {
-                if let Some((_, t, sec)) = DIGITS.iter().find(|(d, _, _)| *d == c) {
-                    self.go(*t);
-                    if let Some(sec) = sec {
-                        self.open_section(sec);
-                    }
+            // A digit opens the tab it numbers on the tab bar.
+            KeyCode::Char(c) if Tab::by_digit(c).is_some() => {
+                if let Some(t) = Tab::by_digit(c) {
+                    self.go(t);
                 }
             }
             KeyCode::Tab => self.go(Tab::ALL[(self.tab.index() + 1) % tabs]),
@@ -923,12 +980,12 @@ impl App {
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
                     self.read_sessions();
-                    if self.controls.ranked {
-                        self.read_ranked();
-                    }
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
+                }
+                if self.tab == Tab::Log {
+                    self.read_log_folds();
                 }
                 if self.tab == Tab::Focus {
                     self.read_focus();
@@ -956,11 +1013,12 @@ impl App {
         }
     }
 
-    /// A request's query: an Infra section on Infra, else a project name.
+    /// A request's query: a section on Infra and Log, else a project name.
     pub fn open_query(&mut self, q: Option<String>) {
         match (self.tab, q) {
-            (Tab::Infra, Some(q)) => {
-                let secs = hub_core::layout::resolve("infra").map_or(&[][..], |t| t.sections);
+            (Tab::Infra | Tab::Log, Some(q)) => {
+                let secs =
+                    hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
                 if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
                     self.open_section(sec);
                 }
@@ -969,13 +1027,17 @@ impl App {
         }
     }
 
-    /// Show one Infra section: Jobs opens the jobs table, any other scrolls to its heading at
-    /// the next draw.
+    /// Show one section of the tab: Infra's Jobs opens the jobs table, Log's History its day
+    /// list and a Log fold opens; any other scrolls to its heading at the next draw.
     fn open_section(&mut self, sec: &'static str) {
-        if sec == "jobs" {
-            self.infra_jobs = true;
-        } else {
-            self.infra_jobs = false;
+        self.infra_jobs = sec == "jobs";
+        self.log_days = self.tab == Tab::Log && sec == "history";
+        if self.tab == Tab::Log && !self.log_open.contains(&sec) && FOLDS.iter().any(|f| f.0 == sec)
+        {
+            self.log_open.push(sec);
+            self.read_log_folds();
+        }
+        if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
         }
     }
@@ -993,7 +1055,11 @@ impl App {
         self.tab = t;
         self.scroll = 0;
         self.infra_jobs = false;
+        self.log_days = false;
         self.seek = None;
+        if t == Tab::Log {
+            self.read_log_folds();
+        }
         if t == Tab::Sessions {
             self.read_forecast();
             self.read_sessions();
@@ -1106,16 +1172,13 @@ impl App {
 
     /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
     /// confirm, and with one armed every key is the confirm's; Enter opens the selected
-    /// session's detail, f the forecast at the bottom and w the ranked sessions. The page scrolls with
-    /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
+    /// session's detail. The page scrolls with PgUp/PgDn, space and g/G, and keeps the selected
+    /// row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
             Ask::Run(t, a, acct) => self.act(t, a, acct),
-        }
-        if self.controls.ranked && self.ranked.is_none() {
-            self.read_ranked();
         }
         // The stage counts and the table header sit above the first row.
         let at = 2 + self.controls.sel;
@@ -1128,23 +1191,11 @@ impl App {
         true
     }
 
-    /// The RANKED fold under the forecast: the week's sessions worst first, one line each, and
-    /// the command that prints any one's full card.
+    /// Log's ranked sessions: the last `outcomes::DAYS` days' sessions worst first, one line
+    /// each, and the command that prints any one's full card.
     fn ranked_lines(&self, w: usize) -> Vec<Line<'static>> {
         let clip = |t: String, st| crate::fit::clip_line(Line::styled(t, st), w);
-        if !self.controls.ranked {
-            return vec![clip(
-                format!(
-                    "RANKED  w opens the sessions ranked by friction, last {}d",
-                    outcomes::DAYS
-                ),
-                self.p.head(),
-            )];
-        }
-        let mut l = vec![clip(
-            format!("RANKED  last {}d by friction; w folds it", outcomes::DAYS),
-            self.p.head(),
-        )];
+        let mut l = vec![];
         match &self.ranked {
             None => l.push(clip(
                 "Reading agentctl-session-outcomes worst.".into(),
@@ -1169,7 +1220,44 @@ impl App {
         l
     }
 
-    /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
+    /// Log's keys. With the day list open (h): j/k pick a day, Enter opens it, Esc, Backspace
+    /// or h go back. Otherwise h opens the day list, a `FOLDS` key opens or folds its section,
+    /// and the day's keys.
+    fn log_key(&mut self, k: KeyEvent) -> bool {
+        if self.log_days {
+            if matches!(
+                k.code,
+                KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h')
+            ) {
+                self.log_days = false;
+                self.scroll = 0;
+                return true;
+            }
+            return self.history_key(k);
+        }
+        match k.code {
+            KeyCode::Char('h') => {
+                self.log_days = true;
+                self.scroll = 0;
+            }
+            KeyCode::Char(c) if FOLDS.iter().any(|f| f.1 == c) => {
+                let Some(&(name, ..)) = FOLDS.iter().find(|f| f.1 == c) else {
+                    return true;
+                };
+                if let Some(i) = self.log_open.iter().position(|n| *n == name) {
+                    self.log_open.remove(i);
+                } else {
+                    self.log_open.push(name);
+                    self.read_log_folds();
+                    self.seek = Some(name);
+                }
+            }
+            _ => return self.today_key(k),
+        }
+        true
+    }
+
+    /// The day's keys on Log: `[` and `]` step a day, n and N jump between sections.
     fn today_key(&mut self, k: KeyEvent) -> bool {
         let days = self.boards.as_ref().map_or(&[][..], |b| b.days.as_slice());
         let at = match &self.day {
@@ -1218,7 +1306,7 @@ impl App {
         true
     }
 
-    /// Show a day on the Today tab (None: the newest, live one) and read its record.
+    /// Show a day on Log (None: the newest, live one) and read its record.
     fn open_day(&mut self, d: Option<String>) {
         self.day = d;
         self.scroll = 0;
@@ -1227,7 +1315,7 @@ impl App {
         }
     }
 
-    /// History's own keys: j/k pick a day, Enter opens it on the Today tab.
+    /// Log's day list's keys: j/k pick a day, Enter opens it.
     fn history_key(&mut self, k: KeyEvent) -> bool {
         let n = self.boards.as_ref().map_or(0, |b| b.hist.len());
         let last = n.saturating_sub(1);
@@ -1249,7 +1337,7 @@ impl App {
                 };
                 let d = (self.hist_sel > 0 || !row.live).then(|| row.date.clone());
                 self.open_day(d);
-                self.tab = Tab::Today;
+                self.log_days = false;
             }
             _ => return false,
         }
@@ -1257,7 +1345,7 @@ impl App {
     }
 
     /// The Jobs page's own keys; false hands the key to the global ones.
-    /// n and N jump to the next or the previous section heading (Today, Infra).
+    /// n and N jump to the next or the previous section heading (Log, Infra).
     fn next_section(&mut self, forward: bool) {
         let at = self.sections.iter().map(|s| s.1);
         if forward {
@@ -1426,7 +1514,7 @@ impl App {
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
-        } else if self.tab == Tab::History && self.boards.is_some() {
+        } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
@@ -1439,7 +1527,7 @@ impl App {
                     self.scroll = at + 1 - h;
                 }
             }
-            // A section asked for (key 4, `hub --tab ci`) is scrolled to once the page has it.
+            // A section asked for (`hub --tab ci`, a fold opened) is scrolled to once the page has it.
             if let Some(want) = self.seek {
                 if let Some((_, at)) = sections.iter().find(|s| s.0 == want) {
                     self.scroll = *at;
@@ -1507,10 +1595,10 @@ impl App {
     }
 
     fn hints(&self) -> String {
-        let tabs = "0-9";
+        let tabs = "1-9";
         match self.tab {
             Tab::Infra if !self.infra_jobs => format!(
-                "n/N section  Enter jobs table  4 CI  5 Machines  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+                "n/N section  Enter jobs table  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
             Tab::Infra if self.jv.log.is_some() => {
@@ -1523,7 +1611,7 @@ impl App {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
             Tab::Sessions => format!(
-                "j/k pick  Enter detail  i p u m x c a act  f forecast  w ranked  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter detail  i p u m x c a act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
@@ -1535,11 +1623,13 @@ impl App {
             Tab::Outbox => {
                 "Enter edit in $EDITOR  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
             }
-            Tab::Today if self.day.is_some() => {
-                format!("[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit")
+            Tab::Log if self.log_days => {
+                format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
-            Tab::Today => format!("[ ] day  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit"),
-            Tab::History => format!("j/k pick a day  Enter open it in Today  {tabs} tabs  q quit"),
+            Tab::Log => format!(
+                "[ ] day{}  h days  a c s v f w fold  n/N section  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit",
+                if self.day.is_some() { "  t today" } else { "" }
+            ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
                 "j/k pick  c cancel  +/- priority  f candidates  p promote  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
@@ -1646,11 +1736,11 @@ impl App {
                     vec![],
                 ),
             },
-            // One row per session (its controls, stage and ETA), the selected one's detail, the
-            // asks and the changes, then the forecast folded at the bottom.
+            // One row per session (its controls, stage and ETA), the selected one's detail and
+            // the asks; the changes, the forecast and the ranked sessions are Log's.
             (Tab::Sessions, b, _) => {
                 let table = self.controls.lines(self.p, now, w);
-                let mut l = match b {
+                let l = match b {
                     None => {
                         let mut l = reading("the board files").0;
                         l.extend(table);
@@ -1658,24 +1748,6 @@ impl App {
                     }
                     Some(b) => fleet::page(&b.watch, table, self.p, now, w),
                 };
-                l.push(Line::raw(""));
-                if self.controls.forecast {
-                    l.push(Line::styled("FORECAST  f folds it", self.p.head()));
-                    match &self.forecast {
-                        None => l.extend(reading("fleet-bench forecast").0),
-                        Some(f) => l.extend(forecast::page(f, self.p, now, w)),
-                    }
-                } else {
-                    l.push(crate::fit::clip_line(
-                        Line::styled(
-                            "FORECAST  f opens the all-done band, the drain, the burn-up and the baseline",
-                            self.p.head(),
-                        ),
-                        w,
-                    ));
-                }
-                l.push(Line::raw(""));
-                l.extend(self.ranked_lines(w));
                 (l, vec![])
             }
             // The machinery that runs the sessions: accounts, runners and the judges.
@@ -1703,12 +1775,11 @@ impl App {
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
                 Some(Ok(v)) => (focustab::page(v, self.p, w), vec![]),
             },
-            (Tab::Today | Tab::History, None, _) => reading("the board files"),
-            (Tab::Today, Some(b), _) => {
-                let pg = day::today(b.rec.as_ref(), self.p, now, w);
-                (pg.lines, pg.sections.into_iter().map(|s| ("", s)).collect())
+            (Tab::Log, None, _) => reading("the board files"),
+            (Tab::Log, Some(b), _) if self.log_days => {
+                (day::history(&b.hist, self.hist_sel, self.p, w), vec![])
             }
-            (Tab::History, Some(b), _) => (day::history(&b.hist, self.hist_sel, self.p, w), vec![]),
+            (Tab::Log, Some(b), _) => self.log_page(b, now, w),
             (_, _, None) => reading("Prometheus"),
             // Infra's sections in hub_core::layout order, a blank line between them.
             (_, _, Some(i)) => {
@@ -1730,6 +1801,68 @@ impl App {
             }
         };
         (lines, sections)
+    }
+
+    /// Log: the day, then its history and each `FOLDS` section, a heading with its count when
+    /// it is known and, when open, its rows; the section names are hub_core::layout's.
+    fn log_page(
+        &self,
+        b: &Boards,
+        now: i64,
+        w: usize,
+    ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
+        let head = |t: String| crate::fit::clip_line(Line::styled(t, self.p.head()), w);
+        let pg = day::today(b.rec.as_ref(), self.p, now, w);
+        let mut at: Vec<(&'static str, usize)> = vec![("day", 0)];
+        at.extend(pg.sections.into_iter().filter(|s| *s > 0).map(|s| ("", s)));
+        let mut l = pg.lines;
+        l.push(Line::raw(""));
+        at.push(("history", l.len()));
+        l.push(head(format!(
+            "HISTORY ({})  h lists the days",
+            b.hist.len()
+        )));
+        for (name, key, title) in FOLDS {
+            l.push(Line::raw(""));
+            at.push((name, l.len()));
+            let count = match name {
+                "actions" => self.actions.as_ref().map(|g| g.actions.len()),
+                "changes" => Some(b.watch.transitions.len()),
+                "rundowns" => Some(b.rundowns_total),
+                "ranked" => match &self.ranked {
+                    Some(Ok(r)) => Some(r.len()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let count = count.map_or(String::new(), |n| format!(" ({n})"));
+            let open = self.log_open.contains(&name);
+            let verb = if open { "folds" } else { "opens" };
+            l.push(head(format!("{title}{count}  {key} {verb} it")));
+            if !open {
+                continue;
+            }
+            let reading =
+                |what: &str| vec![Line::styled(format!("  Reading {what}..."), self.p.dim())];
+            l.extend(match name {
+                "actions" => match &self.actions {
+                    None => reading("the actions"),
+                    Some(g) => logtab::actions(g, self.p, now, w),
+                },
+                "changes" => fleet::changes(&b.watch, self.p, now, w),
+                "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
+                "verdicts" => match &self.fleet {
+                    None => reading("the fleet"),
+                    Some(f) => fleettab::verdicts(f, self.p, now, w),
+                },
+                "forecast" => match &self.forecast {
+                    None => reading("fleet-bench forecast"),
+                    Some(f) => forecast::page(f, self.p, now, w),
+                },
+                _ => self.ranked_lines(w),
+            });
+        }
+        (l, at)
     }
 
     pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
@@ -1950,7 +2083,20 @@ mod tests {
             days: vec![],
             rec: None,
             hist: vec![],
+            rundowns: vec![],
+            rundowns_total: 0,
         }
+    }
+
+    /// Log with the board files read; the folds that read a command or the ledgers are marked
+    /// already reading, so no test runs one.
+    fn log_app(tx: Sender<Msg>) -> App {
+        let mut a = with_tx(Tab::Log, tx);
+        a.boards = Some(boards());
+        a.forecast_read.busy = true;
+        a.fleet_read.busy = true;
+        a.actions_read.busy = true;
+        a
     }
 
     #[test]
@@ -1959,7 +2105,7 @@ mod tests {
         a.controls.set(crate::controls::tests::fixture());
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("6 Sessions"), "{s}");
+        assert!(lines[0].contains("5 Sessions"), "{s}");
         assert!(lines[1].contains("Reading the board files..."), "{s}");
         assert!(
             lines[2].starts_with("SESSION") && lines[2].contains("ACCOUNT"),
@@ -1983,7 +2129,7 @@ mod tests {
             lines[4].contains("dotfiles-agent-9") && lines[4].contains("parked"),
             "{s}"
         );
-        assert!(s.contains("FORECAST  f opens"), "{s}");
+        assert!(!s.contains("FORECAST"), "the forecast is Log's: {s}");
         assert!(
             lines[29].contains("j/k pick  Enter detail  i p u m x c a act"),
             "{s}"
@@ -2008,7 +2154,10 @@ mod tests {
             lines[5].contains("dotfiles-agent-9") && lines[5].contains("parked"),
             "{s}"
         );
-        assert!(s.contains("ASKS (1)") && s.contains("CHANGES"), "{s}");
+        assert!(
+            s.contains("ASKS (1)") && !s.contains("CHANGES"),
+            "the changes are Log's: {s}"
+        );
 
         a.handle(key('x'));
         let s = screen(&mut a, 140, 30);
@@ -2061,32 +2210,34 @@ mod tests {
     }
 
     #[test]
-    fn the_forecast_folds_at_the_bottom_of_sessions_and_its_etas_are_the_rows() {
+    fn the_forecasts_etas_are_the_sessions_rows_and_its_bands_a_log_fold() {
         let mut a = app(Tab::Sessions);
         let mut b = boards();
         b.watch.state["sessions"][0]["target"] = "hub/dotfiles:8".into();
         a.handle(Msg::Boards(Box::new(b)));
-        assert!(!screen(&mut a, 200, 60).contains("not draining"));
         a.handle(Msg::Forecast(Box::new(forecast::tests::fixture())));
         let s = screen(&mut a, 200, 60);
         assert!(s.contains("late 5h35m"), "the forecast's ETA wins: {s}");
+        assert!(!s.contains("FORECAST"), "the bands are Log's: {s}");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.forecast = Some(forecast::tests::fixture());
+        assert!(screen(&mut a, 200, 60).contains("FORECAST  f opens it"));
         a.handle(key('f'));
         let s = screen(&mut a, 200, 120);
+        assert!(s.contains("FORECAST  f folds it"), "{s}");
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(s.contains("BURN-UP 24h"), "{s}");
     }
 
     #[test]
-    fn the_ranked_sessions_fold_under_the_forecast_and_read_only_when_opened() {
+    fn the_ranked_sessions_are_a_log_fold_read_only_when_opened() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut a = with_tx(Tab::Sessions, tx);
+        let mut a = log_app(tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        let s = screen(&mut a, 200, 60);
-        assert!(
-            s.contains("RANKED  w opens the sessions ranked by friction, last 7d"),
-            "{s}"
-        );
+        let s = screen(&mut a, 200, 80);
+        assert!(s.contains("RANKED SESSIONS  w opens it"), "{s}");
         assert!(
             fake.0.lock().unwrap().is_empty(),
             "nothing is read while it is folded"
@@ -2106,7 +2257,7 @@ mod tests {
             fake.0.lock().unwrap().as_slice(),
             ["agentctl-session-outcomes worst --json --days 7 -n 20"]
         );
-        assert!(screen(&mut a, 200, 60).contains("No session with friction this week."));
+        assert!(screen(&mut a, 200, 80).contains("No session with friction this week."));
         a.handle(Msg::Ranked(Ok(vec![Ranked {
             session_id: "6f296b73-b7a5".into(),
             project: "dotfiles".into(),
@@ -2116,12 +2267,70 @@ mod tests {
             prs_merged: 1,
             ..Ranked::default()
         }])));
-        let s = screen(&mut a, 200, 60);
-        assert!(s.contains("RANKED  last 7d by friction; w folds it"), "{s}");
+        let s = screen(&mut a, 200, 80);
+        assert!(s.contains("RANKED SESSIONS (1)  w folds it"), "{s}");
         assert!(s.contains(" 11  6f296b73  dotfiles"), "{s}");
         assert!(s.contains("agentctl-session-outcomes card <id>"), "{s}");
         a.handle(key('w'));
-        assert!(screen(&mut a, 200, 60).contains("RANKED  w opens"));
+        assert!(screen(&mut a, 200, 80).contains("RANKED SESSIONS (1)  w opens it"));
+    }
+
+    #[test]
+    fn log_is_the_day_then_its_history_and_folds_in_layout_order() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        let s = screen(&mut a, 160, 60);
+        let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
+        let heads = [
+            "HISTORY (0)  h lists the days",
+            "ACTIONS  a opens it",
+            "CHANGES (",
+            "RUNDOWNS (0)  s opens it",
+            "JUDGES' VERDICTS  v opens it",
+            "FORECAST  f opens it",
+            "RANKED SESSIONS  w opens it",
+        ];
+        for w in heads.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "{} is not above {}", w[0], w[1]);
+        }
+        // Changes open in place, under their heading; c folds them again.
+        a.handle(key('c'));
+        let s = screen(&mut a, 160, 80);
+        assert!(s.contains("c folds it"), "{s}");
+        a.handle(key('c'));
+        assert!(screen(&mut a, 160, 80).contains("c opens it"));
+        // h swaps the day for the day list, Esc brings the day back.
+        a.handle(key('h'));
+        assert!(a.log_days);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(!a.log_days);
+    }
+
+    #[test]
+    fn log_folds_are_the_layout() {
+        let log = hub_core::layout::resolve("log").unwrap();
+        let mut want = vec!["day", "history"];
+        want.extend(FOLDS.iter().map(|f| f.0));
+        assert_eq!(log.sections, want.as_slice());
+    }
+
+    #[test]
+    fn hub_tab_actions_opens_logs_actions_fold() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.tab = Tab::Home;
+        let (t, q) = crate::tabreq::parse("actions").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.tab, a.log_open.as_slice()), (Tab::Log, &["actions"][..]));
+        assert!(screen(&mut a, 160, 60).contains("Reading the actions..."));
+        a.handle(Msg::Actions(Box::default()));
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("ACTIONS (0)  a folds it"), "{s}");
+        assert!(s.contains("nothing in the last 24h"), "{s}");
+        // A retired day-list name opens the list itself.
+        let (t, q) = crate::tabreq::parse("history").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert!(a.log_days);
     }
 
     #[test]
@@ -2170,7 +2379,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Home  2 Queue  3 Infra  6 Sessions"),
+            lines[0].contains("1 Outbox  2 Home  3 Queue  4 Projects  5 Sessions  6 Infra"),
             "{s}"
         );
         assert!(
@@ -2179,7 +2388,7 @@ mod tests {
         );
         assert!(s.contains("RUNNING (1)"), "{s}");
 
-        a.handle(key('2'));
+        a.handle(key('3'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
@@ -2190,7 +2399,7 @@ mod tests {
             s.lines().last().unwrap().contains("c cancel  +/- priority"),
             "{s}"
         );
-        a.handle(key('1'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Home);
     }
 
@@ -2234,7 +2443,7 @@ mod tests {
         a.runner = fake.clone();
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
-        a.handle(key('2'));
+        a.handle(key('3'));
         // Both workers reply when their read ends: wait for the two messages, not a timer.
         let (mut queue, mut cands) = (false, false);
         while !(queue && cands) {
@@ -2324,7 +2533,7 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        a.handle(key('0'));
+        a.handle(key('4'));
         settle(&mut a, &rx);
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
         let mut l = loaded();
@@ -2363,13 +2572,13 @@ mod tests {
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         assert_eq!(Tab::parse("board"), Some(Tab::Projects), "board is retired");
-        // Projects has Board's slot and key: every other digit keeps its meaning.
-        a.handle(key('0'));
+        // Projects is the fourth tab, so 4 opens it.
+        a.handle(key('4'));
         assert_eq!(a.tab, Tab::Projects);
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Infra") && bar.contains("9 Fleet  Focus  0 Projects"),
+            bar.contains("4 Projects  5 Sessions") && bar.contains("9 Fleet"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -2510,7 +2719,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("3 Infra") && first.contains(" RED "),
+            first.contains("2 Home") && first.contains("6 Infra") && first.contains(" RED "),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -2529,38 +2738,26 @@ mod tests {
         assert_eq!(Tab::parse("ci"), Some(Tab::Infra));
         assert_eq!(Tab::parse("machines"), Some(Tab::Infra));
         assert_eq!(Tab::parse("jobs"), Some(Tab::Infra));
-        assert_eq!(Tab::parse("forecast"), Some(Tab::Sessions));
+        assert_eq!(Tab::parse("forecast"), Some(Tab::Log));
+        assert_eq!(Tab::parse("today"), Some(Tab::Log));
+        assert_eq!(Tab::parse("history"), Some(Tab::Log));
+        assert_eq!(Tab::parse("actions"), Some(Tab::Log));
         assert_eq!(Tab::parse("watch"), Some(Tab::Sessions));
         assert_eq!(Tab::parse("shepherd"), Some(Tab::Sessions));
     }
 
     #[test]
-    fn the_landed_layout_tabs_lead_in_hub_core_order() {
-        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's landed tabs in its order.
-        // Rule 13's interim: until the layout renumbers the digits once, a landed tab that
-        // replaced one keeps that tab's key, so it sits out the order check: Projects is
-        // Board's 0, Sessions Forecast's 6 and Infra Jobs' 3 (4 and 5 open its CI and Machines).
-        let interim = [
-            (Tab::Projects, '0'),
-            (Tab::Sessions, '6'),
-            (Tab::Infra, '3'),
-        ];
-        for (t, d) in interim {
-            assert_eq!(t.digit(), d, "{} left its interim key", t.title());
-        }
+    fn the_tabs_are_the_layout_and_each_digit_its_place() {
+        // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs in its order,
+        // and the digits follow that order, 1 for the first.
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
-        let mut at = 0;
-        for t in hub_core::layout::landed() {
-            let i = titles
-                .iter()
-                .position(|x| *x == t.title)
-                .unwrap_or_else(|| panic!("{} is landed but not a TUI tab", t.title));
-            if interim.iter().any(|(x, _)| x.title() == t.title) {
-                continue;
-            }
-            assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
-            at = i;
+        let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.title).collect();
+        assert_eq!(titles, layout);
+        for (i, t) in Tab::ALL.iter().enumerate() {
+            let d = char::from_digit(i as u32 + 1, 10).unwrap();
+            assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
+        assert_eq!(Tab::by_digit('0'), None);
     }
 
     #[test]
@@ -2638,11 +2835,11 @@ mod tests {
 
     #[test]
     fn a_failed_fleet_bench_draws_the_fallbacks() {
-        let mut a = app(Tab::Sessions);
-        let f = Forecast::read_with("hub-test-no-such-fleet-bench");
-        a.handle(Msg::Forecast(Box::new(f)));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.forecast = Some(Forecast::read_with("hub-test-no-such-fleet-bench"));
         a.handle(key('f'));
-        let s = screen(&mut a, 160, 20);
+        let s = screen(&mut a, 160, 80);
         assert!(
             s.contains("No forecast: hub-test-no-such-fleet-bench"),
             "{s}"
@@ -2673,10 +2870,10 @@ mod tests {
         a.forecast_read.busy = true;
         a.handle(Msg::Tab(Tab::Fleet, None));
         assert_eq!(a.tab, Tab::Fleet);
-        a.handle(key('6'));
+        a.handle(key('5'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('7'));
-        assert_eq!(a.tab, Tab::Today);
+        a.handle(key('8'));
+        assert_eq!(a.tab, Tab::Log);
     }
 
     #[test]
@@ -2743,11 +2940,11 @@ mod tests {
     #[test]
     fn infra_reads_health_red_machines_ci_jobs_cloud_governor_in_order() {
         let mut a = infra_app();
-        a.handle(key('3'));
+        a.handle(key('6'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Infra  6 Sessions") && !bar.contains("Machines"),
+            bar.contains("5 Sessions  6 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(top(&s).starts_with("HEALTH"), "{s}");
@@ -2770,7 +2967,7 @@ mod tests {
     #[test]
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
-        a.handle(key('3'));
+        a.handle(key('6'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
@@ -2792,12 +2989,15 @@ mod tests {
     fn number_keys_switch_pages_and_q_quits() {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
-        a.handle(key('4'));
-        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("ci")));
-        a.handle(key('5'));
-        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("machines")));
+        a.handle(key('6'));
+        assert_eq!((a.tab, a.seek), (Tab::Infra, None));
+        a.handle(key('8'));
+        assert_eq!(a.tab, Tab::Log);
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Log, "0 opens nothing");
+        a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Sessions);
+        assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('q'));
         assert!(a.quit);
     }

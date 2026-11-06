@@ -77,18 +77,20 @@ test("the overview folds the last day and the shepherd; the changes and the rund
   assert.match(html, /Skipped on purpose, in Actions/);
 });
 
-test("the ranked sessions fold lists the week worst first, and an open row shows its card", () => {
+test("Log's ranked sessions list the week worst first, and an open row shows its card", () => {
   setup();
   run(`ost.rows = null; ost.open = null; ost.cards = {}`);
   ctx.renderOverview();
-  assert.match(boxes.scroll.innerHTML, /<details class="ovsec" data-k="ranked"><summary><h2 class="sec">Ranked sessions <span class="muted">7d, by friction/);
-  assert.match(boxes.scroll.innerHTML, /Loading\./, "nothing is read until the fold opens");
+  assert.doesNotMatch(boxes.scroll.innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
+  ctx.renderLogRanked();
+  assert.match(boxes["log-ranked"].innerHTML, /<span class="muted">7d, by friction<\/span>/);
+  assert.match(boxes["log-ranked"].innerHTML, /Loading\./, "nothing is read until the section opens");
   run(`ost.rows = __d.rows; ost.open = __d.rows[0].session_id; ost.cards[ost.open] = __d.card;`, { card: "fix the gate (6f296b73)\n  Time      work 2h05", rows: [
     { session_id: "6f296b73-b7a5", project: "dotfiles", title: "fix the gate\nmore", friction: 11, why: "9 nudges", cost_usd: 41.2, duration_s: 22200, prs_merged: 24, prs_open: 0, prs_closed_unmerged: 1 },
     { session_id: "aa11bb22-cc", project: "hub", title: "t", friction: 1, why: "1 denied", cost_usd: null, duration_s: null, prs_merged: 0, prs_open: 0, prs_closed_unmerged: 0 },
   ] });
-  ctx.renderOverview();
-  const html = boxes.scroll.innerHTML;
+  ctx.renderLogRanked();
+  const html = boxes["log-ranked"].innerHTML;
   assert.match(html, /2 worst, 7d, by friction/);
   assert.match(html, /<tr class="click" data-sid="6f296b73-b7a5"><td class="n">11<\/td><td>fix the gate <span class="muted">6f296b73<\/span>/);
   assert.match(html, /<td class="n">6h 10m<\/td><td class="n">\$41\.20<\/td><td class="n">24\/25<\/td>/);

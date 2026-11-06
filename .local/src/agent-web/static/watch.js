@@ -180,8 +180,8 @@ function renderFacts() {
 }
 
 // The detail pane while no session is open: the bucket tiles (they filter the list), then the
-// last day's swimlanes and the shepherd's pass and due lines, each folded. The change feed and
-// the rundowns are Log's.
+// last day's swimlanes and the shepherd's pass and due lines, each folded. The change feed, the
+// rundowns and the ranked sessions are Log's.
 function renderOverview() {
   if (st.sel || st.tab !== "sessions") return;
   const el = $("scroll");
@@ -201,23 +201,23 @@ function renderOverview() {
     html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
   }
-  html += shepherdOverview() + rankedOverview();
+  html += shepherdOverview();
   paint(el, html, wst.open);
 }
 
-// Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes' friction
-// score. The list is read when the fold opens and a card when its row is clicked (rule 10);
-// the rows change once a night, so nothing re-reads them on its own.
+// Log's Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes'
+// friction score. The list is read when the section opens and a card when its row is clicked
+// (rule 10); the rows change once a night, so nothing re-reads them on its own.
 const ost = { rows: null, err: null, open: null, cards: {} };
 async function loadRanked() {
   try { ost.rows = await api("/api/outcomes"); ost.err = null; } catch (e) { ost.err = e.message; }
-  renderOverview();
+  renderLogRanked();
 }
 async function loadCard(sid) {
   try { ost.cards[sid] = await api(`/api/outcomes/card?sid=${encodeURIComponent(sid)}`); } catch (e) { ost.cards[sid] = e.message; }
-  renderOverview();
+  renderLogRanked();
 }
-function rankedOverview() {
+function renderLogRanked() {
   const rows = ost.rows || [];
   const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
     : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
@@ -228,21 +228,23 @@ function rankedOverview() {
         return `<tr class="click" data-sid="${esc(r.session_id)}"><td class="n">${r.friction}</td><td>${esc(r.title.split("\n")[0].slice(0, 60))} <span class="muted">${esc(r.session_id.slice(0, 8))}</span></td><td>${esc(r.project)}</td>` +
           `<td class="n">${r.duration_s == null ? "-" : dur(r.duration_s / 60)}</td><td class="n">${r.cost_usd == null ? "-" : "$" + r.cost_usd.toFixed(2)}</td><td class="n">${r.prs_merged}/${prs}</td><td class="wrap">${esc(r.why)}</td></tr>${card}`;
       }).join("")}</table></div>`;
-  return fold("ranked", `Ranked sessions <span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span>`, body);
+  $("log-ranked").innerHTML = `<div class="bhead"><span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span></div>${body}`;
 }
+$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows) loadRanked(); });
+$("log-ranked").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-sid]");
+  if (!row) return;
+  const sid = row.dataset.sid;
+  ost.open = ost.open === sid ? null : sid;
+  if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderLogRanked();
+});
+LOG_PARTS.push({ show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
 // A folded overview section; the fold is remembered across re-renders by its key.
 const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open[k] ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;
-  const row = e.target.closest("tr[data-sid]");
-  if (row) {
-    const sid = row.dataset.sid;
-    ost.open = ost.open === sid ? null : sid;
-    if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderOverview();
-    return;
-  }
   const tile = e.target.closest("[data-bucket]");
   if (tile) { wst.filter = wst.filter === tile.dataset.bucket ? null : tile.dataset.bucket; renderList(); renderOverview(); }
 });
@@ -257,7 +259,6 @@ for (const id of ["scroll", "facts", "list"]) {
   $(id).addEventListener("toggle", (e) => {
     const k = e.target.dataset && e.target.dataset.k;
     if (k) wst.open[k] = e.target.open;
-    if (k === "ranked" && e.target.open && !ost.rows) loadRanked();
   }, true);
 }
 

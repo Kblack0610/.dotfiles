@@ -213,6 +213,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn log_folds_are_the_layout() {
+        // Rule 8 for sections: each folded Log section in hub_core::layout is a `sec-<name>`
+        // fold in index.html, in its order. The day and its history are the day view
+        // (log.js); the forecast's burn-up and baseline are the TUI's alone so far.
+        let html = include_str!("index.html");
+        let log = hub_core::layout::resolve("log").expect("log is a tab");
+        let mut at = 0;
+        for s in log.sections {
+            if ["day", "history", "forecast"].contains(s) {
+                continue;
+            }
+            let id = format!("id=\"sec-{s}\"");
+            let i = html
+                .find(&id)
+                .unwrap_or_else(|| panic!("index.html lacks {id}"));
+            assert!(i > at, "{id} is out of layout order");
+            at = i;
+        }
+    }
+
     fn header_of(res: &Response, name: header::HeaderName) -> String {
         res.headers()
             .get(name)
@@ -293,7 +314,7 @@ mod tests {
 
     /// The page's scripts share one global scope, so a top-level name declared in two of them
     /// is a SyntaxError that drops the later script whole (2026-11-04: `sumOf` in infra.js and
-    /// actions.js left the Actions tab blank). `node --check` sees one file and cannot catch it.
+    /// actions.js left Log's Actions section blank). `node --check` sees one file and cannot catch it.
     #[test]
     fn no_top_level_name_is_declared_by_two_scripts() {
         let mut seen: std::collections::HashMap<String, &str> = Default::default();

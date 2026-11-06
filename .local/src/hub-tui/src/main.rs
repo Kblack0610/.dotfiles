@@ -14,6 +14,7 @@ mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod logtab;
 mod outboxtab;
 mod projtab;
 mod queuetab;
@@ -76,7 +77,7 @@ fn main() {
         std::process::exit(actions(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("tabs") {
-        for t in hub_core::layout::landed() {
+        for t in &hub_core::layout::TABS {
             println!("{}\t{}\t{}", t.id, t.title, t.question);
         }
         return;
@@ -121,7 +122,7 @@ fn main() {
     }
 }
 
-/// `hub actions`: hub-core's actions reader, so the briefing's digest is the Actions tab's.
+/// `hub actions`: hub-core's actions reader, so the briefing's digest is Log's Actions section's.
 /// `--records` streams the whole window as JSONL, one action or reject per line, with none
 /// capped: comms-lint's `fleet-log` channel reads it.
 fn actions(args: Vec<String>) -> i32 {
@@ -136,10 +137,7 @@ fn actions(args: Vec<String>) -> i32 {
         }
     }
     let since = since.unwrap_or_else(|| die(USAGE));
-    let (items, err) = match hub_core::queue::list(&hub_core::session_actions::System, "all") {
-        Ok(items) => (items, None),
-        Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
-    };
+    let (items, err) = hub_core::actions::queue_items();
     let paths = hub_core::actions::Paths::from_env();
     let mut g = if records {
         hub_core::actions::window(&paths, since, &items)
@@ -223,7 +221,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Today | Tab::History)) = tab {
+    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Log)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");

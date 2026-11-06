@@ -1,4 +1,4 @@
-//! The Today and History tabs: what a day shipped, from the records `day-log snapshot` writes
+//! Log's day and history sections: what a day shipped, from the records `day-log snapshot` writes
 //! to `~/.agent/daylog/<date>.json` (day-log.timer, every 5 minutes). The sections are the ones
 //! `day-log show` prints; the record's fields are read as written, nothing is recomputed.
 
@@ -96,7 +96,7 @@ fn spend(rec: &Value) -> (Option<u64>, Option<f64>, Option<u64>) {
     )
 }
 
-/// The Today tab and where each section starts (for n/N).
+/// Log's day and where each section starts (for n/N).
 pub struct Page {
     pub lines: Vec<Line<'static>>,
     pub sections: Vec<usize>,
@@ -315,10 +315,13 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         .map(|k| wt[*k].as_array().map_or(0, Vec::len))
         .sum();
     if n > 0 {
-        out.push(Line::from(vec![
-            Span::styled(format!("{n} waiting on you"), p.warn()),
-            Span::styled("  1 Home answers them", p.dim()),
-        ]));
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("{n} waiting on you"), p.warn()),
+                Span::styled("  2 Home answers them", p.dim()),
+            ]),
+            w,
+        ));
     }
 
     // MERGED, every PR, newest first
@@ -493,7 +496,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     }
 }
 
-/// The History tab: one row per recorded day, newest first, `sel` highlighted.
+/// Log's history list: one row per recorded day, newest first, `sel` highlighted.
 pub fn history(days: &[DayRow], sel: usize, p: Palette, w: usize) -> Vec<Line<'static>> {
     if days.is_empty() {
         return vec![Line::styled(
@@ -656,7 +659,7 @@ pub mod tests {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("3 waiting on you  1 Home answers them") < at("MERGED (2)"));
+        assert!(at("3 waiting on you  2 Home answers them") < at("MERGED (2)"));
         assert!(!t.contains("WAITING ON YOU"), "Home lists them");
         assert!(at("MERGED (2)") < at("STILL OPEN (1 touched in 7d)"));
         assert!(at("STILL OPEN") < at("SESSIONS (1)"));

@@ -7,7 +7,7 @@
 // ~/.agent/shepherd/rundowns). The chat is the shepherd's own session, pinned first in the list:
 // opening it shows its transcript and a box that types into its pane, so an answer it gives there
 // is also kept as a rundown. The lines a pass skipped on purpose, with why, are the shepherd's
-// skips in the Actions tab.
+// skips in Log's Actions section.
 
 const shst = { data: null, err: null, open: new Set() };
 

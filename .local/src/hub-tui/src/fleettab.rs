@@ -47,7 +47,7 @@ pub fn page(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     out.push(Line::raw(""));
     out.push(dispatch_head(&f.dispatch, p, w));
     out.push(judge_head(&f.judge, p, w));
-    out.push(Line::styled("  verdict lists: 6 Log, v", p.dim()));
+    out.push(Line::styled("  verdict lists: 8 Log, v", p.dim()));
     out
 }
 
@@ -422,9 +422,12 @@ pub mod tests {
         }
     }
 
+    /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
-        page(f, Palette { no_color: true }, NOW, w)
+        let p = Palette { no_color: true };
+        page(f, p, NOW, w)
             .iter()
+            .chain(verdicts(f, p, NOW, w).iter())
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n")
@@ -447,6 +450,7 @@ pub mod tests {
             "fix the flaky bats test",
             "agree 3 (75% of scored)  disagree 1  deferred 2  pending 1  unscored 5",
             "land the fleet tab now?",
+            "verdict lists: 8 Log, v",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }

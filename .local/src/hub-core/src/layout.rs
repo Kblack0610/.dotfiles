@@ -63,7 +63,7 @@ pub const TABS: [Tab; 9] = [
         title: "Log",
         question: "What happened?",
         sections: &[
-            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast", "ranked",
         ],
     },
     Tab {
@@ -111,7 +111,8 @@ pub fn resolve(name: &str) -> Option<&'static Tab> {
         .iter()
         .find(|(old, _)| *old == n)
         .map_or(n.as_str(), |(_, new)| new);
-    TABS.iter().find(|t| t.id == id || t.title.eq_ignore_ascii_case(id))
+    TABS.iter()
+        .find(|t| t.id == id || t.title.eq_ignore_ascii_case(id))
 }
 
 /// The section a retired name opens on its new tab, when that name is one of the tab's
@@ -137,10 +138,7 @@ mod tests {
         assert_eq!(ids.len(), TABS.len());
         for (old, new) in RETIRED {
             assert!(!ids.contains(old), "{old} is retired and live");
-            assert!(
-                resolve(new).is_some(),
-                "{old} points at {new}, not a tab"
-            );
+            assert!(resolve(new).is_some(), "{old} points at {new}, not a tab");
         }
     }
 
