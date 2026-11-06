@@ -23,6 +23,10 @@
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
+#   fleet-bench rules [--json|--check]
+#                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
+#                                rule's number re-measured; --check fails when one moved against its
+#                                recorded confidence, its measure died, or a rule's text left its source
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots), against KPI_THRESHOLDS;
@@ -135,6 +139,8 @@ set -uo pipefail
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
 : "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
+: "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
+: "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 : "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
 : "${KPI_BOARD:=agent-runtime}"       # the agent board improve, retro and triage file rows on
@@ -872,6 +878,12 @@ cmd_scorecard() {
     echo "Runners, timers and direct headless launches may only shrink; the baseline is ~/.config/agentctl/ledger-baseline."
     echo
     ledger_section "$counts"
+    echo
+    echo "## Rule numbers"
+    echo
+    echo "Each provisional rule's number, re-measured; a moved one gets a cleanup item (standards.md, the last rule)."
+    echo
+    cmd_rules | sed 's/^\([a-z_]*\)=/- \1: /; /^- /!s/^/- /'
   } > "$out.tmp" && mv "$out.tmp" "$out" && cp "$out" "$BENCH_SCORECARD_DIR/latest.md" || return 1
   echo "$out"
 }
@@ -1462,6 +1474,70 @@ cmd_ledger() {
     --check) ledger_check "$counts" ;;
     "") echo "$counts" ;;
     *) say "ledger: unknown option $1"; return 2 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- rules
+
+# The rule register: one JSON row per rule, its kind, the number it rests on, a confidence and a
+# revisit trigger (~/.local/src/docs/standards.md, the last rule). A row with `measure` and `max` or
+# `min` re-measures itself here: `measure` prints a number, `holds` says it is inside the bound.
+# confidence low records a number known not to hold, so `moved` is a change from what the register
+# says, never a number merely being past its line. `anchored` is the rule's text still being in its
+# source; null when the source is not on this machine.
+
+# rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead.
+rules_states() {
+  [ -s "$RULES_REGISTER" ] || return 0
+  local src anchor cmd value anchored
+  while IFS=$'\x1f' read -r src anchor cmd; do
+    src="${src/#\~/$HOME}"
+    if [ ! -f "$src" ]; then anchored=null
+    elif grep -qF -- "$anchor" "$src"; then anchored=true
+    else anchored=false
+    fi
+    value=""
+    [ -z "$cmd" ] || value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>/dev/null </dev/null | tail -1)
+    printf '%s\x1f%s\n' "$anchored" "$value"
+  done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
+    jq -cRn --slurpfile rows "$RULES_REGISTER" '
+      [inputs | split("\u001f")] as $seen
+      | range($rows | length) as $i
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
+      | (.max != null or .min != null) as $bounded
+      | .dead = ($bounded and .value == null)
+      | .holds = (if $bounded and .value != null
+          then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
+      | .moved = (.holds != null and .holds != (.confidence != "low"))'
+}
+
+# rules_problems <states array> -> one line per row --check fails on.
+rules_problems() {
+  jq -r '.[] | (.source | split("/") | last) as $f
+    | if .anchored == false then "stale: \($f): \(.anchor)"
+      elif .dead then "dead measure: \($f): \(.anchor)"
+      elif .moved then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
+      else empty end' <<<"$1"
+}
+
+# rules_summary <states array> -> the counts, key=value.
+rules_summary() {
+  jq -r 'def n($k; $v): map(select(.[$k] == $v)) | length;
+    ["rules=\(length)", "invariant=\(n("kind"; "invariant"))", "provisional=\(n("kind"; "provisional"))",
+     "confidence_high=\(n("confidence"; "high"))", "confidence_med=\(n("confidence"; "med"))", "confidence_low=\(n("confidence"; "low"))",
+     "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
+     "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))"] | .[]' <<<"$1"
+}
+
+cmd_rules() {
+  local states problems
+  states=$(rules_states | jq -s .)
+  problems=$(rules_problems "$states")
+  case "${1:-}" in
+    --json) echo "$states" ;;
+    --check) [ -z "$problems" ] || { echo "$problems"; return 1; } ;;
+    "") rules_summary "$states"; [ -z "$problems" ] || echo "$problems" ;;
+    *) say "rules: unknown option $1"; return 2 ;;
   esac
 }
 
@@ -3529,6 +3605,7 @@ main() {
     review) shift; cmd_review "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
+    rules) shift; cmd_rules "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;

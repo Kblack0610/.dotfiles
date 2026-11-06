@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# agent-propose - what an analysis stream proposes to the human, and the only writer of its store.
+#
+#   add --stream s --project p --verb queue|row|none [--arg text] [--why text] [--evidence path|url]
+#       [--key k] "title"             file a proposal; print its id (the open one when it repeats)
+#   list [--json] [--status open|accepted|rejected|expired|all] [--stream s]
+#   show <id> | count
+#   accept [--by who] <id>            run its verb, then record the decision
+#   reject [--by who] <id>            record the decision; the verb never runs
+#   expire                            close what passed its expiry, prune decided records
+#
+# A proposal is a decision for the human, so nothing here runs without an accept and no model
+# reads it: the verb is one of the fixed set below, applied by this script. It is not an
+# agent-ask, whose `resume` is a model prompt that runs whatever the answer was.
+set -uo pipefail
+
+AP_DIR="${AGENT_PROPOSE_DIR:-$HOME/.agent/proposals}"
+AP_TTL_DAYS="${AGENT_PROPOSE_TTL_DAYS:-30}"   # an unread proposal is stale: dream's block expiry
+AP_KEEP_DAYS="${AGENT_PROPOSE_KEEP_DAYS:-90}" # a decided record, long enough to stop a repeat
+AP_MAX="${AGENT_PROPOSE_MAX:-12}"             # open per stream and project, above the largest real backlog (11)
+
+die() { echo "agent-propose: $*" >&2; exit 1; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+records() { find "$AP_DIR" -maxdepth 1 -name '*.json' -print0 2>/dev/null | xargs -0 -r cat; }
+
+# One writer at a time: a repeat check and its write, or a decision and its verb, are one step.
+lock() {
+  mkdir -p "$AP_DIR" || die "cannot create $AP_DIR"
+  exec 9>"$AP_DIR/.lock"
+  flock 9 || die "cannot lock $AP_DIR"
+}
+
+write() { # <id> <json>
+  local tmp="$AP_DIR/.$1.tmp"
+  printf '%s\n' "$2" > "$tmp" && mv "$tmp" "$AP_DIR/$1.json" || die "cannot write $1"
+}
+
+cmd_add() {
+  local stream="" project="" verb="" arg="" why="" evidence="" key="" title
+  while [ $# -gt 0 ]; do
+    case "$1" in --*) [ $# -ge 2 ] || die "add: $1 needs a value" ;; esac
+    case "$1" in
+      --stream)   stream="${2-}"; shift 2 ;;
+      --project)  project="${2-}"; shift 2 ;;
+      --verb)     verb="${2-}"; shift 2 ;;
+      --arg)      arg="${2-}"; shift 2 ;;
+      --why)      why="${2-}"; shift 2 ;;
+      --evidence) evidence="${2-}"; shift 2 ;;
+      --key)      key="${2-}"; shift 2 ;;
+      --*)        die "add: unknown flag $1" ;;
+      *)          break ;;
+    esac
+  done
+  title="$*"
+  [ -n "$stream" ] && [ -n "$project" ] && [ -n "$title" ] || die "add needs --stream, --project and a title"
+  case "$verb" in
+    queue|row) [ -n "$arg" ] || die "add: --verb $verb needs --arg" ;;
+    none) ;;
+    *) die "add: --verb must be queue, row or none" ;;
+  esac
+  [ -n "$key" ] || key="$stream/$project/$title"
+  lock
+  sweep >/dev/null
+  # A repeat is the open record, or a decision still kept: a rejected idea is not asked again nightly.
+  # An expired one was never decided, so it may come back.
+  local seen id open_n ts
+  seen="$(records | jq -rs --arg k "$key" 'map(select(.key == $k and .status != "expired")) | last | .id // empty')"
+  if [ -n "$seen" ]; then echo "$seen"; return 0; fi
+  open_n="$(records | jq -s --arg s "$stream" --arg p "$project" \
+    'map(select(.status == "open" and .stream == $s and .project == $p)) | length')"
+  [ "$open_n" -lt "$AP_MAX" ] || die "$stream has $open_n open for $project (max $AP_MAX): decide those first"
+  ts="$(now)"
+  id="$(printf '%s' "$key" | sha256sum | cut -c1-12)"
+  write "$id" "$(jq -cn --arg id "$id" --arg stream "$stream" --arg project "$project" --arg title "$title" \
+    --arg why "$why" --arg evidence "$evidence" --arg verb "$verb" --arg arg "$arg" --arg key "$key" \
+    --arg created "$ts" --arg expires "$(date -u -d "+$AP_TTL_DAYS days" +%Y-%m-%dT%H:%M:%SZ)" \
+    '{id: $id, stream: $stream, project: $project, title: $title, why: $why, evidence: $evidence,
+      verb: $verb, arg: $arg, key: $key, status: "open", created: $created, expires: $expires}')"
+  echo "$id"
+}
+
+cmd_list() {
+  local json="" status=open stream=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)   json=1; shift ;;
+      --status) status="${2:?}"; shift 2 ;;
+      --stream) stream="${2:?}"; shift 2 ;;
+      *) die "list: unknown arg $1" ;;
+    esac
+  done
+  case "$status" in open|accepted|rejected|expired|all) ;; *) die "list: no status $status" ;; esac
+  local rows
+  rows="$(records | jq -cs --arg st "$status" --arg s "$stream" \
+    'map(select(($st == "all" or .status == $st) and ($s == "" or .stream == $s))) | sort_by(.created)')"
+  if [ -n "$json" ]; then printf '%s\n' "$rows"; return 0; fi
+  jq -r '.[] | [.id, .status, .stream, .project, .created[0:10], .title] | @tsv' <<<"$rows"
+}
+
+record() { # <id>: the record's path, or die
+  case "$1" in *[!0-9a-f]*|"") die "bad id: $1" ;; esac
+  [ -f "$AP_DIR/$1.json" ] || die "no proposal $1"
+  printf '%s' "$AP_DIR/$1.json"
+}
+
+# apply <record file>: the verb, and only the fixed set. Its stdout is what the decision records.
+apply() {
+  local f="$1" verb arg project
+  verb="$(jq -r .verb "$f")" arg="$(jq -r .arg "$f")" project="$(jq -r .project "$f")"
+  case "$verb" in
+    queue) agent-queue add --project "$project" -- "$arg" ;;
+    row)   notes ptask "$project" --agent add "$arg" ;;
+    none)  ;;
+    *)     echo "unknown verb $verb" >&2; return 1 ;;
+  esac
+}
+
+decide() { # <accepted|rejected> [--by who] <id>
+  local status="$1" by=human; shift
+  if [ "${1:-}" = --by ]; then by="${2:?}"; shift 2; fi
+  local id="${1:-}" f result="" st
+  [ -n "$id" ] || die "${status%ed} needs an id"
+  f="$(record "$id")" || exit 1
+  lock
+  st="$(jq -r .status "$f")"
+  [ "$st" = open ] || die "$id is already $st"
+  if [ "$status" = accepted ]; then
+    # A failed verb leaves it open with the reason, so the accept can be tried again.
+    if ! result="$(apply "$f" 2>&1 9>&-)"; then  # 9>&-: a child must not keep the store lock
+      write "$id" "$(jq -c --arg e "$result" '.error = $e' "$f")"
+      die "$id: its ${status%ed} failed: $result"
+    fi
+  fi
+  write "$id" "$(jq -c --arg s "$status" --arg by "$by" --arg t "$(now)" --arg r "$result" \
+    '.status = $s | .decided_by = $by | .decided_at = $t | .result = $r | del(.error)' "$f")"
+  echo "$id $status"
+}
+
+# sweep: runs under the lock, and on every add, so a store with no reader still closes its past-due
+# proposals and they stop counting against the cap.
+sweep() {
+  local ts cut f n=0
+  ts="$(now)"
+  cut="$(date -u -d "-$AP_KEEP_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
+  while IFS= read -r -d '' f; do
+    if jq -e --arg t "$ts" '.status == "open" and .expires < $t' "$f" >/dev/null; then
+      write "$(jq -r .id "$f")" "$(jq -c --arg t "$ts" '.status = "expired" | .decided_at = $t' "$f")"
+      n=$((n + 1))
+    elif jq -e --arg c "$cut" '.status != "open" and .decided_at < $c' "$f" >/dev/null; then
+      rm -f "$f"
+    fi
+  done < <(find "$AP_DIR" -maxdepth 1 -name '*.json' -print0)
+  echo "$n expired"
+}
+
+cmd_expire() { lock; sweep; }
+
+case "${1:-}" in
+  add)    shift; cmd_add "$@" ;;
+  list)   shift; cmd_list "$@" ;;
+  show)   f="$(record "${2:-}")" || exit 1; jq . "$f" ;;
+  count)  records | jq -s 'map(select(.status == "open")) | length' ;;
+  accept) shift; decide accepted "$@" ;;
+  reject) shift; decide rejected "$@" ;;
+  expire) cmd_expire ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
