@@ -204,8 +204,9 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 10px 15px; font: inherit; overflow: hidden; }
 .tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c); }
-button.tile { cursor: pointer; }
-button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
+button.tile, a.tile { cursor: pointer; }
+a.tile { text-decoration: none; }
+button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
 .tile.wide { grid-column: span 2; }
 .tl { font-size: 11px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 .tv { font-size: 26px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
