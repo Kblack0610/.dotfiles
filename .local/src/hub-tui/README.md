@@ -68,7 +68,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `h`, `j`/`k`, Enter, Esc | Log: list the recorded days, pick one, open it, close the list |
 | `a` `c` `s` `v` `f` `w` | Log: open or fold Actions, Changes, Rundowns, Judges' verdicts, Forecast, Ranked sessions (an open fold is read and scrolled to) |
 | `j`/`k`, Enter, Esc | Sessions: pick a session (PgUp/PgDn, space and `g`/`G` scroll the page), open or close its detail pane; with it closed Esc clears the query, chip and sort |
-| `/`, `f`, `s`, `S` | Sessions: type a query (Enter applies, Esc clears; `project:dotfiles pr:open`, `item:none`, `source:queue`, `session:agent-3`), step the chip (All, Running, Needs you, Stalled, Done today), step the sort, flip it. `x` stays Stop here, so Esc clears |
+| `/`, `f`, `s`, `S` | Sessions: type a query (Enter applies, Esc drops the draft; `project:dotfiles pr:open`, `item:none`, `source:queue`, `session:agent-3`), step the chip (All, Running, Needs you, Stalled, Done today), step the sort, flip it. `x` stays Stop here, so Esc clears |
 | `T` | Sessions: start a stopped timer; asks first, and says so when none is stopped |
 | `i` `p` `u` `m` `x` `c` `a` | Sessions: interrupt, park, unpark, move, stop, cancel, approve the plan of the selected session; each asks first |
 | `y`/Enter, `n`/Esc, Left/Right | Sessions, confirm armed: run it, drop it, pick the account a move goes to (a move only) |
