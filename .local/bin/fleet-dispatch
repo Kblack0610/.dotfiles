@@ -966,19 +966,25 @@ gateway_left() {
 }
 
 # gateway_launch <harness> <model> <item json> <brief> -- past every refusal, set cmd to the launch
-# line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget) before
+# line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file room
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
-  left=$(gateway_left "$harness") || { say "start: cannot read the $harness key's budget from the gateway"; return 1; }
-  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the $harness key is spent (\$$left left)"; return 1; }
+  room=$(jq -r --arg h "$harness" '.harnesses[$h].room // empty' "$HARNESSES")
+  if [ -n "$room" ]; then
+    # A plan-billed harness has no key budget; its `room` command says whether the plan has use left.
+    left=$($room 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+  else
+    left=$(gateway_left "$harness") || { say "start: cannot read the $harness key's budget from the gateway"; return 1; }
+    awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the $harness key is spent (\$$left left)"; return 1; }
+  fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
   case "$(harness_launcher "$harness")" in
@@ -996,9 +1002,20 @@ gateway_launch() {
       cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
       ;;
+    codex)
+      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: codex runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
+      # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
+      # agent-codex claims the thread id on the item when codex names it.
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY"
+      cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex run -m $(printf '%q' "$id")"
+      cmd="$cmd --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never $(printf '%q' "$brief")"
+      ;;
     *) say "start: no launcher for harness $harness"; return 2 ;;
   esac
 }
+
+# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane.
+headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac; return 1; }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
@@ -1009,7 +1026,7 @@ gateway_launch() {
 #   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
 #                           repo) with `wt new`, claude on the item's brief there.
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
-#                           the item's `agent:`: claude-lazer and opencode on the eval key, lazer-reserve
+#                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
 #                           (a run pass's spill) on the claude-reserve key.
 #   --brief FILE --row KEY  claim the open row, promote it into a queue item with the brief as
 #                           its task, and start that item as --item does.
@@ -1136,7 +1153,8 @@ cmd_start() {
     else
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"$it")
       gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" || return
-      acct=gateway on=$harness
+      # What the run bills: the map's `account` for a plan login (codex: chatgpt), else the gateway key.
+      acct=$(jq -r --arg h "$harness" '.harnesses[$h].account // "gateway"' "$HARNESSES") on=$harness
     fi
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
@@ -1286,8 +1304,8 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
 # item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
-# item. opencode has no slash commands, hooks or human at the pane, so it reads the skill and
-# closes differently.
+# item. A headless harness (opencode, codex) has no slash commands, hooks or human at the pane, so
+# it reads the skill and closes differently.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry=''
@@ -1298,7 +1316,7 @@ item_brief() {
   kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
   [ -z "$kind" ] || entry=${KIND_ENTRY[$kind]:-}
   entry=${entry:-/one-shot}
-  if [ "$harness" = opencode ]; then
+  if headless "$harness"; then
     printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
     printf '%s%s ' "$entry" "$pr_only"
@@ -1323,7 +1341,7 @@ item_brief() {
     echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
-  if [ "$harness" = opencode ]; then
+  if headless "$harness"; then
     echo "Right after gh pr create, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
     echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Skip what this harness lacks (final-pass, wind-down) and say so in the PR body."

@@ -1,0 +1,12 @@
+# The ChatGPT plan seat through the Codex CLI's own login (~/.codex/auth.json). No host to
+# name, so it ships public, like subscription.
+ROUTE_DESC="personal ChatGPT plan seat via the Codex CLI, native endpoint, its own OAuth"
+ROUTE_TRANSPORT="openai-native"
+ROUTE_BASE_URL=""
+ROUTE_KEY_SOURCE="oauth"
+ROUTE_PAYER="subscription"
+ROUTE_PERSONAL_SAFE="no"
+ROUTE_WORK_SAFE="no"
+ROUTE_FALLBACK_SAFE="yes"      # native: no router in the path, so no edge exists
+ROUTE_HARNESSES="codex"
+ROUTE_NOTE="PERSONAL_SAFE=no until the human decides whether personal data may go to the ChatGPT account; a run declares DATA_CLASS=public meanwhile."

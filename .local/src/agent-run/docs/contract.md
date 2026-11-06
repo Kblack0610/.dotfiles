@@ -4,7 +4,7 @@ What a ROLE means, independent of which harness runs it.
 
 Mirrors the `ticket` CLI's `docs/contract.md`: the contract is the abstraction, the
 harness adapters under `harnesses/` are implementations. `agentctl` has always
-described itself as harness-agnostic (opencode / claude / binks); this
+described itself as harness-agnostic (claude / codex / opencode / binks); this
 makes capability agnostic too, instead of burying it in each runner's `COMMAND`.
 
 ## The capability vocabulary
@@ -127,14 +127,16 @@ them — their independence comes from the `model:` frontmatter in
 
 ## Harness mapping
 
-| contract | claude | opencode |
-|---|---|---|
-| `ROLE_WRITE=no` | `--disallowedTools Write,Edit,NotebookEdit` | agent `tools: {write:false, edit:false}` |
-| `ROLE_TASK=no` | `--disallowedTools Task` | subagent spawning off |
-| `ROLE_BASH=no` | `--disallowedTools Bash` | agent `tools: {bash:false}` |
-| `ROLE_MCP=<set>` | `--mcp-config mcp/<set>.json --strict-mcp-config` | agent `mcp` block |
-| `ROLE_MCP=inherit` | no mcp flags; `ROLE_MCP_DENY` carries the weight | as above |
-| `ROLE_APPROVE` | `--allowedTools` | `permission` block |
+| contract | claude | opencode | codex |
+|---|---|---|---|
+| `ROLE_WRITE=no` | `--disallowedTools Write,Edit,NotebookEdit` | agent `tools: {write:false, edit:false}` | `--sandbox read-only` (binds the shell too) |
+| `ROLE_WRITE=yes` | no write denial | agent grants write | `--dangerously-bypass-approvals-and-sandbox` |
+| `ROLE_TASK=no` | `--disallowedTools Task` | subagent spawning off | `--disable multi_agent` |
+| `ROLE_BASH=no` | `--disallowedTools Bash` | agent `tools: {bash:false}` | refused with `ROLE_WRITE=yes`; with `ROLE_WRITE=no` the read-only sandbox leaves the shell no side effect |
+| `ROLE_MCP=<set>` | `--mcp-config mcp/<set>.json --strict-mcp-config` | agent `mcp` block | `-c mcp_servers.<n>.enabled=false` for each configured server outside the set, the set's servers added inline (`-c mcp_servers={}` merges and clears nothing, measured on 0.164) |
+| `ROLE_MCP=inherit` | no mcp flags; `ROLE_MCP_DENY` carries the weight | as above | config.toml servers |
+| `ROLE_APPROVE` | `--allowedTools` | `permission` block | n/a: exec never prompts |
+| `AGENT_SCHEMA` | `--json-schema` | refused | `--output-schema` |
 
 `ROLE_MCP` controls what SPAWNS; denials control what may be CALLED. Both are
 needed. An allowlist alone still starts every user-scope server: that is how 11
@@ -155,7 +157,8 @@ This is not patched, deliberately:
 
 The real fix is a sandbox with no writable mount. Until then, a role with
 `ROLE_WRITE=no, ROLE_BASH=yes` constrains the SHAPE of the work and must not be
-described as airtight. Say so in any doc that describes such a role.
+described as airtight. Say so in any doc that describes such a role. The codex
+harness is the exception: its read-only sandbox covers the shell.
 
 ## Adding a harness
 

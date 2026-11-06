@@ -104,10 +104,12 @@ EOF
 headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
-  # The one exception, with its row in PIPELINES.md: a `fleet-dispatch start --harness opencode`.
+  # The two exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`
+  # and the `agent-codex run` that `--harness codex` launches.
   run headless_launches "$REPO_ROOT/.local"
-  assert_equal "${#lines[@]}" 1
+  assert_equal "${#lines[@]}" 2
   assert_output --partial '/.local/bin/fleet-dispatch:'
+  assert_output --partial '/.local/bin/agent-codex:'
   run headless_launches "$REPO_ROOT/.config"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"
@@ -158,10 +160,13 @@ exec claude "$@"
   mkdir -p "$d"
   printf '#!/bin/sh\n# claude -p in a comment is fine\nclaude -p "do it" --max-turns 5\n' > "$d/runner"
   printf '#!/bin/sh\nprintf x | "$CLAUDE_BIN" --print\n' > "$d/piped"
+  printf '#!/bin/sh\n# codex exec in a comment is fine\n"$CODEX_BIN" exec --json "do it"\n' > "$d/cx"
   printf '#!/bin/sh\n# OpenAI chat/completions in prose is fine\ncurl -s "$BASE/v1/chat/completions" -d @q\ncurl -s https://api.anthropic.com/v1/messages\n' > "$d/http"
   run headless_launches "$d"
   assert_line --partial 'runner:3:'
   assert_line --partial 'piped:2:'
+  assert_line --partial 'cx:3:'
+  refute_output --partial 'cx:2:'
   assert_line --partial 'http:3:'
   assert_line --partial 'http:4:'
   refute_output --partial 'runner:2:'
