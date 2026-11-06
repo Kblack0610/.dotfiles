@@ -131,6 +131,7 @@ Media/Music
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
 !.claude/skills/ops/playground-headless-test/
+!.claude/skills/ops/playground-nightly-fix/
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
 !.claude/skills/ops/ci-cleanup/
