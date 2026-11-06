@@ -62,16 +62,19 @@ gh_slug() {
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
 # The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
-# files and gives none for a large PR). A PR gh cannot read is cached as {} so a rerun skips it.
+# files and gives none for a large PR). A PR that is not there (404) is cached as {} so a rerun
+# skips it; any other failure (a rate limit, the network) is not cached, so a rerun asks again.
 pr_facts() {
-  local f="$CB_CACHE/${1//\//_}-$2.json" files n
+  local f="$CB_CACHE/${1//\//_}-$2.json" files="" n
   if [ ! -s "$f" ]; then
     mkdir -p "$CB_CACHE"
-    if n="$(gh api "repos/$1/pulls/$2" --jq '.additions + .deletions' 2>/dev/null)" &&
-      files="$(gh api "repos/$1/pulls/$2/files" --paginate --jq '.[].filename' 2>/dev/null)"; then
+    if n="$(gh api "repos/$1/pulls/$2" --jq '.additions + .deletions' 2>&1)" &&
+      files="$(gh api "repos/$1/pulls/$2/files" --paginate --jq '.[].filename' 2>&1)"; then
       jq -cRn --argjson n "$n" '{files: [inputs | select(. != "")], n: $n}' <<<"$files" >"$f"
-    else
+    elif grep -q 'HTTP 404' <<<"$n$files"; then
       echo '{}' >"$f"
+    else
+      return 0
     fi
   fi
   jq -c --argjson s "$S_MAX" --argjson m "$M_MAX" 'select((.files // []) | length > 0)

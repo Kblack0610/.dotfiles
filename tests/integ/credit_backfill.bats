@@ -25,13 +25,14 @@ setup() {
       "arena": {repo: "game", path: "Assets/Arena", code: "ar", lab: "personal", type: "game"},
       "level": {repo: "game", path: "Assets/Level", code: "lv", lab: "personal", type: "game"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
   printf '#!/bin/sh\nexec "%s/.local/bin/agent-queue" "$@"\n' "$REPO_ROOT" >"$SANDBOX/bin/agent-queue"
-  # gh api repos/<r>/pulls/N[/files]: served from $GH_PRS/N.json, else a failure, as gh gives for a
-  # PR it cannot read. The stub answers the --jq the script asks for.
+  # gh api repos/<r>/pulls/N[/files]: served from $GH_PRS/N.json; N.err is a failure with that
+  # message, and no fixture a 404, as gh gives. The stub answers the --jq the script asks for.
   cat >"$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
 echo "gh $*" >>"$NOTES_FIXTURE/gh.log"
 p="${2#repos/*/pulls/}" f="$GH_PRS/${p%/files}.json"
-[ -f "$f" ] || exit 1
+[ ! -f "${f%.json}.err" ] || { cat "${f%.json}.err" >&2; exit 1; }
+[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
 case "$p" in */files) jq -r '.files[]?.path' "$f" ;; *) jq -r '.additions + .deletions' "$f" ;; esac
 SH
   printf '#!/bin/sh\ncat "$NOTES_FIXTURE/criteria-$1.json" 2>/dev/null\n' >"$SANDBOX/bin/system-check"
@@ -88,19 +89,23 @@ lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'
   assert_line 'story|act-two|level|-|m|open|-|-|P4 the rest (plan act-two, phase 4)'
 }
 
-@test "propose survives a PR gh cannot read: the story is filed at size m with no credit move, and gh is asked once" {
+@test "propose survives a PR gh cannot read: the story is filed at size m with no credit move; a 404 is asked once, a rate limit again" {
   printf '{"additions": 0, "deletions": 0, "files": []}\n' >"$GH_PRS/31.json"
+  echo "gh: API rate limit exceeded (HTTP 403)" >"$GH_PRS/33.err"
   done_item empty 31
   done_item gone 32
+  done_item limited 33
   run "$CB" propose game
   assert_success
   run lines
   assert_line 'story|-|game|-|m|done|pr:31|empty|empty'
   assert_line 'story|-|game|-|m|done|pr:32|gone|gone'
+  assert_line 'story|-|game|-|m|done|pr:33|limited|limited'
   refute_line --partial 'attr|'
   : >"$NOTES_FIXTURE/gh.log"
   "$CB" propose game
-  [ ! -s "$NOTES_FIXTURE/gh.log" ]
+  run cat "$NOTES_FIXTURE/gh.log"
+  assert_output 'gh api repos/acme/game/pulls/33 --jq .additions + .deletions'
 }
 
 @test "propose files a typed project's FAIL criteria as stories under one epic per system" {
