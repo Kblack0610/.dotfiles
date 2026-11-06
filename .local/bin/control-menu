@@ -20,7 +20,7 @@
 # pin-only machines chip). A chip hidden from the bar (modules.sh) still lists, because the
 # preview runs the command behind its `modules.sh gate <id>` prefix, not the gate. The window
 # rows are the described exec binds (bindd/bindpd in keybindings.conf and leader.conf), read
-# live from `hyprctl binds -j`, each with the chord that reaches it. The hub rows are `hub tabs`
+# live by hypr-binds, each with the chord that reaches it. The hub rows are `hub tabs`
 # (hub-core's layout), each previewed with `hub --once --tab` and opened as a hub popup.
 
 set -u
@@ -64,20 +64,7 @@ run_exec() {
 # Every described exec bind as chord<TAB>description<TAB>arg. A leader leaf's chord is the
 # path of submap entries that reach it (Super+A u t s); an Esc bind never counts as an entry.
 windows() {
-    hyprctl binds -j 2>/dev/null | jq -r '
-        def bit($n): (. / $n | floor) % 2 == 1;
-        def chord: [(.modmask | if bit(64) then "Super" else empty end, if bit(4) then "Ctrl" else empty end,
-                     if bit(8) then "Alt" else empty end, if bit(1) then "Shift" else empty end),
-                    (if .modmask > 0 and (.key | length) == 1 then .key | ascii_upcase else .key end)] | join("+");
-        . as $all
-        | def path($s; $depth):
-            if $s == "" or $depth > 5 then ""
-            else ([$all[] | select(.dispatcher == "submap" and .arg == $s and .submap != $s and .key != "escape")][0]) as $e
-                 | if $e == null then "[\($s)]" else (path($e.submap; $depth + 1) + " " + ($e | chord)) end
-            end;
-        .[] | select(.has_description and .dispatcher == "exec")
-        | [((path(.submap; 0) + " " + (if .submap == "" then chord else .key end)) | ltrimstr(" ")), .description, .arg]
-        | @tsv'
+    "${SELF%/*}/hypr-binds" | awk -F'\t' -v OFS='\t' '$3 == "exec" && $2 != "" { print $1, $2, $4 }'
 }
 
 hidden() { grep -qxF "$1" "${XDG_STATE_HOME:-$HOME/.local/state}/waybar/modules.off" 2>/dev/null; }

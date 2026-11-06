@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# keys - every key that is live, Hyprland, tmux and nvim in one searchable list (Super+A k,
+# Prefix+K).
+#
+#   keys                 the sheet: fzf, a row per key, the full command in the preview; type to
+#                        filter ("tmux prefix", "hypr Super+A", "nvim <leader>g"), Esc closes
+#   keys --print         the rows as TSV: layer, table or mode, key, what it does, command
+#   keys --md            the rows as one markdown table, for a printed sheet
+#   keys preview <layer> <where> <key> <command>   one row's detail
+#
+# No list of its own: a key's meaning is its own bind (Hyprland bindd descriptions via
+# hypr-binds, tmux -N notes, nvim desc), read live.
+
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+. "${SELF%/*}/../src/tmux/panel-lib.sh" || exit 1
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/keys"
+NVIM_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+
+tab() { local IFS=$'\t'; printf '%s\n' "$*"; }
+
+# One row per chord. A leader leaf is three binds on one key (the described exec, the hint close,
+# the submap reset), so the described one speaks for the chord, else the first.
+hypr_rows() {
+    "${SELF%/*}/hypr-binds" | awk -F'\t' -v OFS='\t' '
+        !($1 in seen) { seen[$1] = 1; order[++n] = $1; cmd[$1] = $3 " " $4 }
+        $2 != "" && !($1 in what) { what[$1] = $2; cmd[$1] = $3 " " $4 }
+        END { for (i = 1; i <= n; i++) { k = order[i]; w = (k in what) ? what[k] : cmd[k]
+                                         sub(/ +$/, "", w); c = cmd[k]; sub(/ +$/, "", c)
+                                         print "hypr", "", k, w, c } }'
+}
+
+# The socket to read binds from, as tmux args. Inside tmux, this server. Outside, the first socket
+# that answers list-sessions, hub first; never a list-keys on a socket that has not answered.
+tmux_socket() {
+    if [ -n "${TMUX:-}" ]; then
+        printf '%s\n' "${TMUX%%,*}"
+        return 0
+    fi
+    local dir sock
+    dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+    for sock in "$dir/hub" "$dir"/*; do
+        [ -S "$sock" ] || continue
+        tmux -S "$sock" list-sessions >/dev/null 2>&1 && { printf '%s\n' "$sock"; return 0; }
+    done
+    return 1
+}
+
+tmux_rows() {
+    local sock tables t skip label noted line key text
+    if ! sock="$(tmux_socket)"; then
+        tab tmux "" "-" "no tmux server is running, so there are no tmux keys to read" ""
+        return 0
+    fi
+    # copy-mode and copy-mode-vi are the same keys for two mode-keys settings; list the live one.
+    skip=copy-mode-vi
+    [ "$(tmux -S "$sock" show-options -gv mode-keys 2>/dev/null)" = vi ] && skip=copy-mode
+    tables="$(tmux -S "$sock" list-keys 2>/dev/null |
+        awk '{ for (i = 1; i < NF; i++) if ($i == "-T") { print $(i + 1); break } }' | awk '!s[$0]++')"
+    for t in prefix root $(grep -vxE "prefix|root|$skip" <<<"$tables"); do
+        grep -qxF "$t" <<<"$tables" || continue
+        case "$t" in prefix) label="Prefix " ;; root) label="" ;; *) label="$t: " ;; esac
+        # -N alone lists the keys that have a note; -aN adds the rest, showing their command.
+        noted="$(tmux -S "$sock" list-keys -N -P '' -T "$t" 2>/dev/null | awk '{ print $1 }')"
+        while IFS= read -r line; do
+            line="${line#"${line%%[! ]*}"}"   # -P '' still leaves the separator space
+            [ -n "$line" ] || continue
+            key="${line%% *}"
+            text="${line#"$key"}"
+            text="${text#"${text%%[! ]*}"}"
+            if grep -qxF -- "$key" <<<"$noted"; then
+                tab tmux "$t" "$label$key" "$text" ""
+            else
+                tab tmux "$t" "$label$key" "$text" "$text"
+            fi
+        done < <(tmux -S "$sock" list-keys -aN -P '' -T "$t" 2>/dev/null)
+    done
+}
+
+# The dump runs inside nvim with the user's config, so lazy-loaded plugins' `keys` specs (which
+# register a stub mapping with its desc at startup) are listed too.
+NVIM_DUMP='
+pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "VeryLazy" })
+local leader = vim.g.mapleader and vim.fn.keytrans(vim.g.mapleader) or nil
+local out = {}
+for _, m in ipairs({ "n", "x", "o", "i", "t", "c" }) do
+  for _, k in ipairs(vim.api.nvim_get_keymap(m)) do
+    if k.desc and k.desc ~= "" and not k.lhs:match("^<Plug>") then
+      local lhs = vim.fn.keytrans(k.lhs)
+      if leader and leader ~= "" and lhs:sub(1, #leader) == leader then lhs = "<leader>" .. lhs:sub(#leader + 1) end
+      local rhs = (k.rhs and k.rhs ~= "") and k.rhs or (k.callback and "<Lua function>" or "")
+      local row = { "nvim", m, lhs, k.desc, rhs }
+      for i, v in ipairs(row) do row[i] = (v:gsub("[\t\n]", " ")) end
+      out[#out + 1] = table.concat(row, "\t")
+    end
+  end
+end
+io.stdout:write(table.concat(out, "\n") .. "\n")
+'
+
+nvim_rows() {
+    local cache="$CACHE/nvim.tsv"
+    command -v nvim >/dev/null 2>&1 || return 0
+    if [ ! -s "$cache" ] || [ -n "$(find -L "$NVIM_CONF" -newer "$cache" -print -quit 2>/dev/null)" ]; then
+        mkdir -p "$CACHE"
+        printf '%s' "$NVIM_DUMP" > "$CACHE/dump.lua"
+        nvim --headless -i NONE -c "luafile $CACHE/dump.lua" -c 'qa!' 2>/dev/null | grep -v '^$' > "$cache.tmp" &&
+            mv "$cache.tmp" "$cache"
+    fi
+    cat "$cache" 2>/dev/null
+}
+
+rows() { hypr_rows; tmux_rows; nvim_rows; }
+
+markdown() {
+    printf '| Layer | Key | What it does |\n|---|---|---|\n'
+    awk -F'\t' '{ for (i = 1; i <= NF; i++) gsub(/\|/, "\\|", $i)
+                  printf "| %s | `%s` | %s |\n", ($2 == "" ? $1 : $1 " " $2), $3, $4 }'
+}
+
+preview() {
+    local layer="$1" where="$2" key="$3" cmd="${4:-}" sock
+    printf '%s  %s\n\n' "$layer${where:+ ($where)}" "$key"
+    case "$layer" in
+        tmux)
+            # The noted rows carry no command; ask tmux for the bind itself.
+            [ "$where" = prefix ] && key="${key#Prefix }"
+            [ "$where" = root ] || [ "$where" = prefix ] || key="${key#"$where: "}"
+            if [ -z "$cmd" ] && sock="$(tmux_socket)"; then
+                tmux -S "$sock" list-keys -T "$where" -- "$key" 2>/dev/null
+            else
+                printf '%s\n' "$cmd"
+            fi ;;
+        *) printf '%s\n' "$cmd" ;;
+    esac
+}
+
+sheet() {
+    panel_need fzf
+    panel_fzf_opts
+    panel_fzf_table
+    panel_fzf_layout
+    rows | awk -F'\t' -v OFS='\t' '{ l = ($2 == "" ? $1 : $1 " " $2)
+                                     print $1, $2, $3, sprintf("%-18s %-28s %s", l, $3, $4), $5 }' |
+        fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=4 \
+            --prompt='keys > ' \
+            --header='type to filter (hypr, tmux prefix, nvim n <leader>)   esc close' \
+            "${PANEL_FZF_LAYOUT[@]}" \
+            --preview="$(printf '%q' "$SELF") preview {1} {2} {3} {5}" >/dev/null
+}
+
+case "${1:-}" in
+    "") sheet ;;
+    --print) rows ;;
+    --md) rows | markdown ;;
+    preview) shift; preview "$@" ;;
+    -h|--help) sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    *) echo "keys: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+esac
