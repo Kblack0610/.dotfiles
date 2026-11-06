@@ -47,7 +47,7 @@ pub fn page(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     out.push(Line::raw(""));
     out.push(dispatch_head(&f.dispatch, p, w));
     out.push(judge_head(&f.judge, p, w));
-    out.push(Line::styled("  verdict lists: 8 Log, v", p.dim()));
+    out.push(Line::styled("  verdict lists: 7 Log, v", p.dim()));
     out
 }
 
@@ -450,7 +450,7 @@ pub mod tests {
             "fix the flaky bats test",
             "agree 3 (75% of scored)  disagree 1  deferred 2  pending 1  unscored 5",
             "land the fleet tab now?",
-            "verdict lists: 8 Log, v",
+            "verdict lists: 7 Log, v",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }

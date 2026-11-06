@@ -1,4 +1,4 @@
-//! The Outbox tab: `GET /api/outbox` is `hub_core::outbox::read` (the hub TUI's reader), and
+//! Daily's outbox (`#daily/outbox`): `GET /api/outbox` is `hub_core::outbox::read` (the hub TUI's reader), and
 //! `PUT /api/outbox {base, text}` hands the page's text to `notes outbox put --base`, the one
 //! writer. The CLI compares `base` with the file's hash under its lock, so a sweep that took
 //! lines since the page last read comes back as 409 with the current doc for the page to merge.

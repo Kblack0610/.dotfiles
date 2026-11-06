@@ -7,7 +7,7 @@
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* type scale: everything is one of these */
   --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
-  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e3e1db;
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #57564f; --line: #d4d1c8;
   --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
   --user: #eaf0fb; --tool: #f1efe9;
   /* fleet-sessions buckets */
@@ -18,7 +18,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9a998f; --line: #2e2d2a;
+    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #b2b0a6; --line: #3d3c38;
     --accent: #6f9ef0; --user: #1f2a3d; --tool: #24231f; color-scheme: dark;
     --b-needs: #e8665a; --b-stalled: #f0953f; --b-landed: #a585e6; --b-unclear: #77756e; --b-working: #6f9ef0; --b-done: #5cb877;
     --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #9a6bdc; --c6: #d85a99; --c-other: #66645e;
@@ -29,6 +29,14 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: var(--fs-md)/1.5 var(--sans); font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
 header h1 { font-size: 16px; margin: 0; }
+/* The menu button and the current tab's name show only on a narrow screen, where the tab list
+   is a dropdown the button opens (app.js menuOpen). */
+.menu, .cur { display: none; }
+.menu { position: relative; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; width: 38px; height: 34px; padding: 0; cursor: pointer; }
+.menu .bars, .menu .bars::before, .menu .bars::after { position: absolute; left: 10px; width: 16px; height: 2px; background: currentColor; border-radius: 1px; content: ""; }
+.menu .bars { top: 16px; } .menu .bars::before { left: 0; top: -5px; } .menu .bars::after { left: 0; top: 5px; }
+.menu #menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
+.cur { font-weight: 600; color: var(--muted); }
 .tabs { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
 .tabs button { flex: none; }
 .tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
@@ -97,7 +105,6 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 .card .q.planq { max-height: 24em; overflow-y: auto; font-size: 13px; background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 .planpeek { flex-basis: 100%; margin: 4px 0; font-size: 12px; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
 .card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
-.card .opts .rec { border-color: var(--accent); }
 h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px auto 8px; max-width: 760px; }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
@@ -110,16 +117,16 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #board summary { cursor: pointer; }
 #board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
-/* Focus (focus.js): one note read like a page, phone width first; a link into another note or a
-   project is in-app (#focus/..., #projects/...), so it is styled apart from an external one. */
-#focus > *, #focus h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
-#focus .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
-#focus a.btn { text-decoration: none; display: inline-block; }
+/* Daily (focus.js): one note read like a page, phone width first; a link into another note or a
+   project is in-app (#daily/..., #projects/...), so it is styled apart from an external one. */
+#daily > div > *, #daily h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
+#daily .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+#daily a.btn { text-decoration: none; display: inline-block; }
 a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
 a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
-#focus .opts a.wl { font: 12px var(--mono); }
-#focus pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
-#focus #f-edit { display: block; width: 100%; box-sizing: border-box; min-height: 60vh; max-height: none; margin: 8px 0; font: var(--fs-sm)/1.45 var(--mono); }
+#daily .opts a.wl { font: 12px var(--mono); }
+#daily pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#daily #f-edit { display: block; width: 100%; box-sizing: border-box; min-height: 60vh; max-height: none; margin: 8px 0; font: var(--fs-sm)/1.45 var(--mono); }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 /* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and
@@ -220,10 +227,18 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 3px; }
 .pcard[data-open] { cursor: pointer; }
-.pcard .pprog { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 6px 0; font-family: var(--mono); font-size: var(--fs-sm); }
-.pcard .pprog .meter { width: 180px; max-width: 100%; height: 8px; }
-.pcard .pline { display: grid; grid-template-columns: 6.5em 1fr; gap: 8px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
-.pcard .plead { color: var(--muted); }
+.pcard:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.pcard .pprog { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; }
+.pcard .pprog .meter { flex: 1; width: auto; height: 8px; }
+.pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
+.pcard .psum { font-size: var(--fs-xs); color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; margin-bottom: 8px; }
+.pcard .pgoal { font-size: var(--fs-md); margin-bottom: 8px; overflow-wrap: anywhere; }
+.pcard .pcounts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pcard .prun { list-style: none; margin: 0 0 8px; padding: 0; }
+.pcard .prun li { display: flex; flex-direction: column; padding: 6px 0 6px 10px; border-left: 3px solid var(--b-working); margin-bottom: 4px; font-size: var(--fs-sm); }
+.pcard .prt { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.pcard .prm { color: var(--muted); font-size: var(--fs-xs); }
+.pcard .pstat { font-size: var(--fs-sm); margin-bottom: 8px; overflow-wrap: anywhere; }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 9px; font: 600 11px var(--mono); color: #fff; background: var(--c); }
 .chip.sm { padding: 0 6px; font-size: 10px; }
 .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 10px; }
@@ -323,6 +338,15 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
   .board { padding: 12px; }
+  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+  .menu, .cur { display: inline-block; }
+  .tabs { display: none; }
+  header.open .tabs { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
+  header.open .tabs button { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
+  header.open .tabs button.on { border-color: var(--accent); }
+  header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+  .card { padding: 12px; }
+  .need .opts .btn, .aopt { min-height: 40px; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }
@@ -356,10 +380,65 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .md th { background: var(--tool); font-weight: 600; }
 .md a { color: var(--accent); }
 
-/* The Outbox tab: one column, the doc as tall as the screen allows, on a phone too. */
-#outbox > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+/* Daily's outbox (#daily/outbox): the doc as tall as the screen allows, on a phone too. */
 #o-doc { display: block; width: 100%; box-sizing: border-box; min-height: 40vh; max-height: none; font: var(--fs-lg)/1.5 var(--mono); }
 #o-said { margin: 6px auto 14px; font-size: 12px; }
 .o-steps { list-style: none; padding: 0; margin: 0; font-size: 13px; }
 .o-steps li { padding: 3px 0; overflow-wrap: anywhere; }
 .o-steps li.warn { color: var(--wait); }
+
+/* Needs you (home.js, waiting.js): one card per thing that waits on the human, its kind a band
+   and a left stripe. Waiting is the status, so the kind takes the categorical colours (rule 5):
+   plan c5, question c1, permission c6, your turn ink; blocked is stalled amber, failing red. */
+/* One colour per need kind, shared by the card stripe and the tally chip. */
+.k-plan { --k: var(--c5); } .k-ask { --k: var(--c1); } .k-perm { --k: var(--c6); }
+.k-turn { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red { --k: var(--b-needs); }
+.need { border-left: 5px solid var(--k, var(--muted)); }
+.nband { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
+.nkind { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }
+.ntitle { font-weight: 600; font-size: var(--fs-lg); line-height: 1.35; overflow-wrap: anywhere; margin-bottom: 8px; }
+.need .q.planq { max-height: none; overflow: visible; margin: 10px 0; }
+.need .opts { margin-bottom: 8px; }
+.ntally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 auto 10px; }
+.nchip { font-size: var(--fs-sm); font-weight: 600; padding: 2px 10px; border-radius: 12px; color: var(--k, var(--muted)); background: color-mix(in srgb, var(--k, var(--muted)) 13%, transparent); }
+/* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
+.actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
+.aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
+.aopt:hover { border-color: var(--accent); }
+.aopt.rec { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.aok { font: 600 var(--fs-sm) var(--mono); color: var(--accent); }
+.aon { overflow-wrap: anywhere; }
+.aow { grid-column: 2; font-size: var(--fs-sm); color: var(--muted); }
+
+/* Daily (focus.js): the note read like a page on a phone. A head with the date, the note's links
+   as one row of buttons (Outbox first), then each Focus lane a card whose tasks are rows. */
+.dhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 12px; }
+.dtitle { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dtitle h2 { margin: 0; font-size: 20px; font-weight: 650; }
+.dhead .btn, .dhead .seg button { font-family: inherit; font-size: 13px; padding: 6px 11px; margin: 0; min-height: 32px; }
+.dhead .seg { display: flex; }
+.dhead .seg button:first-child { border-radius: 6px 0 0 6px; }
+.dhead .seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.dlinks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.dlink { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none; font-size: var(--fs-sm); font-weight: 500; }
+.dlink:hover { border-color: var(--accent); }
+.dlink.out { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.dlink.missing { color: var(--muted); border-style: dashed; }
+.dlc { font-size: var(--fs-xs); font-weight: 700; min-width: 18px; padding: 0 6px; border-radius: 9px; text-align: center; background: var(--tool); color: var(--muted); }
+.dlane { --k: var(--line); background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--k); border-radius: 8px; margin-bottom: 10px; padding: 0 14px; }
+.dlane.urgent { --k: var(--b-needs); } .dlane.high { --k: var(--b-stalled); } .dlane.done { --k: var(--b-done); }
+.dlh { display: flex; align-items: center; gap: 8px; padding: 10px 0; cursor: pointer; list-style: none; }
+.dlh::-webkit-details-marker { display: none; }
+.dlane.empty .dlh { cursor: default; padding: 8px 0; }
+.dln { font-weight: 650; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .06em; color: var(--k); }
+.dlane:not(.urgent):not(.high):not(.done) .dln { color: var(--ink); }
+.dlane.empty .dlh .muted { font-size: var(--fs-sm); margin-left: auto; }
+.dlane > .md { padding-bottom: 10px; }
+.dlane .md ul { padding-left: 0; margin: 0; }
+.dlane .md li.task { list-style: none; margin: 0; padding: 8px 0 8px 26px; text-indent: -26px; border-top: 1px solid var(--line); line-height: 1.45; }
+.dlane .md li.task input { width: 16px; height: 16px; margin: 0 10px 0 0; vertical-align: -3px; }
+.dlane .md li.task.done { color: var(--muted); }
+.dlane .md li.task li.task { border-top: 0; padding-top: 4px; }
+.ntag { display: inline-block; text-indent: 0; font: 600 var(--fs-xs) var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); }
+#daily details.cfold { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 0 auto 10px; }

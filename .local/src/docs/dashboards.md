@@ -35,19 +35,18 @@ The Companion app's Template widget is the main mobile view: Home, shortened to 
 
 ## Hub layout
 
-Both surfaces show the layout below, built in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. The list itself is `hub-core/src/layout.rs`: the TUI's `the_tabs_are_the_layout_and_each_digit_its_place` and agent-web's `tab_names_are_the_layout` fail when a surface drifts from it, and each surface's `log_folds_are_the_layout` holds Log's sections to it. TUI digits 1-9 are the order.
+Both surfaces show the layout below, built in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. The list itself is `hub-core/src/layout.rs`: the TUI's `the_tabs_are_the_layout_and_each_digit_its_place` and agent-web's `tab_names_are_the_layout` fail when a surface drifts from it, and each surface's `log_folds_are_the_layout` holds Log's sections to it. TUI digits 1-8 are the order.
 
 | # | Tab | Question | Status |
 |---|---|---|---|
-| 1 | Outbox | What am I handing off, and what happened to it? | landed: `hub_core::outbox`, the outbox as a doc and Handled today. Web: the landing page, a textarea saved through `notes outbox put --base` (compare-and-swap; a 409 is merged line by line), the line under the cursor held back until Enter. TUI: read-only, Enter edits the file in `$EDITOR`; the hub still starts on Home |
-| 2 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the TUI's front page; second on the web, after Outbox |
+| 1 | Home | What needs me, and is everything ok? | landed (#929): `hub_core::home`, the TUI's front page; the landing page on both surfaces |
+| 2 | Daily | What is my day? | landed: `hub_core::focus` over `notes show --json`, the daily note read clean on a phone (the Focus tab renamed and moved after Home, 2026-11-05). Web: the head has the date, open and done counts, prev and next day, Refresh, Edit and Rendered or Raw; then the note's own links as one row of buttons, Outbox first with its waiting count; then each `## Focus` lane a card (Urgent, High, Low open; Done folded) whose tasks are rows with their tags as chips; the note's other sections fold below. `[[wikilinks]]` open the linked note in the same view at `#daily/<target>` (Back returns); `#p:<name>` opens `#projects/<name>`. Edit and Save rewrite the note through `notes put --base` (a stale hash writes nothing and shows both versions; the draft stays on the device). `#daily/outbox` is the outbox (`hub_core::outbox`): the whole outbox as a textarea saved through `notes outbox put --base` (compare-and-swap; a 409 is merged line by line, the line under the cursor held back until Enter), then Handled today, with Back to Daily and Inbox. Project rows stay on Projects; the Projects board lists no Focus rows, only a count linking here. TUI: read-only, `[` `]` step a day, `t` today, `o` shows the outbox in place of the note (Enter edits it in `$EDITOR`, `o` or Esc back); key 2, `hub --tab daily` or `hub --tab outbox` |
 | 3 | Queue | What will agents do next? Add work. | landed (#920 cards) |
 | 4 | Projects | Where is each project, and its tasks? | landed: `hub_core::projects`, one card per lab project with its open version's progress by size, pace, ETA and what is in flight; Enter (TUI) or Open rows (web) shows that project's rows, All shows every project's. |
 | 5 | Sessions | What is each agent doing? Act on it. | landed (#961): one row per session, grouped by bucket on the web and ranked by bucket in the TUI, with task, PR and CI, phases, ETA, idle and account. TUI: Enter opens the detail pane with the session's forecast timeline, i p u m x c a act. Web: the shepherd's pass is the list's first line and its session is pinned first; with no session open the detail pane is the overview (bucket tiles that filter the list, then the last 24h and Shepherd, folded); an open session shows its fleet-state card folded above the transcript, which loads only then. |
 | 6 | Infra | Is the machinery healthy? | landed (#971): `hub_core::infra` on both surfaces, sections health, red now, machines (one table in place of POOLS, CI by machine and the Machines tab), CI (running, queued, failed 24h; green is one line), jobs (TUI: 8 rows, Enter opens the table; web: the table), cloud runners, governor. |
-| 7 | Focus | What is my day? | landed: `hub_core::focus` over `notes show --json`, the daily note's `## Focus` lanes (Urgent, High, Low open; Done, the rollup and the other sections folded). Web: Rendered or Raw with Copy, prev and next day, and `[[wikilinks]]` open the linked note in the same view at `#focus/<target>` (Back returns); `#p:<name>` opens `#projects/<name>`; the head links to Outbox. Edit and Save rewrite the note through `notes put --base` (a stale hash writes nothing and shows both versions; the draft stays on the device). The Projects board lists no Focus rows, only a count linking here. TUI: read-only, `[` `]` step a day, `t` today |
-| 8 | Log | What happened? | landed (#1077): the day from `day-log`, its history (TUI `h` lists the days; web the per-day bars), then folded sections, each read when it opens and capped at `FOLD_ROWS` (50) with a `+N older` line: Actions, Changes, Rundowns, Judges' verdicts, Forecast (TUI only: the web never had one) and Ranked sessions (a row opens the session's full card). TUI keys a c s v f w |
-| 9 | Fleet | Can I afford more agents; are the judges right? | landed (#1077): Claude accounts, workers (one row per agentctl runner) and the judges' counts; their verdict lists are Log's |
+| 7 | Log | What happened? | landed (#1077): the day from `day-log`, its history (TUI `h` lists the days; web the per-day bars), then folded sections, each read when it opens and capped at `FOLD_ROWS` (50) with a `+N older` line: Actions, Changes, Rundowns, Judges' verdicts, Forecast (TUI only: the web never had one) and Ranked sessions (a row opens the session's full card). TUI keys a c s v f w |
+| 8 | Fleet | Can I afford more agents; are the judges right? | landed (#1077): Claude accounts, workers (one row per agentctl runner) and the judges' counts; their verdict lists are Log's |
 
 ### What moves, and why
 
@@ -61,6 +60,8 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | TUI CI and Machines, web Jobs | Infra sections | One question: is the machinery healthy (rule 1) |
 | TUI Today and History | Log | One question: what happened |
 | Web Focus "Add to outbox" box | Outbox tab: the whole outbox as an editable doc | One place writes the outbox from the hub, and it shows what intake did with each line (2026-11-05) |
+| Outbox tab (both surfaces) | Daily: `#daily/outbox` on the web, the first button in the note's links row; `o` on the TUI Daily tab | The human asked for a clean daily note view with a link to the outbox, not a tab of its own (2026-11-05) |
+| Focus tab (both surfaces) | Daily, second after Home | It is the daily note, so it is named for it; Home is the landing page again (2026-11-05) |
 | Web Actions, Watch Changes, Shepherd rundowns, judge verdict lists, Forecast burn-up and baseline | Log, folded sections (#1077; folded at the bottom of Sessions from #961 until then) | Audit trails behind a click (rule 3) |
 | New: ranked sessions and the session card (`agentctl-session-outcomes worst`, `card`) | Log, folded section (#1077) | Asked for 2026-11-04 (session telemetry); one reader, `hub_core::outcomes`, for both surfaces (rule 8) |
 | Web Shepherd pass card | Sessions, one line | It is one status line, too small for a tab |
@@ -80,6 +81,8 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `actions` (agent-web `#actions`, the tab) | Log, its Actions section | #1077 |
 | `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
 | `jobs`, `ci`, `machines` (TUI `hub --tab jobs`, `hub --tab ci`, `hub --tab machines`, keys 4 and 5; agent-web `#jobs`) | Infra, scrolled to that section; `jobs` opens the TUI jobs table | #971 |
+| `outbox` (agent-web `#outbox`, `hub --tab outbox`) | Daily, showing the outbox (`#daily/outbox`) | #1075 |
+| `focus` (agent-web `#focus`, `#focus/<note>`; `hub --tab focus`) | Daily (`#daily`, `#daily/<note>`) | #1075 |
 
 ### Log
 

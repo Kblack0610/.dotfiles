@@ -64,8 +64,8 @@ cmd_rows() {
         who = slug(n)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
-        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $19, $1)
-        A[NR] = age($19); Q[NR] = $6
+        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $NF, $1)
+        A[NR] = age($NF); Q[NR] = $6
         S[NR] = ($16 != "" && index(live, " " $16 " ") == 0) ? "ended" : ""
         if (T[$16] != "") S[NR] = S[NR] (S[NR] != "" ? " . " : "") faint T[$16] off
       }

@@ -8,22 +8,23 @@
 <link rel="stylesheet" href="/static/app.css?v={{v}}">
 </head>
 <body>
-<header>
+<header id="top">
+  <button class="menu" id="menu" aria-label="Menu" aria-expanded="false" aria-controls="tabs"><span class="bars"></span><span id="menu-badge"></span></button>
   <span class="conn" id="conn" title="live updates"></span>
   <h1>Agents</h1>
+  <span class="cur" id="cur-tab"></span>
   <span class="live-off" id="live-off" hidden>live updates off, reload to refresh</span>
-  <div class="tabs">
-    <button id="tab-outbox" class="on">Outbox</button>
-<button id="tab-home">Home<span id="ask-badge"></span></button>
+  <nav class="tabs" id="tabs">
+    <button id="tab-home" class="on">Home<span id="ask-badge"></span></button>
+    <button id="tab-daily">Daily</button>
     <button id="tab-queue">Queue<span id="queue-badge"></span></button>
     <button id="tab-projects">Projects</button>
     <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
     <button id="tab-infra">Infra</button>
-    <button id="tab-focus">Focus</button>
     <button id="tab-log">Log</button>
     <button id="tab-fleet">Fleet</button>
-  </div>
-  <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
+    <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
+  </nav>
 </header>
 <main id="main">
   <nav id="list"></nav>
@@ -49,8 +50,8 @@
       <div class="err" id="err"></div>
     </div>
   </section>
-  <section id="outbox" class="board"></section>
-<section id="home" class="board" hidden></section>
+  <section id="home" class="board"></section>
+  <section id="daily" class="board" hidden><div id="d-note"></div><div id="outbox" hidden></div></section>
   <section id="queue" class="board" hidden></section>
   <section id="projects" class="board" hidden><div id="p-cards"></div><div id="p-rows" hidden><div id="p-head"></div><div id="board"></div></div></section>
   <section id="log" class="board" hidden><div id="log-day"></div>
@@ -62,7 +63,6 @@
   </section>
   <section id="infra" class="board" hidden><div id="infra-main"></div><div id="jobs"></div><div id="infra-tail"></div></section>
   <section id="fleet" class="board" hidden></section>
-  <section id="focus" class="board" hidden></section>
 </main>
 <script src="/static/ui.js?v={{v}}"></script>
 <script src="/static/md.js?v={{v}}"></script>

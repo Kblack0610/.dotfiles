@@ -6,7 +6,7 @@
 // rundowns are shepherd.js; a transcript is read only when its session is opened.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "outbox", asks: [] };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -304,8 +304,8 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["outbox", "home", "queue", "projects", "sessions", "infra", "focus", "log", "fleet"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log" };
+const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
@@ -317,18 +317,20 @@ function seekSection() {
   if (e.tagName === "DETAILS") e.open = true;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
-// A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Focus link opens
-// (`#focus/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
+// A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
+// (`#daily/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
+// The retired `#outbox` is Daily's outbox (`#daily/outbox`); `#focus/<note>` is `#daily/<note>`.
 function route(hash) {
   const h = String(hash || "").replace(/^#/, "");
   const at = h.indexOf("/");
   const name = at < 0 ? h : h.slice(0, at);
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
+  if (name === "outbox" && !arg) arg = "outbox";
   return { name, tab: tabOf(name), arg };
 }
 // Show tab t; arg is what it opens (blank for its front). A tab button replaces the URL, so tab
-// hopping makes no history; an in-app link (`href="#focus/outbox"`) pushes one, so Back returns.
+// hopping makes no history; an in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
 function setTab(t, arg) {
   st.tab = t;
   st.arg = arg || "";
@@ -336,6 +338,8 @@ function setTab(t, arg) {
     $("tab-" + n).classList.toggle("on", t === n);
     if (n !== "sessions") $(n).hidden = t !== n;
   }
+  $("cur-tab").textContent = $("tab-" + t).firstChild.textContent;
+  menuOpen(false);
   $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
@@ -343,6 +347,16 @@ function setTab(t, arg) {
   try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
+
+// Under 760px the tabs fold behind the menu button (app.css); a pick, Escape or a tap outside
+// closes it. The button carries the Needs you count, so a closed menu still says something waits.
+function menuOpen(on) {
+  $("top").classList.toggle("open", on);
+  $("menu").setAttribute("aria-expanded", on ? "true" : "false");
+}
+$("menu").onclick = (e) => { e.stopPropagation(); menuOpen(!$("top").classList.contains("open")); };
+document.addEventListener("click", (e) => { if (!e.target.closest || !e.target.closest("#top")) menuOpen(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") menuOpen(false); });
 
 function showLive(ev) {
   // The server could not watch some paths (the user's inotify limit, usually); it retries.

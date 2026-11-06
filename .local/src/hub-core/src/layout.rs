@@ -12,19 +12,21 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 9] = [
-    // The landing page: the outbox as a doc to write into, and what the sweep did with it.
-    Tab {
-        id: "outbox",
-        title: "Outbox",
-        question: "What am I handing off, and what happened to it?",
-        sections: &["doc", "handled"],
-    },
+pub const TABS: [Tab; 8] = [
+    // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
         sections: &["needs", "running", "numbers", "health"],
+    },
+    // The daily note, its links row first; the outbox (the doc and Handled today) opens from
+    // that row, so it is a section here, not a tab of its own.
+    Tab {
+        id: "daily",
+        title: "Daily",
+        question: "What is my day?",
+        sections: &["links", "lanes", "rollup", "sections", "outbox"],
     },
     Tab {
         id: "queue",
@@ -51,12 +53,6 @@ pub const TABS: [Tab; 9] = [
         sections: &[
             "health", "red", "machines", "ci", "jobs", "cloud", "governor",
         ],
-    },
-    Tab {
-        id: "focus",
-        title: "Focus",
-        question: "What is my day?",
-        sections: &["lanes", "rollup", "sections"],
     },
     Tab {
         id: "log",
@@ -102,6 +98,10 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("history", "log"),
     ("actions", "log"),
     ("forecast", "log"),
+    // The Outbox tab (the landing page until 2026-11-05) is a section of Daily, opened from its
+    // links row; Focus is Daily, the daily note's own name.
+    ("outbox", "daily"),
+    ("focus", "daily"),
 ];
 
 /// A tab id, a title, or a retired name (any case) as the tab it means.
@@ -147,9 +147,10 @@ mod tests {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
-        assert_eq!(resolve("focus").map(|t| t.id), Some("focus"));
-        assert_eq!(resolve("Outbox").map(|t| t.id), Some("outbox"));
-        assert_eq!(TABS[0].id, "outbox", "the landing page leads");
+        assert_eq!(resolve("focus").map(|t| t.id), Some("daily"));
+        assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));
+        assert_eq!(resolve("Daily").map(|t| t.id), Some("daily"));
+        assert_eq!(TABS[0].id, "home", "the landing page leads");
         assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("log"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
@@ -174,6 +175,8 @@ mod tests {
         assert_eq!(section("actions"), Some("actions"));
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
+        assert_eq!(section("outbox"), Some("outbox"));
+        assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
         assert_eq!(section("nope"), None);

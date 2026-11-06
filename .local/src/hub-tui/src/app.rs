@@ -37,39 +37,37 @@ const PREVIEW_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
-    Outbox,
     Home,
+    Daily,
     Queue,
     Projects,
     Sessions,
     Infra,
-    Focus,
     Log,
     Fleet,
 }
 
 impl Tab {
     /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 9] = [
-        Tab::Outbox,
+    pub const ALL: [Tab; 8] = [
         Tab::Home,
+        // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
+        Tab::Daily,
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
         Tab::Infra,
-        Tab::Focus,
         Tab::Log,
         Tab::Fleet,
     ];
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Outbox => "Outbox",
             Tab::Home => "Home",
+            Tab::Daily => "Daily",
             Tab::Queue => "Queue",
             Tab::Projects => "Projects",
             Tab::Sessions => "Sessions",
             Tab::Infra => "Infra",
-            Tab::Focus => "Focus",
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
         }
@@ -91,7 +89,7 @@ impl Tab {
     fn digit(self) -> char {
         char::from_digit(self.index() as u32 + 1, 10).unwrap_or(' ')
     }
-    /// The tab a digit opens; 0 opens none.
+    /// The tab a digit opens; 0 and 9 open none.
     fn by_digit(c: char) -> Option<Tab> {
         let n = c.to_digit(10)? as usize;
         n.checked_sub(1).and_then(|i| Tab::ALL.get(i).copied())
@@ -101,11 +99,10 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Outbox
+            Tab::Daily
             | Tab::Queue
             | Tab::Projects
             | Tab::Sessions
-            | Tab::Focus
             | Tab::Log
             | Tab::Fleet => None,
         }
@@ -271,13 +268,15 @@ pub struct App {
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
-    /// The Focus tab's note; None until the first read.
+    /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
-    /// The Outbox tab's view; None until the first read.
+    /// The Daily tab shows the outbox (`o`) in place of the note.
+    pub daily_outbox: bool,
+    /// The outbox under the Daily tab; None until the first read.
     pub outbox: Option<Result<hub_core::outbox::View, String>>,
-    /// What Enter on the Outbox tab did: the editor opened, or why it did not.
+    /// What Enter on the outbox did: the editor opened, or why it did not.
     pub outbox_said: Option<Result<String, String>>,
-    /// The day the Focus tab shows (`YYYY-MM-DD`); None is today.
+    /// The day the Daily tab shows (`YYYY-MM-DD`); None is today.
     pub focus_day: Option<String>,
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
@@ -360,6 +359,7 @@ impl App {
             ranked: None,
             fleet: None,
             focus: None,
+            daily_outbox: false,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -496,7 +496,7 @@ impl App {
         }
     }
 
-    /// Nothing here watches the vault (`notes` is its writer), so the Focus tab reads its day
+    /// Nothing here watches the vault (`notes` is its writer), so the Daily tab reads its day
     /// on entering, on a day key, on `r` and on the tick while it is shown.
     pub fn read_focus(&mut self) {
         if self.focus_read.want() {
@@ -515,7 +515,16 @@ impl App {
         }
     }
 
-    /// The outbox has no watch here: the tab reads it on entering, on `r` and on the tick.
+    /// The Daily tab's view: the note, or the outbox when `o` shows it.
+    pub fn read_daily(&mut self) {
+        if self.daily_outbox {
+            self.read_outbox();
+        } else {
+            self.read_focus();
+        }
+    }
+
+    /// The outbox has no watch here: Daily reads it on showing it, on `r` and on the tick.
     pub fn read_outbox(&mut self) {
         if self.outbox_read.want() {
             let tx = self.tx.clone();
@@ -753,11 +762,8 @@ impl App {
                 if self.tab == Tab::Log {
                     self.read_log_folds();
                 }
-                if self.tab == Tab::Focus {
-                    self.read_focus();
-                }
-                if self.tab == Tab::Outbox {
-                    self.read_outbox();
+                if self.tab == Tab::Daily {
+                    self.read_daily();
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
@@ -932,18 +938,7 @@ impl App {
         if self.tab == Tab::Log && self.log_key(k) {
             return;
         }
-        if self.tab == Tab::Focus && self.focus_key(k) {
-            return;
-        }
-        if self.tab == Tab::Outbox && k.code == KeyCode::Enter {
-            let path = match &self.outbox {
-                Some(Ok(v)) if !v.doc.path.is_empty() => Some(v.doc.path.clone()),
-                _ => None,
-            };
-            self.outbox_said = Some(match path {
-                Some(p) => edit_in_tmux(&p, 1),
-                None => Err("the outbox has not been read yet: press r".into()),
-            });
+        if self.tab == Tab::Daily && self.daily_key(k) {
             return;
         }
         if self.tab == Tab::Sessions && self.sessions_key(k) {
@@ -987,11 +982,8 @@ impl App {
                 if self.tab == Tab::Log {
                     self.read_log_folds();
                 }
-                if self.tab == Tab::Focus {
-                    self.read_focus();
-                }
-                if self.tab == Tab::Outbox {
-                    self.read_outbox();
+                if self.tab == Tab::Daily {
+                    self.read_daily();
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
@@ -1013,9 +1005,14 @@ impl App {
         }
     }
 
-    /// A request's query: a section on Infra and Log, else a project name.
+    /// A request's query: the outbox on Daily, a section on Infra and Log, else a project name.
     pub fn open_query(&mut self, q: Option<String>) {
         match (self.tab, q) {
+            (Tab::Daily, q) => {
+                if q.is_some_and(|q| q.trim().eq_ignore_ascii_case("outbox")) {
+                    self.show_outbox(true);
+                }
+            }
             (Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
                     hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
@@ -1067,12 +1064,9 @@ impl App {
         if t == Tab::Fleet {
             self.read_fleet();
         }
-        if t == Tab::Focus {
+        if t == Tab::Daily {
+            self.daily_outbox = false;
             self.read_focus();
-        }
-        if t == Tab::Outbox {
-            self.outbox_said = None;
-            self.read_outbox();
         }
         if t == Tab::Queue {
             self.read_queue();
@@ -1282,9 +1276,39 @@ impl App {
         true
     }
 
-    /// Focus's own keys: `[` and `]` step to the day before or after that has a note, `t`
-    /// goes back to today.
-    fn focus_key(&mut self, k: KeyEvent) -> bool {
+    /// Show the outbox on the Daily tab (true) or the note (false), and read what is shown.
+    fn show_outbox(&mut self, on: bool) {
+        self.daily_outbox = on;
+        self.outbox_said = None;
+        self.scroll = 0;
+        self.read_daily();
+    }
+
+    /// Daily's own keys: `o` shows the outbox and `o` or Esc goes back to the note; on the
+    /// outbox Enter edits it, and on the note `[` and `]` step to the day before or after that
+    /// has a note, `t` goes back to today.
+    fn daily_key(&mut self, k: KeyEvent) -> bool {
+        if self.daily_outbox {
+            match k.code {
+                KeyCode::Char('o') | KeyCode::Esc => self.show_outbox(false),
+                KeyCode::Enter => {
+                    let path = match &self.outbox {
+                        Some(Ok(v)) if !v.doc.path.is_empty() => Some(v.doc.path.clone()),
+                        _ => None,
+                    };
+                    self.outbox_said = Some(match path {
+                        Some(p) => edit_in_tmux(&p, 1),
+                        None => Err("the outbox has not been read yet: press r".into()),
+                    });
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if k.code == KeyCode::Char('o') {
+            self.show_outbox(true);
+            return true;
+        }
         let note = match &self.focus {
             Some(Ok(v)) => Some(&v.note),
             _ => None,
@@ -1548,7 +1572,7 @@ impl App {
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for t in Tab::ALL.iter() {
-            // A tab with no digit yet (Focus) shows its title alone.
+            // A tab with no digit yet (Daily) shows its title alone.
             let label = match t.digit() {
                 ' ' => format!(" {} ", t.title()),
                 d => format!(" {d} {} ", t.title()),
@@ -1595,7 +1619,7 @@ impl App {
     }
 
     fn hints(&self) -> String {
-        let tabs = "1-9";
+        let tabs = "1-8";
         match self.tab {
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
@@ -1616,12 +1640,14 @@ impl App {
             Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
-            Tab::Focus if self.focus_day.is_some() => {
-                "[ ] day  t today  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            Tab::Daily if self.daily_outbox => {
+                "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
             }
-            Tab::Focus => "[ ] day  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into(),
-            Tab::Outbox => {
-                "Enter edit in $EDITOR  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            Tab::Daily if self.focus_day.is_some() => {
+                "[ ] day  t today  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            }
+            Tab::Daily => {
+                "[ ] day  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Log if self.log_days => {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
@@ -1755,8 +1781,9 @@ impl App {
                 None => reading("the fleet"),
                 Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
             },
-            // The outbox and today's intake steps (outboxtab.rs); Enter edits the file.
-            (Tab::Outbox, ..) => match &self.outbox {
+            // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
+            // edits the file.
+            (Tab::Daily, ..) if self.daily_outbox => match &self.outbox {
                 None => reading("the outbox"),
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
                 Some(Ok(v)) => {
@@ -1769,8 +1796,8 @@ impl App {
                     (l, vec![])
                 }
             },
-            // A day's Focus lanes, read-only (focustab.rs).
-            (Tab::Focus, ..) => match &self.focus {
+            // The daily note's Focus lanes, read-only (focustab.rs).
+            (Tab::Daily, ..) => match &self.focus {
                 None => reading("the daily note"),
                 Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
                 Some(Ok(v)) => (focustab::page(v, self.p, w), vec![]),
@@ -2372,14 +2399,14 @@ mod tests {
     }
 
     #[test]
-    fn two_opens_the_queue_tab_and_home_counts_the_queue() {
+    fn three_opens_the_queue_tab_and_home_counts_the_queue() {
         let mut a = app(Tab::Home);
         assert!(screen(&mut a, 140, 30).contains("Prometheus: reading"));
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Outbox  2 Home  3 Queue  4 Projects  5 Sessions  6 Infra"),
+            lines[0].contains("1 Home  2 Daily  3 Queue  4 Projects  5 Sessions  6 Infra"),
             "{s}"
         );
         assert!(
@@ -2399,7 +2426,7 @@ mod tests {
             s.lines().last().unwrap().contains("c cancel  +/- priority"),
             "{s}"
         );
-        a.handle(key('2'));
+        a.handle(key('1'));
         assert_eq!(a.tab, Tab::Home);
     }
 
@@ -2578,7 +2605,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("4 Projects  5 Sessions") && bar.contains("9 Fleet"),
+            bar.contains("4 Projects  5 Sessions") && bar.contains("8 Fleet"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -2719,7 +2746,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("2 Home") && first.contains("6 Infra") && first.contains(" RED "),
+            first.contains("1 Home") && first.contains("6 Infra") && first.contains(" RED "),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -2757,17 +2784,20 @@ mod tests {
             let d = char::from_digit(i as u32 + 1, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!(Tab::by_digit('0'), None);
+        assert_eq!((Tab::by_digit('9'), Tab::by_digit('0')), (None, None));
     }
 
     #[test]
-    fn the_focus_tab_reads_today_then_steps_a_day_with_its_keys() {
+    fn the_daily_tab_reads_today_then_steps_a_day_with_its_keys() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        assert_eq!(Tab::parse("focus"), Some(Tab::Focus));
-        a.handle(Msg::Tab(Tab::Focus, None));
+        // Focus was Daily's name; the Outbox tab is Daily's outbox view (hub_core::layout).
+        for n in ["daily", "Daily", "focus", "outbox"] {
+            assert_eq!(Tab::parse(n), Some(Tab::Daily), "{n}");
+        }
+        a.handle(Msg::Tab(Tab::Daily, None));
         // The fake answers nothing, so the read fails, and says why.
         let first = rx.recv().unwrap();
         a.handle(first);
@@ -2785,7 +2815,8 @@ mod tests {
         a.handle(Msg::Focus(Box::new(Ok(hub_core::focus::build(note)))));
         let s = screen(&mut a, 100, 20);
         assert!(
-            s.contains("FOCUS 2026-11-05  1 open, 0 done") && s.contains("[ ] fix the menu"),
+            s.contains("DAILY 2026-11-05  1 open, 0 done  o outbox")
+                && s.contains("[ ] fix the menu"),
             "{s}"
         );
         a.handle(key('['));
@@ -2809,12 +2840,71 @@ mod tests {
     }
 
     #[test]
+    fn o_on_daily_toggles_the_outbox_and_hub_tab_outbox_opens_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        a.runner = Arc::new(Fake::default());
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        // Each read is answered, as the loop would, so the next one is free.
+        let answer = |a: &mut App| {
+            let m = rx.recv().unwrap();
+            a.handle(m);
+        };
+        a.handle(Msg::Tab(Tab::Daily, None));
+        answer(&mut a);
+        assert!(!a.daily_outbox, "Daily opens on the note");
+        assert!(screen(&mut a, 120, 20).contains("o outbox"));
+        a.handle(key('o'));
+        answer(&mut a);
+        assert!(a.daily_outbox);
+        let doc = hub_core::outbox::Doc {
+            path: "/vault/outbox.md".into(),
+            text: "- call the vet\n".into(),
+            waiting: 1,
+            ..Default::default()
+        };
+        a.handle(Msg::Outbox(Box::new(Ok(hub_core::outbox::View {
+            doc,
+            ..Default::default()
+        }))));
+        let s = screen(&mut a, 120, 20);
+        assert_eq!(a.tab, Tab::Daily, "{s}");
+        assert!(
+            top(&s).starts_with("OUTBOX  1 waiting") && s.contains("- call the vet"),
+            "{s}"
+        );
+        assert!(s.lines().last().unwrap().contains("o/Esc the note"), "{s}");
+        // Esc goes back to the note, even in a popup, and `o` toggles both ways.
+        a.popup = true;
+        a.handle(esc());
+        answer(&mut a);
+        assert!(!a.daily_outbox && !a.quit);
+        a.handle(key('o'));
+        answer(&mut a);
+        a.handle(key('o'));
+        answer(&mut a);
+        assert!(!a.daily_outbox);
+        // `hub --tab outbox` lands on Daily's outbox; `focus` on the note.
+        let (t, q) = crate::tabreq::parse("outbox").unwrap();
+        assert_eq!((t, q.as_deref()), (Tab::Daily, Some("outbox")));
+        a.handle(Msg::Tab(Tab::Home, None));
+        a.handle(Msg::Tab(t, q));
+        answer(&mut a);
+        answer(&mut a);
+        assert!(a.tab == Tab::Daily && a.daily_outbox);
+        let (t, q) = crate::tabreq::parse("focus").unwrap();
+        a.handle(Msg::Tab(t, q));
+        answer(&mut a);
+        assert!(a.tab == Tab::Daily && !a.daily_outbox);
+    }
+
+    #[test]
     fn the_fleet_tab_draws_the_workers_and_judges() {
         let mut a = app(Tab::Fleet);
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("9 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
         for want in [
             "CLAUDE ACCOUNTS",
             "WORKERS",
@@ -2872,7 +2962,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('5'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('8'));
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
     }
 
@@ -2991,10 +3081,10 @@ mod tests {
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
         a.handle(key('6'));
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
-        a.handle(key('8'));
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
-        a.handle(key('0'));
-        assert_eq!(a.tab, Tab::Log, "0 opens nothing");
+        a.handle(key('9'));
+        assert_eq!(a.tab, Tab::Log, "9 opens nothing");
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);

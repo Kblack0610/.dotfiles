@@ -14,27 +14,36 @@ const refreshProjects = coalesce(async () => {
 
 const pKey = (c) => c.profile + "/" + c.name;
 
+// The sessions running on a project, a card shows the first PRUNNING_SHOWN of; its rows view
+// shows them all.
+const PRUNNING_SHOWN = 3;
+
+// One running item: its title (two lines at most), then its phases and estimate.
 function pRunning(r) {
-  let t = r.title;
-  const ph = r.phases;
-  if (ph) t += ` (phase ${ph.done + 1} of ${ph.total}${ph.next ? ": " + ph.next : ""})`;
-  return `<div class="pline"><span class="plead">running</span><span>${esc(t)} ${etaText(ph)}</span></div>`;
+  const meta = [esc(phasesText(r)), etaText(r.phases)].filter(Boolean).join(", ");
+  return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
 }
 
+// A count chip, only when there is something to count.
+const pCount = (n, what, cls) => (n ? cchip(cls || "", `${n} ${what}`) : "");
+
+// A project card: its name and stage, the open version's progress (hub_core's summary word for
+// word under the meter), its goal, what it holds as counts, then what runs on it.
 function pCard(c, rowsOpen) {
-  const chips = [];
-  if (c.running.length) chips.push(cchip("running", `${c.running.length} running`));
-  if (c.waiting) chips.push(cchip("waiting", `${c.waiting} waiting`));
-  const counts = `${c.running.length} running, ${c.waiting} waiting, ${c.queued} queued; ` +
-    `${c.requested} rows #requested, ${c.inbox} in the inbox`;
+  const chips = [cchip("", esc(c.stage || "no stage")), pCount(c.running.length, "running", "running"), pCount(c.waiting, "waiting", "waiting")];
+  const counts = [pCount(c.queued, "queued"), pCount(c.requested, "#requested"), pCount(c.inbox, "in the inbox")].join("");
+  const shown = rowsOpen ? c.running : c.running.slice(0, PRUNNING_SHOWN);
+  const more = c.running.length - shown.length;
   return `<div class="card qitem pcard"${rowsOpen ? "" : ` data-open="${esc(pKey(c))}"`}>` +
-    cardHead(c.name.toUpperCase(), chips) +
-    cardLine([esc(c.profile), esc(c.stage)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-    `<div class="pprog">${meter((c.percent || 0) / 100)}<span>${esc(c.summary)}</span></div>` +
-    (c.goal ? `<div class="pline"><span class="plead">goal</span><span>${esc(c.goal)}</span></div>` : "") +
-    c.running.map(pRunning).join("") +
-    `<div class="pline"><span class="plead">queue</span><span>${esc(counts)}</span></div>` +
-    (c.status ? `<div class="pline muted"><span class="plead">${esc(c.status_date)}</span><span>${esc(c.status)}</span></div>` : "") +
+    cardHead(c.name, chips.filter(Boolean)) +
+    cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
+    `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
+    `<div class="psum">${esc(c.summary)}</div>` +
+    (c.goal ? `<div class="pgoal">${esc(c.goal)}</div>` : "") +
+    (counts ? `<div class="pcounts">${counts}</div>` : "") +
+    (shown.length ? `<ul class="prun">${shown.map(pRunning).join("")}</ul>` : "") +
+    (more ? `<div class="cline">+${more} more running; Open rows shows them all</div>` : "") +
+    (c.status ? `<div class="pstat"><span class="muted">${esc(c.status_date)}</span> ${esc(c.status)}</div>` : "") +
     (rowsOpen ? "" : `<div class="opts"><button class="btn sm" data-open="${esc(pKey(c))}">Open rows</button></div>`) +
     `</div>`;
 }
@@ -47,7 +56,7 @@ function pCards() {
     `progress is the open version's rows by size (#size/s 1, m 3, l 8)</div>`;
   html += (d.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   html += `<div class="card qitem pcard" data-open="all">` +
-    cardHead("ALL PROJECTS", [cchip("", open == null ? "reading notes board" : `${open} open rows`)]) +
+    cardHead("All projects", [cchip("", open == null ? "reading notes board" : `${open} open rows`)]) +
     cardLine(["every project's rows, filtered by text, #tag, lane or priority"]) +
     `<div class="opts"><button class="btn sm" data-open="all">Open rows</button></div></div>`;
   html += cards.map((c) => pCard(c, false)).join("");
@@ -59,7 +68,7 @@ function pCards() {
   return html;
 }
 
-// `#projects/<name>` (a `#p:<name>` link on Focus) or `#projects/<profile>/<name>` opens that
+// `#projects/<name>` (a `#p:<name>` link on Daily) or `#projects/<profile>/<name>` opens that
 // project's rows, once the cards say which project the name is; `#projects/all` opens All.
 function pDeep() {
   const want = st.arg;
@@ -92,7 +101,7 @@ function renderProjects() {
   }
   const c = pst.open !== "all" && pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   $("p-head").innerHTML = `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
-    (c ? pCard(c, true) : `<h2 class="sec">ALL PROJECTS</h2>`);
+    (c ? pCard(c, true) : `<h2 class="sec">All projects</h2>`);
   renderBoard();
 }
 

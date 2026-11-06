@@ -2,7 +2,7 @@
 //! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
 //! same feed and writes as agent-web's Projects tab. Rows are grouped by profile and project
 //! and their text wraps, so a row shows whole; All names each profile's open Focus count, whose
-//! rows are the Focus tab's (focustab.rs); j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
+//! rows are the Daily tab's (focustab.rs); j/k pick a row, `/` searches, `l` steps the lane filter, and a, s, d/D, x/X, m,
 //! e, t/T, + and - add, start, finish, drop (with why, or the id it duplicates), move (to a
 //! project or a version), edit, tag and untag, and step a row a release sooner or later through
 //! `notes ptask --exact`; `o` opens the sheet at the row. This file writes nothing: it hands the app a `tasks::Write`, and a row edited since
@@ -453,7 +453,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         out.push(clip_line(
             heading(
                 "FOCUS",
-                format!("  {} open, on the Focus tab", each.join(", ")),
+                format!("  {} open, on the Daily tab", each.join(", ")),
                 p,
             ),
             w,
@@ -681,7 +681,7 @@ pub(crate) mod tests {
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
         assert!(s.contains("ALL PROJECTS  4 open rows in 2 groups"), "{s}");
-        assert!(at("FOCUS  bnb 1 open, on the Focus tab") < at("BNB/DEMO  3, 1 urgent"));
+        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("BNB/DEMO  3, 1 urgent"));
         assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
         // j/k follow the page's order, not the feed's.
@@ -703,7 +703,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(
-            !text(&f, &one, 120).contains("on the Focus tab"),
+            !text(&f, &one, 120).contains("on the Daily tab"),
             "one project's rows have no Focus count"
         );
     }
