@@ -109,6 +109,10 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
+# Spill to Lazer: when no account has room, a pass may start a Sonnet-lane item on the claude-reserve
+# key instead (SPILL_HARNESS); the human approved it on by default, 2 live, under 80% of the pool (2026-11-06).
+: "${DISPATCH_SPILL_MAX_LIVE:=2}"   # spill sessions live at once; 0 turns spilling off
+: "${DISPATCH_SPILL_POOL_PCT:=80}"   # percent of the Lazer pool's budget (lazer-spend) at which spilling stops
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
@@ -120,6 +124,10 @@ HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which 
 # spent 50 minutes on a `ci:` row. Raising this is a conversation, not a config edit.
 # Tier 3 may run unattended to an open PR only, as a `night` item, never past it (human decision 2026-11-02): see fill_night.
 UNATTENDED_TIER_CEILING=2
+# The harness a spill runs on: claude-lazer on the claude-reserve key, never the eval key (harnesses.json).
+SPILL_HARNESS=lazer-reserve
+SPILL_REFUSED="$DIR/spill-refused"   # <day> TAB <slug> TAB <why>: an item that may not spill, for the rest of the day
+NO_SPILL=()   # this pass's "<slug> (<why>)" for items that may not spill; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
 logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
@@ -368,13 +376,14 @@ item_sessions() {
 # says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
 # of the Claude sessions that worked it is live). A tmux session alone is not a session: a shell
 # left after claude exits keeps it, and an item in a hub window has none of its own. Exit 1 (keep
-# the item) when it cannot tell: another agent than claude (agent-panel lists only Claude), a
+# the item) when it cannot tell: an agent that is not Claude (agent-panel lists only Claude, which
+# a harness launched by claude-lazer is), a
 # parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # REAP_PANEL caches one read per pass.
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
-  case "$agent" in claude | claude-lazer) ;; *) return 1 ;; esac
+  case "$agent" in claude) ;; *) [ "$(harness_launcher "$agent")" = claude-lazer ] || return 1 ;; esac
   if [ -n "$sess" ]; then
     [ -e "$PARKED_DIR/$sess" ] && return 1
     compgen -G "$PARKED_DIR/$sess:*" >/dev/null && return 1
@@ -429,6 +438,67 @@ floor_open() {
 # (claude-acct still refuses an account in its reserve, its 5h window or emptied before its reset).
 acct_room() {
   if floor_open; then CLAUDE_ACCT_PACE_SLACK_PCT=100 claude-acct room; else claude-acct room; fi
+}
+
+# --- spill to Lazer: a run start past every account's cap -----------------------------------
+# When the only gate shut is account room, a pass may still start a queue item, on SPILL_HARNESS: a
+# Sonnet-lane item within the unattended tier ceiling, under DISPATCH_SPILL_MAX_LIVE live spills, with
+# the Lazer pool under DISPATCH_SPILL_POOL_PCT and budget left on the key. Load, idle, holds and the
+# rest still hold it. A spill is a run session: it holds run units like any other.
+
+# spill_live -> how many items on SPILL_HARNESS have a live session.
+spill_live() {
+  local server sess agent n=0 _s _o _p _a _st _w _rest
+  while IFS=$'\x1f' read -r _s server sess _o _p _a _st _w agent _rest; do
+    [ "$agent" = "$SPILL_HARNESS" ] && session_live "$sess" "$server" && n=$((n + 1))
+  done < <(item_sessions)
+  echo "$n"
+}
+
+# spill_shut -> why no spill may start, from this machine's own counts; nothing when one may. The
+# cap counts this pass's spills (SPILLED) on top of the live ones cmd_run read (SPILL_LIVE). A map
+# without the harness's own key_file shuts it: the fallback is the gateway's key, the eval one.
+spill_shut() {
+  [ "${DISPATCH_SPILL_MAX_LIVE:-0}" -gt 0 ] 2>/dev/null || { echo "off (DISPATCH_SPILL_MAX_LIVE=0)"; return; }
+  jq -e --arg h "$SPILL_HARNESS" '.harnesses[$h].key_file' "$HARNESSES" >/dev/null 2>&1 ||
+    { echo "unset: $HARNESSES has no $SPILL_HARNESS with its own key_file"; return; }
+  local live=$(( ${SPILL_LIVE:-$(spill_live)} + ${SPILLED:-0} ))
+  [ "$live" -lt "$DISPATCH_SPILL_MAX_LIVE" ] || echo "full: $live of DISPATCH_SPILL_MAX_LIVE=$DISPATCH_SPILL_MAX_LIVE spill sessions live"
+}
+
+# spill_note <spill_shut or spill_money reason> -> the words an account stop carries for it: none when
+# spilling is off, so an account stop reads as it did before spilling was a thing.
+spill_note() { case "$1" in '' | off*) ;; *) printf ' (spill to Lazer %s)' "$1" ;; esac; }
+
+# spill_money -> why the gateway says no spill may start; nothing when the Lazer pool is under
+# DISPATCH_SPILL_POOL_PCT of its budget and the spill key has budget left. Unreadable is shut.
+spill_money() {
+  local pct left
+  pct=$(lazer-spend --json 2>/dev/null | jq -e '.spend / .max_budget * 100 | floor' 2>/dev/null) ||
+    { echo "shut: the Lazer pool's spend is unreadable"; return; }
+  [ "$pct" -lt "$DISPATCH_SPILL_POOL_PCT" ] || { echo "shut: the Lazer pool is at $pct%, the line is DISPATCH_SPILL_POOL_PCT=$DISPATCH_SPILL_POOL_PCT%"; return; }
+  left=$(gateway_left "$SPILL_HARNESS") || { echo "shut: cannot read the $SPILL_HARNESS key's budget"; return; }
+  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || echo "shut: the $SPILL_HARNESS key is spent (\$$left left)"
+}
+
+# item_tier <item json> -> the item's tier: a night item's 3 unless its text says lower, else what its
+# title or task says (row_tier), else 1. An item with no tier was queued by the human or judged within
+# the ceiling when fill promoted it.
+item_tier() {
+  local text t
+  text=$(jq -r '[.title // empty, .task // empty] | join("\n")' <<<"$1")
+  t=$(row_tier "$text")
+  [ -n "$t" ] || { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" night "* ]] && t=3; }
+  echo "${t:-1}"
+}
+
+# spill_cached <slug> -> why the item may not spill, when a pass found that today; spill_refused
+# <slug> <why> records it, so later passes do not ask model-lane again for every Opus item.
+spill_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$SPILL_REFUSED" 2>/dev/null; }
+spill_refused() {
+  local d; d=$(date +%F); mkdir -p "$DIR"
+  { awk -F'\t' -v d="$d" '$1 == d' "$SPILL_REFUSED" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$2"; } > "$SPILL_REFUSED.tmp" &&
+    mv -f "$SPILL_REFUSED.tmp" "$SPILL_REFUSED"
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
@@ -762,11 +832,17 @@ start_ready() {
   claude-acct trust "$1" "$3" "$4" >/dev/null || say "$2: claude did not show \"$4\"; look at its pane"
 }
 
-# gateway_left -> dollars left on the eval key, from the gateway itself; rc 1 when it cannot say.
-# The key goes in on stdin, off the process list.
+# harness_launcher <harness> -> the wrapper that runs it: its `launcher` in the map, else its own name.
+harness_launcher() { jq -er --arg h "$1" '.harnesses[$h].launcher // $h' "$HARNESSES" 2>/dev/null || echo "$1"; }
+
+# harness_key_file <harness> -> the key file it spends: its own `key_file`, else the gateway's (the eval key).
+harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.key_file) | sub("^~"; env.HOME)' "$HARNESSES"; }
+
+# gateway_left <harness> -> dollars left on the key that harness spends, from the gateway itself; rc 1
+# when it cannot say. The key goes in on stdin, off the process list.
 gateway_left() {
   local file key
-  file=$(jq -r '.gateway.key_file | sub("^~"; env.HOME)' "$HARNESSES") && key=$(cat "$file") || return 1
+  file=$(harness_key_file "$1") && key=$(cat "$file") || return 1
   curl -fsS -m 10 -K - "$(jq -r .gateway.url "$HARNESSES")/key/info" <<<"header = \"Authorization: Bearer $key\"" 2>/dev/null |
     jq -e '.info | .max_budget - .spend' 2>/dev/null
 }
@@ -783,11 +859,11 @@ gateway_launch() {
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
-  left=$(gateway_left) || { say "start: cannot read the eval key's budget from the gateway"; return 1; }
-  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the eval key is spent (\$$left left)"; return 1; }
+  left=$(gateway_left "$harness") || { say "start: cannot read the $harness key's budget from the gateway"; return 1; }
+  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the $harness key is spent (\$$left left)"; return 1; }
   slug=$(jq -r .slug <<<"$it")
-  file=$(jq -r '.gateway.key_file | sub("^~"; env.HOME)' "$HARNESSES")
-  case "$harness" in
+  file=$(harness_key_file "$harness")
+  case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
@@ -814,8 +890,9 @@ gateway_launch() {
 # which the human had to ask about twice.
 #   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
 #                           repo) with `wt new`, claude on the item's brief there.
-#   --harness NAME          with --item: run it on claude, claude-lazer or opencode, not the item's
-#                           `agent:`. The last two go through the gateway on the eval key.
+#   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
+#                           the item's `agent:`: claude-lazer and opencode on the eval key, lazer-reserve
+#                           (a run pass's spill) on the claude-reserve key.
 #   --brief FILE --row KEY  claim the open row, promote it into a queue item with the brief as
 #                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
@@ -875,7 +952,7 @@ cmd_start() {
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
-    [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
+    verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
     # One start of a queue item at a time, from the queued check until the item is running: on
     # 11-04 a pass and a hand start both saw one item queued, and the pass's launch failed. fd 7
     # closes when this item is running, or when the caller (start_item, or the process) ends.
@@ -950,6 +1027,8 @@ cmd_start() {
     # Preflight and agent-land claim for Claude alone, and both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(jq -r .task <<<"$it")" "$verdict" "$model"
+    # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.
+    elif [ "$origin" = run ]; then lane_log "$item" "$(jq -r .task <<<"$it")" "$verdict" "$model" "$harness"
     else eval_log "$item" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" "$harness" "$model"
     fi
     dispatch_event started "$project" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" --item "$item" --to "$server:$session" --why "$model on $on"
@@ -1304,8 +1383,9 @@ start_items() {
       return 0
     fi
     start_item "$PICKED"; rc=$?
-    case "$rc" in 0 | 4) ;; 3) return 0 ;; *) return "$rc" ;; esac
+    case "$rc" in 0 | 4 | 5) ;; 3) return 0 ;; *) return "$rc" ;; esac
     items=$(jq -c --arg s "$(jq -r .slug <<<"$PICKED")" 'select(.slug != $s)' <<<"$items")
+    [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 ))
     if [ "$rc" -eq 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
       left=${PRESENT_LEFT:-$(present_left)}
@@ -1316,6 +1396,13 @@ start_items() {
     [ "$rc" -eq 0 ] && UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
+  # No account had room and nothing it tried may spill: held, so BLOCKED, naming what it tried.
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_SPILL[@]}" -gt 0 ]; then
+    why=$(printf '%s, ' "${NO_SPILL[@]:0:3}")
+    [ "${#NO_SPILL[@]}" -le 3 ] || why="$why$(( ${#NO_SPILL[@]} - 3 )) more, "
+    settle BLOCKED "$NO_ROOM, and no queue item may spill to Lazer: ${why%, }"
+    return 0
+  fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
   [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
@@ -1332,8 +1419,9 @@ start_items() {
 # held dispatch on purpose (agent-hold), else BLOCKED.
 held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
-# next_items -> the queued items a pass may try, queue order, one JSON object a line. A gateway
-# harness spends the eval budget, so only a hand or a batch starts one.
+# next_items -> the queued items a pass may try, queue order, one JSON object a line. An item whose
+# `agent:` is a gateway harness is an eval run the human paired, so only a hand or a batch starts it;
+# a pass moves a claude item onto Lazer only as a spill, when no account has room (start_item).
 next_items() {
   # A red fix goes first, so the run floor spends itself on what is broken; the queue's order holds within each.
   runnable 2>/dev/null | jq -cs 'map(select((.waits | not) and (.agent // "claude") == "claude"))
@@ -1428,7 +1516,7 @@ lane_pick() {
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }
 
-# lane_log <slug> <task> <verdict json> <model ran> -- the started item's pick goes in model-lane's
+# lane_log <slug> <task> <verdict json> <model ran> [harness] -- the started item's pick goes in model-lane's
 # log and its run id on the item as lane_run, so the item's close reports the outcome (agent-queue
 # move) and the lane can graduate or demote on evidence. No verdict (model-lane failed) logs nothing:
 # the item ran on opus, and a broken router never blocks a start.
@@ -1436,7 +1524,7 @@ lane_log() {
   local id
   [ -n "$3" ] || return 0
   id=$(model-lane log --item "$1" --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
-    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" 2>/dev/null) && [ -n "$id" ] ||
+    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" ${5:+--harness "$5"} 2>/dev/null) && [ -n "$id" ] ||
     { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }
@@ -1451,25 +1539,55 @@ eval_log() {
 }
 
 # start_item <item json> -- past the gates: start it, and publish what happened. rc 3 when no
-# account has room, which ends the pass: the next item would find none either. rc 4 when another
-# start (a hand start, say) took the item first: that is not a failed launch, and the pass goes on.
+# account has room and no spill may start, which ends the pass: the next item would find none
+# either. rc 4 when another start (a hand start, say) took the item first: that is not a failed
+# launch, and the pass goes on. rc 5 when no account has room and this item may not spill (an Opus
+# lane, a tier past the ceiling): the pass goes on to the next item, which may.
 start_item() {
-  local it="$1" slug acct err why rc
+  local it="$1" slug acct err why rc verdict='' floor='' harness=claude no spill
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
   # names the closest account and how far past its pace it is, as in gate.
   err=$(mktemp)
-  if ! acct=$(acct_room 2>"$err"); then
-    why=$(tail -n 1 "$err"); rm -f "$err"
-    settle BLOCKED "queue item $slug waits: ${why#claude-acct: }"; return 3
+  if acct=$(acct_room 2>"$err"); then
+    rm -f "$err"
+    floor_open && floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
+    # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
+    START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug"
+  else
+    why=$(tail -n 1 "$err"); why=${why#claude-acct: }; rm -f "$err"
+    spill=$(spill_shut)
+    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
+    no=$(spill_cached "$slug")
+    if [ -z "$no" ]; then
+      no=$(item_tier "$it")
+      if [ "$no" -gt "$UNATTENDED_TIER_CEILING" ]; then no="tier $no is past the unattended ceiling"; else no=''; fi
+      if [ -z "$no" ]; then
+        verdict=$(lane_pick "$slug" claude)
+        case "$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)" in
+          sonnet | haiku) ;;
+          '') no="model-lane gave no verdict" ;;
+          *) no="model-lane puts it on $(jq -r .dispatch_model <<<"$verdict")" ;;
+        esac
+      fi
+      # A broken router is not a fact about the item: the next pass asks again.
+      [ -z "$verdict" ] || [ -z "$no" ] || spill_refused "$slug" "$no"
+    fi
+    if [ -n "$no" ]; then
+      say "queue item $slug may not spill to Lazer: $no"
+      NO_SPILL+=("$slug ($no)"); NO_ROOM=$why
+      return 5
+    fi
+    spill=$(spill_money)
+    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
+    harness=$SPILL_HARNESS floor=" on Lazer ($SPILL_HARNESS, sonnet), spilled: $why"
+    # The verdict that let it spill is the one cmd_start logs, so model-lane is asked once.
+    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model sonnet
   fi
-  rm -f "$err"
-  local floor=''; floor_open && floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
-  # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
-  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug"
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
+    [ "$harness" = claude ] || SPILLED=$(( ${SPILLED:-0} + 1 ))
     settle WORKED "started queue item $slug$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
@@ -1869,7 +1987,9 @@ gate() {
   acct=$(tail -n 1 <<<"$acct"); acct=${acct#claude-acct: }
   case $rc in
     0) ;;
-    1) why+=("${acct:-no account has room under its weekly pace}") ;;
+    # No room is not a stop while a spill may start (start_item); unreadable usage always is.
+    1) local spill; spill=$(spill_shut); [ -n "$spill" ] || spill=$(spill_money)
+       [ -z "$spill" ] || why+=("${acct:-no account has room under its weekly pace}$(spill_note "$spill")") ;;
     *) why+=("account usage unreadable${acct:+ ($acct)}") ;;
   esac
   fleet-assess --watch-probe >/dev/null 2>&1 || why+=("fleet-assess says HOLD")
@@ -1948,7 +2068,8 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED=
+  QUEUE_HELD='' STARTED=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
+  NO_SPILL=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
@@ -1958,6 +2079,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
   live=$(live_units)
   FLOOR_LIVE=$(live_runs | grep -c . || true)
+  SPILL_LIVE=$(spill_live)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   room=$UNITS_FREE
   [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS

@@ -3,7 +3,9 @@
 //!
 //! An account is a `CLAUDE_CONFIG_DIR`. The accounts file has one `name dir` per line, `-`
 //! for the default (`~/.claude`) account and `#` for a comment; a process with no
-//! `CLAUDE_CONFIG_DIR`, or one set to `~/.claude`, is on the default account.
+//! `CLAUDE_CONFIG_DIR`, or one set to `~/.claude`, is on the default account. A process with
+//! `ANTHROPIC_BASE_URL` set (claude-lazer) runs on the Lazer gateway, on no account: it is
+//! named `gateway`, the `account:` a queue item started on a gateway harness records.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -77,16 +79,20 @@ pub fn norm_dir(dir: &str, home: &Path) -> String {
     }
 }
 
+/// The value of `var` in process `pid`'s environment; empty when unset or unreadable.
+fn env_of(proc_root: &Path, pid: u32, var: &str) -> String {
+    let raw = fs::read(proc_root.join(pid.to_string()).join("environ")).unwrap_or_default();
+    let key = format!("{var}=");
+    raw.split(|b| *b == 0)
+        .find_map(|kv| kv.strip_prefix(key.as_bytes()))
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+        .unwrap_or_default()
+}
+
 /// The `CLAUDE_CONFIG_DIR` process `pid` runs under, normalised; empty for the default
 /// account or when its environment cannot be read.
 pub fn config_dir_of(proc_root: &Path, pid: u32, home: &Path) -> String {
-    let raw = fs::read(proc_root.join(pid.to_string()).join("environ")).unwrap_or_default();
-    let dir = raw
-        .split(|b| *b == 0)
-        .find_map(|kv| kv.strip_prefix(b"CLAUDE_CONFIG_DIR="))
-        .map(|v| String::from_utf8_lossy(v).into_owned())
-        .unwrap_or_default();
-    norm_dir(&dir, home)
+    norm_dir(&env_of(proc_root, pid, "CLAUDE_CONFIG_DIR"), home)
 }
 
 /// The account's name for a dir, else the dir itself, else `default`.
@@ -104,8 +110,12 @@ pub fn name_of(dir: &str, accounts: &[Account]) -> String {
         })
 }
 
-/// The account name process `pid` runs on.
+/// The account name process `pid` runs on, or `gateway` for one on the Lazer gateway: the
+/// shepherd must never move or park that one onto an account.
 pub fn of_pid(proc_root: &Path, pid: u32, home: &Path, accounts: &[Account]) -> String {
+    if !env_of(proc_root, pid, "ANTHROPIC_BASE_URL").is_empty() {
+        return "gateway".into();
+    }
     name_of(&config_dir_of(proc_root, pid, home), accounts)
 }
 
@@ -166,13 +176,22 @@ mod tests {
         environ(&proc, 11, &["TERM=x"]);
         environ(&proc, 12, &["CLAUDE_CONFIG_DIR=/home/u/.claude"]);
         environ(&proc, 13, &["CLAUDE_CONFIG_DIR=/srv/other"]);
-        let got: Vec<String> = [10, 11, 12, 13, 99]
+        // claude-lazer: no CLAUDE_CONFIG_DIR, so the default dir, but on the gateway.
+        environ(
+            &proc,
+            14,
+            &["TERM=x", "ANTHROPIC_BASE_URL=https://llm.example"],
+        );
+        let got: Vec<String> = [10, 11, 12, 13, 14, 99]
             .iter()
             .map(|p| of_pid(&proc, *p, home, &accts))
             .collect();
         let _ = fs::remove_dir_all(&proc);
         // 13 is in no account line, so it is named by its dir; 99 has no /proc entry.
-        assert_eq!(got, ["bnb", "main", "main", "/srv/other", "main"]);
+        assert_eq!(
+            got,
+            ["bnb", "main", "main", "/srv/other", "gateway", "main"]
+        );
     }
 
     #[test]
