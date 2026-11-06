@@ -43,9 +43,9 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   assert_output --partial '  goal: one kit with logo, colors and type'
   assert_output --partial '  approach: collect the assets'
   assert_output --partial '  check: the guide renders'
-  assert_output --partial '  split: 2 rows, each marked part of sc-1'
-  assert_output --regexp 'docs\(brand\): the brand guide #size/m'
-  assert_output --partial 'part of sc-1: feat(brand): a brand kit #size/l'
+  assert_output --partial '  split: 2 rows under sc-1'
+  assert_output --regexp 'docs\(brand\): the brand guide #size/m .*#of/sc-1'
+  refute_output --partial 'part of sc-1'
   grep -q 'The row: feat(brand): a brand kit #size/s #plan' "$NOTES_FIXTURE/args.txt" || fail "the row never reached the model"
   grep -q 'was: brand kit for the studio' "$NOTES_FIXTURE/args.txt" || fail "its details never reached the model"
   grep -q 'sc-2	fix(ui): the menu flickers' "$NOTES_FIXTURE/args.txt" || fail "the open rows never reached the model"
