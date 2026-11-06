@@ -729,6 +729,63 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
 }
 
+@test "backfill-harness: a month's rows with no harness get the run's rule, nothing else changes, and the old file stays as .bak" {
+  queue_stub
+  jq -cn '{slug: "lz", agent: "claude-lazer", sessions: "old-lz"}' > "$SANDBOX/items.jsonl"
+  mkdir -p "$SO_OUT/proj" "$SO_OUT/_runner" "$SO_OUT/done"
+  {
+    jq -cn '{session_id: "old-lz", cost_usd: 2.5, harness: null}'
+    jq -cn '{session_id: "old-cc", cost_usd: 1.25}'
+    jq -cn '{session_id: "new-oc", cost_usd: 3, harness: "opencode"}'
+  } > "$SO_OUT/proj/2026-11.jsonl"
+  jq -cn '{session_id: "runner", cost_usd: 0.5, runner: true}' > "$SO_OUT/_runner/2026-11.jsonl"
+  jq -cn '{session_id: "other-month", cost_usd: 9}' > "$SO_OUT/proj/2026-10.jsonl"
+  jq -cn '{session_id: "all-set", harness: "claude"}' > "$SO_OUT/done/2026-11.jsonl"
+  before=$(cat "$SO_OUT"/*/2026-11.jsonl | jq -s 'map(.cost_usd // 0) | add')
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_success
+  assert_output 'session-outcomes: 3 row(s) in 2 file(s) given a harness for 2026-11'
+  assert_equal "$(jq -r .harness "$SO_OUT/proj/2026-11.jsonl" | paste -sd' ')" 'claude-lazer claude opencode'
+  assert_equal "$(jq -r .harness "$SO_OUT/_runner/2026-11.jsonl")" claude
+  assert_equal "$(cat "$SO_OUT"/*/2026-11.jsonl | jq -s 'map(.cost_usd // 0) | add')" "$before"
+  assert_equal "$(jq -c 'del(.harness)' "$SO_OUT/proj/2026-11.jsonl" | md5sum)" "$(jq -c 'del(.harness)' "$SO_OUT/proj/2026-11.jsonl.bak" | md5sum)"
+  # negative controls: another month and a file with every harness set are not touched
+  assert_equal "$(jq -c .harness "$SO_OUT/proj/2026-10.jsonl")" null
+  [ ! -e "$SO_OUT/done/2026-11.jsonl.bak" ] && [ ! -e "$SO_OUT/proj/2026-10.jsonl.bak" ]
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_output 'session-outcomes: 0 row(s) in 0 file(s) given a harness for 2026-11'
+}
+
+@test "backfill-harness: a row with no session_id still gets claude; a .bak left from an earlier run leaves that file alone" {
+  queue_stub
+  : > "$SANDBOX/items.jsonl"
+  mkdir -p "$SO_OUT/proj" "$SO_OUT/held"
+  jq -cn '{cost_usd: 1}' > "$SO_OUT/proj/2026-11.jsonl"
+  chmod 600 "$SO_OUT/proj/2026-11.jsonl"
+  jq -cn '{session_id: "old", cost_usd: 2}' > "$SO_OUT/held/2026-11.jsonl"
+  echo stale > "$SO_OUT/held/2026-11.jsonl.bak"
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_success
+  assert_output --partial 'held/2026-11.jsonl.bak from an earlier backfill is still there'
+  assert_output --partial '1 row(s) in 1 file(s)'
+  assert_equal "$(jq -r .harness "$SO_OUT/proj/2026-11.jsonl")" claude
+  assert_equal "$(stat -c %a "$SO_OUT/proj/2026-11.jsonl")" 600
+  [ ! -e "$SO_OUT/proj/2026-11.jsonl.next" ]
+  assert_equal "$(jq -c .harness "$SO_OUT/held/2026-11.jsonl")" null
+  assert_equal "$(cat "$SO_OUT/held/2026-11.jsonl.bak")" stale
+}
+
+@test "backfill-harness: an unreadable queue changes nothing, and a bad month is a usage error" {
+  export SO_QUEUE=false
+  mkdir -p "$SO_OUT/proj"
+  jq -cn '{session_id: "old", cost_usd: 1}' > "$SO_OUT/proj/2026-11.jsonl"
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_failure 1
+  assert_equal "$(jq -c .harness "$SO_OUT/proj/2026-11.jsonl")" null
+  run "$SUBJECT" backfill-harness 11
+  assert_failure 2
+}
+
 @test "a row names every work item whose sessions list it, in ledger order, and none with no item" {
   queue_stub
   {

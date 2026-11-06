@@ -630,71 +630,13 @@ project() { run "$DRIFT" --lint "$REPO" --profile project; }
   assert_output --partial "BADNAME"
 }
 
-# ── the Codex corpus is held to a SMALLER contract ───────────────────────────
-#
-# .config/codex/skills is a different tool's corpus with a deliberately smaller
-# 2-key frontmatter contract. Holding it to the Claude one (category/tags/reviewed,
-# category directories, the house ASCII rule) produced 25 findings that could never
-# be actioned - which is how a report becomes something nobody reads. But the checks
-# that mean something anywhere still apply: a skill with NO frontmatter at all is
-# still flagged.
-
-# The local report needs a whole machine, so point every input at an empty sandbox
-# and let only the codex corpus have content.
-codex_report() {
-  mkdir -p "$HOME/empty/skills" "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx"
-  : > "$HOME/empty/CLAUDE.md"
-  CLAUDE_SKILLS="$HOME/empty/skills" DOTFILES="$HOME/empty/pub" \
-  DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
-  CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
-  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" \
-    run "$DRIFT"
-}
-
-@test "codex: a skill with no category/tags/reviewed is NOT flagged" {
-  mkdir -p "$REPO/codex/plain"
-  printf -- '---\nname: plain\ndescription: a codex skill\n---\n\n# Plain\n' > "$REPO/codex/plain/SKILL.md"
-  codex_report
-  refute_output --partial "BADMETA"
-}
-
-@test "codex: an em dash is NOT flagged (different corpus, different rules)" {
-  mkdir -p "$REPO/codex/dashy"
-  printf -- '---\nname: dashy\ndescription: x\n---\n\nprose \xe2\x80\x94 here\n' > "$REPO/codex/dashy/SKILL.md"
-  codex_report
-  refute_output --partial "NONASCII"
-}
-
-@test "codex: a skill with no Scope and triggers heading is NOT flagged" {
-  mkdir -p "$REPO/codex/plain"
-  printf -- '---\nname: plain\ndescription: a codex skill\n---\n\n# Plain\n' > "$REPO/codex/plain/SKILL.md"
-  codex_report
-  refute_output --partial "NOHEADING"
-}
-
-# The checks that mean something anywhere still fire, starting with a skill that
-# has no frontmatter at all.
-@test "codex: missing frontmatter IS still flagged" {
-  mkdir -p "$REPO/codex/nofm"
-  printf '# no frontmatter at all\n' > "$REPO/codex/nofm/SKILL.md"
-  codex_report
-  assert_output --partial "NOFRONTMATTER"
-}
-
-@test "codex: a name that disagrees with its directory IS still flagged" {
-  mkdir -p "$REPO/codex/realdir"
-  printf -- '---\nname: othername\ndescription: x\n---\n\n# x\n' > "$REPO/codex/realdir/SKILL.md"
-  codex_report
-  assert_output --partial "BADNAME"
-}
-
 # ── UNUSED reads claude-recall stats ─────────────────────────────────────────
 #
 # A skill reached only by its typed /command was reported unused while the counter was
 # a grep for Skill-tool calls. Three deployed skills: one run by the Skill tool, one only
 # typed as a /command, one never touched.
 @test "UNUSED: a skill typed as a /command counts as used; an untouched one is reported" {
-  mkdir -p "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx/-p" "$REPO/codex"
+  mkdir -p "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx/-p"
   : > "$HOME/empty/CLAUDE.md"
   for s in by-tool by-slash idle; do
     mkdir -p "$HOME/empty/skills/$s"
@@ -706,7 +648,7 @@ codex_report() {
 {"type":"assistant","cwd":"/p",$ts,"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"by-tool"}}]}}
 JSONL
   CLAUDE_SKILLS="$HOME/empty/skills" DOTFILES="$HOME/empty/pub" \
-  DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
+  DOTFILES_PRIVATE="$HOME/empty/priv" \
   CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
   SKILL_DRIFT_BASELINE="$HOME/empty/baseline" \
     run "$DRIFT"
@@ -733,10 +675,10 @@ mkdeployed() {
 
 # listing_report <budget>: a deployed tree in the sandbox and nothing else.
 listing_report() {
-  mkdir -p "$HOME/empty/skills" "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx" "$HOME/empty/commands" "$REPO/codex"
+  mkdir -p "$HOME/empty/skills" "$HOME/empty/pub" "$HOME/empty/priv" "$HOME/empty/tx" "$HOME/empty/commands"
   : > "$HOME/empty/CLAUDE.md"
   CLAUDE_SKILLS="$HOME/empty/skills" CLAUDE_COMMANDS="$HOME/empty/commands" \
-  DOTFILES="$HOME/empty/pub" DOTFILES_PRIVATE="$HOME/empty/priv" CODEX_SKILLS="$REPO/codex" \
+  DOTFILES="$HOME/empty/pub" DOTFILES_PRIVATE="$HOME/empty/priv" \
   CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
   SKILL_DRIFT_BASELINE="$HOME/empty/baseline" SKILL_LISTING_MAX="$1" \
     run "$DRIFT" "${@:2}"

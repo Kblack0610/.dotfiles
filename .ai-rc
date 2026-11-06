@@ -102,7 +102,7 @@ cl() {
     esac
     claude-acct run "${acct[@]}" --dangerously-skip-permissions "$@"
 }
-alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
+alias codex-sync="$HOME/.dotfiles/.config/codex/sync-ai-global-config.sh"
 alias cb="agent" # need to rename to agent
 
 # --- Tmux pane title wrappers for AI tools ---

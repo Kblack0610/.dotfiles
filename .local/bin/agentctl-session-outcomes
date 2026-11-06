@@ -6,6 +6,7 @@
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
 #   agentctl-session-outcomes ended [--days N]             the sessions observed that recently, one JSON line each, newest first
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
+#   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -66,6 +67,22 @@ LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
 # shellcheck source=/dev/null
 . "$LIB_DIR/session-outcomes.sh"
 
+# queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items}}: the work
+# items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
+# several), the harness it ran on and, for a headless harness (opencode, codex), the PR the brief
+# set. An unreadable queue writes {} and returns 1.
+queue_index() {
+  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
+      | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
+        .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug])})' > "$1" && return 0
+  printf '{}' > "$1"
+  return 1
+}
+
+# The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
+# the queue item's agent, else claude, since every other row is a Claude Code transcript.
+HARNESS_DEF='def harness_of($i): .harness // $i.agent // "claude";'
+
 die_stalled() {
   echo "$NAME: $1" >&2
   proof_outcome "$NAME" STALLED "$1"
@@ -115,17 +132,11 @@ cmd_run() {
     return 0
   fi
 
-  # What the queue knows of a session: the work items whose `sessions:` list it (the ledger join
-  # every reader of a row uses; a session can work several), the harness it ran on and, for
-  # a headless harness (opencode, codex), the PR the brief set.
   local queue_note=""
-  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
-      | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
-        .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug])})' > "$work/queue.json" ||
-    { printf '{}' > "$work/queue.json"; queue_note="; queue unreadable, harness read as claude, items unknown"; }
-  jq -c --slurpfile q "$work/queue.json" '($q[0][.session_id] // {}) as $i
+  queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
+  jq -c --slurpfile q "$work/queue.json" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
-      | .harness = (.harness // $i.agent // "claude")
+      | .harness = harness_of($i)
       | if .harness == "opencode" or .harness == "codex" then
           .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
@@ -492,12 +503,46 @@ cmd_card() {
       end' <<<"$rows"
 }
 
+# backfill-harness MONTH - rows written before the writer stamped a harness (#1125) get one by the
+# rule `run` uses (HARNESS_DEF), in place in every project's MONTH file; nothing else on a row
+# changes, and a file whose rows would differ in anything but harness is left alone. The file as it
+# was stays beside it as .bak, for the reader to compare and delete; a .bak still there from an earlier
+# backfill leaves that file alone. An unreadable queue changes nothing, as it would read a gateway
+# session as claude. A file written while it runs (the nightly `run`) is left alone, to run again.
+cmd_backfill_harness() {
+  local month="${1:-}" work f n next rows=0 files=0
+  [[ "$month" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "usage: $NAME backfill-harness YYYY-MM" >&2; return 2; }
+  work="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  queue_index "$work/queue.json" || { echo "$NAME: the queue is unreadable; nothing backfilled" >&2; return 1; }
+  for f in "$OUT"/*/"$month".jsonl; do
+    [ -f "$f" ] || continue
+    n=$(jq -s 'map(select(.harness == null)) | length' "$f") || { echo "$NAME: $f unreadable, skipped" >&2; continue; }
+    [ "$n" -gt 0 ] || continue
+    [ ! -e "$f.bak" ] || { echo "$NAME: $f.bak from an earlier backfill is still there; compare and delete it first. $f left alone" >&2; continue; }
+    cp -p "$f" "$f.bak" || { echo "$NAME: no .bak for $f; left alone" >&2; continue; }
+    next="$f.next"  # beside $f, so the mv below is a rename on one filesystem
+    if ! { cp -p "$f.bak" "$next" &&
+        jq -c --slurpfile q "$work/queue.json" "$HARNESS_DEF"'
+          if .harness == null then .harness = harness_of($q[0][.session_id // ""] // {}) else . end' "$f.bak" > "$next" &&
+        [ "$(jq -cs 'map(del(.harness))' "$f.bak")" = "$(jq -cs 'map(del(.harness))' "$next")" ]; }; then
+      rm -f "$next" "$f.bak"; echo "$NAME: $f would change beyond harness; left alone" >&2; continue
+    fi
+    cmp -s "$f" "$f.bak" || { rm -f "$next" "$f.bak"; echo "$NAME: $f was written during the backfill; left alone, run it again" >&2; continue; }
+    mv "$next" "$f" || return 1
+    rows=$((rows + n)); files=$((files + 1))
+  done
+  echo "$NAME: $rows row(s) in $files file(s) given a harness for $month"
+}
+
 case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
   card) shift; cmd_card "$@" ;;
   ended) shift; cmd_ended "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
-  -h|--help) sed -n '2,26p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | langfuse [--all]" >&2; exit 2 ;;
+  backfill-harness) shift; cmd_backfill_harness "$@" ;;
+  -h|--help) sed -n '2,27p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM" >&2; exit 2 ;;
 esac
