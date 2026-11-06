@@ -99,7 +99,7 @@ def polls(text):
 
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "block-poll: " + reason}}))
 
 
 def main():

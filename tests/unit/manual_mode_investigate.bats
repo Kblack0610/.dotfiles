@@ -29,6 +29,7 @@ tool() { printf '{"hook_event_name":"PreToolUse","permission_mode":"%s","tool_na
   run bash "$HOOK" <<< "$(tool default Edit)"
   assert_success
   assert_output --partial '"permissionDecision":"deny"'
+  assert_output --partial '"permissionDecisionReason":"manual-mode-investigate: '
 }
 
 @test "an edit in bypass mode passes" {
