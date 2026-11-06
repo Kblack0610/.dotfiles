@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
 # totals, "Q27 B1522 D280": the items ready to start next (running work is the agents chip beside
-# it), the open agent board rows, and the items done in the last 24h. Letters are dim and sit on
+# it), the open agent board rows, and the items done today. Letters are dim and sit on
 # their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
@@ -50,13 +50,6 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
-# done_in <h>: items finished and not failed in the last h hours; - when the feed lacks the count.
-done_in() {
-  local dn fl
-  dn="$(get "dispatch.done_${1}h")" fl="$(get "dispatch.failed_${1}h")"
-  [ -n "$dn" ] && [ -n "$fl" ] && dn=$((dn - fl))
-  printf '%s' "${dn:--}"
-}
 
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
@@ -121,10 +114,11 @@ else
 
   # flow <h>: started, done (finished and not failed) and failed in the last h hours; failed is amber.
   flow() {
-    local st fl
-    st="$(d "started_${1}h")" fl="$(get "dispatch.failed_${1}h")"
+    local st dn fl
+    st="$(d "started_${1}h")" dn="$(get "dispatch.done_${1}h")" fl="$(get "dispatch.failed_${1}h")"
+    [ -n "$dn" ] && [ -n "$fl" ] && dn=$((dn - fl))
     ((${fl:-0} > 0)) && fl="$(paint "$C_YEL" "$fl")"
-    printf '%s started, %s done, %s failed' "$st" "$(done_in "$1")" "${fl:--}"
+    printf '%s started, %s done, %s failed' "$st" "${dn:--}" "${fl:--}"
   }
 
   total=-
@@ -181,9 +175,9 @@ fi
 # feed lacks reads -.
 board="$(get dispatch.board_agent)" qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
-text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(done_in 24)"
+text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(d done_today)"
 
-tip="Q ready to start next, B on the board, D done in 24h"$'\n'"$qhead"
+tip="Q ready to start next, B on the board, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
