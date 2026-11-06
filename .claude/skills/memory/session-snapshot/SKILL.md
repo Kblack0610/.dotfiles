@@ -26,7 +26,7 @@ Snapshot every live working process before a reboot/logout and restore it after.
 
 The checklist goes to the **notes inbox**, not `$HOME` root:
 
-- Full doc: `"$(notes path inbox)/<date>-reboot-restore.md"`  (e.g. `~/.notes/inbox/2026-06-30-reboot-restore.md`)
+- Full doc: `"$(notes path inbox)/<date>-reboot-restore.md"`
 - Triage pointer (so it surfaces in `notes inbox`): `notes inbox add "reboot restore checklist -> <file>"`
 
 Use the resolved path from `notes path inbox`; never hard-code `~/.notes`. Never hand-write into
