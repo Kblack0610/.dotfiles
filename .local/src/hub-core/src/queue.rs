@@ -105,6 +105,81 @@ impl Item {
         }
     }
 
+    fn extra_str(&self, key: &str) -> Option<&str> {
+        self.extra
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    }
+
+    /// What the item cost, in dollars: the metered gateway cost when it has one, else the
+    /// nightly outcomes pass's `cost_usd`. None for an item neither priced: a ledger `0` is
+    /// "no session row had a cost" (the pass sums a missing cost as 0), never a claim of free.
+    pub fn cost(&self) -> Option<f64> {
+        ["gateway_cost_usd", "cost_usd"]
+            .iter()
+            .filter_map(|k| match self.extra.get(*k)? {
+                Value::String(s) => s.trim().parse::<f64>().ok(),
+                Value::Number(n) => n.as_f64(),
+                _ => None,
+            })
+            .find(|c| *c > 0.0)
+    }
+
+    /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
+    /// URL): the label a row prints and the page it links to, when the ledger names the repo.
+    pub fn pr_link(&self) -> Option<(String, Option<String>)> {
+        let pr = self.pr.as_deref()?.trim();
+        if pr.is_empty() {
+            return None;
+        }
+        if pr.starts_with("https://") || pr.starts_with("http://") {
+            let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
+            return Some((format!("#{n}"), Some(pr.into())));
+        }
+        match pr.split_once('#') {
+            Some((repo, n))
+                if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                let short = repo.rsplit('/').next().unwrap_or(repo);
+                Some((
+                    format!("{short}#{n}"),
+                    Some(format!("https://github.com/{repo}/pull/{n}")),
+                ))
+            }
+            _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
+        }
+    }
+
+    /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
+    /// recorded` when `agent-land` wrote no merge commit beside it.
+    pub fn pr_words(&self) -> Option<String> {
+        let (label, _) = self.pr_link()?;
+        let merge = if self.merged() {
+            "merged"
+        } else {
+            "merge not recorded"
+        };
+        Some(format!("PR {label} {merge}"))
+    }
+
+    /// Whether the ledger recorded the merge: `agent-land` writes `merged` (the merge commit)
+    /// beside `pr`, so a PR without it is one nobody proved landed.
+    pub fn merged(&self) -> bool {
+        self.extra_str("merged").is_some()
+    }
+
+    /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
+    /// path of what it made instead of one). A canary item opens no PR by design.
+    pub fn unproven(&self) -> bool {
+        self.state == State::Done
+            && self.status.as_deref().unwrap_or("ok") == "ok"
+            && self.pr_link().is_none()
+            && self.extra_str("report").is_none()
+            && self.from.as_deref() != Some("canary")
+    }
+
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
     /// priority agent-queue does not know.
     pub fn bumped(&self, up: bool) -> Option<&'static str> {
@@ -242,6 +317,108 @@ fn hold_reason(kind: &str) -> String {
         "pr" => "until a PR merges".into(),
         k => format!("held by {k}"),
     }
+}
+
+/// Dollars as the Queue shows them: cents under $100, whole dollars above.
+pub fn money(c: f64) -> String {
+    if c >= 100.0 {
+        format!("${c:.0}")
+    } else {
+        format!("${c:.2}")
+    }
+}
+
+/// One day's finished items: how many, how many failed, and the dollars of those priced.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DayTotal {
+    pub done: usize,
+    pub failed: usize,
+    pub cost: f64,
+    /// Items that ran but have no cost, left out of `cost`, so a total never reads as complete when it is not.
+    pub unpriced: usize,
+}
+
+impl DayTotal {
+    pub fn of<'a>(items: impl IntoIterator<Item = &'a Item>) -> DayTotal {
+        let mut t = DayTotal::default();
+        for i in items {
+            t.done += 1;
+            t.failed += usize::from(i.status.as_deref() == Some("failed"));
+            match i.cost() {
+                Some(c) => t.cost += c,
+                // A cancelled item never ran, so it has no price to miss.
+                None if i.status.as_deref() != Some("cancelled") => t.unpriced += 1,
+                None => {}
+            }
+        }
+        t
+    }
+
+    /// What follows the count: `2 failed, $214, 3 unpriced`, each only when it applies.
+    pub fn detail(&self) -> String {
+        let mut out = Vec::new();
+        if self.failed > 0 {
+            out.push(format!("{} failed", self.failed));
+        }
+        if self.cost > 0.0 {
+            out.push(money(self.cost));
+        }
+        if self.unpriced > 0 {
+            out.push(format!("{} unpriced", self.unpriced));
+        }
+        out.join(", ")
+    }
+
+    /// `31 done, 2 failed, $214, 3 unpriced`.
+    pub fn line(&self) -> String {
+        match self.detail() {
+            d if d.is_empty() => format!("{} done", self.done),
+            d => format!("{} done, {d}", self.done),
+        }
+    }
+}
+
+/// The local date (`YYYY-MM-DD`) of one of the ledger's UTC stamps, the day an item counts on.
+pub fn day_of(stamp: &str) -> Option<String> {
+    let utc = chrono::DateTime::parse_from_rfc3339(stamp)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M").map(|t| t.and_utc())
+        })
+        .ok()?;
+    Some(
+        utc.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string(),
+    )
+}
+
+/// A day (`YYYY-MM-DD`) as the Queue headings word it, by the same clock `day_of` uses: Today,
+/// Yesterday, else `Thu 6 Nov`.
+pub fn day_label(day: &str) -> String {
+    let today = chrono::Local::now().date_naive();
+    let Ok(d) = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+        return day.into();
+    };
+    if d == today {
+        "Today".into()
+    } else if Some(d) == today.pred_opt() {
+        "Yesterday".into()
+    } else {
+        d.format("%a %-d %b").to_string()
+    }
+}
+
+/// Each day's finished items totalled, by the day they finished. An item with no readable
+/// `finished` counts on no day.
+pub fn done_days(items: &[Item]) -> BTreeMap<String, DayTotal> {
+    let mut by: BTreeMap<String, Vec<&Item>> = BTreeMap::new();
+    for i in items.iter().filter(|i| i.state == State::Done) {
+        if let Some(d) = i.finished.as_deref().and_then(day_of) {
+            by.entry(d).or_default().push(i);
+        }
+    }
+    by.into_iter().map(|(d, v)| (d, DayTotal::of(v))).collect()
 }
 
 fn argv(args: &[&str]) -> Vec<String> {
@@ -874,6 +1051,132 @@ mod tests {
             human.last().map(String::as_str),
             Some("- [ ] backtest report")
         );
+    }
+
+    #[test]
+    fn a_done_item_shows_its_pr_its_cost_and_whether_anything_proves_it() {
+        let item = |j: &str| parse(j).remove(0);
+        let landed = item(
+            r#"{"slug":"a","state":"done","status":"ok","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
+        );
+        assert_eq!(
+            landed.pr_link(),
+            Some((
+                ".dotfiles#1225".into(),
+                Some("https://github.com/Kblack0610/.dotfiles/pull/1225".into())
+            ))
+        );
+        assert!(landed.merged() && !landed.unproven());
+        assert_eq!(landed.cost(), Some(6.1));
+        // An older item carries a bare number: a label, no link, and no merge recorded.
+        let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
+        assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
+        assert!(!bare.merged() && !bare.unproven());
+        assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
+        assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
+        // Nothing odd reaches a link: no number is a bare label, a slash is trimmed.
+        let odd = |pr: &str| {
+            item(&format!(
+                r#"{{"slug":"x","state":"done","pr":"{pr}","task":"t"}}"#
+            ))
+            .pr_link()
+        };
+        assert_eq!(odd("o/r#"), Some(("#o/r#".into(), None)));
+        assert_eq!(
+            odd("https://h/o/r/pull/7/"),
+            Some(("#7".into(), Some("https://h/o/r/pull/7/".into())))
+        );
+        assert_eq!(
+            odd("javascript:alert(1)"),
+            Some(("#javascript:alert(1)".into(), None))
+        );
+        // No PR and no report is flagged; a report, a canary or a failure is not.
+        let flagged = item(r#"{"slug":"c","state":"done","status":"ok","task":"t"}"#);
+        assert!(flagged.unproven());
+        let reported =
+            item(r#"{"slug":"c","state":"done","status":"ok","report":"https://x/y","task":"t"}"#);
+        assert!(!reported.unproven());
+        let canary =
+            item(r#"{"slug":"c","state":"done","status":"ok","from":"canary","task":"t"}"#);
+        assert!(!canary.unproven());
+        assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
+        assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
+    }
+
+    #[test]
+    fn a_cost_of_zero_or_none_is_unknown_and_a_gateway_cost_wins() {
+        let item = |j: &str| parse(j).remove(0);
+        assert_eq!(
+            item(r#"{"slug":"a","state":"done","cost_usd":"0","task":"t"}"#).cost(),
+            None
+        );
+        assert_eq!(
+            item(r#"{"slug":"a","state":"done","task":"t"}"#).cost(),
+            None
+        );
+        assert_eq!(
+            item(r#"{"slug":"a","state":"done","cost_usd":"junk","task":"t"}"#).cost(),
+            None
+        );
+        assert_eq!(
+            item(r#"{"slug":"a","state":"done","cost_usd":2.5,"task":"t"}"#).cost(),
+            Some(2.5)
+        );
+        assert_eq!(
+            item(r#"{"slug":"a","state":"done","cost_usd":"2.5","gateway_cost_usd":"9.1","task":"t"}"#).cost(),
+            Some(9.1)
+        );
+        assert_eq!(money(6.1), "$6.10");
+        assert_eq!(money(214.4), "$214");
+    }
+
+    #[test]
+    fn a_day_totals_what_finished_what_failed_and_what_is_priced() {
+        let items = parse(concat!(
+            r#"{"slug":"a","state":"done","status":"ok","cost_usd":"6.10","task":"t"}"#,
+            "\n",
+            r#"{"slug":"b","state":"done","status":"failed","cost_usd":"3.02","task":"t"}"#,
+            "\n",
+            r#"{"slug":"c","state":"done","status":"ok","cost_usd":"0","task":"t"}"#,
+            "\n",
+        ));
+        let t = DayTotal::of(&items);
+        assert_eq!((t.done, t.failed, t.unpriced), (3, 1, 1));
+        assert!((t.cost - 9.12).abs() < 1e-9);
+        assert_eq!(t.line(), "3 done, 1 failed, $9.12, 1 unpriced");
+        assert_eq!(
+            DayTotal::of(&items[..0]).line(),
+            "0 done",
+            "no cost is never $0"
+        );
+    }
+
+    #[test]
+    fn done_days_total_each_local_day_by_when_the_item_finished() {
+        let items = parse(concat!(
+            r#"{"slug":"a","state":"done","status":"ok","cost_usd":"1","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"b","state":"done","status":"failed","cost_usd":"2","finished":"2026-11-06T12:30:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"c","state":"done","status":"ok","cost_usd":"4","finished":"2026-11-04T12:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d","state":"done","status":"ok","cost_usd":"8","task":"t"}"#,
+            "\n",
+            r#"{"slug":"e","state":"running","cost_usd":"16","task":"t"}"#,
+            "\n",
+        ));
+        let days = done_days(&items);
+        assert_eq!(
+            days.len(),
+            2,
+            "no finished stamp, no day; a running item is no day's"
+        );
+        let d = &days[&day_of("2026-11-06T12:00:00Z").unwrap()];
+        assert_eq!((d.done, d.failed, d.cost), (2, 1, 3.0));
+        assert_eq!(day_of("not a time"), None);
+        assert_eq!(day_label(&days_ago(0)), "Today");
+        assert_eq!(day_label(&days_ago(1)), "Yesterday");
+        assert_eq!(day_label("2026-11-04"), "Wed 4 Nov");
     }
 
     #[test]
