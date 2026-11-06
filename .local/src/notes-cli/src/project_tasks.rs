@@ -526,9 +526,15 @@ fn is_typed(text: &str) -> bool {
 
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
-/// (`#1469`) are words, not tags, so they stay in the `was:` line only.
+/// (`#1469`) are words, not tags, so they stay in the `was:` line only. The priority levels
+/// share one name, so a new `#low` replaces the old `#high` rather than joining it.
 fn carry_tags(old: &str, new: &str) -> String {
-    let name = |t: &str| t.split('/').next().unwrap_or(t).to_string();
+    let name = |t: &str| {
+        if is_priority(t) {
+            return "priority".to_string();
+        }
+        t.split('/').next().unwrap_or(t).to_string()
+    };
     let set: Vec<String> = md::find_hashtags(new).iter().map(|t| name(t)).collect();
     md::find_hashtags(old)
         .into_iter()
@@ -1250,16 +1256,25 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
     Ok(format!("#{t}"))
 }
 
-/// `line` with `remove` dropped and `add` added. A row has one size, so adding a
-/// `#size/<s>` replaces the size it had.
+/// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
+/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had.
 pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
     let sized = add.iter().any(|t| t.starts_with("#size/"));
     let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| a == t));
-    let l = old
+    let mut l = old
         .into_iter()
         .chain(remove.iter().map(String::as_str))
         .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+    if add.iter().any(|a| is_priority(a)) {
+        l = md::strip_priority_tag(&l);
+    }
     add.iter().fold(l, |l, t| md::add_tag(&l, t))
+}
+
+/// Is `tag` (`#high`, or bare `high`) one of the priority levels?
+fn is_priority(tag: &str) -> bool {
+    let t = tag.trim_start_matches('#').to_lowercase();
+    md::PRIORITIES.iter().any(|(w, _, _)| *w == t)
 }
 
 /// The row's `#size/<s>` tag, read from its text before the marker comment.
@@ -1764,7 +1779,8 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        let new = f(l);
+        // A row is written with one priority tag, whatever the edit added (nc-70).
+        let new = f(l).map(|n| md::one_priority(&n));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -2104,6 +2120,17 @@ Version: v1.13.0
             "a new size replaces the old one"
         );
         assert_eq!(retag(row, &t(&["ai"]), &[]), row, "a tag it has is a no-op");
+        let high = "- [ ] row #high #c1105 <!-- id:ar-1 -->";
+        assert_eq!(
+            retag(high, &t(&["low"]), &[]),
+            "- [ ] row #c1105 #low <!-- id:ar-1 -->",
+            "a new priority replaces the old one, even a less urgent one"
+        );
+        assert_eq!(
+            carry_tags(high, "fix(x): reworded #urgent"),
+            "fix(x): reworded #urgent #c1105",
+            "a rewrite's priority replaces the row's"
+        );
         assert!(tag_token("v0.2.0")
             .unwrap_err()
             .to_string()
