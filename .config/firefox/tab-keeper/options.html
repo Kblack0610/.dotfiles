@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Tab Keeper</title>
+    <style>
+      body { font: 14px sans-serif; margin: 2rem auto; max-width: 56rem; padding: 0 1rem; }
+      textarea, input { box-sizing: border-box; font: 13px monospace; width: 100%; }
+      textarea { height: 18rem; }
+      pre { background: #8881; max-height: 28rem; overflow: auto; padding: 0.5rem; }
+      label { display: block; font-weight: 600; margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Tab Keeper</h1>
+    <label for="config">Settings (JSON)</label>
+    <textarea id="config" spellcheck="false"></textarea>
+    <label for="key">Karakeep API key (blank keeps the saved one)</label>
+    <input id="key" type="password" autocomplete="off" />
+    <p><button id="save">Save</button> <button id="tick">Run a tick now</button> <span id="status"></span></p>
+    <h2>Log, newest first</h2>
+    <pre id="log"></pre>
+    <script src="rules.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1962,6 +1962,30 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
     "$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
 }
 
+@test "a judge budget stop leaves no error verdict, and a pass with nothing else to do is BLOCKED, exit 0" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' "- [ ] fix crash $T"
+  stub judge-stub 'echo "agentctl-run: dispatch-judge over its daily budget" >&2; exit 75'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'judge stopped at its budget'
+  assert_equal "$(outcome)" BLOCKED
+  grep -q 'outcome=BLOCKED why: budget: could not judge the new rows (stopped at its budget)' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log" || fail "$(cat "$HOME/.local/state/agentctl/fleet-dispatch/activity.log")"
+  # touched, not written: board_starved reads the mtime, and this stop is already published
+  [ -f "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] && [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] || fail "$(cat "$FLEET_DISPATCH_DIR/verdicts.jsonl")"
+}
+
+@test "a judge budget stop does not stop the pass: a row the cache already judged still starts" {
+  game_ready
+  row game human 'fix the new crash' "- [ ] fix the new crash $T"
+  stub judge-stub 'exit 75'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'judge stopped at its budget'
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "a dry run publishes nothing, past a gate or at one" {
   game_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
@@ -2829,14 +2853,25 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   refute_output --partial 'fix-red'
 }
 
-@test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
+@test "next_items keeps the queue's order (agent-queue owns it), drops a waiting board item and a gateway one" {
   runnable() {
-    printf '%s\n' '{"slug":"a","waits":false}' '{"slug":"w","waits":true}' '{"slug":"b","waits":false,"tags":"reddish"}' \
-      '{"slug":"r1","waits":false,"tags":"red cause:x"}' '{"slug":"r2","waits":false,"tags":"cause:y red"}'
+    printf '%s\n' '{"slug":"r1","waits":false,"tags":"red"}' '{"slug":"w","waits":true}' '{"slug":"c","waits":false,"tags":"cleanup"}' \
+      '{"slug":"g","waits":false,"agent":"lazer"}' '{"slug":"a","waits":false}'
   }
   run next_items
   assert_success
-  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 r2 a b '
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 c a '
+}
+
+@test "next_items from the real queue: a low red, then high cleanup, then an older plain high" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug plain "plain"
+  agent-queue add --project game --slug tidy --tags cleanup "tidy"
+  agent-queue add --project game --slug broke --priority low --tags 'red cause:ab12' "broke"
+  stub fleet-presence 'echo away 0 x'
+  run next_items
+  assert_success
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke tidy plain '
 }
 
 @test "red: a board item with the red tag does not wait while the human is here, a plain one does" {

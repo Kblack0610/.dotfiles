@@ -43,9 +43,9 @@ const day = {
 
 const run = (code) => vm.runInContext(code, ctx);
 const reply = (status, body) => async () => ({ ok: status < 300, status, statusText: "", headers: { get: () => "application/json" }, json: async () => body, text: async () => JSON.stringify(body) });
-function draw(data, { raw = false, arg = "" } = {}) {
-  ctx.input = { data, raw, arg };
-  vm.runInContext(`st.tab = "daily"; st.arg = input.arg; fcs.data = input.data; fcs.err = null; fcs.raw = input.raw; fcs.open = {}; renderFocus();`, ctx);
+function draw(data, { raw = false, arg = "", keepBrief = false } = {}) {
+  ctx.input = { data, raw, arg, keepBrief };
+  vm.runInContext(`st.tab = "daily"; st.arg = input.arg; fcs.data = input.data; fcs.err = null; fcs.raw = input.raw; fcs.open = {}; fcs.undo = null; if (!input.keepBrief) fcs.brief = null; renderFocus();`, ctx);
   return box("d-note").innerHTML;
 }
 
@@ -56,7 +56,7 @@ test("today's lanes are cards, open but Done, with counts, and the rollup and ot
   assert.match(h, /<div class="dlane empty high"><div class="dlh"><span class="dln">High<\/span><span class="dlc">0<\/span><span class="muted">nothing here<\/span>/);
   assert.match(h, /<details class="dlane done" data-k="lane:Done"><summary class="dlh"><span class="dln">Done<\/span><span class="dlc">1<\/span>/);
   assert.match(h, /<li class="task done"><input type="checkbox" disabled checked> water plants/);
-  assert.match(h, /<span class="ntag">#urgent<\/span>/);
+  assert.doesNotMatch(h, /ntag">#urgent</, "the Urgent lane says urgent once, in its head");
   assert.match(h, /<details class="cfold" data-k="rollup"><summary><b>Rollup/);
   assert.match(h, /<details class="cfold" data-k="sec:Morning"><summary><b>Morning/);
   assert.match(h, /class="task doing"/, "a [/] line reads as doing");
@@ -66,28 +66,32 @@ test("a #p: tag opens its project, a wikilink opens its note, a missing one is m
   const h = draw(day);
   assert.match(h, /<a href="#projects\/demo" class="ptag">#p:demo<\/a>/);
   assert.match(h, /<a href="#daily\/journal\/refs\/2026-11-05\/briefing" class="wl">the briefing<\/a>/);
-  assert.match(h, /<a class="dlink missing" href="#daily\/gone" title="gone \(no such note\)">Gone<\/a>/);
+  assert.match(box("d-nav").innerHTML, /<a class="dn missing" href="#daily\/gone" title="gone \(no such note\)">Gone<\/a>/);
 });
 
-test("a day leads with its links as buttons, the outbox first and once, each by a short name", () => {
+test("Daily's one nav: the places, Daily first, each once, only the open one marked, then the note's parts", () => {
   const h = draw(day);
-  assert.ok(h.indexOf('class="dlinks"') < h.indexOf('class="dlane'), "links come before the lanes");
-  assert.match(h, /<nav class="dlinks"><a class="dlink out" href="#daily\/outbox">Outbox<\/a><a class="dlink" href="#daily\/status\/inbox"[^>]*>Inbox<\/a><a class="dlink" href="#daily\/journal\/refs\/2026-11-05\/briefing"[^>]*>Briefing<\/a><a class="dlink" href="#daily\/lab\/projects\/index"[^>]*>Projects<\/a>/);
-  assert.equal(h.match(/#daily\/outbox"/g).length, 1);
+  assert.doesNotMatch(h, /dlinks|dlink/, "no chips row on the page");
+  const nav = box("d-nav").innerHTML;
+  assert.match(nav, /^<a class="dn" href="#daily" title="daily" aria-current="page">Daily<\/a><a class="dn" href="#daily\/outbox" title="outbox">Outbox<\/a><a class="dn" href="#daily\/status\/inbox" title="status\/inbox">Inbox<\/a><a class="dn" href="#daily\/journal\/refs\/2026-11-05\/briefing"[^>]*>Briefing<\/a><a class="dn" href="#daily\/lab\/projects\/index"[^>]*>Projects<\/a>/);
+  assert.equal(nav.match(/#daily\/outbox"/g).length, 1, "the outbox once, though the note links it too");
+  assert.equal(nav.match(/aria-current/g).length, 1);
+  assert.match(nav, /<span class="dng">This note<\/span><button class="dn part" data-jump="lane:Urgent">Urgent <span class="dlc">2<\/span><\/button><button class="dn part" data-jump="lane:Done">Done <span class="dlc">1<\/span><\/button><button class="dn part" data-jump="rollup">Rollup<\/button><button class="dn part" data-jump="sec:Morning">Morning<\/button>$/);
   run(`obx.view = { doc: { waiting: 3 } }`);
-  assert.match(draw(day), /href="#daily\/outbox">Outbox <span class="dlc">3<\/span><\/a>/, "the waiting count once the outbox is read");
+  draw(day);
+  assert.match(box("d-nav").innerHTML, /href="#daily\/outbox" title="outbox">Outbox <span class="dlc">3<\/span><\/a>/, "the waiting count once the outbox is read");
   run(`obx.view = null`);
+  draw({ ...day, note: { ...day.note, date: null } }, { arg: "status/inbox" });
+  assert.match(box("d-nav").innerHTML, /<a class="dn" href="#daily" title="daily">Daily<\/a>.*href="#daily\/status\/inbox" title="status\/inbox" aria-current="page">Inbox/, "on Inbox, Inbox is marked and Daily is the way back");
 });
 
-test("day buttons link to the neighbour that exists; Back and Today show only away from today", () => {
+test("day buttons link to the neighbour that exists; the nav, not the head, is the way back", () => {
   const h = draw(day);
   assert.match(h, /href="#daily\/daily%3A2026-11-04"[^>]*>&lt;</);
   assert.doesNotMatch(h, /Day after/, "no next day, no button");
   assert.doesNotMatch(h, /data-f="back"|>Today</);
-  const away = draw(day, { arg: "daily:2026-11-04" });
-  assert.match(away, /aria-label="Day before">&lt;<\/a><a class="btn sm" href="#daily">Today<\/a>/);
-  assert.doesNotMatch(away, /data-f="back"/, "a day steps by day, not by Back");
-  assert.match(draw({ ...day, note: { ...day.note, date: null } }, { arg: "status/inbox" }), /data-f="back">Back<\/button>/);
+  assert.doesNotMatch(draw(day, { arg: "daily:2026-11-04" }), /data-f="back"|>Today</);
+  assert.doesNotMatch(draw({ ...day, note: { ...day.note, date: null } }, { arg: "status/inbox" }), /data-f="back"/);
 });
 
 test("a note opened from a link is all sections, open, its untitled top drawn as is", () => {
@@ -131,7 +135,8 @@ test("Daily writes nothing to the outbox; #daily/outbox shows the outbox view in
   run(`st.tab = "daily"; st.arg = "outbox"; TABS.daily.show()`);
   assert.equal(box("d-note").hidden, true);
   assert.equal(box("outbox").hidden, false);
-  assert.match(box("outbox").innerHTML, /<h2>Outbox<\/h2>.*href="#daily">Back to Daily<\/a><a class="btn sm" href="#daily\/status\/inbox">Inbox<\/a>/s);
+  assert.match(box("outbox").innerHTML, /<h2>Outbox<\/h2><\/div><\/div><textarea/, "the nav has Daily and Inbox; the head is the name alone");
+  assert.match(box("outbox").innerHTML, /<button class="btn primary" id="o-send">Send<\/button>/);
   run(`st.arg = ""; TABS.daily.show()`);
   assert.equal(box("d-note").hidden, false);
   assert.equal(box("outbox").hidden, true);
@@ -247,4 +252,130 @@ test("a tick posts its key and state and draws the page it gets back; a refusal 
   ctx.fetch = reply(409, "no ingest event");
   await run("ackRow(input)");
   assert.match(box("d-note").innerHTML, /panel down">Could not send to inbox \(HTTP 409\)/);
+});
+
+// Row actions on a day note: each is the one line changed in the note as read, put over its hash.
+const NOTE = "---\ndate: 2026-11-05\n---\n# 2026-11-05\n\n## Focus\n\n### Urgent\n- [ ] fix the menu #p:demo #urgent\n  - [ ] a child\n- [/] wire the bar\n\n### High\n\n### Done\n- [x] water plants\n\n## Morning\n- [ ] call back\n";
+const live = {
+  ...day,
+  note: { ...day.note, markdown: NOTE },
+  focus: { lanes: [lane("Urgent", "- [ ] fix the menu #p:demo #urgent\n  - [ ] a child\n- [/] wire the bar", 2, 0), lane("High", "", 0, 0), lane("Done", "- [x] water plants", 0, 1)], rollup: "", open: 2, done: 1 },
+  sections: [{ title: "Morning", markdown: "- [ ] call back" }],
+};
+const lines = (t) => t.split("\n");
+function putting(status = 200) {
+  const sent = [];
+  ctx.fetch = async (url, opts) => {
+    const b = JSON.parse(opts.body);
+    sent.push(b);
+    return reply(status, { ...live, note: { ...live.note, hash: "h" + sent.length, markdown: status < 300 ? b.text : NOTE } })();
+  };
+  return sent;
+}
+
+test("on a day each task row carries its line in the note, a live box and a remove button; each lane but Done adds", () => {
+  const h = draw(live);
+  for (const n of [8, 9, 10, 15, 18]) assert.match(h, new RegExp(`<input type="checkbox" data-ln="${n}"`), `line ${n}`);
+  assert.match(h, /<li class="task"><button class="trm" data-rm="8"[^>]*>-<\/button><input type="checkbox" data-ln="8"> fix the menu/);
+  assert.match(h, /<form class="tadd" data-id="Urgent">/);
+  assert.match(h, /<div class="dlane empty high">.*<form class="tadd" data-id="High">/s, "an empty lane still adds");
+  assert.doesNotMatch(h, /data-id="Done"/);
+  assert.doesNotMatch(draw({ ...live, note: { ...live.note, date: null } }, { arg: "status/inbox" }), /data-ln|data-rm|tadd/, "only a day note's rows are live");
+});
+
+test("a tick writes [x] on its line and an untick [ ]; nothing else in the note moves", async () => {
+  draw(live);
+  const sent = putting();
+  ctx.input = { dataset: { ln: "8" }, checked: true };
+  await run("tickRow(input)");
+  assert.equal(sent[0].t, "daily:2026-11-05", "the day's own target, not the alias that moves at midnight");
+  assert.equal(sent[0].base, "aa");
+  const want = lines(NOTE); want[8] = "- [x] fix the menu #p:demo #urgent";
+  assert.deepEqual(lines(sent[0].text), want);
+  ctx.input = { dataset: { ln: "15" }, checked: false };
+  await run("tickRow(input)");
+  assert.equal(lines(sent[1].text)[15], "- [ ] water plants");
+  assert.equal(sent[1].base, "h1", "the next write is over the hash the last one returned");
+});
+
+test("remove takes the row and its children, and Undo puts the note back over the new hash", async () => {
+  draw(live);
+  const sent = putting();
+  await run("removeRow(8)");
+  assert.deepEqual(lines(sent[0].text).slice(7, 10), ["### Urgent", "- [/] wire the bar", ""]);
+  assert.match(box("d-note").innerHTML, /<span class="muted">Removed &quot;fix the menu&quot;<\/span><button class="btn sm" data-f="undo">Undo<\/button>/);
+  await run("undoRemove()");
+  assert.deepEqual(sent[1], { t: "daily:2026-11-05", base: "h1", text: NOTE });
+  assert.doesNotMatch(box("d-note").innerHTML, /data-f="undo"/);
+  // A child after a blank line is still the row's; the next row at its depth is not.
+  const loose = "## Focus\n### Urgent\n- [ ] parent\n\n  - [ ] child\n- [ ] next\n";
+  draw({ ...live, note: { ...live.note, markdown: loose } });
+  await run("removeRow(2)");
+  assert.deepEqual(lines(sent[2].text), ["## Focus", "### Urgent", "- [ ] next", ""]);
+});
+
+test("a row action while one is saving writes nothing and says so", async () => {
+  draw(live);
+  const sent = putting();
+  ctx.input = { dataset: { ln: "8" }, checked: true };
+  await run("fcs.busy = true");
+  assert.equal(await run("tickRow(input)"), false);
+  await run("fcs.busy = false");
+  assert.equal(sent.length, 0);
+  assert.match(box("d-note").innerHTML, /Still saving the last change/);
+});
+
+test("+ adds an open task at the end of its lane, tagged as the lane unless it names a priority", async () => {
+  draw(live);
+  const sent = putting();
+  assert.equal(await run(`addTask("High", "ring the bank")`), true);
+  assert.deepEqual(lines(sent[0].text).slice(12, 15), ["### High", "- [ ] ring the bank #high", ""]);
+  draw(live);
+  await run(`addTask("Urgent", "ship it #low")`);
+  assert.deepEqual(lines(sent[1].text).slice(10, 12), ["- [/] wire the bar", "- [ ] ship it #low"]);
+});
+
+test("a note changed since the read writes nothing and is shown as it is now; a moved row writes nothing", async () => {
+  draw(live);
+  const sent = putting(409);
+  ctx.input = { dataset: { ln: "8" }, checked: true };
+  assert.equal(await run("tickRow(input)"), false);
+  assert.match(box("d-note").innerHTML, /panel down">The note changed somewhere else, so nothing was written/);
+  draw(live);
+  ctx.input = { dataset: { ln: "11" }, checked: true };
+  sent.length = 0;
+  ctx.fetch = reply(200, live);
+  assert.equal(await run("tickRow(input)"), false);
+  assert.equal(sent.length, 0);
+  assert.match(box("d-note").innerHTML, /That row is not where the page drew it/);
+});
+
+test("the day's briefing is read with it and drawn as one open fold after the lanes, a part of the note in the nav", async () => {
+  const brief = { note: { ...day.note, target: "journal/refs/2026-11-05/briefing", rel: "journal/refs/2026-11-05/briefing", date: null, links: [] }, focus: null,
+    sections: [{ title: "", markdown: "As of 06:45: 2 things need you." }, { title: "Needs you", markdown: "- a red" }] };
+  let asked = null;
+  ctx.fetch = async (url) => { asked = url; return reply(200, brief)(); };
+  ctx.input = day.note.links;
+  await run("readBrief(input)");
+  assert.equal(asked, "/api/focus?t=journal%2Frefs%2F2026-11-05%2Fbriefing", "the day's own briefing link");
+  const h = draw(day, { keepBrief: true });
+  assert.match(h, /<details class="cfold" data-k="brief" open><summary><b>Briefing<\/b> <a class="muted" href="#daily\/journal\/refs\/2026-11-05\/briefing">open<\/a><\/summary>.*<p>As of 06:45: 2 things need you\.<\/p><h3>Needs you<\/h3><ul><li>a red/s);
+  assert.ok(h.indexOf('data-k="brief"') > h.indexOf('data-k="lane:Done"'), "after the lanes");
+  const nav = box("d-nav").innerHTML;
+  assert.match(nav, /data-jump="brief">Briefing</);
+  assert.doesNotMatch(nav, /href="#daily\/journal\/refs\/2026-11-05\/briefing"/, "drawn on the page, so not a place too");
+  ctx.input = day.note.links.filter((l) => !/briefing/.test(l.target));
+  await run("readBrief(input)");
+  assert.equal(run("fcs.brief"), null, "a day with no briefing draws none");
+});
+
+test("a briefing read that finishes after the page moved to another day is not drawn on it", async () => {
+  const release = {};
+  ctx.fetch = (url) => new Promise((res) => { release[/2026-11-0\d/.exec(url)[0]] = () => res(reply(200, { note: { target: url, exists: true }, sections: [] })()); });
+  const link = (d) => [{ target: `journal/refs/${d}/briefing`, exists: true }];
+  ctx.a = link("2026-11-04"); ctx.b = link("2026-11-05");
+  const slow = run("readBrief(a)"), fast = run("readBrief(b)");
+  release["2026-11-05"](); await fast;
+  release["2026-11-04"](); await slow;
+  assert.match(run("fcs.brief.note.target"), /2026-11-05/);
 });

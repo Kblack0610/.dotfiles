@@ -117,6 +117,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "unknown project: notes"
 }
 
+@test "list puts a red item first, then priority, then a cleanup item within its priority" {
+  "$AQ" add --project game --slug a-high "a"
+  "$AQ" add --project game --slug b-cleanup --tags "cleanup tier3" "b"
+  "$AQ" add --project game --slug c-urgent --priority urgent "c"
+  "$AQ" add --project game --slug d-red-low --priority low --tags "red cause:x" "d"
+  "$AQ" add --project game --slug e-reddish --tags "reddish" "e"
+  "$AQ" add --project game --slug f-cleanup-low --priority low --tags cleanup "f"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # red beats urgent; cleanup beats an older item of its priority, never a higher priority; tags match whole words.
+  assert_output $'d-red-low\nc-urgent\nb-cleanup\na-high\ne-reddish\nf-cleanup-low'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = d-red-low ]
+}
+
 @test "list orders by priority, then queued time, and next is the head" {
   "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"
@@ -174,6 +189,40 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tomorrow ]
   run "$AQ" add --project game --tags "at:2026-13-01T09:00" "x"
   assert_failure; assert_output --partial "at:YYYY-MM-DDTHH:MM"
+}
+
+@test "an ask: tag holds an item until that agent-ask is answered, with that option when one is named (ar-455)" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  # add refuses a malformed tag and an id no ask file has, so the gate is never silently open or shut.
+  for t in "ask:" "ask:../x" "ask:a1=" "ask:a1"; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure
+  done
+  ask a1 pending
+  "$AQ" add --project game --slug money --tags "ask:a1=a" "go live"
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'b. stay on paper'
+  run "$AQ" next --json
+  assert_failure
+  ask a1 cancelled
+  run "$AQ" next --json
+  assert_failure
+  # A machine answer is not the human's decision.
+  ask a1 answered 'a' judge
+  run "$AQ" next --json
+  assert_failure
+  ask a1 answered 'A, go live' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = money ]
+  ask a2 pending
+  "$AQ" add --project game --slug any --priority urgent --tags "ask:a2" "any answer"
+  ask a2 answered 'whatever'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = any ]
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {

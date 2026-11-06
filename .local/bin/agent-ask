@@ -1347,6 +1347,14 @@ Return the verdict in the structured output."
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
   out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $AGENT_ASK_JUDGE_CMD -p "$prompt" 2>"$wd/err")
   rc=$?
+  # A budget stop is no verdict: the ask reads not judged, stays the human's, and the next sweep
+  # asks again. It is not an error for judge_errors to count.
+  if [ "$rc" = "$EX_BUDGET" ]; then
+    drop_field "$f" judge judge_reason judged_at
+    queue_changed
+    rm -rf -- "$wd"
+    echo "agent-ask: judge stopped at its budget for $id" >&2; return "$rc"
+  fi
   if [ "$rc" != 0 ]; then
     judge_record "$f" error "" "call failed (exit $rc): $(head -c 200 "$wd/err")" "$cid"
     rm -rf -- "$wd"
