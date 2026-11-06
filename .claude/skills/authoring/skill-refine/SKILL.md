@@ -14,14 +14,14 @@ A `SKILL.md` is prose an agent obeys. It has no compiler, no test, and no import
 
 This skill is the maintenance pass for that corpus. It never trusts a skill's own account of itself; it checks against the filesystem, then against what the memory layers have since learned.
 
-## Why propose-only
+## Who changes a skill
 
-Skills are instructions, not code. An auto-rewrite that is subtly wrong does not throw - it changes how every future session behaves, invisibly. So the split is:
+Skills are instructions, not code. An auto-rewrite that is subtly wrong does not throw - it changes how every future session behaves, invisibly. So no change reaches a skill without a reviewable diff:
 
-- **Headless** (the weekly `agentctl@skill-refine` run): audit, write a report with proposed diffs, touch nothing.
-- **Interactive** (`apply`): a human walks the report and confirms each change.
+- **Nightly** (`docs-cleanup`): the runner counts `skill-drift` findings and queues a session that fixes the mechanical ones (a moved path, a renamed command) one area per PR, CI on each.
+- **Interactive** (`audit`, `apply`): the judgment layer below, a human confirming each change.
 
-Same gate as Dreaming's `mem0-queue.md`: machine-generated durable changes get staged, never auto-committed.
+The weekly propose-only `agentctl@skill-refine` run was retired on 2026-11-05: six reports in six weeks while DEADPATH rose from 25 to 31, because a report nobody applies fixes nothing.
 
 ## Verbs
 
@@ -112,12 +112,10 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 | Piece | Runs | Does |
 |---|---|---|
 | `skill-drift` | on demand; `--lint` in CI on every PR | deterministic, zero-token |
-| `agentctl@skill-refine` | Mon 05:00 | full audit -> report at `~/.agent/plans/dotfiles/`; edits nothing |
-| `/skill-refine apply` | when you choose | the only thing that changes a file |
+| `agentctl@docs-cleanup` | nightly 05:00 | counts drift, queues a `docs-cleanup` pass that lands fixes by PR |
+| `/skill-refine audit`, `apply` | when you choose | judgment: overlaps, lesson contradictions, missing skills |
 
-05:00 Monday is deliberate: after `dream` (03:00) so the audit sees the latest consolidation, and after `lab-sync` (04:00).
-
-There is no sentinel watch on skill-drift: it was deleted on 2026-11-02 after 84 days red on UNUSED signals and false positives. The weekly audit reads the same findings.
+There is no sentinel watch on skill-drift: it was deleted on 2026-11-02 after 84 days red on UNUSED signals and false positives. The nightly runner reads the same findings.
 
 ## Verification
 
