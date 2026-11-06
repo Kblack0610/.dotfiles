@@ -707,7 +707,7 @@ pass_account() {
     : > "$NOROOM"
     why="$(tail -n 1 <<<"$why")"; why="${why#claude-acct: }"
     agent-notify -p normal -t "No account has room for new starts" \
-      "Passes keep running on the closest account and dispatch starts nothing new. ${why^}." >/dev/null 2>&1 || true
+      "Passes keep running on the closest account and dispatch starts nothing new.${why:+ ${why^}.}" >/dev/null 2>&1 || true
   fi
   claude-acct pick 2>/dev/null || true
 }

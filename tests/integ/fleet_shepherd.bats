@@ -31,8 +31,8 @@ esac'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
-  room) echo "claude-acct: room on alt (2% of its week, 9% gone)" >&2
-        [ -z "${STUB_NO_ROOM:-}" ] || { echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
+  room) [ -z "${STUB_NO_ROOM:-}" ] || { [ -n "${STUB_ROOM_QUIET:-}" ] || echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
+        echo "claude-acct: room on alt (2% of its week, 9% gone)" >&2
         printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
   status) printf "%b" "${STUB_ACCTS:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
@@ -510,10 +510,14 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$HOME/prose-check" \
     run "$REPO_ROOT/.local/bin/comms-lint" --channel page --priority normal --title 'No account has room for new starts' - <<<"$page"
   assert_success
+  # a room with nothing to say still pages a whole sentence
+  rm -f "$HOME/pages" "$FLEET_SHEPHERD_DIR/.noroom"
+  STUB_NO_ROOM=1 STUB_ROOM_QUIET=1 run "$SH" run
+  assert_equal "$(cat "$HOME/pages")" '-p normal -t No account has room for new starts Passes keep running on the closest account and dispatch starts nothing new.'
   # room came back: the next time none has any is news again
   run "$SH" run
   STUB_NO_ROOM=1 run "$SH" run
-  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 2
+  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1
 }
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind; the next run starts one" {
