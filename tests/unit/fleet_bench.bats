@@ -146,6 +146,7 @@ agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
 agent_bench_kpi{kpi="human_answered_per_day",window="7d"} 0
 agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
+agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
@@ -943,11 +944,14 @@ watch() {
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
   printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
   printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
-  for n in alpha gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  for n in alpha beta gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
   printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
   printf '[2026-10-30T03:00:00-07:00] outcome=STALLED lock held 40m\n' > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"         # the reason wins over a long summary
+  printf '[2026-10-30T04:00:00-07:00] outcome=FAILED routed 0 of 40 lines, %s why: no answer block\n' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx > "$AGENTCTL_STATE_DIR/beta/activity.log"
   printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
   printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
   echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
@@ -957,14 +961,15 @@ watch() {
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
+  assert_line 'fix(runner): beta is FAILED: 2026-10-30 why: no answer block #high'
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
-  assert_equal "$(grep -c . <<<"$output")" 3
+  assert_equal "$(grep -c . <<<"$output")" 4
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage
   assert_success
-  run grep -c 'fix(runner): alpha is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
-  assert_output 3
+  run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
+  assert_output 4
   run outcome
   assert_output WORKED
   : > "$NLOG"
@@ -985,6 +990,23 @@ watch() {
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+@test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
+  kpi_setup
+  mkdir -p "$AGENTCTL_STATE_DIR/alpha" "$AGENTCTL_STATE_DIR/beta"
+  at() { date -d "@$((T0 - $1))" -Is; }
+  {
+    echo "[$(at 60)] outcome=FAILED why: unrecorded"
+    echo "[$(at 120)] outcome=STALLED 3 left why: unrecorded"
+    echo "[$(at 180)] outcome=FAILED why: route: the model returned no answer block"
+    echo "[$(at 240)] outcome=WORKED routed 4"
+    echo "[$(at 90000)] outcome=FAILED why: unrecorded"
+  } > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  echo "[$(at 300)] outcome=BLOCKED budget: day why: unrecorded" > "$AGENTCTL_STATE_DIR/beta/activity.log"
+  echo failed_unexplained_max=0 >> "$KPI_THRESHOLDS"
+  BENCH_NOW=$T0 run "$SUBJECT" kpi
+  assert_line '| failed_unexplained (now) | 3 | - | max 0 | past |'
 }
 
 # errlog <runner> <finished offset> <line>...: one run's stderr appended to <runner>.stderr.log with

@@ -103,7 +103,7 @@ fn link_for(name: &str, vault: &std::path::Path, sheet: Option<&std::path::Path>
 /// list, which is what a filtered human lane did.
 fn lane_tasks(dir: &std::path::Path, lane: Lane) -> Option<(String, Vec<String>)> {
     let w = project_tasks::current_rows_for_dir(&lane.dir(dir))?;
-    Some((w.version, w.rows.into_iter().map(|(_, l)| l).collect()))
+    Some((w.version, w.rows.into_iter().map(|r| r.text).collect()))
 }
 
 /// The one line the human board gives a project's playtest.md: how many checks wait, linked
@@ -595,6 +595,9 @@ struct FeedRow {
     sheet: String,
     line: usize,
     raw: String,
+    /// The lines indented under the row (`goal:`, `check:`, children), trimmed; empty for a
+    /// Focus or playtest row.
+    details: Vec<String>,
 }
 
 /// One project in the feed, rows or not: a UI needs every project to offer `add` on it.
@@ -632,7 +635,12 @@ struct Origin<'a> {
 /// task carries (`md::default_priority`). `tags` are the hashtags no other field already
 /// carries: not the priority, tier, worker, requested, size, release tag or created tag
 /// (`since`).
-fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate) -> FeedRow {
+fn feed_row(
+    o: &Origin,
+    (line_no, line): (usize, &str),
+    details: Vec<String>,
+    today: chrono::NaiveDate,
+) -> FeedRow {
     let prio = md::task_priority(line).unwrap_or(md::default_priority());
     let priority = md::PRIORITIES
         .iter()
@@ -689,6 +697,7 @@ fn feed_row(o: &Origin, (line_no, line): (usize, &str), today: chrono::NaiveDate
         sheet: o.sheet.display().to_string(),
         line: line_no,
         raw: line.trim_end().to_string(),
+        details,
     }
 }
 
@@ -724,8 +733,8 @@ fn feed_for_dir(
             game: None,
             sheet: &w.sheet,
         };
-        for (n, l) in &w.rows {
-            rows.push(feed_row(&o, (*n, l), today));
+        for r in w.rows {
+            rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
         }
     }
     let file = crate::playtest::path(dir);
@@ -740,7 +749,7 @@ fn feed_for_dir(
                 game: Some(&game),
                 sheet: &file,
             };
-            rows.push(feed_row(&o, (n, l), today));
+            rows.push(feed_row(&o, (n, l), Vec::new(), today));
         }
     }
     let proj = FeedProject {
@@ -772,7 +781,7 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
     };
     crate::focus::open_focus_positions(&content)
         .into_iter()
-        .map(|(n, _, l)| feed_row(&o, (n, &l), today))
+        .map(|(n, _, l)| feed_row(&o, (n, &l), Vec::new(), today))
         .collect()
 }
 
@@ -1173,6 +1182,39 @@ mod tests {
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A row's details are the indented lines under it, read by the sheet parser, so a reader of
+    // the feed never re-parses the sheet; a row with nothing under it carries none.
+    #[test]
+    fn the_feed_carries_each_rows_details() {
+        let dir = sheet("feeddetails", "# demo\n\n## Tasks\n- [ ] bare\n");
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\n\n## Tasks\n\
+             - [ ] planned one <!-- id:dm-1 -->\n  goal: it works\n  check: a test\n\
+             - [ ] bare one <!-- id:dm-2 -->\n",
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let got: Vec<(&str, Vec<String>)> = rows
+            .iter()
+            .map(|r| (r.text.as_str(), r.details.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("bare", vec![]),
+                (
+                    "planned one",
+                    vec!["goal: it works".to_string(), "check: a test".to_string()]
+                ),
+                ("bare one", vec![]),
+            ]
+        );
+        let v = serde_json::to_value(&rows[1]).unwrap();
+        assert_eq!(v["details"][0], "goal: it works");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

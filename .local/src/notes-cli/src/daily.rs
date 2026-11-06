@@ -1151,7 +1151,7 @@ fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) ->
             let Some(open) = crate::project_tasks::current_rows_for_dir(&lane.dir(d)) else {
                 continue;
             };
-            for (_, l) in &open.rows {
+            for l in open.rows.iter().map(|r| &r.text) {
                 if crate::projects::row_type_area(l).is_none_or(|(t, _)| t != "decide") {
                     continue;
                 }

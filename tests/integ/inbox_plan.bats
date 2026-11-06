@@ -88,10 +88,21 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   assert_output --partial '#plan'
   run record
   assert_output --regexp '"action":"refused".*the plan had no goal'
+  grep -q 'outcome=FAILED .*why: scratch: the plan had no goal$' "$HOME/.local/state/agentctl/inbox-plan/activity.log"
   run "$PLAN"
   assert_success
   assert_output --partial 'planned 0'
   [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "asked the model again"
+}
+
+@test "a failed model call keeps its stderr in the log and its first words in the outcome" {
+  sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n'
+  printf '#!/usr/bin/env bash\necho "harness: claude exited 1" >&2\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  run "$PLAN"
+  assert_failure
+  assert_output --partial 'harness: claude exited 1'
+  grep -q 'outcome=FAILED .*why: scratch sc-1: model call failed: harness: claude exited 1$' \
+    "$HOME/.local/state/agentctl/inbox-plan/activity.log"
 }
 
 @test "no #plan row: no model call; --dry-run writes nothing" {
