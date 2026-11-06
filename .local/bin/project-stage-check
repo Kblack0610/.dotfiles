@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # project-stage-check - does a project meet its stage, and its systems' criteria?
 #
-#   project-stage-check <name> [--stage <stage>]
+#   project-stage-check <name> [--stage <stage>] [--json]
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
 #
 # Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
 # declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
 # TODO line per row, then a `gate:` line. Exit 0 when nothing blocks, 1 when a FAIL blocks (from
 # stages.md's `Enforced from:` date; before it the gate only reports), 2 on usage or an unknown
-# project. Callers: `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
+# project. --json prints the counts, the gate and each row instead, with the same exit. Callers:
+# `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
 # Systems mode runs the Criteria rows of systems.md for every system the project's type has (or
 # one, with --system): the same lines, then met/total per system; --json prints those counts and
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 NAME="" TARGET="" SYSTEMS="" ONLY="" JSON=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
@@ -32,7 +33,6 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$NAME" ] || usage
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
-[ -n "$SYSTEMS" ] || [ -z "$JSON" ] || { echo "project-stage-check: --json needs --systems" >&2; usage; }
 
 STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
 SYSTEMS_DOC="${SYSTEMS_DOC:-$HOME/.local/src/docs/systems.md}"
@@ -173,20 +173,36 @@ lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check:
 enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
-fails=0
+fails=0 res=""
 while IFS=$'\t' read -r stage app req check; do
   lab_stage_at_least "$TARGET" "$stage" || continue
   applies "$app" || continue
   r="$(judge "$check")"
-  line "$r" "$stage" "$req" "$check"
+  res+="$stage"$'\t'"$r"$'\t'"$req"$'\t'"$check"$'\n'
+  [ -n "$JSON" ] || line "$r" "$stage" "$req" "$check"
   [ "$r" != FAIL ] || fails=$((fails + 1))
 done < <(rows "$STAGES_DOC" Requirements)
 
-if [ "$fails" -eq 0 ]; then
+blocks=""
+[ "$fails" -gt 0 ] && [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]] && blocks=1
+
+if [ -n "$JSON" ]; then
+  printf '%s' "$res" | jq -R -s --arg name "$NAME" --arg type "$TYPE" --arg stage "$TARGET" \
+      --arg from "$enforced_from" --arg blocks "$blocks" '
+    [split("\n")[] | select(length > 0) | split("\t") | {stage: .[0], result: .[1], requirement: .[2], check: .[3]}] as $r
+    | {project: $name, type: (if $type == "" then null else $type end), stage: $stage,
+       met: ($r | map(select(.result == "PASS")) | length), total: ($r | length),
+       fail: ($r | map(select(.result == "FAIL")) | length),
+       human: ($r | map(select(.result == "HUMAN")) | length),
+       todo: ($r | map(select(.result == "TODO")) | length),
+       enforced_from: (if $from == "" then null else $from end), blocks: ($blocks != ""),
+       requirements: $r}'
+elif [ "$fails" -eq 0 ]; then
   echo "gate: $NAME meets #$TARGET"
-elif [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]]; then
-  echo "gate: $NAME fails $fails row(s) for #$TARGET"; exit 1
+elif [ -n "$blocks" ]; then
+  echo "gate: $NAME fails $fails row(s) for #$TARGET"
 else
   echo "gate: $NAME fails $fails row(s) for #$TARGET (report-only until ${enforced_from:-an Enforced from: date is set})"
 fi
+[ -z "$blocks" ] || exit 1
 exit 0
