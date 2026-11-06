@@ -27,27 +27,28 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `prod` (live users): bugs and small fixes only. No new features, no flags turned on, nothing touching production data.
 - `beta`: bugs, and small features that are fully described in the row.
 - `alpha`: only small rows that need no design choice; most alpha work still needs planning, so skip it. A clear, size `S` `#requested` row counts as one of these.
+- (stage) The row is more than its project's stage allows above.
 
 ## Always skip
 
-- Anything tier 3: CI, gates, test runners, builds, deploys, harness and tooling, dependencies. Including fixes to them, including "small" ones.
-
-- Playtests, device, pad or headset runs, anything that needs a person to look, play or listen.
-- Store listings, releases, tags, signing keys, payments, purchases, pricing, ads.
-- Production data or infrastructure writes: backfills, migrations run against prod, DNS, secrets, flipping a flag on in prod.
-- Anything touching health information, compliance, privacy or legal review.
-- Rows that start with `decide:` or ask a question, and wishes ("would be cool", "should i", "maybe", "ideally", "investigate whether"), unless the row is `#requested`.
-- Anything that needs a product or design decision the row does not already make.
-- Anything about the human's personal machine or personal config.
-- Rows that bundle several tasks, or that are long lists of things to check.
-- Rows spanning more than one area (see Fields).
-- Rows that wait on something else, such as "after agent-24 PR lands" or "after feat/x lands". You cannot tell whether it has landed.
+- (tier3) Anything tier 3: CI, gates, test runners, builds, deploys, harness and tooling, dependencies. Including fixes to them, including "small" ones.
+- (needs-person) Playtests, device, pad or headset runs, anything that needs a person to look, play or listen.
+- (release) Store listings, releases, tags, signing keys, payments, purchases, pricing, ads.
+- (prod-write) Production data or infrastructure writes: backfills, migrations run against prod, DNS, secrets, flipping a flag on in prod.
+- (compliance) Anything touching health information, compliance, privacy or legal review.
+- (question) Rows that start with `decide:` or ask a question, and wishes ("would be cool", "should i", "maybe", "ideally", "investigate whether"), unless the row is `#requested`.
+- (design) Anything that needs a product or design decision the row does not already make.
+- (personal) Anything about the human's personal machine or personal config.
+- (bundle) Rows that bundle several tasks, or that are long lists of things to check.
+- (multi-area) Rows spanning more than one area (see Fields).
+- (waits) Rows that wait on something else, such as "after agent-24 PR lands" or "after feat/x lands". You cannot tell whether it has landed.
 
 ## Size
 
 - `S`: one focused change a session can finish, test and merge in about an hour, in one place, with the change described in the row.
 - `M`: several files or steps in one area, or some investigation first, that a session can still finish in an afternoon.
 - `L`: a feature, a system, or open-ended work.
+- (too-big) The row is size `L`.
 
 ## Fields
 
@@ -58,3 +59,13 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run. False for every row below tier 3.
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
+- `rule`: the id in parentheses of the one rule that decided the verdict, from the rules below and above.
+
+## Rules for the verdict
+
+- (fits) `dispatch`: every field above allows it.
+- (unclear) `skip`: clear is false.
+- (tier-above) `skip`: your tier is higher than the row's `tier`.
+- (unknown) `skip`: no rule fits and you are in doubt. Pick this rather than force a rule.
+
+Every `skip` names the first rule above, in any section, that the row breaks.

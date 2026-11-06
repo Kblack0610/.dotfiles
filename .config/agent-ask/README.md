@@ -97,15 +97,19 @@ recommend_why: SSO is on the roadmap and oauth gets it free     # optional, the 
 answer:                   # filled by `answer`
 answered_at:
 answered_by:              # human | judge | shepherd
-judge:                    # the answer judge: human | take-recommend | answer:<text>
+judge:                    # the answer judge: human | take-recommend | answer:<text> | error
+judge_rule:               # the policy rule id that decided it
 judge_reason:
+judge_call:               # the call's line in calls.jsonl
 judged_at:
 resume: /captain resume
 ```
 
 ## The answer judge (shadow)
 
-`post` starts `agent-ask judge <id>` in the background. One observe-role call (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --role observe`) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_reason` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule.
+`post` starts `agent-ask judge <id>` in the background. One observe-role call (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --role observe`) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_rule`, `judge_reason`, `judge_call` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule `gate`.
+
+Every call names one rule of the policy by its id: a bullet that opens with the id in parentheses, `- (taste) ...`. The policy file is the one list of rules (`judge_rules` in `.local/lib/judge.sh` reads it), so a rule added there needs no code change. A call that fails, a reply with no verdict, or a verdict naming a rule the policy does not define is recorded as `judge: error` with the reason, never dropped. `judge_call` links the verdict to its `calls.jsonl` line, and the nightly `agentctl-session-outcomes` run sends each verdict to Langfuse as a score on that call's session.
 
 The judge never answers. agent-web's Waiting tab shows "judge would ..." under the question, and `judge-report` scores each call against the human's answer. Turning on auto-answers for a class of asks is a later, separate change, made only on the agreement this records. `AGENT_ASK_NO_JUDGE=1` skips the call; the test sandbox sets it.
 
