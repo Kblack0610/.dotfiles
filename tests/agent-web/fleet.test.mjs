@@ -29,7 +29,7 @@ for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, running_since: null, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null,
+  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null,
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -53,9 +53,9 @@ const data = {
   workers: [
     worker("ask-judge", {
       eval: {
-        prompt_sha: "3fa1c2d", live: ["restates-rule"], total: {},
+        prompt_sha: "3fa1c2d", live: ["ship_deploy"], total: {},
         rules: [
-          { rule: "restates-rule", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true, bar: { labels: 6, need: 30, met: false } },
+          { rule: "ship_deploy", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true, bar: { labels: 6, need: 30, met: false } },
           { rule: "taste", verdicts: 31, errors: 0, scored: 28, precision: null, false_defer_pct: 18, live: false, bar: { labels: 6, need: 30, met: false } },
         ],
       },
@@ -86,7 +86,7 @@ test("an open judge shows its role, prompt, 24h calls with Langfuse links, and i
   assert.match(h, /trigger called by its caller \| 24h: 14 calls, <span class="bad">1 errors<\/span>, \$0.12, 865k tokens, p95 7s/);
   assert.match(h, /<a href="https:\/\/lf\/project\/P\/sessions\/s1" target="_blank" rel="noopener">Langfuse<\/a>/);
   assert.match(h, /<td class="bad">error<\/td><td><span class="muted">s2<\/span>/, "a call with no session shows its id");
-  assert.match(h, /<td>restates-rule<\/td><td class="n">9<\/td><td class="n">6<\/td><td class="n">100%<\/td><td class="n">-<\/td><td>yes<\/td>/);
+  assert.match(h, /<td>ship_deploy<\/td><td class="n">9<\/td><td class="n">6<\/td><td class="n">100%<\/td><td class="n">-<\/td><td>yes<\/td>/);
   assert.match(h, /<td>taste<\/td>.*<td class="n">18%<\/td><td>no \(6\/30 to bar\)<\/td>/);
   open("ask-judge");
 });
@@ -148,6 +148,27 @@ test("Tonight lists the slots in hub-core's order, a call under its caller, and 
   click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
   assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"]);
   assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.data = data;
+});
+
+test("the score cell ends each row in both orders, its title what it counted, and no score is a dash", () => {
+  const score = { value: 93.2, right: 41, n: 44, window: "7d", source: "triage-untouched", text: "93% untouched", title: "7d, 41 of 44 right, 3 pending, triage-untouched" };
+  const scored = {
+    ...data,
+    workers: [{ ...data.workers[0], score }, data.workers[1]],
+    tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [{ name: "ask-judge", at: null, under: null }, { name: "dream", at: 1793942659 + 3600, under: null }] },
+  };
+  const f = vm.runInContext("fst", ctx);
+  f.data = scored;
+  for (const tonight of [false, true]) {
+    f.tonight = tonight;
+    ctx.renderFleet();
+    const h = box.innerHTML;
+    assert.match(h, /<th class="n">\$ 24h<\/th><th>score 7d<\/th><\/tr>/);
+    assert.match(h, /<td title="7d, 41 of 44 right, 3 pending, triage-untouched">93% untouched<\/td><\/tr>/, `tonight=${tonight}`);
+    assert.match(h, /data-key="dream">.*?<td class="muted">-<\/td><\/tr>/, `tonight=${tonight}`);
+  }
+  f.tonight = false;
   f.data = data;
 });
 

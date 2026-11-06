@@ -14,6 +14,8 @@ them, and a source it cannot read keeps the previous value and is named in .unre
   ~/.notes history           board rows opened and closed
   agent-usage tokens json    tokens, cost, sessions by kind and account (the nightly snapshot)
   outcomes/*.jsonl           sessions with no PR, time use (the nightly session-outcomes)
+  agentctl runs.jsonl        last night's runner passes, priced from calls.jsonl, scored by
+                             judge-eval --all --json (each lane's score_7d, as the Workers cell)
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
   scripts/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
 
@@ -83,10 +85,14 @@ def share(part, whole):
     return round(part / whole, 4) if whole else None
 
 
+def local_epoch(date, time=dt.time()):
+    return int(dt.datetime.combine(date, time).astimezone().timestamp())
+
+
 def day_bounds(day):
     """(start, end) epochs of a local calendar day, YYYY-MM-DD: 23 or 25 hours when the clocks move."""
     date = dt.date.fromisoformat(day)
-    return tuple(int(dt.datetime.combine(d, dt.time()).astimezone().timestamp()) for d in (date, date + dt.timedelta(days=1)))
+    return local_epoch(date), local_epoch(date + dt.timedelta(days=1))
 
 
 # --- the day ---------------------------------------------------------------
@@ -182,6 +188,61 @@ def ask_ages(asks, now):
             "age_h_max": round(hours[-1], 1) if hours else None}
 
 
+NIGHT = (dt.time(20), dt.time(7))   # the night a runner rollup covers, local: the day before to the day
+
+
+def night_bounds(day):
+    """(start, end) epochs of the night that ends on a local day's morning."""
+    date = dt.date.fromisoformat(day)
+    return local_epoch(date - dt.timedelta(days=1), NIGHT[0]), local_epoch(date, NIGHT[1])
+
+
+def conf_keys(path):
+    """A runner conf's KEY=value lines, quotes stripped; the conf is the one home of EFFECT and CALLER."""
+    keys = {}
+    for line in path.read_text().splitlines():
+        m = re.match(r"^([A-Z_]+)=(.*)$", line.strip())
+        if m:
+            keys[m[1]] = m[2].strip().strip("'\"")
+    return keys
+
+
+def jsonl(path):
+    """A log's rows; a missing log is empty, as on a fresh install."""
+    if not Path(path).exists():
+        return []
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def runners(day):
+    """Every agentctl runner pass that started in the night before the day, in time order: its
+    verdict from runs.jsonl, its cost from the calls it or a call it makes (CALLER) logged while
+    it ran, its conf's EFFECT, and its lane's judge-eval score."""
+    start, end = night_bounds(day)
+    runs = [r for r in jsonl(ENV["DAYLOG_RUNS"]) if isinstance(r.get("started"), int) and start <= r["started"] < end]
+    confs = {p.stem: conf_keys(p) for p in Path(ENV["DAYLOG_AGENTS_DIR"]).glob("*.conf")}
+    calls = []
+    for c in jsonl(ENV["DAYLOG_CALLS"]):
+        c["epoch"] = dt.datetime.fromisoformat(c.get("at") or "1970-01-01T00:00:00+00:00").timestamp()
+        if start <= c["epoch"]:
+            calls.append(c)
+    judged, _ = run_json(cmd("DAYLOG_JUDGE_CMD") + ["--all", "--json"])
+    # An unreadable judge-eval is "?" on every row, not "-": "-" says the lane has no score.
+    score = {a["agent"]: (a.get("score_7d") or {}).get("text") for a in (judged or {}).get("agents", [])}
+    unscored = "-" if judged else "?"
+    passes = []
+    for r in sorted(runs, key=lambda r: r["started"]):
+        name, fin = r.get("name", ""), r.get("finished") or r["started"]
+        mine = [c.get("cost_usd") or 0 for c in calls if r["started"] <= c["epoch"] <= fin
+                and name in (c.get("agent"), confs.get(c.get("agent"), {}).get("CALLER"))]
+        passes.append({"at": r["started"], "name": name,
+                       "verdict": r.get("outcome") or ("-" if r.get("result") in ("success", None) else "FAILED"),
+                       "cost_usd": round(sum(mine), 4) if mine else None,
+                       "effect": confs.get(name, {}).get("EFFECT"), "score": score.get(name) or unscored})
+    return {"from": start, "to": end, "passes": passes}, None
+
+
 def usage_of(snap):
     """What a token-usage snapshot says about the day, each value None when it has none yet."""
     snap = snap or {}
@@ -226,6 +287,7 @@ def enrich(a):
         "outcomes": None if live else read("outcomes", "agents.outcomes", lambda: (outcomes(a.start, a.end), None)),
         "asks": read("asks", "agents.asks", lambda: (ask_ages(record["waiting"]["asks"], now), None))
         if live and record.get("waiting") else get(prev, "agents.asks"),
+        "runners": read("runners", "agents.runners", lambda: runners(day)),
     }
     record["ci"] = load(a.ci_file) if a.ci_file else prev.get("ci")
     bad.extend(f"ci {name}" for name in get(record, "ci.unreadable") or [])

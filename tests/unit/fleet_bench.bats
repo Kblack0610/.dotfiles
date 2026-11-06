@@ -774,6 +774,32 @@ kpi_fixture() {
   assert_output 0
 }
 
+@test "kpi --check: exits 1 on a KPI past its threshold only when its scope names it, and a scope matching none is an error" {
+  kpi_setup
+  printf '%s\n' judge_precision_min=90 ask_false_defer_pct_max=30 runner_score_inbox_plan_min=70 >> "$KPI_THRESHOLDS"
+  echo '{"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"runner_score_inbox_plan":{"7d":80,"28d":null}}' > "$JUDGEKPI"
+  scope='^(runner_score_.*|.*_false_defer_pct)$'
+  run "$SUBJECT" kpi --check "$scope"
+  assert_success
+  assert_output ''
+  # Unscoped, judge_precision is past: --check alone holds every KPI.
+  run "$SUBJECT" kpi --check
+  assert_failure 1
+  assert_line 'judge_precision 75 (min 90)'
+  # Negative control: push a scoped KPI past and the same scope trips on it alone.
+  echo '{"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":61,"28d":null},"runner_score_inbox_plan":{"7d":50,"28d":null}}' > "$JUDGEKPI"
+  run "$SUBJECT" kpi --check "$scope"
+  assert_failure 1
+  assert_line 'ask_false_defer_pct 61 (max 30)'
+  assert_line 'runner_score_inbox_plan 50 (min 70)'
+  refute_line --partial judge_precision
+  run "$SUBJECT" kpi --check '^runner_scor$'
+  assert_failure 2
+  assert_output --partial 'no KPI matches'
+  run "$SUBJECT" kpi --check --trend 3
+  assert_failure 2
+}
+
 # ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ]: one agent-ask list --all line
 ask_row() {
   local st; st() { [ -n "$1" ] && TZ="${2:-UTC}" date -d "@$1" +%Y-%m-%dT%H:%M:%S%z; }

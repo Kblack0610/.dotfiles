@@ -46,7 +46,12 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_FLEET_CMD:=fleet-sessions}"
 : "${DAYLOG_NOTES_DIR:=$HOME/.notes}"
 : "${DAYLOG_CI:=$HOME/.config/agentctl/day-log-ci}"   # private overlay: it names private repos
+: "${DAYLOG_RUNS:=${AGENTCTL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl}/runs.jsonl}"
+: "${DAYLOG_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"
+: "${DAYLOG_AGENTS_DIR:=$HOME/.config/agentctl/agents}"
+: "${DAYLOG_JUDGE_CMD:=judge-eval}"
 export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI DAYLOG_FLEET_CMD
+export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -261,6 +266,20 @@ def spend: (.usage // []) | (map(select(.project == "TOTAL")) | first)
   | {cost: .cost_usd, tokens: .tokens, sessions: .sessions};
 def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
 def cap: (.[:1] | ascii_upcase) + .[1:];
+def pad($w): tostring | if length >= $w then . else . + " " * ($w - length) end;
+# The runner passes of the night, one row a runner in the order it first ran: its verdicts, the
+# worst first, then cost, EFFECT and score.
+def night: (.passes | map(.verdict)) as $v
+  | "- Last night (\(.from | strflocaltime("%H:%M"))-\(.to | strflocaltime("%H:%M"))): \(.passes | length) passes, "
+    + "\($v | map(select(. == "FAILED")) | length) failed, \($v | map(select(. == "BLOCKED")) | length) blocked"
+    + ($v | map(select(. == "STALLED")) | length | if . > 0 then ", \(.) stalled" else "" end)
+    + (.passes | map(.cost_usd // empty) | if length > 0 then ", \(add | money) in calls" else ", no call priced" end),
+    (.passes | group_by(.name) | sort_by(.[0].at)[]
+      | (group_by(.verdict) | sort_by((.[0].verdict | IN("FAILED", "BLOCKED", "STALLED") | not), -length)) as $g
+      | (if ($g | length) == 1 then $g[0][0].verdict else $g | map("\(length) \(.[0].verdict)") | join(", ") end) as $said
+      | "  - \(.[0].at | strflocaltime("%H:%M")) \(.[0].name + (if length > 1 then " x\(length)" else "" end) | pad(22))"
+        + " \($said | pad(9)) \(map(.cost_usd // empty) | if length > 0 then add | money else "-" end | pad(6))"
+        + " \(.[0].effect // "-" | pad(6)) \(.[0].score)");
 def step: gsub("\\*\\*"; "") | sub("^(Phase +[0-9]+[a-z]?( *\\([^)]*\\))?:? *|[0-9]+\\. *)"; "") | (capture("^(?<s>.+?[.])( |$)").s // .);
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
@@ -310,6 +329,7 @@ markdown() {
         (.work.phases | if . then "- Plan phases: \(.ticked) ticked, \(.added) added" else empty end),
         (.agents.outcomes | if . then "- Sessions: \(.sessions), \(.no_pr) with no PR (\(.no_pr_with_edits) of them edited files)" else empty end),
         (.agents.asks | if . then "- Asks: \(.open) open, oldest \(.age_h_max // "-") h" else empty end),
+        (.agents.runners | if . == null then empty elif (.passes | length) == 0 then "- Last night: no runner passes" else night end),
         (.ci.repos // {} | to_entries[] | select(.value.runs) | "- CI \(.key | sub(".*/"; "")): \(.value.red) red of \(.value.runs) runs, \(.value.main.red // 0) on main"
           + (.value.cost | if . then ", gate wall p50 \(.gate.wall.p50 // "-") min, \(.hours.pool) runner-hours, \(.regates.branches_regated) branches re-gated" else "" end)),
         "" else empty end),

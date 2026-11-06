@@ -68,22 +68,24 @@ function workerDetail(w) {
       `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
   }
   if (r.eval) h += evalTable(r.eval);
-  return `<tr class="wdet"><td colspan="9">${h}</td></tr>`;
+  return `<tr class="wdet"><td colspan="10">${h}</td></tr>`;
 }
 
 // slots, when given, prefixes each name with its Tonight slot: a time, "always", or a call's
 // indent under its caller.
 function workersTable(ws, slots) {
   if (!ws.length) return `<div class="empty">${slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
-  return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th></tr>${ws.map((w, i) => {
+  return `<table class="tbl"><tr><th>runner</th><th>lane</th><th>last</th><th class="n">when</th><th class="n">runs 24h</th><th class="n">failed</th><th>why</th><th class="n">next</th><th class="n">$ 24h</th><th>score 7d</th></tr>${ws.map((w, i) => {
     const last = w.running_since ? `<td class="muted">running since ${when(w.running_since)}</td><td class="n">-</td>`
       : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
       : `<td class="muted">no run this week</td><td class="n">-</td>`;
     const why = w.why ? `${esc(w.why.word)} ${cut(w.why.text || "")}` : "";
     const open = fst.open.has(w.name);
+    // hub-core's score cell: judge-eval's counted 7d score, its title what it counted.
+    const score = w.score ? `<td title="${esc(w.score.title)}">${esc(w.score.text)}</td>` : `<td class="muted">-</td>`;
     return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${slots ? `${slots[i]} ` : ""}${esc(w.name)}${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
       `<td class="n">${w.runs_24h}</td><td class="n${w.failed_24h ? " bad" : ""}">${w.failed_24h}</td><td class="wrap muted">${why}</td>` +
-      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td></tr>` + (open ? workerDetail(w) : "");
+      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td>${score}</tr>` + (open ? workerDetail(w) : "");
   }).join("")}</table>`;
 }
 

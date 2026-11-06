@@ -121,6 +121,19 @@ pub struct Worker {
     pub cost_24h: Option<f64>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
+    /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
+    pub score: Option<RunnerScore>,
+}
+
+/// A lane's score over a window as judge-eval counts and words it (its `score_7d`), never
+/// model-written: the cell text and the title that says what it counted.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct RunnerScore {
+    /// "93% untouched", "n<30" under the bar, "-" for a lane with no counted outcome.
+    pub text: String,
+    /// "7d, 41 of 44 right, 3 pending, triage-untouched".
+    pub title: String,
 }
 
 /// The workers from now to the next 07:00 local: always-on runners first, then each timer in
@@ -391,11 +404,11 @@ pub fn files(paths: &Paths) -> Fleet {
             HashMap::new()
         }
     };
-    let (judge, evals) = match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
+    let (judge, evals, scores) = match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
         Ok(x) => x,
         Err(e) => {
             errors.push(format!("judges: {e}"));
-            (Judge::default(), HashMap::new())
+            Default::default()
         }
     };
     let regs: HashMap<String, Registry> = confs
@@ -405,6 +418,7 @@ pub fn files(paths: &Paths) -> Fleet {
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
+        w.score = scores.get(&w.name).cloned();
     }
     let tonight = tonight(&workers, &timers, at);
 
@@ -978,10 +992,13 @@ fn run_judge_eval(cmd: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The answer judge's tiles, each lane's per-rule table and each lane's score, by agent name.
+pub type Judges = (Judge, HashMap<String, Eval>, HashMap<String, RunnerScore>);
+
 /// From one `judge-eval --all --json`, under each judge's current prompt: the answer judge's
-/// tiles, and each lane's per-rule table by agent name. No count is made here: judge-eval is the
-/// one scorer.
-pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
+/// tiles and each lane's per-rule table; under any prompt, each lane's 7d score. No count is made
+/// here: judge-eval is the one scorer.
+pub fn judges(json: &str) -> Result<Judges, String> {
     #[derive(Deserialize)]
     struct All {
         agents: Vec<Agent>,
@@ -999,6 +1016,8 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
         live: Vec<String>,
         #[serde(default)]
         rules: Vec<Score>,
+        #[serde(default)]
+        score_7d: Option<RunnerScore>,
     }
     #[derive(Deserialize, Default)]
     #[serde(default)]
@@ -1017,8 +1036,12 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
     }
     let all: All = serde_json::from_str(json).map_err(|e| format!("judge-eval: {e}"))?;
     let mut evals = HashMap::new();
+    let mut scores = HashMap::new();
     let mut ask = None;
-    for a in all.agents {
+    for mut a in all.agents {
+        if let Some(sc) = a.score_7d.take() {
+            scores.insert(a.agent.clone(), sc);
+        }
         evals.insert(
             a.agent.clone(),
             Eval {
@@ -1047,7 +1070,7 @@ pub fn judges(json: &str) -> Result<(Judge, HashMap<String, Eval>), String> {
         week: a.week,
         verdicts: a.verdicts,
     };
-    Ok((judge, evals))
+    Ok((judge, evals, scores))
 }
 
 /// Unix seconds from RFC 3339 (`date -Is`) or agent-ask's `%Y-%m-%dT%H:%M:%S%z` (no colon).
@@ -1297,7 +1320,7 @@ mod tests {
            "verdicts":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
              "you":"no","rule":"r","type":"ship_deploy","said":"would answer","score":"wrong","at":1700000000},
              {"id":"Ab2","said":"passed","score":"needless","at":null}]}]}"#;
-        let (j, evals) = judges(json).unwrap();
+        let (j, evals, _) = judges(json).unwrap();
         assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
         assert_eq!(
             (
@@ -1334,6 +1357,45 @@ mod tests {
     }
 
     #[test]
+    fn each_lanes_score_cell_and_title_are_judge_evals_score_7d_as_written() {
+        let json = r#"{"bar":{"labels":30,"precision":90},"agents":[
+          {"agent":"ask-judge","prompt_sha":"a","score":"ask-answers",
+           "total":{"verdicts":1,"tp":0,"fp":0,"fn":0,"tn":0},
+           "score_7d":{"window":"7d","right":7,"n":9,"pending":4,"value":null,"text":"n<30",
+             "title":"7d, 7 of 9 right, 4 pending, ask-answers; a percent at 30 rows"}},
+          {"agent":"inbox-triage","prompt_sha":"b","score":"triage-untouched",
+           "total":{"verdicts":44,"tp":41,"fp":3},
+           "score_7d":{"window":"7d","right":41,"n":44,"pending":3,"value":93.2,"text":"93% untouched",
+             "title":"7d, 41 of 44 right, 3 pending, triage-untouched"}},
+          {"agent":"ask-sweep","prompt_sha":"","score":"unrecorded","total":{},
+           "score_7d":{"window":"7d","right":0,"n":0,"pending":0,"value":null,"text":"-",
+             "title":"unrecorded: no counted outcome"}},
+          {"agent":"old-lane","prompt_sha":"c","total":{}}]}"#;
+        let (_, _, scores) = judges(json).unwrap();
+        let cell = |a: &str| {
+            let s = &scores[a];
+            (s.text.as_str(), s.title.as_str())
+        };
+        assert_eq!(
+            cell("inbox-triage"),
+            (
+                "93% untouched",
+                "7d, 41 of 44 right, 3 pending, triage-untouched"
+            )
+        );
+        assert_eq!(
+            cell("ask-judge"),
+            (
+                "n<30",
+                "7d, 7 of 9 right, 4 pending, ask-answers; a percent at 30 rows"
+            )
+        );
+        assert_eq!(cell("ask-sweep"), ("-", "unrecorded: no counted outcome"));
+        // A judge-eval with no score_7d for a lane gives it no score: the surfaces draw "-".
+        assert!(!scores.contains_key("old-lane"));
+    }
+
+    #[test]
     fn a_judge_eval_answer_with_no_ask_judge_block_is_an_error_not_zeros() {
         assert!(judges(r#"{"agents":[]}"#).is_err());
         assert!(judges("not json").is_err());
@@ -1343,16 +1405,16 @@ mod tests {
     fn each_judge_gets_its_per_rule_table_from_the_one_judge_eval_read() {
         let json = r#"{"agents":[
           {"agent":"ask-judge","prompt_sha":"aaaaaaaaa","total":{"verdicts":40,"tp":6,"fp":0,"fn":0,"tn":0},
-           "live":["restates-rule"],
-           "rules":[{"rule":"restates-rule","verdicts":9,"errors":0,"scored":6,"precision":100.0,
+           "live":["ship_deploy"],
+           "rules":[{"rule":"ship_deploy","verdicts":9,"errors":0,"scored":6,"precision":100.0,
                      "false_defer_pct":null,"live":true,"bar":{"labels":6,"need":30,"met":false}},
                     {"rule":"taste","verdicts":31,"scored":28,"precision":null,"false_defer_pct":18.0,
                      "live":false}],
            "misses":[]},
           {"agent":"dispatch-judge","prompt_sha":"bbbbbbbbb","total":{"verdicts":16,"errors":2,"tp":0,"fp":0,"fn":0,"tn":0}}]}"#;
-        let (_, evals) = judges(json).unwrap();
+        let (_, evals, _) = judges(json).unwrap();
         let a = &evals["ask-judge"];
-        assert_eq!(a.live, vec!["restates-rule".to_string()]);
+        assert_eq!(a.live, vec!["ship_deploy".to_string()]);
         assert_eq!(a.total.verdicts, 40);
         assert_eq!(
             (
@@ -1361,7 +1423,7 @@ mod tests {
                 a.rules[0].precision,
                 a.rules[0].live
             ),
-            ("restates-rule", 6, Some(100.0), true)
+            ("ship_deploy", 6, Some(100.0), true)
         );
         assert_eq!(
             a.rules[0].bar,

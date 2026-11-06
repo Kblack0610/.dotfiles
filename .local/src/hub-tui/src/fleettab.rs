@@ -242,17 +242,20 @@ fn workers(
                 ),
                 r.next.map_or("-".into(), |t| clock(t, now)).into(),
                 usd(r.cost_24h).into(),
+                r.score.as_ref().map_or("-", |s| &s.text).into(),
                 cell(why, p.dim()),
             ]
         })
         .collect();
     let table = Table {
         header: vec![
-            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "WHY",
+            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "SCORE", "WHY",
         ],
         rows,
-        keep: vec![0, 2, 3, 5, 4, 6, 7, 1],
-        flex: Some(8),
+        // WHY is the flex column and stays last: fit neither pads nor clips it, so a column
+        // after it would be pushed off the line by a long WHY.
+        keep: vec![0, 2, 8, 3, 5, 4, 6, 7, 1],
+        flex: Some(9),
         flexmin: 20,
         right: vec![4, 5, 7],
         cap: vec![(0, if slots.is_some() { 35 } else { 28 })],
@@ -268,6 +271,12 @@ fn workers(
         out.push(l);
         if let Some(r) = i.checked_sub(1).and_then(|i| ws.get(i)) {
             out.extend(registry(&r.registry, p, now, w));
+            if let Some(s) = &r.score {
+                out.push(clip_line(
+                    Line::styled(format!("{PAD}score {}: {}", s.text, s.title), p.dim()),
+                    w,
+                ));
+            }
         }
     }
     out
@@ -602,7 +611,9 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{Bar, Call, Calls, JudgeWeek, Outcome, Score, Slot, Tonight, Verdict};
+    use hub_core::fleet::{
+        Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Slot, Tonight, Verdict,
+    };
 
     pub const NOW: i64 = 1_793_661_428;
 
@@ -650,6 +661,10 @@ pub mod tests {
                     }),
                     next: Some(NOW + 3600),
                     cost_24h: Some(1.25),
+                    score: Some(RunnerScore {
+                        text: "81% kept".into(),
+                        title: "7d, 34 of 42 right, 0 pending, lessons-kept".into(),
+                    }),
                     registry: Registry {
                         kind: "oneshot".into(),
                         trigger: "*-*-* 03:00:00".into(),
@@ -677,7 +692,7 @@ pub mod tests {
                             prompt_sha: "3fa1c2d".into(),
                             rules: vec![
                                 Score {
-                                    rule: "restates-rule".into(),
+                                    rule: "ship_deploy".into(),
                                     verdicts: 9,
                                     scored: 6,
                                     precision: Some(100.0),
@@ -809,6 +824,42 @@ pub mod tests {
     }
 
     #[test]
+    fn the_score_column_sits_before_why_in_both_orders_and_a_lane_with_none_is_a_dash() {
+        let p = Palette { no_color: true };
+        // A WHY longer than the page: the score before it still shows.
+        let mut f = tonight_fixture();
+        for w in &mut f.workers {
+            if let Some(o) = w.why.as_mut() {
+                o.text = "moved 0 from the outbox, filed 0, left 0, refused 3 ".repeat(6);
+            }
+        }
+        for tonight in [false, true] {
+            let lines: Vec<String> = page(&f, p, NOW, 150, false, tonight)
+                .iter()
+                .map(plain)
+                .collect();
+            let row = |name: &str| {
+                lines
+                    .iter()
+                    .find(|l| l.contains(name) && !l.contains("WORKERS"))
+                    .unwrap_or_else(|| panic!("{name:?} missing from {lines:#?}"))
+                    .trim_end()
+                    .to_string()
+            };
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.trim_end().ends_with("WHY") && l.contains("$24H  SCORE ")),
+                "{lines:#?}"
+            );
+            // dream is the row with its lane, memory.
+            assert!(row("memory").contains("81% kept"), "{}", row("memory"));
+            assert!(row("memory").ends_with('~'), "{}", row("memory"));
+            assert!(row("idle-one").contains(" -  "), "{}", row("idle-one"));
+        }
+    }
+
+    #[test]
     fn an_empty_fleet_says_so() {
         let s = text(&Fleet::default(), 100);
         for want in [
@@ -889,12 +940,19 @@ pub mod tests {
         );
         let s = lines.join("\n");
         assert!(s.contains("RULE"), "{s}");
+        // The score's title, what it counted, closes dream's block; idle-one has no score line.
+        assert!(
+            lines.iter().any(|l| l.trim_end()
+                == "    score 81% kept: 7d, 34 of 42 right, 0 pending, lessons-kept"),
+            "{lines:#?}"
+        );
+        assert_eq!(lines.iter().filter(|l| l.contains("    score ")).count(), 1);
         let taste = lines.iter().find(|l| l.contains("taste")).unwrap();
         assert!(
             taste.contains("18%") && taste.contains("no (6/30 to bar)"),
             "{taste}"
         );
-        let live = lines.iter().find(|l| l.contains("restates-rule")).unwrap();
+        let live = lines.iter().find(|l| l.contains("ship_deploy")).unwrap();
         assert!(
             live.contains("100%") && live.trim_end().ends_with("yes"),
             "{live}"

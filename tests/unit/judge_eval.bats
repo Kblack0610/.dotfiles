@@ -201,13 +201,13 @@ ask_fixture() {
 
 # --- replay ---------------------------------------------------------------------------------
 
-# replay_stub: a judge that logs its input and scores every ask clear.
+# replay_stub: a judge that logs its input and scores every ask an answerable ship_deploy.
 replay_stub() {
   cat > "$SANDBOX/bin/replay-stub" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HOME/replay.calls"
-printf '{"decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
-  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true},"restates-rule":{"evidence":"","met":false}'
+printf '{"type":"ship_deploy","decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
+  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true}'
 SH
   chmod +x "$SANDBOX/bin/replay-stub"
   export JUDGE_EVAL_REPLAY_CMD=replay-stub
@@ -222,13 +222,23 @@ SH
   local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
   run --separate-stderr "$JUDGE_EVAL" replay --out "$HOME/replay" --json
   assert_success
-  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "clear") | [.tp, .fp]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[1,1]'
   assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
   assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
   # the copy the judge saw has the question and no answer
   run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
   assert_output 0
   assert_equal "$(grep -c '^status: pending' "$HOME/replay/blind/demo/right.md")" 1
+}
+
+@test "replay: a copy reads the real store's earlier disagreements, never its own answer" {
+  replay_stub
+  ask early judge=human answer=no created=2026-11-01T10:00:00-0800 answered_at=2026-11-01T11:00:00-0800
+  ask late judge=human answer=no created=2026-11-02T10:00:00-0800 answered_at=2026-11-02T11:00:00-0800
+  run "$JUDGE_EVAL" replay
+  assert_success
+  assert_equal "$(grep -c '^early (demo): ' "$HOME/replay.calls")" 1
+  assert_equal "$(grep -c '^late (demo): ' "$HOME/replay.calls")" 0
 }
 
 @test "replay: an answer left on the copy stops the run before any call (negative control)" {
@@ -295,6 +305,8 @@ SH
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
   assert_equal "$(jq -c '.agents[0].total | [.scored, .tp, .fp, .precision]' <<<"$output")" '[30,0,30,0]'
+  # the score cell: the week at the bar
+  assert_equal "$(jq -c '.agents[0].score_7d' <<<"$output")" '{"window":"7d","right":0,"n":30,"pending":0,"value":0,"text":"0% untouched","title":"7d, 0 of 30 right, 0 pending, triage-untouched"}'
   run "$JUDGE_EVAL" inbox-triage
   assert_line --regexp '^  all +30 +0 +100% +30 +0% \[0-11\.4\]'
   run "$JUDGE_EVAL" kpi --json
@@ -303,6 +315,11 @@ SH
   sed -i '1,2d' "$INGEST"
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].score_7d | [.n, .value, .text, .title]' <<<"$output")" '[29,null,"n<30","7d, 0 of 29 right, 0 pending, triage-untouched; a percent at 30 rows"]'
+  # a lane with no counted outcome has no score word
+  run "$JUDGE_EVAL" ask-sweep --json
+  assert_equal "$(jq -c '.agents[0].score_7d | [.text, .title]' <<<"$output")" '["-","unrecorded: no counted outcome"]'
 }
 
 @test "inbox-plan: a planned row is right when it, or a row it split into, starts before anyone re-splits it" {

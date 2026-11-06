@@ -34,12 +34,14 @@
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
 #   agent-ask judge <id>                the answer judge: score a pending ask and record what it
-#                                       would answer (judge, judge_rule, judge_reason, judge_call),
-#                                       replacing any older verdict; post runs it and answers a
-#                                       LIVE_RULES class at once
+#                                       would answer (judge, judge_rule, judge_type, judge_reason,
+#                                       judge_evidence, judge_call), replacing any older verdict;
+#                                       post runs it and answers a LIVE_RULES type at once
 #   agent-ask sweep [project|--all]     judge every pending ask again and answer each live one as
 #                                       the judge, through `answer`'s delivery; one line per ask.
 #                                       Run it after the policy or LIVE_RULES changes
+#   agent-ask precedents <before>       the human's latest disagreements answered before an ISO
+#                                       time, newest first: what the judge reads with an ask
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
 #                                       (model, time, cost, prompt sha, raw) and Langfuse link
 #
@@ -90,10 +92,12 @@
 # THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
 # one call to the registered agent `ask-judge` (its conf sets role, model, schema and the policy
 # prompt) scores the ask on the policy's criteria, and judge.sh judge_derive turns the score into
-# `judge: human | take-recommend | answer:<text> | error`, the class that decided it
-# (`judge_rule`), the criteria that held (`judge_met`), `judge_reason`, and `judge_call`, its
-# line in calls.jsonl. A class listed in the
-# conf's LIVE_RULES is answered live (`answered_by: judge`, see "live answers" below); every
+# `judge: human | take-recommend | answer:<text> | error`, what decided it (`judge_rule`: the
+# criterion that sent it to the human, or the ask's type when it could be answered), the type
+# (`judge_type`), the criteria that held (`judge_met`), `judge_reason`, the quote behind the rule
+# (`judge_evidence`), and `judge_call`, its line in calls.jsonl. The human's latest disagreements
+# (`precedents`) go in with the ask, so a past answer changes the next verdict. A type listed in
+# the conf's LIVE_RULES is answered live (`answered_by: judge`, see "live answers" below); every
 # other rule is shadow, and the human answers. A gate or approval is never sent to the model;
 # it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it),
 # AGENT_ASK_JUDGE_CMD replaces it, and AGENT_ASK_LIVE_RULES replaces the conf's list (tests).
@@ -107,10 +111,10 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
 # The guard on post's foreground judge call (seconds); past it the ask stays with the human.
 : "${AGENT_ASK_JUDGE_TIMEOUT:=30}"
-# The bar judge-eval shows beside each class: AGENT_ASK_LIVE_BAR scored answers at
-# AGENT_ASK_LIVE_PRECISION percent. A class goes live on the human's call (ask-judge.conf).
+# The bar judge-eval shows beside each type: AGENT_ASK_LIVE_BAR scored answers at
+# AGENT_ASK_LIVE_PRECISION percent. A type goes live on the human's call (ask-judge.conf).
 : "${AGENT_ASK_LIVE_BAR:=30}" "${AGENT_ASK_LIVE_PRECISION:=90}"
-# A live class goes back to shadow when precision over its last AGENT_ASK_LIVE_BAR live answers
+# A live type goes back to shadow when precision over its last AGENT_ASK_LIVE_BAR live answers
 # falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
@@ -230,8 +234,8 @@ judge_line() {
   case "$j" in
     "") printf 'Judge: not judged\n'; return 0 ;;
     human) what=deferred ;;
-    take-recommend) if [ -n "$live" ]; then what=answered; else what="would take the recommendation"; fi ;;
-    answer:*) if [ -n "$live" ]; then what="answered \"${j#answer:}\""; else what="would answer \"${j#answer:}\""; fi ;;
+    take-recommend) if [ -n "$live" ]; then what=answered; else what="would take the recommendation, type not proven"; fi ;;
+    answer:*) if [ -n "$live" ]; then what="answered \"${j#answer:}\""; else what="would answer \"${j#answer:}\", type not proven"; fi ;;
     *) what="$j" ;;
   esac
   [ -n "$ov" ] && [ "$ov" != none ] && what+=", overridden: $ov"
@@ -445,7 +449,7 @@ cmd_post() {
   } > "$file"
   queue_changed
 
-  # The judge runs before the asker is told anything: a class it answers live comes back as the
+  # The judge runs before the asker is told anything: a type it answers live comes back as the
   # answer, and the asker goes on. The timeout is a guard on an external model call (a stuck one
   # leaves today's pending ask with an error verdict), not a wait for an event.
   if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
@@ -609,24 +613,26 @@ start_resume() {
 
 # --- live answers ----------------------------------------------------------
 #
-# A rule class in ask-judge.conf's LIVE_RULES is answered by the judge at post: the asker gets
-# the answer in place of the question and goes on. Each live answer is reviewed by the human's
-# next message in that session (settle-session): naming another option records judge_override,
-# and an override demotes the class (judge_demote_check). A demote is runtime state, not a conf
+# judge_conf <key> <default>: AGENT_ASK_<key> when set, else ask-judge.conf's <key>, else the
+# default. The conf is sourced in a subshell, so nothing else it sets reaches this one.
+judge_conf() {
+  local env="AGENT_ASK_$1"
+  if [ -n "${!env+x}" ]; then printf '%s' "${!env}"; return 0; fi
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${!1:-$2}" )
+}
+
+# A type in ask-judge.conf's LIVE_RULES is answered by the judge at post: the asker gets the
+# answer in place of the question and goes on. Each live answer is reviewed by the human's next
+# message in that session (settle-session): naming another option records judge_override, and
+# enough overrides demote the type (judge_demote_check). A demote is runtime state, not a conf
 # edit: a script writing the tracked conf would leave the private repo's main checkout dirty,
-# so the demote list subtracts from LIVE_RULES until the human re-promotes or drops the class
+# so the demote list subtracts from LIVE_RULES until the human re-promotes or drops the type
 # from the conf by PR.
 
-# live_rules: the rule ids answered live now, one per line: LIVE_RULES (space or comma
-# separated) minus the demoted ones.
+# live_rules: the types answered live now, one per line: LIVE_RULES (space or comma separated)
+# minus the demoted ones. `other` is never live: it is what no type covers, so nothing proves it.
 live_rules() {
-  local rules
-  if [ -n "${AGENT_ASK_LIVE_RULES+x}" ]; then
-    rules="$AGENT_ASK_LIVE_RULES"
-  else
-    rules="$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${LIVE_RULES:-}")"
-  fi
-  tr ', ' '\n\n' <<<"$rules" | grep . | grep -vxF -f <(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null; echo) || true
+  tr ', ' '\n\n' <<<"$(judge_conf LIVE_RULES "")" | grep . | grep -vxF -f <(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null; echo other) || true
 }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
@@ -679,15 +685,15 @@ cmd_sweep() {
 }
 
 # judge_demote_check <file>: after an override on this live answer, take its rule out of the
-# live set when precision over the class's last AGENT_ASK_LIVE_BAR live answers is under
+# live set when precision over the type's last AGENT_ASK_LIVE_BAR live answers is under
 # AGENT_ASK_DEMOTE_PRECISION, once there are AGENT_ASK_DEMOTE_MIN of them. A window, not a
-# lifetime count, so one early miss does not end a class that is right 9 times in 10.
+# lifetime count, so one early miss does not end a type that is right 9 times in 10.
 # Pages once and files one board row.
 judge_demote_check() {
   local f="$1" rule id n over
   rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
   [ -n "$rule" ] && live_rules | grep -qxF -- "$rule" || return 0
-  # The class's live answers as "<answered_at> <0|1 overridden>", newest last, then the window.
+  # The type's live answers as "<answered_at> <0|1 overridden>", newest last, then the window.
   read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
     function out() { if (by == "judge" && r == rule) print when, (ov != "" && ov != "none") }
     FNR == 1 { if (NR > 1) out(); by = r = when = ov = "" }
@@ -990,6 +996,17 @@ named_option() {
   [ "$n" -eq 1 ] && printf '%s' "$hit"
 }
 
+# in_session_picks <ask json lines>: {ask id: option} for each answer typed in a session as free
+# text that names exactly one of the ask's options (named_option); the rest carry no label.
+in_session_picks() {
+  local id opts ans pick
+  while IFS=$'\t' read -r id opts ans; do
+    pick="$(named_option "$opts" "$ans")"
+    [ -n "$pick" ] && jq -cn --arg i "$id" --arg p "$pick" '{($i): $p}'
+  done < <(jq -r 'select((.answer // "") | startswith("in session:")) | select((.options // "") != "")
+                  | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
+}
+
 # settle-session <claude_session> answered [text...]: settle the pending asks that session owns,
 # when the human typed into it (the UserPromptSubmit hook). An ask with --options is
 # answered only by a message that names exactly one of them, and records that option; any other
@@ -1126,11 +1143,39 @@ cmd_mark_resumed() {
 # range was `3,26p` and silently started truncating the moment the header grew.
 # --- judge -----------------------------------------------------------------
 
+# precedents <before>: the human's disagreements decided before an ISO time, newest first, capped
+# by PRECEDENTS in ask-judge.conf, one line each: an ask they answered with another option than
+# the recommendation, or a live answer they overrode. Only earlier ones count, so a replayed ask
+# never reads its own answer. Computed from the ask files, never stored. Read from
+# AGENT_ASK_PRECEDENTS_ROOT when set, because a replay's ASKS_ROOT holds only blind copies.
+cmd_precedents() {
+  local before="${1:-}"; [ -n "$before" ] || { echo "usage: agent-ask precedents <before>" >&2; return 2; }
+  local asks
+  asks="$(judge_ask_docs "${AGENT_ASK_PRECEDENTS_ROOT:-$ASKS_ROOT}" | jq -c 'select(.status == "answered"
+    and (.options // "") != "" and (.recommend // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
+  [ -n "$asks" ] || return 0
+  jq -sr --argjson picks "$(in_session_picks "$asks")" --arg before "$before" --argjson cap "$(judge_conf PRECEDENTS 30)" "$JQ_EPOCH"'
+    def note($o): . as $a | ($a.options | split("|") | index($o)) as $i
+      | (($a.option_notes // "") | split("|")[$i // 99] // "") as $n | if $n == "" then $o else "\($o) (\($n))" end;
+    map((.judge_override // "") as $over
+      | if .answered_by == "judge" then
+          select($over != "" and $over != "none") + {said: .answer, chose: $over, at: .judge_override_at}
+        elif (.answered_by // "human") == "human" then
+          . as $a | ($picks[.id] // .answer) as $h
+          | select(($a.options | split("|") | index($h)) and ($h | ascii_downcase) != ($a.recommend | ascii_downcase))
+          | . + {said: .recommend, chose: $h, at: .answered_at}
+        else empty end)
+    | map(select((.at | epoch) as $t | $t != null and $t < ($before | epoch)))
+    | sort_by(.at | epoch) | reverse | .[:$cap][]
+    | "\(.id) (\(.project)): \(.question) | recommended: \(note(.said)) | the human chose: \(note(.chose))"' <<<"$asks"
+}
+
 # judge <id>: what the answer judge would do with this ask. Shadow only: it records its call
 # and never answers. Runs once per ask; a gate is the human's without a model call. Every
 # outcome is recorded: `judge` is human, take-recommend, answer:<text>, or error when the call
-# failed or its reply was not a full score; `judge_rule` is the class, `judge_met` the criteria
-# that held, `judge_reason` the why, and `judge_call` the id of the call's calls.jsonl line.
+# failed or its reply was not a full score; `judge_rule` is what decided it, `judge_type` the
+# kind of question, `judge_met` the criteria that held, `judge_reason` the why, `judge_evidence`
+# the quote behind the rule, and `judge_call` the id of the call's calls.jsonl line.
 cmd_judge() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask judge <id>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
@@ -1138,13 +1183,14 @@ cmd_judge() {
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
-  local k; for k in judge_rule judge_met judge_call; do drop_field "$f" "$k"; done
+  local k; for k in judge_rule judge_type judge_met judge_evidence judge_call; do drop_field "$f" "$k"; done
   case "$(field "$f" kind)" in
     gate|approval)
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
       return 0 ;;
   esac
-  local prompt out wd rc verdict call rule answer cid
+  local prompt precedents out wd rc verdict call rule answer cid
+  precedents="$(cmd_precedents "$(field "$f" created)" 2>/dev/null)"
   # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
   prompt="## The ask
 
@@ -1157,7 +1203,11 @@ options: $(field "$f" options)
 option_notes: $(field "$f" option_notes)
 recommend: $(field "$f" recommend)
 recommend_why: $(field "$f" recommend_why)
+${precedents:+
+## Past disagreements
 
+$precedents
+}
 ## Answer
 
 Return the verdict in the structured output."
@@ -1182,14 +1232,15 @@ Return the verdict in the structured output."
   fi
   rule=$(jq -r .rule <<<"$verdict"); answer=$(jq -r .answer <<<"$verdict")
   call=human
-  case "$rule" in
-    clear|restates-rule)
-      if [ -n "$answer" ]; then call="answer:$(oneline "$answer")"
-      elif [ -n "$(field "$f" recommend)" ]; then call=take-recommend
-      else rule=grounded   # nothing to take: no recommendation and no answer of its own
-      fi ;;
-  esac
+  if [ "$(jq -r .answerable <<<"$verdict")" = true ]; then
+    if [ -n "$answer" ]; then call="answer:$(oneline "$answer")"
+    elif [ -n "$(field "$f" recommend)" ]; then call=take-recommend
+    else rule=grounded   # nothing to take: no recommendation and no answer of its own
+    fi
+  fi
+  set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
   set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
+  set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
 }
 
@@ -1300,6 +1351,7 @@ case "$sub" in
   mark-resumed) cmd_mark_resumed "$@" ;;
   settle-session) cmd_settle_session "$@" ;;
   judge)        cmd_judge "$@" ;;
+  precedents)   cmd_precedents "$@" ;;
   sweep)        cmd_sweep "$@" ;;
   trace)        cmd_trace "$@" ;;
   -h|--help|help) usage ;;
