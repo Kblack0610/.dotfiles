@@ -91,8 +91,8 @@ cmd_list() {
   done
   case "$status" in open|accepted|rejected|expired|all) ;; *) die "list: no status $status" ;; esac
   local rows
-  rows="$(records | jq -cs --arg st "$status" --arg s "$stream" \
-    'map(select(($st == "all" or .status == $st) and ($s == "" or .stream == $s))) | sort_by(.created)')"
+  rows="$(records | jq -cs --arg st "$status" --arg s "$stream" "$AP_DOES"'
+    map(select(($st == "all" or .status == $st) and ($s == "" or .stream == $s)) | .does = does) | sort_by(.created)')"
   if [ -n "$json" ]; then printf '%s\n' "$rows"; return 0; fi
   jq -r '.[] | [.id, .status, .stream, .project, .created[0:10], .title] | @tsv' <<<"$rows"
 }
@@ -103,16 +103,19 @@ record() { # <id>: the record's path, or die
   printf '%s' "$AP_DIR/$1.json"
 }
 
+# The fixed set of verbs, as the command each one runs: apply runs it and the surfaces show it.
+AP_ARGV='def argv: if .verb == "queue" then ["agent-queue", "add", "--project", .project, "--", .arg]
+  elif .verb == "row" then ["notes", "ptask", .project, "--agent", "add", .arg]
+  elif .verb == "none" then [] else null end;'
+AP_DOES="$AP_ARGV"'def does: if (argv // []) == [] then "nothing runs: the decision is recorded"
+  else argv | join(" ") end;'
+
 # apply <record file>: the verb, and only the fixed set. Its stdout is what the decision records.
 apply() {
-  local f="$1" verb arg project
-  verb="$(jq -r .verb "$f")" arg="$(jq -r .arg "$f")" project="$(jq -r .project "$f")"
-  case "$verb" in
-    queue) agent-queue add --project "$project" -- "$arg" ;;
-    row)   notes ptask "$project" --agent add "$arg" ;;
-    none)  ;;
-    *)     echo "unknown verb $verb" >&2; return 1 ;;
-  esac
+  local f="$1" cmd
+  jq -e "$AP_ARGV"'argv != null' "$f" >/dev/null || { echo "unknown verb $(jq -r .verb "$f")" >&2; return 1; }
+  mapfile -d '' -t cmd < <(jq -j "$AP_ARGV"'argv[] | . + "\u0000"' "$f")
+  [ "${#cmd[@]}" -eq 0 ] || "${cmd[@]}"
 }
 
 decide() { # <accepted|rejected> [--by who] <id>

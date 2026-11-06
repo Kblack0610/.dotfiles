@@ -70,6 +70,7 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | Fleet Tonight order (web button, TUI `t`) | The runner's next start in the `doing` cell (`next HH:MM`), and the Jobs table for the timers | Tonight was a second order of the same rows; the table sorts instead (P4, assumed) |
 | Answer judge disagreements list | Log, Judges' verdicts: every answer verdict, its `wrong` filter is the old list | Asked for 2026-11-05: see what the judge said yes to and why, not only where it missed |
 | New: ranked sessions and the session card (`agentctl-session-outcomes worst`, `card`) | Log, folded section (#1077) | Asked for 2026-11-04 (session telemetry); one reader, `hub_core::outcomes`, for both surfaces (rule 8) |
+| New: proposals (`agent-propose`) | Home, between Needs you and Running | Asked for 2026-11-06: analysis sessions filed suggestions nothing surfaced; one reader, `hub_core::proposals`, for both surfaces (rule 8) |
 | New: red fixes (`fleet-bench reds --json`) | Infra, under Red now | Asked for 2026-11-06: see whether each auto-triaged red was fixed and stayed fixed; one reader, `hub_core::reds`, for both surfaces (rule 8) |
 | Web Shepherd pass card | Sessions header, its shepherd part | It is one status line, too small for a tab |
 | Web Shepherd chat | Sessions: the shepherd session, a row like any other (search `shepherd`) | The chat is that session's transcript and compose box, which Sessions already has |
