@@ -259,7 +259,7 @@ panel_ratchet() {
     "$fn" "$path" || offenders+=("$path")
   done < <(panel_rows)
 
-  # Uniq: a script bound to two keys (servers.sh is S, C-s and A) must count once.
+  # Uniq: a script bound to two keys (servers.sh is S and H) must count once.
   n="$(printf '%s\n' "${offenders[@]+"${offenders[@]}"}" | sort -u | grep -c . || true)"
 
   if [ "$n" -gt "$max" ]; then
