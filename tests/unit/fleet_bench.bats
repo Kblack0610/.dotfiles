@@ -761,9 +761,9 @@ kpi_fixture() {
   assert_line '| ask_unclear_pct | - | - | - | - |'
   run "$SUBJECT" retro
   assert_success
-  run grep -c 'kpi: judge_precision past threshold' "$BOARD"
+  run grep -c 'check(kpi): judge_precision past threshold' "$BOARD"
   assert_output 1
-  run grep -c 'kpi: judge_errors\|kpi: ask_false_defer_pct' "$BOARD"
+  run grep -c 'check(kpi): judge_errors\|check(kpi): ask_false_defer_pct' "$BOARD"
   assert_output 0
 }
 
@@ -1132,7 +1132,7 @@ chain_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the models and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -1144,9 +1144,10 @@ chain_fixture() {
   assert_line --index 3 '## Bottlenecks'
   assert_line --index 4 '## Where the time went'
   assert_line --index 5 '## Queue'
-  assert_line --index 6 '## Sessions'
-  assert_line --index 7 '## Agent depth'
-  assert_line --index 8 '## Session time'
+  assert_line --index 6 '## Models'
+  assert_line --index 7 '## Sessions'
+  assert_line --index 8 '## Agent depth'
+  assert_line --index 9 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1850,6 +1851,46 @@ qstats_fixture() {
     by_source: {human: {done: 4, ok: 3, failed: 1, cancelled: 0, prs: 2, wait_minutes_median: 12, to_pr_minutes_median: 95},
                 shepherd: {done: 1, ok: 0, failed: 0, cancelled: 1, prs: 0, wait_minutes_median: null, to_pr_minutes_median: null}},
     done_by_tag: {}}' > "$QSTATS"
+}
+
+@test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":3,"reverted_7d":0}'
+    echo '{"session_id":"s2","cost_usd":1,"reverted_7d":1}'
+    echo '{"session_id":"s3","cost_usd":2,"reverted_7d":0}'
+    echo '{"session_id":"s4","cost_usd":5,"reverted_7d":0}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","sessions":"s1"}'
+    echo '{"slug":"b","model":"sonnet","status":"ok","pr":"o/r#2","sessions":"s2 s3"}'
+    echo '{"slug":"c","model":"sonnet","status":"failed","sessions":"s4"}'
+    echo '{"slug":"d","model":"sonnet","status":"cancelled"}'
+    echo '{"slug":"e","status":"ok","pr":"o/r#3"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00); old_iso=$(date -u -d "@$((T0 - 8 * 86400))" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":null}"
+    echo "{\"id\":\"r4\",\"ts\":\"$old_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}"
+  } > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
+  assert_equal "$(jq -c .models.sonnet <<<"$output")" '{"done":2,"landed":1,"landed_rate":0.5,"failed":1,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"cost_per_pr":8}'
+  assert_equal "$(jq -c '.models.opus | [.landed_rate, .cost_per_pr, .redo_rate]' <<<"$output")" '[1,3,null]'
+  assert_equal "$(jq -c '.models.unrecorded.done' <<<"$output")" 1
+  run env BENCH_NOW=$T0 "$SUBJECT" models
+  assert_success
+  assert_line '| sonnet | 2 | 1 | 0.5 | 1 | 2 | 1 | 0.5 | 1 | $8 | $8 |'
+  assert_line '| opus | 1 | 1 | 1 | 0 | 0 | 0 | - | 0 | $3 | $3 |'
+  run "$SUBJECT" models --bogus
+  assert_failure 2
 }
 
 @test "queue prints the week from agent-queue stats since BENCH_QUEUE_DAYS ago, --json passes it through" {

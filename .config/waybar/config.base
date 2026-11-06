@@ -146,6 +146,19 @@
         "hide-empty-text": true,
         "tooltip": true
     },
+    // Shown only while a gungan voice take runs (red mic: stream, mic: record). Not gated: a
+    // hot mic is a privacy indicator. No interval: gungan fires RTMIN+9 on every start and
+    // stop. A click stops a stream; a record take is stopped by whoever started it.
+    "custom/gungan": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": "once",
+        "exec": "$HOME/.local/bin/gungan status",
+        "signal": 9,
+        "hide-empty-text": true,
+        "tooltip": true,
+        "on-click": "[ \"$(~/.local/bin/gungan status | jq -r .tooltip)\" = 'Gungan: Streaming...' ] && ~/.local/bin/gungan stream"
+    },
     // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
