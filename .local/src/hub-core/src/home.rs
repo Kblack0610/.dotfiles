@@ -33,10 +33,15 @@ pub const TEXT_MAX: usize = 160;
 /// long list is capped, never unbounded at top level).
 pub const SHOWN: usize = 8;
 
-/// What a row is. Conditions (Nightly, Red) list after every scored row, in this order.
+/// What a row is. A Stopped row leads the list; conditions (Nightly, Red) list after every
+/// scored row, in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
+    /// A hold that has stopped every dispatch pass (`fleet-dispatch stopped`): how long, why and
+    /// what clears it, in one line. A condition with no score, so the needs pager leaves it to
+    /// the queue-starved watch.
+    Stopped,
     /// A pending `agent-ask`, answered by its id.
     Ask,
     /// A session fleet-sessions buckets NEEDS with no ask: a dialog, a permission or a stop.
@@ -266,7 +271,8 @@ pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue and infra (None
 /// until read), ranked: the asks, sessions and queue items only the human can act on by what
 /// their wait costs (`Score::value`), then those the judge said a machine could answer, then
-/// nightly reds and red-now items. Ages are by the state's own clock, so the order is pure.
+/// nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of
+/// them: while it stands nothing else starts. Ages are by the state's own clock, so the order is pure.
 pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec<Need> {
     let now = state["generated_epoch"].as_i64();
     let age_min = |since: Option<i64>| {
@@ -302,6 +308,19 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
     };
     let mut out = Vec::new();
     let mut shown: HashSet<String> = HashSet::new();
+
+    for st in state["stopped"].as_array().into_iter().flatten() {
+        out.push(Need {
+            kind: Kind::Stopped,
+            project: String::new(),
+            text: short(str_of(st, "line")),
+            id: format!("stopped:{}", str_of(st, "runner")),
+            target: None,
+            since: st["since"].as_i64(),
+            recommend: None,
+            score: None,
+        });
+    }
 
     for a in state["asks"].as_array().into_iter().flatten() {
         let session = str_of(a, "session");
@@ -417,9 +436,11 @@ pub fn needs(state: &Value, queue: Option<&Queue>, infra: Option<&Infra>) -> Vec
             });
         }
     }
-    // Stable: equal waits keep their read order (asks, sessions, queue items); conditions last.
+    // Stable: equal waits keep their read order (asks, sessions, queue items); conditions last,
+    // but a Stopped row first.
     out.sort_by_key(|n| {
         (
+            n.kind != Kind::Stopped,
             n.score.is_none(),
             n.score.as_ref().map(|s| (!s.human, std::cmp::Reverse(s.value))),
         )
@@ -674,6 +695,28 @@ mod tests {
         let mut st = state();
         st["asks"][0]["created"] = json!("2026-11-06T09:00:00-0800");
         assert_eq!(score(&build(&st, None, None).needs[1]).4, 0);
+    }
+
+    #[test]
+    fn a_stopped_dispatch_leads_needs_you_as_one_unscored_line() {
+        let mut st = state();
+        st["stopped"] = json!([{"runner": "fleet-dispatch", "since": NOW - 13 * 3600,
+            "why": "no account has room",
+            "line": "Dispatch stopped 13h: no account has room. Clears when an account is back under its pace."}]);
+        let h = build(&st, None, None);
+        let top = &h.needs[0];
+        assert_eq!(top.kind, Kind::Stopped);
+        assert_eq!(top.id, "stopped:fleet-dispatch");
+        assert!(top.text.starts_with("Dispatch stopped 13h: "));
+        assert_eq!(top.since, Some(NOW - 13 * 3600));
+        assert!(top.score.is_none());
+        assert_eq!(serde_json::to_value(top).unwrap()["kind"], "stopped");
+        // The rest keep their order; with no hold there is no Stopped row.
+        assert_eq!(h.needs[1].kind, Kind::Ask);
+        assert!(build(&state(), None, None)
+            .needs
+            .iter()
+            .all(|n| n.kind != Kind::Stopped));
     }
 
     #[test]
