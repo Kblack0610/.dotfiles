@@ -1,16 +1,23 @@
 # Voice into a Claude session
 
-Super+R sends speech to a Claude session that you are not looking at, or starts a new session with it. To type speech into the window you are in, use Super+Shift+R (gungan record) or Super+Alt+R (gungan stream).
+| Key | What it does |
+| --- | --- |
+| Super+R | gungan stream: words are typed into the focused window as you talk; press again to stop |
+| Super+Shift+R | gungan record: press, talk, press; the whole take is typed into the focused window |
+| Super+Alt+R | agent-voice: press, talk, press, then pick a Claude session (or a new one) to send it to |
+| Super+Ctrl+R | force-kill a stuck take |
 
-1. Press Super+R and talk. The waybar mic shows the take.
-2. Press Super+R again. gungan transcribes the take, then a floating picker opens with the text at the top.
+## Sending a take to a Claude session
+
+Super+Alt+R sends speech to a Claude session that you are not looking at, or starts a new session with it.
+
+1. Press Super+Alt+R and talk. The waybar mic shows the take.
+2. Press Super+Alt+R again. gungan transcribes the take, then a floating picker opens with the text at the top.
 3. Pick a target and press Enter:
    - The first row, marked `paged`, is the session your newest page points at (its `tmux:` ref).
    - Next come the other live sessions, idle ones first, then busy ones. A session in a dialog is left out.
    - Last come the `new session in <project>` rows. Each one queues the text as an agent-queue item and starts it with `fleet-dispatch start --item`.
 4. A popup says what happened. Esc sends nothing, and the text stays on the clipboard.
-
-Super+Ctrl+R kills a stuck take.
 
 gungan records the source named by `GUNGAN_SOURCE` in `~/.config/gungan/config` (here the Brio 101 webcam mic), not the system default, because audio work moves the default to an instrument input.
 
