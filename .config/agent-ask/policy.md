@@ -22,9 +22,14 @@ Any one of these, on any decision, makes the ask the human's.
 
 ## Needed for any answer
 
-Both of these must be met on every decision, or the ask is the human's.
+This must be met on every decision, or the ask is the human's.
 
 - (reversible) A wrong answer can be undone by a revert or a later change, and nothing has reached anyone outside the fleet by then.
+
+## Noted, never a stop
+
+Answer this one too. It is what a reader sees behind a yes, and it never sends an ask to the human.
+
 - (grounded) A rule below or a fact the ask states picks this option over every other listed one, or gives the answer when there are no options. The facts it rests on are stated, not assumed. An option that only seems reasonable, or a recommendation with nothing but its own reasoning behind it, is not grounded.
 
 ## The rules you may ground on
