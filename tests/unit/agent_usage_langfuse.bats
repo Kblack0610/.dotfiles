@@ -25,7 +25,8 @@ case "$*" in
     {"providedModelName":"glm","level":"DEFAULT","count_count":"9","sum_totalCost":0.5,"sum_totalTokens":"100","p95_latency":200},
     {"providedModelName":"glm","level":"ERROR","count_count":"1","sum_totalCost":0,"sum_totalTokens":"0","p95_latency":900}]}' ;;
   *claude_code.tool.execution*) echo '{"data":[{"level":"DEFAULT","count_count":"97"},{"level":"ERROR","count_count":"3"}]}' ;;
-  *) echo '{"data":[
+  *) [[ -n "${NO_TOOL_SPANS:-}" ]] && { echo '{"data":[]}'; exit 0; }
+    echo '{"data":[
     {"name":"Read","count_count":"5","p50_latency":1,"p95_latency":2,"sum_latency":1000},
     {"name":"Bash","count_count":"2","p50_latency":10,"p95_latency":20,"sum_latency":9000},
     {"name":"mcp__x__y","count_count":"1","p50_latency":3,"p95_latency":3,"sum_latency":3000},
@@ -42,12 +43,21 @@ lf() { "$AU" langfuse --since 2026-01-01T00:00:00-08:00 --until 2026-01-02T00:00
 @test "tools: only tool spans from Claude's environments, slowest in total first, no human waits" {
   assert_equal "$(lf | jq -c '[.tools[].tool]')" '["Bash","mcp__x__y","Read"]'
   grep -q 'claude-agentctl' "$CURL_LOG"
+  grep -q '"default"' "$CURL_LOG"
   assert_equal "$(lf | jq -c '.tools[0]')" '{"tool":"Bash","calls":2,"p50_ms":10,"p95_ms":20,"total_s":9}'
 }
 
 @test "tool errors: counts from metrics, classes across every page" {
   assert_equal "$(lf | jq -c '.tool_errors')" \
     '{"executions":100,"errors":3,"share":0.03,"by_class":{"ShellError":2,"unknown":1},"truncated":false}'
+}
+
+@test "executions with no tool span is exit 1 and a reason, never an empty ranking" {
+  export NO_TOOL_SPANS=1
+  run --separate-stderr lf
+  assert_failure 1
+  assert_equal "$output" ""
+  [[ "$stderr" == *"no tool span matched"* ]]
 }
 
 @test "gateway: one row per model, errors by class" {
