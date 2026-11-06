@@ -808,7 +808,7 @@ gateway_launch() {
 #                           It reopens in the mode its transcript last shows, bypass when none.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' brief cmd label origin acct mode rec
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' brief cmd label origin acct mode rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -856,6 +856,8 @@ cmd_start() {
     return 2
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
+    # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
+    [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
     # One start of a queue item at a time, from the queued check until the item is running: on
     # 11-04 a pass and a hand start both saw one item queued, and the pass's launch failed. fd 7
     # closes when this item is running, or when the caller (start_item, or the process) ends.
@@ -910,6 +912,7 @@ cmd_start() {
     origin=${START_ORIGIN:-hand}
     [ -n "$harness" ] || harness=$(jq -r '.agent // "claude"' <<<"$it")
     if [ "$harness" = claude ]; then
+      [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(account_env "$acct")claude --model $(printf '%q' "$model")"
@@ -928,7 +931,9 @@ cmd_start() {
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # Preflight and agent-land claim for Claude alone, and both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
-    [ "$harness" = claude ] || eval_log "$item" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" "$harness" "$model"
+    if [ "$harness" = claude ]; then lane_log "$item" "$(jq -r .task <<<"$it")" "$verdict" "$model"
+    else eval_log "$item" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" "$harness" "$model"
+    fi
     dispatch_event started "$project" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" --item "$item" --to "$server:$session" --why "$model on $on"
     exec 7>&-
   fi
@@ -1393,6 +1398,18 @@ held_by() {
   [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")
 }
 
+# lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
+# at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
+# Every start of an item comes through cmd_start (a pass, a hand start, a plan phase, an after: chain),
+# so this is the one place an item's model is picked.
+lane_pick() {
+  local it
+  it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
+  [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
+  model-lane classify "$(jq -r .task <<<"$it")" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null |
+    jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
+}
+
 # lane_log <slug> <task> <verdict json> <model ran> -- the started item's pick goes in model-lane's
 # log and its run id on the item as lane_run, so the item's close reports the outcome (agent-queue
 # move) and the lane can graduate or demote on evidence. No verdict (model-lane failed) logs nothing:
@@ -1419,8 +1436,8 @@ eval_log() {
 # account has room, which ends the pass: the next item would find none either. rc 4 when another
 # start (a hand start, say) took the item first: that is not a failed launch, and the pass goes on.
 start_item() {
-  local it="$1" slug acct err why model rc verdict task
-  slug=$(jq -r .slug <<<"$it"); task=$(jq -r .task <<<"$it")
+  local it="$1" slug acct err why rc
+  slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
   # names the closest account and how far past its pace it is, as in gate.
@@ -1430,13 +1447,11 @@ start_item() {
     settle BLOCKED "queue item $slug waits: ${why#claude-acct: }"; return 3
   fi
   rm -f "$err"
-  verdict=$(model-lane classify "$task" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null | jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null) || verdict=''
-  model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
   local floor=''; floor_open && floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
-  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --model "${model:-opus}"
+  # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
+  START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug"
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
-    lane_log "$slug" "$task" "$verdict" "${model:-opus}"
     settle WORKED "started queue item $slug$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
