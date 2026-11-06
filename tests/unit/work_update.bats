@@ -42,6 +42,11 @@ EOF
  {"repo": "other", "title": "chore: not this job", "url": "https://x/other/pull/1"}]}
 EOF
   echo "- paired with Sam on the health check" >"$JOBROOT/log/2026-11-05.md"
+  # the work ledger: agent-queue list serves $SANDBOX/items, and fails while it is missing
+  export WORK_UPDATE_QUEUE="$SANDBOX/bin/queue-stub" TZ=UTC
+  printf '#!/usr/bin/env bash\nexec cat "%s"\n' "$SANDBOX/items" >"$WORK_UPDATE_QUEUE"
+  chmod +x "$WORK_UPDATE_QUEUE"
+  : >"$SANDBOX/items"
 }
 
 @test "a job is its file over _default, and an unknown job names the ones there are" {
@@ -61,6 +66,33 @@ EOF
   refute_output --partial "not this job"
   assert_output --partial "paired with Sam"
   assert_output --partial "Channel: client-eod."
+}
+
+@test "facts groups the day by the job's work items, longest first, with their minutes and a day total" {
+  printf '%s\n' \
+    '{"slug":"health","title":"devices report health","pr":"o/fleet#7","work_min":"45","finished":"2026-11-05T12:00:00Z"}' \
+    '{"slug":"lint","title":"lint the api","pr":"o/fleet#8","work_min":"90","finished":"2026-11-05T13:00:00Z"}' \
+    '{"slug":"untimed","title":"docs","pr":"o/fleet#9","finished":"2026-11-05T14:00:00Z"}' \
+    '{"slug":"other-repo","pr":"o/other#1","work_min":"30","finished":"2026-11-05T12:00:00Z"}' \
+    '{"slug":"bare-pr","pr":"7","work_min":"30","finished":"2026-11-05T12:00:00Z"}' \
+    '{"slug":"next-day","pr":"o/fleet#10","work_min":"30","finished":"2026-11-06T12:00:00Z"}' >"$SANDBOX/items"
+  run "$SUBJECT" facts acme eod --date 2026-11-05
+  assert_success
+  run grep -A4 '^## Work items' <<<"$output"
+  assert_output "$(printf '%s\n' '## Work items' \
+    '- 2026-11-05 [Fleet Platform] lint the api (90 min, #8, lint)' \
+    '- 2026-11-05 [Fleet Platform] devices report health (45 min, #7, health)' \
+    '- 2026-11-05 [Fleet Platform] docs (? min, #9, untimed)' \
+    '- 2026-11-05 total: 135 min over 3 item(s), 1 with no time')"
+}
+
+@test "facts says when the work ledger cannot be read, and still lists the PRs (negative control)" {
+  rm "$SANDBOX/items"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$WORK_UPDATE_QUEUE"
+  run "$SUBJECT" facts acme eod --date 2026-11-05
+  assert_success
+  assert_output --partial "- (the work ledger could not be read)"
+  assert_output --partial "devices report health (https://x/fleet/pull/7)"
 }
 
 @test "save lints the draft on the job's channel and saves it either way; it never sends" {
