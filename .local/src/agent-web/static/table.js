@@ -26,14 +26,32 @@ function tblSet(query, patch) {
 // One dropdown per facet, each option the whole query that picks its value.
 const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
   f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
+// One count chip, here and on the tabs that still filter their own lists.
+const chipBtn = (on, attr, val, label, n) =>
+  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
-// The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
-// box has focus replaces around it: `<id>-facets` and `<id>-chips`.
+// The search box, the dropdowns and the chips. `id` names the parts tblPaint replaces around a
+// control in use: `<id>-facets` and `<id>-chips`.
 function tblBar(id, t, hint) {
   return `<div class="card bfilter qcfilter"><div class="opts"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text">` +
     `<span id="${id}-facets">${tblFacets(t)}</span></div></div><div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>`;
+}
+
+// Draw a table view. `parts` is its regions' html in order, each in an `<id>-<part>` element:
+// `head` above the bar, the rest below it. A refresh must not take the search box or an open
+// dropdown from under the human, so while one has focus everything around it repaints and it stays.
+function tblPaint(el, id, t, hint, parts, open) {
+  const f = document.activeElement, region = ([k, html]) => `<div id="${id}-${k}">${html}</div>`;
+  if (f && el.contains(f) && (f.id === `${id}-q` || f.dataset.tq !== undefined)) {
+    if (f.id === `${id}-q`) paint($(`${id}-facets`), tblFacets(t));
+    paint($(`${id}-chips`), tblChips(t));
+    for (const [k, html] of Object.entries(parts)) paint($(`${id}-${k}`), html, open);
+    return;
+  }
+  const { head, ...rest } = parts;
+  paint(el, region(["head", head]) + tblBar(id, t, hint) + Object.entries(rest).map(region).join(""), open);
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
@@ -45,6 +63,9 @@ function tblHead(t, labels) {
     return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
+
+// The button a capped body ends in; the view's own click listener answers `data-all`.
+const tblMore = (n) => (n > 0 ? `<button class="btn sm" data-all="1">+${n} older</button>` : "");
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {
@@ -58,4 +79,15 @@ function tblPatch(e) {
   const chip = t.closest("[data-ts]");
   if (chip) return { s: chip.dataset.ts };
   return null;
+}
+
+// Send every view change in `el` to `view(patch)`. A picked dropdown lets go of focus, so the
+// answer redraws it with the new counts.
+function tblBind(el, view) {
+  for (const ev of ["click", "input", "change"]) el.addEventListener(ev, (e) => {
+    const v = tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    view(v);
+  });
 }

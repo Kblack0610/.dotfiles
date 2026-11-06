@@ -49,7 +49,7 @@ function jobsBody(d) {
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+      tblMore(more) + `</div>`
     : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`;
 }
 
@@ -73,19 +73,7 @@ function renderJobs() {
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
     return;
   }
-  // A refresh must not take the search box or an open dropdown from under the human, so
-  // everything around the control in use repaints and it stays.
-  const f = document.activeElement;
-  if (f?.id === "jobs-q" || f?.dataset?.tq !== undefined) {
-    paint($("jobs-head"), jobsHead(d));
-    if (f.id === "jobs-q") paint($("jobs-facets"), tblFacets(d.table));
-    paint($("jobs-chips"), tblChips(d.table));
-    paint($("jobs-body"), jobsBody(d));
-    paint($("jobs-tail"), jobsTail());
-    return;
-  }
-  paint(el, `<div id="jobs-head">${jobsHead(d)}</div>${tblBar("jobs", d.table, "search, or source:ci result:fail -name:dream")}` +
-    `<div id="jobs-body">${jobsBody(d)}</div><div id="jobs-tail">${jobsTail()}</div>`);
+  tblPaint(el, "jobs", d.table, "search, or source:ci result:fail -name:dream", { head: jobsHead(d), body: jobsBody(d), tail: jobsTail() });
   seekSection();
 }
 
@@ -121,15 +109,12 @@ $("jobs").addEventListener("click", (e) => {
   const h = t.closest("[data-hist]");
   if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; renderJobs(); refreshJobs(); return; }
   if (t.dataset.all) { jst.all = true; renderJobs(); return; }
-  const v = tblPatch(e);
-  if (v) { jobsView(v); return; }
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("jobs").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); jobsView(v); });
+tblBind($("jobs"), jobsView);
 
 // Shown and refreshed by TABS.infra (infra.js).
 const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);

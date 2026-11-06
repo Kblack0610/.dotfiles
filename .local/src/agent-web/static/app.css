@@ -181,14 +181,10 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .rd-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 .board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
-/* Log's Actions section (static/actions.js): filter chips, then one line per action. */
+/* A table's state chips (static/table.js) and a muted mono time. */
 .fseg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
-.flist { max-width: 1200px; padding: 6px 14px; }
-.frow { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--line); }
-.frow:last-child { border-bottom: 0; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
-.fx { flex: 1 1 20em; min-width: 0; overflow-wrap: anywhere; }
 .muted { color: var(--muted); font-weight: normal; }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }

@@ -1,100 +1,89 @@
 "use strict";
 // Log's Actions section: what the fleet's machinery did (shepherd nudges, skips and escalations,
-// dispatch starts and reaps, pages, failed runs, queue adds and finishes), newest first and
-// grouped by local day. /api/actions reads the ledgers each writer already keeps, through the
-// same reader as `hub actions`. The chips filter by actor, then verb; their counts cover the
-// whole window, the list its newest rows.
+// dispatch starts and reaps, pages, failed runs, queue adds and finishes), newest first.
+// /api/actions reads the ledgers each writer already keeps, through the same reader as `hub
+// actions`. The list is the shared table (table.js): the server filters and sorts by the view in
+// Log's URL query, which also holds the window (`#log?q=actor:shepherd&hours=72`).
 
 const ACTION_WINDOWS = [[12, "12h"], [24, "24h"], [72, "3d"], [168, "7d"]];
-// A page at one of these priorities gets a pill; normal and low ones do not.
-const ACTION_LOUD = ["high", "urgent"];
-const ast = { data: null, err: null, hours: 24, actor: "", verb: "" };
+const ACTION_HOURS = 24;
+// `read` is the view the data answers; `all` shows past the first LOG_ROWS.
+const ast = { data: null, err: null, read: null, all: false };
+
+// The URL's window, when it is one of the buttons: the head says what the server was asked for.
+function actionHours() {
+  const h = Number(new URLSearchParams(st.views.log || "").get("hours"));
+  return ACTION_WINDOWS.some(([w]) => w === h) ? h : ACTION_HOURS;
+}
 
 const refreshActions = coalesce(async () => {
-  try { ast.data = await api("/api/actions?hours=" + ast.hours); ast.err = null; } catch (e) { ast.err = e.message; }
+  const view = st.views.log || "", p = tblParams(view);
+  p.set("hours", actionHours());
+  try { ast.data = await api("/api/actions?" + p); ast.err = null; ast.read = view; } catch (e) { ast.err = e.message; }
   if (st.tab === "log") renderActions();
 });
 
 // Open Log at its Actions section filtered to one actor (and verb), from another tab's link.
 function showActions(actor, verb) {
-  ast.actor = actor || "";
-  ast.verb = verb || "";
   st.section = "actions";
-  setTab("log");
+  const q = [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ");
+  setTab("log", undefined, tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
 }
 
-const chipBtn = (on, attr, val, label, n) =>
-  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
+const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], prio: ["prio"], source: ["source"], text: ["text"] };
 
-function actionChips(counts) {
-  const actors = Object.keys(counts).sort((a, b) => sumOf(counts[b]) - sumOf(counts[a]) || a.localeCompare(b));
-  const all = actors.reduce((s, a) => s + sumOf(counts[a]), 0);
-  let html = `<div class="seg fseg">${chipBtn(!ast.actor, "data-actor", "", "all", all)}` +
-    actors.map((a) => chipBtn(ast.actor === a, "data-actor", a, a, sumOf(counts[a]))).join("") + `</div>`;
-  const verbs = counts[ast.actor];
-  if (verbs) {
-    const vs = Object.keys(verbs).sort((a, b) => verbs[b] - verbs[a] || a.localeCompare(b));
-    html += `<div class="seg fseg">${chipBtn(!ast.verb, "data-verb", "", "every verb", sumOf(verbs))}` +
-      vs.map((v) => chipBtn(ast.verb === v, "data-verb", v, v, verbs[v])).join("") + `</div>`;
-  }
-  return html;
+const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).toISOString())}">${stamp(a.at)}</td>` +
+  `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
+  `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
+
+function actionsHead(d) {
+  const inWindow = sumOf(Object.values(d.counts).map(sumOf));
+  const hours = actionHours();
+  const newest = d.table.total < inWindow ? `, newest ${d.table.total}` : "";
+  const errs = [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
+  return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>` +
+    `<div class="seg fseg">` + ACTION_WINDOWS.map(([h, l]) => `<button class="${hours === h ? "on" : ""}" data-hours="${h}">${l}</button>`).join("") + `</div>${errs}`;
 }
 
-function actionRow(a) {
-  const loud = ACTION_LOUD.includes(a.priority) ? `<span class="pill ask">${esc(a.priority)}</span>` : "";
-  return `<div class="frow" title="${esc(a.source)}"><span class="ft">${clock(a.at * 1e3)}</span>` +
-    `<span class="pill">${esc(a.actor)}</span><b>${esc(a.verb)}</b>${loud}<span class="fx">${esc(a.text)}</span></div>`;
-}
-
-// Rows under one heading per local day, in the order given (newest first).
-function byDay(rows) {
-  let day = null, html = "";
-  for (const a of rows) {
-    const d = new Date(a.at * 1e3);
-    const k = d.toDateString();
-    if (k !== day) {
-      if (day) html += `</div>`;
-      day = k;
-      html += `<h3 class="sub">${esc(d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }))}</h3><div class="card flist">`;
-    }
-    html += actionRow(a);
-  }
-  return day ? html + `</div>` : "";
+function actionsBody(d) {
+  const shown = d.actions, rows = ast.all ? shown : shown.slice(0, LOG_ROWS), more = shown.length - rows.length;
+  return shown.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${rows.map(actionRow).join("")}</table>` +
+      tblMore(more) + `</div>`
+    : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 
 function renderActions() {
-  const el = $("actions");
-  const d = ast.data;
-  const windows = `<div class="seg fseg">` + ACTION_WINDOWS.map(([h, l]) =>
-    `<button class="${ast.hours === h ? "on" : ""}" data-hours="${h}">${l}</button>`).join("") + `</div>`;
-  if (ast.err) { paint(el, windows + `<div class="card err">${esc(ast.err)}</div>`); return; }
-  if (!d) { paint(el, windows + `<div class="empty">Loading.</div>`); return; }
-  if (ast.actor && !d.counts[ast.actor]) ast.verb = "";
-  const rows = d.actions.filter((a) => (!ast.actor || a.actor === ast.actor) && (!ast.verb || a.verb === ast.verb));
-  const verbs = d.counts[ast.actor] || {};
-  const total = !ast.actor ? Object.values(d.counts).reduce((s, v) => s + sumOf(v), 0)
-    : ast.verb ? verbs[ast.verb] || 0 : sumOf(verbs);
-  const shown = rows.length < total ? ` <span class="muted">newest ${rows.length} of ${total} in the window</span>` : "";
-  const errs = d.errors.map((e) => `<div class="card err">unread: ${esc(e)}</div>`).join("");
-  const list = rows.length ? byDay(rows.slice(0, LOG_ROWS)) + older(rows.length - LOG_ROWS)
-    : `<div class="empty">Nothing recorded${ast.actor ? " for this filter" : ""} in the window.</div>`;
-  paint(el, `<div class="bhead"><span>what the machinery did${shown}</span></div>${windows}${actionChips(d.counts)}${errs}${list}`);
+  const el = $("actions"), d = ast.data;
+  if (!d || !d.table) { paint(el, `<div class="${ast.err ? "card err" : "empty"}">${esc(ast.err || "Loading.")}</div>`); return; }
+  tblPaint(el, "actions", d.table, "search, or actor:shepherd verb:nudge -actor:dispatch", { head: actionsHead(d), body: actionsBody(d) });
+}
+
+// The view changed: the URL follows it and the server applies it.
+function actionsView(patch) {
+  setQuery(tblSet(st.views.log, patch));
+  ast.all = false;
+  refreshActions();
 }
 
 $("actions").addEventListener("click", (e) => {
-  const b = e.target.closest("button");
-  if (!b) return;
-  if (b.dataset.hours) { ast.hours = Number(b.dataset.hours); refreshActions(); return; }
-  if (b.dataset.actor !== undefined) { ast.actor = b.dataset.actor; ast.verb = ""; }
-  else if (b.dataset.verb !== undefined) ast.verb = b.dataset.verb;
-  else return;
-  renderActions();
+  const t = e.target;
+  if (t.dataset.all) { ast.all = true; renderActions(); return; }
+  const h = t.closest("[data-hours]");
+  if (h) { actionsView({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours }); return; }
 });
+tblBind($("actions"), actionsView);
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".
 const actionsFeed = pushed("log", ["actions", "fleet", "queue"], refreshActions);
 LOG_PARTS.push({
-  show() { renderActions(); actionsFeed.show(!ast.data); },
+  show() {
+    // A view this page has not read asks the server, and when it came by a link opens its section.
+    const view = st.views.log || "", fresh = ast.read !== view;
+    if (fresh && view) $("sec-actions").open = true;
+    renderActions();
+    actionsFeed.show(fresh);
+  },
   onEvent: actionsFeed.onEvent,
 });

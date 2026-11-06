@@ -123,6 +123,8 @@ const FOLDS: [(&str, char, &str); 6] = [
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+/// The footer while a table's query is being typed.
+const QUERY_HINT: &str = "type a query (word, key:value, -key:value), Enter applies, Esc cancels";
 
 /// The files the Sessions, Fleet and Log tabs are read from.
 #[derive(Clone)]
@@ -343,6 +345,10 @@ pub struct App {
     pub ask_filter: usize,
     /// Log's Actions section; None until it is first opened.
     pub actions: Option<hub_core::actions::Gathered>,
+    /// The view of Log's Actions table.
+    pub actions_table: DataTable,
+    /// The Actions table has the keys: its `f` and `s` are not the Forecast and Rundowns folds.
+    log_actions: bool,
     /// Where the page's sections start, from the last draw (n/N jump between them on Log and
     /// Infra), with the `hub_core::layout` section names.
     sections: Vec<(&'static str, usize)>,
@@ -432,6 +438,8 @@ impl App {
             log_open: vec![],
             ask_filter: 0,
             actions: None,
+            actions_table: DataTable::default(),
+            log_actions: false,
             sections: vec![],
             seek: None,
             infra_jobs: false,
@@ -1416,6 +1424,7 @@ impl App {
         self.scroll = 0;
         self.infra_jobs = false;
         self.log_days = false;
+        self.log_actions = false;
         self.seek = None;
         if t == Tab::Log {
             self.read_log_folds();
@@ -1614,7 +1623,17 @@ impl App {
             }
             return self.history_key(k);
         }
+        if self.log_actions && self.actions_key(k) {
+            return true;
+        }
         match k.code {
+            KeyCode::Enter | KeyCode::Char('/')
+                if !self.log_actions && self.log_open.contains(&"actions") =>
+            {
+                self.log_actions = true;
+                self.seek = Some("actions");
+                return k.code == KeyCode::Enter || self.actions_key(k);
+            }
             KeyCode::Char('h') => {
                 self.log_days = true;
                 self.scroll = 0;
@@ -1625,6 +1644,7 @@ impl App {
                 };
                 if let Some(i) = self.log_open.iter().position(|n| *n == name) {
                     self.log_open.remove(i);
+                    self.log_actions &= name != "actions";
                 } else {
                     self.log_open.push(name);
                     self.read_log_folds();
@@ -1637,6 +1657,21 @@ impl App {
             _ => return self.today_key(k),
         }
         true
+    }
+
+    /// The Actions table's keys. Esc or Backspace with nothing to clear gives the keys back to
+    /// Log; a key that is not the table's is Log's, so `n` still jumps and `a` still folds.
+    fn actions_key(&mut self, k: KeyEvent) -> bool {
+        let t = &mut self.actions_table;
+        if t.is_default() && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+            self.log_actions = false;
+            return true;
+        }
+        if t.typing.is_none() && k.code == KeyCode::Esc {
+            t.clear();
+            return true;
+        }
+        t.key::<hub_core::actions::Action>(k.code) != Took::No
     }
 
     /// The day's keys on Log: `[` and `]` step a day, n and N jump between sections.
@@ -1996,9 +2031,13 @@ impl App {
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.jv.table.typing.is_some() => {
-                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            Tab::Infra if self.jv.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Log if self.log_actions && self.actions_table.typing.is_some() => {
+                QUERY_HINT.into()
             }
+            Tab::Log if self.log_actions => format!(
+                "/ query  f state  s sort  S asc/desc  x clear  Esc back  j/k PgUp/PgDn ^d/^u scroll  {tabs} tabs  q quit"
+            ),
             Tab::Infra if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
@@ -2297,7 +2336,12 @@ impl App {
             let count = count.map_or(String::new(), |n| format!(" ({n})"));
             let open = self.log_open.contains(&name);
             let verb = if open { "folds" } else { "opens" };
-            l.push(head(format!("{title}{count}  {key} {verb} it")));
+            let filters = if open && name == "actions" {
+                ", Enter filters"
+            } else {
+                ""
+            };
+            l.push(head(format!("{title}{count}  {key} {verb} it{filters}")));
             if !open {
                 continue;
             }
@@ -2306,7 +2350,7 @@ impl App {
             l.extend(match name {
                 "actions" => match &self.actions {
                     None => reading("the actions"),
-                    Some(g) => logtab::actions(g, self.p, now, w),
+                    Some(g) => logtab::actions(g, &self.actions_table, self.p, now, w),
                 },
                 "changes" => fleet::changes(&b.watch, self.p, now, w),
                 "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
@@ -2907,6 +2951,64 @@ mod tests {
             key(&mut a, 'V');
         }
         assert_eq!(a.ask_filter, 0);
+    }
+
+    #[test]
+    fn logs_actions_table_takes_its_keys_and_gives_them_back() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        let at = |i, verb: &str| hub_core::actions::Action {
+            at: i,
+            actor: "shepherd".into(),
+            verb: verb.into(),
+            text: format!("row {verb}"),
+            priority: None,
+            reference: None,
+            source: "shepherd".into(),
+        };
+        a.actions = Some(hub_core::actions::Gathered {
+            actions: vec![at(2, "nudge"), at(1, "failed")],
+            ..Default::default()
+        });
+        a.log_open.push("actions");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(key('f'));
+        a.handle(key('f'));
+        assert_eq!(a.actions_table.view.state, "failed");
+        assert_eq!(
+            a.log_open,
+            ["actions"],
+            "f is the chip, not the Forecast fold"
+        );
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("row failed") && !s.contains("row nudge"), "{s}");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(
+            a.actions_table.is_default(),
+            "the first Esc clears the view"
+        );
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.contains(&"forecast"),
+            "the keys went back to Log"
+        );
+        a.log_open.retain(|n| *n != "forecast");
+        a.handle(key('/'));
+        a.handle(key('n'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.actions_table.view.q, "n", "/ goes straight to the query");
+        a.handle(key('/'));
+        a.handle(key('q'));
+        assert!(!a.quit, "q is typed into the query");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('2'));
+        a.handle(key('7'));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.contains(&"forecast"),
+            "leaving the tab left the table"
+        );
     }
 
     #[test]

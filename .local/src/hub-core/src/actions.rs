@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::jobs::read_or_empty;
 use crate::queue::Item;
+use crate::table::{Row, Val};
 
 /// Actions sent to a caller, newest first. `Gathered::counts` still counts the whole window.
 pub const MAX_ACTIONS: usize = 1000;
@@ -43,6 +44,36 @@ pub struct Action {
     pub reference: Option<String>,
     /// Which ledger said so (the module table).
     pub source: String,
+}
+
+/// A page at one of these priorities is under the `loud` chip; normal and low ones are not.
+const LOUD: [&str; 2] = ["high", "urgent"];
+
+impl Row for Action {
+    const COLUMNS: &'static [&'static str] = &["when", "actor", "verb", "prio", "source", "text"];
+    const STATES: &'static [&'static str] = &["all", "loud", "failed"];
+    const FACETS: &'static [&'static str] = &["actor", "verb"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| Val::Text(s.to_string());
+        match col {
+            "when" => Val::Num(self.at as f64),
+            "actor" => text(&self.actor),
+            "verb" => text(&self.verb),
+            "prio" => self.priority.as_deref().map_or(Val::None, text),
+            "source" => text(&self.source),
+            "text" => text(&self.text),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, state: &str) -> bool {
+        match state {
+            "loud" => self.priority.as_deref().is_some_and(|p| LOUD.contains(&p)),
+            "failed" => self.verb == "failed",
+            _ => true,
+        }
+    }
 }
 
 impl Action {
@@ -539,6 +570,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::View;
+
+    #[test]
+    fn the_table_filters_by_column_and_chip_and_sorts_by_when() {
+        let page = |at, verb: &str, priority: Option<&str>| Action {
+            priority: priority.map(str::to_string),
+            ..Action::new(at, "notify", verb, "t", "notify")
+        };
+        let rows = vec![
+            page(3, "page", Some("urgent")),
+            page(2, "page", Some("low")),
+            Action::new(1, "agentctl", "failed", "dream", "runs"),
+        ];
+        let at = |v: &View| v.apply(&rows).iter().map(|a| a.at).collect::<Vec<_>>();
+        assert_eq!(at(&View::new::<Action>("actor:notify", "", "", "")), [3, 2]);
+        assert_eq!(at(&View::new::<Action>("-verb:page", "", "", "")), [1]);
+        assert_eq!(at(&View::new::<Action>("dream", "", "", "")), [1]);
+        assert_eq!(at(&View::new::<Action>("", "loud", "", "")), [3]);
+        assert_eq!(at(&View::new::<Action>("", "failed", "", "")), [1]);
+        assert_eq!(at(&View::new::<Action>("", "", "when", "asc")), [1, 2, 3]);
+    }
     use chrono::FixedOffset;
 
     const SHEPHERD: &str = "## 2026-10-24 (pass 4)
