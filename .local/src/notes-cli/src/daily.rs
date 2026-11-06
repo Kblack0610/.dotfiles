@@ -868,6 +868,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     });
     status::Page {
         feed: status::Feed::Watches,
+        reviewed: Vec::new(),
         lead: Vec::new(),
         more: Vec::new(),
         stat,
@@ -963,6 +964,8 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         format!("{} {n}{board}", to_sheet(id, n, lane))
     };
     let mut rows: Vec<status::Row> = Vec::new();
+    let acked = crate::inbox_ack::acked(p);
+    let mut reviewed: Vec<String> = Vec::new();
     let (mut filed, mut joined, mut planned, mut left, mut refused, mut added) = (0, 0, 0, 0, 0, 0);
     for (i, ev) in events.iter().enumerate() {
         let at = ev.ts.get(11..16).unwrap_or("--:--");
@@ -1036,7 +1039,23 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
             }
             _ => continue,
         };
-        rows.push(row(attention, i, head, detail));
+        // A handled row is a task the human ticks once read (`notes inbox ack`, or its checkbox
+        // in agent-web), keyed by its event's ts; a ticked one folds into `+N reviewed`.
+        if attention {
+            rows.push(row(true, i, head, detail));
+            continue;
+        }
+        let done = acked.contains(&ev.ts);
+        let head = format!(
+            "[{}] {head} <!-- ack:{} -->",
+            if done { 'x' } else { ' ' },
+            ev.ts
+        );
+        if done {
+            reviewed.push(head);
+        } else {
+            rows.push(row(false, i, head, detail));
+        }
     }
     let waiting = crate::outbox::lines(p).unwrap_or_default();
     let shown = |l: &crate::sheet::InboxLine| {
@@ -1102,6 +1121,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
             }
         )),
         rows,
+        reviewed,
         lead: vec![status::Section {
             heading: "Decisions for you".into(),
             guide: Some("Answer in the outbox: `<id>: <your answer>`".into()),
@@ -2757,22 +2777,19 @@ mod tests {
             "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n",
         )
         .unwrap();
+        // The human read the joined row: it folds into `+1 reviewed`, still tickable.
+        crate::inbox_ack::mark(&p, &dup.ts, true).unwrap();
         let page = inbox_page_in(&p, &[("demo".into(), demo)]);
         let out = status::render(&p.root, &p.daily, &page);
-        // Every event row leads with its HH:MM, which is the test's clock: mask it.
-        let masked: String = out
-            .lines()
-            .map(|l| match l.strip_prefix("- ") {
-                Some(r)
-                    if r.len() > 6
-                        && r.as_bytes()[2] == b':'
-                        && r[..5].chars().all(|c| c.is_ascii_digit() || c == ':') =>
-                {
-                    format!("- HH:MM{}\n", &r[5..])
-                }
-                _ => format!("{l}\n"),
-            })
-            .collect();
+        // Every event row leads with its HH:MM and a handled one ends with its event's ts, both
+        // the test's clock: mask them.
+        let masked = crate::ingest::on_day(&p, &dup.ts[..10])
+            .iter()
+            .fold(out.clone(), |o, e| {
+                o.replace(&format!("ack:{}", e.ts), "ack:TS")
+                    .replace(&format!("- {} ", &e.ts[11..16]), "- HH:MM ")
+                    .replace(&format!("] {} ", &e.ts[11..16]), "] HH:MM ")
+            });
         let body = masked
             .split_once("## Needs you\n")
             .and_then(|(_, b)| b.split_once("\n---\n"))
@@ -2788,13 +2805,14 @@ mod tests {
 - waiting in the outbox: new one
 
 ## Handled today
-- HH:MM filed [[demo/README|dm-4]] demo: feat(ui): loading screens
-- HH:MM joined nc-9 nc: focus and outbox
-- HH:MM planned [[demo/README|dm-5]] demo: feat(ui): a brand kit
+- [ ] HH:MM filed [[demo/README|dm-4]] demo: feat(ui): loading screens <!-- ack:TS -->
+- [ ] HH:MM planned [[demo/README|dm-5]] demo: feat(ui): a brand kit <!-- ack:TS -->
   - added: 3 plan lines, split into 2 rows
-- HH:MM added [[demo/README|dm-6]] demo by 5227cc0a: decide(squad): followers and a squad that join and ...
-- HH:MM filed [[demo/agent/README|dm-7]] demo (agent board): test(x): a follow-up
-- HH:MM moved to [[demo/README|demo]] inbox: still in the inbox
+- [ ] HH:MM added [[demo/README|dm-6]] demo by 5227cc0a: decide(squad): followers and a squad that join and ... <!-- ack:TS -->
+- [ ] HH:MM filed [[demo/agent/README|dm-7]] demo (agent board): test(x): a follow-up <!-- ack:TS -->
+- [ ] HH:MM moved to [[demo/README|demo]] inbox: still in the inbox <!-- ack:TS -->
+- +1 reviewed
+  - [x] HH:MM joined nc-9 nc: focus and outbox <!-- ack:TS -->
 
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting

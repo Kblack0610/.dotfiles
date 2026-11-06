@@ -753,6 +753,65 @@ kpi_fixture() {
   assert_line '| revert_rate | - | - | max 0.1 | - |'
 }
 
+@test "kpi --at reads both windows as of T with the comms and counted-now KPIs null; --trend is one 7d row a day" {
+  kpi_setup; kpi_fixture
+  echo '{"buzzes_per_day":{"7d":63.1,"28d":28.5},"comms_pass_pct":{"7d":61,"28d":40}}' > "$COMMSKPI"
+  run "$SUBJECT" kpi --json --at $((T0 - 864000))
+  assert_success
+  run jq -c '[.sessions["7d"], .sessions["28d"], .prs_per_session["7d"], .buzzes_per_day["7d"], .board_open["7d"]]' <<<"$output"
+  assert_output '[1,1,1,null,null]'
+  run "$SUBJECT" kpi --json
+  run jq -c '[.sessions["7d"], .buzzes_per_day["7d"]]' <<<"$output"
+  assert_output '[1,63.1]'
+  run "$SUBJECT" kpi --trend 3 --json
+  assert_success
+  run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
+  assert_output '[[0,1,1],3]'
+  run "$SUBJECT" kpi --trend 3
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate |'
+  run "$SUBJECT" kpi --trend 0
+  assert_failure 2
+  run "$SUBJECT" kpi --at 'not a time'
+  assert_failure 2
+}
+
+@test "effect: N days before a change against N after, a verdict by which way is better, pending until the after window ends" {
+  kpi_setup
+  out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, reverted_7d: 0, cost_usd: 10, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, reverted_7d: 1, cost_usd: 2, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "r1", project: "game", runner: true, updated_epoch: ($t - 1296000), prs_merged: 50, reverted_7d: 0, cost_usd: 0}'
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
+  assert_success
+  run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"]]'
+  run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
+  assert_success
+  run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
+  assert_output $'["pending"]\n[null]'
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10
+  assert_line '| cost_per_pr | 5 | 1 | improved |'
+}
+
+@test "effect: a PR is read as its merge time; an unmerged PR or a bare number is refused" {
+  kpi_setup
+  out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, cost_usd: 10}'
+  out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, cost_usd: 2}'
+  GHLOG="$SANDBOX/gh.log"; MERGED=$(date -u -d @$((T0 - 1728000)) +%FT%TZ)
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0\n' "$GHLOG" "$MERGED" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  run "$SUBJECT" effect 'o/r#7' --days 10 --json
+  assert_success
+  run jq -c '[.ref, (.kpis[] | select(.kpi == "cost_per_pr") | .verdict)]' <<<"$output"
+  assert_output '["o/r#7","improved"]'
+  run grep -c 'pr view 7 -R o/r' "$GHLOG"
+  assert_output 1
+  run "$SUBJECT" effect 'x/y#7'
+  assert_failure 1
+  assert_output --partial 'not merged'
+  run "$SUBJECT" effect 7
+  assert_failure 2
+  assert_output --partial 'owner/repo#7'
+}
+
 @test "kpi: runners_bad counts FAILED or STALLED scheduled runners, not off, hand-fired or retired ones" {
   kpi_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
