@@ -671,14 +671,23 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                use hub_core::{boards, capacity, session_table as table};
+                use hub_core::{capacity, session_table as table};
                 let feed = table::feed(runner.as_ref(), &table::registry());
                 let _ = tx.send(Msg::SessionFeed(Box::new(feed)));
-                let state = table::read_state(&boards::fleet_state());
-                let cap = capacity::read(runner.as_ref(), &state);
+                let cap = capacity::read_fleet(runner.as_ref());
                 let _ = tx.send(Msg::Capacity(Box::new(cap)));
             });
         }
+    }
+
+    /// What `read_sessions` reads in its workers, here and now, for `--once`.
+    pub fn read_sessions_now(&mut self) {
+        use hub_core::{capacity, session_table as table};
+        let runner = self.runner.clone();
+        self.controls.set((self.gather)(runner.as_ref()));
+        self.controls
+            .read_feed(table::feed(runner.as_ref(), &table::registry()));
+        self.controls.capacity = Some(capacity::read_fleet(runner.as_ref()));
     }
 
     /// Start a timer the header says is stopped, confirmed; the re-read shows it on.
@@ -2516,6 +2525,24 @@ mod tests {
 
     fn fixture_sessions(_: &dyn Runner) -> Snapshot {
         crate::controls::tests::fixture()
+    }
+
+    #[test]
+    fn read_sessions_now_fills_everything_the_tab_draws() {
+        // `--once` has no workers: a source left out here is a part missing from the printed page.
+        let mut a = app(Tab::Sessions);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.gather = fixture_sessions;
+        a.read_sessions_now();
+        assert!(a.controls.capacity.is_some(), "the header has its parts");
+        assert!(
+            !a.controls.rows().is_empty(),
+            "the snapshot reached the table"
+        );
+        let ran = fake.0.lock().unwrap().join("\n");
+        assert!(ran.contains("agentctl-session-outcomes ended"), "{ran}");
+        assert!(ran.contains("fleet-dispatch headroom --json"), "{ran}");
     }
 
     #[test]
