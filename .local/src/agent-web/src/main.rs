@@ -123,6 +123,7 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
+        .route("/api/projects/{name}/epics", get(projects::epics))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))

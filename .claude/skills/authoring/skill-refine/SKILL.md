@@ -35,9 +35,9 @@ Four layers, in order. The first is ground truth; the rest are judgment.
 skill-drift --json
 ```
 
-**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `UNLISTED` (on disk, absent from CLAUDE.md), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts).
+**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `LISTBUDGET` (the whole listing over its budget).
 
-**Static** (`skill-drift --lint .`, and CI already gates every PR on these, so a finding here means something landed before the gate existed): `NOFRONTMATTER`, `BADNAME`, `DUPNAME`, `BADMETA`, `CATCOLLIDE`, `LONGDESC`, `NONASCII`, plus the advisory `DESCNEAR`.
+**Static** (`skill-drift --lint .`, the checks `~/.local/src/docs/skills.md` names): CI gates every PR on these, so a finding here is debt frozen in `tests/skill-lint.baseline` or something that landed before the gate existed.
 
 `skill-drift` reports **all** findings and marks which are `new` relative to `~/.agent/skill-drift.baseline`. Read the whole set in an audit; the baseline marks what is new, not so old debt disappears.
 
@@ -82,7 +82,7 @@ Rank by blast radius: a skill invoked constantly with a dead path outranks a rar
 2. Walk findings in rank order. For each: show the diff, confirm, edit.
 3. Route the fix to the right tool:
    - Skill prose -> edit the `SKILL.md` directly.
-   - CLAUDE.md registration (`UNLISTED`/`GHOST`) -> the `update-rules` skill.
+   - CLAUDE.md registration (`GHOST`) -> the `update-rules` skill.
    - `UNDEPLOYED` -> create the symlink into `~/.claude/skills/`.
 4. Re-run `skill-drift` to confirm the finding is gone and nothing new appeared.
 5. If the fixed set is now the accepted state, refresh the baseline: `skill-drift --write-baseline`.
@@ -94,7 +94,7 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 
 1. Name the evidence: which sessions/lessons show the repetition.
 2. Confirm scope and name with the user. **Never auto-create a skill file.**
-3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. Which repo is decided by `.githooks/sensitive-tokens.txt`, not by taste: if the draft matches any of those patterns it goes in `~/.dotfiles-private`, otherwise public plus a `.gitignore` allowlist line.
+3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. `dotfiles-land` decides which repo.
 4. Run `skill-deploy` - never hand-write the symlink. A skill that is not linked is invisible. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.
 
@@ -105,7 +105,7 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 - **`*.example.internal` hostnames are deliberate sanitization** for the public repo (see `dotfiles-land`), not drift. Same for `AcmeCorp` and `YYYY-MM-DD` placeholders. Do not "fix" them into real hostnames - that leaks infra into a public repo.
 - **Do not silence a finding by weakening the check.** If `skill-drift` is wrong, fix its logic or use the `skill-drift: ignore` line marker with a stated reason.
 - **A skill is not stale just because it is old.** Verify against the filesystem before proposing a rewrite.
-- **Keep the house writing style**: plain ASCII, no em dashes, no hard-wrapping.
+- **Hold every edit to `~/.local/src/docs/skills.md`**, and do not hard-wrap.
 
 ## Cadence
 

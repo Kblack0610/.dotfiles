@@ -16,8 +16,7 @@ Rules for this repo only. Rules that span repos live in `~/.claude/CLAUDE.md`.
 
 ## Skill corpus
 
-- Skills live at `.claude/skills/<category>/<name>/SKILL.md` in one of the two repos; `skill-deploy` flattens them into `~/.claude/skills/<name>/`, which is the ONLY path anything else should reference. A repo path breaks on re-categorisation and on a move between repos.
-- Frontmatter is `name`, `description`, and `metadata.{category,tags,reviewed}`; CI enforces it (`skill-drift --lint`). There is no version field on purpose: git answers "what changed", `reviewed` answers "when was this last checked true".
+- The standard for skills, commands and agents is `.local/src/docs/skills.md`, enforced by `skill-drift --lint` through `.github/workflows/skill-lint.yml`, which the private repo and game repos call too.
 - New skill: copy `.claude/skills/SKILL-TEMPLATE.md`. `skill-refine` decides what needs changing in an existing one.
 
 ## Agent runtime
