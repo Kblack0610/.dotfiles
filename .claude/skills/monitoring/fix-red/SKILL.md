@@ -59,8 +59,8 @@ Re-run the same probe or check from step 2 and put the before and after in the P
 
 A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet red too (`~/.config/fleet-dispatch/policy.md`). Nobody watches it merge, so it gets one more check than other work:
 
-1. Run `/code-review high` on the diff. Fix each finding it confirms, or say in the PR why it does not apply.
-2. Merge with `agent-land <N>`. It waits for every check, merges only that head and records the merge on the item. A red check is fixed, never re-run: after two failed attempts, stop and go to step 6.
+1. Run `/code-review high` on the diff. Fix each finding it confirms, or say in the PR why it does not apply, and put the line `Review: /code-review high, <what it found and what you did>` in the PR body.
+2. Merge with `agent-land <N>`. On a tier-3 item (a harness project, or a `tier3` tag) it refuses a body with no `Review:` line or checks that never ran. It waits for every check, merges only that head and records the merge on the item. A red check is fixed, never re-run: after two failed attempts, stop and go to step 6.
 3. Once the merge is live (the project's post-land step), re-run the probe. Still red is a finding: say so on the board row.
 
 `fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not. `reds_unfixed` on `fleet-bench chain` counts the misses.
