@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [docs, briefs, writing]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-06"
 ---
 
 # one-pager
@@ -77,6 +77,14 @@ Every brief for a registered project opens with the four lines in its template, 
 - Epic: the row id, added when the epic is filed. This line is how the project page ties a brief to its epic.
 
 A brief in `~/.notes/lab/ideas/` has no project yet, so it may omit Type standard and Epic.
+
+## From a design( row
+
+`fleet-dispatch` starts this skill for a `design(` row (`.config/fleet-dispatch/kinds.json`: rung propose, exit doc+ask), and its brief says the run ends on a doc and an ask. No one is at the window, so this replaces Format selection and Interview:
+
+- Ask nothing in the conversation. Take the format from the row (one-pager when it names none) and draft from the row, its detail lines and the `decide(` row or answered ask that let it in (`notes-system`, "Project board").
+- A head line those do not fill reads `TBD: <what is missing>`, and the ask's `--context` lists each one.
+- Save it as Output says. The one ask is its review: `--options 'a=approve: the brief stands and its epic is filed from it|b=revise: say what changes|c=drop: the idea stops here'`, with `--context` naming the brief's path.
 
 ## Output
 
