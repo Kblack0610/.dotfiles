@@ -282,6 +282,7 @@ def scan(path, start, end, acc):
 
 def registry(start, end, root):
     by_acct, by_proj, n, cost, last = defaultdict(lambda: Counter()), defaultdict(lambda: Counter()), 0, 0.0, {}
+    by_sess = {}
     for f in glob.glob(os.path.join(root, "*", "sessions.jsonl")):
         rows = {}
         for line in open(f, errors="ignore"):
@@ -308,7 +309,8 @@ def registry(start, end, root):
                 b[k]["output"] += tok.get("output", 0) or 0
             n += 1
             cost += c
-    return n, cost, by_acct, by_proj, last
+            by_sess[r["session_id"]] = by_sess.get(r["session_id"], 0) + c  # one sid in two registries counts in both, as cost does
+    return n, cost, by_acct, by_proj, last, by_sess
 
 
 def merged_prs(start, end, root):
@@ -419,7 +421,7 @@ def main():
             continue
         scan(p, start, end, acc)
 
-    n, cost, by_acct, by_proj, reg_last = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
+    n, cost, by_acct, by_proj, reg_last, reg_by_sess = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
     prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
@@ -477,7 +479,7 @@ def main():
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
                    "transcripts": len(set().union(*acc["kind_files"].values()))},
-        "registry": {"sessions": n, "cost_usd": round(cost, 2)},
+        "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}

@@ -852,6 +852,8 @@ def tool_output_file(path, since, until, emit):
     uses, pending, seen_msgs, turns = {}, [], set(), 0
     project, seg = None, {"start": 0, "in_win": 0, "carried": 0, "chars": 0, "last": ""}
     kind = "subagent" if "subagents" in path.parts else "main"
+    # The session that pays for this transcript: its own, or its parent's for a subagent thread.
+    session = path.parts[path.parts.index("subagents") - 1] if kind == "subagent" else path.stem
     first_ctx, prev_ctx, prev_ts, live_tool, compacted, in_win = 0, 0, 0.0, 0, False, 0
     ttl = 300  # the TTL of the prefix written before: 1h when that write was ephemeral_1h
 
@@ -929,7 +931,7 @@ def tool_output_file(path, since, until, emit):
             tid = b.get("tool_use_id")
             name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
-                            "filetype": ftype, "kind": kind,
+                            "filetype": ftype, "kind": kind, "session": session,
                             "chars": len(text), "at": turns})
     settle(False)
     if in_win and kind == "main":
@@ -946,16 +948,37 @@ def window_bound(s):
     return t.strftime("%Y-%m-%dT%H:%M:%S"), t.timestamp()
 
 
+RESULT_BY = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
+             "filetype": lambda r: r.get("filetype"), "kind": lambda r: r["kind"],
+             "session": lambda r: r["session"]}  # cuts of tool results
+TURN_BY = {"day": lambda r: r["ts"][:10],
+           "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
+           "project": lambda r: r["project"]}  # cuts of responses too
+
+
+def tool_output_by(v):
+    """A --by value: one cut, or two cuts of tool results joined by a comma."""
+    keys = v.split(",")
+    if (len(keys) == 1 and (keys[0] in RESULT_BY or keys[0] in TURN_BY)) or \
+            (len(keys) == 2 and keys[0] != keys[1] and all(k in RESULT_BY for k in keys)):
+        return v
+    raise argparse.ArgumentTypeError(f"{v!r}: one of {', '.join([*RESULT_BY, *TURN_BY])}, "
+                                     f"or two of {', '.join(RESULT_BY)} joined by a comma")
+
+
 def cmd_tool_output(a):
     """Token use as a whole (API usage per response) and the tool output behind it."""
     since, since_epoch = window_bound(
         a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
     until = window_bound(a.until)[0] if a.until else "9999"
-    bucket_of = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
-                 "day": lambda r: r["ts"][:10],
-                 "week": lambda r: datetime.strptime(r["ts"][:10], "%Y-%m-%d").strftime("%G-W%V"),
-                 "project": lambda r: r["project"], "filetype": lambda r: r.get("filetype"),
-                 "kind": lambda r: r["kind"]}[a.by]
+    keys = a.by.split(",")
+    fns = [{**RESULT_BY, **TURN_BY}[k] for k in keys]
+
+    def bucket_of(r):
+        """Two keys (`session,tool`) make a row per pair, its key a list of both. A result with
+        no value for a cut (filetype of a non-file tool) has no row, as with one key."""
+        k = tuple(f(r) for f in fns)
+        return None if None in k else k if len(k) > 1 else k[0]
     totals = {f: 0 for f in USAGE_FIELDS}
     totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0)
     cw_by_cause = {k: 0 for k in CW_CAUSES}
@@ -987,13 +1010,13 @@ def cmd_tool_output(a):
             cw_by_cause[r["cw_cause"]] += r["cache_creation_input_tokens"]
             for k, v in zip(split, r["split"]):
                 split[k] += v
-            if a.by in ("day", "week", "project"):
+            if a.by in TURN_BY:
                 x = row(bucket_of(r))
                 x["turns"] += 1
                 for f in USAGE_FIELDS:
                     x[f] += r[f]
             return
-        if a.by == "command" and r["tool"] != "Bash":
+        if "command" in keys and r["tool"] != "Bash":
             key = None
         else:
             key = bucket_of(r)
@@ -1067,11 +1090,12 @@ def cmd_tool_output(a):
           + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
                     f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
                     for x in long[:3]) + "\n")
-    if a.by in ("tool", "command", "filetype", "kind"):
+    if a.by not in TURN_BY:
         print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {a.by}"))
         for r in order:
+            key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
             print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
-                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {r['key']}")
+                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {key}")
     else:
         print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
                      f"{'bash calls':>10} {'chars/call':>10} {'carried~tok':>13}  {a.by}"))
@@ -1599,10 +1623,12 @@ def main():
     to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
     to.add_argument("--long-turns", type=int, default=LONG_TURNS,
                     help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
-    to.add_argument("--by", choices=["tool", "command", "filetype", "kind", "day", "week", "project"],
-                    default="tool", help="command = Bash calls by command head; filetype = Read and "
-                                         "sed/cat/head/tail by the file's class and extension; kind = "
-                                         "main session or subagent")
+    to.add_argument("--by", type=tool_output_by, default="tool",
+                    help="tool, command, filetype, kind, session, day, week or project; command = Bash "
+                         "calls by command head; filetype = Read and sed/cat/head/tail by the file's "
+                         "class and extension; kind = main session or subagent; session = the session "
+                         "that pays (a subagent's parent). Two of the first five, comma-joined "
+                         "(session,tool), give a row per pair")
     to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
     to.add_argument("--project", "-p", help="substring match on repo")
     to.add_argument("--json", action="store_true")
