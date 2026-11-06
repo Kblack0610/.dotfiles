@@ -1,7 +1,0 @@
-# Command shapes the token filter never rewrites: one ERE per line, matched against the
-# command as written. Tracked defaults; `token-filter verify --apply` and `token-filter skip
-# add` write to ~/.agent/token-filter/skip instead. Why each rule exists goes on the line above.
-#
-# rtk 1.1.0 ls lists directories first and appends sizes: `ls -t | head` returns different
-# files, and a short listing grows (verify 2026-11-04: 3 of 3 bad results were ls).
-(^|[;&|(] *)ls\b

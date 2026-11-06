@@ -1,17 +1,15 @@
 #!/usr/bin/env bats
 # claude-recall tool-output: token use per API response and the tool output behind it, from a
 # fixture transcript. Pins dedup by message id, carried cost stopping at a compaction, the
-# Bash command head past cd/rtk/git -C, and method windows from the token-filter switch log.
+# and the Bash command head past cd, rtk (the 2026-11 trial's wrapper) and git -C.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   RECALL="$BATS_TEST_DIRNAME/../../.local/bin/claude-recall"
   D="$BATS_TEST_TMPDIR"
-  mkdir -p "$D/projects/p" "$D/state" "$D/cache"
-  export CLAUDE_TRANSCRIPTS="$D/projects" TOKEN_FILTER_STATE="$D/state" TOKEN_FILTER_CACHE="$D/cache"
-  echo '{"ts":"2026-10-20T10:02:30Z","method":"rtk","from":"off","by":"test"}' > "$D/state/methods.jsonl"
-  echo '{"id":"b2","orig":"git -C /x log -3"}' > "$D/cache/rewrites.jsonl"
+  mkdir -p "$D/projects/p"
+  export CLAUDE_TRANSCRIPTS="$D/projects"
   local cwd='"cwd":"/home/u/proj-agent-a70248c5e81708b6e"'
   u() { echo "\"usage\":{\"input_tokens\":$1,\"cache_creation_input_tokens\":$2,\"cache_read_input_tokens\":$3,\"output_tokens\":$4}"; }
   # m1 is written as two records (one per content block) with one usage: it counts once.
@@ -59,15 +57,10 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_output '[150,2,0,[]]'
 }
 
-@test "by command: the head is found past cd, rtk and git -C; filtered counts rewrites" {
+@test "by command: the head is found past cd, rtk and git -C" {
   o="$(out --by command)"
-  run jq -c '[.rows[] | [.key,.calls,.chars,.carried,.rewritten]]' <<<"$o"
-  assert_output '[["grep",1,100,200,0],["git log",1,10,0,1]]'
-}
-
-@test "by method: responses and Bash calls land in the window that was live" {
-  run jq -c '[.rows[] | [.key,.turns,.cache_read_input_tokens,.bash_calls,.rewritten]]' <<<"$(out --by method)"
-  assert_output '[["off",3,600,1,0],["rtk",1,50,1,1]]'
+  run jq -c '[.rows[] | [.key,.calls,.chars,.carried]]' <<<"$o"
+  assert_output '[["grep",1,100,200],["git log",1,10,0]]'
 }
 
 @test "by project folds an Agent-tool worktree (agent-a<hex>) into its repo" {
