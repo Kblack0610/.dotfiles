@@ -1578,6 +1578,36 @@ pipeline_fixture() {
   assert_output --partial NOOP
 }
 
+@test "retro holds new rows while board_open is past board_open_max and says why; under it files; #requested is never held" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  echo board_open_max=2 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_failure
+  assert_output 'full: board_open 3 past board_open_max 2'
+  run "$SUBJECT" retro
+  assert_success
+  assert_output --partial '0 added, 0 refreshed, 3 held (full: board_open 3 past board_open_max 2)'
+  run grep -c ' add ' "$NLOG"
+  assert_output 0
+  run outcome
+  assert_output --partial WORKED
+  # The human's ask is not intake: a #requested row files over the limit.
+  run bash -c '. "$1"; board_upsert "$(printf "check(x): asked\tcheck(x): asked #requested\t#low\n")" && echo "$UPSERT_ADDED $UPSERT_HELD"' _ "$SUBJECT"
+  assert_output '1 0'
+  # Negative control: under the limit the same retro files.
+  echo board_open_max=10 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_success
+  assert_output 'room: board_open 3 of board_open_max 10'
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c ' add ' "$NLOG"
+  assert_output 2
+}
+
 @test "retro reads an add that exits 3 (an open near-dup) as filed, and any other failure as FAILED" {
   kpi_setup; kpi_fixture
   ADD_RC=3 run "$SUBJECT" retro
