@@ -45,17 +45,6 @@ prompt_sha() {
   [ -n "$p" ] && [ -r "$p" ] && git hash-object "$(readlink -f "$p")" 2>/dev/null
 }
 
-# in_session_picks: {ask id: option} for each answer typed in a session as free text that names
-# exactly one of the ask's options (agent-ask's named_option); the rest stay unscorable.
-in_session_picks() {
-  local id opts ans pick
-  while IFS=$'\t' read -r id opts ans; do
-    pick="$(named_option "$opts" "$ans")"
-    [ -n "$pick" ] && jq -cn --arg i "$id" --arg p "$pick" '{($i): $p}'
-  done < <(jq -r 'select((.answer // "") | startswith("in session:")) | select((.options // "") != "")
-                  | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
-}
-
 # eval_json <agents> <any-prompt 0|1> <days or empty> -> the whole report as one JSON object
 eval_json() {
   local want="$1" any="$2" days="$3" shas="{}" a sha tmp rc=0
@@ -84,11 +73,7 @@ eval_json() {
 
 # JQ_EVAL: the scoring, over the slurped sources above.
 # shellcheck disable=SC2016
-JQ_EVAL='
-  def epoch: if . == null or . == "" then null else
-    (.[0:19] + "Z" | fromdateiso8601? // null) as $u | if $u == null then null else
-    $u - ((.[19:] | capture("(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})")
-           | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) // 0) end end;
+JQ_EVAL="$JQ_EPOCH"'
   def pct($a; $b): if $b > 0 then ($a * 1000 / $b | round) / 10 else null end;
   def quantile($q): sort | if length == 0 then null else .[((length - 1) * $q) | floor] end;
   # Wilson score interval, 95%, for k right of n, in percent.
@@ -277,7 +262,7 @@ replay() {
   done < <(replay_labelled)
   if [ "$rc" = 0 ] && [ "$n" -gt 0 ]; then
     find "$dir/blind" -mindepth 2 -name '*.md' -printf '%f\n' | sed 's/\.md$//' |
-      AGENT_ASK_ROOT="$dir/blind" AGENT_ASK_JUDGE_CMD="$JUDGE_EVAL_REPLAY_CMD" \
+      AGENT_ASK_ROOT="$dir/blind" AGENT_ASK_PRECEDENTS_ROOT="$ASKS_ROOT" AGENT_ASK_JUDGE_CMD="$JUDGE_EVAL_REPLAY_CMD" \
         xargs -r -P "$JUDGE_EVAL_REPLAY_JOBS" -n 1 "$ask" judge >/dev/null 2>&1
     local copy pat='^(judge|judge_[a-z]+|judged_at): '
     while IFS= read -r copy; do

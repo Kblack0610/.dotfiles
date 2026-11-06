@@ -98,9 +98,11 @@ answer:                   # filled by `answer`
 answered_at:
 answered_by:              # human | judge | shepherd
 judge:                    # the answer judge: human | take-recommend | answer:<text> | error
-judge_rule:               # the class that decided it, derived from the score
+judge_rule:               # what decided it: the criterion that sent it to the human, else its type
+judge_type:               # the kind of question, from the policy's list, on every model verdict
 judge_met:                # the criteria that held, space separated
 judge_reason:
+judge_evidence:           # the quote behind judge_rule; for an answerable verdict, what grounded it
 judge_call:               # the call's line in calls.jsonl
 judged_at:
 judge_override:           # on a live answer: the option the human's next message named instead, or none
@@ -111,19 +113,21 @@ resume: /captain resume
 
 ## The answer judge
 
-`post` runs `agent-ask judge <id>` in the foreground, behind a `AGENT_ASK_JUDGE_TIMEOUT` guard (30s; past it the verdict is `judge: error`, "timed out", and the ask stays with the human). One call to the registered agent `ask-judge` (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --agent ask-judge`; its conf sets role, model and prompt) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_rule`, `judge_reason`, `judge_call` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule `gate`.
+`post` runs `agent-ask judge <id>` in the foreground, behind a `AGENT_ASK_JUDGE_TIMEOUT` guard (30s; past it the verdict is `judge: error`, "timed out", and the ask stays with the human). One call to the registered agent `ask-judge` (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --agent ask-judge`; its conf sets role, model and prompt) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_rule`, `judge_type`, `judge_reason`, `judge_evidence`, `judge_call` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule `gate`.
 
-The judge never picks the call. It answers each criterion of the policy with a quote and yes or no, per decision of the ask, and `judge_derive` in `.local/lib/judge.sh` derives the class: `knowledge`, `external`, `taste` or `unclear-ask` on any decision, or `reversible` or `grounded` missing on any decision, is `human`; otherwise `restates-rule` when every decision restates a rule, else `clear`. A criterion is a `- (id) ...` bullet in the policy and a key in `verdict.schema.json`, so adding one is a change to both and to `judge_derive`. `judge_met` lists the criteria that held. A call that fails, or a reply that is not a full score is recorded as `judge: error` with the reason, never dropped. `judge_call` links the verdict to its `calls.jsonl` line, and the nightly `agentctl-session-outcomes` run sends each verdict to Langfuse as a score on that call's session.
+The judge never picks the call. It names the ask's type, then answers each criterion of the policy with a quote and yes or no, per decision of the ask, and `judge_derive` in `.local/lib/judge.sh` derives the rule: `knowledge`, `external`, `taste`, `unclear-ask` or `against-precedent` on any decision, or `reversible` or `grounded` missing on any decision, is `human` and names that criterion; otherwise the rule is the type. A criterion is a `- (id) ...` bullet in the policy and a key in `verdict.schema.json`, and a type is a `` - `id`: ... `` bullet and a value of the schema's `type` enum; `agent_ask.bats` "the policy, the schema and judge_derive name the same criteria and types" keeps them equal. `other` is what no type covers: it is never live, and its count says a type is missing.
 
-### Live classes
+The input also carries the human's latest disagreements (`agent-ask precedents <before>`): asks they answered with another option than the recommendation, and live answers they overrode, all decided before this ask was posted and capped by `PRECEDENTS` in the conf. One that covers the same decision meets `against-precedent`, so a disagreement changes the next verdict with no rule written. They are computed from the ask files, and a replay reads them from `AGENT_ASK_PRECEDENTS_ROOT`.
 
-A rule in `LIVE_RULES` of the private `~/.config/agentctl/agents/ask-judge.conf` is answered live when the call is `take-recommend` or `answer` and the ask is not a gate or approval. `post` then records the answer with `answered_by: judge` and prints, on stderr, `Answered by the judge (<rule>): <option> - <reason>. Proceed; the human can override in this session.` The asker reads it there, so nothing is typed into its pane and no board row is filed. Every other rule is shadow: the card and agent-web's ask card show `Judge: would ...` and `judge-eval` scores the call against the human's answer.
+### Live types
 
-The human's next message in that session reviews the live answer (`settle-session`, from the UserPromptSubmit hook). A message naming exactly one other option records `judge_override: <option>`; anything else records `none`, so later messages about other things cannot read as an override. An override demotes the class when it is among the class's first `AGENT_ASK_LIVE_BAR` (30) live answers, or when precision falls under `AGENT_ASK_LIVE_PRECISION` (90%) after that. A demote appends the rule to `~/.local/state/agent-ask/demoted` (runtime state, so no script edits the tracked conf), pages high, and files a `check(judge):` row on the agent-runtime board. The class is shadow from then until its line is deleted there (re-promote) or it is dropped from `LIVE_RULES` by PR.
+A rule in `LIVE_RULES` of the private `~/.config/agentctl/agents/ask-judge.conf` is answered live when the call is `take-recommend` or `answer` and the ask is not a gate or approval. `post` then records the answer with `answered_by: judge` and prints, on stderr, `Answered by the judge (<rule>): <option> - <reason>. Proceed; the human can override in this session.` The asker reads it there, so nothing is typed into its pane and no board row is filed. Every other rule is shadow, and an answerable one shows "type not proven": the card and agent-web's ask card show `Judge: would ...` and `judge-eval` scores the call against the human's answer.
 
-Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`). A shadow class goes live when `judge-eval` shows it past the bar, by adding it to `LIVE_RULES`.
+The human's next message in that session reviews the live answer (`settle-session`, from the UserPromptSubmit hook). A message naming exactly one other option records `judge_override: <option>`; anything else records `none`, so later messages about other things cannot read as an override. An override demotes the type when `DEMOTE_OVERRIDES` (2) of its last `DEMOTE_WINDOW` (10) live answers were overridden, both numbers in the conf. A demote appends the rule to `~/.local/state/agent-ask/demoted` (runtime state, so no script edits the tracked conf), pages high, and files a `check(judge):` row on the agent-runtime board. The class is shadow from then until its line is deleted there (re-promote) or it is dropped from `LIVE_RULES` by PR.
 
-`AGENT_ASK_NO_JUDGE=1` skips the call and `AGENT_ASK_LIVE_RULES` replaces the conf's list; the test sandbox sets the first.
+Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`). A shadow type goes live only on the human's answer, once `judge-eval` shows the live set past the bar, by adding it to `LIVE_RULES`.
+
+`AGENT_ASK_NO_JUDGE=1` skips the call, and `AGENT_ASK_<key>` replaces the conf's `LIVE_RULES`, `PRECEDENTS`, `DEMOTE_OVERRIDES` or `DEMOTE_WINDOW`; the test sandbox sets the first.
 
 ## Producer / consumer wiring
 
