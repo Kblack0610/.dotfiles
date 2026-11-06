@@ -7,7 +7,7 @@
 # Fires only when ALL of these hold:
 #   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
 #   2. nothing is in progress    — no `- [/]` item in today's Focus
-#   3. the work went untracked   — no `notes ptask|focus` or `agent-queue` write by this
+#   3. the work went untracked   - no `notes ptask` or `agent-queue` write by this
 #                                  session, and no `$AGENT_QUEUE_ITEM` from the dispatcher
 #   4. not already fired         — at most ONCE per session
 #
@@ -101,7 +101,7 @@ case "$LAST_RUN" in ''|*[!0-9]*) LAST_RUN=0 ;; esac
 
 NOW=$(date +%s)
 # With no prior mark (first run for this project) there is no turn window to compare a
-# focus write against, and a bare 0 would make every focus write ever logged look like it
+# ptask write against, and a bare 0 would make every ptask write ever logged look like it
 # happened just now — the gate would fail open exactly once per project, silently. Fall
 # back to a conservative recent window instead: a turn is not 15 minutes of wall clock.
 [ "$LAST_RUN" -eq 0 ] && LAST_RUN=$((NOW - 900))
@@ -191,8 +191,9 @@ WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
 
 # --- 3. was the work tracked since the last run? ---
 # `notes` logs every command as `[<iso8601>] [INFO] <cmd>: <msg>` (logging.rs). The most
-# recent `focus:` OR `ptask:` line is enough — if it postdates our last run, this turn
-# tracked its work somewhere. Bounded tail so the scan cost does not grow with the log.
+# recent `ptask:` line is enough - if it postdates our last run, this turn tracked its work
+# somewhere. A `focus:` write is the human's list and never counts: work is tracked in the queue.
+# Bounded tail so the scan cost does not grow with the log.
 #
 # `ptask:` counts, and that is the whole point. The daily note is ONE human's list; this
 # gate used to accept only a write to it, so every agent session satisfied it the only way
@@ -214,12 +215,12 @@ if [ "$PR_WORK" -eq 1 ]; then
     save_state; exit 0
   fi
 elif [ "$SESSION_MODE" -eq 1 ]; then
-  if grep -qE '^BASH .*(\bnotes +(ptask|focus)\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)' <<<"$CALLS"; then
+  if grep -qE '^BASH .*(\bnotes +ptask\b.*\b(add|start|done|toggle)\b|\bagent-queue +(add|claim|move|set)\b|\bagent-land\b)' <<<"$CALLS"; then
     save_state; exit 0
   fi
 elif [ -r "$NOTES_LOG" ]; then
   LAST_FOCUS_TS=$(tail -n 2000 "$NOTES_LOG" 2>/dev/null \
-    | grep -E '^\[[^]]+\] \[[A-Z]+\] (focus|ptask):' | tail -1 \
+    | grep -E '^\[[^]]+\] \[[A-Z]+\] ptask:' | tail -1 \
     | sed -E 's/^\[([^]]+)\].*/\1/' || true)
   if [ -n "$LAST_FOCUS_TS" ]; then
     LAST_FOCUS_EPOCH=$(date -d "$LAST_FOCUS_TS" +%s 2>/dev/null || echo 0)
@@ -259,7 +260,8 @@ The task you are on is an agent-queue item, NOT a board row and NOT the daily no
   agent-queue add --running --project <project> \"<task>\"   you are on it
   agent-land <N>, or agent-queue move <slug> done            it landed
 
-A follow-up you will not do now goes on the AGENT board: notes ptask <project> --agent add \"<type(area): title> #size/s\".
+A cleanup or agent-runtime fix you will not do now goes into the queue at high priority: agent-queue add --priority high --project <project> \"<task>\".
+Any other follow-up goes on the AGENT board: notes ptask <project> --agent add \"<type(area): title> #size/s\".
 The sheet without --agent is the human's queue: human asks, human-only actions, and
 prod/PHI/security/money findings only.
 

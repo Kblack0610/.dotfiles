@@ -23,8 +23,8 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once), 2 if it could not refresh. A /loop shepherd tick runs it first
-#                          and ends the turn on 1, so a quiet tick costs one call, not a pass
+#                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
+#                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -572,7 +572,7 @@ settle() {
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
-# check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
+# check: the refresh and gate a pass starts with, shared by the runner and a fleet-lead pass.
 # Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
 # a quiet fleet.
 cmd_check() {

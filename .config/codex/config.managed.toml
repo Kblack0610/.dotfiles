@@ -6,10 +6,6 @@ args = ["-y", "@upstash/context7-mcp"]
 command = "npx"
 args = ["-y", "@playwright/mcp@latest", "--browser", "firefox"]
 
-[mcp_servers.serena]
-command = "uvx"
-args = ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "ide-assistant"]
-
 [mcp_servers.filesystem]
 command = "/home/kblack0610/dev/home/binks-agent-orchestrator/target/release/filesystem-mcp"
 args = []
