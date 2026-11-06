@@ -1,0 +1,30 @@
+{
+  "id": "project-name-husk",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#759",
+  "base": "c39753439342e6adc4fdfcf276d89ade1f758ad4",
+  "merge": "cba7b01a79315efc483cef41a2f95f9ddcf3bdbb",
+  "task": "fix(project-name): a reaped or husk worktree resolves to its repo by name",
+  "accept": [
+    "a reaped worktree under the worktree root resolves to its repo by name",
+    "a husk dir (no .git, Logs only) resolves the same way, from a subdir too",
+    "the longest registered repo name wins",
+    "a name that only shares a prefix without the dash is not claimed",
+    "the same name OUTSIDE the worktree root keeps its basename",
+    "a live worktree still resolves through git, not its name"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/project_name.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(a reaped worktree under the worktree root resolves to its repo by name|a husk dir \\(no \\.git, Logs only\\) resolves the same way, from a subdir too|the longest registered repo name wins|a name that only shares a prefix without the dash is not claimed|the same name OUTSIDE the worktree root keeps its basename|a live worktree still resolves through git, not its name)$",
+      "tests/unit/project_name.bats"
+    ]
+  }
+}

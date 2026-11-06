@@ -1,0 +1,25 @@
+{
+  "id": "sessions-planless-done",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#1092",
+  "base": "d93b877ea9de6688a27d4f7a7817ca6a4bcb0807",
+  "merge": "130e15354e289226c2b53cb39630b08390ec23a4",
+  "task": "fix(fleet-sessions): a plan-less session whose own PRs all merged reads DONE, not UNCLEAR",
+  "accept": [
+    "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_sessions.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR)$",
+      "tests/unit/fleet_sessions.bats"
+    ]
+  }
+}

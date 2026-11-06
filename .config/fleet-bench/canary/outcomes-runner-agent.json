@@ -1,0 +1,25 @@
+{
+  "id": "outcomes-runner-agent",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#1098",
+  "base": "fd1bd42abf1cc6e28ea78a37cccacc25cbc51c4a",
+  "merge": "954b0d18fc1d4e278b6b0dff29a551fbeb798c3c",
+  "task": "feat(session-outcomes): a runner session names its agent, from calls.jsonl",
+  "accept": [
+    "a runner session carries the agent calls.jsonl names for it; a human session never does"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/session_outcomes.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(a runner session carries the agent calls\\.jsonl names for it; a human session never does)$",
+      "tests/unit/session_outcomes.bats"
+    ]
+  }
+}
