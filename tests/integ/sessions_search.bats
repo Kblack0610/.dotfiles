@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # `sessions search`, the table behind prefix R: a title prints whole, a project gets 20
-# columns, a row with no title falls back to its first prompt capped at one row's worth.
+# columns, a row with no title falls back to its first prompt capped at one row's worth,
+# and only sessions a human started are listed unless --all.
 # `claude-recall` is a stub reporting nothing new, so the fixture index is what is read.
 
 setup() {
@@ -16,11 +17,15 @@ setup() {
   TITLE='Waybar right-side overflow and agent chips across both monitors, wrapped'
   PROMPT="$(printf 'prompt%.0s ' {1..30})"
   mkdir -p "$HOME/.agent/sessions"
-  # id project updated mtime cwd branch title titles_all first last files prs
-  printf '%s\t' aaaaaaaa-1 dotfiles-agent-runtime-x - 200 /w main "$TITLE" "$TITLE" first last f.sh - \
+  # id project updated mtime cwd branch title titles_all first last files prs kind
+  printf '%s\t' aaaaaaaa-1 dotfiles-agent-runtime-x - 200 /w main "$TITLE" "$TITLE" first last f.sh - hand \
     | sed 's/\t$/\n/' > "$HOME/.agent/sessions/index.tsv"
-  printf '%s\t' bbbbbbbb-2 proj - 100 /w main - - "$PROMPT" last f.sh - \
+  printf '%s\t' bbbbbbbb-2 proj - 100 /w main - - "$PROMPT" last f.sh - hand \
     | sed 's/\t$/\n/' >> "$HOME/.agent/sessions/index.tsv"
+  for k in runner dispatched; do
+    printf '%s\t' "cccccccc-$k" proj - 50 /w main "a $k pass" "a $k pass" first last f.sh - "$k" \
+      | sed 's/\t$/\n/' >> "$HOME/.agent/sessions/index.tsv"
+  done
 }
 
 @test "a long title prints whole" {
@@ -46,6 +51,27 @@ setup() {
   run "$SUBJECT" search f.sh
   assert_output --partial "$TITLE"
   assert_output --partial 'proj'
+}
+
+@test "runner and dispatched sessions are hidden unless --all" {
+  run "$SUBJECT" search pass
+  assert_success
+  refute_output --partial 'a runner pass'
+  refute_output --partial 'a dispatched pass'
+  run "$SUBJECT" search --all pass
+  assert_output --partial 'a runner pass'
+  assert_output --partial 'a dispatched pass'
+}
+
+@test "an index from before the kind column still lists every row, then rebuilds" {
+  logging_recall
+  cut -f1-12 "$HOME/.agent/sessions/index.tsv" > "$HOME/old.tsv"
+  mv "$HOME/old.tsv" "$HOME/.agent/sessions/index.tsv"
+  run "$SUBJECT" _filter --cached pass
+  assert_output --partial 'a runner pass'
+  run "$SUBJECT" index
+  run cat "$HOME/recall.log"
+  assert_output 'recall cards'
 }
 
 @test "--pick opens a picker with no preview pane" {

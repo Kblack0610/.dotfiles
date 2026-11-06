@@ -111,15 +111,26 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   assert_output --partial 'carried share 0.17 vs 7-day median 0.15 (+13%)'
 }
 
-@test "check: a change past the band against the 7-day median trips, naming the number" {
+@test "check: a rise past the band against the 7-day median trips, naming the number" {
   week; day 2026-01-01 100000 0.3 40000
   run "$AU" tokens check
   assert_failure 1
-  assert_output '2026-01-01: drift past 25%: carried share 0.3 vs 7-day median 0.15 (+100%)'
-  day 2026-01-01 60000 0.15 40000
+  assert_output '2026-01-01: worse past 25%: carried share 0.3 vs 7-day median 0.15 (+100%)'
+  day 2026-01-01 127000 0.15 40000
   run "$AU" tokens check
   assert_failure 1
-  assert_output --partial 'context per response 60,000 vs 7-day median 100,000 (-40%)'
+  assert_output --partial 'worse past 25%: context per response 127,000 vs 7-day median 100,000 (+27%)'
+}
+
+@test "check: a drop is an improvement and stays quiet, unless it is past 50% and reads as a broken counter" {
+  week; day 2026-01-01 73000 0.15 40000
+  run "$AU" tokens check
+  assert_success
+  assert_output --partial 'context per response 73,000 vs 7-day median 100,000 (-27%)'
+  day 2026-01-01 40000 0.15 40000
+  run "$AU" tokens check
+  assert_failure 1
+  assert_output --partial 'better past 50%, measurement suspect: context per response 40,000 vs 7-day median 100,000 (-60%)'
 }
 
 @test "check: fewer than 3 earlier days is a baseline still building, not a drift" {
