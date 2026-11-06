@@ -6,8 +6,8 @@
 #
 # A policy defines its rules as bullets that open with the id in parentheses, `- (gate) ...`;
 # the policy file (the agent conf's PROMPT) is the one list, so a rule added there is valid
-# here with no code change. A verdict names one, and a verdict naming none of them is an
-# `error`. A verdict stays in its subject's store (an ask file's judge_* fields, fleet-dispatch's
+# here with no code change. A dispatch verdict names one, and naming none of them is an `error`;
+# an ask verdict's class is derived from its score (judge_derive). A verdict stays in its subject's store (an ask file's judge_* fields, fleet-dispatch's
 # verdicts.jsonl) and carries judge_call, the id of its line in calls.jsonl; the caller passes it
 # to agentctl-run as AGENTCTL_CALL_ID.
 
@@ -16,6 +16,28 @@
 
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
+
+# judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON with the
+# class that decides it, `rule`, the criteria that held, `met`, and `reason` and `answer`. Nothing
+# on any other reply, so a criterion left out can never read as clear. A bundle counts its worst
+# item: a human criterion on any decision, a needed one missing on any decision.
+judge_derive() {
+  jq -c '
+    ["knowledge", "external", "taste", "unclear-ask"] as $human
+    | ["reversible", "grounded"] as $needed
+    | ($human + $needed + ["restates-rule"]) as $all
+    | select(type == "object" and (.decisions | type) == "array" and (.decisions | length) > 0
+        and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")))
+    | .decisions as $d
+    | def holds($c): if ($human | index($c)) then any($d[]; .[$c].met) else all($d[]; .[$c].met) end;
+      {rule: first(
+         ($human[] | select(holds(.))),
+         ($needed[] | select(holds(.) | not)),
+         ("restates-rule" | select(holds(.))),
+         "clear"),
+       met: ([$all[] | select(holds(.))] | join(" ")),
+       reason: (.reason // ""), answer: (.answer // "")}' 2>/dev/null | head -1
+}
 
 # judge_call_id: a fresh call id, in the form agentctl-run gives its own.
 judge_call_id() { calls_new_id; }

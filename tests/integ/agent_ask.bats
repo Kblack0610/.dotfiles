@@ -737,6 +737,17 @@ registry() {
 
 # fake_judge <json>: a judge command that prints <json>, as agentctl-run prints a schema reply, and logs its prompt.
 # Outside the sandbox dir: its path has a space, and the judge command is a word list.
+# score <class> [answer] [reason]: a schema reply whose criteria derive that class. `not-<id>`
+# takes a needed criterion away, any other id sets that criterion.
+score() {
+  jq -cn --arg c "$1" --arg a "${2:-}" --arg r "${3:-x}" '
+    {decision: "d"}
+    + ({knowledge: 0, external: 0, taste: 0, "unclear-ask": 0, reversible: 1, grounded: 1, "restates-rule": 0}
+       | map_values({evidence: "", met: (. == 1)}))
+    | if $c == "clear" then . elif ($c | startswith("not-")) then .[$c[4:]].met = false else .[$c].met = true end
+    | {decisions: [.], reason: $r, answer: $a}'
+}
+
 fake_judge() {
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
@@ -746,12 +757,10 @@ printf '%s\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
   export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
-  # The real policy: its rule ids are the ones a verdict may name.
-  export AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
 }
 
 @test "judge records its call and reason, and leaves the ask pending" {
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"landing is standing authorization"}'
+  fake_judge "$(score restates-rule "" "landing is standing authorization")"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
   run "$AGENT_ASK" judge "$id"
   assert_success
@@ -780,7 +789,7 @@ SH
 }
 
 @test "judge turns a call the ask cannot carry out into human, and runs once per ask" {
-  fake_judge '{"call":"take-recommend","rule":"continue-work","answer":"","reason":"x"}'
+  fake_judge "$(score clear)"
   local id; id="$(post demo 'no recommendation here?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
@@ -791,7 +800,7 @@ SH
 }
 
 @test "judge records a free answer, and a reply with no verdict is an error verdict" {
-  fake_judge '{"call":"answer","rule":"simpler","answer":"the simpler one","reason":"no product effect"}'
+  fake_judge "$(score clear "the simpler one" "no product effect")"
   local id; id="$(post demo 'which way?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
@@ -806,7 +815,7 @@ SH
   assert_line --regexp '^judge_call: [0-9a-f]{12}$'
 }
 
-@test "judge: prose around a verdict is an error, and the schema's calls are the ones judge accepts (negative control)" {
+@test "judge: prose around a verdict is an error (negative control)" {
   fake_judge 'thinking...
 ASK-JUDGE-START
 {"call":"human","rule":"taste","answer":"","reason":"x"}
@@ -816,19 +825,24 @@ ASK-JUDGE-END'
   assert_failure
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: error'
-  run jq -c .properties.call.enum "$REPO_ROOT/.config/agent-ask/verdict.schema.json"
-  assert_output '["human","take-recommend","answer"]'
 }
 
-@test "judge: a rule the policy does not define, a failed call and a missing policy are error verdicts with their reason" {
-  fake_judge '{"call":"take-recommend","rule":"vibes","answer":"","reason":"x"}'
+@test "judge: a partial score and a failed call are error verdicts with their reason" {
+  fake_judge "$(score clear | jq -c 'del(.decisions[0].knowledge)')"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
   run "$AGENT_ASK" judge "$id"
   assert_failure
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: error'
-  assert_line "judge_reason: rule 'vibes' is not in the policy"
+  assert_line --partial 'judge_reason: the reply had no verdict'
   refute_line --partial 'judge_rule:'
+  # no decisions is no score, never clear
+  fake_judge '{"decisions":[],"reason":"x","answer":""}'
+  id="$(post demo 'empty?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
   # a call that fails says how, from its stderr
   printf '#!/usr/bin/env bash\necho "rate limited" >&2; exit 7\n' > "$BATS_TEST_TMPDIR/judge"
   id="$(post demo 'again?')"
@@ -837,23 +851,75 @@ ASK-JUDGE-END'
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: error'
   assert_line 'judge_reason: call failed (exit 7): rate limited'
-  # no policy to read the rules from
-  fake_judge '{"call":"human","rule":"taste","answer":"","reason":"x"}'
-  export AGENT_ASK_POLICY="$BATS_TEST_TMPDIR/none.md"
-  id="$(post demo 'and again?')"
-  run "$AGENT_ASK" judge "$id"
-  assert_failure
+}
+
+@test "judge derives the call from the score" {
+  check() {
+    fake_judge "$(score "$1")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "case $1?")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    assert_line "judge: $2"
+    assert_line "judge_rule: $3"
+  }
+  check knowledge human knowledge
+  check external human external
+  check taste human taste
+  check unclear-ask human unclear-ask
+  check not-reversible human reversible
+  check not-grounded human grounded
+  check restates-rule take-recommend restates-rule
+  check clear take-recommend clear
+}
+
+@test "judge: the order of the classes puts every human criterion ahead of restates-rule" {
+  local both; both=$(score external | jq -c '.decisions[0]["restates-rule"].met = true')
+  export AGENT_ASK_LIVE_RULES=restates-rule
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$both"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"
-  assert_line 'judge: error'
-  assert_line --partial "judge_reason: no rules in the policy $BATS_TEST_TMPDIR/none.md"
-  # negative control: the same verdict against the real policy is recorded
-  export AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
-  id="$(post demo 'once more?')"
-  run "$AGENT_ASK" judge "$id"
-  assert_success
+  assert_line 'status: pending'
+  assert_line 'judge_rule: external'
+  # negative control: the same score with external clear is answered
+  fake_judge "$(score restates-rule)"
+  id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'land it?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"
-  assert_line 'judge: human'
-  assert_line 'judge_rule: taste'
+  assert_line 'status: answered'
+}
+
+@test "judge: a bundle scores its worst item" {
+  bundle() { jq -cs '{decisions: map(.decisions[0]), reason: "x", answer: ""}' <(score clear) <(score "$1"); }
+  check() {
+    fake_judge "$(bundle "$1")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "bundle $1?")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    assert_line "judge: $2"
+    assert_line "judge_rule: $3"
+  }
+  check external human external
+  check not-reversible human reversible
+  # restates-rule needs every item to restate one; one that does not is plain clear
+  check restates-rule take-recommend clear
+}
+
+@test "judge: its own answer wins over the recommendation, and judge_met lists what held" {
+  fake_judge "$(score clear no)"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'which?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: answer:no'
+  assert_line 'judge_met: reversible grounded'
+}
+
+@test "judge: the policy, the schema and judge_derive name the same criteria" {
+  . "$REPO_ROOT/.local/lib/judge.sh"
+  local policy schema derive="$REPO_ROOT/.local/lib/judge.sh"
+  policy=$(judge_rules "$REPO_ROOT/.config/agent-ask/policy.md" | grep -vxE 'clear|gate' | sort)
+  schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision")' "$REPO_ROOT/.config/agent-ask/verdict.schema.json" | sort)
+  assert_equal "$policy" "$schema"
+  local c; for c in $schema; do grep -q "\"$c\"" "$derive" || fail "judge_derive does not read $c"; done
 }
 
 @test "judge: a gate names the gate rule and no call" {
@@ -865,7 +931,7 @@ ASK-JUDGE-END'
 }
 
 @test "post runs the judge before it returns, unless AGENT_ASK_NO_JUDGE is set" {
-  fake_judge '{"call":"human","rule":"taste","answer":"","reason":"taste"}'
+  fake_judge "$(score taste "" taste)"
   unset AGENT_ASK_NO_JUDGE
   local id; id="$(post demo 'pick a colour?')"
   run grep -c 'pick a colour?' "$BATS_TEST_TMPDIR/judge.calls"
@@ -891,7 +957,7 @@ live_post() {
 }
 
 @test "a live rule's take-recommend is answered by the judge at post, and the asker is told to proceed" {
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"rules say fix failing CI yourself."}'
+  fake_judge "$(score restates-rule "" "rules say fix failing CI yourself.")"
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_LIVE_RULES=restates-rule
   run --separate-stderr live_post sid-1 'fix the flaky test here?'
@@ -910,22 +976,22 @@ live_post() {
 @test "live answers: a shadow rule, an empty LIVE_RULES, a gate and a human call all stay with the human" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_LIVE_RULES=restates-rule
-  fake_judge '{"call":"take-recommend","rule":"simpler","answer":"","reason":"x"}'
+  fake_judge "$(score clear)"
   local id; id="$(live_post sid-a 'shadow rule?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge: take-recommend'
   export AGENT_ASK_LIVE_RULES=
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"x"}'
+  fake_judge "$(score restates-rule)"
   id="$(live_post sid-b 'nothing live?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   export AGENT_ASK_LIVE_RULES=restates-rule
   id="$("$AGENT_ASK" post --project demo --kind gate 'merge #4?')"
   assert [ "$(grep -c 'merge #4' "$BATS_TEST_TMPDIR/judge.calls")" = 0 ]
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
-  fake_judge '{"call":"human","rule":"restates-rule","answer":"","reason":"x"}'
+  fake_judge "$(score knowledge)"
   id="$(live_post sid-c 'human call?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   # A demoted rule is out of the live set even while the conf lists it.
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"x"}'
+  fake_judge "$(score restates-rule)"
   mkdir -p "$(dirname "$HOME/.local/state/agent-ask/demoted")"
   printf 'restates-rule\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"
   id="$(live_post sid-d 'demoted?')"
@@ -960,7 +1026,7 @@ live_post() {
 @test "override: the human's next message naming another option labels the live answer and demotes the class" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_LIVE_RULES=restates-rule
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"x"}'
+  fake_judge "$(score restates-rule)"
   local id; id="$(live_post sid-1 'fix it here?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-1 answered "no, wait for the row to be fixed"
   run "$AGENT_ASK" show "$id"
@@ -979,7 +1045,7 @@ live_post() {
 @test "override: a message that agrees or says nothing about the options closes the review with none" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_LIVE_RULES=restates-rule
-  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"x"}'
+  fake_judge "$(score restates-rule)"
   local a b
   a="$(live_post sid-1 'fix it here?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-1 answered "ok how many phases left?"
