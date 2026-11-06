@@ -404,17 +404,21 @@ mod tests {
         assert_eq!(sent[0][..7], ["agent-notify", "-p", "high", "-t", TITLE, "-r", "ask:a1"]);
         assert_eq!(sent[0][7], page.text);
         // comms-standard rule 12: the page as sent passes the page channel's lint.
-        let lint = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bin/comms-lint");
-        let mut c = std::process::Command::new(&lint)
+        // The repo's channels file, not the stowed one: CI has no ~/.config.
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let mut c = std::process::Command::new(repo.join(".local/bin/comms-lint"))
+            .env("COMMS_CHANNELS", repo.join(".config/comms-lint/channels.toml"))
             .args(["--channel", "page", "--priority", "high", "--title", TITLE, "-"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         use std::io::Write;
         c.stdin.take().unwrap().write_all(page.text.as_bytes()).unwrap();
         let out = c.wait_with_output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        let said = [out.stdout, out.stderr].concat();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&said));
     }
 
     #[test]
