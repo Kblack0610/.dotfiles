@@ -308,9 +308,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             let f = forecast::Forecast::read();
             a.controls.read(state, Some(forecast::schedule(&f)));
             a.forecast = Some(f);
-            a.controls.set(hub_core::session_actions::gather(
-                &hub_core::session_actions::System,
-            ));
+            a.read_sessions_now();
         }
         // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
         if t == Tab::Fleet {
