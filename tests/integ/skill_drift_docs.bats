@@ -42,3 +42,29 @@ setup() {
   DRIFT_DOCS="$HOME/missing.md" run "$DRIFT" --docs
   assert_failure 2
 }
+
+@test "a placeholder path is checked by its concrete directory only" {
+  # Cut at the <, `p<N>/` read as a missing `~/real/p`; a brace list still
+  # names its dead directory.
+  printf 'Save to `~/real/p<N>/`, `~/real/{a,b}.md` and `~/gone/{a,b}.md`.\n' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '.findings[] | .item' <<< "$output"
+  assert_output '~/gone'
+}
+
+@test "comments, heredoc bodies and multi-line quoted strings in a fence are not commands" {
+  printf '%s\n' '```bash' \
+    '# invert a binding / swap two verbs' \
+    "gh api graphql -f query='" \
+    '  number' \
+    "'" \
+    "cat <<'EOF' > ~/x" \
+    'changelog -- not a tool' \
+    'EOF' \
+    'no-such-tool-xyz --flag' \
+    '```' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '.findings[] | select(.type == "NOCMD") | .item' <<< "$output"
+  # negative control: the real missing tool after them is still found
+  assert_output 'no-such-tool-xyz'
+}
