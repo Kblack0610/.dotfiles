@@ -45,6 +45,10 @@ setup() {
   printf '#!/usr/bin/env bash\ncase "$*" in line) cat "%s" ;; "kpi --json") cat "%s" ;; *) exit 9 ;; esac 2>/dev/null\n' \
     "$COMMSLINE" "$COMMSKPI" > "$SANDBOX/bin/comms-stub"
   chmod +x "$SANDBOX/bin/comms-stub"
+  # judge-eval kpi --json, canned: serves $JUDGEKPI when it exists, else fails like no judge data
+  export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
+  printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
+  chmod +x "$SANDBOX/bin/judge-stub"
 }
 
 # row <session> <target> <done> <total> [finished]
@@ -717,7 +721,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -740,6 +744,25 @@ kpi_fixture() {
   run grep -c 'kpi: buzzes_per_day past threshold: 7d 63.1 (28d 28.5, max 15) #high' "$BOARD"
   assert_output 1
   run grep -c 'kpi: comms_pass_pct' "$BOARD"
+  assert_output 0
+}
+
+@test "kpi: the judge KPIs come from judge-eval kpi, and retro files the one past its threshold" {
+  kpi_setup
+  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi
+  assert_line '| judge_errors | - | - | max 0 | - |'
+  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
+  run "$SUBJECT" kpi
+  assert_line '| judge_errors | 0 | 2 | max 0 | ok |'
+  assert_line '| judge_precision | 75 | 80 | min 90 | past |'
+  assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
+  assert_line '| ask_unclear_pct | - | - | - | - |'
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c 'kpi: judge_precision past threshold' "$BOARD"
+  assert_output 1
+  run grep -c 'kpi: judge_errors\|kpi: ask_false_defer_pct' "$BOARD"
   assert_output 0
 }
 

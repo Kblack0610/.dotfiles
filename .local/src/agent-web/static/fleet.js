@@ -71,13 +71,14 @@ function dispatchList(d) {
   return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>row</th><th>verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
 }
 
+// judge-eval's numbers under the judge's current prompt; nothing is recounted here.
 function judgeTiles(j) {
-  const scored = j.agree + j.disagree;
-  const tiles = tile("AGREE", j.agree, "var(--b-done)", scored ? `${Math.round((100 * j.agree) / scored)}% of scored` : "none scored") +
-    tile("DISAGREE", j.disagree, "var(--b-needs)") +
+  const tiles = tile("AGREE", j.agree, "var(--b-done)", j.precision == null ? "none scored" : `${j.precision}% precision`) +
+    tile("DISAGREE", j.disagree, "var(--b-needs)", j.kappa == null ? "" : `kappa ${j.kappa}`) +
     tile("DEFERRED", j.deferred, "var(--b-unclear)", "judge said: ask you") +
+    tile("FALSE-DEFER", j.false_defer, "var(--b-needs)", "you took the recommendation") +
     tile("PENDING", j.pending, "var(--b-stalled)", "judged, unanswered") +
-    tile("UNSCORED", j.unscored, "var(--c3)", "answered in session");
+    tile("UNSCORED", j.unscored, "var(--c3)", "free text, no option named");
   return `<div class="tiles">${tiles}</div>`;
 }
 
@@ -98,7 +99,7 @@ function renderFleet() {
   html += `<h2 class="sec" id="sec-workers">Workers <span class="muted">${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run</span></h2>` +
     `<div class="panel scroll">${workersTable(d.workers)}</div>`;
   html += `<h2 class="sec" id="sec-judges">Dispatch judge <span class="muted">24h, with the week below; the verdicts are on Log</span></h2>${dispatchTiles(d.dispatch)}`;
-  html += `<h2 class="sec">Answer judge <span class="muted">its call against your answer; the disagreements are on Log</span></h2>${judgeTiles(d.judge)}`;
+  html += `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(d.judge.prompt || "none")}, its call against your answer; the disagreements are on Log</span></h2>${judgeTiles(d.judge)}`;
   paint(el, html);
 }
 

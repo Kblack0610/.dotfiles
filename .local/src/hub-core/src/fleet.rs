@@ -7,9 +7,9 @@
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers, and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
-//! | answer judge | `~/.agent/asks/<project>/*.md`, counted as `agent-ask judge-report` does  |
+//! | answer judge | `judge-eval ask-judge --json`, the one scorer (`~/.local/src/docs/judges.md`) |
 //!
-//! The file parts are cheap and read fresh; the Prometheus part (`prom`) is the slow one, so a
+//! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
 //! server can cache it apart and `apply` it to a fresh file read.
 
 use std::collections::{BTreeMap, HashMap};
@@ -48,7 +48,8 @@ pub struct Paths {
     pub agents: PathBuf,
     pub jobs: jobs::Paths,
     pub dispatch: PathBuf,
-    pub asks: PathBuf,
+    /// The judge scorer; `JUDGE_EVAL` overrides it (tests, a checkout).
+    pub judge_eval: String,
 }
 
 impl Paths {
@@ -58,7 +59,7 @@ impl Paths {
             agents: home.join(".config/agentctl/agents"),
             jobs: jobs::Paths::from_env(),
             dispatch: crate::boards::dispatch_dir(),
-            asks: agent_panel::asks::root(),
+            judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
         }
     }
 }
@@ -141,14 +142,22 @@ pub struct Dispatch {
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Judge {
+    /// Answered, and the human's answer (or the review of a live answer) matched.
     pub agree: u32,
     pub disagree: u32,
     /// The judge said this one is the human's ("asks-you").
     pub deferred: u32,
+    /// Deferred, and the human took the recommendation anyway.
+    pub false_defer: u32,
     /// Judged, still waiting on the human.
     pub pending: u32,
-    /// Answered in the session as free text, which no call can match.
+    /// Answered in the session as free text naming no option, which no call can match.
     pub unscored: u32,
+    /// agree / (agree + disagree) in percent, and Cohen's kappa; null with nothing scored.
+    pub precision: Option<f64>,
+    pub kappa: Option<f64>,
+    /// The judge prompt the counts are under (its git blob, short).
+    pub prompt: String,
     pub disagreements: Vec<Disagreement>,
 }
 
@@ -212,12 +221,18 @@ pub fn files(paths: &Paths) -> Fleet {
         Ok((text, _)) => dispatch.log_24h = log_counts(&text, &local_minute(at - DAY)),
         Err(e) => errors.push(format!("dispatch log: {e}")),
     }
+    let judge = run_judge_eval(&paths.judge_eval)
+        .and_then(|t| judge(&t))
+        .unwrap_or_else(|e| {
+            errors.push(format!("answer judge: {e}"));
+            Judge::default()
+        });
     Fleet {
         at,
         errors,
         workers,
         dispatch,
-        judge: judge(&read_asks(&paths.asks)),
+        judge,
         ..Default::default()
     }
 }
@@ -493,105 +508,86 @@ fn local_minute(t: i64) -> String {
         .unwrap_or_default()
 }
 
-/// The ask fields the judge count reads, each as agent-ask's `field` gives it: the value after
-/// the first `<key>: ` line.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Ask {
-    pub id: String,
-    pub project: String,
-    pub status: String,
-    pub question: String,
-    pub recommend: String,
-    pub answer: String,
-    pub answered_at: String,
-    pub answered_by: String,
-    pub judge: String,
-    pub judge_reason: String,
-}
-
-pub fn parse_ask(text: &str) -> Ask {
-    let field = |k: &str| {
-        let p = format!("{k}: ");
-        text.lines()
-            .find_map(|l| l.strip_prefix(p.as_str()))
-            .unwrap_or("")
-            .to_string()
-    };
-    Ask {
-        id: field("id"),
-        project: field("project"),
-        status: field("status"),
-        question: field("question"),
-        recommend: field("recommend"),
-        answer: field("answer"),
-        answered_at: field("answered_at"),
-        answered_by: field("answered_by"),
-        judge: field("judge"),
-        judge_reason: field("judge_reason"),
+fn run_judge_eval(cmd: &str) -> Result<String, String> {
+    let out = std::process::Command::new(cmd)
+        .args(["ask-judge", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{cmd} exited {}", out.status));
     }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn read_asks(root: &Path) -> Vec<Ask> {
-    let Ok(projects) = std::fs::read_dir(root) else {
-        return vec![];
-    };
-    projects
-        .flatten()
-        .filter_map(|p| std::fs::read_dir(p.path()).ok())
-        .flat_map(|d| d.flatten())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md"))
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .map(|t| parse_ask(&t))
-        .collect()
-}
-
-/// The answer judge against the human, as `agent-ask judge-report` scores it: only asks the
-/// judge called and a human answered count; `human` is a deferral, `take-recommend` wants the
-/// recommended option, `answer:<x>` wants x, compared without case; an answer typed in the
-/// session is free text and unscored.
-pub fn judge(asks: &[Ask]) -> Judge {
-    let mut j = Judge::default();
-    let mut differ = vec![];
-    for a in asks.iter().filter(|a| !a.judge.is_empty()) {
-        if a.status == "pending" {
-            j.pending += 1;
-            continue;
-        }
-        if a.status != "answered" || !matches!(a.answered_by.as_str(), "" | "human") {
-            continue;
-        }
-        let want = match a.judge.as_str() {
-            "human" => {
-                j.deferred += 1;
-                continue;
-            }
-            // A failed call neither defers nor answers.
-            "error" => continue,
-            "take-recommend" => a.recommend.as_str(),
-            call => call.strip_prefix("answer:").unwrap_or(call),
-        };
-        if a.answer.starts_with("in session:") {
-            j.unscored += 1;
-        } else if a.answer.to_lowercase() == want.to_lowercase() {
-            j.agree += 1;
-        } else {
-            j.disagree += 1;
-            differ.push(Disagreement {
-                id: a.id.clone(),
-                project: a.project.clone(),
-                question: a.question.clone(),
-                judge: want.to_string(),
-                reason: a.judge_reason.clone(),
-                answer: a.answer.clone(),
-                answered_at: ts(&a.answered_at),
-            });
-        }
+/// The answer judge's tiles from `judge-eval ask-judge --json`, under its current prompt. No
+/// count is made here: judge-eval is the one scorer.
+pub fn judge(json: &str) -> Result<Judge, String> {
+    #[derive(Deserialize)]
+    struct Eval {
+        agents: Vec<Agent>,
     }
-    differ.sort_by_key(|d| std::cmp::Reverse(d.answered_at));
-    differ.truncate(RECENT_DISAGREE);
-    j.disagreements = differ;
-    j
+    #[derive(Deserialize)]
+    struct Agent {
+        agent: String,
+        prompt_sha: String,
+        total: Total,
+        misses: Vec<Miss>,
+    }
+    #[derive(Deserialize)]
+    struct Total {
+        tp: u32,
+        fp: u32,
+        #[serde(rename = "fn")]
+        false_defer: u32,
+        deferred: u32,
+        pending: u32,
+        unscorable: u32,
+        precision: Option<f64>,
+        kappa: Option<f64>,
+    }
+    #[derive(Deserialize)]
+    struct Miss {
+        id: String,
+        project: String,
+        question: Option<String>,
+        judge: Option<String>,
+        reason: Option<String>,
+        answer: Option<String>,
+        answered_at: Option<i64>,
+    }
+    let e: Eval = serde_json::from_str(json).map_err(|e| format!("judge-eval: {e}"))?;
+    let a = e
+        .agents
+        .into_iter()
+        .find(|a| a.agent == "ask-judge")
+        .ok_or("judge-eval: no ask-judge block")?;
+    let t = a.total;
+    Ok(Judge {
+        agree: t.tp,
+        disagree: t.fp,
+        deferred: t.deferred,
+        false_defer: t.false_defer,
+        pending: t.pending,
+        unscored: t.unscorable,
+        precision: t.precision,
+        kappa: t.kappa,
+        prompt: a.prompt_sha.chars().take(7).collect(),
+        disagreements: a
+            .misses
+            .into_iter()
+            .take(RECENT_DISAGREE)
+            .map(|m| Disagreement {
+                id: m.id,
+                project: m.project,
+                question: m.question.unwrap_or_default(),
+                judge: m.judge.unwrap_or_default(),
+                reason: m.reason.unwrap_or_default(),
+                answer: m.answer.unwrap_or_default(),
+                answered_at: m.answered_at,
+            })
+            .collect(),
+    })
 }
 
 /// Unix seconds from RFC 3339 (`date -Is`) or agent-ask's `%Y-%m-%dT%H:%M:%S%z` (no colon).
@@ -832,90 +828,28 @@ mod tests {
         );
     }
 
-    fn ask(status: &str, by: &str, judge: &str, recommend: &str, answer: &str, at: &str) -> Ask {
-        parse_ask(&format!(
-            "id: {judge}{answer}\nproject: p\nstatus: {status}\nquestion: q?\nrecommend: {recommend}\nanswer: {answer}\nanswered_at: {at}\nanswered_by: {by}\njudge: {judge}\njudge_reason: because\n"
-        ))
+    #[test]
+    fn the_answer_judge_tiles_are_judge_evals_numbers() {
+        let json = r#"{"at":1,"agents":[
+          {"agent":"ask-judge","prompt_sha":"60c840b1234","total":{"verdicts":9,"tp":2,"fp":1,"fn":3,"tn":1,
+            "deferred":4,"pending":1,"unscorable":2,"precision":66.7,"kappa":0.12},
+           "misses":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
+             "answer":"no","rule":"r","answered_at":1700000000}]}]}"#;
+        let j = judge(json).unwrap();
+        assert_eq!(
+            (j.agree, j.disagree, j.deferred, j.false_defer, j.pending, j.unscored),
+            (2, 1, 4, 3, 1, 2)
+        );
+        assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
+        assert_eq!(j.prompt, "60c840b");
+        assert_eq!(j.disagreements[0].judge, "yes");
+        assert_eq!(j.disagreements[0].answered_at, Some(1_700_000_000));
     }
 
     #[test]
-    fn the_answer_judge_is_scored_as_judge_report_does() {
-        let asks = [
-            ask(
-                "answered",
-                "",
-                "take-recommend",
-                "a",
-                "A",
-                "2026-11-03T09:00:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:b",
-                "a",
-                "b",
-                "2026-11-03T09:01:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "take-recommend",
-                "a",
-                "b",
-                "2026-11-03T09:02:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:yes",
-                "",
-                "no",
-                "2026-11-03T10:00:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "human",
-                "a",
-                "a",
-                "2026-11-03T09:03:00-0800",
-            ),
-            ask(
-                "answered",
-                "human",
-                "answer:a",
-                "a",
-                "in session: do a then b",
-                "",
-            ),
-            ask("answered", "shepherd", "answer:a", "a", "b", ""),
-            ask("pending", "", "take-recommend", "a", "", ""),
-            ask("cancelled", "", "take-recommend", "a", "", ""),
-            ask("answered", "human", "", "a", "b", ""),
-        ];
-        let j = judge(&asks);
-        assert_eq!(
-            (j.agree, j.disagree, j.deferred, j.pending, j.unscored),
-            (2, 2, 1, 1, 1)
-        );
-        assert_eq!(
-            j.disagreements[0].judge, "yes",
-            "newest first, the call without its prefix"
-        );
-        assert_eq!(j.disagreements[0].answer, "no");
-        assert_eq!(
-            j.disagreements[1].judge, "a",
-            "take-recommend wants the recommendation"
-        );
-        assert_eq!(j.disagreements[1].reason, "because");
-    }
-
-    #[test]
-    fn an_ask_field_is_the_first_match_after_key_colon_space() {
-        let a = parse_ask("id: x\nanswer: first\nanswer: second\nanswered_at: t\n");
-        assert_eq!(a.answer, "first");
-        assert_eq!(a.answered_at, "t");
+    fn a_judge_eval_answer_with_no_ask_judge_block_is_an_error_not_zeros() {
+        assert!(judge(r#"{"agents":[]}"#).is_err());
+        assert!(judge("not json").is_err());
     }
 
     #[test]
