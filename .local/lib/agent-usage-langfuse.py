@@ -33,8 +33,10 @@ EXEC_SPAN = "claude_code.tool.execution"
 GATEWAY_SPAN = "litellm_request"
 # Claude Code names a tool's span after the tool, and Langfuse cannot filter on the span.type
 # attribute that would say so directly. So: its environments (apps/alloy sets them from
-# service.name), then the name shape, which drops claude_code.* and the like.
-CLAUDE_ENVIRONMENTS = ["claude-code", "claude-agentctl"]
+# service.name), then the name shape, which drops claude_code.* and the like. "default" is
+# the spans from before those labels (2026-11-06): only Claude Code wrote there, and it ages
+# out with the 90-day TTL, so drop it from this list after 2027-02-05.
+CLAUDE_ENVIRONMENTS = ["claude-code", "claude-agentctl", "default"]
 TOOL_SPAN = re.compile(r"^(?:[A-Z][A-Za-z0-9]+|mcp__.+)$")
 HUMAN_WAIT = {"AskUserQuestion", "ExitPlanMode"}
 TOP_TOOLS = 20
@@ -179,6 +181,8 @@ def main():
     try:
         c = Client(a.since, a.until)
         out = {"tools": tools(c), "tool_errors": tool_errors(c), "gateway": gateway(c)}
+        if out["tool_errors"]["executions"] and not out["tools"]:
+            raise Unreadable("tools ran but no tool span matched: is an environment missing from the filter?")
     except Unreadable as e:
         print(f"langfuse: {e}", file=sys.stderr)
         return 1
