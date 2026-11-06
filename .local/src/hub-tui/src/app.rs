@@ -201,6 +201,9 @@ pub enum Msg {
     Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
+    /// The Sessions table's ended rows, then its header, which waits on headroom.
+    SessionFeed(Box<hub_core::session_table::Feed>),
+    Capacity(Box<hub_core::capacity::Capacity>),
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
@@ -355,6 +358,7 @@ pub struct App {
     tx: Sender<Msg>,
     infra_read: Read,
     jobs_read: Read,
+    feed_read: Read,
     boards_read: Read,
     forecast_read: Read,
     ranked_read: Read,
@@ -437,6 +441,7 @@ impl App {
             tx,
             infra_read: Read::default(),
             jobs_read: Read::default(),
+            feed_read: Read::default(),
             boards_read: Read::default(),
             forecast_read: Read::default(),
             ranked_read: Read::default(),
@@ -662,6 +667,31 @@ impl App {
                 let _ = tx.send(Msg::Sessions(Box::new(gather(runner.as_ref()))));
             });
         }
+        if self.feed_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                use hub_core::{boards, capacity, session_table as table};
+                let feed = table::feed(runner.as_ref(), &table::registry());
+                let _ = tx.send(Msg::SessionFeed(Box::new(feed)));
+                let state = table::read_state(&boards::fleet_state());
+                let cap = capacity::read(runner.as_ref(), &state);
+                let _ = tx.send(Msg::Capacity(Box::new(cap)));
+            });
+        }
+    }
+
+    /// Start a timer the header says is stopped, confirmed; the re-read shows it on.
+    fn start_timer(&mut self, name: String) {
+        let label = format!("start {name}");
+        self.controls.running = Some(label.clone());
+        self.controls.said = None;
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = hub_core::capacity::start(runner.as_ref(), &name);
+            let _ = tx.send(Msg::Acted(said(&label, r)));
+        });
     }
 
     /// Run a confirmed action in a worker: re-read the sessions, so the target and account are
@@ -1038,6 +1068,13 @@ impl App {
                 }
                 if self.jobs_read.done() {
                     self.read_jobs();
+                }
+            }
+            Msg::SessionFeed(f) => self.controls.read_feed(*f),
+            Msg::Capacity(c) => {
+                self.controls.capacity = Some(*c);
+                if self.feed_read.done() {
+                    self.read_sessions();
                 }
             }
             Msg::Log(gen, text) => {
@@ -1511,17 +1548,19 @@ impl App {
     }
 
     /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
-    /// confirm, and with one armed every key is the confirm's; Enter opens the selected
-    /// session's detail. The page scrolls with PgUp/PgDn, space and g/G, and keeps the selected
+    /// confirm, and with one armed every key is the confirm's; `/ f s S` are the shared table's
+    /// and Esc clears its view; T starts a stopped timer; Enter opens the selected session's
+    /// detail. The page scrolls with PgUp/PgDn, space and g/G, and keeps the selected
     /// row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
             Ask::Run(t, a, acct) => self.act(t, a, acct),
+            Ask::Start(name) => self.start_timer(name),
         }
-        // The stage counts and the table header sit above the first row.
-        let at = 2 + self.controls.sel;
+        // The stage counts line, then the table's own header.
+        let at = 1 + self.controls.above() + self.controls.sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;
@@ -1966,11 +2005,15 @@ impl App {
             Tab::Infra => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Sessions if self.controls.table.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc clears".into()
+            }
+            Tab::Sessions if self.controls.starting.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Sessions if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
             Tab::Sessions => format!(
-                "j/k pick  Enter detail  i p u m x c a act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter detail  / query  f state  s sort  S asc/desc  Esc clear  i p u m x c a act  T start timer  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_typing => "type to search, Enter keeps it, Esc clears".into(),
             Tab::Fleet if self.fleet_page.is_some() => format!(
@@ -2653,51 +2696,39 @@ mod tests {
         let lines: Vec<&str> = s.lines().collect();
         assert!(lines[0].contains("5 Sessions"), "{s}");
         assert!(lines[1].contains("Reading the board files..."), "{s}");
+        assert!(lines[2].starts_with("all 2  running"), "{s}");
         assert!(
-            lines[2].starts_with("SESSION") && lines[2].contains("ACCOUNT"),
+            lines[3].starts_with("STAGE") && lines[3].contains("ACCOUNT"),
             "{s}"
         );
-        for want in [
-            "dotfiles-agent-3:2",
-            "here",
-            "idle",
-            "bnb",
-            "new-curious-garden",
-            "a1",
-        ] {
+        for want in ["dotfiles-agent-3:2", "here", "idle", "bnb", "a1"] {
             assert!(
-                lines[3].contains(want),
+                lines[4].contains(want),
                 "{want} missing from {:?}",
-                lines[3]
+                lines[4]
             );
         }
         assert!(
-            lines[4].contains("dotfiles-agent-9") && lines[4].contains("parked"),
+            lines[5].contains("dotfiles-agent-9") && lines[5].contains("parked"),
             "{s}"
         );
         assert!(!s.contains("FORECAST"), "the forecast is Log's: {s}");
-        assert!(
-            lines[29].contains("j/k pick  Enter detail  i p u m x c a act"),
-            "{s}"
-        );
+        assert!(lines[29].contains("j/k pick  Enter detail  / query"), "{s}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
         a.handle(Msg::Boards(Box::new(boards())));
         let s = screen(&mut a, 160, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(
-            lines[1].starts_with("SESSIONS  2  NEEDS 1  WORKING 1"),
-            "{s}"
-        );
-        let row = lines[3];
+        assert!(lines[1].starts_with("SESSIONS   state"), "{s}");
+        let row = lines[4];
         for want in ["dotfiles-agent-3:2", "NEEDS", "here", "bnb", "a1"] {
             assert!(row.contains(want), "{want} missing from {row:?}");
         }
         assert!(
-            lines[4].contains("unity-core-playground-agent-10") && lines[4].contains("WORKING")
+            lines[5].contains("unity-core-playground-agent-10") && lines[5].contains("WORKING")
         );
         assert!(
-            lines[5].contains("dotfiles-agent-9") && lines[5].contains("parked"),
+            lines[6].contains("dotfiles-agent-9") && lines[6].contains("parked"),
             "{s}"
         );
         assert!(

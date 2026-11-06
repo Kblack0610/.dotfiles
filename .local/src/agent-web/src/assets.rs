@@ -21,7 +21,7 @@ const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
 /// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the Sessions tab and the event stream, waiting.js the answer cards, home.js the Home tab;
+/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
     ("app.css", CSS, include_bytes!("../static/app.css")),
@@ -37,6 +37,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("infra.js", JS, include_bytes!("../static/infra.js")),
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
@@ -208,6 +209,22 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
+    }
+
+    #[test]
+    fn the_session_headers_are_hub_cores_columns() {
+        // Rule 8, as above; `item`, `source` and `session` are search keys with no column here.
+        use hub_core::table::Row;
+        let js = include_str!("../static/sessions.js");
+        let at = js.find("const SESSION_COLS = {").expect("no SESSION_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let columns = hub_core::session_table::SessionRow::COLUMNS;
+        assert_eq!(keys, columns[..columns.len() - 3]);
     }
 
     #[test]
