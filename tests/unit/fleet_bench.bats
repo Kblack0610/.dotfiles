@@ -722,7 +722,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
