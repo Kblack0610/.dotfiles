@@ -694,6 +694,10 @@ kpi_setup() {
   printf '#!/usr/bin/env bash\nB=%q; L=%q\n' "$BOARD" "$NLOG" > "$SANDBOX/bin/notes"
   cat >> "$SANDBOX/bin/notes" <<'NS'
 echo "$*" >> "$L"
+if [ "$1 $2" = "ptask home-config" ]; then
+  case "$3" in list) cat "$B.home" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$B.home" ;; esac
+  exit 0
+fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
 case "$4" in
   list) cat "$B" ;;
@@ -950,7 +954,7 @@ ask_row() {
 # "unit Result LoadState" a line) and an empty Sentinel state and manifest dir
 triage_setup() {
   kpi_setup
-  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches"
+  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches" TRIAGE_RED_CMD=true
   mkdir -p "$TRIAGE_WATCH_STATE" "$TRIAGE_WATCHES"; : > "$SANDBOX/failed"
   printf '#!/usr/bin/env bash\nF=%q\n' "$SANDBOX/failed" > "$SANDBOX/bin/systemctl-stub"
   cat >> "$SANDBOX/bin/systemctl-stub" <<'SC'
@@ -1058,11 +1062,15 @@ errlog() {
     '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
-# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty causes table
+# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty route table
 log_triage_setup() {
   triage_setup
   mkdir -p "$AGENTCTL_STATE_DIR"; PLOG="$SANDBOX/promote.log"
-  export TRIAGE_CAUSES="$SANDBOX/triage-causes" TRIAGE_PROMOTE_CMD=promote-stub
+  export TRIAGE_ROUTES="$SANDBOX/triage-routes" TRIAGE_PROMOTE_CMD=promote-stub TRIAGE_HOLD_CMD=true TRIAGE_ITEMS_CMD=items-stub TRIAGE_NOTIFY_CMD=notify-stub
+  ITEMS="$SANDBOX/items.jsonl"; NOTIFY="$SANDBOX/notify.log"; : > "$ITEMS"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
+  chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   chmod +x "$SANDBOX/bin/promote-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
@@ -1086,26 +1094,125 @@ log_triage_setup() {
   [ ! -s "$PLOG" ]
 }
 
-@test "triage: a row a known cause explains is queued once as a night fix; no match queues nothing" {
+# route <ERE> <route> <skill> <fix> [tags]: one line of the route table
+route() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:--}" >> "$TRIAGE_ROUTES"; }
+lock_route() { route 'lock .* held by pid' agent fix-red 'clear the stale lock #2 in alpha' "${1:--}"; }
+cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
+
+@test "triage: an agent route is queued once as a red fix; no match queues nothing" {
   log_triage_setup
-  printf '# comment\nnot in any row\tnever used\n' > "$TRIAGE_CAUSES"
-  printf 'lock .* held by pid\tclear the stale lock #2 in alpha\n' >> "$TRIAGE_CAUSES"
+  printf '# comment\n' > "$TRIAGE_ROUTES"; route 'not in any row' agent - never
+  lock_route '#size/m hold:x'
   run "$SUBJECT" triage --dry-run
-  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; known cause: clear the stale lock no\.2 in alpha #low \(queued as a night fix\)$'
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; fix with fix-red: clear the stale lock no\.2 in alpha #size/m #low \(agent\)$'
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial '1 queued as night fixes'
+  assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
-  assert_output --regexp '^--agent --project agent-runtime --tags night --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*known cause'
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
+  run grep -c '#size/s' "$BOARD"
+  assert_output 0
   # started on the board: never queued twice
   sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  printf 'nothing matches\tx\n' > "$TRIAGE_CAUSES"
+  printf 'nothing matches\tagent\t-\tx\n' > "$TRIAGE_ROUTES"
   rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
   run "$SUBJECT" triage
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a cause already queued, or closed with the red still here, is not queued again" {
+  log_triage_setup
+  lock_route
+  for state in running done; do
+    jq -cn --arg t "red cause:$(cause_of)" --arg s "$state" '{tags: $t, state: $s, queued: "2020-01-01T00:00:00Z"}' > "$ITEMS"
+    run "$SUBJECT" triage
+    assert_success
+    [ ! -s "$PLOG" ]
+  done
+  run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
+  assert_output 1
+}
+
+@test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
+  log_triage_setup
+  lock_route
+  TRIAGE_HOLD_CMD=false run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  TRIAGE_ITEMS_CMD=false run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+}
+
+@test "triage: the daily cap stops a route, and two rows of one cause are one item" {
+  log_triage_setup
+  lock_route
+  today=$(date -u -d "@$T0" +%F)
+  jq -cn --arg d "${today}T01:00:00Z" '{tags: "red cause:other", state: "done", queued: $d}' > "$ITEMS"
+  TRIAGE_FIX_CAP=1 run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  TRIAGE_FIX_CAP=2 run "$SUBJECT" triage
+  [ "$(grep -c . "$PLOG")" = 1 ]
+  : > "$PLOG"; : > "$ITEMS"
+  triage_setup_two() { watch one TRIP -25200 high; watch two TRIP -25200 high; }
+  triage_setup_two
+  printf 'check.watch.: (one|two) tripped\tagent\t-\tshared\t-\n' > "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c . "$PLOG")" = 1 ]
+}
+
+@test "triage: alert and owned take no row and no item, script files a row, a human route files and pages once" {
+  log_triage_setup
+  watch spend TRIP -25200 high; watch drift TRIP -25200 high; watch nightly TRIP -25200 high; watch puck TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  route 'watch.: nightly' owned:ar-9 - 'its plan owns it'
+  route 'watch.: drift' script - 'dotfiles-deploy --apply'
+  route 'watch.: puck' human:home-config - 'check the puck'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 for the human'
+  [ ! -s "$PLOG" ]
+  run grep -c 'watch): spend\|watch): nightly\|watch): puck' "$BOARD"
+  assert_output 0
+  run grep -c 'tripped since .*; script: dotfiles-deploy' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
+  [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+@test "triage: a route the table does not know is unrouted, never a silent sink" {
+  log_triage_setup
+  route 'lock .* held by pid' agnet - 'typo'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'no such route: agnet'
+  [ ! -s "$PLOG" ]
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
+  log_triage_setup
+  export TRIAGE_RED_CMD=red-stub
+  printf '#!/usr/bin/env bash\necho "watch voice_kitchen_puck"\necho "watch local_one"\necho "runner alpha"\n' > "$SANDBOX/bin/red-stub"
+  chmod +x "$SANDBOX/bin/red-stub"
+  watch local-one TRIP -3600 low
+  printf 'NAME=alpha\n' > "$LEDGER_CONF_DIR/alpha.conf"
+  run "$SUBJECT" triage --dry-run
+  assert_line 'check(red): watch voice_kitchen_puck is red #low'
+  refute_line --partial 'local_one'
+  refute_line --partial 'runner alpha'
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
