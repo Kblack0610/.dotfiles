@@ -325,7 +325,7 @@ enum Cmd {
         /// With --stats: one JSON array instead, adding each project's dir, done count, STATUS line and date, and summary path
         #[arg(long, requires = "stats")]
         json: bool,
-        /// Print a project's maturity stage; with --set, declare it.
+        /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
         /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,

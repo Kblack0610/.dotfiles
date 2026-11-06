@@ -185,8 +185,8 @@ pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
 //
 // This is not the `<!-- canonical: NAME -->` mistake repeated. That field drifted because
 // NOTHING checked it, not because a human could type it. `project-map-doctor` checks this
-// one against a closed vocabulary and refuses a `prod` claim no git tag backs, so the
-// checker is the safeguard and the CLI does not also have to be a gatekeeper.
+// one against a closed vocabulary, and both it and `--stage --set` run
+// `project-stage-check`, which holds a stage to its rows in `~/.local/src/docs/stages.md`.
 
 /// The lines above the first `##` heading: a project's front page, where a fact about the
 /// project as a whole belongs. Scanning the whole file would pick up a `#prod` written
@@ -308,15 +308,64 @@ fn tag_verb(
 
 /// `notes projects --stage <name> [--set <value>]`: read a project's maturity, or move it.
 ///
-/// Editing the `#prod` / `#alpha` tag on the sheet by hand does exactly the same thing;
-/// this is the scriptable spelling, not a required one.
+/// A move up the ladder runs the stage gate first and refuses when it blocks; a move down or
+/// sideways never does, since a project claiming less than it meets is no risk. A hand edit
+/// of the tag skips the gate, and the nightly `project-map-doctor` run catches it.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    stage_via(p, log, name, value, STAGE_GATE_BIN)
+}
+
+/// `stage` with the gate command named, so a test can point it at a stub.
+fn stage_via(p: &Profile, log: &Logger, name: &str, value: Option<&str>, gate: &str) -> Result<()> {
     if let Some(v) = value {
-        if !STAGES.contains(&v) {
+        let Some(to) = stage_rank(v) else {
             bail!("unknown stage '{v}' (want: {})", STAGES.join(", "));
+        };
+        let dir = project_dir(p, name)?;
+        if stage_of(&dir)
+            .and_then(|s| stage_rank(&s))
+            .is_none_or(|f| to > f)
+        {
+            // The dir's name is the canonical project name; an alias would miss the map.
+            let canon = dir.file_name().map_or(name.into(), |n| n.to_string_lossy());
+            stage_gate(gate, &canon, v)?;
         }
     }
     tag_verb(p, log, name, &STAGES, value)
+}
+
+const STAGE_GATE_BIN: &str = "project-stage-check";
+
+/// Run `project-stage-check <name> --stage <stage>`. Exit 0 passes (its report goes to
+/// stderr, since stdout is the `--set` result scripts read), 1 refuses with the report, and
+/// anything else (missing script, unknown project, 2) says no gate ran and lets the move go:
+/// the gate lives in the dotfiles, and a machine without them still has to move a tag.
+fn stage_gate(bin: &str, name: &str, stage: &str) -> Result<()> {
+    match std::process::Command::new(bin)
+        .args([name, "--stage", stage])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            eprint!("{}", String::from_utf8_lossy(&o.stdout));
+            Ok(())
+        }
+        Ok(o) if o.status.code() == Some(1) => bail!(
+            "{name} does not meet #{stage}; the stage is unchanged\n{}",
+            String::from_utf8_lossy(&o.stdout).trim_end()
+        ),
+        Ok(o) => {
+            eprintln!(
+                "no stage gate ran ({bin} exited {}: {})",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("no stage gate ran ({bin}: {e})");
+            Ok(())
+        }
+    }
 }
 
 /// `notes projects --group <name> [--set <value>]`: read or set a project's index group.
@@ -3423,7 +3472,10 @@ mod stage_tag_tests {
     fn a_prio_is_set_replaced_and_cleared_beside_the_stage() {
         let s = "# demo\nVersion: v1.0.0 #alpha #tooling\n\n## Tasks\n- [ ] a row #high\n";
         let one = replace_head_tag(s, &PRIOS, Some("prio/focus")).unwrap();
-        assert!(one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"), "{one}");
+        assert!(
+            one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"),
+            "{one}"
+        );
         assert_eq!(prio_of_str(&one), "focus");
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
@@ -3444,7 +3496,10 @@ mod stage_tag_tests {
             (0, 1, 0),
             (0, 1, 1),
         );
-        assert!(sheet.contains("Version: v0.1.1 #alpha #prio/focus\n"), "{sheet}");
+        assert!(
+            sheet.contains("Version: v0.1.1 #alpha #prio/focus\n"),
+            "{sheet}"
+        );
     }
 
     #[test]
@@ -5029,5 +5084,70 @@ mod shape_tests {
         fs::write(dir.join("README.md"), "# d\nVersion: v0.1.0\n\n## Tasks\n").unwrap();
         assert!(stage_blocks_release(&dir, "d").is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A project at `#draft`, and a stub gate that logs its args and exits `code`.
+    fn gated(tag: &str, code: i32) -> (Sandbox, PathBuf, String) {
+        let s = sandbox(tag);
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let sheet = s.p.projects.as_ref().unwrap().join("demo/README.md");
+        fs::write(&sheet, "# demo\nVersion: v0.1.0 #dev\n\n## Tasks\n").unwrap();
+        let gate = s.root.join("gate");
+        let calls = s.root.join("calls");
+        fs::write(
+            &gate,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\necho 'FAIL  draft  A brief'\nexit {code}\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
+        let gate = gate.display().to_string();
+        (s, sheet, gate)
+    }
+
+    fn calls(s: &Sandbox) -> String {
+        fs::read_to_string(s.root.join("calls")).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_move_up_the_gate_blocks_is_refused_and_the_tag_stays() {
+        let (s, sheet, gate) = gated("gate-block", 1);
+        let err = stage_via(&s.p, &s.log, "demo", Some("alpha"), &gate)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not meet #alpha"), "{err}");
+        assert!(err.contains("FAIL  draft  A brief"), "{err}");
+        assert!(fs::read_to_string(&sheet).unwrap().contains("#dev"));
+        assert_eq!(calls(&s), "demo --stage alpha\n");
+    }
+
+    #[test]
+    fn a_move_up_the_gate_passes_is_written() {
+        let (s, sheet, gate) = gated("gate-pass", 0);
+        stage_via(&s.p, &s.log, "demo", Some("alpha"), &gate).unwrap();
+        let text = fs::read_to_string(&sheet).unwrap();
+        assert!(text.contains("#alpha") && !text.contains("#dev"), "{text}");
+    }
+
+    #[test]
+    fn a_move_down_never_runs_the_gate() {
+        let (s, sheet, gate) = gated("gate-down", 1);
+        stage_via(&s.p, &s.log, "demo", Some("draft"), &gate).unwrap();
+        stage_via(&s.p, &s.log, "demo", Some("draft"), &gate).unwrap();
+        assert!(fs::read_to_string(&sheet).unwrap().contains("#draft"));
+        assert_eq!(calls(&s), "");
+    }
+
+    #[test]
+    fn a_gate_that_cannot_run_lets_the_move_through() {
+        let (s, sheet, gate) = gated("gate-usage", 2);
+        stage_via(&s.p, &s.log, "demo", Some("alpha"), &gate).unwrap();
+        assert!(fs::read_to_string(&sheet).unwrap().contains("#alpha"));
+        let missing = s.root.join("no-such-gate").display().to_string();
+        stage_via(&s.p, &s.log, "demo", Some("beta"), &missing).unwrap();
+        assert!(fs::read_to_string(&sheet).unwrap().contains("#beta"));
     }
 }
