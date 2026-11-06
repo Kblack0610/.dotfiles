@@ -440,9 +440,7 @@ $(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
 
 ## Answer
 
-For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
-{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"area\": \"<one lowercase word>\", \"clear\": true|false, \"agent_only\": true|false, \"tier3_only\": true|false, \"verdict\": \"dispatch|skip\", \"rule\": \"<the id of the rule that decided it>\", \"reason\": \"<one short sentence>\"}
-Copy project, lane and key exactly as given."
+For every row above, return one verdict in the structured output. Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
@@ -459,10 +457,11 @@ Copy project, lane and key exactly as given."
     say "judge call failed"; return 1
   fi
   rules=$(judge_rules "$DISPATCH_POLICY" | jq -Rsc 'split("\n") | map(select(length > 0))')
-  verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
+  # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
+  verdicts=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
+    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
       --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line})' <<<"$cands")" '
-      fromjson? | select(type == "object"
+      select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
       | ([.project, .lane, .key] | tostring) as $k
