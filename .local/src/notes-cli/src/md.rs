@@ -800,34 +800,7 @@ pub fn find_hashtags(line: &str) -> Vec<String> {
     out
 }
 
-/// The `#idea` tag on a line: `None` when it has none, `Some(None)` for a bare `#idea`, and
-/// `Some(Some(project))` for `#idea:<project>`.
-///
-/// Its own reader because the shared tag walker stops at `:` (so `find_hashtags` sees both
-/// forms as `idea`), and only this tag gives the suffix a meaning.
-pub fn idea_tag(line: &str) -> Option<Option<String>> {
-    let bytes = line.as_bytes();
-    let mut found = None;
-    for_each_tag(line, |_, tag_start, scan_end, end| {
-        if found.is_some() || !line[tag_start..end].eq_ignore_ascii_case("idea") {
-            return;
-        }
-        if scan_end != end || bytes.get(end) != Some(&b':') {
-            found = Some(None);
-            return;
-        }
-        let rest = &line[end + 1..];
-        let len = rest
-            .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-            .count();
-        let name = rest[..len].trim_end_matches(['-', '.']);
-        found = Some((!name.is_empty()).then(|| name.to_lowercase()));
-    });
-    found
-}
-
-/// The project a `#p:<project>` tag sends a Focus row to, lower-cased. A bare `#p` or an
+/// The project a `#p:<project>` tag sends an outbox line to, lower-cased. A bare `#p` or an
 /// empty name is no tag. Only the text before the marker comment counts.
 pub fn project_tag(line: &str) -> Option<String> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
@@ -1508,24 +1481,6 @@ mod tests {
             without_project_tag("  - [ ] fix the chest #p:apociseum #high"),
             "  - [ ] fix the chest #high"
         );
-    }
-
-    #[test]
-    fn idea_tag_reads_the_bare_and_the_project_form() {
-        assert_eq!(idea_tag("- [ ] a game about cans #idea"), Some(None));
-        assert_eq!(
-            idea_tag("- [ ] cans #idea:Apociseum #low"),
-            Some(Some("apociseum".into()))
-        );
-        assert_eq!(
-            idea_tag("- [ ] more levels #idea:unity-playground."),
-            Some(Some("unity-playground".into()))
-        );
-        assert_eq!(idea_tag("- [ ] not one #ideas #high"), None);
-        assert_eq!(idea_tag("- [ ] in code `#idea` only"), None);
-        assert_eq!(idea_tag("- [ ] glued foo#idea"), None);
-        assert_eq!(idea_tag("- [ ] empty suffix #idea:"), Some(None));
-        assert_eq!(idea_tag("- [ ] ends a sentence #idea."), Some(None));
     }
 
     fn d(s: &str) -> NaiveDate {
