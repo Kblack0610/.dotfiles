@@ -41,7 +41,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
    4. What makes the windows not comparable: slots, routing, gate count, load, runs still going, one night against one night.
    5. What has not been measured yet, and the next lever.
    Say which change caused a number only if that lever was measured alone.
-8. **File the next lever** on the agent board (`notes ptask <project> --agent add "ci cost: <lever>" '#tier/3'`), checking for an existing row first.
+8. **File the next lever** on the agent board (`notes ptask <project> --agent add "ci(cost): <lever> #size/s" '#tier/3'`), checking for an existing row first.
 
 ## Do NOT
 
