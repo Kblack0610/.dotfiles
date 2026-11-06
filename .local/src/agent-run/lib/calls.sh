@@ -20,8 +20,10 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 
 # calls_record <harness> <cmd...>: run a print-mode harness command that emits one JSON result object
 # (claude --output-format json, or an OpenAI chat completion from harnesses/raw.sh), print its
-# reply text to stdout as the plain run would, append the call line, and return the command's
-# exit code.
+# reply to stdout as the plain run would, append the call line, and return the command's exit
+# code. The reply is .structured_output as one JSON line when the agent has a SCHEMA, else
+# .result (claude) or the first choice's content (raw). A schema run that ended without valid
+# output has no such field, so its prose goes out and the caller's parse fails visibly.
 calls_record() {
   local harness="$1" id t0 t1 out rc=0 text
   shift
@@ -30,8 +32,8 @@ calls_record() {
   out="$("$@")" || rc=$?
   t1="$(date +%s%3N)"
   # A non-JSON reply (a crash before the result object) is still the call's output.
-  if text="$(jq -er 'if type != "object" then error
-    elif has("result") then .result
+  if text="$(jq -cer 'if type != "object" then error
+    elif has("result") or has("structured_output") then .structured_output // .result
     elif has("choices") or has("error") then .choices[0].message.content // ""
     else error end' <<<"$out" 2>/dev/null)"; then
     printf '%s\n' "$text"

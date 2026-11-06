@@ -168,7 +168,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'WORKING PR #9 CI running'
 }
 
-@test "no PR: dirty or ahead is STALLED, clean is UNCLEAR, closed PR is UNCLEAR" {
+@test "no PR: dirty or ahead is STALLED, clean is UNCLEAR, a closed PR is STALLED unless one of its own merged" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
   run b idle 0 0 0 30 1 0 2 - - - 1
@@ -176,9 +176,70 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   run b idle 0 0 0 30 1 0 0 - - - 1
   assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
   run b idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
-  assert_output --partial 'UNCLEAR PR #7 closed'
+  assert_output 'STALLED PR #7 closed without merging'
+  run work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1
+  assert_output 'PR #7 closed without merging; no plan file and nothing merged'
+  # closed beside a merged PR of its own: replaced, so the plan decides as for a merge
+  run b idle 0 0 0 30 1 0 0 7 CLOSED PASS 1 - - - - - - '#8'
+  assert_output 'DONE PR #7 closed, its PRs #8 merged, no plan file, its PR landed'
+  run b idle 0 0 0 30 1 0 0 7 CLOSED PASS 1 - 1/2 'Phase 2' - - - '#8'
+  assert_output 'LANDED PR #7 closed, its PRs #8 merged, next phase: Phase 2'
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 7 CLOSED PASS 1 - - - - - - '#8')" ]
   run b idle 0 0 0 30 0 0 0 - - - 1
   assert_output 'UNCLEAR not in a git repo'
+}
+
+@test "a session's queue item decides a clean branch with no plan: moved on is DONE, still running here is STALLED" {
+  # 2026-11-05: agent-21's item was requeued and agent-26's moved on; both read UNCLEAR for a day
+  local q='moved:dbr-p8 moved on (queued)'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - "$q"
+  assert_output 'DONE clean, nothing on the branch, no plan file, its item dbr-p8 moved on (queued)'
+  session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - "$q"
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - "$q")" ]
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item dbr-p8 is running here'
+  ! session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
+  assert_output 'no plan file and nothing merged'
+  # unlanded work and a plan still win over the item
+  run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - - "$q"
+  assert_output 'STALLED 3 dirty file(s), no PR'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/2 'Phase 2' - - - - "$q"
+  assert_output 'LANDED clean, nothing on the branch, next phase: Phase 2'
+  # a removed worktree has nothing left to land
+  run b idle 0 0 0 30 gone 0 0 - - - 1
+  assert_output 'DONE its worktree was removed'
+  session_finished idle 0 0 0 30 gone 0 0 - - - 1
+  [ -z "$(work_blockers '' idle 0 0 0 30 gone 0 0 - - - 1)" ]
+  run b idle 0 0 0 5 gone 0 0 - - - 1
+  assert_output 'WORKING idle 5m'
+}
+
+@test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
+  local start=1000 t=$'\t'
+  qi() { printf '%s\n' "$@"; }
+  # requeued under this tmux session, and done in another with this sid among its sessions
+  run item_of "$(qi "queued${t}lab:s1${t}-${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'moved:a moved on (queued)'
+  run item_of "$(qi "done${t}lab:s2${t}sid-1 sid-9${t}a${t}500")" sid-9 lab:s1 1 "$start"
+  assert_output 'moved:a moved on (done)'
+  run item_of "$(qi "running${t}lab:s2${t}sid-9${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'moved:a moved on (running in lab:s2)'
+  # running here is its own; waiting here is neither, and either beats one that moved on
+  run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "running${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'own:b'
+  run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "waiting${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
+  # session: alone: a done item counts only when it finished after this claude started (names recycle)
+  run item_of "$(qi "done${t}lab:s1${t}-${t}a${t}500")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
+  run item_of "$(qi "done${t}lab:s1${t}-${t}a${t}1500")" sid-9 lab:s1 1 "$start"
+  assert_output 'moved:a moved on (done)'
+  # a tmux session shared by several claudes (hub/dotfiles) is no one window's by session:
+  run item_of "$(qi "queued${t}lab:s1${t}-${t}a${t}0")" sid-9 lab:s1 2 "$start"
+  [ "$output" = - ]
+  run item_of "$(qi "queued${t}lab:s2${t}sid-8${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
 }
 
 @test "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR" {
@@ -613,6 +674,46 @@ queue_item() {
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
+}
+
+# clean_fixture: landed_fixture with no PR on the branch and no plan file: what read UNCLEAR.
+clean_fixture() {
+  landed_fixture
+  panel "$SANDBOX/wt"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\n' > "$SANDBOX/bin/gh"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+}
+
+@test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
+  clean_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = UNCLEAR ]
+  # requeued: the item keeps naming this tmux session
+  queue_item queued lab:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save moved on (queued)' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
+  # running here with nothing on the branch: the session's to pick up
+  rm -r "$HOME/.agent/queue/queued"; queue_item running lab:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save is running here' ]
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  # done in another session, this one among its sessions
+  rm -r "$HOME/.agent/queue/running"; local d; d="$HOME/.agent/queue/done/$(date +%F)"
+  mkdir -p "$d"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s2\nsessions: sid-1 sid-9\nfinished: %s\n---\nfix wave save\n' \
+    "$(date -u +%FT%TZ)" > "$d/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save moved on (done)' ]
+  # a reaped worktree
+  rm -r "$d"; rm -rf "$SANDBOX/wt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'its worktree was removed' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
 @test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {

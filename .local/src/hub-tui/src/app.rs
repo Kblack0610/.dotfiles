@@ -99,12 +99,7 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Daily
-            | Tab::Queue
-            | Tab::Projects
-            | Tab::Sessions
-            | Tab::Log
-            | Tab::Fleet => None,
+            Tab::Daily | Tab::Queue | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
         }
     }
 }
@@ -268,6 +263,8 @@ pub struct App {
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
+    /// The Fleet tab shows each runner's registry lines (`d`) under its row.
+    pub fleet_details: bool,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -360,6 +357,7 @@ impl App {
             fleet: None,
             focus: None,
             daily_outbox: false,
+            fleet_details: false,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -948,6 +946,10 @@ impl App {
             return;
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
+            return;
+        }
+        if self.tab == Tab::Fleet && k.code == KeyCode::Char('d') {
+            self.fleet_details = !self.fleet_details;
             return;
         }
         let n = self.page.max(1);
@@ -1638,7 +1640,8 @@ impl App {
                 "j/k pick  Enter detail  i p u m x c a act  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet => {
-                format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                let d = if self.fleet_details { "hide" } else { "show" };
+                format!("d {d} runner details  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
@@ -1779,7 +1782,10 @@ impl App {
             // The machinery that runs the sessions: accounts, runners and the judges.
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
-                Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
+                Some(f) => (
+                    fleettab::page(f, self.p, now, w, self.fleet_details),
+                    vec![],
+                ),
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
@@ -2910,9 +2916,15 @@ mod tests {
             "WORKERS",
             "DISPATCH JUDGE",
             "ANSWER JUDGE",
+            "d show runner details",
         ] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
+        assert!(!s.contains("trigger "), "details start hidden\n{s}");
+        a.handle(key('d'));
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("trigger *-*-* 03:00:00"), "{s}");
+        assert!(s.contains("d hide runner details"), "{s}");
     }
 
     #[test]
