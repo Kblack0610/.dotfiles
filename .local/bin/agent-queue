@@ -30,6 +30,8 @@ AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
 PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
 # The night window a `night` item may start in, local time; it may wrap midnight.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
@@ -82,6 +84,19 @@ fm_get() { # file key
     index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null
 }
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
+
+# item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
+# naming the item, its project, its row's key (as item_rec reads `row`), its PR, merge commit and
+# ticket.
+item_event() {
+  local action=$1 f=$2 row title
+  shift 2
+  row="$(fm_get "$f" row)" title="$(fm_get "$f" title)"
+  [ -n "$row" ] || case "$(fm_get "$f" from)" in board:*) row="$(fm_get "$f" from)" row="${row#board:}" ;; esac
+  chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
+    --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
+    --sha "$(fm_get "$f" merged)" --ticket "$(fm_get "$f" ticket)" "$@"
+}
 
 slugify() {
   printf '%s' "$1" | head -1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' \
@@ -517,6 +532,7 @@ cmd_add() {
     [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$project" "${story#*$'\t'}" "${story%%$'\t'*}"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
+  item_event item-added "$f" --to "$state"
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story ${story#*$'\t'} on the $project agent board${epic:+, under $epic}"
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
@@ -703,6 +719,7 @@ cmd_claim() {
   cur="$(fm_get "$f" sessions)"
   case " $cur " in *" $sid "*) echo "$slug: $sid already claimed"; return 0 ;; esac
   header_set "$f" sessions "${cur:+$cur }$sid"
+  item_event item-claimed "$f" --why "$sid"
   echo "$slug: claimed by $sid"
 }
 
@@ -729,6 +746,7 @@ cmd_cancel() {
   header_set "$f" status cancelled
   header_set "$f" finished "$(now_utc)"
   dest="$(move_to "$f" "done")" || die "could not move $f"
+  item_event item-cancelled "$dest" --to done
   echo "cancelled $slug -> $dest"
 }
 
@@ -738,12 +756,13 @@ cmd_bump() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   header_set "$f" priority "$prio"
+  item_event item-set "$f" --why "priority=$prio"
   echo "$slug -> $prio"
 }
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged cost_usd work_min report note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged ticket cost_usd work_min report note status area origin lane profile from touches row "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -763,6 +782,7 @@ cmd_set() {
     case "$kv" in session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;; esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
   done
+  item_event item-set "$f" --why "$*"
   echo "$slug: $*"
 }
 
@@ -838,6 +858,7 @@ cmd_move() {
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
   esac
   dest="$(move_to "$f" "$to")" || die "could not move $f"
+  item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
   [ "$to" = done ] && [ "$status" = ok ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   start_next "$slug"
