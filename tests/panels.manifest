@@ -30,8 +30,7 @@
 root    f     script       WIDE     .local/src/tmux/sessionizer.sh        -
 root    S     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-session
 root    R     script       WIDE     .local/bin/sessions                   search --window
-root    C-s   bin-symlink  SMALL    .local/src/tmux/servers.sh            pick
-root    A     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick-all
+root    H     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick
 root    g     rust-bin     FULL     .local/src/agent-panel                -
 root    C-g   script       FULL     .local/src/tmux/fleet.sh              -
 root    P     script       WIDE     .local/src/tmux/pr-viewer.sh          -
