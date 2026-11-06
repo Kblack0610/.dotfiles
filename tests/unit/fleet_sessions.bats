@@ -686,6 +686,66 @@ SH
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
+@test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {
+  # ar-185: one test red on several agents' gates at once is a shared cause, and each session chased it alone.
+  landed_fixture
+  local now f doc="$XDG_STATE_HOME/fleet/state.json"
+  now="$(date +%s)" f="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv"
+  mkdir -p "${f%/*}"
+  # T.Shared: an episode from 2.5h ago (gaps under 2h), red on feat/x (this session's worktree), a
+  # detached agent-3 (counted by its worktree) and feat/b twice. T.Two has two branches, T.Old three
+  # outside the window; a future line and a malformed one are skipped.
+  printf '%s\t%s\t%s\t%s\n' \
+    $((now - 9000)) old feat/old T.Shared  $((now - 3600)) wt feat/x T.Shared \
+    $((now - 1800)) uc-agent-3 - T.Shared  $((now - 600)) uc-b feat/b T.Shared  $((now - 300)) uc-b feat/b T.Shared \
+    $((now - 600)) uc-b feat/b T.Two  $((now - 500)) wt feat/x T.Two \
+    $((now - 9000)) a feat/a T.Old  $((now - 8900)) b feat/b T.Old  $((now - 8800)) c feat/c T.Old \
+    $((now + 600)) z feat/z T.Two  junk wt feat/x T.Two > "$f"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -s length <<<"$shared")" = 1 ]
+  [ "$(jq -r .target <<<"$shared")" = T.Shared ]
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 3 branches in 2h: feat/x, uc-agent-3, feat/b' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 9000))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+  # the session keeps its own bucket: the red is not its work
+  [ "$(jq -r 'select(.bucket != "SHARED") | .bucket' <<<"$output")" = LANDED ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line SHARED
+  assert_output --partial 'T.Shared red on 3 branches in 2h'
+
+  # the state document lists it under shared, never as a session
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.shared | length' "$doc")" = 1 ]
+  [ "$(jq -r '.shared[0] | "\(.test) \(.id) \(.escalated)"' "$doc")" = 'T.Shared shared-T_Shared false' ]
+  [ "$(jq -r '[.sessions[].bucket] | join(",")' "$doc")" = LANDED ]
+  [ "$(jq -r '.counts | has("SHARED")' "$doc")" = false ]
+
+  # escalated once; a fourth branch in the same episode is the same fact, so it does not page again
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate shared-T_Shared "SHARED T.Shared @$((now - 9000))"
+  printf '%s\tuc-c\tfeat/c\tT.Shared\n' $((now - 60)) >> "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 4 branches in 2h: feat/x, uc-agent-3, feat/b, feat/c' ]
+  [ "$(jq -r .escalated <<<"$shared")" = true ]
+
+  # a quiet gap longer than the window ends the episode: the same test red again is a new fact
+  printf '%s\t%s\t%s\t%s\n' $((now - 20000)) old feat/old T.Shared \
+    $((now - 900)) wt feat/x T.Shared $((now - 800)) uc-b feat/b T.Shared $((now - 700)) uc-c feat/c T.Shared > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 900))" ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+
+  # negative control: a higher bar makes no row
+  FLEET_SHARED_RED_BRANCHES=4 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
 @test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
   # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
   git init -q --bare "$SANDBOX/origin.git"
