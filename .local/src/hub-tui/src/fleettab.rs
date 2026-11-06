@@ -4,12 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use hub_core::fleet::{Dispatch, Fleet, Judge, Worker};
+use hub_core::fleet::{Dispatch, Eval, Fleet, Judge, Registry, Worker};
 use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, Table};
-use crate::fmt::{clock, older, Palette};
+use crate::fmt::{clock, dur, older, pct, Palette};
 use hub_core::layout::FOLD_ROWS;
 
 fn usd(v: Option<f64>) -> String {
@@ -23,7 +23,8 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-pub fn page(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// `details` puts each runner's registry lines under its row (the hub's `d`).
+pub fn page(f: &Fleet, p: Palette, now: i64, w: usize, details: bool) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &f.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -43,7 +44,7 @@ pub fn page(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         ),
         w,
     ));
-    out.extend(workers(&f.workers, p, now, w));
+    out.extend(workers(&f.workers, p, now, w, details));
     out.push(Line::raw(""));
     out.push(dispatch_head(&f.dispatch, p, w));
     out.push(judge_head(&f.judge, p, w));
@@ -128,7 +129,7 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
     .fit(w, p.head())
 }
 
-fn workers(ws: &[Worker], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+fn workers(ws: &[Worker], p: Palette, now: i64, w: usize, details: bool) -> Vec<Line<'static>> {
     if ws.is_empty() {
         return vec![Line::styled(
             "No runners configured in ~/.config/agentctl/agents.",
@@ -182,7 +183,7 @@ fn workers(ws: &[Worker], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
             ]
         })
         .collect();
-    Table {
+    let table = Table {
         header: vec![
             "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "WHY",
         ],
@@ -194,7 +195,162 @@ fn workers(ws: &[Worker], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
         cap: vec![(0, 28)],
         ..Default::default()
     }
-    .fit(w, p.head())
+    .fit(w, p.head());
+    if !details {
+        return table;
+    }
+    // fit gives the header, then one line per runner.
+    let mut out = vec![];
+    for (i, l) in table.into_iter().enumerate() {
+        out.push(l);
+        if let Some(r) = i.checked_sub(1).and_then(|i| ws.get(i)) {
+            out.extend(registry(&r.registry, p, now, w));
+        }
+    }
+    out
+}
+
+fn kilo(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
+        n if n >= 1_000 => format!("{}k", (n + 500) / 1_000),
+        n => n.to_string(),
+    }
+}
+
+fn secs(ms: Option<u64>) -> String {
+    ms.map_or("-".into(), |ms| dur(ms as f64 / 1000.0))
+}
+
+const PAD: &str = "    ";
+
+/// One runner's registry, as agent-web's expanded row: its role and what the role takes away,
+/// model, prompt and its sha, trigger, 24h calls, the newest call's Langfuse trace, and a judge's
+/// per-rule table.
+fn registry(r: &Registry, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let c = &r.calls;
+    let prompt = if r.prompt.is_empty() {
+        "-".to_string()
+    } else {
+        let sha = if c.prompt_sha.is_empty() {
+            r.eval.as_ref().map_or("", |e| e.prompt_sha.as_str())
+        } else {
+            &c.prompt_sha
+        };
+        format!("{} {sha}", r.prompt.rsplit('/').next().unwrap_or(&r.prompt))
+    };
+    let dash = |s: &str| {
+        if s.is_empty() {
+            "-".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    let mut out = vec![
+        Line::from(vec![
+            Span::raw(PAD),
+            Span::styled(dash(&r.role), p.head()),
+            Span::styled(format!("  {}", r.caps), p.dim()),
+        ]),
+        Line::from(vec![
+            Span::raw(PAD),
+            Span::styled(
+                format!(
+                    "model {}  prompt {prompt}  effect {}",
+                    dash(&r.model),
+                    dash(&r.effect)
+                ),
+                p.dim(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(PAD),
+            Span::raw(format!("trigger {} | 24h: {} calls, ", r.trigger, c.n_24h)),
+            Span::styled(
+                format!("{} errors", c.errors_24h),
+                if c.errors_24h > 0 {
+                    p.bad()
+                } else {
+                    Default::default()
+                },
+            ),
+            Span::raw(format!(
+                ", {}, {} tokens, p95 {}",
+                usd(c.cost_24h),
+                kilo(c.tokens_24h),
+                secs(c.p95_ms)
+            )),
+        ]),
+    ];
+    if let Some(x) = c.recent.first() {
+        out.push(Line::from(vec![
+            Span::raw(PAD),
+            Span::styled(
+                format!(
+                    "last call {} {} {}  {}",
+                    clock(x.at, now),
+                    secs(Some(x.ms)),
+                    if x.ok { "ok" } else { "error" },
+                    if x.link.is_empty() { &x.id } else { &x.link }
+                ),
+                if x.ok { p.dim() } else { p.bad() },
+            ),
+        ]));
+    }
+    let mut out: Vec<_> = out.into_iter().map(|l| clip_line(l, w)).collect();
+    if let Some(e) = &r.eval {
+        out.extend(eval(e, p, w));
+    }
+    out
+}
+
+/// A judge's per-rule table from judge-eval; a rule not yet live shows its labels against the bar.
+fn eval(e: &Eval, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if e.rules.is_empty() {
+        return vec![clip_line(
+            Line::styled(
+                format!("{PAD}no verdicts under prompt {}", e.prompt_sha),
+                p.dim(),
+            ),
+            w,
+        )];
+    }
+    // judge-eval gives percents, fmt::pct takes ratios.
+    let pct = |x: Option<f64>| pct(x.map(|x| x / 100.0));
+    let rows = e
+        .rules
+        .iter()
+        .map(|r| {
+            let live = match (&r.bar, r.live) {
+                (_, true) => "yes".to_string(),
+                (Some(b), false) => format!("no ({}/{} to bar)", b.labels, b.need),
+                (None, false) => "no".into(),
+            };
+            vec![
+                cell(r.rule.clone(), Default::default()),
+                r.verdicts.to_string().into(),
+                r.scored.to_string().into(),
+                pct(r.precision).into(),
+                pct(r.false_defer_pct).into(),
+                cell(live, if r.live { p.good() } else { p.dim() }),
+            ]
+        })
+        .collect();
+    Table {
+        header: vec!["RULE", "CALLS", "SCORED", "PREC", "FALSE-DEFER", "LIVE"],
+        rows,
+        keep: vec![0, 5, 3, 4, 1, 2],
+        right: vec![1, 2, 3, 4],
+        ..Default::default()
+    }
+    .fit(w.saturating_sub(PAD.len()), p.dim())
+    .into_iter()
+    .map(|l| {
+        let mut spans = vec![Span::raw(PAD)];
+        spans.extend(l.spans);
+        Line::from(spans)
+    })
+    .collect()
 }
 
 fn dispatch_head(d: &Dispatch, p: Palette, w: usize) -> Line<'static> {
@@ -277,7 +433,11 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
         .precision
         .map(|x| format!(" ({x}% precision)"))
         .unwrap_or_default();
-    let prompt = if j.prompt.is_empty() { "none" } else { j.prompt.as_str() };
+    let prompt = if j.prompt.is_empty() {
+        "none"
+    } else {
+        j.prompt.as_str()
+    };
     clip_line(
         heading(
             "ANSWER JUDGE",
@@ -330,7 +490,7 @@ fn judge_list(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{Disagreement, Outcome, Verdict};
+    use hub_core::fleet::{Bar, Call, Calls, Disagreement, Outcome, Score, Verdict};
 
     pub const NOW: i64 = 1_793_661_428;
 
@@ -378,6 +538,57 @@ pub mod tests {
                     }),
                     next: Some(NOW + 3600),
                     cost_24h: Some(1.25),
+                    registry: Registry {
+                        kind: "oneshot".into(),
+                        trigger: "*-*-* 03:00:00".into(),
+                        role: "curate".into(),
+                        caps: "write yes, task no, bash yes, mcp none".into(),
+                        model: "claude-opus-5-5".into(),
+                        prompt: "/home/k/.config/dream/prompt.md".into(),
+                        calls: Calls {
+                            n_24h: 14,
+                            errors_24h: 1,
+                            cost_24h: Some(0.12),
+                            tokens_24h: 864_905,
+                            p95_ms: Some(7_100),
+                            prompt_sha: "3fa1c2d".into(),
+                            recent: vec![Call {
+                                id: "c1".into(),
+                                at: NOW - 60,
+                                ms: 3_200,
+                                ok: true,
+                                link: "https://lf/project/P/sessions/s1".into(),
+                                ..Default::default()
+                            }],
+                        },
+                        eval: Some(Eval {
+                            prompt_sha: "3fa1c2d".into(),
+                            rules: vec![
+                                Score {
+                                    rule: "restates-rule".into(),
+                                    verdicts: 9,
+                                    scored: 6,
+                                    precision: Some(100.0),
+                                    live: true,
+                                    ..Default::default()
+                                },
+                                Score {
+                                    rule: "taste".into(),
+                                    verdicts: 31,
+                                    scored: 28,
+                                    false_defer_pct: Some(18.0),
+                                    bar: Some(Bar {
+                                        labels: 6,
+                                        need: 30,
+                                        met: false,
+                                    }),
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 Worker {
@@ -429,7 +640,7 @@ pub mod tests {
     /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        page(f, p, NOW, w)
+        page(f, p, NOW, w, false)
             .iter()
             .chain(verdicts(f, p, NOW, w).iter())
             .map(plain)
@@ -476,8 +687,53 @@ pub mod tests {
 
     #[test]
     fn a_narrow_page_fits() {
-        for l in page(&fixture(), Palette { no_color: true }, NOW, 40) {
-            assert!(plain(&l).chars().count() <= 40, "{:?}", plain(&l));
+        for details in [false, true] {
+            for l in page(&fixture(), Palette { no_color: true }, NOW, 40, details) {
+                assert!(plain(&l).chars().count() <= 40, "{:?}", plain(&l));
+            }
         }
+    }
+
+    #[test]
+    fn details_put_each_runners_registry_under_its_row() {
+        let p = Palette { no_color: true };
+        let lines: Vec<String> = page(&fixture(), p, NOW, 160, true)
+            .iter()
+            .map(plain)
+            .collect();
+        let row = lines.iter().position(|l| l.starts_with("dream")).unwrap();
+        let want = [
+            "    curate  write yes, task no, bash yes, mcp none",
+            "    model claude-opus-5-5  prompt prompt.md 3fa1c2d  effect -",
+            "    trigger *-*-* 03:00:00 | 24h: 14 calls, 1 errors, $0.12, 865k tokens, p95 7s",
+        ];
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(lines[row + 1 + i].trim_end(), *w, "{lines:#?}");
+        }
+        assert!(
+            lines[row + 4].contains("3s ok  https://lf/project/P/sessions/s1"),
+            "{lines:#?}"
+        );
+        let s = lines.join("\n");
+        assert!(s.contains("RULE"), "{s}");
+        let taste = lines.iter().find(|l| l.contains("taste")).unwrap();
+        assert!(
+            taste.contains("18%") && taste.contains("no (6/30 to bar)"),
+            "{taste}"
+        );
+        let live = lines.iter().find(|l| l.contains("restates-rule")).unwrap();
+        assert!(
+            live.contains("100%") && live.trim_end().ends_with("yes"),
+            "{live}"
+        );
+        // idle-one has an empty registry: its lines say so with dashes, and no call or table.
+        let idle = lines
+            .iter()
+            .position(|l| l.starts_with("idle-one"))
+            .unwrap();
+        assert_eq!(lines[idle + 1].trim_end(), "    -", "{lines:#?}");
+        assert!(!page(&fixture(), p, NOW, 160, false)
+            .iter()
+            .any(|l| plain(l).contains("trigger")));
     }
 }

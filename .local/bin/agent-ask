@@ -84,9 +84,11 @@
 # cancel stamps `closed_at` and, when given, `closed_reason`.
 #
 # THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
-# one call to the registered agent `ask-judge` (its conf sets role, model and the policy prompt)
-# writes `judge: human | take-recommend | answer:<text> | error`, the policy rule that decided it
-# (`judge_rule`), `judge_reason`, and `judge_call`, its line in calls.jsonl. A rule listed in the
+# one call to the registered agent `ask-judge` (its conf sets role, model, schema and the policy
+# prompt) scores the ask on the policy's criteria, and judge.sh judge_derive turns the score into
+# `judge: human | take-recommend | answer:<text> | error`, the class that decided it
+# (`judge_rule`), the criteria that held (`judge_met`), `judge_reason`, and `judge_call`, its
+# line in calls.jsonl. A class listed in the
 # conf's LIVE_RULES is answered live (`answered_by: judge`, see "live answers" below); every
 # other rule is shadow, and the human answers. A gate or approval is never sent to the model;
 # it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it),
@@ -106,9 +108,6 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_LIVE_BAR:=30}" "${AGENT_ASK_LIVE_PRECISION:=90}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
-# The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the ask); read
-# here only for the rule ids a verdict may name (judge.sh judge_rules).
-: "${AGENT_ASK_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
@@ -1087,8 +1086,8 @@ cmd_mark_resumed() {
 # judge <id>: what the answer judge would do with this ask. Shadow only: it records its call
 # and never answers. Runs once per ask; a gate is the human's without a model call. Every
 # outcome is recorded: `judge` is human, take-recommend, answer:<text>, or error when the call
-# failed or its reply named no call or no rule of the policy; `judge_rule` is the rule id,
-# `judge_reason` the why, and `judge_call` the id of the call's calls.jsonl line.
+# failed or its reply was not a full score; `judge_rule` is the class, `judge_met` the criteria
+# that held, `judge_reason` the why, and `judge_call` the id of the call's calls.jsonl line.
 cmd_judge() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask judge <id>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
@@ -1099,8 +1098,7 @@ cmd_judge() {
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
       return 0 ;;
   esac
-  local prompt out wd rc verdict call rule rules cid
-  rules="$(judge_rules "$AGENT_ASK_POLICY")"
+  local prompt out wd rc verdict call rule answer cid
   # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
   prompt="## The ask
 
@@ -1116,8 +1114,7 @@ recommend_why: $(field "$f" recommend_why)
 
 ## Answer
 
-One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE-END, nothing else between them:
-{\"call\": \"human|take-recommend|answer\", \"rule\": \"<the id of the rule that decided it>\", \"answer\": \"<your answer when call is answer, else empty>\", \"reason\": \"<one short sentence>\"}"
+Return the verdict in the structured output."
   # An empty directory: from inside a repo, that repo's Stop hook would answer instead (see
   # fleet-dispatch judge).
   wd=$(mktemp -d)
@@ -1131,28 +1128,23 @@ One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE
     echo "agent-ask: judge call failed for $id" >&2; return 1
   fi
   rm -rf -- "$wd"
-  verdict=$(sed -n '/^ASK-JUDGE-START$/,/^ASK-JUDGE-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR 'fromjson? | select(type == "object" and (.call == "human" or .call == "take-recommend" or .call == "answer"))' 2>/dev/null | head -1)
+  # The reply is the schema's one object (SCHEMA in the agent's conf); anything else is an error.
+  verdict=$(judge_derive <<<"$out")
   if [ -z "$verdict" ]; then
     judge_record "$f" error "" "the reply had no verdict: ${out:0:200}" "$cid"
     echo "agent-ask: no judge verdict for $id" >&2; return 1
   fi
-  call=$(jq -r .call <<<"$verdict"); rule=$(jq -r '.rule // ""' <<<"$verdict")
-  if [ -z "$rules" ]; then
-    judge_record "$f" error "$rule" "no rules in the policy ${AGENT_ASK_POLICY:-(no PROMPT in the ask-judge conf)}" "$cid"
-    echo "agent-ask: no policy rules for $id" >&2; return 1
-  fi
-  if ! grep -qxF -- "$rule" <<<"$rules"; then
-    judge_record "$f" error "" "rule '$rule' is not in the policy" "$cid"
-    echo "agent-ask: judge named no rule of the policy for $id" >&2; return 1
-  fi
-  # A call the ask cannot carry out is the human's: no recommendation to take, or no answer text.
-  if { [ "$call" = take-recommend ] && [ -z "$(field "$f" recommend)" ]; } ||
-     { [ "$call" = answer ] && [ -z "$(jq -r '.answer // ""' <<<"$verdict")" ]; }; then
-    call=human
-  fi
-  [ "$call" = answer ] && call="answer:$(oneline "$(jq -r .answer <<<"$verdict")")"
-  judge_record "$f" "$call" "$rule" "$(jq -r '.reason // ""' <<<"$verdict")" "$cid"
+  rule=$(jq -r .rule <<<"$verdict"); answer=$(jq -r .answer <<<"$verdict")
+  call=human
+  case "$rule" in
+    clear|restates-rule)
+      if [ -n "$answer" ]; then call="answer:$(oneline "$answer")"
+      elif [ -n "$(field "$f" recommend)" ]; then call=take-recommend
+      else rule=grounded   # nothing to take: no recommendation and no answer of its own
+      fi ;;
+  esac
+  set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
+  judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
 }
 
 # judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.

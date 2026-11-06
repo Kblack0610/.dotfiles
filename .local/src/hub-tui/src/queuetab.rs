@@ -336,7 +336,7 @@ fn candidates(
                 c.key.clone().into(),
                 c.title().into(),
                 cell(c.start_label(), style),
-                c.why.clone().into(),
+                c.why_line().into(),
             ]
         })
         .collect();
@@ -362,6 +362,22 @@ fn candidates(
     out.append(&mut t);
     if c.more() > 0 {
         out.push(Line::styled(format!("+{} more", c.more()), p.dim()));
+    }
+    if !c.reasons.is_empty() {
+        let by: Vec<String> = c.reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
+        out.push(clip_line(
+            Line::styled(format!("blocked: {}", by.join(", ")), p.dim()),
+            w,
+        ));
+    }
+    if !c.uncovered.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!("worked on today, no worker: {}", c.uncovered.join(", ")),
+                p.warn(),
+            ),
+            w,
+        ));
     }
     out
 }

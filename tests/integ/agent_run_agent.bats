@@ -94,6 +94,45 @@ fake_claude() {
   assert_equal "$(jq -r '[.exit, .raw] | @tsv' "$CALLS")" "$(printf '3\tAPI Error: overloaded')"
 }
 
+# schema_conf: the fixture judge with a SCHEMA key, and a reply that fills it.
+schema_conf() {
+  printf '{"type":"object","properties":{"call":{"type":"string"}}}\n' > "$SANDBOX/verdict.schema.json"
+  printf 'SCHEMA="%s"\n' "$SANDBOX/verdict.schema.json" >> "$AGENTCTL_CONF_DIR/judge.conf"
+  fake_claude '{"type":"result","is_error":false,"result":"","structured_output":{"call":"human","reason":"a b"},"session_id":"sess-1"}'
+}
+
+@test "an agent with a SCHEMA passes it to claude and prints the structured reply as one JSON line" {
+  schema_conf
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert_output '{"call":"human","reason":"a b"}'
+  run grep -Fx -A1 -- --json-schema "$SANDBOX/claude.argv"
+  assert_line '{"type":"object","properties":{"call":{"type":"string"}}}'
+  assert_equal "$(jq -r .raw "$CALLS")" '{"call":"human","reason":"a b"}'
+}
+
+@test "a schema run with no structured_output prints its prose, so the caller's parse fails (negative control)" {
+  schema_conf
+  fake_claude '{"type":"result","is_error":true,"result":"gave up","session_id":"sess-1"}'
+  run "$RUN" --agent judge -p x
+  assert_output 'gave up'
+}
+
+@test "an agent without a SCHEMA passes no --json-schema (negative control)" {
+  run "$RUN" --agent judge -p x
+  assert_success
+  run grep -Fx -- --json-schema "$SANDBOX/claude.argv"
+  assert_failure
+}
+
+@test "a SCHEMA that is not readable JSON is refused before the harness runs (negative control)" {
+  printf 'SCHEMA="%s"\n' "$SANDBOX/missing.json" >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge -p x
+  assert_failure
+  assert_output --partial 'not a readable JSON file'
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
 @test "an unregistered agent is refused before the harness runs (negative control)" {
   run "$RUN" --agent nobody -p x
   assert_failure 78
