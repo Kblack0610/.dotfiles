@@ -1587,7 +1587,8 @@ start_item() {
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
-    [ "$harness" = claude ] || SPILLED=$(( ${SPILLED:-0} + 1 ))
+    # A spill goes past the account hold without ending it, like a run-floor start (settle).
+    [ "$harness" = claude ] || { SPILLED=$(( ${SPILLED:-0} + 1 )); FLOOR_HELD=1; }
     settle WORKED "started queue item $slug$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
@@ -2035,8 +2036,8 @@ settle() {
   esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
-  # A start the run floor let past an account over its pace leaves the hold standing (held_since):
-  # the floor is a trickle, not room. FLOOR_HELD carries it to the pass's later WORKED (under-used).
+  # A start the run floor or a spill let past an account over its pace leaves the hold standing
+  # (held_since): neither is room. FLOOR_HELD carries it to the pass's later WORKED (under-used).
   [ "$1" = WORKED ] && [[ "$2" == *"on the run floor"* ]] && ! claude-acct room >/dev/null 2>&1 && FLOOR_HELD=1
   [ "$1" = WORKED ] && [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
   # shellcheck source=/dev/null
@@ -2053,9 +2054,11 @@ settle_board() {
 
 # triage_pass: reds become rows and red items before the pass counts its room, so a fix queued here
 # starts this pass. The guards live in fleet-bench. A failure is named in the outcome, never stops the pass.
+# It reports under fleet-bench's own name: under this unit's AGENTCTL_NAME its NOOP or WORKED became
+# this pass's, and ended a standing hold (held_since) at the top of every pass.
 triage_pass() {
   local out
-  out=$(fleet-bench triage 2>&1) || TRIAGE_FAILED=$(tail -n 1 <<<"$out" | cut -c1-100)
+  out=$(AGENTCTL_NAME=fleet-bench fleet-bench triage 2>&1) || TRIAGE_FAILED=$(tail -n 1 <<<"$out" | cut -c1-100)
 }
 
 cmd_run() {
