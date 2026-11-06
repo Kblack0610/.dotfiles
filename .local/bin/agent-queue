@@ -90,8 +90,7 @@ fm_get() { # file key
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
 
 # item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
-# naming the item, its project, its row's key (as item_rec reads `row`), its PR, merge commit and
-# ticket.
+# naming the item, its project, its row's key (as item_rec reads `row`), its PR and merge commit.
 item_event() {
   local action=$1 f=$2 row title
   shift 2
@@ -99,7 +98,7 @@ item_event() {
   [ -n "$row" ] || case "$(fm_get "$f" from)" in board:*) row="$(fm_get "$f" from)" row="${row#board:}" ;; esac
   chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
-    --sha "$(fm_get "$f" merged)" --ticket "$(fm_get "$f" ticket)" "$@"
+    --sha "$(fm_get "$f" merged)" "$@"
 }
 
 slugify() {
@@ -760,7 +759,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged ticket cost_usd gateway_cost_usd work_min report note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged cost_usd gateway_cost_usd work_min report note status area origin lane profile from touches row "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k

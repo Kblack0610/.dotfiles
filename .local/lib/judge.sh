@@ -29,13 +29,14 @@ judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 # what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
 # type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
 # quote behind `rule` (for an answerable verdict, what grounded it), and `reason` and `answer`.
+# `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
 # counts its worst item: a human criterion on any decision, a needed one missing on any decision.
 judge_derive() {
   jq -c '
     ["knowledge", "external", "taste", "unclear-ask", "against-precedent"] as $human
-    | ["reversible", "grounded"] as $needed
-    | ($human + $needed) as $all
+    | ["reversible"] as $needed
+    | ($human + $needed + ["grounded"]) as $all
     | select(type == "object" and (.type | type) == "string" and .type != ""
         and (.decisions | type) == "array" and (.decisions | length) > 0
         and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")))
