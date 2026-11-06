@@ -122,19 +122,17 @@ EOF
 }
 
 @test "pane_of: a process's pane as agent-panel names it, <server>/<pane id>, from its tmux env" {
-  # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each signals
-  # on a fifo once it runs under its own env, so the read never races the exec.
-  local ready="$BATS_TEST_TMPDIR/ready" in out
-  mkfifo "$ready"
-  env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo > "$0"; exec sleep 30' "$ready" &
-  in=$!; read -r _ < "$ready"
-  env -u TMUX -u TMUX_PANE sh -c 'echo > "$0"; exec sleep 30' "$ready" &
-  out=$!; read -r _ < "$ready"
-  run pane_of "$in"
-  assert_output 'lab/%8'
-  run pane_of "$out"
-  [ "$output" = - ] # assert_output - would read the expected value from stdin
-  kill "$in" "$out"
+  # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each prints its
+  # own pid ($$ survives the exec) once it runs under its env, so the read never races the exec.
+  local in out got_in got_out
+  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo $$; exec sleep 30' 3>&-)
+  read -r in <&5
+  exec 6< <(env -u TMUX -u TMUX_PANE sh -c 'echo $$; exec sleep 30' 3>&-)
+  read -r out <&6
+  got_in="$(pane_of "$in")"; got_out="$(pane_of "$out")"
+  kill "$in" "$out"; exec 5<&- 6<&-
+  [ "$got_in" = lab/%8 ]
+  [ "$got_out" = - ]
 }
 
 # --- --textfile: what node_exporter publishes for the hub board ---------------------
