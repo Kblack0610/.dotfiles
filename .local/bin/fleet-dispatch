@@ -62,8 +62,10 @@ unset _k _v
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
-# here only so a policy edit re-judges every row (policy_sig).
+# here so a policy edit re-judges every row (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# shellcheck source=../lib/judge.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
@@ -323,11 +325,13 @@ row_priority() {
 
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>" for each verdict that still holds: one
 # made under the current policy for the row's current text. A `failed` record holds for the
-# key whatever changed ("*"), so a row whose session died is not picked again on its own.
+# key whatever changed ("*"), so a row whose session died is not picked again on its own. An
+# `error` holds nothing: the row is judged again.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
   jq -r --arg sig "$(policy_sig)" '
     if .verdict == "failed" then [.project, .lane, .key, "*"]
+    elif .verdict == "error" then empty
     elif .policy == $sig then [.project, .lane, .key, (.line // "")]
     else empty end | @tsv' "$VERDICTS" 2>/dev/null
 }
@@ -373,9 +377,12 @@ cmd_candidates() {
 
 # --- judgment ------------------------------------------------------------------------
 
-# judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache
+# judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache. Each
+# names the policy rule that decided it (`rule`, an id judge_rules reads from the policy) and its
+# call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
+# saying why: the call failed, the reply named no rule of the policy, or it left the row out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc
+  local cands="$1" prompt out verdicts wd rc cid err rules missing
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -391,30 +398,55 @@ $(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
 ## Answer
 
 For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
-{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"area\": \"<one lowercase word>\", \"clear\": true|false, \"agent_only\": true|false, \"tier3_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
+{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"area\": \"<one lowercase word>\", \"clear\": true|false, \"agent_only\": true|false, \"tier3_only\": true|false, \"verdict\": \"dispatch|skip\", \"rule\": \"<the id of the rule that decided it>\", \"reason\": \"<one short sentence>\"}
 Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
+  cid=$(judge_call_id)
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null)
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD -p "$prompt" 2>"$wd/err")
   rc=$?
+  err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "judge call failed"; return 1; }
+  mkdir -p "$DIR"
+  if [ "$rc" != 0 ]; then
+    verdict_errors "$cands" "call failed (exit $rc): $err" "$cid" >> "$VERDICTS"
+    say "judge call failed"; return 1
+  fi
+  rules=$(judge_rules "$DISPATCH_POLICY" | jq -Rsc 'split("\n") | map(select(length > 0))')
   verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
       --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line})' <<<"$cands")" '
       fromjson? | select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
       | ([.project, .lane, .key] | tostring) as $k
-      | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, reason, at: $at,
-         policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first)}')
+      | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
+         policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first), judge_call: $call}
+      | . as $v | if any($rules[]; . == $v.rule) then $v
+        else {project, lane, key, verdict: "error", reason: "rule \(.rule // "" | tojson) is not in the policy",
+              at, policy, line, judge_call} end')
   # A pass that could not judge must not read as "no row qualifies".
-  [ -n "$verdicts" ] || { say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1; }
-  mkdir -p "$DIR"
-  printf '%s\n' "$verdicts" >> "$VERDICTS"
+  if [ -z "$verdicts" ]; then
+    verdict_errors "$cands" "the reply had no verdicts" "$cid" >> "$VERDICTS"
+    say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
+  fi
+  missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
+    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$cands")
+  {
+    printf '%s\n' "$verdicts"
+    verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
+  } >> "$VERDICTS"
+}
+
+# verdict_errors <rows> <reason> <call id> -- an `error` verdict line for each row. judged_keys
+# skips errors, so the next pass judges those rows again.
+verdict_errors() {
+  [ -n "$1" ] || return 0
+  jq -c --arg r "$2" --arg call "$3" --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+    '{project, lane, key, verdict: "error", reason: $r, at: $at, policy: $sig, line, judge_call: $call}' <<<"$1"
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
@@ -1139,7 +1171,8 @@ low_starved() {
 
 # board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
 # was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing.
+# else nothing. An `error` verdict counts as written: a pass whose judge fails already publishes
+# FAILED (settle), which fleet-liveness reads.
 board_starved() {
   local judged state mins n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)

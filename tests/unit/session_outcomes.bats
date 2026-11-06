@@ -537,3 +537,65 @@ queue_stub() {
   assert_equal "$(outcome)" WORKED
   assert_equal "$(lines | wc -l)" 3
 }
+
+# Judge verdicts: an ask file's judge_* fields and dispatch's verdicts.jsonl, each linked by
+# judge_call to its line in calls.jsonl, whose session_id is the trace the score lands on.
+judge_fixture() {
+  export SO_ASKS="$HOME/.agent/asks" SO_VERDICTS="$HOME/.agent/dispatch/verdicts.jsonl"
+  export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
+  mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
+  printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
+    'judge_rule: restates-rule' 'judge_reason: landing is standing authorization' \
+    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
+  # a gate: never sent to the model, so no call and no score
+  printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
+    'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-2.md"
+  printf '%s\n' \
+    '{"project":"p","lane":"agent","key":"k1","verdict":"skip","rule":"tier3","reason":"tier 3","judge_call":"c2","at":"2026-10-19T11:00:00-07:00"}' \
+    '{"project":"p","lane":"agent","key":"k2","verdict":"error","reason":"call failed (exit 7): x","judge_call":"c3","at":"2026-10-19T11:00:00-07:00"}' \
+    '{"project":"p","lane":"agent","key":"k3","verdict":"dispatch","reason":"old, no call","at":"2026-10-19T11:00:00-07:00"}' \
+    > "$SO_VERDICTS"
+  # c3 failed before it had a session: nothing to hang a score on
+  printf '%s\n' '{"id":"c1","session_id":"js-1"}' '{"id":"c2","session_id":"js-2"}' '{"id":"c3"}' > "$AGENTCTL_CALLS"
+}
+judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
+
+@test "langfuse: each judge verdict with a call session is one CATEGORICAL score, named for its agent, valued with its call" {
+  lf_setup; judge_fixture
+  run "$SUBJECT" run
+  assert_success
+  report | grep -q 'langfuse: 38 score(s) for 4 session(s); judge: 2 score(s)'
+  assert_equal "$(judge_posted | wc -l)" 2
+  run judge_posted
+  assert_line --partial '"id":"jv:c1:ask-1","sessionId":"js-1","name":"ask-judge","value":"take-recommend"'
+  assert_line --partial '"comment":"restates-rule: landing is standing authorization"'
+  assert_line --partial '"id":"jv:c2:p/agent/k1","sessionId":"js-2","name":"dispatch-judge","value":"skip"'
+  assert_line --partial '"comment":"tier3: tier 3"'
+  # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$(date -d 2026-10-19T18:00:00Z +%s)"
+}
+
+@test "langfuse: a second run sends no judge score again, a new verdict goes alone, and no verdicts add nothing to the report" {
+  lf_setup; judge_fixture
+  "$SUBJECT" run
+  : > "$BATS_TEST_TMPDIR/lf.posted"
+  "$SUBJECT" run
+  report | grep -q 'langfuse: nothing new$'
+  [ ! -s "$BATS_TEST_TMPDIR/lf.posted" ]
+  printf '%s\n' '{"project":"p","lane":"agent","key":"k4","verdict":"dispatch","rule":"fits","reason":"small","judge_call":"c4","at":"2026-10-19T12:00:00-07:00"}' >> "$SO_VERDICTS"
+  printf '%s\n' '{"id":"c4","session_id":"js-4"}' >> "$AGENTCTL_CALLS"
+  "$SUBJECT" run
+  report | grep -q 'langfuse: nothing new; judge: 1 score(s)'
+  assert_equal "$(judge_posted | jq -r .body.id)" jv:c4:p/agent/k4
+}
+
+@test "langfuse: a failed judge push keeps its mark and says FAILED" {
+  lf_setup; judge_fixture
+  "$SUBJECT" run
+  printf '%s\n' '{"project":"p","lane":"agent","key":"k4","verdict":"dispatch","rule":"fits","reason":"small","judge_call":"c4","at":"2026-10-19T12:00:00-07:00"}' >> "$SO_VERDICTS"
+  printf '%s\n' '{"id":"c4","session_id":"js-4"}' >> "$AGENTCTL_CALLS"
+  local before; before="$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")"
+  LF_CODE=500 "$SUBJECT" run
+  report | grep -q '; judge: FAILED (HTTP 500) after 0 score(s), retried next run'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$before"
+}

@@ -652,20 +652,25 @@ fake_judge() {
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+printf '%s\n' "\$AGENTCTL_CALL_ID" > "$BATS_TEST_TMPDIR/judge.id"
 printf 'thinking...\nASK-JUDGE-START\n%s\nASK-JUDGE-END\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
   export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  # The real policy: its rule ids are the ones a verdict may name.
+  export AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
 }
 
 @test "judge records its call and reason, and leaves the ask pending" {
-  fake_judge '{"call":"take-recommend","answer":"","reason":"landing is standing authorization"}'
+  fake_judge '{"call":"take-recommend","rule":"restates-rule","answer":"","reason":"landing is standing authorization"}'
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes|no' --recommend yes 'open the PR?')"
   run "$AGENT_ASK" judge "$id"
   assert_success
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: take-recommend'
   assert_line 'judge_reason: landing is standing authorization'
+  assert_line 'judge_rule: restates-rule'
+  assert_line "judge_call: $(cat "$BATS_TEST_TMPDIR/judge.id")"
   assert_line 'status: pending'
   assert_line --regexp '^judged_at: .+'
   # the input carries the ask; the policy is the agent's PROMPT, added by agentctl-run
@@ -686,7 +691,7 @@ SH
 }
 
 @test "judge turns a call the ask cannot carry out into human, and runs once per ask" {
-  fake_judge '{"call":"take-recommend","answer":"","reason":"x"}'
+  fake_judge '{"call":"take-recommend","rule":"continue-work","answer":"","reason":"x"}'
   local id; id="$(post demo 'no recommendation here?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
@@ -696,8 +701,8 @@ SH
   assert_output '1'
 }
 
-@test "judge records a free answer, and a reply with no verdict records nothing" {
-  fake_judge '{"call":"answer","answer":"the simpler one","reason":"no product effect"}'
+@test "judge records a free answer, and a reply with no verdict is an error verdict" {
+  fake_judge '{"call":"answer","rule":"simpler","answer":"the simpler one","reason":"no product effect"}'
   local id; id="$(post demo 'which way?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
@@ -707,11 +712,57 @@ SH
   run "$AGENT_ASK" judge "$id"
   assert_failure
   run "$AGENT_ASK" show "$id"
-  refute_line --partial 'judge:'
+  assert_line 'judge: error'
+  assert_line 'judge_reason: the reply had no verdict: thinking... ASK-JUDGE-START not json ASK-JUDGE-END'
+  assert_line --regexp '^judge_call: [0-9a-f]{12}$'
+}
+
+@test "judge: a rule the policy does not define, a failed call and a missing policy are error verdicts with their reason" {
+  fake_judge '{"call":"take-recommend","rule":"vibes","answer":"","reason":"x"}'
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes|no' --recommend yes 'open the PR?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
+  assert_line "judge_reason: rule 'vibes' is not in the policy"
+  refute_line --partial 'judge_rule:'
+  # a call that fails says how, from its stderr
+  printf '#!/usr/bin/env bash\necho "rate limited" >&2; exit 7\n' > "$BATS_TEST_TMPDIR/judge"
+  id="$(post demo 'again?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
+  assert_line 'judge_reason: call failed (exit 7): rate limited'
+  # no policy to read the rules from
+  fake_judge '{"call":"human","rule":"taste","answer":"","reason":"x"}'
+  export AGENT_ASK_POLICY="$BATS_TEST_TMPDIR/none.md"
+  id="$(post demo 'and again?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
+  assert_line --partial "judge_reason: no rules in the policy $BATS_TEST_TMPDIR/none.md"
+  # negative control: the same verdict against the real policy is recorded
+  export AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
+  id="$(post demo 'once more?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'
+  assert_line 'judge_rule: taste'
+}
+
+@test "judge: a gate names the gate rule and no call" {
+  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #2?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_rule: gate'
+  refute_line --partial 'judge_call:'
 }
 
 @test "post starts the judge unless AGENT_ASK_NO_JUDGE is set" {
-  fake_judge '{"call":"human","answer":"","reason":"taste"}'
+  fake_judge '{"call":"human","rule":"taste","answer":"","reason":"taste"}'
   # The fake judge also writes to a fifo, so the test waits on the call itself, not a timer.
   mkfifo "$BATS_TEST_TMPDIR/called"
   sed -i "2i echo called > '$BATS_TEST_TMPDIR/called'" "$BATS_TEST_TMPDIR/judge"
@@ -748,25 +799,28 @@ SH
 }
 
 @test "judge-report scores the judge against the human's answer" {
-  local agree differ session deferred
+  local agree differ session deferred failed
   agree="$("$AGENT_ASK" post --project demo --options 'yes|no' --recommend yes 'a?')"
-  differ="$(post demo 'b?')"; session="$(post demo 'c?')"; deferred="$(post demo 'd?')"
+  differ="$(post demo 'b?')"; session="$(post demo 'c?')"; deferred="$(post demo 'd?')"; failed="$(post demo 'e?')"
   sed -i 's/^judge: .*//' "$HOME/.agent/asks/demo/"*.md
   printf 'judge: take-recommend\n' >> "$HOME/.agent/asks/demo/$agree.md"
   printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$differ.md"
   printf 'judge: answer:left\n' >> "$HOME/.agent/asks/demo/$session.md"
   printf 'judge: human\n' >> "$HOME/.agent/asks/demo/$deferred.md"
+  printf 'judge: error\n' >> "$HOME/.agent/asks/demo/$failed.md"
   "$AGENT_ASK" answer "$agree" Yes 2>/dev/null
   "$AGENT_ASK" answer "$differ" right 2>/dev/null
   "$AGENT_ASK" answer "$session" "in session: left" 2>/dev/null
   "$AGENT_ASK" answer "$deferred" whatever 2>/dev/null
+  "$AGENT_ASK" answer "$failed" whatever 2>/dev/null
   run "$AGENT_ASK" judge-report demo
   assert_success
   assert_line --regexp "^$agree	agree	take-recommend	Yes$"
   assert_line --regexp "^$differ	differ	answer:left	right$"
   assert_line --regexp "^$session	unscored	"
   assert_line --regexp "^$deferred	asks-you	human	"
-  assert_line 'judged 4 answered asks: the judge would have answered 3, scored 2, agreed 1'
+  assert_line --regexp "^$failed	error	error	"
+  assert_line 'judged 5 answered asks: the judge would have answered 3, scored 2, agreed 1'
 }
 
 # list and the card read each file once; this is what makes Prefix y open fast.
