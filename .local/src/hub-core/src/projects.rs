@@ -59,6 +59,24 @@ pub fn next_prio(cur: &str) -> &'static str {
     }
 }
 
+/// A project or profile name safe to pass as one argument: not empty, not flag-like, and only
+/// letters, digits, `-`, `_` and `.`.
+pub fn safe_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The opened card's Agent note head: `model-written, <date>`, or `none`.
+pub fn note_says(c: &Card) -> String {
+    if c.status.is_empty() {
+        "none".into()
+    } else {
+        format!("model-written, {}", c.status_date)
+    }
+}
+
 /// `notes projects --prio <name> --profile <profile> --set <value>`: the one writer.
 pub fn set_prio(
     runner: &dyn Runner,
@@ -66,13 +84,10 @@ pub fn set_prio(
     name: &str,
     value: &str,
 ) -> Result<String, String> {
-    let ok = |s: &str| {
-        !s.is_empty()
-            && !s.starts_with('-')
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    };
-    if !ok(profile) || !ok(name) || !["focus", "high", "low", "normal"].contains(&value) {
+    if !safe_name(profile)
+        || !safe_name(name)
+        || !["focus", "high", "low", "normal"].contains(&value)
+    {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
     runner.run(&[
@@ -272,6 +287,26 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
+/// The card's queue in one line, on the list card's first line: `1 running, 0 waiting, 2 queued`.
+pub fn queue(c: &Card) -> String {
+    format!(
+        "{} running, {} waiting, {} queued",
+        c.running.len(),
+        c.waiting,
+        c.queued
+    )
+}
+
+/// The opened card's In flight counts: the queue, then rows #requested and the inbox.
+pub fn counts(c: &Card) -> String {
+    format!(
+        "{}; {} rows #requested, {} in the inbox",
+        queue(c),
+        c.requested,
+        c.inbox
+    )
+}
+
 /// The whole join every surface reads: `notes projects --stats --json`, the inbox feed, fleet
 /// state and the queue, built into cards. agent-web's `/api/projects` and `hub projects --json`
 /// both call this, so the chip, the phone, the web tab and the TUI agree.
@@ -299,6 +334,8 @@ pub fn to_json(p: &Projects) -> Value {
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["summary"] = summary(c).into();
+            j["counts"] = counts(c).into();
+            j["note_says"] = note_says(c).into();
             j["in_flight"] = c.in_flight().into();
         }
     }
@@ -336,6 +373,11 @@ mod tests {
             .unwrap()
             .starts_with("v0.1.0 25% (1 of 4 by size)"));
         assert_eq!(v["cards"][0]["in_flight"], false);
+        assert_eq!(v["cards"][0]["note_says"], "none");
+        assert_eq!(
+            v["cards"][0]["counts"],
+            "0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox"
+        );
     }
 
     struct Argv(std::cell::RefCell<Vec<String>>);

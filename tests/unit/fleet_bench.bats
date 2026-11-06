@@ -2793,7 +2793,7 @@ epics_fixture() {
     {slug: "d1", project: "game", mode: "oneshot", state: "done", row: "game:gm-2", pr: 101},
     {slug: "l1", project: "game", mode: "plan", state: "queued", plan: $loose, hold: "night (22:00-06:00)"}' > "$SANDBOX/all-items.jsonl"
   jq -n '[{version: "v1", epics: [
-      {id: "gm-1", title: "Menus", version: "v1", open: 2, done: 2, open_weight: 2, done_weight: 2, verified: false, proof: ""},
+      {id: "gm-1", title: "Menus", system: "ui", version: "v1", open: 2, done: 2, open_weight: 2, done_weight: 2, verified: false, proof: ""},
       {id: "gm-9", title: "Nothing filed", version: "v1", open: 0, done: 0, open_weight: 0, done_weight: 0, verified: false, proof: ""}],
     closed_epics: [{id: "gm-5", title: "Shipped", version: "v1", open: 0, done: 1, open_weight: 0, done_weight: 1, verified: true, proof: "played it"}],
     rows: [
@@ -2817,6 +2817,9 @@ epics_fixture() {
   run jq -c '.projects[0].epics | map({id, step, brief: (.brief != null), plans: (.plans | map({done, total, open, queued})),
       rows: (.rows | map(.id)), items: (.items | map("\(.slug) \(.row)")), prs}) | INDEX(.id) | [.["gm-1"], .["gm-9"].step, .["gm-5"].step]' <<<"$output"
   assert_output '[{"id":"gm-1","step":"rows","brief":true,"plans":[{"done":1,"total":3,"open":["two","three"],"queued":0}],"rows":["gm-13","gm-2","gm-3","gm-4"],"items":["d1 gm-2","q1 gm-3"],"prs":["101"]},"epic","verified"]'
+  # The system groups epics on the project page; a roadmap from before it was carried reads empty.
+  run jq -c '.projects[0].epics | INDEX(.id) | [.["gm-1"].system, .["gm-9"].system]' <<<"$(BENCH_NOW=$((T0 + 600)) "$SUBJECT" epics --json)"
+  assert_output '["ui",""]'
 }
 
 @test "epics gives an open epic an ETA from its queued rows plus its unqueued work, and none to an epic with nothing filed" {

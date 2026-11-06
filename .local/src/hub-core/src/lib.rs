@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod layout;
 pub mod outbox;
 pub mod outcomes;
+pub mod page;
 pub mod pager;
 pub mod phone;
 pub mod pipeline;
