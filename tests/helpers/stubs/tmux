@@ -161,7 +161,7 @@ case "$verb" in
     # to describe one moment. It must be matched BEFORE socket_path and session_name,
     # both of which it contains; either of those arms would answer a 3-field question
     # with 1 field and toggle would read a server name as a session. The fourth is the
-    # client tty, STUB_CLIENT_TTY, which keys the Prefix+L crumb.
+    # client tty, STUB_CLIENT_TTY, which keys the Prefix+L places file.
     # STUB_SOCKET empty is the "no current client" case: _current_loc must reject it.
     if printf '%s ' "$@" | grep -q 'socket_path.*session_name.*window_index'; then
       printf '%s\t%s\t%s\t%s\n' "${STUB_SOCKET:-}" "${STUB_SESSION:-}" "${STUB_WINDOW_INDEX:-}" "${STUB_CLIENT_TTY:-}"

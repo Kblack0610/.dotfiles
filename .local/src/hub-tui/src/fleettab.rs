@@ -4,7 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, Worker, ASK_FILTERS};
+use hub_core::fleet::{
+    AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, Worker, WorkerView, ASK_FILTERS,
+};
 use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
@@ -24,7 +26,8 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
 }
 
 /// `details` puts each runner's registry lines under its row (the hub's `d`); `tonight` lists
-/// the runners in hub-core's Tonight order in place of the default (the hub's `t`).
+/// the runners in hub-core's Tonight order in place of the default (the hub's `t`); `view` is
+/// the Workers filter (the hub's `/ f l s`), and Tonight keeps its own order under it.
 pub fn page(
     f: &Fleet,
     p: Palette,
@@ -32,6 +35,7 @@ pub fn page(
     w: usize,
     details: bool,
     tonight: bool,
+    view: &WorkerView,
 ) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &f.errors {
@@ -50,6 +54,7 @@ pub fn page(
         )
     };
     out.push(clip_line(heading("WORKERS", rest, p), w));
+    out.push(clip_line(chips(&f.workers, view, tonight, p), w));
     if tonight {
         let (ws, slots): (Vec<&Worker>, Vec<String>) = f
             .tonight
@@ -57,6 +62,9 @@ pub fn page(
             .iter()
             .filter_map(|s| {
                 let r = f.workers.iter().find(|r| r.name == s.name)?;
+                if !view.keeps(r) {
+                    return None;
+                }
                 let slot = match (&s.under, s.at) {
                     (Some(_), _) => "  `-".to_string(),
                     (None, Some(t)) => hhmm(t),
@@ -65,7 +73,15 @@ pub fn page(
                 Some((r, slot))
             })
             .unzip();
-        out.extend(workers(&ws, Some(&slots), p, now, w, details));
+        out.extend(workers(
+            &ws,
+            Some(&slots),
+            !view.is_empty(),
+            p,
+            now,
+            w,
+            details,
+        ));
         if f.tonight.other_timers > 0 {
             out.push(clip_line(
                 Line::styled(
@@ -80,8 +96,8 @@ pub fn page(
             ));
         }
     } else {
-        let ws: Vec<&Worker> = f.workers.iter().collect();
-        out.extend(workers(&ws, None, p, now, w, details));
+        let ws = view.apply(&f.workers);
+        out.extend(workers(&ws, None, !view.is_empty(), p, now, w, details));
     }
     out.push(Line::raw(""));
     out.push(dispatch_head(&f.dispatch, p, w));
@@ -175,10 +191,36 @@ fn hhmm(t: i64) -> String {
         .map_or("-".into(), |d| d.format("%H:%M").to_string())
 }
 
-/// One row per runner; `slots`, when given, prefixes each name with its Tonight slot.
+/// The state filters with their counts under the search and lane, the one in force in brackets,
+/// then the rest of the view: what `/ f l s` set. Tonight has its own order, so no sort.
+fn chips(ws: &[Worker], v: &WorkerView, tonight: bool, p: Palette) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    for (f, n) in v.counts(ws) {
+        let on = f == v.state;
+        let label = if f == "failed" { "failed 24h" } else { f };
+        spans.push(if on {
+            Span::styled(format!("[{label} {n}] "), p.head())
+        } else {
+            Span::styled(format!("{label} {n}  "), p.dim())
+        });
+    }
+    let more = [
+        ("lane ", v.lane.as_str()),
+        ("/", v.q.as_str()),
+        ("sort ", if tonight { "" } else { v.sort.as_str() }),
+    ];
+    for (k, x) in more.iter().filter(|(_, x)| !x.is_empty()) {
+        spans.push(Span::styled(format!("{k}{x}  "), p.head()));
+    }
+    Line::from(spans)
+}
+
+/// One row per runner; `slots`, when given, prefixes each name with its Tonight slot; `filtered`
+/// says an empty list is the filter's doing.
 fn workers(
     ws: &[&Worker],
     slots: Option<&[String]>,
+    filtered: bool,
     p: Palette,
     now: i64,
     w: usize,
@@ -186,7 +228,9 @@ fn workers(
 ) -> Vec<Line<'static>> {
     if ws.is_empty() {
         return vec![Line::styled(
-            if slots.is_some() {
+            if filtered {
+                "No runner matches. Esc clears the filter."
+            } else if slots.is_some() {
                 "No runner runs before morning."
             } else {
                 "No runners configured in ~/.config/agentctl/agents."
@@ -208,6 +252,7 @@ fn workers(
                 cell(format!("{label} (off)"), p.dim())
             };
             let (last, when) = match (&r.running_since, &r.last) {
+                (Some(t), _) if r.overdue => (cell("overdue", p.warn()), clock(*t, now)),
                 (Some(t), _) => (cell("running", p.warn()), clock(*t, now)),
                 (None, Some(o)) => (
                     cell(
@@ -645,6 +690,7 @@ pub mod tests {
                     name: "dream".into(),
                     lane: "memory".into(),
                     enabled: true,
+                    state: "idle".into(),
                     last: Some(Outcome {
                         word: "FAILED".into(),
                         ok: Some(false),
@@ -792,7 +838,7 @@ pub mod tests {
     /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        page(f, p, NOW, w, false, false)
+        page(f, p, NOW, w, false, false, &Default::default())
             .iter()
             .chain(verdicts(f, "all", p, NOW, w).iter())
             .map(plain)
@@ -834,7 +880,7 @@ pub mod tests {
             }
         }
         for tonight in [false, true] {
-            let lines: Vec<String> = page(&f, p, NOW, 150, false, tonight)
+            let lines: Vec<String> = page(&f, p, NOW, 150, false, tonight, &Default::default())
                 .iter()
                 .map(plain)
                 .collect();
@@ -903,6 +949,55 @@ pub mod tests {
     }
 
     #[test]
+    fn the_filter_line_counts_each_state_and_marks_the_one_in_force() {
+        let p = Palette { no_color: true };
+        let show = |v: &WorkerView, tonight| -> Vec<String> {
+            page(&fixture(), p, NOW, 160, false, tonight, v)
+                .iter()
+                .map(plain)
+                .collect()
+        };
+        let lines = show(&Default::default(), false);
+        let chips = lines.iter().find(|l| l.contains("failed 24h")).unwrap();
+        assert!(
+            chips.contains("[all 2]") && chips.contains("failed 24h 1"),
+            "{chips}"
+        );
+
+        let v = WorkerView {
+            state: "failed".into(),
+            sort: "cost".into(),
+            ..Default::default()
+        };
+        let lines = show(&v, false);
+        assert!(
+            lines.iter().any(|l| l.contains("[failed 24h 1]")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("sort cost")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("idle-one")), "{lines:?}");
+        // Tonight is an order of its own, so a sort does not claim to apply.
+        assert!(!show(&v, true).iter().any(|l| l.contains("sort cost")));
+    }
+
+    #[test]
+    fn a_run_past_its_usual_length_reads_overdue() {
+        let mut f = fixture();
+        f.workers[1].running_since = Some(NOW - 900);
+        let p = Palette { no_color: true };
+        let row = |f: &Fleet| {
+            page(f, p, NOW, 160, false, false, &Default::default())
+                .iter()
+                .map(plain)
+                .find(|l| l.contains("idle-one"))
+                .unwrap()
+        };
+        assert!(row(&f).contains("running"), "{}", row(&f));
+        f.workers[1].overdue = true;
+        assert!(row(&f).contains("overdue"), "{}", row(&f));
+    }
+
+    #[test]
     fn a_narrow_page_fits() {
         for (details, tonight) in [(false, false), (true, false), (false, true), (true, true)] {
             for l in page(
@@ -912,6 +1007,7 @@ pub mod tests {
                 40,
                 details,
                 tonight,
+                &Default::default(),
             ) {
                 assert!(plain(&l).chars().count() <= 40, "{:?}", plain(&l));
             }
@@ -921,7 +1017,7 @@ pub mod tests {
     #[test]
     fn details_put_each_runners_registry_under_its_row() {
         let p = Palette { no_color: true };
-        let lines: Vec<String> = page(&fixture(), p, NOW, 160, true, false)
+        let lines: Vec<String> = page(&fixture(), p, NOW, 160, true, false, &Default::default())
             .iter()
             .map(plain)
             .collect();
@@ -963,9 +1059,11 @@ pub mod tests {
             .position(|l| l.starts_with("idle-one"))
             .unwrap();
         assert_eq!(lines[idle + 1].trim_end(), "    -", "{lines:#?}");
-        assert!(!page(&fixture(), p, NOW, 160, false, false)
-            .iter()
-            .any(|l| plain(l).contains("trigger")));
+        assert!(
+            !page(&fixture(), p, NOW, 160, false, false, &Default::default())
+                .iter()
+                .any(|l| plain(l).contains("trigger"))
+        );
     }
 
     /// The fixture with a call under dream, and its Tonight order: idle-one always on, then
@@ -1005,7 +1103,7 @@ pub mod tests {
     fn tonight_lists_the_slots_in_order_with_a_call_under_its_caller() {
         let p = Palette { no_color: true };
         let f = tonight_fixture();
-        let lines: Vec<String> = page(&f, p, NOW, 160, false, true)
+        let lines: Vec<String> = page(&f, p, NOW, 160, false, true, &Default::default())
             .iter()
             .map(plain)
             .collect();
@@ -1036,7 +1134,7 @@ pub mod tests {
             "{lines:#?}"
         );
         // The default order is untouched: no slot words, every runner by its own name.
-        let default: Vec<String> = page(&f, p, NOW, 160, false, false)
+        let default: Vec<String> = page(&f, p, NOW, 160, false, false, &Default::default())
             .iter()
             .map(plain)
             .collect();
@@ -1055,7 +1153,7 @@ pub mod tests {
     #[test]
     fn an_empty_night_says_so() {
         let p = Palette { no_color: true };
-        let s: Vec<String> = page(&fixture(), p, NOW, 160, false, true)
+        let s: Vec<String> = page(&fixture(), p, NOW, 160, false, true, &Default::default())
             .iter()
             .map(plain)
             .collect();

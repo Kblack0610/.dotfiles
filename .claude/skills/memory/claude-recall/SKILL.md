@@ -94,6 +94,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 - `--by tool|command` ranks what produces output (`command` is the Bash command head, past env, `cd` and wrappers, with git/gh subcommands, and a past `rtk` rewrite counts under the tool it ran). `--by filetype` ranks file reads (Read, and the file a `sed`/`cat`/`head`/`tail` call names) as `<class> .<ext>`, class one of code, prose, config, output, data, other; `--by kind` splits tool output between main sessions and subagents. `--by day|week|project` splits usage over time.
 - `--since`/`--until` take a date (a UTC day) or an ISO time (an exact window, any offset).
 - `long_runs` (JSON) and the text footer list the stretches between compactions that ran `--long-turns` (default 150) responses or more, top 10 by carried cost.
+- `cache_write_by_cause` (JSON) splits cache writes: `start` and `subagent_start` (a transcript's first response), `compaction` (the first after one), `idle_expiry` and `prefix_change` (a miss: under half the prior context read back, after a gap past the TTL of the previous write or without one) and `tail` (the turn's own new content). `context_split` splits context into `start` (the transcript's first context), `tool` (tool output since the last compaction) and `conversation` (the rest). `sessions` is responses per main transcript (p50, p90), with one-response print calls counted apart as `single`; `hook_turns` counts Stop feedback and PreToolUse denies.
 
 ## tool-calls: what each call costs
 
@@ -105,6 +106,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 - `fail` classes the error text; `retry` says whether the next response reran the same input. `exit` is mostly a failed test or grep doing its job, so read `denied`, `hook` and `zsh` for waste.
 - `bg_wait` bands each background shell by run time and by whether any other work ran before it woke; `bg_short_idle` is the runs under 10 minutes that nothing else used, by command. Its `ctx` is the start ack plus the wake.
 - `reads` counts file reads (Read, or sed, cat, head and tail of a path). `locate_then_read` is a read of a file a grep, rg, Grep or Glob found in the 8 calls before: two round trips where one call could locate and print. `reread_same_lines` is a read of lines this stretch already read with no write to the file between (a non-read-only run resets every non-code file; logs, data and /tmp never count). `hot_target` is files by the responses their reads caused, calls being the sessions that read each. The nightly snapshot keeps the shares as `locate_read_share` and `reread_share`.
+- Read triggers: `read_after_compaction` is the first read in a stretch of a file read before the compaction, `read_after_subagent` the first read in a stretch of a file an Agent report (its result or its task notification) named, `read_rule_doc` a read of a doc a rule tells sessions to read (lessons, ARCHITECTURE.md, plans, planning.md, shepherd orders; `RECALL_RULE_DOC_RE`).
 - Message ids dedupe across files here, so totals differ slightly from `tool-output`.
 
 ## Notes
