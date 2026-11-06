@@ -287,6 +287,72 @@ pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
     }
 }
 
+/// Pure core of `ingest`: take the first open `## Focus` task matching `query` out of the
+/// authored region, with the lines indented under it, all dedented by the row's own indent.
+/// Returns `(new_content, block)`, or `None` when nothing matches.
+fn take_first(content: &str, query: &str) -> Option<(String, Vec<String>)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let span = md::section_span(&lines, FOCUS)?;
+    let at = span.clone().find(|&i| is_match(lines[i], query))?;
+    let depth = |l: &str| l.len() - l.trim_start().len();
+    let indent = depth(lines[at]);
+    let mut end = at + 1;
+    while end < span.end && !lines[end].trim().is_empty() && depth(lines[end]) > indent {
+        end += 1;
+    }
+    let block = lines[at..end]
+        .iter()
+        .map(|l| l.get(indent..).unwrap_or(l.trim_start()).to_string())
+        .collect();
+    let mut out = lines[..at]
+        .iter()
+        .chain(&lines[end..])
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Some((out, block))
+}
+
+/// `notes focus ingest <query>`: hand the first open Focus task matching `<query>`, with its
+/// indented lines, to the outbox and take it out of Focus. The outbox sweep then routes and
+/// files it like any outbox line (`#p:<name>` still forces the project), so Focus has no
+/// intake of its own. The outbox is written first: a failed note write leaves the row in both
+/// places, never in neither, and `outbox::append` does not write it twice.
+pub fn ingest(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        bail!("which one? (provide a word from the task)");
+    }
+    let note = daily::today_path(p);
+    if !note.exists() {
+        bail!("no daily note yet — run: notes today");
+    }
+    let content = fs::read_to_string(&note)?;
+    let Some((rest, block)) = take_first(&content, &query) else {
+        eprintln!("no open focus item matches '{query}'. Open now:");
+        for l in open_focus(&content) {
+            eprintln!("  {l}");
+        }
+        return Ok(1);
+    };
+    if crate::outbox::append(p, log, &block)? {
+        crate::ingest::record(
+            p,
+            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
+        );
+    }
+    md::write_atomic(&note, &rest)?;
+    let mut left = crate::ingest::Event::row("removed", "focus", "", "", &block[0]);
+    left.why = Some("to the outbox".into());
+    crate::ingest::record(p, &left);
+    log.info("focus", "ingested a row to the outbox");
+    println!("ingested {}\n  -> outbox", block[0].trim());
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +615,68 @@ after
         assert!(remove_first(&note, "mirrored").is_none());
         let (_out, removed) = remove_first(&note, "mine").unwrap();
         assert_eq!(removed, "- [ ] mine");
+    }
+
+    #[test]
+    fn take_first_lifts_one_row_with_its_details_and_nothing_else() {
+        let note = "## Focus\n- [ ] gun sound is off #p:apociseum\n  since the patch\n\
+                    - [ ] gun sound again\n- [x] gun sound done\n<!-- rollup:start -->\n\
+                    - [ ] gun sound mirrored\n\n## Notes\n";
+        let (rest, block) = take_first(note, "gun sound").unwrap();
+        assert_eq!(
+            block,
+            ["- [ ] gun sound is off #p:apociseum", "  since the patch"]
+        );
+        assert!(!rest.contains("since the patch"), "{rest}");
+        assert!(
+            rest.contains("- [ ] gun sound again"),
+            "only the first match leaves"
+        );
+        assert!(rest.contains("- [x] gun sound done"));
+        assert!(
+            rest.contains("- [ ] gun sound mirrored"),
+            "the rollup mirror stays"
+        );
+        assert!(rest.ends_with("## Notes\n"));
+        assert!(take_first(note, "no such row").is_none());
+    }
+
+    #[test]
+    fn take_first_dedents_a_nested_row() {
+        let note = "## Focus\n- [ ] parent\n  - [ ] child task\n    its note\n  - [ ] sibling\n";
+        let (rest, block) = take_first(note, "child").unwrap();
+        assert_eq!(block, ["- [ ] child task", "  its note"]);
+        assert_eq!(rest, "## Focus\n- [ ] parent\n  - [ ] sibling\n");
+    }
+
+    #[test]
+    fn ingest_hands_the_row_to_the_outbox_and_takes_it_out_of_focus() {
+        let root = std::env::temp_dir().join(format!("notes-focus-ingest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let log = Logger::new(root.join(".state/log"), false);
+        let note = daily::today_path(&p);
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(
+            &note,
+            "## Focus\n- [ ] keep this\n- [ ] waybar dry run stats #urgent\n  fold queue stats\n",
+        )
+        .unwrap();
+        assert_eq!(ingest(&p, &log, "dry run").unwrap(), 0);
+        assert_eq!(
+            fs::read_to_string(&note).unwrap(),
+            "## Focus\n- [ ] keep this\n"
+        );
+        let waiting = crate::outbox::lines(&p).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].raw, "- [ ] waybar dry run stats #urgent");
+        assert_eq!(waiting[0].details, ["fold queue stats"]);
+        // a word that matches nothing changes nothing and says so
+        assert_eq!(ingest(&p, &log, "dry run").unwrap(), 1);
+        let events = crate::ingest::since(&p, 1);
+        assert!(events.iter().any(|e| e.action == "removed"
+            && e.from == "focus"
+            && e.why.as_deref() == Some("to the outbox")));
+        let _ = fs::remove_dir_all(&root);
     }
 }
