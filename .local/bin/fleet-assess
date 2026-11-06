@@ -2,14 +2,14 @@
 # fleet-assess - is this machine overloaded, by whom, and can each consumer hear a message?
 #
 #   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
-#   fleet-assess --watch-probe   one line; exit 1 on HOLD (the sentinel `fleet-thermal` probe)
+#   fleet-assess --watch-probe   one line; exit 1 on HOLD (fleet-dispatch's load gate)
+#   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe)
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
 # Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
-# (under the low mark while a hold is set: safe to send GO), OK (nothing to do). For
-# --watch-probe a tripped fleet-thermal watch counts as a hold.
+# (under the low mark while a hold is set: safe to send GO), OK (nothing to do).
 # Load is the primary signal. Tctl alone is not: a Zen 4 part boosts until it reads 95 C,
 # so 90s under one busy thread is by design. Thresholds are the FLEET_* block below.
 
@@ -365,10 +365,11 @@ main() {
   holds_set && held=1
   # The watch's own trip counts as a hold, so it clears at the low mark. With no hold set it
   # cleared at the first dip under 1.75x: about 31 trips and 63 pages in the 7 days to 2026-11-06.
-  [ "${1:-}" != --watch-probe ] || [ "$(cat "$WATCH_TRIP_FILE" 2>/dev/null)" != TRIP ] || held=1
+  # Only the watch: fleet-dispatch's gate on --watch-probe keeps the high mark.
+  [ "${1:-}" != --thermal-probe ] || [ "$(cat "$WATCH_TRIP_FILE" 2>/dev/null)" != TRIP ] || held=1
   verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held")"
 
-  if [ "${1:-}" = --watch-probe ]; then
+  if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ]; then
     echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free)"
     case "$verdict" in HOLD*) return 1 ;; *) return 0 ;; esac
   fi

@@ -105,24 +105,28 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD held'
 }
 
-@test "--watch-probe between the marks: a tripped watch stays tripped, an untripped one passes" {
+@test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
   local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
-  echo OK > "$SENTINEL_STATE/fleet-thermal.state"
-  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
-  echo TRIP > "$SENTINEL_STATE/fleet-thermal.state"
-  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  echo OK > "$SENTINEL_STATE/fleet-thermal.state"
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_success
+  printf TRIP > "$SENTINEL_STATE/fleet-thermal.state"
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_failure 1
   assert_output --partial 'HOLD held'
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  assert_success
 }
 
-@test "--watch-probe under the low mark clears a tripped watch" {
+@test "--thermal-probe under the low mark clears a tripped watch" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
-  echo TRIP > "$SENTINEL_STATE/fleet-thermal.state"
-  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  printf TRIP > "$SENTINEL_STATE/fleet-thermal.state"
+  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   assert_output --partial 'CLEAR'
 }
