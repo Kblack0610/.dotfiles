@@ -42,7 +42,7 @@ ask() {
   local wd err rc
   wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  OUT="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$1" 2>"$err")"; rc=$?
+  OUT="$(cd "$wd" && $INBOX_TRIAGE_CMD -p <<<"$1" 2>"$err")"; rc=$?
   [ -s "$err" ] && head -n 20 "$err" >&2
   [ "$rc" = 0 ] || WHY="$(cat - "$err" <<<"$OUT" | grep -m1 '[^[:space:]]' | clean 120)"
   rm -rf -- "$wd" "$err"

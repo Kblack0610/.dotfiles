@@ -174,12 +174,24 @@ lab_section() {
 auto_block() {
   echo "$START"
   echo "## Links"
-  echo "- Plans:   \`~/.agent/plans/$PROJECT/\`"
-  echo "- Lessons: \`~/.agent/lessons/$PROJECT.md\`"
+  # A link is written only when its target exists: a named path that is not
+  # there reads to a session as a fact, and skill-drift --docs flags it.
+  if [ -d "$PLAN_DIR" ]; then
+    echo "- Plans:   \`~/.agent/plans/$PROJECT/\`"
+  else
+    echo "- Plans:   _(none yet)_"
+  fi
+  if [ -f "$LESSONS" ]; then
+    echo "- Lessons: \`~/.agent/lessons/$PROJECT.md\`"
+  else
+    echo "- Lessons: _(none yet)_"
+  fi
   if [ -n "$LATEST_OUTCOMES" ]; then
     echo "- Outcomes: \`~/.agent/outcomes/$PROJECT/\` (latest: \`$LATEST_OUTCOMES\`)"
-  else
+  elif [ -d "$OUTCOMES_DIR" ]; then
     echo "- Outcomes: \`~/.agent/outcomes/$PROJECT/\`"
+  else
+    echo "- Outcomes: _(none yet)_"
   fi
   echo "- Repo docs: $REPO_DOCS"
   [ -n "$ADRS" ] && echo "- ADRs: \`$ADR_DIR/\` (latest: $ADRS)"

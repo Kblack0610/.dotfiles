@@ -96,6 +96,28 @@ seed_anchor() {
   refute_output --partial 'evals'
 }
 
+@test "regen-anchor: links plans, lessons and outcomes only when they exist" {
+  # A link to a path that is not there reads as a fact; it was 60 of 338 docs findings.
+  seed_anchor
+  rmdir "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   _(none yet)_'
+  assert_output --partial '- Lessons: _(none yet)_'
+  assert_output --partial '- Outcomes: _(none yet)_'
+  refute_output --partial '~/.agent/plans/proj/'
+  refute_output --partial '~/.agent/lessons/proj.md'
+  # negative control: once they exist, the links come back
+  mkdir -p "$HOME/.agent/plans/proj" "$HOME/.agent/outcomes/proj"
+  echo "- a lesson" > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  run cat "$ANCHOR"
+  assert_output --partial '- Plans:   `~/.agent/plans/proj/`'
+  assert_output --partial '- Lessons: `~/.agent/lessons/proj.md`'
+  assert_output --partial '- Outcomes: `~/.agent/outcomes/proj/`'
+}
+
 @test "regen-anchor: preserves the hand-curated sections byte-for-byte" {
   seed_anchor
   local before
