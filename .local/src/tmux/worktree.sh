@@ -29,6 +29,7 @@
 #                     otherwise. There is no --force.
 #   gc [<repo>] [-n]  reap every eligible worktree and NAME the ones it kept. With no repo,
 #                     everything under $WT_ROOT; with one, that repo's linked worktrees.
+#                     An orphan daemon in Library/ does not hold a tree: gc ends it and names its pid.
 #   --list            the rows, TSV. The data behind the picker, split out so it is
 #                     assertable without a terminal.
 #   preview <path>    the picker's preview pane for one worktree.
@@ -320,11 +321,60 @@ wt_pane_inside() {
     awk -v p="$1" '$0 == p || index($0, p "/") == 1 { found = 1 } END { exit !found }'
 }
 
-# wt_process_inside <path> -- true when any process has its working directory in <path> or below.
-# A build, a test run or a subagent's shell holds no tmux pane, and a tree deleted under one fails
-# it halfway. A process of another user cannot be read, and is not ours to keep the tree for.
+# wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose
+# executable) is <path> or below. A process of another user cannot be read, and is not ours
+# to keep the tree for.
+wt_pids_inside() {
+  local path
+  path=$(printf '%s' "$1" | sed 's/[][*?\\]/\\&/g') # -lname takes a glob; the path is literal
+  find "${WT_PROC_ROOT:-/proc}"/[0-9]*/"${2:-cwd}" -maxdepth 0 \( -lname "$path" -o -lname "$path/*" \) -print 2>/dev/null |
+    awk -F/ '{ print $(NF - 1) }'
+}
+
+# wt_orphans_inside <path> -- daemons nobody owns: the binary is under <path>/Library, and the
+# parent is init or the user manager. Unity's gamedev-mcp-server is the case: it outlives its
+# editor, and from #652 to 2026-11-02 its cwd pinned merged clean trees until 11 were killed by
+# hand. Its parent is systemd from the start, so this does not prove the editor is gone:
+# wt_occupied_reason asks wt_editor_open first. Library/ is Unity's regenerable cache, so a
+# server someone left running from a build directory is never matched.
+wt_orphans_inside() {
+  local proc="${WT_PROC_ROOT:-/proc}" pid ppid
+  for pid in $(wt_pids_inside "$1/Library" exe); do
+    ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/$pid/status" 2>/dev/null)
+    if [ "$ppid" = 1 ] || [ "$(cat "$proc/$ppid/comm" 2>/dev/null)" = systemd ]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+# wt_await_exit <pid>... -- wait for pids to exit. The timeout is a guard: the caller looks
+# at what is still there afterwards.
+WT_SETTLE_SECS="${WT_SETTLE_SECS:-30}"
+wt_await_exit() {
+  waitpid --exited --timeout "$WT_SETTLE_SECS" "$@" >/dev/null 2>&1 || :
+}
+
+# wt_end_orphans <path> -- ask the orphans in <path> to exit, once wt_reap_reason has passed.
+# rc 1 when one is still there afterwards, so the tree is kept and says why.
+wt_end_orphans() {
+  local pids
+  pids=$(wt_orphans_inside "$1")
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086 # one pid per word
+  kill -TERM $pids 2>/dev/null
+  # shellcheck disable=SC2086
+  wt_await_exit $pids
+  [ -z "$(wt_orphans_inside "$1")" ] || panel_fail "kept $(basename "$1"): an orphan daemon outlived SIGTERM"
+}
+
+# wt_process_inside <path> -- true when any process but an orphan has its working directory
+# in <path> or below. A build, a test run or a subagent's shell holds no tmux pane, and a tree
+# deleted under one fails it halfway.
 wt_process_inside() {
-  [ -n "$(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/cwd -maxdepth 0 \( -lname "$1" -o -lname "$1/*" \) -print -quit 2>/dev/null)" ]
+  local pids
+  pids=$(wt_pids_inside "$1")
+  [ -n "$pids" ] || return 1
+  [ -n "$(grep -vxFf <(wt_orphans_inside "$1") <<<"$pids")" ]
 }
 
 # ── Eligibility ──────────────────────────────────────────────────────────────
@@ -610,6 +660,7 @@ wt_next_slot() {
 # per agent. The branch it was on goes the way `reap` sends it -- `-d`, never `-D`.
 wt_recycle() {
   local path="$1" branch="agent-$2" base="$3" old main
+  wt_end_orphans "$path" || return 1
   old="$(wt_branch_of "$path")"
   main=$(wt_main_repo "$path") || return 1
   git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
@@ -858,16 +909,6 @@ wt_land() {
   wt_focus "$name"
 }
 
-# wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose
-# executable) is <path> or below. Same /proc seam as wt_process_inside.
-wt_pids_inside() {
-  local link="${2:-cwd}" d t
-  for d in "${WT_PROC_ROOT:-/proc}"/[0-9]*; do
-    t=$(readlink "$d/$link" 2>/dev/null) || continue
-    case "$t" in "$1" | "$1"/*) printf '%s\n' "${d##*/}" ;; esac
-  done
-}
-
 # wt_settle <path> -- after the kill and before the reap: let the killed session's processes
 # finish exiting, so the reap does not count them. `kill-session` only SIGHUPs the panes and
 # returns, and the reap ran in that same instant: from #681 to 2026-11-03, 57 of the last 60
@@ -876,7 +917,6 @@ wt_pids_inside() {
 # reparented to systemd and never exits, so it is told to. Nothing is waited on or killed
 # while a session or pane is still in the tree (a window-scope wind-down): reap refuses that
 # anyway. waitpid's timeout is a guard; whatever is still there afterwards is what reap reports.
-WT_SETTLE_SECS="${WT_SETTLE_SECS:-30}"
 wt_settle() {
   local path="$1" pids
   wt_session_exists "$(basename "$path")" && return 0
@@ -886,7 +926,7 @@ wt_settle() {
   [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
   pids=$( { wt_pids_inside "$path"; wt_pids_inside "$path" exe; } | sort -u)
   # shellcheck disable=SC2086
-  [ -z "$pids" ] || waitpid --exited --timeout "$WT_SETTLE_SECS" $pids >/dev/null 2>&1 || :
+  [ -z "$pids" ] || wt_await_exit $pids
 }
 
 cmd_reap() {
@@ -900,6 +940,7 @@ cmd_reap() {
   else
     panel_fail "kept $(basename "$path"): $reason" || return 1
   fi
+  wt_end_orphans "$path" || return 1
 
   name="$(basename "$path")"
   # A husk has no worktree for git to remove, and wt_reap_reason has just proved it holds
@@ -1045,15 +1086,22 @@ cmd_gc() {
   # STRANDED: kept, and nobody is in it, so it is held for its work (dirty, unlanded) by an
   # owner that is gone. Nothing comes back for such a tree on its own, so gc names it every
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
-  local reaped=0 kept=0 stranded=0 reason
+  local reaped=0 kept=0 stranded=0 reason ends
   for path in "${candidates[@]}"; do
     if reason=$(wt_reap_reason "$path"); then
+      # gc runs unattended, so a daemon it ends goes in the log by pid.
+      ends=$(wt_orphans_inside "$path" | paste -sd, -)
+      [ -z "$ends" ] || ends=" (orphan daemon $ends)"
       if [ "$dry" -eq 1 ]; then
-        printf '%swould reap%s  %s\n' "$C_SEL" "$C_OFF" "$(basename "$path")"
+        printf '%swould reap%s  %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        reaped=$((reaped + 1))
+      elif reason=$(cmd_reap "$path" 2>&1 >/dev/null); then
+        printf '%sreaped%s      %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        reaped=$((reaped + 1))
       else
-        cmd_reap "$path" >/dev/null && printf '%sreaped%s      %s\n' "$C_SEL" "$C_OFF" "$(basename "$path")"
+        printf '%skept%s        %-28s %s%s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$ends" "$C_OFF"
+        kept=$((kept + 1))
       fi
-      reaped=$((reaped + 1))
     else
       if wt_occupied_reason "$path" >/dev/null; then
         reason="$reason; stranded, nobody in it"

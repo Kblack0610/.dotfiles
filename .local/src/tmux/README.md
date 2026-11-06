@@ -331,7 +331,7 @@ breaking all three at once.
 | `wt new [-c <dir>]` | take the next agent-N of `<dir>`'s repo and land in its session at once; the fetch and checkout run visibly in that session's first pane |
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
-| `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason |
+| `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
