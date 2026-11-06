@@ -376,6 +376,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
+    // Red fixes are read off-thread in the live app; a printed page has no next frame, so read
+    // them here or Infra prints "reading".
+    if matches!(tab, None | Some(Tab::Infra)) {
+        a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
+    }
     let tabs = match tab {
         Some(t) => vec![t],
         None => vec![Tab::Home, Tab::Infra],
