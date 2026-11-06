@@ -466,7 +466,7 @@ settle() {
   : > "$LEDGER/.settled"
   local n
   n="$(jq '[(.sessions // [])[] | select(.bucket | IN("NEEDS","UNCLEAR"))] | length' "$STATE_FILE")"
-  agent-notify -p normal -t shepherd "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
+  agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 
 # check: the refresh and gate a pass starts with, shared by the runner and a /loop tick.
@@ -511,7 +511,11 @@ receipts() {
     if [ -n "$seen" ] && [ -z "$early" ]; then
       owed+="unhandled: $line"$'\n'
       if [ $(( (now - seen) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
-        agent-notify -p high -t shepherd "unhandled $(( (now - seen) / 60 ))m: $key" >/dev/null 2>&1 || true
+        # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
+        # so its target is where the page points; other lines (pace, infra) point nowhere.
+        ref=""
+        [[ "$key" =~ ^(nudge|escalate)\ [A-Z]+:\ ([^ /]+/[^ ]+:[0-9]+) ]] && ref="tmux:${BASH_REMATCH[2]}"
+        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - seen) / 60 ))m: $key" >/dev/null 2>&1 || true
         printf '%s\n' "$key" >> "$PAGED"
       fi
     else

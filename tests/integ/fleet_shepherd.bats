@@ -149,7 +149,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   "$SH" run
   "$SH" run
   run cat "$HOME/pages"
-  assert_output '-p normal -t shepherd fleet settled: 1 need you; rundown in '"$FLEET_SHEPHERD_DIR"'/log.md'
+  assert_output '-p normal -t shepherd -r file:'"$FLEET_SHEPHERD_DIR"'/log.md fleet settled: 1 need you; rundown in '"$FLEET_SHEPHERD_DIR"'/log.md'
   [ "$(wc -l < "$HOME/pages")" -eq 1 ] || { cat "$HOME/pages"; false; }
   doc "[$(row a WORKING false false)]"
   "$SH" run
@@ -730,6 +730,19 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   STUB_TRIPPED='' "$SH" check || true
   run cat "$FLEET_SHEPHERD_DIR/.paged"
   assert_output ''
+}
+
+@test "an unhandled session line's page points at the session; a line with no session points nowhere" {
+  doc "[$(row hub/demo-agent-1:2 NEEDS false false)]"
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  "$SH" check >/dev/null
+  "$SH" check >/dev/null
+  sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  "$SH" check >/dev/null
+  run grep 'escalate NEEDS' "$HOME/pages"
+  assert_output --partial '-p high -t shepherd -r tmux:hub/demo-agent-1:2 unhandled'
+  run grep 'queue-starved' "$HOME/pages"
+  refute_output --partial ' -r '
 }
 
 # finding <rule> <scope> <class> <epoch> <episode>: one row of `fleet-bench findings --json`
