@@ -241,6 +241,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" account)" = main ]
 }
 
+@test "move --if moves only while the item is still in the state the caller read" {
+  "$AQ" add --project game --slug cas "cas" >/dev/null
+  "$AQ" move cas running >/dev/null
+  run "$AQ" move cas waiting --if queued
+  [ "$status" -eq 3 ]
+  assert_output --partial "cas is running, not queued: left as it is"
+  [ -f "$(item running cas)" ]
+  run "$AQ" move cas done --status failed --if queued
+  [ "$status" -eq 3 ]
+  [ -f "$(item running cas)" ]
+  run "$AQ" move cas waiting --if running
+  assert_success
+  [ -f "$(item waiting cas)" ]
+}
+
 @test "move back to queued drops where the item ran and keeps who worked it" {
   "$AQ" add --project game --running --session game-agent-1 --slug b "b"
   "$AQ" set b origin=run account=main
@@ -860,4 +875,29 @@ EOF
   [ "$(field "$(item queued app-pr)" project)" = app ]
   run "$AQ" attribute nope </dev/null
   assert_failure; assert_output --partial "no item: nope"
+}
+
+@test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
+  plan_fixture
+  "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
+  "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null
+  # Another session landed phase 2 and ticked it; its queue item never heard.
+  sed -i 's/^- \[ \] 2\. Second/- [x] 2. Second/' "$SANDBOX/my-plan.md"
+  run "$AQ" move base done --status ok
+  assert_success
+  assert_line "base releases: my-plan-p2"
+  assert_output --partial "my-plan-p2: its plan phases are already ticked, so it closes instead of starting"
+  assert_line "my-plan-p2 releases: my-plan-p4"
+  assert_not_called 'start --item my-plan-p2'
+  assert_called 'fleet-dispatch start --item my-plan-p4'
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-my-plan-p2.md)"
+  [ "$(field "$f" status)" = ok ]
+  [ "$(field "$f" note)" = "its plan phases were ticked before base closed" ]
+  # Phases 4 and 5 travel together: one still open, so the item is not landed.
+  sed -i 's/^- \[ \] 4\. Fourth/- [x] 4. Fourth/' "$SANDBOX/my-plan.md"
+  "$AQ" add --project game --running --slug base2 "another parent" >/dev/null
+  "$AQ" set my-plan-p6 after=base2 >/dev/null
+  run "$AQ" move base2 done --status ok
+  assert_called 'fleet-dispatch start --item my-plan-p6'
 }

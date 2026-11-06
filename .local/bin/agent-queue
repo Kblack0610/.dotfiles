@@ -10,7 +10,7 @@
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running or waiting item this session records
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
@@ -747,10 +747,20 @@ cmd_attribute() {
   fi
 }
 
+# move <slug> <state> [--status s] [--if <state>] -- --if is the compare in a compare-and-set: the
+# move happens only while the item is still in the state the caller read, so a pass that read it a
+# moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
-  local slug="${1:?usage: agent-queue move <slug> <state> [--status s]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" f from dest
-  [ "${3:-}" = --status ] && status="${4:?}"
+  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
+  local status="" expect="" f from dest deps
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status) status="${2:?--status needs a value}"; shift 2 ;;
+      --if) expect="${2:?--if needs a state}"; shift 2 ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--if state]" ;;
+    esac
+  done
   case "$to" in queued | running | waiting | done) ;; *) die "state is queued, running, waiting or done, not $to" ;; esac
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
@@ -758,7 +768,13 @@ cmd_move() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"
+  [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  # The items after: this one, named before it closes, since an ok close starts them (start_next).
+  if [ "$to" = done ] && [ "$status" = ok ]; then
+    deps="$(dependents "$slug")"
+    [ -z "$deps" ] || echo "$slug releases: $(paste -sd' ' <<<"$deps")"
+  fi
   case "$to" in
     # Back in the queue, the item runs nowhere: the next start launches a fresh session and
     # records it, and until then a stale `session:` points shepherd and fleet-sessions at a window
@@ -774,17 +790,50 @@ cmd_move() {
   start_next "$slug"
 }
 
+# dependents <slug> -> the slugs of the queued items `after:` it, oldest first.
+dependents() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] && fm_get "$f" slug
+  done < <(items_in "$AQ_DIR/queued")
+}
+
+# phases_ticked <item file> -- every phase the item carries is already ticked (or deferred) in its
+# plan: another session landed it, so starting it would do it twice (lesson 2026-11-05: closing p4
+# started p5, which had landed). No plan, no phases, or a plan it cannot read is not ticked.
+phases_ticked() {
+  local plan phases
+  plan="$(fm_get "$1" plan)" phases="$(fm_get "$1" phases)"
+  [ -n "$plan" ] && [ -n "$phases" ] && [ -f "$plan" ] || return 1
+  # shellcheck source=../lib/plan-phases.sh
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh" || return 1
+  plan_phase_list "$plan" | jq -e --arg ph "$phases" '
+    . as $all | ($ph | split(" ") | map(tonumber? // empty)) as $n
+    | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null
+}
+
 # start_next <slug> -- the items `after:` this one start the moment it closes ok. Each takes the
 # slot the closing session frees, so it waits for no dispatch pass and none of its load gates: a
-# plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it.
+# plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it. One
+# whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
 start_next() {
-  local f s next=()
+  local f s next=() landed=() self
+  self="$(realpath "${BASH_SOURCE[0]}")"
   while IFS= read -r f; do
-    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] && [ -z "$(hold_reason "$f")" ] && next+=("$(fm_get "$f" slug)")
+    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] || continue
+    if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
+    elif [ -z "$(hold_reason "$f")" ]; then next+=("$(fm_get "$f" slug)")
+    fi
   done < <(items_in "$AQ_DIR/queued")
-  [ ${#next[@]} -gt 0 ] || return 0
+  [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0
   # The starter writes these items back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
+  for s in "${landed[@]}"; do
+    "$self" set "$s" "note=its plan phases were ticked before $1 closed" >/dev/null
+    echo "$s: its plan phases are already ticked, so it closes instead of starting"
+    "$self" move "$s" done --status ok
+  done
+  [ ${#next[@]} -gt 0 ] || return 0
   if ! agent-hold check dispatch >/dev/null 2>&1; then
     echo "agent-queue: dispatch is held, so ${next[*]} stays queued for the next dispatch pass" >&2
     return 0
