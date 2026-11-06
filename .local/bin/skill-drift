@@ -292,6 +292,10 @@ check_ascii() {
 # only CHECKABLE if it is concrete: placeholders (<repo>, {project}, *.md, ...)
 # describe a shape, not a file, and testing them would produce pure noise.
 #
+# The token keeps its < > { } * ? so the placeholder test below can see them:
+# `~/.cache/x/p<N>/` cut at the < read as a missing `~/.cache/x/p`; now it is
+# checked as `~/.cache/x`.
+#
 # A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
 # `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
 # stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
@@ -301,7 +305,12 @@ check_paths() {
     [ -n "$p" ] || continue
     orig="$p"
     case "$p" in
-      *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*|*'...'*) continue ;;
+      *'...'*) continue ;;
+      # A placeholder or brace list: only the concrete directory before it is
+      # checkable (`~/.openclaw/{a,b}` names a dead ~/.openclaw).
+      *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*)
+        p="${p%%[\<\>\{\}\*\?]*}"; p="${p%/*}"
+        case "$p" in '~'|'$HOME'|'') continue ;; esac ;;
       *'example.internal'*|*AcmeCorp*|*YYYY*|*vX.Y.Z*) continue ;;
       *-|*.) continue ;;
       *'$'*) case "$p" in '$HOME/'*) : ;; *) continue ;; esac ;;
@@ -312,7 +321,7 @@ check_paths() {
     [ -e "$p" ] || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
     grep -v 'skill-drift: ignore' "$f" \
-      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/-]*[A-Za-z0-9._-]' \
+      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?-]*[A-Za-z0-9._>}*?-]' \
       | sort -u
   )
   return 0
@@ -344,13 +353,27 @@ check_cmds() {
     add NOCMD "$skill" "$c" "command not found on PATH$(at_line "$f" "$c")"
   done < <(
     awk '
-      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; cont=0; next }
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; cont=0; inq=0; hd=""; next }
       /^[[:space:]]*```/ { inblock=0; next }
       !inblock || /skill-drift: ignore/ { next }
       {
         line = $0
         sub(/^[[:space:]]+/, "", line)
-        sub(/^[$#][[:space:]]+/, "", line)
+        # Data, not commands: a heredoc body, and the lines of a single-quoted
+        # string that spans lines (a GraphQL or jq program). Their first words
+        # ("number", "from") are not tools.
+        if (hd != "") { if (line == hd) hd = ""; next }
+        # Count the quotes that are not inside "..." or a trailing # comment, so
+        # an apostrophe in a "..." string or a trailing comment opens no string.
+        tmp = line; gsub(/"[^"]*"/, "", tmp); sub(/(^|[[:space:]])#.*$/, "", tmp)
+        nq = gsub(/\047/, "", tmp)
+        if (inq) { if (nq % 2) inq = 0; next }
+        if (line ~ /^#/) next                   # a comment, not a root prompt
+        if (nq % 2) inq = 1
+        if (match(tmp, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*/)) {
+          hd = substr(tmp, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047]?/, "", hd)
+        }
+        sub(/^[$][[:space:]]+/, "", line)
         was_cont = cont
         cont = (line ~ /(\\|\||&&|\|\|)[[:space:]]*$/)
         if (was_cont) next                      # continuation: no command here

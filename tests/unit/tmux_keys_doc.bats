@@ -13,7 +13,7 @@ setup() {
 }
 
 # The keys .tmux.conf binds, as the doc writes them: `Prefix+K` for the prefix table, `K` for -n.
-# copy-mode-vi and the tags table are one row each, checked by the last test.
+# copy-mode-vi, the tags table and muxpoon's plugin binds are one row each, checked by the last test.
 bound() {
   awk '
     /^[[:space:]]*(bind|bind-key)[[:space:]]/ {
@@ -44,7 +44,8 @@ documented() {
   assert_output ''
 }
 
-@test "the copy-mode and tag tables have their rows" {
+@test "the copy-mode and tag tables and muxpoon have their rows" {
   grep -q '^| copy mode `v` / `y` / `Y` |' "$DOC"
   grep -q '^| `Prefix+t` / `Prefix+C-t` | Tag this window' "$DOC"
+  grep -q '^| muxpoon `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` |' "$DOC"
 }
