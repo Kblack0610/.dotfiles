@@ -273,6 +273,7 @@ impl Controls {
         } else {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
+                mark: None,
                 header: vec![
                     "SESSION", "STAGE", "TASK", "PR", "CI", "PLAN", "ETA", "IDLE", "ACCOUNT",
                     "YOU", "ASK", "WHY",
