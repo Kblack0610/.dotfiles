@@ -2,8 +2,9 @@
 # control-menu: every waybar chip's hover from the keyboard (leader Space). What these pin: the
 # rows are modules.registry and nothing else; what a chip runs and what a click does come from the
 # waybar config, so a hidden chip still lists and previews; a registry row the config lacks is
-# shown, never dropped; a failing chip shows why; Pango becomes terminal text. The last test parses
-# the real config.base and config.pin-full, so a comment added mid-line fails here first.
+# shown, never dropped; a failing chip shows why; Pango becomes terminal text; the window rows are
+# the described exec binds with the chord that reaches each. The real-config test parses
+# config.base and config.pin-full, so a comment added mid-line fails here first.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -27,6 +28,15 @@ jq -cn '{text: "<b>OK</b> 3", tooltip: "<b>Head</b> <span color='"'"'#ff0000'"'"
 EOF
   printf '#!/usr/bin/env bash\necho "prometheus down" >&2\nexit 4\n' > "$FX/bad.sh"
   chmod +x "$FX/ok.sh" "$FX/bad.sh"
+  # hyprctl: `binds -j` serves $FX/binds.json (no binds unless a test writes some), anything
+  # else is logged, so no test reaches the live compositor.
+  echo '[]' > "$FX/binds.json"
+  cat > "$SANDBOX/bin/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "binds -j" ] && exec cat "$FX/binds.json"
+printf '%s\n' "$*" >> "$FX/dispatched"
+EOF
+  chmod +x "$SANDBOX/bin/hyprctl"
   # The gate prefix points at a modules.sh that does not exist: the menu must run what is behind it.
   cat > "$W/config.base" <<EOF
 // -*- mode: jsonc -*-
@@ -93,6 +103,49 @@ EOF
   run "$MENU" click bad right
   assert_failure
   assert_output "bad has no on-click-right"
+}
+
+# Super+D, the leader entry (two chords reach it; the first wins), a nested leaf, an Esc back to
+# a parent that must not count as the way in, an undescribed bind, and a non-exec described one.
+write_binds() {
+  jq -n '[
+    {submap: "", modmask: 64, key: "D", dispatcher: "exec", arg: "wofi --show drun", has_description: true, description: "app launcher"},
+    {submap: "", modmask: 64, key: "Q", dispatcher: "killactive", arg: "", has_description: false, description: ""},
+    {submap: "", modmask: 72, key: "R", dispatcher: "exec", arg: "gungan stream", has_description: true, description: "stream transcription"},
+    {submap: "", modmask: 64, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
+    {submap: "", modmask: 5, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
+    {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "kitty -e agent-panel", has_description: true, description: "agent panel"},
+    {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "pin-hint.sh close", has_description: false, description: ""},
+    {submap: "pinbar", modmask: 0, key: "u", dispatcher: "submap", arg: "pinbar-utils", has_description: true, description: "utils >"},
+    {submap: "pinbar-utils", modmask: 0, key: "t", dispatcher: "submap", arg: "pinbar-timebox", has_description: true, description: "timebox >"},
+    {submap: "pinbar-timebox", modmask: 0, key: "escape", dispatcher: "submap", arg: "pinbar-utils", has_description: true, description: "back"},
+    {submap: "pinbar-timebox", modmask: 0, key: "p", dispatcher: "exec", arg: "timebox pause", has_description: true, description: "pause"}
+  ]' > "$FX/binds.json"
+}
+
+@test "window rows: each described exec bind after the chips, with the chord that reaches it" {
+  write_binds
+  run "$MENU" rows
+  assert_success
+  assert_equal "$(cut -f1 <<< "$output" | tr '\n' ' ')" "ok bad gone win win win win "
+  assert_line $'win\twindow    app launcher                       Super+D\twofi --show drun'
+  assert_line --regexp $'^win\twindow +stream transcription +Super\\+Alt\\+R\tgungan stream$'
+  assert_line --regexp $'^win\twindow +agent panel +Super\\+A a\tkitty -e agent-panel$'
+  assert_line --regexp $'^win\twindow +pause +Super\\+A u t p\ttimebox pause$'
+  refute_output --partial "pin-hint.sh close"
+  refute_output --partial "utils >"
+}
+
+@test "a window row's Enter runs its bind through hyprctl dispatch exec; its preview names it" {
+  write_binds
+  run "$MENU" preview win "timebox pause"
+  assert_success
+  assert_line "timebox pause"
+  run "$MENU" click win left "timebox pause"
+  assert_success
+  assert_equal "$(cat "$FX/dispatched")" "dispatch exec timebox pause"
+  run "$MENU" click win left
+  assert_failure
 }
 
 @test "pango_ansi: a close restores the tag still open; NO_COLOR strips; entities decode" {

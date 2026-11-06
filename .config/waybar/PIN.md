@@ -34,15 +34,15 @@ Super+A                L1 pinbar          space control menu | t toggle | a agen
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
-**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
+**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "window" row per described exec bind (`bindd`/`bindpd` in `keybindings.conf` and `leader.conf`) with the chord that reaches it (`Super+D`, `Super+A u t s`); Enter runs it through `hyprctl dispatch exec`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
 
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
 is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 
-**Add a leaf:** in the target submap add three lines - `bind = , <key>, exec, <cmd>`,
-`bind = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bind = , <key>, submap, reset`
-- then add the key to that level's legend in `pin-hint.sh`.
+**Add a leaf:** in the target submap add three lines - `bindpd = , <key>, <description>, exec, <cmd>`,
+`bindp = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bindp = , <key>, submap, reset`.
+The description (no commas: Hyprland splits on them) is the leaf's legend entry and its control-menu row; `pin-hint.sh` builds each level's popup from the described binds via `hyprctl binds -j`, so there is no legend to edit. A submap entry, Esc and q carry the description on their `submap` line. `tests/integ/pin_hint.bats` fails a leader key with no described bind.
 
 ## Views
 
@@ -100,7 +100,7 @@ survives a reboot, unlike `pin.sh`'s `/tmp` state.
 **Add a toggle:** add a row to `modules.registry` (`key|label|module-id ...`, one key
 may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and give it
 `"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
-`leader.conf` and the key to `pin-hint.sh`'s settings legend.
+`leader.conf` with a description (it is the legend entry).
 
 Only **custom** modules can be toggled. Built-ins (memory, clock, tray...) have
 no `exec` to gate; hiding those would mean generating the config and restarting the
