@@ -18,6 +18,8 @@ NAME="${AGENTCTL_NAME:-inbox-triage}"
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # lines sent to the model per sweep, and rows per --backlog call
 : "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
+: "${INBOX_RETRY_S:=900}"      # --watch: wait before a failed sweep runs again by itself; doubles each failure
+: "${INBOX_RETRY_MAX_S:=7200}" # --watch: the longest that wait grows to
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 LIB="$HERE/../lib"
@@ -26,7 +28,7 @@ LIB="$HERE/../lib"
 # shellcheck source=/dev/null
 . "$LIB/md-render.sh"
 
-DRY=0; ONLY=""; BACKLOG=0; WATCH=0; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0
 OUT=""; WHY=""
 FLAG=""; RECORD=""; OUTBOX=""
@@ -393,7 +395,7 @@ pass() {
 # One sweep: passes until the inbox flag holds still and nothing is over the cap, then the
 # inbox page and the proof.
 sweep() {
-  local k before rc=0 summary verdict
+  local k before rc=0 verdict
   FILED=0; KEPT=0; FAILED=0; ROUTED=0; WHY=""
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
@@ -402,8 +404,8 @@ sweep() {
     [ "$DRY" = 1 ] && break
     [ "$OVER" = 0 ] && [ "$(flag_state)" = "$before" ] && break
   done
-  summary="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED${WHY:+; model call failed: $WHY}"
-  say "$summary"
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED${WHY:+; model call failed: $WHY}"
+  say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
@@ -413,8 +415,8 @@ sweep() {
   verdict=NOOP
   [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
   [ "$rc" != 0 ] && verdict=FAILED
-  proof_report "$NAME" "$verdict" "$summary"
-  agentctl report --name "$NAME" "detail=$summary" >/dev/null 2>&1 || true
+  proof_report "$NAME" "$verdict" "$SUMMARY"
+  agentctl report --name "$NAME" "detail=$SUMMARY" >/dev/null 2>&1 || true
   return "$rc"
 }
 
@@ -426,7 +428,17 @@ watch_dirs() {
   } | while IFS= read -r d; do [ -d "$d" ] && printf '%s\n' "$d"; done | sort -u
 }
 
-# --watch: a sweep now, then one after each burst of saves. Writers (notes, nvim) replace a file
+# watch_sweep: one sweep, then WAIT for --watch: 0 after a clean sweep, else the backoff from
+# INBOX_RETRY_S, doubling to INBOX_RETRY_MAX_S, so a failed sweep is retried with no save.
+watch_sweep() {
+  if sweep; then WAIT=0; return 0; fi
+  if [ "$WAIT" = 0 ]; then WAIT=$INBOX_RETRY_S; else WAIT=$((WAIT * 2)); fi
+  [ "$WAIT" -le "$INBOX_RETRY_MAX_S" ] || WAIT=$INBOX_RETRY_MAX_S
+  say "the sweep failed; it runs again in ${WAIT}s unless a save comes first"
+  agentctl report --name "$NAME" "detail=$SUMMARY; retry $(date -d "+$WAIT seconds" +%H:%M)" >/dev/null 2>&1 || true
+}
+
+# --watch: a sweep now, then one after each burst of saves, and again on the backoff after a failure. Writers (notes, nvim) replace a file
 # by rename, so the directories are watched, not the files. Returns 1 when inotifywait ends, so
 # systemd restarts the runner.
 watch() {
@@ -439,12 +451,21 @@ watch() {
     exec {fd}< <(exec inotifywait -m -q -e close_write,moved_to,delete --format '%w%f' \
       --include '/(README\.md|outbox\.md|PAUSED)$' "${d[@]}")
     pid=$!
-    sweep
+    watch_sweep
     got=0
-    while read -r -u "$fd" _; do
+    while :; do
+      if [ "$WAIT" -gt 0 ]; then
+        # A failed sweep (a usage limit, a broken call) has no event that says it would now pass,
+        # so it runs again on the backoff when no save comes first.
+        read -r -t "$WAIT" -u "$fd" _; got=$?
+        if [ "$got" -gt 128 ]; then watch_sweep; continue; fi
+      else
+        read -r -u "$fd" _; got=$?
+      fi
+      [ "$got" = 0 ] || break
       # The debounce: each read returns on the next save, or times out once the saves stop.
       while :; do read -r -t "$INBOX_SWEEP_QUIET" -u "$fd" _ || { got=$?; break; }; done
-      sweep
+      watch_sweep
       [ "$got" -gt 128 ] || break
       [ "$(watch_dirs)" = "$dirs" ] || { got=dirs; break; }
     done

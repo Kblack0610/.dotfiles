@@ -22,6 +22,8 @@ const Q_STATE = { waiting: "Waiting on you", running: "Running", queued: "Queued
 const qst = {
   items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null,
   cands: null, candErr: null, candMsg: "", promoting: null,
+  // The Candidates filter: a reason chip ("" is every row) and the search words.
+  candReason: "", candQ: "", candAutoOpened: false,
   open: { "sec:done": false, "sec:candidates": false },
 };
 
@@ -29,6 +31,11 @@ const qst = {
 // never on a queue event.
 const refreshCands = coalesce(async () => {
   try { qst.cands = await api("/api/queue/candidates"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
+  // An #urgent row nothing will start opens the fold, once; shut again, it stays shut.
+  if (qst.cands && qst.cands.urgent_blocked > 0 && !qst.candAutoOpened) {
+    qst.candAutoOpened = true;
+    qst.open["sec:candidates"] = true;
+  }
   if (st.tab === "queue") renderQueueList();
 });
 
@@ -218,32 +225,71 @@ function drawQueueList(el) {
   }
   html += qCandidates();
   const y = $("queue").scrollTop;
+  // A redraw keeps the Candidates search box focused, its caret where it was.
+  const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
   el.innerHTML = html;
   $("queue").scrollTop = y;
+  if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
 }
 
-// One ranked row: rank, project, key, title, how it would start (hub-core's label), and why.
-function qCandRow(c, i) {
+// Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
+const qCandAll = () => (qst.cands ? qst.cands.rows.concat(qst.cands.blocked_rows || []) : []);
+
+// The rows the chip and the search keep. The search reads the title, project, key, why and
+// what blocks it.
+function qCandShown() {
+  const q = qst.candQ.trim().toLowerCase();
+  return qCandAll().map((c, i) => [c, i]).filter(([c]) => {
+    if (qst.candReason === "_takes" && (c.blocked || []).length) return false;
+    if (qst.candReason && qst.candReason !== "_takes" && !(c.reasons || []).includes(qst.candReason)) return false;
+    return !q || [c.title, c.project, c.key, c.why, ...(c.blocked || [])].join(" ").toLowerCase().includes(q);
+  });
+}
+
+// One ranked row: rank, project, key, title, how it would start (hub-core's label), why, and
+// each reason nothing would start it.
+function qCandRow([c, i], n) {
   const cls = c.held ? "warn" : "";
   const busy = qst.promoting === c.key;
-  return `<tr><td class="n">${i + 1}</td><td>${esc(c.project)}</td><td>${esc(c.key)}</td>` +
-    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted">${esc(c.why)}</td>` +
+  const blocked = (c.blocked || []).map((b) => `<span class="cchip ${c.prio === 0 ? "bad" : "warn"}">${esc(b)}</span>`).join(" ");
+  return `<tr><td class="n">${n + 1}</td><td>${esc(c.project)}</td><td>${esc(c.key)}</td>` +
+    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted">${esc(c.why)}${blocked ? `<div>${blocked}</div>` : ""}</td>` +
     `<td><button class="btn sm" data-promote="${i}"${qst.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td></tr>`;
 }
 
-// The Candidates fold: counts in the heading, the first rows in rank order, "+N more" after.
+// The table under the chips: the first CAND_SHOWN rows the filter keeps, and what it leaves out.
+const CAND_SHOWN = 30;
+function qCandBody() {
+  const c = qst.cands, rows = qCandShown();
+  if (!rows.length) return `<div class="card muted">No row matches.</div>`;
+  // A chip's count is over every row; the page holds at most CAND_SHOWN of each.
+  const chip = (c.reasons || []).find((r) => r.reason === qst.candReason);
+  const of = qst.candQ.trim() ? rows.length : chip ? chip.rows : qst.candReason === "_takes" ? c.clear : c.total;
+  const more = of - Math.min(rows.length, CAND_SHOWN);
+  return `<div class="panel scroll"><table class="tbl"><tr><th class="n">#</th><th>project</th><th>key</th><th>task</th><th>start</th><th>why</th><th></th></tr>` +
+    `${rows.slice(0, CAND_SHOWN).map(qCandRow).join("")}</table></div>` +
+    (more > 0 ? `<div class="muted">+${more} more${qst.candQ.trim() ? " (the search reads the rows this page holds)" : ""}</div>` : "");
+}
+
+// The Candidates fold: counts in the heading; chips for each reason a row is blocked, with how
+// many it blocks; a search box; the projects worked on today that no worker covers; the rows.
 function qCandidates() {
   const k = "sec:candidates", open = !!qst.open[k];
   const c = qst.cands;
-  const count = c ? `${c.total}, ${c.auto} auto` : qst.candErr ? "unread" : "reading";
+  const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}`
+    : qst.candErr ? "unread" : "reading";
   let body;
   if (qst.candErr) body = `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
   else if (!c) body = `<div class="card muted">Reading fleet-dispatch suggest...</div>`;
   else if (!c.rows.length) body = `<div class="card muted">No open board row to start.</div>`;
   else {
-    body = `<div class="panel scroll"><table class="tbl"><tr><th class="n">#</th><th>project</th><th>key</th><th>task</th><th>start</th><th>why</th><th></th></tr>` +
-      `${c.rows.map(qCandRow).join("")}</table></div>` +
-      (c.total > c.rows.length ? `<div class="muted">+${c.total - c.rows.length} more</div>` : "");
+    const chip = (v, label) => `<button class="btn sm${v === qst.candReason ? " primary" : ""}" data-creason="${esc(v)}">${esc(label)}</button>`;
+    const chips = [chip("", `all ${c.total}`), chip("_takes", `nothing blocks it ${c.clear}`),
+      ...(c.reasons || []).map((r) => chip(r.reason, `${r.reason} ${r.rows}`))].join(" ");
+    const gap = (c.uncovered || []).length
+      ? `<div class="cline warn">Worked on today, and no worker covers a row: ${c.uncovered.map(esc).join(", ")}</div>` : "";
+    body = `<div class="card qcfilter"><div class="opts"><input id="qc-q" placeholder="search task, project, why" value="${esc(qst.candQ)}">${chips}</div></div>` +
+      `${gap}<div id="qc-body">${qCandBody()}</div>`;
   }
   const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
   return `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
@@ -251,7 +297,7 @@ function qCandidates() {
 }
 
 async function qPromote(i) {
-  const c = qst.cands && qst.cands.rows[i];
+  const c = qCandAll()[i];
   if (!c || qst.promoting) return;
   qst.promoting = c.key; qst.candMsg = "";
   renderQueueList();
@@ -308,6 +354,7 @@ $("queue").addEventListener("click", (e) => {
   if (t.id === "q-add") { qAdd(); return; }
   if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
+  if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; renderQueueList(); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) { setTab("sessions"); select(a); }
@@ -327,7 +374,10 @@ $("queue").addEventListener("change", (e) => {
   if (t.dataset.bump) { qAct("/api/queue/bump", { slug: t.dataset.bump, priority: t.value }); return; }
   if (t.closest(".qadd")) qSaveDraft();
 });
-$("queue").addEventListener("input", (e) => { if (e.target.closest(".qadd")) qSaveDraft(); });
+$("queue").addEventListener("input", (e) => {
+  if (e.target.id === "qc-q") { qst.candQ = e.target.value; const b = $("qc-body"); if (b) b.innerHTML = qCandBody(); return; }
+  if (e.target.closest(".qadd")) qSaveDraft();
+});
 $("queue").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) qst.open[e.target.dataset.k] = e.target.open;
 }, true);

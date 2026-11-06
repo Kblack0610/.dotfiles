@@ -321,6 +321,29 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "an empty sweep called the model"
 }
 
+@test "--watch: a failed sweep runs again on the backoff with no save, and a clean one waits for a save" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  outbox ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off #high #size/s"]}'
+  mkfifo "$NOTES_FIXTURE/events"
+  # The watch has no saves to report: it holds until the second model call closes the fifo.
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/events"\n' >"$SANDBOX/bin/inotifywait"
+  chmod +x "$SANDBOX/bin/inotifywait"
+  # The first call hits a usage limit; the second answers and then ends the watch.
+  printf '%s\n' '#!/usr/bin/env bash' 'echo called >> "$NOTES_FIXTURE/model.log"' 'cat > "$NOTES_FIXTURE/prompt.txt"' \
+    'if [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ]; then echo "You have hit your weekly limit" >&2; exit 1; fi' \
+    'cat "$NOTES_FIXTURE/model.out"' ': > "$NOTES_FIXTURE/events"' >"$SANDBOX/bin/model-stub"
+  INBOX_SWEEP_QUIET=1 INBOX_RETRY_S=1 run "$TRIAGE" --watch
+  assert_failure 1
+  assert_output --partial 'model call failed: You have hit your weekly limit'
+  assert_output --partial 'the sweep failed; it runs again in 1s'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  # The negative control: after the clean sweep the watch waited for a save, so no third call.
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 2 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  run tasks
+  assert_output --partial 'fix(audio): the gun sound plays off'
+}
+
 @test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
   sheet '' ''
   outbox '- [ ] chore(build): drop the old cache #p:scratch\n'

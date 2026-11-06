@@ -1,11 +1,170 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["reason", "rule", "call", "answer"],
+  "required": [
+    "decisions",
+    "reason",
+    "answer"
+  ],
   "properties": {
-    "reason": {"type": "string", "description": "One short sentence, written before the call"},
-    "rule": {"type": "string", "description": "The id of the policy rule that decided it"},
-    "call": {"type": "string", "enum": ["human", "take-recommend", "answer"]},
-    "answer": {"type": "string", "description": "Your answer when call is answer, else empty"}
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry for a plain ask, one per item of a bundle",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision",
+          "knowledge",
+          "external",
+          "taste",
+          "unclear-ask",
+          "reversible",
+          "grounded",
+          "restates-rule"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "description": "What this item decides, in a few words"
+          },
+          "knowledge": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "Only the human knows or can do this"
+          },
+          "external": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "It reaches outside the repos and cannot simply be undone"
+          },
+          "taste": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "It is product or design taste"
+          },
+          "unclear-ask": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "The ask cannot be judged as written"
+          },
+          "reversible": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "A wrong answer can be undone"
+          },
+          "grounded": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "The ask and the rules give the answer"
+          },
+          "restates-rule": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "met"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show it, quoted, written before met; empty when there are none"
+              },
+              "met": {
+                "type": "boolean"
+              }
+            },
+            "description": "The ask restates a rule the agent already has"
+          }
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "description": "One short sentence: what decided it"
+    },
+    "answer": {
+      "type": "string",
+      "description": "Your answer, only when the recommendation is wrong or missing and the ask is otherwise answerable; else empty"
+    }
   }
 }
