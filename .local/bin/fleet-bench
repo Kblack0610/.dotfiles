@@ -47,7 +47,8 @@
 #                                regression files a revert row), and one agent-board row per lesson
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
 #                                queues the week's canary run
-#   fleet-bench canary list [--json] | verify [id...] | queue | start <id> | score <id>
+#   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]]
+#                                | start <id> | score <id>
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one night item per task
 #                                a week (retro runs it), start puts the session's worktree at the
@@ -723,7 +724,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
@@ -1597,7 +1598,7 @@ KPI_DEFS="$JQ_LIB"'
     | ($o | map(select(($bot[.session_id] | not) and .updated_epoch != null
                        and .updated_epoch > $since and .updated_epoch <= $t))) as $s
     | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id // ""] | not)))) as $ci
-    | ($k | map(select(.epoch > $since and .epoch <= $t))) as $kw
+    | ($k | map(select((.harness // "claude") == "claude" and .epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
     | ($since | strflocaltime("%Y-%m-%d")) as $d0 | ($t | strflocaltime("%Y-%m-%d")) as $d1
@@ -1836,6 +1837,9 @@ queue_section() {
 # finished in the last BENCH_QUEUE_DAYS days (the model= fleet-dispatch stamped at start) joined to
 # their sessions' outcomes (cost_usd, reverts), and model-lane's runs in the same days by the model
 # and harness they ran on (redo). Landed is done ok with a PR; a cancel counts against no pairing.
+# An item started before fleet-dispatch stamped model= takes the model its sessions spent most on
+# (cost_by_model), or with no cost the one their rows name most (models), as the alias an item names
+# (claude-opus-5-5 is opus); unrecorded is an item none of whose sessions has an outcomes row.
 # An item's gateway_cost_usd beats its sessions' sum: one is metered dollars, the other a list-price
 # estimate. A session counts once per row, however many items of a chain it ran. source says which
 # a row's cost is, and mixed means it holds both. cost_per_pr divides by priced, the landed items with a known cost: a landed item with none would pass as free and pull
@@ -1850,8 +1854,14 @@ models_json() {
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def landed: .status == "ok" and (.pr // "") != "";
     def metered: (.gateway_cost_usd // "") != "";
+    def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
-    | ($items | map(select(.status != "cancelled") | . + {m: (.model // "unrecorded"), h: (.agent // "claude")})) as $done
+    | def spent_most: [sids[] | $o[.] // empty] as $rows
+        | ([$rows[] | .cost_by_model // {} | to_entries[] | select(.value > 0 and (.key | startswith("<") | not))]
+            | group_by(.key) | map({key: .[0].key, usd: (map(.value) | add)}) | max_by(.usd) | .key)
+          // ([$rows[] | .models // [] | .[] | select(startswith("<") | not)] | group_by(.) | max_by(length) | .[0]);
+      ($items | map(select(.status != "cancelled")
+        | . + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude")})) as $done
     | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since) | . + {h: (.harness // "claude")})) as $rs
     | ([$done[] | [.m, .h]] + [$rs[] | [.ran, .h]] | unique) as $pairs
     | {days: $days, models: ($pairs | map(. as [$m, $h]
@@ -3219,8 +3229,10 @@ cmd_flow() {
 # base (the commit before it), merge, task (its row text), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
 # merge, so a session can neither see nor edit what scores it. A score row in canary.jsonl is
-# {epoch, run, id, project, pr, session_id, pass, rc, config}; cost, minutes and turns come from
-# the session's outcome row in the KPI join, never copied here.
+# {epoch, run, id, project, pr, session_id, harness, model, pass, rc, config}; cost, minutes,
+# turns and tokens come from the session's outcome row by session_id, never copied here. A lane is
+# a harness and model: the same tasks run under each, so lanes compare on equal work. The canary_
+# KPIs read the claude lane alone (a row without harness is claude), one baseline week to week.
 
 # canary_tasks [id...] -> one compact task a line, by id; every listed id must exist
 canary_tasks() {
@@ -3273,25 +3285,52 @@ canary_brief() {
     "2. Do this task there, as you would on main: \(.task)",
     (if (.accept // []) | length > 0 then "   Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
     "3. Run `fleet-bench canary score \(.id)` once: it lays that PR'"'"'s own tests over your tree, runs them and records the score. Its result is final.",
-    "4. agent-queue move \($slug) done --status ok, then invoke the wind-down skill."' <<<"$1"
+    "4. agent-queue move \($slug) done --status ok, then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
 }
 
-# canary queue: one night item per task for this ISO week, none for a task whose item exists in
-# any state, so a second retro the same week queues nothing. `from: canary` files no story row.
+# canary queue [--harness h [--model m]]: one night item per task for this ISO week, none for a
+# task whose item exists in any state, so a second retro the same week queues nothing. `from:
+# canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
+# canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
 canary_queue() {
-  local tasks t id slug week added=0 had=0
+  local tasks t id slug week lane="" harness="" model="" added=0 had=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
+      --model) model="${2:?canary queue: --model needs a value}"; shift 2 ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m]]"; return 2 ;;
+    esac
+  done
+  [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
+  [ -z "$harness" ] || lane="-$harness${model:+-$model}"
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week"
+    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week$lane"
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
-      --priority low --weight light --slug "$slug" --title "check(canary): $id $week" -- "$(canary_brief "$t" "$slug")" >/dev/null ||
-      { say "canary: could not queue $slug"; return 1; }
+      --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${harness:+ $harness${model:+/$model}}" \
+      -- "$(canary_brief "$t" "$slug")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
+    [ -z "$model" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" "model=$model" >/dev/null ||
+      { say "canary: queued $slug, but could not set its model"; return 1; }
     added=$((added + 1))
   done <<<"$tasks"
-  say "canary: $added queued, $had already queued for $week"
+  say "canary: $added queued, $had already queued for $week${harness:+ ($harness${model:+/$model})}"
+}
+
+# canary_lane -> {harness, model, session_id} of the run scoring now: harness and model from its
+# queue item (fleet-dispatch records what it started), else codex when CODEX_THREAD_ID is set, else
+# claude. The session is that harness's own id, else the newest one claimed on the item.
+canary_lane() {
+  local it=null
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || it=$($BENCH_CANARY_QUEUE_CMD show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -ce objects) || it=null
+  jq -nc --argjson it "$it" --arg cx "${CODEX_THREAD_ID:-}" --arg cl "${CLAUDE_CODE_SESSION_ID:-}" '
+    def nz: if . == "" then null else . end;
+    ($it.agent // (if $cx != "" then "codex" else "claude" end)) as $h
+    | {harness: $h, model: ($it.model // null | nz),
+       session_id: ((if $h == "claude" then $cl elif $h == "codex" then $cx else "" end | nz)
+                    // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
 
 # canary start <id>: the session's own worktree, clean, moved to the task's base (detached)
@@ -3309,7 +3348,7 @@ canary_start() {
 # canary score <id>: run the oracle over the session's tree and append one score row. A run is the
 # queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
 canary_score() {
-  local t top run log rc=0 cfg r repos
+  local t top run log rc=0 cfg r repos lane
   t=$(canary_task "${1:?usage: fleet-bench canary score <id>}") || return 2
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
   run=${AGENT_QUEUE_ITEM:-canary-$1-$(canary_week)}
@@ -3323,9 +3362,10 @@ canary_score() {
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
         done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
-  jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --arg sid "${CLAUDE_CODE_SESSION_ID:-}" \
+  lane=$(canary_lane)
+  jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
     --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
-      session_id: (if $sid == "" then null else $sid end), pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
+      session_id: $l.session_id, harness: $l.harness, model: $l.model, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
   printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
 }
 
@@ -3352,16 +3392,46 @@ canary_verify() {
   return "$bad"
 }
 
-# canary list [--json]: each task with its newest score
+# canary list [--by harness,model] [--json]: each task with its newest score, or with --by one row
+# per lane: runs, tasks covered, pass rate, and per run its minutes, turns, cost and tokens from the
+# session's outcome row (a plan login has tokens and no cost)
 canary_list() {
-  local tasks
+  local tasks by="" json=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) by="${2:?canary list: --by needs harness,model}"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary list [--by harness,model] [--json]"; return 2 ;;
+    esac
+  done
+  [ -z "$by" ] || [ "$by" = harness,model ] || { say "canary list: --by takes harness,model"; return 2; }
+  if [ -n "$by" ]; then canary_lanes "$json"; return; fi
   tasks=$(canary_tasks) || return 2
   jq -nc --slurpfile k "$(kpi_canary)" --rawfile ts <(printf '%s' "$tasks") '
     $ts | split("\n") | map(select(length > 0) | fromjson) | map(. as $x
       | [$k[] | select(.id == $x.id)] as $rs | ($rs | max_by(.epoch)) as $l
       | {id, project, pr, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
-    if [ "${1:-}" = --json ]; then cat; else
+    if [ -n "$json" ]; then cat; else
       jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)"'
+    fi
+}
+
+# canary_lanes [json] -> one row per harness and model over every score, joined to outcome rows
+canary_lanes() {
+  jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest) "$JQ_LIB"'
+    def mean(f): map(f | numbers) | if length == 0 then null else add / length end;
+    ($o | INDEX(.session_id)) as $os
+    | $k | group_by([.harness // "claude", .model // ""]) | map(
+        [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
+        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), runs: length,
+           tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | map(select(.pass == true)) | length); length),
+           joined: ($rs | map(select(.o)) | length),
+           min_per_run: ($rs | mean(.o.duration_s) | if . then . / 60 | round1 else . end),
+           turns_per_run: ($rs | mean(.o.activity.api_messages) | if . then round1 else . end),
+           cost_per_run: ($rs | mean(.o.cost_usd) | if . then round1 else . end),
+           tokens_per_run: ($rs | mean(.o.tokens_total) | if . then round else . end)}) | .[]' |
+    if [ -n "$1" ]; then cat; else
+      jq -r '"\(.harness)/\(.model // "-")\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
     fi
 }
 
@@ -3369,10 +3439,10 @@ cmd_canary() {
   case "${1:-}" in
     list) shift; canary_list "$@" ;;
     verify) shift; canary_verify "$@" ;;
-    queue) canary_queue ;;
+    queue) shift; canary_queue "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
-    *) say "usage: fleet-bench canary list [--json] | verify [id...] | queue | start <id> | score <id>"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id>"; return 2 ;;
   esac
 }
 

@@ -116,7 +116,6 @@ set -uo pipefail
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
-CODEX="${CODEX_SKILLS:-$PUB/.config/codex/skills}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
@@ -573,26 +572,19 @@ check_listing() {
 # SEEN_NAME is scoped to ONE namespace per call, because uniqueness is a property
 # of the namespace and not of the filesystem. ~/.claude/skills is a single flat
 # tree fed by both dotfiles repos, so a name repeated across them is ambiguous.
-# .config/codex/skills is a DIFFERENT tool's corpus that happens to reuse names
-# (deep-research, security-engineer); flagging those would be noise.
 declare -A SEEN_NAME=()
 # run_static <contract> <root>...
 #
-# <contract> is `full`, `project` or `structural`.
+# <contract> is `full` or `project`.
 #
 #   full        the Claude corpus: category/tags/reviewed, the category directory
 #               layout, the description budget, the house ASCII rule, the heading.
 #   project     the same minus category/tags/reviewed and the category layout, which
 #               mean nothing outside dotfiles. --profile project: a game repo's flat
 #               .claude/skills/<name>/ is still a Claude skill, listed like any other.
-#   structural  only what is true of ANY skill file - it parses, it has a name and
-#               a description, the name matches its directory, no duplicates.
 #
-# The Codex corpus is `structural`. It is a different tool's skills, deployed by a
-# different mechanism, with a deliberately smaller 2-key contract; holding it to
-# the Claude one produced 25 findings that could never be actioned, which is how a
-# report becomes something nobody reads. It is still held to the checks that mean
-# something anywhere, NOFRONTMATTER among them.
+# Codex reads this same corpus: .config/codex/sync-codex-home.sh links each deployed
+# skill into ~/.codex/skills, so there is no second corpus to lint.
 run_static() {
   local contract="$1"; shift
   local root m d s parent c
@@ -613,7 +605,6 @@ run_static() {
       check_frontmatter "$s" "$m" name description
       check_yaml        "$s" "$m"
       check_name        "$s" "$m"
-      [ "$contract" = structural ] && continue
       [ "$contract" = full ] && check_meta "$s" "$m" "$parent"
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
@@ -738,10 +729,8 @@ if [ "$MODE" = lint ] || [ "$MODE" = write_lint_baseline ]; then
   run_static "$PROFILE" "$LINT_DIR/.claude/skills"
   run_entries "$LINT_DIR"
 else
-  # Two namespaces, two calls: the dotfiles pair feed one flat ~/.claude/skills,
-  # while the Codex corpus is a different tool's and legitimately reuses names.
+  # One namespace: the dotfiles pair feed one flat ~/.claude/skills.
   run_static full "$PUB/.claude/skills" "$PRIV/.claude/skills"
-  run_static structural "$CODEX"
   run_entries "$PUB" "$PRIV"
 
   load_usage

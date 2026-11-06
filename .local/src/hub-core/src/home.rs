@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::boards;
 use crate::fleet::ts;
 use crate::infra::Infra;
+use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
 use crate::tasks::{Feed, Row};
 
@@ -206,6 +207,10 @@ pub struct Number {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Home {
     pub needs: Vec<Need>,
+    /// What analysis streams propose, newest first, and their count worded once.
+    pub proposals: Vec<Proposal>,
+    pub proposals_head: String,
+    pub proposals_failed: bool,
     pub running: Vec<Running>,
     pub numbers: Vec<Number>,
     pub health: Vec<Chip>,
@@ -548,9 +553,24 @@ pub fn needs(
     out
 }
 
-/// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
-/// infra (None until read): NEEDS YOU in `needs` order, the running items, the headline numbers
-/// and the chips.
+impl Home {
+    /// The proposals agent-propose holds open; a failed read says so among the errors.
+    pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
+        match open {
+            Ok(p) => {
+                self.proposals_head = crate::proposals::heading(p);
+                self.proposals = p.clone();
+            }
+            Err(e) => {
+                self.proposals_failed = true;
+                self.errors.push(format!("{e}, so no proposals are shown"));
+            }
+        }
+    }
+}
+
+/// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
+/// and infra: NEEDS YOU in `needs` order, the running items, the headline numbers and the chips.
 pub fn build(
     state: &Value,
     queue: Option<&Queue>,
@@ -575,7 +595,6 @@ pub fn build(
             .push(format!("{e}, so no human-sheet rows are shown"));
     }
     h.needs = needs(state, queue, board.and_then(|b| b.as_ref().ok()), infra);
-
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
         h.running = running(state, q);
@@ -989,5 +1008,24 @@ mod tests {
         assert_eq!(tmux_name("lab:repo-agent-1"), "repo-agent-1");
         assert_eq!(tmux_name("repo-agent-1"), "repo-agent-1");
         assert_eq!(dir_name("/home/k/.dotfiles"), "dotfiles");
+    }
+
+    #[test]
+    fn proposals_join_home_and_a_failed_read_says_so() {
+        let p = Proposal {
+            stream: "dream".into(),
+            ..Proposal::default()
+        };
+        let mut h = build(&state(), None, None, None);
+        h.set_proposals(&Ok(vec![p.clone()]));
+        assert_eq!(h.proposals, [p]);
+        assert_eq!(h.proposals_head, "1 from 1 stream");
+        let mut h = build(&state(), None, None, None);
+        h.set_proposals(&Err("no jq".into()));
+        assert!(h.proposals_failed);
+        assert!(h
+            .errors
+            .iter()
+            .any(|e| e == "no jq, so no proposals are shown"));
     }
 }

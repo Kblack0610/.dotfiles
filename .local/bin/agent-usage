@@ -9,6 +9,7 @@
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
 #   agent-usage tokens snapshot|line|json|check [--date D]        the nightly token-usage record per day
+#   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.
 #
@@ -614,9 +615,17 @@ cmd_tokens() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-tokens.py" "$@"
 }
 
+# --- langfuse --------------------------------------------------------------
+
+# One window's tool latency, tool errors and gateway figures, for the token-usage snapshot.
+# Logic: ../lib/agent-usage-langfuse.py.
+cmd_langfuse() {
+  python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-langfuse.py" "$@"
+}
+
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -631,6 +640,7 @@ case "$sub" in
   wakes)     cmd_wakes "$@" ;;
   burn)      cmd_burn "$@" ;;
   tokens)    cmd_tokens "$@" ;;
+  langfuse)  cmd_langfuse "$@" ;;
   -h|--help|help|'') usage ;;
   *) echo "agent-usage: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

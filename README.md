@@ -13,7 +13,7 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.config/windows/{glazewm,powershell,terminal,wsl,zebar,scripts}/` | Windows + WSL counterparts |
 | `.config/{k9s,lazydocker,jesseduffield/lazygit}/` | Cluster + container + git TUIs |
 | `.config/rulesync-global/` | **Source of truth** for shared AI rules + MCP servers (fan-out to Claude/Codex/Gemini/OpenCode) |
-| `.config/codex/` | Codex sync scripts (`sync-ai-global-config.sh`), Codex skills, project-checks heuristics |
+| `.config/codex/` | The Codex/opencode/Gemini sync (`sync-ai-global-config.sh`), Codex hooks source, project-checks heuristics; what each tool gets is in its README |
 | `.config/shared-hooks/` | `project-map.json`, session preflight, stale-plan archiver — used by all AI tools |
 | `.config/{agentctl,playwright,profile}/` | Local agent/orchestration runtime config |
 | `.claude/` | Claude Code harness — agents, skills, slash commands, hooks, settings (see below) |
