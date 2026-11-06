@@ -1,17 +1,27 @@
-//! The Sessions tab's table: one row per agent session, joining every live and parked session
-//! (`hub_core::session_actions`, the same reader and the same actions as agent-web's session
-//! buttons) with its stage from fleet-sessions' state document and its ETA from
-//! `fleet-bench forecast`, by target. One row is selected, a key per action arms a confirm line
-//! before anything runs, and Enter opens the selected session's detail under the table.
+//! The Sessions tab's header and table. The rows are `hub_core::session_table`'s, the ones
+//! agent-web draws: every live and parked session (`hub_core::session_actions`, the same reader
+//! and the same actions as agent-web's session buttons), then what ended today. The header is
+//! `hub_core::capacity`'s, and each row's ETA comes from `fleet-bench forecast`, by target. One
+//! row is selected, a key per action arms a confirm line before anything runs, and Enter opens
+//! the selected session's detail under the table.
 
+use std::cell::Cell as Remembered;
+
+use hub_core::capacity::{Capacity, Part};
 use hub_core::session_actions::{available, Action, Session, Snapshot};
+use hub_core::session_table::{self, Feed, SessionRow, Source};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, dur, older, Palette};
+
+/// Rows drawn; a day's ended sessions run to hundreds, and `/` reaches the rest.
+const OPEN: usize = 200;
 
 /// The key that asks for each action.
 pub const KEYS: [(char, Action); 7] = [
@@ -49,6 +59,8 @@ pub enum Ask {
     Done,
     /// Run this action now: (target, action, account for a move).
     Run(String, Action, Option<String>),
+    /// Start this timer now (`hub_core::capacity::start`).
+    Start(String),
 }
 
 #[derive(Default)]
@@ -66,94 +78,111 @@ pub struct Controls {
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
     pub open: bool,
+    pub table: DataTable,
+    /// What the table reads beyond the state document, and the header.
+    pub feed: Feed,
+    pub capacity: Option<Capacity>,
+    /// The timer whose Start waits on y or n, and what its confirm says.
+    pub starting: Option<(String, String)>,
+    /// `session_table::rows` over the sources above, rebuilt when one moves.
+    all: Vec<SessionRow>,
+    /// Lines above the first row as last drawn, which the scroll follows the selection by.
+    above: Remembered<usize>,
 }
 
-/// One table row: a session the snapshot, the state document or both know.
+/// One table row, with the state-document object and live session it has, if any.
 pub struct Row<'a> {
+    /// The row's key: the target of a live row, else the item or session id.
     pub target: &'a str,
+    pub row: &'a SessionRow,
     pub state: Option<&'a Value>,
     pub live: Option<&'a (hub_core::session_actions::Agent, Session)>,
 }
 
-impl Row<'_> {
-    fn bucket(&self) -> &str {
-        self.state
-            .and_then(|x| x["bucket"].as_str())
-            .unwrap_or("PARKED")
-    }
-}
-
 impl Controls {
-    fn len(&self) -> usize {
-        self.rows().len()
+    fn agents(&self) -> &[(hub_core::session_actions::Agent, Session)] {
+        self.snap.as_ref().map_or(&[], |s| s.agents.as_slice())
     }
 
-    /// Every session once, in the order the table lists them: by stage, what needs the human
-    /// first, then by target; a session the state document does not have yet sorts with the
-    /// parked ones, in the snapshot's order.
+    /// The rows the view keeps, up to `OPEN`, in the table's own order or the view's sort.
     pub fn rows(&self) -> Vec<Row<'_>> {
-        let agents = self.snap.as_ref().map_or(&[][..], |s| s.agents.as_slice());
-        let mut state: Vec<&Value> = self.state.iter().collect();
-        state.sort_by(|a, b| a["target"].as_str().cmp(&b["target"].as_str()));
-        let mut rows: Vec<Row> = state
+        let agents = self.agents();
+        self.table
+            .view
+            .apply(&self.all)
             .into_iter()
-            .filter_map(|x| {
-                let target = x["target"].as_str()?;
-                let live = agents.iter().find(|(_, s)| s.target == target);
-                Some(Row {
-                    target,
-                    state: Some(x),
-                    live,
-                })
+            .take(OPEN)
+            .map(|r| {
+                let on = r.source == Source::Live;
+                Row {
+                    target: &r.key,
+                    row: r,
+                    state: self
+                        .state
+                        .iter()
+                        .find(|x| on && x["target"] == r.target.as_str()),
+                    live: agents.iter().find(|(_, s)| {
+                        (on && s.target == r.target)
+                            || (!r.session_id.is_empty() && s.session_id == r.session_id)
+                    }),
+                }
             })
-            .collect();
-        for a in agents {
-            if !rows.iter().any(|r| r.target == a.1.target) {
-                rows.push(Row {
-                    target: &a.1.target,
-                    state: None,
-                    live: Some(a),
-                });
-            }
-        }
-        rows.sort_by_key(|r| fleet::rank(r.bucket()));
-        rows
+            .collect()
     }
 
-    /// A new snapshot keeps the selection on the same target when it is still there.
-    pub fn set(&mut self, snap: Snapshot) {
-        let was = self.selected_target();
-        self.snap = Some(snap);
-        self.reselect(was);
+    fn len(&self) -> usize {
+        self.table.view.apply(&self.all).len().min(OPEN)
     }
 
-    /// A new state document or forecast, the same.
-    pub fn read(&mut self, state: Option<Vec<Value>>, schedule: Option<Vec<Value>>) {
-        let was = self.selected_target();
-        if let Some(s) = state {
-            self.state = s;
-        }
-        if let Some(s) = schedule {
-            self.schedule = s;
-        }
-        self.reselect(was);
-    }
-
-    fn reselect(&mut self, was: Option<String>) {
+    /// Rebuild the rows after `change`, keeping the selection on the same row when it is still
+    /// there.
+    fn moved(&mut self, change: impl FnOnce(&mut Self)) {
+        let was = self.selected_key();
+        change(self);
+        self.all = session_table::rows(&self.state, &self.feed, self.agents());
         let rows = self.rows();
-        let n = rows.len();
         self.sel = was
             .and_then(|t| rows.iter().position(|r| r.target == t))
             .unwrap_or(self.sel)
-            .min(n.saturating_sub(1));
+            .min(rows.len().saturating_sub(1));
     }
 
-    fn selected_target(&self) -> Option<String> {
+    /// A new snapshot.
+    pub fn set(&mut self, snap: Snapshot) {
+        self.moved(|c| c.snap = Some(snap));
+    }
+
+    /// A new state document or forecast.
+    pub fn read(&mut self, state: Option<Vec<Value>>, schedule: Option<Vec<Value>>) {
+        if let Some(s) = schedule {
+            self.schedule = s;
+        }
+        if let Some(s) = state {
+            self.moved(|c| c.state = s);
+        }
+    }
+
+    /// New ended rows.
+    pub fn read_feed(&mut self, feed: Feed) {
+        self.moved(|c| c.feed = feed);
+    }
+
+    fn selected_key(&self) -> Option<String> {
         self.rows().get(self.sel).map(|r| r.target.to_string())
     }
 
     /// The controls' own keys; with a confirm armed every key is the confirm's.
     pub fn key(&mut self, k: KeyEvent) -> Ask {
+        if self.starting.is_some() {
+            match k.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    return Ask::Start(self.starting.take().expect("armed").0);
+                }
+                KeyCode::Char('n') | KeyCode::Esc => self.starting = None,
+                _ => {}
+            }
+            return Ask::Done;
+        }
         if let Some(c) = &mut self.confirm {
             match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -169,6 +198,13 @@ impl Controls {
                     c.pick = (c.pick + c.to.len() - 1) % c.to.len()
                 }
                 _ => {}
+            }
+            return Ask::Done;
+        }
+        // The shared table keys, but for `x`, which stays Stop here: Esc clears the view instead.
+        if self.table.typing.is_some() || matches!(k.code, KeyCode::Char('/' | 'f' | 's' | 'S')) {
+            if self.table.key::<SessionRow>(k.code) == Took::View {
+                self.sel = 0;
             }
             return Ask::Done;
         }
@@ -189,6 +225,15 @@ impl Controls {
                 self.open = false;
                 Ask::Done
             }
+            KeyCode::Esc if !self.table.is_default() => {
+                self.table.clear();
+                self.sel = 0;
+                Ask::Done
+            }
+            KeyCode::Char('T') => {
+                self.arm_start();
+                Ask::Done
+            }
             KeyCode::Char(ch) => match KEYS.iter().find(|(c, _)| *c == ch) {
                 Some((_, a)) => {
                     self.arm(*a);
@@ -197,6 +242,22 @@ impl Controls {
                 None => Ask::Pass,
             },
             _ => Ask::Pass,
+        }
+    }
+
+    /// Arm the confirm for the first stopped timer, or say there is none.
+    fn arm_start(&mut self) {
+        if self.running.is_some() {
+            self.said = Some(Err("an action is still running".into()));
+            return;
+        }
+        let mut parts = self.capacity.iter().flat_map(|c| &c.parts);
+        match parts.find_map(|p| Some((p.start?.to_string(), p.confirm.clone()))) {
+            Some(armed) => {
+                self.said = None;
+                self.starting = Some(armed);
+            }
+            None => self.said = Some(Err("no timer is stopped".into())),
         }
     }
 
@@ -259,32 +320,81 @@ impl Controls {
         }))
     }
 
-    /// The session table (the selected row reversed), then the confirm, the running action or
-    /// the last answer, then the selected session's detail when it is open.
+    /// The capacity line (one part a line when it does not fit), what could not be read, the
+    /// sessions with no queue item, and the chips.
+    fn head(&self, p: Palette, w: usize) -> Vec<Line<'static>> {
+        let mut out = vec![];
+        let warn = |e: &String| clip_line(Line::styled(e.clone(), p.warn()), w);
+        if let Some(c) = &self.capacity {
+            let span = |x: &Part| {
+                let hint = if x.start.is_some() {
+                    " (T starts it)"
+                } else {
+                    ""
+                };
+                let style = if x.warn { p.warn() } else { Style::new() };
+                Span::styled(format!("{}{hint}", x.text), style)
+            };
+            let spans: Vec<Span> = c.parts.iter().map(span).collect();
+            let long: usize = spans.iter().map(|s| s.content.len() + 3).sum();
+            if long <= w + 3 {
+                let mut line = vec![];
+                for (i, s) in spans.into_iter().enumerate() {
+                    if i > 0 {
+                        line.push(Span::raw(" | "));
+                    }
+                    line.push(s);
+                }
+                out.push(Line::from(line));
+            } else {
+                out.extend(spans.into_iter().map(|s| clip_line(Line::from(s), w)));
+            }
+            out.extend(c.errors.iter().map(warn));
+            if c.unlinked > 0 {
+                let t = format!(
+                    "{} of {} live sessions have no queue item (/item:none)",
+                    c.unlinked, c.live
+                );
+                out.push(clip_line(Line::styled(t, p.dim()), w));
+            }
+        }
+        out.extend(self.feed.errors.iter().map(warn));
+        out.push(clip_line(Line::from(self.table.status(&self.all, p)), w));
+        out
+    }
+
+    /// The header, the session table (the selected row reversed), then the confirm, the running
+    /// action or the last answer, then the selected session's detail when it is open.
     pub fn lines(&self, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         let rows = self.rows();
-        let mut out = vec![];
         if self.snap.is_none() && rows.is_empty() {
-            out.push(Line::styled("Reading sessions...", p.dim()));
-            return out;
+            return vec![Line::styled("Reading sessions...", p.dim())];
         }
+        let mut out = self.head(p, w);
+        self.above.set(out.len() + 1);
         if rows.is_empty() {
-            out.push(Line::styled("No agent sessions.", p.dim()));
+            let none = if self.all.is_empty() {
+                "No sessions, live or ended today."
+            } else {
+                "No sessions match."
+            };
+            out.push(Line::styled(none, p.dim()));
         } else {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
-                mark: None,
+                mark: self.table.mark::<SessionRow>(),
+                // The first eleven are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "SESSION", "STAGE", "TASK", "PR", "CI", "PLAN", "ETA", "IDLE", "ACCOUNT",
-                    "YOU", "ASK", "WHY",
+                    "STAGE", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT", "ITEM",
+                    "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 1, 5, 6, 3, 4, 7, 8, 10, 2, 9],
-                flex: Some(11),
+                keep: vec![0, 2, 3, 4, 5, 10, 1, 6, 7, 13, 12, 11, 8, 9],
+                flex: Some(14),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
-                right: vec![7],
-                cap: vec![(0, fleet::NAME_MAX), (2, 22), (6, 22)],
+                right: vec![5, 6],
+                cap: vec![(1, 16), (2, 30), (8, 22), (10, fleet::NAME_MAX), (11, 22)],
             }
             .fit(w, p.head());
             if let Some(l) = t.get_mut(self.sel + 1) {
@@ -292,11 +402,17 @@ impl Controls {
             }
             out.append(&mut t);
         }
+        out.extend(older(self.table.view.apply(&self.all).len(), rows.len(), p));
         out.push(self.status_line(p, w));
         if self.open {
             out.extend(self.detail(rows.get(self.sel), p, now, w));
         }
         out
+    }
+
+    /// Lines above the first row, as last drawn.
+    pub fn above(&self) -> usize {
+        self.above.get()
     }
 
     /// The forecast's schedule row for a session.
@@ -323,25 +439,20 @@ impl Controls {
     }
 
     fn row(&self, r: &Row, p: Palette, now: i64) -> Vec<Cell> {
+        let x = r.row;
         let f = r.state.map(|x| fleet::row(x, p));
         let at = |j: usize| f.as_ref().map_or_else(|| Cell::from("-"), |f| f[j].clone());
-        let (stage, task, why) = match (&f, r.live) {
-            (Some(_), live) => {
-                let task = match at(1).text.as_str() {
-                    "-" => dash(live.map_or("", |(a, _)| a.plan_slug.as_str())),
-                    _ => at(1),
-                };
-                (at(2), task, at(16))
-            }
-            (None, Some((a, s))) => {
+        let (stage, why) = match (&f, r.live) {
+            (Some(_), _) => (at(2), at(16)),
+            (None, Some((a, s))) if x.source == Source::Live => {
                 let state = if s.parked {
                     cell("parked", p.warn())
                 } else {
                     cell(a.status.clone(), status_style(&a.status, p))
                 };
-                (state, dash(&a.plan_slug), a.summary.clone().into())
+                (state, a.summary.clone().into())
             }
-            (None, None) => ("-".into(), "-".into(), "-".into()),
+            (None, _) => (cell(x.bucket.clone(), p.good()), "-".into()),
         };
         let ask = match r.live {
             Some((a, s)) => match (&a.ask, s.approve_key) {
@@ -351,16 +462,45 @@ impl Controls {
             },
             None => "".into(),
         };
+        let task = match x.task.as_str() {
+            "" => dash(r.live.map_or("", |(a, _)| a.plan_slug.as_str())),
+            t => t.into(),
+        };
+        let pr = match &x.pr {
+            Some(n) => cell(
+                format!("#{n} {} {}", x.pr_state, x.ci)
+                    .trim_end()
+                    .to_string(),
+                fleet::ci_style(p, &x.ci),
+            ),
+            None => "-".into(),
+        };
+        let plan = match (x.phases_done, x.phases_total) {
+            (Some(d), Some(t)) if t > 0 => format!("{d}/{t}").into(),
+            _ => "-".into(),
+        };
+        let idle = if x.ended.is_empty() {
+            at(13)
+        } else {
+            x.ended.as_str().into()
+        };
+        let session = match x.source {
+            Source::Live => fleet::short(r.target),
+            _ => x.session_id.chars().take(8).collect(),
+        };
         vec![
-            fleet::short(r.target).into(),
             stage,
+            dash(&x.project),
             task,
-            at(6),
-            at(8),
-            at(9),
+            pr,
+            plan,
+            idle,
+            x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
+            dash(&x.account),
+            dash(&x.item),
+            x.source.name().into(),
+            session.into(),
             self.eta(r, p, now),
-            at(13),
-            dash(r.live.map_or("", |(_, s)| s.account.as_str())),
             cell(
                 if r.live.is_some_and(|(_, s)| s.attached) {
                     "here"
@@ -429,6 +569,17 @@ impl Controls {
             let offered: Vec<&str> = available(s).iter().map(|a| a.name()).collect();
             out.push(field("OFFERS", &offered.join(", ")));
         }
+        if r.row.source != Source::Live {
+            out.push(field("SOURCE", r.row.source.name()));
+            if !r.row.item.is_empty() {
+                out.push(field("ITEM", &r.row.item));
+            }
+            if !r.row.session_id.is_empty() {
+                let card = format!("agentctl-session-outcomes card {}", r.row.session_id);
+                out.push(field("CARD", &card));
+            }
+            return out;
+        }
         match self.plan(r.target) {
             Some(f) => {
                 out.push(field(
@@ -443,7 +594,9 @@ impl Controls {
     }
 
     fn status_line(&self, p: Palette, w: usize) -> Line<'static> {
-        let l = if let Some(c) = &self.confirm {
+        let l = if let Some((_, confirm)) = &self.starting {
+            Line::styled(format!("{confirm}  y/Enter yes  n/Esc no"), p.warn())
+        } else if let Some(c) = &self.confirm {
             let to = match c.account() {
                 Some(a) => format!("  to: < {a} > (Left/Right)"),
                 None => String::new(),
@@ -615,9 +768,153 @@ pub mod tests {
         c.set(fixture());
         press(&mut c, KeyCode::Char('j'));
         let mut f = fixture();
-        f.agents.reverse();
+        f.agents.remove(0);
         c.set(f);
         assert_eq!(c.sel, 0);
+        assert_eq!(c.rows()[0].target, "lab/dotfiles-agent-9:1");
         assert_eq!(press(&mut c, KeyCode::Char('q')), Ask::Pass);
+    }
+
+    fn capacity(stopped: bool) -> Capacity {
+        Capacity {
+            parts: vec![
+                Part {
+                    text: "2 live: 2 hand".into(),
+                    ..Part::default()
+                },
+                Part {
+                    text: if stopped {
+                        "shepherd timer stopped"
+                    } else {
+                        "shepherd on"
+                    }
+                    .into(),
+                    warn: stopped,
+                    start: stopped.then_some("shepherd"),
+                    confirm: if stopped {
+                        "Start the shepherd timer?"
+                    } else {
+                        ""
+                    }
+                    .into(),
+                },
+            ],
+            live: 2,
+            unlinked: 2,
+            errors: vec![],
+        }
+    }
+
+    fn ended() -> Feed {
+        let item = serde_json::json!({"slug": "ucp-394", "project": "apociseum", "state": "done",
+            "task": "ucp-394 fix", "finished": chrono::Local::now().to_rfc3339(),
+            "sessions": "sid-ended", "pr": "Kblack0610/x#1915", "merged": "abc", "status": "ok"});
+        Feed {
+            items: hub_core::queue::parse(&item.to_string()),
+            ..Feed::default()
+        }
+    }
+
+    fn text(c: &Controls, w: usize) -> String {
+        let p = Palette { no_color: true };
+        let lines = c.lines(p, 0, w);
+        let plain = lines.iter().map(crate::fit::plain);
+        plain.collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_stopped_timer_starts_only_after_its_confirm() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        c.capacity = Some(capacity(true));
+        assert!(text(&c, 140).contains("shepherd timer stopped (T starts it)"));
+
+        press(&mut c, KeyCode::Char('T'));
+        assert!(text(&c, 140).contains("Start the shepherd timer?  y/Enter yes"));
+        assert_eq!(press(&mut c, KeyCode::Char('n')), Ask::Done);
+        assert!(c.starting.is_none());
+
+        press(&mut c, KeyCode::Char('T'));
+        assert_eq!(
+            press(&mut c, KeyCode::Char('j')),
+            Ask::Done,
+            "only y or n answers"
+        );
+        assert_eq!(
+            press(&mut c, KeyCode::Char('y')),
+            Ask::Start("shepherd".into())
+        );
+    }
+
+    #[test]
+    fn t_says_so_when_no_timer_is_stopped() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        c.capacity = Some(capacity(false));
+        press(&mut c, KeyCode::Char('T'));
+        assert!(c.starting.is_none());
+        assert!(matches!(&c.said, Some(Err(e)) if e.contains("no timer")));
+    }
+
+    #[test]
+    fn the_done_today_chip_shows_what_ended_and_its_source() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        c.read_feed(ended());
+        for _ in 0..4 {
+            press(&mut c, KeyCode::Char('f'));
+        }
+        let rows = c.rows();
+        assert_eq!(rows.len(), 1, "{}", text(&c, 200));
+        assert_eq!(rows[0].row.source, Source::Queue);
+        assert!(rows[0].live.is_none());
+        drop(rows);
+        let out = text(&c, 200);
+        assert!(out.contains("#1915") && out.contains("queue"), "{out}");
+
+        press(&mut c, KeyCode::Enter);
+        assert!(text(&c, 200).contains("ucp-394"));
+
+        // No action reaches an ended row, and Esc closes the detail before it clears the view.
+        press(&mut c, KeyCode::Esc);
+        assert_eq!(c.rows().len(), 1);
+        press(&mut c, KeyCode::Esc);
+        assert_eq!(c.rows().len(), 3);
+    }
+
+    #[test]
+    fn the_query_keys_are_the_tables_until_it_is_applied() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        press(&mut c, KeyCode::Char('/'));
+        for k in "agent-9".chars() {
+            assert_eq!(press(&mut c, KeyCode::Char(k)), Ask::Done);
+        }
+        assert!(c.confirm.is_none(), "a typed letter arms no action");
+        press(&mut c, KeyCode::Enter);
+        assert_eq!(c.rows().len(), 1);
+        assert_eq!(c.rows()[0].target, "lab/dotfiles-agent-9:1");
+    }
+
+    #[test]
+    fn the_header_breaks_a_line_a_part_at_80_columns() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        let mut cap = capacity(true);
+        cap.parts[0].text =
+            "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other".into();
+        c.capacity = Some(cap);
+        let p = Palette { no_color: true };
+        let lines: Vec<String> = c.lines(p, 0, 80).iter().map(crate::fit::plain).collect();
+        assert!(
+            lines[0].starts_with("38 live") && !lines[0].contains('|'),
+            "{lines:?}"
+        );
+        assert!(lines[1].starts_with("shepherd timer stopped"), "{lines:?}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 80), "{lines:?}");
+        assert_eq!(
+            c.above(),
+            lines.iter().position(|l| l.starts_with("STAGE")).unwrap() + 1
+        );
     }
 }
