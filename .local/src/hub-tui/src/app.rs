@@ -1063,6 +1063,20 @@ impl App {
             self.quit = true;
             return;
         }
+        // Ctrl-d/Ctrl-u: vim's half page, ahead of every tab's own keys so a tab's plain d or u
+        // (a Sessions action, Fleet's details) never sees them. Queue moves its selection.
+        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d' | 'u'))
+        {
+            let half = (self.page / 2).max(1);
+            if self.tab == Tab::Queue {
+                self.queue_key(k);
+            } else if k.code == KeyCode::Char('d') {
+                self.scroll += half;
+            } else {
+                self.scroll = self.scroll.saturating_sub(half);
+            }
+            return;
+        }
         if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
@@ -1288,14 +1302,23 @@ impl App {
         }
     }
 
-    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item or a candidate, c arms
-    /// a cancel, +/- move its priority, f folds the candidates and p promotes one. The page
-    /// scrolls with PgUp/PgDn, space and g/G.
+    /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
+    /// pick an active item or a candidate, c arms a cancel, +/- move its priority, f folds the
+    /// candidates and p promotes one. The draw keeps the selected row in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
-        match self
-            .qv
-            .key(k, self.queue.as_ref(), cands_of(&self.candidates))
-        {
+        // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
+        // which keeping the selected row in view alone would stop short of.
+        match k.code {
+            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
+            _ => {}
+        }
+        match self.qv.key(
+            k,
+            self.queue.as_ref(),
+            cands_of(&self.candidates),
+            self.page,
+        ) {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
@@ -1698,8 +1721,12 @@ impl App {
             self.draw_history(f, body);
         } else {
             let (lines, sections) = self.body(body.width as usize);
-            // The Projects tab's one section is its selected card or row, kept in view.
-            if let (Tab::Projects, Some(&(_, at))) = (self.tab, sections.first()) {
+            // Clamped first, so a jump to the end (G) is the last page before the selection is
+            // kept in view on it.
+            let max = lines.len().saturating_sub(body.height as usize);
+            self.scroll = self.scroll.min(max);
+            // The Projects and Queue tabs' one section is the selected card or row, kept in view.
+            if let (Tab::Projects | Tab::Queue, Some(&(_, at))) = (self.tab, sections.first()) {
                 let h = (body.height as usize).max(1);
                 if at < self.scroll {
                     self.scroll = at.saturating_sub(2);
@@ -1715,7 +1742,6 @@ impl App {
                 }
             }
             self.sections = sections;
-            let max = lines.len().saturating_sub(body.height as usize);
             self.scroll = self.scroll.min(max);
             f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)), body);
         }
@@ -1778,7 +1804,7 @@ impl App {
         let tabs = "1-8";
         match self.tab {
             Tab::Infra if !self.infra_jobs => format!(
-                "n/N section  Enter jobs table  j/k PgUp/PgDn scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+                "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.typing.is_some() => "type to search, Enter applies, Esc clears".into(),
             Tab::Infra if self.jv.log.is_some() => {
@@ -1796,27 +1822,27 @@ impl App {
             Tab::Fleet => {
                 let d = if self.fleet_details { "hide" } else { "show" };
                 let t = if self.fleet_tonight { "default order" } else { "tonight" };
-                format!("d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                format!("d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
-                "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Daily if self.focus_day.is_some() => {
-                "[ ] day  t today  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "[ ] day  t today  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Daily => {
-                "[ ] day  o outbox  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+                "[ ] day  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Log if self.log_days => {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit",
+                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
-                "j/k pick  c cancel  +/- priority  f candidates  p promote  o Grafana  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn g/G ^d/^u pick  c cancel  +/- priority  f candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -1828,7 +1854,7 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
+            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -1917,8 +1943,8 @@ impl App {
             },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
-                Some(q) => (
-                    queuetab::page(
+                Some(q) => {
+                    let (l, at) = queuetab::page(
                         q,
                         &self.qv,
                         self.candidates.as_ref(),
@@ -1929,9 +1955,9 @@ impl App {
                         self.p,
                         now,
                         w,
-                    ),
-                    vec![],
-                ),
+                    );
+                    (l, at.map(|a| ("", a)).into_iter().collect())
+                }
             },
             // One row per session (its controls, stage and ETA), the selected one's detail and
             // the asks; the changes, the forecast and the ranked sessions are Log's.
@@ -2278,7 +2304,8 @@ mod tests {
             queuetab::QueueView::default().key(
                 KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
                 Some(&queuetab::tests::fixture()),
-                &[]
+                &[],
+                10
             ),
             queuetab::Ask::Pass
         );
@@ -2301,6 +2328,98 @@ mod tests {
         assert!(top(&mut a)[0].starts_with("pipeline  reading"));
         a.handle(Msg::Pipeline(Ok(None)));
         assert_eq!(top(&mut a)[0], "pipeline -");
+    }
+
+    /// A queue longer than any screen: `n` queued items, item-0 first.
+    fn long_queue(n: usize) -> hub_core::queue::Queue {
+        let jsonl: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"slug":"item-{i}","project":"dotfiles","mode":"oneshot","priority":"high","queued":"2026-11-03T10:{:02}:00Z","state":"queued","task":"Task {i}"}}"#, i % 60))
+            .collect();
+        hub_core::queue::Queue {
+            items: hub_core::queue::parse(&jsonl.join("\n")),
+            stats: None,
+            errors: vec![],
+        }
+    }
+
+    fn ctrl(c: char) -> Msg {
+        Msg::Input(Event::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL,
+        )))
+    }
+
+    #[test]
+    fn the_queue_page_follows_the_selection_past_the_bottom() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        assert!(!screen(&mut a, 80, 20).contains("item-30"));
+        for _ in 0..30 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 80, 20);
+        assert_eq!(a.qv.sel, 30);
+        assert!(a.scroll > 0, "the page scrolled with the selection");
+        assert!(s.contains("item-30"), "the selected row is on screen:\n{s}");
+        a.handle(key('k'));
+        assert!(screen(&mut a, 80, 20).contains("item-29"));
+    }
+
+    #[test]
+    fn g_and_shift_g_jump_the_queue_selection_and_the_page_with_it() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        screen(&mut a, 80, 20);
+        a.handle(key('G'));
+        let s = screen(&mut a, 80, 20);
+        assert_eq!(a.qv.sel, 39);
+        assert!(s.contains("item-39"), "{s}");
+        assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
+        a.handle(key('g'));
+        let s = screen(&mut a, 80, 20);
+        assert_eq!((a.qv.sel, a.scroll), (0, 0));
+        assert!(s.contains("item-0"), "{s}");
+        // PgDn and space move the selection a page; the page follows rather than snapping back.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::PageDown))));
+        assert_eq!(a.qv.sel, a.page);
+        let want = format!("item-{}", a.page);
+        assert!(screen(&mut a, 80, 20).contains(&want));
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_move_the_queue_selection_half_a_page() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(long_queue(40))));
+        screen(&mut a, 80, 20);
+        let half = a.page / 2;
+        assert!(half > 0);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.sel, half);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.sel, 2 * half);
+        a.handle(ctrl('u'));
+        assert_eq!(a.qv.sel, half);
+        // NEGATIVE CONTROL: a plain d or u is no move.
+        a.handle(key('d'));
+        a.handle(key('u'));
+        assert_eq!(a.qv.sel, half);
+    }
+
+    #[test]
+    fn ctrl_d_scrolls_any_other_page_half_a_page_and_is_not_its_plain_d() {
+        let mut a = app(Tab::Fleet);
+        a.page = 20;
+        let details = a.fleet_details;
+        a.handle(ctrl('d'));
+        assert_eq!(a.scroll, 10);
+        assert_eq!(a.fleet_details, details, "Ctrl-d is not Fleet's d");
+        a.handle(ctrl('u'));
+        assert_eq!(a.scroll, 0);
+        a.handle(key('d'));
+        assert_ne!(
+            a.fleet_details, details,
+            "plain d still toggles the details"
+        );
     }
 
     fn app(tab: Tab) -> App {

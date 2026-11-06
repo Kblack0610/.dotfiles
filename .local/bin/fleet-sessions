@@ -67,6 +67,9 @@ TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unit
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+# The kind registry fleet-dispatch routes by: a kind whose `exit` is doc+ask finishes on a doc and an
+# ask, not a PR (handoff_of).
+KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
 # A session working a queue item is named by that item's `session:` (<server>:<tmux session>, a
 # bare name on this server); its "<project>: <slug>" is shown so the shepherd knows what it works.
 # claude-acct park writes one ledger per tmux session whose claude it exited to save usage.
@@ -728,6 +731,23 @@ item_of() {
     }' <<<"$1"
 }
 
+# handoff_of <qall> <item_of's answer> -> "<ask id>\t<doc>" when the item is of a doc+ask kind
+# (kinds.json `exit`, by the item's type or its title's `type(area):` prefix) and has handed its work
+# over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
+# session's open question, and the item has moved on. Else nothing.
+handoff_of() {
+  local slug="${2#*:}" ask doc
+  case "$2" in own:* | moved:*) ;; *) return 0 ;; esac
+  [ -r "$KINDS" ] || return 0
+  IFS=$'\t' read -r ask doc < <(jq -r --arg s "${slug%% *}" --slurpfile k "$KINDS" '
+    select(.slug == $s)
+    | (.type // ((.title // .task // "") | capture("^(?<t>[a-z]+)(\\([A-Za-z0-9_./-]+\\))?:").t // "")) as $t
+    | select($t != "" and $k[0][$t].exit == "doc+ask" and (.report // "") != "" and (.ask // "") != "")
+    | [.ask, .report] | @tsv' <<<"$1" 2>/dev/null)
+  [ -n "${ask:-}" ] && [ -f "${doc/#\~/$HOME}" ] && compgen -G "$ASK_ROOT/*/$ask.md" >/dev/null && printf '%s\t%s\n' "$ask" "$doc"
+  return 0
+}
+
 collect() {
   local now heavy line
   now="$(date +%s)"
@@ -776,6 +796,13 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
+    local hask hdoc
+    IFS=$'\t' read -r hask hdoc < <(handoff_of "$qall" "$item")
+    if [ -n "${hask:-}" ]; then
+      askids="$(tr ',' '\n' <<<"$askids" | grep -vxF "$hask" | paste -sd, -)"
+      asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
+      item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
+    fi
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
     # No PR for this branch here: an open PR of its own in another repo is the row's PR. Its
     # conflict is not this clone's to measure, so it is unknown (-).
