@@ -246,7 +246,8 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 # The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
 # two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
 # m4 follows a compaction; m1's request is recorded as an api-request-shape and two blobs), one subagent call, one headless call, a registry with a superseded
-# row, outcomes naming PR o/r#1 twice, and a dream log with one real and one dry run.
+# row, outcomes naming PR o/r#1 twice, a dream log with one real and one dry run, and two queue
+# items that used s1's worktree (demo-task while s1 ran, old-task a day before).
 
 burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
 
@@ -280,7 +281,7 @@ burn() {
 }
 
 @test "burn: the registry keeps a session's last row and splits by account" {
-  assert_equal "$(burn '[.registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [5, 4, 1]')" 'true'
+  assert_equal "$(burn '[.registry.sessions, .registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [2, 5, 4, 1]')" 'true'
 }
 
 @test "burn: a PR merged in the window counts once however many sessions name it" {
@@ -330,6 +331,28 @@ burn() {
   assert_equal "$(burn '.by_session | keys')" '["h1","s1"]'
   # Ranked by cost: the $4 session comes first.
   assert_equal "$(burn '.by_session | keys_unsorted[0]')" '"s1"'
+}
+
+@test "burn: origin joins a session to the queue item that ran in its worktree, with model and size" {
+  # s1 ran in demo-agent-1 while demo-task (origin run, #size/s) did; old-task used the same
+  # tmux name a day earlier and does not claim it. h1 is headless and no item names it.
+  assert_equal "$(burn '.by_session.s1 | [.origin, .item, .size, .models, .subagent_turns]')" \
+    '["run","demo-task","s",{"claude-opus-5-5":4,"claude-sonnet-5-5":1},1]'
+  assert_equal "$(burn '.by_session.h1 | [.origin, .item, .kind]')" '["runner",null,"headless"]'
+  # The subagent row is the subagent thread's turns only; its parent's row keeps the cost.
+  assert_equal "$(burn '.by_origin | map_values([.sessions, .cost_usd, .turns, .opus_turns])
+    == {"run":[1,4,4,4],"runner":[1,1,1,1],"subagent":[1,null,1,0]}')" 'true'
+}
+
+@test "burn: a session id an item lists wins, mode plan is plan; no item is interactive" {
+  burn_home
+  printf 'slug: p\nmode: plan\norigin: hand\nsessions: h1\n---\nplan it\n' > "$HOME/.agent/queue/done/p.md"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.h1.origin, .by_session.h1.item]'"
+  assert_output '["plan","p"]'
+  # Negative control: with no queue, the worktree session is the human's, not a run.
+  rm -rf "$HOME/.agent/queue"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.s1.origin, .by_session.s1.item]'"
+  assert_output '["interactive",null]'
 }
 
 @test "burn: --since sets the window start and wins over --days" {
