@@ -37,6 +37,7 @@ mod registry;
 mod sheet;
 mod show;
 mod status;
+mod steps;
 mod summarize;
 mod sweep;
 mod tags;
@@ -399,7 +400,11 @@ enum Cmd {
         /// Only events of this agent-queue item, like fix-menu
         #[arg(long)]
         item: Option<String>,
-        /// One JSON event per line
+        /// The whole record replayed into the chain's steps, inbox to done: per step what it
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
+        steps: bool,
+        /// One JSON event per line (one object per step with --steps)
         #[arg(long)]
         json: bool,
     },
@@ -1197,6 +1202,9 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Log {
+            steps: true, json, ..
+        } => steps::print(&prof, json)?,
+        Cmd::Log {
             day,
             days,
             project,
@@ -1205,6 +1213,7 @@ fn main() -> Result<()> {
             by,
             item,
             json,
+            ..
         } => {
             let filter = ingest::Filter {
                 project: project.map(|n| registry::canonical(&n)),
