@@ -85,6 +85,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
   ideas/                                     `_IDEAS.md` (`ideas` config key) and briefs for ideas with no project yet
   projects/{current,archived}/<name>/        the personal profile
   <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
+  <org>/practices/<facet>/                   studio-wide procedures a person follows, indexed by practices/README.md
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
 ```
 
