@@ -16,7 +16,7 @@
 # was an AUTO block two months stale: the dotfiles anchor advertised its latest eval as
 # 2026-06-08 while the directory held 2026-08-09. Nothing failed, because a stale
 # generated block and a fresh one look identical. That matters more now that the session
-# preflight stopped listing plans and lessons itself and delegates both to this block.
+# preflight stopped listing plans itself and delegates them to this block.
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
@@ -220,23 +220,6 @@ auto_block() {
     fi
   else
     echo "- _(no plans dir yet)_"
-  fi
-  echo
-  echo "## Recent lessons (digest)"
-  if [ -f "$LESSONS" ]; then
-    local digest
-    # tail of bullet lessons, each truncated to keep the digest scannable (it's injected
-    # at session start — one mega-lesson must not dominate the context window). The cut
-    # lands on a word boundary: a path cut mid-word (`~/.d`) reads as a dead path.
-    digest=$(grep -E '^- ' "$LESSONS" 2>/dev/null | tail -5 \
-      | awk '{ if (length($0) > 200) { s = substr($0,1,197); sub(/[[:space:]]+[^[:space:]]*$/, "", s); print s "..." } else print }' || true)
-    if [ -n "$digest" ]; then
-      echo "$digest"
-    else
-      echo "- _(lessons file has no bullet entries yet)_"
-    fi
-  else
-    echo "- _(no lessons file yet)_"
   fi
   echo "$END"
 }

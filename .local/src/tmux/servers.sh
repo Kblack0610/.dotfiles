@@ -37,6 +37,7 @@
 # choose-tree is server-scoped by construction.
 #
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
+#        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
 #        · land <name> <last|root|session[:window]>
 #        · pick-session · reload
@@ -441,6 +442,22 @@ _focus_terminal() {
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
   done
   return 0
+}
+
+# popup <cmd> [arg...] -- run <cmd> in a popup on the terminal you typed in last and focus it,
+# so a desktop key (Super+A) shows a tool where you work. No terminal attached: one floating kitty.
+cmd_popup() {
+  [ $# -gt 0 ] || die "popup needs a command"
+  local srv client pid
+  read -r srv client pid < <(_newest_client)
+  if [ -z "${client:-}" ]; then
+    command -v kitty >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] ||
+      die "no tmux client is attached and no display to open a terminal on"
+    setsid -f kitty --class floating-term -e "$@" >/dev/null 2>&1
+    return 0
+  fi
+  tmux -L "$srv" display-popup -c "$client" -E -w 95% -h 95% "$(printf '%q ' "$@")" || return 1
+  _focus_terminal "$pid"
 }
 
 # client -- "<server> <client>" of the terminal you typed in last, so another script can
@@ -908,6 +925,7 @@ main() {
     hop)          shift; cmd_hop "${1:-}" ;;
     toggle)       cmd_toggle ;;
     client)       cmd_client ;;
+    popup)        shift; cmd_popup "$@" ;;
     root)         shift; cmd_root "${1:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;

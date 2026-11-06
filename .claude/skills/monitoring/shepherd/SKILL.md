@@ -5,12 +5,12 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
-  reviewed: 2026-11-05
+  reviewed: 2026-11-06
 ---
 
 # shepherd
 
-The delivery role of `fleet-lead` (Binks). It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
+The delivery role of `fleet-lead` (Binks). Binks aims at measured improvement of the fleet, one KPI at a time with a check (`fleet-lead`, step 3); this role is the means. It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
 
 ## Verb: `status`
 

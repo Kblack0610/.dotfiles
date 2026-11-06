@@ -34,8 +34,13 @@
 #                                dwell, the bottleneck step and the record's drift from the queue folders
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--json]
 #                                each windowed KPI over N days before a change landed against N after
-#   fleet-bench retro            one agent-board row per KPI whose 7d value is past its threshold,
-#                                and per lesson that recurred in BENCH_GUARD_RECUR sessions (a guard row)
+#   fleet-bench improve [--json] | file <kpi> <text> | claim <kpi> <ar-N|item:slug> | list [--json]
+#                                the KPI furthest past its threshold that no live claim owns (exit 1
+#                                when none, or BENCH_IMPROVE_MAX are live); file adds its row with a
+#                                check and claims it, claim records a row or item that owns it
+#   fleet-bench retro            a verdict on each claim whose PR landed BENCH_EFFECT_DAYS ago (a
+#                                regression files a revert row), and one agent-board row per lesson
+#                                that recurred in BENCH_GUARD_RECUR sessions (a guard row)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
@@ -114,9 +119,11 @@ set -uo pipefail
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
-: "${KPI_BOARD:=agent-runtime}"       # the agent board retro files its rows on
+: "${KPI_BOARD:=agent-runtime}"       # the agent board improve, retro and triage file rows on
 : "${BENCH_EFFECT_DAYS:=14}"        # effect: the window on each side of a change
 : "${BENCH_EFFECT_FLAT:=0.1}"       # effect: a relative move inside this is flat
+: "${BENCH_IMPROVE_MAX:=3}"         # improve: live claims at which the pick goes quiet (the WIP cap)
+: "${BENCH_LOG_CMD:=notes log --json}"   # improve: the row and item record, given --days N
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
@@ -164,6 +171,7 @@ ESTIMATES="$DIR/estimates.jsonl"
 SCORES="$DIR/scores.jsonl"
 CI="$DIR/pr-ci.jsonl"
 FINDINGS="$DIR/findings.jsonl"
+EFFECT="$DIR/effect.jsonl"   # improve: claims (each with its baseline) and verdicts; append-only, fleet-bench the one writer
 RESPONSES="$DIR/responses.jsonl"   # fleet-bench respond: what answered each finding
 FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
@@ -202,6 +210,12 @@ def leaves_landed: .open == 0 and .done > 0;
 def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
   - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
+# move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
+# (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
+def move($b; $a; $dir; $flat): if $b == null or $a == null or $dir == 0 then "-"
+  else (if $b == 0 then (if $a == 0 then 0 else ($a | if . > 0 then 1 else -1 end) end)
+        else ($a - $b) / ($b | fabs) end) as $rel
+  | if ($rel | fabs) <= $flat then "flat" elif $rel * $dir > 0 then "improved" else "regressed" end end;
 def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
 def run_rows: split("\n") | map(select(. != "") | split("\t")
   | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
@@ -623,7 +637,7 @@ bench_prom() {
   pl=$(pipeline_json "$t") || pl='{"steps": []}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
      --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") --argjson k "$kpis" \
-     "$JQ_LIB$PROM_JQ"'
+     --slurpfile ef <(effect_lines) "$JQ_LIB$IMPROVE_JQ$PROM_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
     | ($w | map(.project) + ($s | map(.project)) | unique) as $ps
@@ -646,6 +660,10 @@ bench_prom() {
         $k | to_entries[] | [{kpi: .key}, .value.threshold]),
       gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
+      gauge("agent_bench_improve"; "Improvement claims live now, and verdicts of each kind, from effect.jsonl.";
+        [{state: "live"}, ($ef | live | length)],
+        (("improved", "flat", "regressed", "unproven") as $v
+         | [{state: $v}, ([$ef[] | select(.type == "verdict" and .verdict == $v)] | length)])),
       gauge("agent_chain_wip"; "Items at each step of the work chain now, from the state files.";
         $pl.steps[] | [{step}, .wip]),
       gauge("agent_chain_age_minutes"; "Minutes the items at each step have sat there, p50 and p90.";
@@ -1830,30 +1848,192 @@ cmd_effect() {
     win($t; $d) as $b | win($t + $d * 86400; $d) as $a | ($now >= $t + $d * 86400) as $done
     | {ref: $ref, at: ($t | todate), days: $d, kpis: [$b | keys_unsorted[] as $k | better[$k] as $dir
         | {kpi: $k, before: $b[$k], after: (if $done then $a[$k] else null end),
-           verdict: (if ($done | not) then "pending"
-                     elif $b[$k] == null or $a[$k] == null or $dir == 0 then "-"
-                     else (if $b[$k] == 0 then (if $a[$k] == 0 then 0 else ($a[$k] | if . > 0 then 1 else -1 end) end)
-                           else ($a[$k] - $b[$k]) / ($b[$k] | fabs) end) as $rel
-                     | if ($rel | fabs) <= $flat then "flat" elif $rel * $dir > 0 then "improved" else "regressed" end end)}]}') || return 1
+           verdict: (if ($done | not) then "pending" else move($b[$k]; $a[$k]; $dir; $flat) end)}]}') || return 1
   if [ "$json" = 1 ]; then jq -c . <<<"$out"; return 0; fi
   jq -r '"effect of \(.ref) at \(.at), \(.days)d before vs after:", "| KPI | before | after | verdict |", "|---|---|---|---|",
     (.kpis[] | "| \(.kpi) | \(.before // "-") | \(.after // "-") | \(.verdict) |")' <<<"$out"
 }
 
-# retro_rows <kpi json> -> key, row text and priority (tab-separated) for each KPI past its
-# threshold; more than 2x past it is #high
-retro_rows() {
-  jq -r 'to_entries[] | select(.value.status == "past") | .key as $k | .value
-    | (if .bound == "max" then .["7d"] > 2 * .threshold else .["7d"] < .threshold / 2 end) as $far
-    | "check(kpi): \($k) past threshold" as $key
-    | [$key, "\($key): "
-        + (if .now then "now \(.["7d"]) (\(.bound) \(.threshold))"
-           else "7d \(.["7d"]) (28d \(.["28d"] // "-"), \(.bound) \(.threshold))" end),
-       (if $far then "#high" else "#low" end)] | @tsv' <<<"$1"
+# --- improve: one KPI past its threshold at a time, each with a check written before the work ---
+# effect.jsonl holds two kinds of line. A claim, {type: "claim", at, kpi, subject, from, bound,
+# threshold}, names the row (ar-N) or queue item (item:<slug>) that owns a KPI and the 7d value it
+# started from. A verdict, {type: "verdict", at, kpi, subject, verdict, from, after, pr, bound,
+# threshold}, ends it. A claim is live until its subject has a verdict after it: identity is the
+# subject, never a row's title. The verdict compares values, never the status, so an edit to
+# kpi-thresholds cannot turn a flat result into a pass.
+IMPROVE_JQ='
+def live: group_by(.subject) | map(sort_by(.at) | last | select(.type == "claim"));
+def last_verdict($k): map(select(.type == "verdict" and .kpi == $k)) | sort_by(.at) | last
+  | if . == null then null else {subject, verdict} end;
+# how far past its threshold a KPI is, relative to the threshold
+def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
+  | (if .bound == "max" then .["7d"] - .threshold else .threshold - .["7d"] end) / $d;
+'
+
+effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
+
+# improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+improve_pick() {
+  jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+    ($e | live) as $live | ($live | map(.kpi)) as $owned
+    | if ($live | length) >= $max then empty else
+        [to_entries[] | select(.value.status == "past" and (.key | IN($owned[]) | not))
+         | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
+        | sort_by(-.gap) | first // empty
+        | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
 }
 
-# One open row per KPI, folded by its title prefix: the numbers are refreshed in place, and
-# rows for a KPI back inside its threshold are left for whoever owns them.
+# improve_target <kpi json> <kpi> [subject] -> the KPI as {kpi, value, threshold, bound}, or a why
+# and a failure: it must be past its threshold, unclaimed, under the cap, and the subject not
+# already a live claim
+improve_target() {
+  local why
+  why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+    ($e | live) as $live | .[$k] as $v
+    | if $v == null then "no KPI named \($k)"
+      elif $v.status != "past" then "\($k) is not past its threshold (\($v.status))"
+      elif ($live | any(.kpi == $k)) then "\($k) is already claimed by \([$live[] | select(.kpi == $k) | .subject] | first)"
+      elif ($live | any(.subject == $s)) then "\($s) already claims \([$live[] | select(.subject == $s) | .kpi] | first)"
+      elif ($live | length) >= $max then "\($live | length) claims are live (BENCH_IMPROVE_MAX \($max)); one must end first"
+      else empty end' <<<"$1") || return 1
+  [ -z "$why" ] || { say "improve: $why"; return 1; }
+  jq -c --arg k "$2" '.[$k] | {kpi: $k, value: .["7d"], threshold, bound}' <<<"$1"
+}
+
+# improve_claim_write <subject> <{kpi, value, threshold, bound}>: append the claim, its baseline
+improve_claim_write() {
+  mkdir -p "$DIR"
+  jq -c --argjson at "$(now)" --arg s "$1" \
+    '{type: "claim", at: $at, kpi, subject: $s, from: .value, bound, threshold}' <<<"$2" >> "$EFFECT"
+}
+
+# improve_add <text> <detail> -> the new row's id on the agent board; 3 when its twin is open
+improve_add() {
+  local out rc=0
+  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2") || rc=$?
+  [ "$rc" = 0 ] || return "$rc"
+  grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | head -1 | sed 's/^<!-- id://' | grep . ||
+    { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
+}
+
+improve_kpis() { kpi_json "$(now)" "$(ledger_counts)" || { say "improve: kpi unreadable"; return 2; }; }
+
+# improve [--json]: the pick; exit 1 when nothing is due
+improve_show() {
+  local json pick
+  json=$(improve_kpis) || return 2
+  pick=$(improve_pick "$json") || return 2
+  [ -n "$pick" ] || return 1
+  if [ "$1" = --json ]; then printf '%s\n' "$pick"; return 0; fi
+  jq -r '"\(.kpi) 7d \(.value) past \(.bound) \(.threshold)" + (if .last then ", last \(.last.subject) \(.last.verdict)" else "" end)' <<<"$pick"
+}
+
+# improve file <kpi> <text>: add the row tagged #kpi/<kpi> with its check as a detail line, and
+# claim it with the KPI's 7d value now as the baseline
+improve_file() {
+  local json t text id rc=0
+  json=$(improve_kpis) || return 2
+  t=$(improve_target "$json" "$1") || return 1
+  text="$2 #kpi/$1"
+  [[ "$text" == *"#size/"* ]] || text+=" #size/s"
+  id=$(improve_add "$text" "$(jq -r --argjson d "$BENCH_EFFECT_DAYS" \
+    '"check: kpi \(.kpi) from \(.value) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$t")") || rc=$?
+  case $rc in
+    0) ;;
+    3) say "improve: a row with that text is already open; claim it: fleet-bench improve claim $1 <its id>"; return 3 ;;
+    *) say "improve: the add failed ($rc)"; return 1 ;;
+  esac
+  improve_claim_write "$id" "$t"
+  printf '%s claims %s from %s\n' "$id" "$1" "$(jq -r .value <<<"$t")"
+}
+
+# improve claim <kpi> <ar-N|item:slug>: record a row or queue item that already owns the KPI; the
+# board is not written
+improve_claim() {
+  local json t
+  [[ "$2" =~ ^([a-z]+-[0-9]+|item:[a-z0-9][a-z0-9-]*)$ ]] || { say "improve: claim takes a row id (ar-N) or item:<slug>, not $2"; return 2; }
+  json=$(improve_kpis) || return 2
+  t=$(improve_target "$json" "$1" "$2") || return 1
+  improve_claim_write "$2" "$t"
+  printf '%s claims %s from %s\n' "$2" "$1" "$(jq -r .value <<<"$t")"
+}
+
+# improve list [--json]: the live claims with their age, and the newest verdicts
+improve_list() {
+  local rows
+  rows=$(effect_lines | jq -sc --argjson now "$(now)" "$IMPROVE_JQ"'
+    {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor)})),
+     verdicts: (map(select(.type == "verdict")) | sort_by(.at) | reverse | .[:20])}') || return 1
+  if [ "$1" = --json ]; then printf '%s\n' "$rows"; return 0; fi
+  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length) of \($max)",
+    (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d"),
+    "verdicts:", (.verdicts[] | "  \(.subject) \(.kpi) \(.verdict) \(.from) -> \(.after // "-")\(if .pr then " (pr:\(.pr))" else "" end)")' <<<"$rows"
+}
+
+# improve_check: retro's read of each live claim. A row closed with a PR, or an item moved to done
+# with one, BENCH_EFFECT_DAYS or more ago gets a verdict from the KPI's 7d value now against the
+# claim's (move, the bound gives the direction); one closed with no PR, dropped, a dup or cancelled
+# is unproven; one still open stays live. Regressed files one #high revert row and claims it; flat
+# and unproven end the claim, so the pick names the KPI again. Leaves IMPROVE_LINE (the outcome
+# part), IMPROVE_WHY (when nothing was checked) and IMPROVE_FAIL.
+improve_check() {
+  local claims days log json v line verdict id n=0 imp=0 flt=0 reg=0 unp=0
+  IMPROVE_LINE='' IMPROVE_WHY='' IMPROVE_FAIL=''
+  claims=$(effect_lines | jq -sc "$IMPROVE_JQ"'live') || { IMPROVE_FAIL="effect ledger unreadable"; return 1; }
+  if [ "$claims" = "[]" ]; then IMPROVE_WHY="no live improvement claim"; return 0; fi
+  days=$(jq -r --argjson now "$(now)" '($now - (map(.at) | min)) / 86400 | floor + 2' <<<"$claims")
+  log=$($BENCH_LOG_CMD --days "$days") || { IMPROVE_FAIL="notes log unreadable"; return 1; }
+  json=$(kpi_json "$(now)" "$(ledger_counts)") || { IMPROVE_FAIL="kpi unreadable"; return 1; }
+  v=$(jq -c --argjson now "$(now)" --argjson d "$BENCH_EFFECT_DAYS" --argjson flat "$BENCH_EFFECT_FLAT" \
+      --argjson k "$json" --slurpfile log <(printf '%s\n' "$log") "$JQ_LIB"'
+    def log_epoch: sub("\\.[0-9]+"; "")
+      | if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
+    .[] | . as $c | ($c.subject | ltrimstr("item:")) as $slug | ($c.subject | startswith("item:")) as $item
+    | [$log[] | select(if $item then .item == $slug and ((.action == "item-moved" and .to == "done") or .action == "item-cancelled")
+                       else .id == $c.subject and (.action | IN("done", "dropped", "dup")) end)
+       | {at: (.ts | log_epoch),
+          pr: (if $item then .pr else first((.why // "") | capture("pr:(?<p>[^ ;]+)") | .p) end // null)}]
+    | (sort_by(.at) | last) as $close
+    | if $close == null then empty
+      elif $close.pr == null then {verdict: "unproven", after: null}
+      elif $now < $close.at + $d * 86400 then empty
+      else (($k[$c.kpi] // {})["7d"]) as $a
+        | move($c.from; $a; (if $c.bound == "max" then -1 else 1 end); $flat) as $m
+        | if $m == "-" then empty else {verdict: $m, after: $a} end end
+    | {type: "verdict", at: $now, kpi: $c.kpi, subject: $c.subject, from: $c.from, pr: $close.pr,
+       bound: $c.bound, threshold: $c.threshold} + .' <<<"$claims") || { IMPROVE_FAIL="check unreadable"; return 1; }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    verdict=$(jq -r .verdict <<<"$line") id=''
+    if [ "$verdict" = regressed ]; then
+      local rc=0 text
+      text=$(jq -r '"fix(kpi): revert \(.pr), \(.kpi) went from \(.from) to \(.after) #kpi/\(.kpi) #high #size/s"' <<<"$line")
+      id=$(improve_add "$text" "$(jq -r --argjson d "$BENCH_EFFECT_DAYS" \
+        '"check: kpi \(.kpi) from \(.after) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$line")") || rc=$?
+      case $rc in 0|3) ;; *) IMPROVE_FAIL="the revert row for $(jq -r .subject <<<"$line") failed"; return 1 ;; esac
+    fi
+    printf '%s\n' "$line" >> "$EFFECT"
+    [ -z "$id" ] || improve_claim_write "$id" "$(jq -c '{kpi, value: .after, threshold, bound}' <<<"$line")"
+    n=$((n + 1))
+    case $verdict in improved) imp=$((imp + 1)) ;; flat) flt=$((flt + 1)) ;; regressed) reg=$((reg + 1)) ;; *) unp=$((unp + 1)) ;; esac
+  done <<<"$v"
+  if [ "$n" = 0 ]; then IMPROVE_WHY="$(jq length <<<"$claims") improvement claims not yet due"; return 0; fi
+  IMPROVE_LINE="$n checked: $imp improved, $flt flat, $reg regressed, $unp unproven"
+}
+
+# improve [--json] | file <kpi> <text> | claim <kpi> <ar-N|item:slug> | list [--json]
+cmd_improve() {
+  local usage="usage: fleet-bench improve [--json] | file <kpi> <text> | claim <kpi> <ar-N|item:slug> | list [--json]"
+  case "${1:-}" in
+    ""|--json) improve_show "${1:-}" ;;
+    file) [ $# -eq 3 ] && [ -n "$3" ] || { say "$usage"; return 2; }; improve_file "$2" "$3" ;;
+    claim) [ $# -eq 3 ] || { say "$usage"; return 2; }; improve_claim "$2" "$3" ;;
+    list) improve_list "${2:-}" ;;
+    *) say "$usage"; return 2 ;;
+  esac
+}
+
 # retro_guard_rows -> one "check(lesson): guard <hash>:<TAB>text<TAB>priority" line per lesson whose sig
 # (so_lesson_sigs) hit in BENCH_GUARD_RECUR or more sessions after it was written: a lesson the
 # fleet keeps relearning wants a hook, test or lint, and the lesson goes once that lands.
@@ -1873,31 +2053,23 @@ retro_guard_rows() {
   done
 }
 
-# retro keeps exactly one open agent-board row per finding, keyed by its prefix: a KPI past its
-# threshold (`check(kpi): <k> past threshold`) or a lesson that keeps recurring
-# (`check(lesson): guard <hash>:`). A row whose numbers moved is edited in place; one that
-# matches writes nothing. An add that exits 3 found the row already open (a near-dup), so it
-# counts as filed.
+# retro reads each live improvement claim (improve_check) and keeps exactly one open agent-board
+# row per lesson that keeps recurring (`check(lesson): guard <hash>:`). A KPI past its threshold gets
+# no row here: `fleet-bench improve` names one at a time, and its row carries the check.
 cmd_retro() {
-  local json rows='' grows why=()
-  if [ -r "$KPI_THRESHOLDS" ]; then
-    json=$(kpi_json "$(now)" "$(ledger_counts)") || { report_outcome FAILED "kpi unreadable"; return 1; }
-    rows=$(retro_rows "$json")
-    [ -n "$rows" ] || why+=("every KPI inside its threshold")
-  else
-    say "no KPI thresholds at $KPI_THRESHOLDS; retro checks no KPI"
-    why+=("no KPI thresholds file")
-  fi
+  local grows why=()
+  improve_check || { report_outcome FAILED "$IMPROVE_FAIL"; return 1; }
+  if [ -n "$IMPROVE_LINE" ]; then say "$IMPROVE_LINE"; else why+=("$IMPROVE_WHY"); fi
   grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs unreadable"; return 1; }
-  [ -n "$grows" ] || why+=("no lesson recurred")
-  rows=$(printf '%s\n%s\n' "$rows" "$grows" | grep .)
-  if [ -z "$rows" ]; then
+  if [ -z "$grows" ]; then
+    why+=("no lesson recurred")
+    if [ -n "$IMPROVE_LINE" ]; then report_outcome WORKED "$IMPROVE_LINE"; return 0; fi
     say "${why[*]}"
     report_outcome NOOP "$(IFS=';'; echo "${why[*]}")"
     return 0
   fi
-  board_upsert "$rows" || return 1
-  upsert_report "$rows"
+  board_upsert "$grows" || return 1
+  upsert_report "$grows" "$IMPROVE_LINE"
 }
 
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
@@ -2699,6 +2871,9 @@ cmd_flow() {
   ' "$PROGRESS"
 }
 
+# usage: the verb list at the top of this file, through the line before its State note
+usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
+
 # epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}.
 # The dirs in BENCH_PLAN_DIRS are read in order and the first file of a name wins, so a plan in
 # ~/.claude/plans beats its ~/.agent/plans cache copy.
@@ -2929,6 +3104,7 @@ main() {
     chain) shift; cmd_chain "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     effect) shift; cmd_effect "$@" ;;
+    improve) shift; cmd_improve "$@" ;;
     retro) cmd_retro ;;
     triage) shift; cmd_triage "$@" ;;
     findings) shift; cmd_findings "$@" ;;
@@ -2942,8 +3118,8 @@ main() {
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
-    -h | --help) sed -n '2,76p' "$0" ;;
-    *) sed -n '2,74p' "$0" >&2; return 2 ;;
+    -h | --help) usage ;;
+    *) usage >&2; return 2 ;;
   esac
 }
 

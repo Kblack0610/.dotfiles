@@ -86,6 +86,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
 | `tmx client` | `<server> <client>` of the terminal you typed in last, for `display-popup -c` from outside tmux |
+| `tmx popup <cmd>` | run `<cmd>` in a popup on that terminal and focus it (what the Super+A agents keys use) |
 
 **From the desktop, a hop drives your terminal.** `goto`, `hop` and `open` run with no `$TMUX` and no tty (a Hyprland key, a waybar click, `agent-panel` from the pin) move the terminal you typed in last (`tmx client`) to the target and focus its window on Hyprland, instead of attaching inside a new window. With a tty they attach right where they stand, and with no terminal attached anywhere they open one kitty on the target.
 
