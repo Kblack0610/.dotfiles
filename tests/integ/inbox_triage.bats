@@ -71,6 +71,38 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   inbox | grep -q 'the gun sound is off'
 }
 
+@test "a budget stop ends the sweep BLOCKED with exit 75: one call, no refusal, the lines wait" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 75\n' >"$SANDBOX/bin/model-stub"
+  INBOX_TRIAGE_PASSES=3 run "$TRIAGE"
+  assert_failure 75
+  assert_output --partial 'route: stopped at its budget'
+  assert_output --partial 'left 1, refused 0'
+  refute_output --partial 'model call failed'
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx BLOCKED "$st/last-outcome"
+  grep -q 'outcome=BLOCKED budget: .*why: stopped at its budget' "$st/activity.log" || fail "$(cat "$st/activity.log")"
+  inbox | grep -q 'the gun sound is off'
+}
+
+@test "--backlog: a budget stop ends the pass BLOCKED with exit 75 after one call, and any other exit stays FAILED" {
+  sheet '' '- [ ] fix(ui): the menu <!-- id:sc-1 -->\n'
+  printf '%s\n' '- [ ] fix(ui): the other menu <!-- id:ot-1 -->' >>"$PROJ/other/README.md"
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 75\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE" --backlog
+  assert_failure 75
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx BLOCKED "$st/last-outcome"
+  grep -q 'outcome=BLOCKED budget: backlog: ' "$st/activity.log" || fail "$(cat "$st/activity.log")"
+  # negative control: an exit that is not the budget's is still a failed pass
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE" --backlog
+  assert_failure 1
+  grep -qx FAILED "$st/last-outcome"
+}
+
 @test "a reply with no answer block names that reason in the outcome" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   echo 'I could not decide.' >"$NOTES_FIXTURE/model.out"
@@ -383,6 +415,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx "$HOME/.notes" "$NOTES_FIXTURE/watch.args" || fail "$(cat "$NOTES_FIXTURE/watch.args")"
   grep -qx "$PROJ/scratch" "$NOTES_FIXTURE/watch.args" || fail "$(cat "$NOTES_FIXTURE/watch.args")"
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "an empty sweep called the model"
+}
+
+@test "--watch: a budget stop is not a failed sweep; it runs again on the backoff, which notices a raise" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  outbox ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off #high #size/s"]}'
+  mkfifo "$NOTES_FIXTURE/events"
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/events"\n' >"$SANDBOX/bin/inotifywait"
+  chmod +x "$SANDBOX/bin/inotifywait"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo called >> "$NOTES_FIXTURE/model.log"' 'cat > "$NOTES_FIXTURE/prompt.txt"' \
+    'if [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ]; then exit 75; fi' \
+    'cat "$NOTES_FIXTURE/model.out"' ': > "$NOTES_FIXTURE/events"' >"$SANDBOX/bin/model-stub"
+  INBOX_SWEEP_QUIET=1 INBOX_RETRY_S=1 run "$TRIAGE" --watch
+  assert_failure 1
+  assert_output --partial 'the sweep stopped at its budget; it runs again in 1s'
+  refute_output --partial 'the sweep failed'
+  assert_output --partial 'filed 1, left 0, refused 0'
 }
 
 @test "--watch: a failed sweep runs again on the backoff with no save, and a clean one waits for a save" {

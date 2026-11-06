@@ -21,6 +21,15 @@ async function api(path, opts) {
   return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
 }
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+// One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
+// or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
+async function putBase(path, body, what, then = "") {
+  const r = await fetch(path, { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
+  if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
+  const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
+  throw new Error(`Could not save ${what} (HTTP ${r.status})${said ? ": " + said : ""}.${then}`);
+}
 
 // Run fn, and if it is asked for again while running, run it once more after.
 // An event storm becomes at most one trailing refetch, with no timer involved.

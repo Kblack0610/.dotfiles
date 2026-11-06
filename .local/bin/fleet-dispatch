@@ -793,6 +793,8 @@ For every row above, return one verdict in the structured output. Copy project, 
   err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
   mkdir -p "$DIR"
+  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
   if [ "$rc" != 0 ]; then
     JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
     verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
@@ -1218,12 +1220,12 @@ cmd_start() {
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # Preflight and agent-land claim for Claude alone, and both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
-    if [ "$harness" = claude ]; then lane_log "$item" "$(jq -r .task <<<"$it")" "$verdict" "$model"
+    if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.
-    elif [ "$origin" = run ]; then lane_log "$item" "$(jq -r .task <<<"$it")" "$verdict" "$model" "$harness"
-    else eval_log "$item" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" "$harness" "$model"
+    elif [ "$origin" = run ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
+    else eval_log "$item" "$(item_headline "$it")" "$harness" "$model"
     fi
-    dispatch_event started "$project" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" --item "$item" --to "$server:$session" --why "$model on $on"
+    dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
     exec 7>&-
   fi
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready"
@@ -1654,13 +1656,12 @@ start_items() {
 # held dispatch on purpose (agent-hold), else BLOCKED.
 held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
-# next_items -> the queued items a pass may try, queue order, one JSON object a line. An item whose
-# `agent:` is a gateway harness is an eval run the human paired, so only a hand or a batch starts it;
-# a pass moves a claude item onto Lazer only as a spill, when no account has room (start_item).
+# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, cleanup, age),
+# one JSON object a line. An item whose `agent:` is a gateway harness is an eval run the human paired,
+# so only a hand or a batch starts it; a pass moves a claude item onto Lazer only as a spill, when no
+# account has room (start_item).
 next_items() {
-  # A red fix goes first, so the run floor spends itself on what is broken; the queue's order holds within each.
-  runnable 2>/dev/null | jq -cs 'map(select((.waits | not) and (.agent // "claude") == "claude"))
-    | sort_by((" " + (.tags // "") + " ") | contains(" red ") | not)[]' 2>/dev/null
+  runnable 2>/dev/null | jq -c 'select((.waits | not) and (.agent // "claude") == "claude")' 2>/dev/null
   return 0
 }
 
@@ -1739,15 +1740,25 @@ held_by() {
   [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")
 }
 
+# item_headline <item json> -> its title, else the first non-blank line of its task: the one name a
+# log, an event and the model-lane pick all use for the item.
+item_headline() {
+  jq -r '(.title // "" | select(test("\\S"))) // ([(.task // "") | split("\n")[] | select(test("\\S")) | sub("^\\s+"; "")][0] // "")' <<<"$1"
+}
+
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
+# It classifies the item's headline and its board #size/ tag, never the whole task: the body carries
+# the same dispatch boilerplate on every item, and its words would pick the lane. Not the item's
+# weight either: agent-queue derives that from load (a Unity checkout or a plan is heavy), not size.
 # Every start of an item comes through cmd_start (a pass, a hand start, a plan phase, an after: chain),
 # so this is the one place an item's model is picked.
 lane_pick() {
-  local it
+  local it size
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
-  model-lane classify "$(jq -r .task <<<"$it")" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null |
+  size=$(jq -r '[(.task // "") | match("#size/([sml])\\b").captures[0].string][0] // empty' <<<"$it")
+  model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }
 
@@ -1961,8 +1972,8 @@ low_starved() {
 
 # board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
 # was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing. An `error` verdict counts as written: a pass whose judge fails already publishes
-# FAILED (settle), which fleet-liveness reads.
+# else nothing. An `error` verdict counts as written, and so does a budget stop's touch: a pass whose
+# judge fails or stops already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
 board_starved() {
   local judged state mins n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
@@ -2273,6 +2284,7 @@ settle() {
   esac
   case "${JUDGE_RC:-0}:$1:$2" in
     0:* | *:"could not judge"*) ;;
+    "$EX_BUDGET":NOOP:* | "$EX_BUDGET":BLOCKED:*) set -- BLOCKED "budget: $(judge_failed); $2" ;;
     *:NOOP:* | *:BLOCKED:*) set -- FAILED "$(judge_failed); $2" ;;
     *) set -- "$1" "$(judge_failed); $2" ;;
   esac
@@ -2318,7 +2330,8 @@ cmd_run() {
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
-  # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED.
+  # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED,
+  # or into BLOCKED when its budget stopped it.
   agent-hold check dispatch >/dev/null 2>&1 && fill_night
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
@@ -2390,13 +2403,14 @@ fill_now() {
 }
 
 # judge_once -- judge the open rows no verdict covers, once a pass, however many fills ask. A dry
-# run never judges: it names what the cache says, and verdicts.jsonl stays as it was.
+# run never judges: it names what the cache says, and verdicts.jsonl stays as it was. A budget stop
+# is not a failed fill: the cached verdicts still pick, and settle names the stop.
 judge_once() {
   if [ -z "${JUDGE_RC:-}" ]; then
     JUDGE_RC=0
     [ "$DRY" = 1 ] || { judge "$(unjudged_rows)"; JUDGE_RC=$?; }
   fi
-  return "$JUDGE_RC"
+  [ "$JUDGE_RC" = "$EX_BUDGET" ] || return "$JUDGE_RC"
 }
 
 # day_picks <room> -> the rows a merging session may take: picks over every open row, judged ones

@@ -94,6 +94,15 @@ test("ack mode makes only a row with an ack key tickable, the key on the box and
   assert.doesNotMatch(md('- [ ] x <!-- ack:"><b> -->', { notes: true, ack: true }), /data-ack/);
 });
 
+test("rows mode puts each task's line in the note on its box and its remove button, a comment keeping the count", () => {
+  const h = md("intro\n<!-- a\nnote -->\n- [ ] one\n  - [x] two\n> - [ ] quoted", { notes: true, rows: 10 });
+  assert.match(h, /<button class="trm" data-rm="13"[^>]*>-<\/button><input type="checkbox" data-ln="13"> one/);
+  assert.match(h, /<input type="checkbox" data-ln="14" checked> two/);
+  assert.match(h, /<blockquote>.*<input type="checkbox" disabled> quoted/s, "a quoted task is not a row of the note");
+  assert.equal((h.match(/data-rm=/g) || []).length, 2);
+  assert.doesNotMatch(md("- [ ] one", { notes: true }), /data-ln|data-rm/);
+});
+
 test("outside notes mode, and inside code, wikilinks and #p: stay text; web links still open a new tab", () => {
   assert.equal(md("[[outbox]] #p:x"), "<p>[[outbox]] #p:x</p>");
   assert.equal(md("`#p:x [[y]]`", { notes: true }), "<p><code>#p:x [[y]]</code></p>");

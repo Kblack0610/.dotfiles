@@ -7,7 +7,8 @@
 #   BUDGET_DAY_USD    the most the name may spend today, summed from calls.jsonl
 #   MAX_CALLS_HOUR    the most calls the name may make in an hour, counted from calls.jsonl
 # A conf without a key gets the default below. The day and hour checks run BEFORE the call:
-# over either, the run does not call, says why, reports BLOCKED and exits 75 (EX_TEMPFAIL).
+# over either, the run does not call, says why, reports BLOCKED and exits 75 (EX_TEMPFAIL). A
+# wrapper around the call does the same, and the oneshot drop-in counts 75 as a clean exit.
 # Only a named call (--agent, or AGENTCTL_NAME from the unit) is budgeted; a person running
 # agentctl-run by hand is not an automated lane.
 #
@@ -18,7 +19,6 @@
 BUDGET_DEFAULT_CALL_USD=2
 BUDGET_DEFAULT_DAY_USD=10
 BUDGET_DEFAULT_CALLS_HOUR=20
-EX_BUDGET=75
 
 # shellcheck source=../../../lib/agent-proof.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"

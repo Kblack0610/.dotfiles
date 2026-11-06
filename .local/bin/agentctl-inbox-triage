@@ -33,7 +33,7 @@ LIB="$HERE/../lib"
 . "$LIB/inbox-epics.sh"
 
 DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
-REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0
+REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0
 OUT=""
 FLAG=""; RECORD=""; OUTBOX=""
 PAUSED="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/PAUSED"
@@ -58,6 +58,10 @@ ask() {
       budget_batch_note "$NAME" capped "$2"
       say "$3: the call stopped at its per-call cap with $2 items; the next carries $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
       proof_why "$3: a call of $2 stopped at the per-call cap" ;;
+    "$EX_BUDGET")
+      BUDGET_STOP=1
+      say "$3: stopped at its budget"
+      proof_why "stopped at its budget" ;;
     *)
       first="$(cat - "$err" <<<"$OUT" | grep -m1 '[^[:space:]]' | clean 120)"
       say "$3: model call failed: ${first:-no output}"
@@ -276,6 +280,7 @@ backlog() {
     size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
     backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$rows")" "$names" "$homes" "$epics"; r=$?
     [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
+    [ "$r" = "$EX_BUDGET" ] && break
     [ "$r" = 0 ] || rc=1
     off=$((off + size))
   done
@@ -380,9 +385,11 @@ backlog_pass() {
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
     for lane in human agent; do
       backlog "$p" "$lane" "$board" "$names" "$homes" || rc=1
+      [ "$BUDGET_STOP" = 0 ] || break 2
     done
   done < <(jq -r '[.rows[] | select(.project != null and (.lane == "human" or .lane == "agent") and .state != "done")]
     | group_by(.project) | sort_by(-length) | .[][0].project' <<<"$board")
+  [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
   return "$rc"
 }
 
@@ -440,6 +447,8 @@ pass() {
       FAILED=$((FAILED + 1))
       note refused "$(jq -r '.take[0].from' <<<"$all")" "too big for one call at the per-call cap" "$(jq -r '.take[0].text' <<<"$all")"
     fi
+  elif [ "$r" = "$EX_BUDGET" ]; then
+    KEPT=$((KEPT + $(jq '.take | length' <<<"$all")))
   elif [ "$r" != 0 ]; then
     rc=1
   fi
@@ -450,15 +459,16 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
     pass || rc=1
-    [ "$DRY" = 1 ] && break
+    [ "$DRY" = 1 ] || [ "$BUDGET_STOP" = 1 ] && break
     [ "$OVER" = 0 ] && [ "$(flag_state)" = "$before" ] && break
   done
   [ "$CAPPED" = 0 ] || rc=1
+  [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
   SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
@@ -467,7 +477,8 @@ sweep() {
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
   [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
-  [ "$rc" != 0 ] && verdict=FAILED
+  [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
+  [ "$rc" = 1 ] && verdict=FAILED
   proof_report "$NAME" "$verdict" "$SUMMARY"
   agentctl report --name "$NAME" "detail=$SUMMARY" next= >/dev/null 2>&1 || true
   return "$rc"
@@ -482,12 +493,17 @@ watch_dirs() {
 }
 
 # watch_sweep: one sweep, then WAIT for --watch: 0 after a clean sweep, else the backoff from
-# INBOX_RETRY_S, doubling to INBOX_RETRY_MAX_S, so a failed sweep is retried with no save.
+# INBOX_RETRY_S, doubling to INBOX_RETRY_MAX_S, so a failed sweep is retried with no save. A sweep
+# stopped at its budget takes the same backoff: a refused call costs nothing, and the retry is what
+# notices a raise or midnight, which send no event.
 watch_sweep() {
-  if sweep; then WAIT=0; return 0; fi
+  local rc
+  sweep; rc=$?
+  if [ "$rc" = 0 ]; then WAIT=0; return 0; fi
   if [ "$WAIT" = 0 ]; then WAIT=$INBOX_RETRY_S; else WAIT=$((WAIT * 2)); fi
   [ "$WAIT" -le "$INBOX_RETRY_MAX_S" ] || WAIT=$INBOX_RETRY_MAX_S
-  say "the sweep failed; it runs again in ${WAIT}s unless a save comes first"
+  if [ "$rc" = "$EX_BUDGET" ]; then say "the sweep stopped at its budget; it runs again in ${WAIT}s unless a save comes first"
+  else say "the sweep failed; it runs again in ${WAIT}s unless a save comes first"; fi
   local at; at=$(($(date +%s) + WAIT))
   agentctl report --name "$NAME" "detail=$SUMMARY; retry $(date -d "@$at" +%H:%M)" "next=$at" >/dev/null 2>&1 || true
 }
@@ -543,13 +559,14 @@ main() {
   done
   local rc=0 summary verdict cfg dir
   if [ "$BACKLOG" = 1 ]; then
-    backlog_pass || rc=1
+    backlog_pass; rc=$?
     summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
     say "$summary"
     [ "$DRY" = 1 ] && return "$rc"
     verdict=NOOP
     [ $((REWROTE + MOVED + DROPPED)) -gt 0 ] && verdict=WORKED
-    [ "$rc" != 0 ] && verdict=FAILED
+    [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
+    [ "$rc" = 1 ] && verdict=FAILED
     proof_report "$NAME" "$verdict" "$summary"
     return "$rc"
   fi
