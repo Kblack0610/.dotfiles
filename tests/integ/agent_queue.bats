@@ -987,10 +987,42 @@ STUB
   story_notes
   "$AQ" add --project game --from board:level:lv-2 --slug promoted "x"
   "$AQ" add --project game --slug no-lab "y"
-  run grep -c '^notes' "$NOTES_FIXTURE/calls.log"
+  # The item's own chain event is the one notes call.
+  run grep -c '^notes ptask' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   [ "$(jq -r .row <<<"$("$AQ" show promoted --json)")" = level:lv-2 ]
   [ "$(jq -r '.row // "none"' <<<"$("$AQ" show no-lab --json)")" = none ]
   run "$AQ" add --project game --epic menus --slug bad "z"
   assert_failure; assert_output --partial "--epic is a row id"
+}
+
+@test "every item write appends one queue event naming the item, its row and its PR" {
+  story_notes
+  "$AQ" add --project game --from board:level:lv-2 --slug chain "x" >/dev/null
+  "$AQ" set chain pr=o/r#7 >/dev/null
+  "$AQ" move chain running >/dev/null
+  "$AQ" move chain done --status ok >/dev/null
+  "$AQ" add --project game --from board:level:lv-3 --slug gone "y" >/dev/null
+  "$AQ" cancel gone >/dev/null
+  run grep -o 'ingest record --stage queue --action [a-z-]* --from level --item [a-z]* --id [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
+  assert_output - <<'OUT'
+ingest record --stage queue --action item-added --from level --item chain --id lv-2
+ingest record --stage queue --action item-set --from level --item chain --id lv-2
+ingest record --stage queue --action item-moved --from level --item chain --id lv-2
+ingest record --stage queue --action item-moved --from level --item chain --id lv-2
+ingest record --stage queue --action item-added --from level --item gone --id lv-3
+ingest record --stage queue --action item-cancelled --from level --item gone --id lv-3
+OUT
+  run grep -c -- '--action item-moved .*--pr o/r#7 .*--to done --why running -> done (ok)' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "an item write never fails on its event: a notes that cannot record leaves the write standing" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "x"
+  assert_success
+  run "$AQ" move sturdy running
+  assert_success
+  assert_output "sturdy: queued -> running"
 }

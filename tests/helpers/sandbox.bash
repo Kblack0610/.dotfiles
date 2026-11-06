@@ -39,7 +39,9 @@ MERGE_PROOF_LIB="$REPO_ROOT/.local/lib/agent-merge-proof.sh"
 GIT_RELEASE_LIB="$REPO_ROOT/.local/lib/git-release.sh"
 # The shared AUTO-block splicer, same reason again.
 MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB
+# The chain event writer agent-queue, fleet-dispatch and agent-land share, same reason again.
+CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds

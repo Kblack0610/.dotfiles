@@ -44,20 +44,52 @@ pub struct Event {
     /// Who wrote it ([`by`]).
     #[serde(default)]
     pub by: String,
+    /// Which step of the chain from intake to landed the write is about: `intake` (a line
+    /// moved or filed), `backlog` (a verb's write to a row), `queue` (an agent-queue item),
+    /// `dispatch` (fleet-dispatch starting, reaping or settling) or `land` (a merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// The agent-queue item the write belongs to or names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// The tracker ticket the item or row carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    /// The Claude session that wrote it, in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The pull request, `owner/repo#N` or a bare number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+    /// The merge commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
 }
+
+/// `v` trimmed, or `None` when that leaves nothing.
+pub fn set(v: Option<&str>) -> Option<String> {
+    v.map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// The stages that are not intake: the inbox page and the board channel read only intake.
+pub const CHAIN_STAGES: [&str; 3] = ["queue", "dispatch", "land"];
 
 impl Event {
     pub fn new(action: &str, from: &str, to: &str, text: &str) -> Self {
+        let env = |k: &str| std::env::var(k).ok();
+        let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
         Event {
             ts: chrono::Local::now().to_rfc3339(),
             action: action.into(),
             from: from.into(),
             to: to.into(),
             text: text.trim().into(),
-            by: by(
-                std::env::var("AGENT_QUEUE_ITEM").ok().as_deref(),
-                std::env::var("CLAUDE_CODE_SESSION_ID").ok().as_deref(),
-            ),
+            by: by(item.as_deref(), session.as_deref()),
+            stage: Some("intake".into()),
+            item: set(item.as_deref()),
+            session_id: set(session.as_deref()),
             ..Default::default()
         }
     }
@@ -67,18 +99,35 @@ impl Event {
         Event {
             lane: lane.into(),
             id: crate::md::row_id(line),
+            stage: Some("backlog".into()),
             ..Event::new(action, from, to, &crate::md::task_text(line))
         }
+    }
+
+    /// `done`'s proof stamp (`pr:<N> commit:<sha>`) as the event's `pr` and `sha`.
+    pub fn proof(mut self, stamp: &str) -> Self {
+        let tok = |k: &str| {
+            stamp
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix(k))
+                .and_then(|v| set(Some(v)))
+        };
+        self.pr = tok("pr:");
+        self.sha = tok("commit:");
+        self
+    }
+
+    /// Whether the inbox page and the board channel read it: intake and row writes, not the
+    /// queue, dispatch and land steps that `notes ingest record --stage` writes.
+    pub fn is_intake(&self) -> bool {
+        self.stage
+            .as_deref()
+            .is_none_or(|s| !CHAIN_STAGES.contains(&s))
     }
 }
 
 /// Who a write belongs to: the queue item, else the session's first 8 characters, else `human`.
 fn by(item: Option<&str>, session: Option<&str>) -> String {
-    let set = |v: Option<&str>| {
-        v.map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-    };
     set(item)
         .or_else(|| set(session).map(|s| s.chars().take(8).collect()))
         .unwrap_or_else(|| "human".into())
@@ -190,11 +239,16 @@ pub struct Filter {
     pub id: Option<String>,
     pub action: Option<String>,
     pub by: Option<String>,
+    pub item: Option<String>,
 }
 
 impl Filter {
     fn is_empty(&self) -> bool {
-        self.project.is_none() && self.id.is_none() && self.action.is_none() && self.by.is_none()
+        self.project.is_none()
+            && self.id.is_none()
+            && self.action.is_none()
+            && self.by.is_none()
+            && self.item.is_none()
     }
 
     fn hits(&self, e: &Event) -> bool {
@@ -208,6 +262,10 @@ impl Filter {
                 .is_none_or(|w| e.id.as_deref() == Some(w))
             && is(&self.action, &e.action)
             && is(&self.by, &e.by)
+            && self
+                .item
+                .as_deref()
+                .is_none_or(|w| e.item.as_deref() == Some(w))
     }
 }
 
@@ -375,6 +433,37 @@ mod tests {
     }
 
     #[test]
+    fn a_row_write_is_the_backlog_stage_and_done_carries_its_pr_and_sha() {
+        let e = Event::row("done", "ar", "", "agent", "- [x] a <!-- id:ar-1 -->")
+            .proof("pr:1080 commit:becad5bb1234");
+        assert_eq!(e.stage.as_deref(), Some("backlog"));
+        assert_eq!(e.id.as_deref(), Some("ar-1"));
+        assert_eq!(
+            (e.pr.as_deref(), e.sha.as_deref()),
+            (Some("1080"), Some("becad5bb1234"))
+        );
+        let u = Event::row("done", "ar", "", "agent", "- [x] a").proof("unverified: no PR");
+        assert_eq!((u.pr, u.sha), (None, None));
+    }
+
+    #[test]
+    fn only_intake_and_row_writes_are_intake() {
+        let mut e = Event::new("filed", "outbox", "ar", "t");
+        assert!(e.is_intake());
+        e.stage = None;
+        assert!(e.is_intake(), "a line from before stage");
+        for s in CHAIN_STAGES {
+            e.stage = Some(s.into());
+            assert!(!e.is_intake(), "{s}");
+        }
+        let json = serde_json::to_string(&Event::new("left", "a", "", "t")).unwrap();
+        assert!(
+            !json.contains("\"pr\""),
+            "unset chain fields stay off the line: {json}"
+        );
+    }
+
+    #[test]
     fn a_line_from_before_by_still_parses() {
         let old = r#"{"ts":"2026-11-05T10:53:09-08:00","action":"filed","from":"a","text":"t"}"#;
         assert_eq!(serde_json::from_str::<Event>(old).unwrap().by, "");
@@ -408,6 +497,13 @@ mod tests {
             ..Default::default()
         };
         assert!(f(None, None).hits(&e));
+        let mut q = e.clone();
+        q.item = Some("p5".into());
+        let it = |i: &str| Filter {
+            item: Some(i.into()),
+            ..Default::default()
+        };
+        assert!(it("p5").hits(&q) && !it("p6").hits(&q) && !it("p5").hits(&e));
         assert!(f(Some("ucp"), None).hits(&e));
         assert!(f(Some("hc"), Some("ucp-1")).hits(&e));
         assert!(!f(Some("other"), None).hits(&e));
