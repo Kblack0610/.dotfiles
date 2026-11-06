@@ -35,11 +35,13 @@ ENV = os.environ
 DIR = Path(ENV.get("TOKENS_DIR", Path.home() / ".agent" / "token-usage"))
 RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
+CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
 MIN_BASELINE = 3      # fewer earlier days than this and there is no median to compare with
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
 TOP_COMMANDS = 20
+TOP_TARGETS = 20      # the files whose reads cost the most responses that day
 # The watched numbers: (key, label). Each is a ratio, so a busy or a quiet day alone moves none.
 WATCHED = (("context_per_response", "context per response"),
            ("carried_share", "carried share"),
@@ -75,12 +77,13 @@ def snapshot(day):
     jobs = {"recall --by project": recall + ["project", "--top", "0"],
             "recall --by command": recall + ["command", "--top", str(TOP_COMMANDS)],
             "recall --by tool": recall + ["tool", "--top", "0"],
+            "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
-    proj, cmd, tool, burn = (got[k][0] or {} for k in
-                             ("recall --by project", "recall --by command", "recall --by tool", "burn"))
+    proj, cmd, tool, calls, burn = (got[k][0] or {} for k in ("recall --by project", "recall --by command",
+                                                             "recall --by tool", "tool-calls", "burn"))
 
     t = proj.get("totals") or {}
     tu = usage(t)
@@ -91,6 +94,9 @@ def snapshot(day):
     for k, v in (burn.get("by_project") or {}).items():
         by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=round(v.get("cost_usd") or 0, 2))
     long_runs = proj.get("long_runs") or {}
+    rd = (calls.get("buckets") or {}).get("all") or {}
+    reads = {k: rd.get(k, 0) for k in ("reads", "locate_then_read", "reread_same_lines",
+                                       "locate_then_read_ctx", "reread_same_lines_ctx")}
     out = {
         "schema": 1,
         "date": day.isoformat(),
@@ -108,6 +114,13 @@ def snapshot(day):
         "merged_prs": prs,
         "cost_per_merged_pr": per_pr.get("cost_usd"),
         "context_per_merged_pr": ctx // prs if prs else None,
+        "responses_per_merged_pr": round(turns / prs, 1) if prs else None,
+        "tool_chars_per_call": tu["tool_chars"] // t["calls"] if t.get("calls") else None,
+        "reads": reads if rd else None,
+        "locate_read_share": round(reads["locate_then_read"] / reads["reads"], 4) if reads["reads"] else None,
+        "reread_share": round(reads["reread_same_lines"] / reads["reads"], 4) if reads["reads"] else None,
+        "hot_targets": [{"path": g["key"], "sessions": g["calls"], "ctx": g["ctx"]}
+                        for g in (calls.get("groups") or {}).get("hot_target") or []][:TOP_TARGETS] or None,
         "compactions": burn.get("compactions"),
         "by_project": dict(sorted(by_project.items(), key=lambda kv: -(kv[1].get("context") or 0))),
         "by_tool": split(tool, "tool"),
