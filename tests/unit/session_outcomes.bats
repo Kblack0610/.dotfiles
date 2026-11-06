@@ -659,3 +659,123 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   report | grep -q '; judge: FAILED (HTTP 500) after 0 score(s), retried next run'
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$before"
 }
+
+# ── opencode sessions and gateway cost ───────────────────────────────────────
+# oc_db -- an opencode DB as 2.1.4 writes it, the columns this reads: a root session that stopped
+# at $STOP with a child subagent, and one `gh pr create` that printed #10 beside a `gh pr view` of #99.
+oc_db() {
+  export SO_OPENCODE_DB="$SANDBOX/opencode.db" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
+  echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
+  local stop_ms=$((STOP * 1000)) create view
+  create=$(jq -cn '{content: [{type: "tool", name: "bash", state: {status: "completed", input: {command: "gh pr create --fill"}, content: [{type: "text", text: "https://github.com/o/r/pull/10\n"}]}}]}')
+  view=$(jq -cn '{content: [{type: "tool", name: "bash", state: {status: "completed", input: {command: "gh pr view 99"}, content: [{type: "text", text: "https://github.com/o/r/pull/99"}]}}]}')
+  sqlite3 "$SO_OPENCODE_DB" <<EOF
+CREATE TABLE session_v2 (id text, parent_id text, directory text, title text, model text, summary_files integer, cost real, tokens_input integer, tokens_output integer, tokens_reasoning integer, tokens_cache_read integer, tokens_cache_write integer, time_created integer, time_updated integer);
+CREATE TABLE session_message (session_id text, type text, data text);
+INSERT INTO session_v2 VALUES ('ses_root', NULL, '/w/proj', 'fix-menu', '{"id":"claude-sonnet-5","providerID":"litellm"}', 2, 1.5, 10, 20, 0, 100, 30, $((stop_ms - 600000)), $((stop_ms - 5000)));
+INSERT INTO session_v2 VALUES ('ses_child', 'ses_root', '/w/proj', 'sub', NULL, NULL, 0.25, 1, 2, 3, 4, 5, $((stop_ms - 300000)), $stop_ms);
+INSERT INTO session_message VALUES ('ses_root', 'assistant', '$create');
+INSERT INTO session_message VALUES ('ses_child', 'assistant', '$view');
+EOF
+}
+
+@test "an opencode session gets one line: milliseconds read as seconds, its child rolled in, its own PR, not one it looked at" {
+  oc_db
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"ses_root\")) | last | $1"; }
+  assert_equal "$(r '[.harness, .project, .title, .updated_epoch, .duration_s, .cost_usd, .tokens_total, .edits] | join(" ")')" "opencode proj fix-menu $STOP 600 1.75 175 2"
+  assert_equal "$(r '[.prs[].number] | join(" ")')" 10
+  assert_equal "$(r '.prs_merged')" 1
+  assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
+}
+
+@test "an opencode session is observed once, and turns final like any other" {
+  oc_db
+  "$SUBJECT" run >/dev/null
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" NOOP
+  SO_NOW=$((SO_NOW + 8 * 86400)) run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .final')" true
+}
+
+@test "the harness comes from the queue item: claude-lazer on its session, claude with no item, and an opencode item's PR joins" {
+  oc_db
+  queue_stub
+  {
+    jq -cn '{slug: "lz", agent: "claude-lazer", sessions: "sess-a"}'
+    jq -cn '{slug: "oc", agent: "opencode", sessions: "ses_root", pr: "o/r#11"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a .harness) $(field b .harness)" 'claude-lazer claude'
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
+}
+
+@test "a reshaped opencode DB costs its own rows only: Claude sessions still write, and the report says so" {
+  oc_db
+  sqlite3 "$SO_OPENCODE_DB" 'ALTER TABLE session_v2 DROP COLUMN cost'
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial 'opencode rows unread'
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(lines | wc -l)" 3
+}
+
+# gw_ready -- a harness map, a reader key and a gateway serving $SANDBOX/gw.json for any tag.
+gw_ready() {
+  queue_stub
+  printf 'sk-read\n' > "$SANDBOX/reader.key"
+  export SO_HARNESSES="$SANDBOX/harnesses.json" SO_CURL=curl-gw
+  jq -n --arg k "$SANDBOX/reader.key" '{gateway: {url: "https://gw.test", reader_key_file: $k}}' > "$SO_HARNESSES"
+  printf '#!/usr/bin/env bash\ncat > "%s/gw.stdin"; echo "$*" >> "%s/gw.log"\ncat "%s/gw.json"\n' "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/curl-gw"
+  chmod +x "$SANDBOX/bin/curl-gw"
+  echo '{"metadata":{"total_spend":3.14159,"total_api_requests":12}}' > "$SANDBOX/gw.json"
+  {
+    jq -cn '{slug: "oc", agent: "opencode", started: "2026-10-18T23:30:00Z", sessions: "sess-a"}'
+    jq -cn '{slug: "plain", agent: "claude", started: "2026-10-18T23:30:00Z", sessions: "sess-b"}'
+    jq -cn '{slug: "queued", agent: "opencode"}'
+  } > "$SANDBOX/items.jsonl"
+}
+
+@test "gateway spend lands on the item by its tag and UTC dates, beside cost_usd; the key stays off the command line" {
+  gw_ready
+  run "$SUBJECT" run
+  assert_success
+  grep -qx 'set oc gateway_cost_usd=3.1416' "$SANDBOX/sets.log" || fail "no gateway cost: $(cat "$SANDBOX/sets.log")"
+  grep -q '^set oc cost_usd=' "$SANDBOX/sets.log" || fail "cost_usd did not write"
+  ! grep -q 'plain gateway\|queued gateway' "$SANDBOX/sets.log" || fail "wrote a gateway cost on a claude or unstarted item"
+  grep -q 'tags=queue:oc&start_date=2026-10-18&end_date=2026-10-20' "$SANDBOX/gw.log" || fail "wrong query: $(cat "$SANDBOX/gw.log")"
+  ! grep -q sk-read "$SANDBOX/gw.log" || fail "key on the command line"
+  grep -q 'Bearer sk-read' "$SANDBOX/gw.stdin" || fail "key not handed over"
+}
+
+@test "gateway cost does not wait on a new session: the NOOP path writes it too" {
+  gw_ready
+  "$SUBJECT" run >/dev/null
+  : > "$SANDBOX/sets.log"
+  echo '{"metadata":{"total_spend":4,"total_api_requests":13}}' > "$SANDBOX/gw.json"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" NOOP
+  assert_equal "$(cat "$SANDBOX/sets.log")" 'set oc gateway_cost_usd=4'
+}
+
+@test "a failed gateway read leaves the field unset, never 0, and cost_usd still writes; so does a tag with no requests" {
+  gw_ready
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl-gw"
+  run "$SUBJECT" run
+  assert_success
+  ! grep -q gateway_cost_usd "$SANDBOX/sets.log" || fail "a failed read wrote a cost"
+  grep -q '^set oc cost_usd=' "$SANDBOX/sets.log" || fail "cost_usd did not write"
+  assert_equal "$(outcome)" WORKED
+  gw_ready
+  : > "$SANDBOX/sets.log"
+  echo '{"metadata":{"total_spend":0,"total_api_requests":0}}' > "$SANDBOX/gw.json"
+  SO_NOW=$((SO_NOW + 60)) run "$SUBJECT" run
+  assert_success
+  ! grep -q gateway_cost_usd "$SANDBOX/sets.log" || fail "a tag with no requests wrote \$0"
+}
