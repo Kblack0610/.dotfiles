@@ -18,11 +18,10 @@ visible instead of mysterious.
 ## Install
 
 ```sh
-cargo build --release
-ln -sf ../../.dotfiles/.local/src/notes-cli/target/release/notes ~/.local/bin/notes
+notes-bootstrap --build-only
 ```
 
-`notes-bootstrap` does both automatically (and on every machine).
+It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes` and links `~/.local/bin/notes` there. A `cargo build` alone deploys nothing, so a branch build never changes the `notes` on PATH. Run it from the main checkout after a merge.
 
 ## Configuration
 
