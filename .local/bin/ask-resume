@@ -49,7 +49,11 @@ run_resume() { # $1=id $2=project $3=command
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
   mkdir -p "$log"
-  setsid -f agentctl-run --agent ask-resume -p "$cmd" \
+  # A unit kills whatever its oneshot cgroup leaves behind (assume-due answers from fleet-state), so
+  # under one the run gets its own scope. systemd sets INVOCATION_ID for a unit's processes.
+  local detach=(setsid -f)
+  [ -z "${INVOCATION_ID:-}" ] || detach=(systemd-run --user --scope --quiet setsid -f)
+  "${detach[@]}" agentctl-run --agent ask-resume -p "$cmd" \
     --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }

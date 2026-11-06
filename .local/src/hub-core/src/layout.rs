@@ -51,7 +51,7 @@ pub const TABS: [Tab; 8] = [
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
-            "health", "red", "machines", "ci", "jobs", "cloud", "governor",
+            "health", "red", "fixes", "machines", "ci", "jobs", "cloud", "governor",
         ],
     },
     Tab {
@@ -163,6 +163,14 @@ mod tests {
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
         assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
         assert_eq!(resolve("nope"), None);
+    }
+
+    #[test]
+    fn infra_shows_red_fixes_right_under_red_now() {
+        let infra = resolve("infra").unwrap().sections;
+        let at = |s: &str| infra.iter().position(|x| *x == s).unwrap();
+        assert_eq!(at("fixes"), at("red") + 1);
+        assert_eq!(section("fixes"), None, "a new section is no retired name");
     }
 
     #[test]
