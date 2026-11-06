@@ -98,7 +98,8 @@ answer:                   # filled by `answer`
 answered_at:
 answered_by:              # human | judge | shepherd
 judge:                    # the answer judge: human | take-recommend | answer:<text> | error
-judge_rule:               # the policy rule id that decided it
+judge_rule:               # the class that decided it, derived from the score
+judge_met:                # the criteria that held, space separated
 judge_reason:
 judge_call:               # the call's line in calls.jsonl
 judged_at:
@@ -112,7 +113,7 @@ resume: /captain resume
 
 `post` runs `agent-ask judge <id>` in the foreground, behind a `AGENT_ASK_JUDGE_TIMEOUT` guard (30s; past it the verdict is `judge: error`, "timed out", and the ask stays with the human). One call to the registered agent `ask-judge` (`AGENT_ASK_JUDGE_CMD`, default `agentctl-run --agent ask-judge`; its conf sets role, model and prompt) reads [`policy.md`](policy.md) and the ask, and writes `judge`, `judge_rule`, `judge_reason`, `judge_call` and `judged_at`. A `gate` or `approval` ask is never sent to the model: its judge is `human` by rule `gate`.
 
-Every call names one rule of the policy by its id: a bullet that opens with the id in parentheses, `- (taste) ...`. The policy file is the one list of rules (`judge_rules` in `.local/lib/judge.sh` reads it), so a rule added there needs no code change. A call that fails, a reply with no verdict, or a verdict naming a rule the policy does not define is recorded as `judge: error` with the reason, never dropped. `judge_call` links the verdict to its `calls.jsonl` line, and the nightly `agentctl-session-outcomes` run sends each verdict to Langfuse as a score on that call's session.
+The judge never picks the call. It answers each criterion of the policy with a quote and yes or no, per decision of the ask, and `judge_derive` in `.local/lib/judge.sh` derives the class: `knowledge`, `external`, `taste` or `unclear-ask` on any decision, or `reversible` or `grounded` missing on any decision, is `human`; otherwise `restates-rule` when every decision restates a rule, else `clear`. A criterion is a `- (id) ...` bullet in the policy and a key in `verdict.schema.json`, so adding one is a change to both and to `judge_derive`. `judge_met` lists the criteria that held. A call that fails, or a reply that is not a full score is recorded as `judge: error` with the reason, never dropped. `judge_call` links the verdict to its `calls.jsonl` line, and the nightly `agentctl-session-outcomes` run sends each verdict to Langfuse as a score on that call's session.
 
 ### Live classes
 
