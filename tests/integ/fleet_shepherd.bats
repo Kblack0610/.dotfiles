@@ -109,6 +109,20 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
+@test "due lists an unescalated shared red with the escalate call that answers it" {
+  jq -n '{schema: 1, sessions: [], main: [], shared: [
+      {test: "T.A", id: "shared-T_A", reason: "T.A red on 3 branches in 2h: a, b, c", fact: "SHARED T.A @100", escalated: false},
+      {test: "T.B", id: "shared-T_B", reason: "T.B red on 3 branches in 2h: a, b, c", fact: "SHARED T.B @100", escalated: true}]}' > "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  assert_line 'shared red: T.A red on 3 branches in 2h: a, b, c; then: fleet-sessions escalate shared-T_A "SHARED T.A @100"'
+  refute_output --partial T.B
+  # the shepherd role answers it, keyed without the call, as every `; then:` line is
+  "$SH" check >/dev/null
+  run awk -F'\t' '$4 ~ /^shared red/ { print $2 "|" $1 }' "$FLEET_SHEPHERD_DIR/.due"
+  assert_output 'shepherd|shared red: T.A red on 3 branches in 2h: a, b, c'
+}
+
 @test "a manual row is never due, and an all-quiet document exits 1" {
   doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
   run "$SH" due
