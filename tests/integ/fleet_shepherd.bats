@@ -800,10 +800,12 @@ finding() {
   assert_output --partial 'fleet-bench findings unreadable'
 }
 
-# phase <sid> <reason> <phase_min> <age_min> [done/total]: a WORKING state row and its `fleet-bench eta --json` row
+# phase <sid> <reason> <phase_min> <age_min> [done/total] [bucket] [activity]: a state row (WORKING,
+# activity the reason's first word, unless given) and its `fleet-bench eta --json` row
 phase() {
   local d="${5:-1/4}"
-  jq -cn --arg s "$1" --arg r "$2" '{target:"t-\($s)", session_id:$s, bucket:"WORKING", reason:$r, nudged:false,
+  jq -cn --arg s "$1" --arg r "$2" --arg b "${6:-WORKING}" --arg a "${7:-${2%% *}}" \
+    '{target:"t-\($s)", session_id:$s, bucket:$b, reason:$r, activity:$a, nudged:false,
     escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0}' >> "$HOME/rows"
   jq -cn --arg s "$1" --argjson m "$3" --argjson a "$4" --argjson d "${d%/*}" --argjson n "${d#*/}" \
     '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
@@ -825,6 +827,18 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   refute_output --partial t-s3
   refute_output --partial t-s4
   refute_output --partial t-s5
+}
+
+@test "a NEEDS session carrying on past its ask keeps the overdue check; a plain or busy one does not" {
+  phase s1 '1 pending ask(s), carrying on' 40 81 1/4 NEEDS shell
+  phase s2 '1 pending ask(s)' 40 81 1/4 NEEDS idle                  # its turn ended on the question
+  phase s3 '1 pending ask(s), carrying on' 40 81 1/4 NEEDS busy     # mid-turn: a message would only queue
+  phases_doc
+  run "$SH" due
+  assert_success
+  assert_line "overdue: t-s1 phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-sessions mark s1 \"overdue phase 2/4\""
+  refute_output --partial 'overdue: t-s2'
+  refute_output --partial 'overdue: t-s3'
 }
 
 @test "an overdue phase is nudged once, escalated once a phase-length after, then left to the human" {

@@ -28,14 +28,26 @@ b() { session_bucket "$@"; }
   assert_output 'WORKING busy'
 }
 
-@test "a pending ask is NEEDS while the session is busy, in a shell or under a heavy child" {
+@test "a pending ask is NEEDS whatever the status; one still working past it reads carrying on" {
   # 2026-10-28: agent-12's ask sat 14h behind "WORKING busy", so it never reached the human.
+  # Busy, or a gate shell under FLEET_SHELL_STALE_MIN, is what WORKING would call it with no ask.
   run b busy 0 1 0 0 1 0 0 - - - 1
-  assert_output 'NEEDS 1 pending ask(s)'
+  assert_output 'NEEDS 1 pending ask(s), carrying on'
   run b shell 0 2 0 5 1 3 0 - - - 1
-  assert_output 'NEEDS 2 pending ask(s)'
-  run b idle 0 1 1 99 1 0 0 - - - 1
+  assert_output 'NEEDS 2 pending ask(s), carrying on'
+  run b shell 0 1 0 30 1 0 0 - - - 1 - - - - gate
+  assert_output 'NEEDS 1 pending ask(s), carrying on'
+  # negative controls: a stale gate shell, a non-gate shell, a heavy child, idle, and a prompt
+  run b shell 0 1 0 130 1 0 0 - - - 1 - - - - gate
   assert_output 'NEEDS 1 pending ask(s)'
+  run b shell 0 1 0 30 1 0 0 - - - 1 - - - - none
+  assert_output 'NEEDS 1 pending ask(s)'
+  run b idle 0 1 1 0 1 0 0 - - - 1
+  assert_output 'NEEDS 1 pending ask(s)'
+  run b idle 0 1 0 0 1 0 0 - - - 1
+  assert_output 'NEEDS 1 pending ask(s)'
+  run b waiting 0 1 0 0 1 0 0 - - - 1
+  assert_output 'NEEDS waiting on a prompt or permission'
 }
 
 @test "a green PR that conflicts with the default branch is STALLED whatever the status" {
@@ -572,6 +584,26 @@ landed_fixture() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .escalated <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
+}
+
+@test "end to end: carrying on is in the reason, never the fact, so a busy/idle flip pages once" {
+  landed_fixture
+  PANEL_STATUS=busy panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s), carrying on' ]
+  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s) @feat/x' ]
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 'NEEDS 1 pending ask(s) @feat/x'
+
+  # its turn ends on the question: same fact, already escalated
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s) @feat/x' ]
+  [ "$(jq -r .escalated <<<"$output")" = true ]
 }
 
 @test "end to end: a nightly red after a merge names the merging session as owner" {
@@ -1306,7 +1338,7 @@ SH
   [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
   # its own ask outranks the background shell: the agent-12 shape from 2026-10-28
   [ "$(jq -r '.sessions[0].bucket' "$doc")" = NEEDS ]
-  [ "$(jq -r '.sessions[0].reason' "$doc")" = '1 pending ask(s)' ]
+  [ "$(jq -r '.sessions[0].reason' "$doc")" = '1 pending ask(s), carrying on' ]
   [ "$(jq -r '.sessions[0].asks' "$doc")" = 1 ]
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
