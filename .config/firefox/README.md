@@ -15,6 +15,7 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `mozilla.cfg` | `/usr/lib/firefox/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
 | `autoconfig.js` | `/usr/lib/firefox/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
+| `tab-keeper/` | signed xpi, installed by policy | Extension: one tab per chosen site, idle tabs unloaded, old tabs saved to Karakeep then closed |
 | `install.sh` | — | One-shot installer |
 
 The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
@@ -26,20 +27,7 @@ If using a `file://` URL, the HTML lives at
 
 ## Install / re-install
 
-Preferred: `bash install.sh`
-
-> Known bug: `install.sh` aborts under `set -e` if `user.js` / `userChrome.css`
-> are already stow symlinks (cp errors with "same file"). The autoconfig +
-> pacman hook steps run *after* those, so they get skipped on a stow'd setup.
-
-Workaround for just the system-level pieces (mozilla.cfg, autoconfig.js, pacman hook):
-
-```sh
-sudo install -m 0644 ~/.dotfiles/.config/firefox/mozilla.cfg /usr/lib/firefox/mozilla.cfg
-sudo install -m 0644 ~/.dotfiles/.config/firefox/autoconfig.js /usr/lib/firefox/defaults/pref/autoconfig.js
-sudo install -d -m 0755 /etc/pacman.d/hooks
-sudo install -m 0644 ~/.dotfiles/.config/firefox/firefox-autoconfig.hook /etc/pacman.d/hooks/firefox-autoconfig.hook
-```
+`bash install.sh` works on a stowed profile and leaves an existing `containers.json` alone, since Firefox owns that file once it has run.
 
 Then fully restart Firefox (autoconfig only loads at startup):
 
@@ -50,7 +38,7 @@ pkill -f /usr/lib/firefox/firefox; sleep 1; setsid firefox >/dev/null 2>&1 < /de
 After install, `pacman -Syu firefox` upgrades will trigger the hook to restore
 `mozilla.cfg` + `autoconfig.js` automatically. The hook reads from this dotfiles
 path, so a `git pull` of an updated `mozilla.cfg` is picked up on the next
-Firefox upgrade (or by re-running the workaround commands above).
+Firefox upgrade (or by re-running `install.sh`).
 
 ## Why autoconfig
 
@@ -59,6 +47,35 @@ creation through `chrome.tabs.onCreated`, which races with STG's tab-grouping
 logic. Setting `AboutNewTab.newTabURL` from `mozilla.cfg` happens at the
 browser engine level before any extension hooks fire, so STG wins the race
 and assigns the new tab to the active group cleanly.
+
+## Tab Keeper
+
+A small extension that keeps the tab strip short. It starts in dry run: it logs what it would do and touches nothing until `dryRun` is off.
+
+| Rule | What happens |
+|---|---|
+| Single-tab site (`singleTabHosts`) | A new tab on that host lands in the open tab, in any container. A deep link navigates it |
+| Any other site | A new tab with the exact URL of an open tab in the same container lands in that tab |
+| Idle `discardHours` (2) | The tab stays in the strip and its process is freed, unless the host is in `neverDiscardHosts` |
+| Idle `sweepDays` (7) | Saved to Karakeep with the `tab-sweep` tag, then closed. Hosts in `closeWithoutSaving` close without saving |
+
+Only newly opened tabs are deduped, never navigation inside a tab, and a tab opened from its own site (Duplicate Tab, a link that opens a new tab) stays. Pinned, audible, active and non-web tabs are left alone. Hidden tabs (Simple Tab Groups) and `neverCloseContainers` are discarded but never closed, and a hidden tab is never the one a new tab lands in. A tab closes only after Karakeep has confirmed both the bookmark and the tag. A tick closes at most `maxSweepPerTick` tabs, oldest first.
+
+Ctrl+Alt+D or the toolbar button pauses dedupe. The badge shows `off` when paused, `!` after a failed save, and `dry` in dry run.
+
+Settings are JSON in the options page (`about:addons`, Tab Keeper, Preferences), which also shows the log. Keep the real values in `~/.dotfiles-private/.config/firefox/tab-keeper.config.json` and paste them in. The Karakeep API key is pasted once per machine and stays in that profile. `tab-sweep` is listed as `reserved` in home-config's Karakeep taxonomy, so the AI tagger cannot apply it and `retag --prune` keeps it.
+
+Release Firefox only loads signed add-ons. After a change, bump `version` in `manifest.json`, then sign it unlisted and copy the xpi to the private repo:
+
+```sh
+WEB_EXT_API_KEY=$(rbw get amo_jwt_issuer) WEB_EXT_API_SECRET=$(rbw get amo_jwt_secret) \
+  npx web-ext sign --channel unlisted -s ~/.dotfiles/.config/firefox/tab-keeper -a ~/.cache/tab-keeper
+cp ~/.cache/tab-keeper/*.xpi ~/.dotfiles-private/.config/firefox/tab-keeper.xpi
+```
+
+The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-private/.config/firefox/tab-keeper.xpi`; `install.sh` fills in `@HOME@`.
+
+Tests: `tests/unit/tab_keeper.bats` runs the rule tests in `tests/tab-keeper/`, and `tests/unit/firefox_install.bats` covers `install.sh`.
 
 ## Hardware acceleration (VA-API)
 

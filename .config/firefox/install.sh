@@ -6,24 +6,30 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+install_file() {
+    local src="$1" dest="$2"
+    [[ "$src" -ef "$dest" ]] || cp "$src" "$dest"
+    echo "  - Installed ${dest##*/}"
+}
+
 install_to_profile() {
     local profile="$1"
     local browser="$2"
 
     echo "Installing to $browser profile: $profile"
 
-    # Install user.js
-    cp "$SCRIPT_DIR/user.js" "$profile/user.js"
-    echo "  - Installed user.js"
-
-    # Install userChrome.css
+    # A stowed profile already links these to the repo, and cp refuses "same file".
+    install_file "$SCRIPT_DIR/user.js" "$profile/user.js"
     mkdir -p "$profile/chrome"
-    cp "$SCRIPT_DIR/chrome/userChrome.css" "$profile/chrome/userChrome.css"
-    echo "  - Installed chrome/userChrome.css"
+    install_file "$SCRIPT_DIR/chrome/userChrome.css" "$profile/chrome/userChrome.css"
 
-    # Install containers.json
-    cp "$SCRIPT_DIR/containers.json" "$profile/containers.json"
-    echo "  - Installed containers.json"
+    # Seed only: Firefox owns this file once it has run, and a copy over it would
+    # drop any container added since.
+    if [[ -e "$profile/containers.json" ]]; then
+        echo "  - Kept existing containers.json"
+    else
+        install_file "$SCRIPT_DIR/containers.json" "$profile/containers.json"
+    fi
 }
 
 find_and_install() {
@@ -47,12 +53,12 @@ installed=0
 
 # Try Firefox
 if find_and_install "$HOME/.mozilla/firefox" "Firefox"; then
-    ((installed++))
+    installed=$((installed + 1))
 fi
 
 # Try Floorp
 if find_and_install "$HOME/.floorp" "Floorp"; then
-    ((installed++))
+    installed=$((installed + 1))
 fi
 
 if [[ $installed -eq 0 ]]; then
@@ -64,7 +70,7 @@ fi
 # Install policies.json to Firefox distribution directory
 install_policies() {
     local firefox_dir=""
-    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox /snap/firefox/current/usr/lib/firefox; do
+    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox /snap/firefox/current/usr/lib/firefox; do
         if [[ -d "$candidate" ]]; then
             firefox_dir="$candidate"
             break
@@ -86,7 +92,9 @@ install_policies() {
     # etc.): deep-merged over the public base, which cannot name LAN hosts.
     local overlay="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}/.config/firefox/policies.local.json"
     if [[ -f "$overlay" ]]; then
+        # @HOME@ lets the overlay name a file:/// install_url on any machine.
         jq -s '.[0] * (.[1] | del(._comment))' "$SCRIPT_DIR/policies.json" "$overlay" \
+            | sed "s|@HOME@|$HOME|g" \
             | sudo tee "$dist_dir/policies.json" >/dev/null
         echo "  - Installed policies.json (+ $overlay) to $dist_dir"
     else
@@ -101,7 +109,7 @@ install_policies() {
 # hook (installed below) restores it post-transaction.
 install_autoconfig() {
     local firefox_dir=""
-    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox; do
+    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox; do
         if [[ -d "$candidate" ]]; then
             firefox_dir="$candidate"
             break
@@ -136,5 +144,5 @@ echo ""
 echo "Done! Restart browser(s) to apply changes."
 echo "  - Session restore enabled (tabs persist across restarts)"
 echo "  - Tab groups enabled"
-echo "  - Containers synced"
+echo "  - Containers seeded on a new profile"
 echo "  - Catppuccin Mocha theme applied"
