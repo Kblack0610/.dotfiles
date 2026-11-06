@@ -14,6 +14,7 @@
 # .local/src/*/target, 1,286 Claude session transcripts, plus paste/image caches and
 # plugin PID files. It also aborted on conflicts with the loose runtime JSON below.
 ^/tests$
+^/docs$
 target
 # ~/.agent is the agent RUNTIME axis and must stay a real directory in $HOME. Stowed, it
 # becomes a link farm pointing back here, so every hook write lands inside this working
