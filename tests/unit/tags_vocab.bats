@@ -201,8 +201,8 @@ setup() {
   # unbound key and looks like the bind "not working half the time".
   local k conf="$REPO_ROOT/.tmux.conf"
   for k in t C-t; do
-    grep -qE "^bind $k switch-client -T tags\$" "$conf" || fail "prefix+$k does not open the tags table"
+    grep -qE "^bind (-N \"[^\"]*\" )?$k switch-client -T tags\$" "$conf" || fail "prefix+$k does not open the tags table"
   done
-  run grep -nE '^bind -T tags s ' "$conf"
+  run grep -nE '^bind (-N "[^"]*" )?-T tags s ' "$conf"
   assert_failure
 }
