@@ -754,7 +754,8 @@ cmd_assume_due() {
   local f id ans due now; now="$(date +%s)"
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
-    due="$(date -d "$(field "$f" assume_at)" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
+    due="$(field "$f" assume_at)"; [ -n "$due" ] || continue
+    due="$(date -d "$due" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
     id="$(field "$f" id)"
     if ! ans="$(live_answer "$f")" || [ "$ans" != "$(field "$f" assume_answer)" ]; then
       drop_arm "$f"; queue_changed

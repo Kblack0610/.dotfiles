@@ -435,10 +435,14 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 24 tab-separated fields per ask" {
+@test "list emits 25 tab-separated fields per ask, assume_at last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '24'
+  assert_output '25'
+  local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
+  printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
+  run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
+  assert_output '2026-11-06T14:30:00-0800'
 }
 
 @test "the last three fields are judge_rule, judge_reason and answer_note, for agent-web's Details fold" {
@@ -821,7 +825,7 @@ SH
 }
 
 @test "sweep judges the pending queue again, answers live classes as the judge and leaves the rest" {
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   local live shadow gate done
   live="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   shadow="$("$AGENT_ASK" post --project other --options 'a=one|b=two' --recommend a 'which mic?')"
@@ -858,7 +862,7 @@ SH
 
 @test "a judge answer typed into a live session names the judge, its rule and its reason" {
   unset AGENT_ASK_NO_RESUME
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   printf '{"session_id":"sid-7","pane":"%%7","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix it here?')"
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
@@ -945,7 +949,7 @@ ASK-JUDGE-END'
 }
 
 @test "judge: every human criterion beats the type, however safe the type looks" {
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(SCORE_TYPE=ship_deploy score external)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
@@ -963,7 +967,7 @@ ASK-JUDGE-END'
 }
 
 @test "judge: grounded is noted, never a stop: a live type answers, a shadow type only says so" {
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(SCORE_TYPE=ship_deploy score not-grounded)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
@@ -979,8 +983,8 @@ ASK-JUDGE-END'
   assert_line 'judge_rule: ci_capacity_ops'
 }
 
-@test "judge: other is never live, even when LIVE_RULES names it" {
-  export AGENT_ASK_LIVE_RULES='other ship_deploy'
+@test "judge: other is never live, even when DELAY_RULES names it" {
+  export AGENT_ASK_DELAY_RULES='other=0 ship_deploy=0'
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(score other)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'no type fits?' 2>/dev/null)"
@@ -1042,13 +1046,23 @@ ASK-JUDGE-END'
   policy=$(judge_rules "$file" | grep -vx gate | sort)
   schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision")' "$verdict" | sort)
   assert_equal "$policy" "$schema"
-  local c; for c in $schema; do grep -q "\"$c\"" "$derive" || fail "judge_derive does not read $c"; done
+  assert_equal "$(printf '%s\n' $JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA grounded | sort)" "$schema"
   types() { sed -n 's/^- `\([a-z_]*\)`: .*/\1/p' "$1" | sort; }
   assert_equal "$(types "$file")" "$(jq -r '.properties.type.enum[]' "$verdict" | sort)"
   assert [ "$(types "$file" | wc -l)" -ge 13 ]
   # negative control: a type dropped from the policy no longer matches the schema
   sed '/^- `ship_deploy`/d' "$file" > "$BATS_TEST_TMPDIR/policy.md"
   refute [ "$(types "$BATS_TEST_TMPDIR/policy.md")" = "$(jq -r '.properties.type.enum[]' "$verdict" | sort)" ]
+}
+
+@test "judge: every policy rule id is a hard stop, so no DELAY_RULES row can name one" {
+  . "$REPO_ROOT/.local/lib/judge.sh"
+  local id; for id in $(judge_rules "$REPO_ROOT/.config/agent-ask/policy.md"); do
+    [[ " $JUDGE_HARD_STOPS " == *" $id "* ]] || fail "$id is not in JUDGE_HARD_STOPS"
+  done
+  local t; for t in product_taste human_fact human_physical_action credential_or_account other; do
+    [[ " $JUDGE_HARD_STOPS " == *" $t "* ]] || fail "$t is not in JUDGE_HARD_STOPS"
+  done
 }
 
 @test "judge: a gate names the gate rule and no call" {
@@ -1088,7 +1102,7 @@ live_post() {
 @test "a live rule's take-recommend is answered by the judge at post, and the asker is told to proceed" {
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   run --separate-stderr live_post sid-1 'fix the flaky test here?'
   assert_success
   local id="$output"
@@ -1102,17 +1116,17 @@ live_post() {
   assert_equal "$("$AGENT_ASK" count demo)" 0
 }
 
-@test "live answers: a shadow rule, an empty LIVE_RULES, a gate and a human call all stay with the human" {
+@test "live answers: a shadow rule, an empty DELAY_RULES, a gate and a human call all stay with the human" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   fake_judge "$(score engineering_design)"
   local id; id="$(live_post sid-a 'shadow rule?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge: take-recommend'
-  export AGENT_ASK_LIVE_RULES=
+  export AGENT_ASK_DELAY_RULES=
   fake_judge "$(score ship_deploy)"
   id="$(live_post sid-b 'nothing live?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   id="$("$AGENT_ASK" post --project demo --kind gate 'merge #4?')"
   assert [ "$(grep -c 'merge #4' "$BATS_TEST_TMPDIR/judge.calls")" = 0 ]
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
@@ -1133,7 +1147,7 @@ live_post() {
 
 @test "live answers: malformed output is an error verdict, and a stuck call times out to one; both stay pending" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   fake_judge 'not json'
   run --separate-stderr live_post sid-1 'garbled?'
   assert_success
@@ -1154,7 +1168,7 @@ live_post() {
 
 @test "override: the human's next message naming another option labels the live answer; one miss does not demote" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   fake_judge "$(score ship_deploy)"
   local id; id="$(live_post sid-1 'fix it here?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-1 answered "no, wait for the row to be fixed"
@@ -1171,7 +1185,7 @@ live_post() {
 
 @test "override: a message that agrees or says nothing about the options closes the review with none" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_LIVE_RULES=ship_deploy
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
   fake_judge "$(score ship_deploy)"
   local a b
   a="$(live_post sid-1 'fix it here?' 2>/dev/null)"
@@ -1195,7 +1209,7 @@ live_answer_file() {
 }
 
 @test "override: a type demotes when precision over its last live answers falls under the bar, once it has the minimum" {
-  export AGENT_ASK_LIVE_RULES=ship_deploy AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
   local d="$HOME/.agent/asks/demo" i
   # An old override outside the window of 5, then four good answers.
   live_answer_file 1 1 wait
@@ -1287,6 +1301,311 @@ live_answer_file() {
   sed -i 's/^claude_session: .*/claude_session: sid-1/' "$HOME/.agent/asks/demo/$c.md"
   "$AGENT_ASK" settle-session sid-1 answered ok
   run "$AGENT_ASK" show "$c"; assert_line 'answered_by: human'
+}
+
+# ── assume on delay: a DELAY_RULES wait arms an ask, assume-due fires it ────────
+
+# armed <sid> <question>: a ship_deploy ask armed at post with a 30 minute wait. Prints its id.
+armed() {
+  CLAUDE_CODE_SESSION_ID="$1" "$AGENT_ASK" post --project demo \
+    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix "$2" 2>/dev/null
+}
+# due <id>: its wait has passed.
+due() { sed -i 's/^assume_at: .*/assume_at: 2026-01-01T00:00:00+0000/' "$HOME/.agent/asks/demo/$1.md"; }
+
+delay_setup() {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy=30
+  fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
+}
+
+@test "delay: a wait arms the ask at post: it stays pending, and the card names the answer and deadline" {
+  delay_setup
+  run --separate-stderr armed sid-1 'fix the flake?'
+  assert_success
+  local id="$output"
+  refute [ -n "$stderr" ]
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_line 'assume_answer: fix'
+  assert_line --regexp '^assume_at: 20[0-9-]+T[0-9:]+[-+][0-9]{4}$'
+  run "$AGENT_ASK" card "$id"
+  assert_output --regexp 'assumes "fix" at [0-9]{2}:[0-9]{2} unless you reply'
+  run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25}"'
+  assert_output --regexp '^20'
+  # negative control: at 0 the same verdict answers at post
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  id="$(armed sid-2 'fix that flake?')"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answered_by: judge'
+  refute_line --partial 'assume_at:'
+}
+
+@test "delay: assume-due fires a due ask once as the judge, and leaves one not yet due" {
+  delay_setup
+  local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix the other?')"
+  due "$a"
+  run "$AGENT_ASK" assume-due
+  assert_success
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  assert_line 'assume_at: 2026-01-01T00:00:00+0000'
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'; assert_line 'assume_answer: fix'
+  assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
+  # a second pass changes nothing and files nothing
+  local at; at="$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")"
+  "$AGENT_ASK" assume-due
+  assert_equal "$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")" "$at"
+  assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "delay: assume-due answers nothing whose verdict or rule moved inside the window" {
+  delay_setup
+  local d="$HOME/.agent/asks/demo" id
+  # check <how>: an armed, due ask broken by <how> stays with the human and loses its arm.
+  check() {
+    id="$(armed "sid-$1" "case $1?")"; due "$id"
+    "$2" "$d/$id.md"
+    run --separate-stderr "$AGENT_ASK" assume-due
+    assert_success
+    run "$AGENT_ASK" show "$id"
+    assert_line 'status: pending'
+    refute_line --partial 'assume_at:'
+    assert [ -n "$stderr" ]
+  }
+  errored() { sed -i 's/^judge: .*/judge: error/' "$1"; }
+  empty() { sed -i 's/^judge: .*/judge: /' "$1"; }
+  gate() { sed -i 's/^kind: .*/kind: gate/' "$1"; }
+  approval() { sed -i 's/^kind: .*/kind: approval/' "$1"; }
+  disarmed() { printf 'assume_disarmed: 2026-11-06T10:00:00-0800\n' >> "$1"; }
+  rerecommended() { sed -i 's/^recommend: .*/recommend: wait/' "$1"; }
+  check errored errored
+  check empty empty
+  check gate gate
+  check approval approval
+  check disarmed disarmed
+  check rerecommended rerecommended
+  # a demoted type, a removed row, a hard stop in the table and malformed rows
+  mkdir -p "$HOME/.local/state/agent-ask"
+  demote() { printf 'ship_deploy\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"; }
+  check demoted demote
+  rm "$HOME/.local/state/agent-ask/demoted"
+  id="$(armed sid-rr 'removed row?')"; due "$id"
+  AGENT_ASK_DELAY_RULES=engineering_design=30 "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
+  local rows; for rows in 'ship_deploy=soon' 'ship_deploy' 'ship_deploy=-5'; do
+    id="$(armed "sid-$rows" "malformed $rows?")"; due "$id"
+    run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" "$AGENT_ASK" assume-due
+    assert_regex "$stderr" "refuses '$rows'"
+    run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  done
+  id="$(armed sid-hs 'hard stop?')"; due "$id"
+  sed -i 's/^judge_rule: .*/judge_rule: product_taste/' "$d/$id.md"
+  run --separate-stderr env AGENT_ASK_DELAY_RULES='product_taste=0' "$AGENT_ASK" assume-due
+  assert_regex "$stderr" 'refuses product_taste'
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  # positive control: an untouched due ask under the same table fires
+  id="$(armed sid-u 'untouched?')"; due "$id"
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
+}
+
+@test "delay: a hard stop or a malformed row in DELAY_RULES never makes a type live at post" {
+  unset AGENT_ASK_NO_JUDGE
+  local rows; for rows in 'gate=0' 'reversible=0' 'credential_or_account=0' 'ship_deploy' 'ship_deploy=soon'; do
+    case "$rows" in ship_deploy*) fake_judge "$(score ship_deploy)" ;; *) fake_judge "$(score "${rows%%=*}")" ;; esac
+    run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-$rows" "$AGENT_ASK" post \
+      --project demo --options 'yes=do it|no=leave it' --recommend yes "row $rows?"
+    assert_success
+    assert_regex "$stderr" 'refuses'
+    run "$AGENT_ASK" show "${output##*$'\n'}"
+    assert_line 'status: pending'
+    refute_line --partial 'assume_at:'
+  done
+}
+
+@test "delay: a human answer during the judge's call stands; the judge writes nothing over it" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  # The judge's call is where the human answers: it finds the ask by its question and answers it.
+  cat > "$BATS_TEST_TMPDIR/judge" <<SH
+#!/usr/bin/env bash
+grep -l '^question: race' "$HOME"/.agent/asks/demo/*.md | while IFS= read -r f; do
+  grep -qx 'status: pending' "\$f" && "$AGENT_ASK" answer "\$(sed -n 's/^id: //p' "\$f")" wait >/dev/null 2>&1
+done
+printf '%s\n' '$(score ship_deploy)'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  run --separate-stderr armed sid-r 'race at post?'
+  local id="$output"
+  refute_regex "$stderr" 'Answered by the judge'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answer: wait'; assert_line 'answered_by: human'
+  assert_equal "$(grep -c '^status: ' "$HOME/.agent/asks/demo/$id.md")" 1
+  # the same race in a sweep
+  export AGENT_ASK_NO_JUDGE=1
+  id="$(armed sid-r 'race in a sweep?')"
+  unset AGENT_ASK_NO_JUDGE
+  run "$AGENT_ASK" sweep demo
+  assert_line --regexp "^demo	$id	yours	"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answer: wait'; assert_line 'answered_by: human'
+}
+
+@test "delay: a session in a dialog keeps its armed ask until the dialog closes" {
+  delay_setup
+  unset AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-w","pane":"%%9","status":"waiting"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  local id; id="$(armed sid-w 'fix it in the dialog?')"; due "$id"
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'; assert_line 'assume_at: 2026-01-01T00:00:00+0000'
+  assert_not_called "agent-panel send --pane %9"
+  # negative control: once idle, the next pass fires it into the session
+  printf '{"session_id":"sid-w","pane":"%%9","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
+  assert_called "agent-panel send --pane %9 Answer to ask $id: fix (the judge, ship_deploy"
+}
+
+@test "delay: recommend drops the arm, and sweep arms again keeping the clock on the same answer" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy=30
+  fake_judge "$(score ship_deploy fix)"
+  local id f; id="$(armed sid-1 'fix or wait?')"; f="$HOME/.agent/asks/demo/$id.md"
+  run "$AGENT_ASK" show "$id"; assert_line 'judge: answer:fix'; assert_line 'assume_answer: fix'
+  "$AGENT_ASK" recommend "$id" wait 2>/dev/null
+  run "$AGENT_ASK" show "$id"; refute_line --partial 'assume_'
+  # a hand-run sweep arms it again; the same answer on the next sweep keeps the clock
+  run "$AGENT_ASK" sweep demo
+  assert_line --regexp "^demo	$id	armed fix	ship_deploy	"
+  sed -i 's/^assume_at: .*/assume_at: 2030-01-01T00:00:00+0000/' "$f"
+  "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$id"; assert_line 'assume_at: 2030-01-01T00:00:00+0000'
+  # a different answer starts a full window
+  fake_judge "$(score ship_deploy wait)"
+  "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'assume_answer: wait'
+  refute_line 'assume_at: 2030-01-01T00:00:00+0000'
+}
+
+@test "delay override: in the window, another option is an override and the human's answer records" {
+  delay_setup
+  local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix this flake?')"
+  "$AGENT_ASK" settle-session sid-1 answered "no, wait for the row"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'judge_override: wait'
+  assert_line 'judge_override_note: in session: no, wait for the row'
+  assert_line --regexp '^judge_override_at: .+'
+  assert_line 'answer: wait'; assert_line 'answered_by: human'
+  # the same option agrees
+  "$AGENT_ASK" settle-session sid-2 answered "yes fix it"
+  run "$AGENT_ASK" show "$b"
+  assert_line 'judge_override: none'; assert_line 'answer: fix'; assert_line 'answered_by: human'
+  # neither fires later
+  due "$a"; due "$b"
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'
+}
+
+@test "delay override: a message naming no option disarms for good, and a later pick still counts" {
+  delay_setup
+  local id f; id="$(armed sid-1 'fix the flake?')"; f="$HOME/.agent/asks/demo/$id.md"
+  "$AGENT_ASK" settle-session sid-1 answered "what is going on here?"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_line --regexp '^assume_disarmed: .+'
+  assert_line 'assume_answer: fix'
+  refute_line --partial 'assume_at:'
+  # neither assume-due nor a sweep answers or arms it again
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" sweep demo
+  assert_line --regexp "^demo	$id	yours	"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
+  # nor does a type at 0
+  AGENT_ASK_DELAY_RULES=ship_deploy=0 "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  "$AGENT_ASK" settle-session sid-1 answered "wait"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_override: wait'; assert_line 'answer: wait'
+}
+
+@test "delay override: after it fires, a later session pick still overrides, past an unrelated first message" {
+  delay_setup
+  local id; id="$(armed sid-1 'fix the flake?')"; due "$id"
+  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" settle-session sid-1 answered "ok how many phases left?"
+  run "$AGENT_ASK" show "$id"; assert_line 'judge_override: none'
+  "$AGENT_ASK" settle-session sid-1 answered "wait, park it"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_override: wait'
+  assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  # one override closes it
+  "$AGENT_ASK" settle-session sid-1 answered "fix"
+  run "$AGENT_ASK" show "$id"; assert_line 'judge_override: wait'
+}
+
+@test "delay override: a board answer on a fired ask stamps the override and keeps the judge's answer" {
+  delay_setup
+  local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix this flake?')"
+  due "$a"; due "$b"
+  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" answer "$a" wait 2>/dev/null
+  run "$AGENT_ASK" show "$a"
+  assert_line 'judge_override: wait'; assert_line 'judge_override_note: from a board: wait'
+  assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  assert_called "answered: wait (ask $a)"
+  # the same option changes nothing
+  "$AGENT_ASK" answer "$b" fix 2>/dev/null
+  run "$AGENT_ASK" show "$b"
+  refute_line --partial 'judge_override'; assert_line 'answered_by: judge'
+  # a board answer on a pending armed ask records the human's and the override
+  local c; c="$(armed sid-3 'fix one more?')"
+  "$AGENT_ASK" answer "$c" wait 2>/dev/null
+  run "$AGENT_ASK" show "$c"
+  assert_line 'judge_override: wait'; assert_line 'answered_by: human'; assert_line 'answer: wait'
+}
+
+@test "override: a nested option names one option, not two" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  fake_judge "$(score ship_deploy)"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-n "$AGENT_ASK" post --project demo \
+    --options 'approve=ship it|approve-with-edits=ship with edits|redo=start over' --recommend approve 'ship?' 2>/dev/null)"
+  "$AGENT_ASK" settle-session sid-n answered "approve-with-edits please"
+  run "$AGENT_ASK" show "$id"; assert_line 'judge_override: approve-with-edits'
+  # negative control: two separate options named is no pick
+  id="$(CLAUDE_CODE_SESSION_ID=sid-m "$AGENT_ASK" post --project demo \
+    --options 'approve=ship it|approve-with-edits=ship with edits|redo=start over' --recommend approve 'ship again?' 2>/dev/null)"
+  "$AGENT_ASK" settle-session sid-m answered "redo or approve-with-edits"
+  run "$AGENT_ASK" show "$id"; assert_line 'judge_override: none'
+}
+
+@test "delay: demote counts in-window answers, agreeing or not, and precedents read an in-window override" {
+  delay_setup
+  export AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=2 AGENT_ASK_DEMOTE_PRECISION=85
+  local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix this flake?')"
+  "$AGENT_ASK" settle-session sid-1 answered "fix"
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  "$AGENT_ASK" settle-session sid-2 answered "wait"
+  # 1 of 2 overridden, under 85%: without the agreeing one the window would be under the minimum
+  run cat "$HOME/.local/state/agent-ask/demoted"
+  assert_output --regexp "^ship_deploy	.+	override on ask $b: 1 of its last 2 live answers overridden"
+  run "$AGENT_ASK" precedents 2030-01-01T00:00:00+0000
+  assert_output --partial "$b (demo): fix this flake? | recommended: fix"
+  assert_output --partial 'the human chose: wait'
+  refute_output --partial "$a (demo)"
+  assert_equal "$(grep -c "$b (demo)" <<<"$output")" 1
+  # an in-window override that picks the recommendation over the judge's own answer is kept
+  rm "$HOME/.local/state/agent-ask/demoted"
+  fake_judge "$(score ship_deploy wait)"
+  local c; c="$(armed sid-3 'park the flake?')"
+  run "$AGENT_ASK" show "$c"; assert_line 'assume_answer: wait'
+  AGENT_ASK_DEMOTE_MIN=99 "$AGENT_ASK" settle-session sid-3 answered "fix"
+  run "$AGENT_ASK" precedents 2030-01-01T00:00:00+0000
+  assert_output --partial "$c (demo): park the flake? | recommended: wait (park until the row is fixed) | the human chose: fix"
 }
 
 # list and the card read each file once; this is what makes Prefix y open fast.
