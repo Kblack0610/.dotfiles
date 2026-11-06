@@ -4,6 +4,7 @@
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
+#   agentctl-session-outcomes ended [--days N]             the sessions observed that recently, one JSON line each, newest first
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
@@ -416,6 +417,22 @@ cmd_worst() {
       end'
 }
 
+# ended: what the hub's Sessions table lists as ended (hub_core::session_table), for a session
+# with no queue item. Rows exist only after a nightly run, and a headless runner call is not a session.
+cmd_ended() {
+  local days=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-1}"; shift 2 ;;
+      *) echo "$NAME ended: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
+    [inputs | select(.project != "_runner" and .updated_epoch >= $now - $days * 86400)]
+    | sort_by(-.updated_epoch)[]
+    | {session_id, project, title, account, cost_usd, updated_epoch, prs_merged, prs_open}'
+}
+
 # cmd_card PREFIX [--json] - one session's newest row as its full card: time, stages, cost,
 # delivery, the friction sum term by term, activity and what it reached for. --json is the
 # row plus friction and why. A prefix that names no session or more than one is an error.
@@ -479,7 +496,8 @@ case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
   card) shift; cmd_card "$@" ;;
+  ended) shift; cmd_ended "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
-  -h|--help) sed -n '2,25p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | langfuse [--all]" >&2; exit 2 ;;
+  -h|--help) sed -n '2,26p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | langfuse [--all]" >&2; exit 2 ;;
 esac

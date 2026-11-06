@@ -1,14 +1,14 @@
 "use strict";
-// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each row's bucket
-// and card fields, the folded facts card above an open transcript, and the overview shown while
-// no session is open. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
+// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each session's
+// card, the folded facts card above an open transcript, and the last day's fold under the
+// table. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
 // through /api/watch; nothing is judged here.
 
 const WATCH_HOURS = 24;
 // Fields that move on almost every tick and drown the stage changes; the feed hides lines that
 // change only these until "all changes" is on.
 const NOISY = ["sync", "tree"];
-const wst = { data: null, filter: null, allChanges: false, ended: false, open: {} };
+const wst = { data: null, allChanges: false, ended: false, open: {} };
 
 // watch.log targets carry no tmux server ("dotfiles:2"); state.json's do ("hub/dotfiles:2").
 const shortTarget = (t) => String(t).split("/").pop();
@@ -17,7 +17,7 @@ const logTime = (ts) => new Date(ts.replace(" ", "T")).getTime();
 
 const refreshWatch = coalesce(async () => {
   wst.data = await api("/api/watch");
-  if (st.tab === "sessions") { renderList(); renderFacts(); renderOverview(); }
+  if (st.tab === "sessions") { renderFacts(); renderOverview(); }
   if (st.tab === "log") renderLogChanges();
 });
 
@@ -59,20 +59,6 @@ function buildLanes(now) {
   return { t0, lanes: [...lanes.values()].sort((a, b) => rank(a.target) - rank(b.target) || a.target.localeCompare(b.target)) };
 }
 
-
-function tiles(sessions, state) {
-  const n = (b) => sessions.filter((s) => s.bucket === b).length;
-  const main = (state && state.main) || [];
-  const asks = (state && state.asks) || [];
-  let html = BUCKETS.map((b) => `
-    <button class="tile${wst.filter === b ? " on" : ""}" data-bucket="${b}" style="--c:${bucketColor(b)}">
-      <span class="tl">${b}</span><span class="tv">${n(b)}</span>
-    </button>`).join("");
-  html += `<div class="tile" style="--c:var(--b-needs)"><span class="tl">ASKS</span><span class="tv">${asks.length}</span></div>`;
-  html += `<div class="tile wide" style="--c:${main.length ? "var(--b-needs)" : "var(--b-done)"}"><span class="tl">NIGHTLY</span>${
-    main.length ? main.map((m) => `<span class="ts1" title="${esc(m.reason)}">${esc(m.repo)} red</span>`).join("") : '<span class="ts1">all green</span>'}</div>`;
-  return `<div class="tiles">${html}</div>`;
-}
 
 // A session's closed time by what it waited on (fleet-states.md). The line under the bar carries
 // the numbers, in the bar's order, so the colours are only a shape to scan.
@@ -144,33 +130,12 @@ $("log-changes").addEventListener("change", (e) => {
   if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
 });
 
-// The order of the list's groups: the shepherd first, then the buckets, PARKED last, where sessions
-// fleet-state has no row for also go, as they do on the hub's Sessions tab.
-const LIST_ORDER = ["SHEPHERD", ...BUCKETS];
-
-// One row per session: every live or parked session here with its fleet-state row (matched by
-// session id, then target), then the fleet-state rows with no session on this machine. Grouped
-// in LIST_ORDER; a stable sort keeps each group in the server's order.
-function sessionRows() {
-  const states = sessionsOf(), used = new Set();
-  const shep = shst.data && shst.data.target;
-  const rows = st.agents.map((a) => {
-    const s = states.find((x) => (x.session_id && x.session_id === a.session) || x.target === a.target);
-    if (s) used.add(s);
-    return { a, s, group: shep && a.target === shep ? "SHEPHERD" : s ? s.bucket : "PARKED" };
-  });
-  for (const s of states) if (!used.has(s)) rows.push({ a: null, s, group: s.bucket });
-  const rank = (g) => { const i = LIST_ORDER.indexOf(g); return i < 0 ? LIST_ORDER.indexOf("CHAT") : i; };
-  return rows.sort((x, y) => rank(x.group) - rank(y.group));
-}
-
 const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_tokens || 0));
 
 // The open session's fleet-state card, folded to one line above its transcript.
 function renderFacts() {
   const el = $("facts");
-  const r = st.sel && sessionRows().find((x) => x.a && x.a.target === st.sel.target);
-  const s = r && r.s;
+  const s = st.sel && sessionsOf().find((x) => (x.session_id && x.session_id === st.sel.session) || x.target === st.sel.target);
   el.hidden = !s;
   if (!s) return;
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
@@ -179,30 +144,24 @@ function renderFacts() {
   paint(el, `<details data-k="facts"${wst.open.facts ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
 }
 
-// The detail pane while no session is open: the bucket tiles (they filter the list), then the
-// last day's swimlanes and the shepherd's pass and due lines, each folded. The change feed, the
-// rundowns and the ranked sessions are Log's.
-function renderOverview() {
-  if (st.sel || st.tab !== "sessions") return;
-  const el = $("scroll");
-  if (!wst.data) { el.innerHTML = '<div class="empty">Loading the overview.</div>'; return; }
+// The folds under the table: how old the state is, the last day's swimlanes and the shepherd's
+// pass and due lines. The change feed, the rundowns and the ranked sessions are Log's.
+function overviewFolds() {
+  if (!wst.data) return '<div class="empty">Loading the overview.</div>';
   const state = wst.data.state;
   const now = Date.now();
   let html = "";
   if (!state) html += '<div class="empty">No fleet state yet: fleet-state.timer has not written ~/.local/state/fleet/state.json.</div>';
   else {
-    const sessions = sessionsOf();
     const { t0, lanes } = buildLanes(now);
     const keep = lanes.filter((l) => wst.ended || !l.gone);
     const ended = lanes.length - lanes.filter((l) => !l.gone).length;
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
-    html += `<div class="bhead"><span>fleet ${sessions.length} session(s)</span><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
-    html += tiles(sessions, state);
+    html += `<div class="bhead"><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
     html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
   }
-  html += shepherdOverview();
-  paint(el, html, wst.open);
+  return html + shepherdOverview();
 }
 
 // Log's Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes'
@@ -243,11 +202,6 @@ LOG_PARTS.push({ show() { renderLogRanked(); if ($("sec-ranked").open && !ost.ro
 // A folded overview section; the fold is remembered across re-renders by its key.
 const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open[k] ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
 
-$("scroll").addEventListener("click", (e) => {
-  if (st.sel) return;
-  const tile = e.target.closest("[data-bucket]");
-  if (tile) { wst.filter = wst.filter === tile.dataset.bucket ? null : tile.dataset.bucket; renderList(); renderOverview(); }
-});
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;
   if (e.target.matches("[data-ended]")) wst.ended = e.target.checked;
@@ -255,31 +209,12 @@ $("scroll").addEventListener("change", (e) => {
 });
 // A fold the reader opens stays open through the next push (paint reads it before a repaint;
 // this catches the ones toggled between repaints).
-for (const id of ["scroll", "facts", "list"]) {
+for (const id of ["scroll", "facts"]) {
   $(id).addEventListener("toggle", (e) => {
     const k = e.target.dataset && e.target.dataset.k;
     if (k) wst.open[k] = e.target.open;
   }, true);
 }
 
-// fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
-const watchFeed = pushed("sessions", ["watch"], refreshWatch);
-const shepFeed = pushed("sessions", ["shepherd", "sessions"], () => refreshShepherd()); // shepherd.js loads after this file
 const logWatchFeed = pushed("log", ["watch"], refreshWatch);
 LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
-// #sessions/<target> opens that session, as a Fleet row does. The agents list may not be
-// loaded yet, so the open waits for it (refreshAgents returns once it has).
-async function openArg() {
-  const target = st.arg;
-  if (!st.agents.length) await refreshAgents();
-  const a = st.agents.find((x) => x.target === target);
-  if (a && st.arg === target && (!st.sel || st.sel.target !== target)) select(a);
-}
-TABS.sessions = {
-  show() {
-    if (st.arg) openArg();
-    else if (!st.sel) overview(false);
-    watchFeed.show(!wst.data); shepFeed.show(!shst.data);
-  },
-  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); },
-};
