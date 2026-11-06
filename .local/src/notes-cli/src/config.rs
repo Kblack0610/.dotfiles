@@ -37,8 +37,8 @@ struct RawConfig {
     /// is active when it is regenerated.
     #[serde(default = "default_board")]
     board: String,
-    /// The cross-project ideas file, relative to `vault`: where `notes focus sweep` moves a
-    /// Focus row tagged `#idea` with no project. Cross-org like `board`, for the same reason.
+    /// The cross-project ideas file, relative to `vault`, that `notes config` names. Cross-org
+    /// like `board`, for the same reason.
     #[serde(default = "default_ideas")]
     ideas: String,
     /// The outbox, relative to `vault`: where the human and agents drop work for any project,
