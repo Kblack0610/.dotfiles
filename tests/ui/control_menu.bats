@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # Tier 3: the control menu (leader Space) through real fzf on a real tmux server. The first
 # chip's hover is in the preview on open, moving the cursor moves the preview to the next chip,
-# Enter runs that chip's click and closes, Esc closes. Container only.
+# Enter runs that chip's click and closes, Esc closes; typing finds a window row, whose Enter
+# dispatches its bind. Container only.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -23,6 +24,13 @@ jq -cn '{text: "OK 3", tooltip: "<b>Good hover</b> line one\nline two", class: "
 EOF
   printf '#!/usr/bin/env bash\necho "prometheus down" >&2\nexit 4\n' > "$FX/bad.sh"
   chmod +x "$FX/ok.sh" "$FX/bad.sh"
+  # hyprctl: one described launcher; anything but `binds -j` is logged.
+  cat > "$SANDBOX/bin/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "binds -j" ] && exec echo '[{"submap":"","modmask":64,"key":"D","dispatcher":"exec","arg":"wofi --show drun","has_description":true,"description":"app launcher"}]'
+printf '%s\n' "$*" >> "$FX/dispatched"
+EOF
+  chmod +x "$SANDBOX/bin/hyprctl"
   cat > "$W/config.base" <<EOF
 {
     "custom/ok": {"exec": "\$HOME/.config/waybar/modules.sh gate custom/ok $FX/ok.sh", "on-click": "echo left > $FX/clicked"},
@@ -58,4 +66,16 @@ gone() { ! _tm has-session 2>/dev/null; }
   wait_until gone
   wait_until '[ -s "$FX/clicked" ]'
   assert_equal "$(cat "$FX/clicked")" left
+}
+
+@test "typing finds a window row; its preview names the bind and Enter dispatches it" {
+  open_menu
+  wait_until 'screen_has "Good hover"'
+  tmux_type launcher
+  wait_until 'screen_matches "app launcher +Super\\+D"'
+  wait_until 'screen_has "wofi --show drun"'
+  tmux_keys Enter
+  wait_until gone
+  wait_until '[ -s "$FX/dispatched" ]'
+  assert_equal "$(cat "$FX/dispatched")" "dispatch exec wofi --show drun"
 }
