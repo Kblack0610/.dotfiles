@@ -217,9 +217,10 @@ auto_block() {
   if [ -f "$LESSONS" ]; then
     local digest
     # tail of bullet lessons, each truncated to keep the digest scannable (it's injected
-    # at session start — one mega-lesson must not dominate the context window)
+    # at session start — one mega-lesson must not dominate the context window). The cut
+    # lands on a word boundary: a path cut mid-word (`~/.d`) reads as a dead path.
     digest=$(grep -E '^- ' "$LESSONS" 2>/dev/null | tail -5 \
-      | awk '{ if (length($0) > 200) print substr($0,1,197) "…"; else print }' || true)
+      | awk '{ if (length($0) > 200) { s = substr($0,1,197); sub(/[[:space:]]+[^[:space:]]*$/, "", s); print s "..." } else print }' || true)
     if [ -n "$digest" ]; then
       echo "$digest"
     else

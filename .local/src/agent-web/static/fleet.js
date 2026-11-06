@@ -52,7 +52,7 @@ function workersTable(ws) {
   }).join("")}</table>`;
 }
 
-const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--b-unclear)", failed: "var(--b-needs)" };
+const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--b-unclear)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
 
 function dispatchTiles(d) {

@@ -4,7 +4,7 @@
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
-#   agentctl-session-outcomes langfuse [--all]             push outcomes to Langfuse as scores
+#   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -15,9 +15,10 @@
 # project `_runner` with no corrections: nobody is there to correct it, so a lesson it
 # writes is its job, not a redirect. Every run ends with `langfuse`: rows observed since the
 # last push go to Langfuse as session scores (so_langfuse_events), so its trace view filters
-# by them. URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry SO_LF_ENTRY,
-# "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push leaves the
-# mark where it was, so the next run sends them again.
+# by them, and each judge verdict that names its call goes as a score on that call's session
+# (judge.sh, its own mark). URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry
+# SO_LF_ENTRY, "pk-lf-...:sk-lf-...". With either missing the push is skipped; a failed push
+# leaves the mark where it was, so the next run sends them again.
 # A row is the session's whole card: the registry's cost, tokens and models, the transcript's
 # counts, agent-panel's time use, and `fleet-bench stats` as delivery (time per stage, nudges,
 # escalations, merged PRs with their lines and CI reds), read once per run. The account is the
@@ -41,13 +42,18 @@ FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
-LF_BATCH=100      # events per ingestion request
+SO_ASKS="${SO_ASKS:-$HOME/.agent/asks}"                          # the ask judge's verdicts
+SO_VERDICTS="${SO_VERDICTS:-$HOME/.agent/dispatch/verdicts.jsonl}"  # the dispatch judge's
 NAME=session-outcomes
 
 LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
 
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-proof.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/langfuse.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/judge.sh"
 # shellcheck source=/dev/null
 . "$LIB_DIR/session-outcomes.sh"
 
@@ -224,11 +230,12 @@ ledger_push() {
 }
 
 # lf_push [--all] WORKDIR - send every session's newest row observed after the mark (all
-# of them with --all) to Langfuse, then move the mark. Prints one status phrase for the
-# run's report. Never fails the run: the outcome rows are already written and are the
-# record; a push that failed says so on stderr and in the report, and is retried next run.
+# of them with --all) to Langfuse, then move the mark; then the same for the judge lanes'
+# verdicts (lf_push_judge). Prints one status phrase for the run's report. Never fails the
+# run: the outcome rows are already written and are the record; a push that failed says so on
+# stderr and in the report, and is retried next run.
 lf_push() {
-  local all="$1" work="$2" key mark since code n=0 sent=0
+  local all="$1" work="$2" key mark since
   local mark_file
   mark_file="$(proof_state_dir)/$NAME/langfuse-mark"
   if [ -z "$LF_URL" ]; then
@@ -251,33 +258,38 @@ lf_push() {
   }
   if [ ! -s "$work/lf.rows" ]; then
     printf 'langfuse: nothing new'
-    return 0
-  fi
-  if ! so_langfuse_events < "$work/lf.rows" | jq -cn --argjson b "$LF_BATCH" \
-      '[inputs] | range(0; length; $b) as $i | {batch: .[$i:$i + $b]}' > "$work/lf.batches"; then
+  elif ! so_langfuse_events < "$work/lf.rows" > "$work/lf.events"; then
     echo "$NAME: langfuse: could not build score events" >&2
     printf 'langfuse: FAILED building events'
-    return 0
+  elif ! lf_ingest "$CURL" "$LF_URL" "$key" "$work/lf.events" "$work"; then
+    printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "$LF_SENT"
+  else
+    mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
+    printf 'langfuse: %s score(s) for %s session(s)' "$LF_SENT" "$(wc -l < "$work/lf.rows")"
   fi
-  while IFS= read -r batch; do
-    n=$((n + 1))
-    printf '%s' "$batch" > "$work/lf.body"
-    # The key goes in on stdin (-K -), never argv, where any `ps` would show it.
-    code="$(printf 'user = "%s"\n' "$key" | "$CURL" -sS -K - -o "$work/lf.resp" -w '%{http_code}' \
-      --max-time 30 -H 'Content-Type: application/json' \
-      --data-binary @"$work/lf.body" "$LF_URL/api/public/ingestion" 2>"$work/lf.err")" || code=000
-    # 207 is the normal answer: per-event results, any of which can be an error.
-    if { [ "$code" = 200 ] || [ "$code" = 207 ]; } \
-       && [ "$(jq '.errors | length' "$work/lf.resp" 2>/dev/null)" = 0 ]; then
-      sent=$((sent + $(jq '.batch | length' "$work/lf.body")))
-    else
-      echo "$NAME: langfuse: batch $n failed (HTTP $code): $(head -c 300 "$work/lf.resp" "$work/lf.err" 2>/dev/null)" >&2
-      printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$code" "$sent"
-      return 0
-    fi
-  done < "$work/lf.batches"
-  mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
-  printf 'langfuse: %s score(s) for %s session(s)' "$sent" "$(wc -l < "$work/lf.rows")"
+  lf_push_judge "$all" "$work" "$key" "$since"
+}
+
+# lf_push_judge ALL WORKDIR KEY SINCE - each judge verdict judged after its own mark, as a score
+# on the session its call ran as (judge_langfuse_events). Appends "; judge: ..." to the report,
+# and nothing when there was no verdict to send.
+lf_push_judge() {
+  local all="$1" work="$2" key="$3" since="$4" mark_file mark=0
+  mark_file="$(proof_state_dir)/$NAME/langfuse-judge-mark"
+  [ "$all" = --all ] || mark="$(cat "$mark_file" 2>/dev/null || echo 0)"
+  judge_verdicts "$SO_ASKS" "$SO_VERDICTS" |
+    judge_langfuse_events "$AGENTCTL_CALLS" "$since" "${mark:-0}" > "$work/jv.events" 2>/dev/null || {
+    printf '; judge: FAILED building events'
+    return 0
+  }
+  [ -s "$work/jv.events" ] || return 0
+  jq -c 'del(.epoch)' "$work/jv.events" > "$work/jv.send"
+  if lf_ingest "$CURL" "$LF_URL" "$key" "$work/jv.send" "$work"; then
+    mkdir -p "${mark_file%/*}" && jq -s 'map(.epoch) | max' "$work/jv.events" > "$mark_file"
+    printf '; judge: %s score(s)' "$LF_SENT"
+  else
+    printf '; judge: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "$LF_SENT"
+  fi
 }
 
 cmd_langfuse() {

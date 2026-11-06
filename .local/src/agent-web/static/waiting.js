@@ -67,7 +67,7 @@ function sessionCard(a) {
 // The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
 // A judge that would leave it to the human says nothing the buttons do not.
 function judgeText(a) {
-  if (!a.judge || a.judge === "human") return "";
+  if (!a.judge || a.judge === "human" || a.judge === "error") return "";
   return a.judge === "take-recommend" ? `judge would take the recommendation (${esc(a.recommend)})`
     : `judge would answer "${esc(a.judge.replace(/^answer:/, ""))}"`;
 }
