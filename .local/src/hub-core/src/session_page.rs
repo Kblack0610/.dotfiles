@@ -22,6 +22,8 @@ use crate::text::{cap, headline, TITLE_MAX};
 
 /// What a page says when its outcome card has not been written, for a session that has ended.
 pub const NO_CARD: &str = "No outcome card yet: the nightly run writes it.";
+/// What `agentctl-session-outcomes card` says, on exit 1, for a session with no card yet.
+const NO_ROW: &str = "no outcome row";
 
 /// One labelled line of the page.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -78,7 +80,8 @@ pub fn find<'a>(rows: &'a [SessionRow], id: &str) -> Option<&'a SessionRow> {
         return None;
     }
     rows.iter()
-        .find(|r| r.session_id == id || r.key == id || r.target == id || r.item == id)
+        .find(|r| r.session_id == id || r.key == id)
+        .or_else(|| rows.iter().find(|r| r.target == id || r.item == id))
 }
 
 /// A session past the table's window has no row, but its outcome card still names it.
@@ -106,12 +109,10 @@ pub fn read(
     let row = find(rows, id);
     let sid = row.map_or(id, |r| r.session_id.as_str());
     let ended = row.is_none_or(|r| r.source != Source::Live);
-    let card = (ended && !sid.is_empty())
-        .then(|| outcomes::card(runner, sid).ok())
-        .flatten();
+    let card = (ended && !sid.is_empty()).then(|| outcomes::card(runner, sid));
     let row = match row {
         Some(r) => r.clone(),
-        None => old_row(id, card.as_deref()?),
+        None => old_row(id, card.as_ref()?.as_ref().ok()?),
     };
     let live = state.iter().find(|s| {
         row.source == Source::Live
@@ -143,7 +144,10 @@ pub fn read(
     };
     let parts = vec![
         item_part(&row, item.as_ref(), live),
-        board.unwrap_or_else(|| Part::new("Board row", "no board row")),
+        board.unwrap_or_else(|| match &item {
+            None if !row.item.is_empty() => Part::new("Board row", "could not be read").warn(true),
+            _ => Part::new("Board row", "no board row"),
+        }),
         plan_part(live, item.as_ref()),
         worktree_part(live, item.as_ref()),
         pr_part(&row, live, item.as_ref()),
@@ -151,9 +155,15 @@ pub fn read(
         asks_part(asks.as_deref()),
         shepherd_part(&Ledger::read(ledger, &row.session_id), live),
     ];
-    let outcome = card
-        .or_else(|| ended.then(|| NO_CARD.to_string()))
-        .unwrap_or_default();
+    let outcome = match card {
+        Some(Ok(c)) => c,
+        Some(Err(e)) if !e.contains(NO_ROW) => {
+            fail("outcome card", e);
+            "could not be read".to_string()
+        }
+        _ if ended => NO_CARD.to_string(),
+        _ => String::new(),
+    };
     Some(SessionPage {
         name: name(&row),
         session_id: row.session_id.clone(),
@@ -257,10 +267,7 @@ fn plan_part(live: Option<&Value>, item: Option<&Item>) -> Part {
     let file = live
         .and_then(|s| known(&s["plan_file"]))
         .or_else(|| item.and_then(|i| i.extra.get("plan")).and_then(known));
-    let Some(file) = file else {
-        return Part::new(label, "no plan file");
-    };
-    let mut text = tilde(file);
+    let mut text = file.map_or_else(|| "no plan file".to_string(), tilde);
     if let Some(s) = live {
         if let (Some(d), Some(t)) = (s["phases_done"].as_i64(), s["phases_total"].as_i64()) {
             text += &format!("  phases {d}/{t}");
@@ -365,13 +372,14 @@ fn spend_part(r: &SessionRow, budget: Option<&(String, f64)>) -> Part {
         "unsized" => format!("${usd} budget, unsized"),
         size => format!("${usd} budget, size {size}"),
     });
-    let text = match (r.cost_usd, cap) {
+    let spent = r.item_cost_usd.or(r.cost_usd);
+    let text = match (spent, cap) {
         (Some(c), Some(cap)) => format!("${c:.2} of the {cap}, from the {from}"),
         (Some(c), None) => format!("${c:.2}, from the {from}"),
         (None, Some(cap)) => format!("none recorded yet, {cap}"),
         (None, None) => "none recorded yet".to_string(),
     };
-    let over = matches!((r.cost_usd, budget), (Some(c), Some((_, b))) if c > *b);
+    let over = matches!((spent, budget), (Some(c), Some((_, b))) if c > *b);
     Part::new("Spend", text).warn(over)
 }
 
@@ -674,10 +682,80 @@ mod tests {
             item: String::new(),
             ..live_row()
         };
-        let no_card = Fake(vec![("agent-ask list --all", Ok(String::new()))]);
+        let no_card = Fake(vec![
+            ("agent-ask list --all", Ok(String::new())),
+            (
+                "agentctl-session-outcomes card",
+                Err(format!("session-outcomes card: {NO_ROW} for {SID}")),
+            ),
+        ]);
         let d = no_ledger();
         let p = read(&no_card, &d, SID, &[row], &[]).unwrap();
         assert_eq!(p.outcome, NO_CARD);
+    }
+
+    #[test]
+    fn a_card_that_cannot_be_read_says_so_rather_than_that_it_is_not_written() {
+        let row = SessionRow {
+            source: Source::Queue,
+            ..live_row()
+        };
+        let t = Fake(vec![(
+            "agentctl-session-outcomes card",
+            Err("agentctl-session-outcomes: not found".into()),
+        )]);
+        let p = read(&t, &no_ledger(), SID, &[row], &[]).unwrap();
+        assert_eq!(p.outcome, "could not be read");
+        assert!(p.errors.iter().any(|e| e.starts_with("outcome card: ")));
+    }
+
+    #[test]
+    fn an_item_that_cannot_be_read_does_not_claim_it_has_no_board_row() {
+        let t = Fake(vec![("agent-ask list --all", Ok(String::new()))]);
+        let p = read(&t, &no_ledger(), SID, &[live_row()], &[]).unwrap();
+        let board = p.parts.iter().find(|x| x.label == "Board row").unwrap();
+        assert_eq!(board.text, "could not be read");
+        assert!(board.warn);
+    }
+
+    #[test]
+    fn a_session_with_phases_and_no_plan_file_still_names_its_next_phase() {
+        let s = json!({"phases_done": 1, "phases_total": 3, "next_phase": "P2: the rest"});
+        assert_eq!(
+            plan_part(Some(&s), None).text,
+            "no plan file  phases 1/3, next: P2"
+        );
+    }
+
+    #[test]
+    fn the_budget_is_held_against_the_whole_item_not_the_one_session() {
+        let row = SessionRow {
+            cost_usd: Some(10.0),
+            item_cost_usd: Some(30.0),
+            ..live_row()
+        };
+        let p = spend_part(&row, Some(&("m".to_string(), 25.0)));
+        assert_eq!(
+            p.text,
+            "$30.00 of the $25 budget, size m, from the session registry"
+        );
+        assert!(p.warn);
+    }
+
+    #[test]
+    fn an_id_that_is_a_rows_own_key_wins_over_another_row_of_the_same_item() {
+        let working = SessionRow {
+            key: "lab/d:1".into(),
+            item: "the-item".into(),
+            ..SessionRow::default()
+        };
+        let queued = SessionRow {
+            key: "the-item".into(),
+            item: "the-item".into(),
+            ..SessionRow::default()
+        };
+        let rows = [working, queued];
+        assert_eq!(find(&rows, "the-item").unwrap().key, "the-item");
     }
 
     #[test]

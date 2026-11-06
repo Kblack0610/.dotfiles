@@ -101,6 +101,9 @@ pub struct SessionRow {
     /// When it ended, unix seconds.
     pub finished: Option<i64>,
     pub cost_usd: Option<f64>,
+    /// A live row's item across all its sessions, which is what the item's budget holds. A queue
+    /// row has none: its `cost_usd` already is that.
+    pub item_cost_usd: Option<f64>,
     pub account: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
@@ -286,6 +289,13 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         phases_total: s["phases_total"].as_i64(),
         idle_min: s["idle_min"].as_i64(),
         cost_usd: feed.cost.get(sid).copied(),
+        item_cost_usd: item.and_then(|i| {
+            let mut sids = item_sessions(i);
+            sids.push(sid.to_string());
+            sids.sort();
+            sids.dedup();
+            item_cost(i, &sids, feed)
+        }),
         account: str_of(s, "account").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
@@ -512,6 +522,17 @@ mod tests {
             cost: HashMap::from([("s1".to_string(), 1.2)]),
             errors: vec![],
         }
+    }
+
+    #[test]
+    fn a_live_row_prices_its_item_across_all_of_the_items_sessions() {
+        let mut f = feed();
+        f.items[0].extra.insert("sessions".into(), "s0,s1".into());
+        f.cost.insert("s0".into(), 3.0);
+        let r = rows(&state(), &f, &[]);
+        let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(own.cost_usd, Some(1.2));
+        assert_eq!(own.item_cost_usd, Some(4.2));
     }
 
     #[test]

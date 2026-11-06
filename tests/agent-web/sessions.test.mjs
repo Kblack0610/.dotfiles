@@ -109,6 +109,18 @@ test("every row is a link to its page, keeping the table's view for Back", () =>
   assert.equal(run("location.hash"), "#sessions/ucp-394", "no session id, by its row key");
 });
 
+test("a transcript that answers after the view moved back to the page does not cover it", async () => {
+  await run(`(async () => {
+    let answer; api = () => new Promise((r) => { answer = r; });
+    st.sel = { target: "hub/a:1" }; st.view = "transcript"; $("scroll").innerHTML = "the page";
+    const loading = load();
+    st.view = "page"; answer({ start: 0, end: 1, events: [] });
+    await loading;
+  })()`);
+  assert.equal(run(`$("scroll").innerHTML`), "the page");
+  assert.equal(run("st.end"), null);
+});
+
 test("the URL opens the session on a pane on its page, and one with no pane has nothing to type into", async () => {
   setup();
   run(`__opened = []; __select = select; select = (a) => { __opened.push(a); }; api = async () => PAGE_STUB;`);

@@ -170,11 +170,11 @@ function evHtml(e) {
 async function load() {
   if (st.view === "page") return loadPage();
   if (st.view === "screen") return loadScreen();
-  const a = st.sel;
+  const a = st.sel, still = () => st.sel === a && st.view === "transcript";
   let page;
   try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}`); }
-  catch (e) { $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  if (st.sel !== a) return;
+  catch (e) { if (still()) $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!still()) return;
   st.start = page.start; st.end = page.end;
   $("scroll").innerHTML = olderBtn() + page.events.map(evHtml).join("");
   toBottom($("scroll"));
