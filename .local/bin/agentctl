@@ -86,6 +86,15 @@ load_agent() {
             *) printf 'invalid LANE=%s (%s)\n' "$LANE" "$AGENTCTL_LANES" >&2; exit 1 ;;
         esac
         : "${DESCRIPTION:?missing DESCRIPTION (one line: what it is for)}"
+        # What a run may change on its own, so the catalog (`list --md`) says which runners
+        # act unattended: none (runs no model, itself or through a session it starts), draft
+        # (a report or draft for the human), shadow (a verdict nothing acts on yet), acts
+        # (model output changes state: rows, files, labels, sessions, merges).
+        : "${EFFECT:?missing EFFECT (none|draft|shadow|acts)}"
+        case "$EFFECT" in
+            none|draft|shadow|acts) ;;
+            *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
+        esac
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -110,6 +119,10 @@ load_agent() {
         printf 'ENABLED=%s\n' "$ENABLED"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
         printf 'INBOX=%s\n' "$INBOX"
+        printf 'EFFECT=%s\n' "$EFFECT"
+        printf 'ROLE=%s\n' "${ROLE:-}"
+        printf 'MODEL=%s\n' "${MODEL:-}"
+        printf 'ROUTE=%s\n' "${ROUTE:-}"
     )
 }
 
@@ -391,7 +404,43 @@ cmd_report() {
 # kv_get <KEY> - read one key from load_agent output on stdin.
 kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); exit}'; }
 
+# cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
+# so it prints the same on any machine. PIPELINES.md points here instead of copying it.
+cmd_list_md() {
+    local name conf lane kind sched trigger model effect role route
+    printf '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|\n'
+    local -a names=() invalid=()
+    mapfile -t names < <(list_agent_names)
+    declare -A confs=()
+    for name in "${names[@]}"; do
+        if conf=$(load_agent "$name" 2>/dev/null); then confs[$name]=$conf; else invalid+=("$name"); fi
+    done
+    for lane in $AGENTCTL_LANES; do
+        for name in "${names[@]}"; do
+            conf=${confs[$name]:-}
+            [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
+            kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
+            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
+            if [ "$kind" = call ]; then trigger='called by its caller'
+            elif [ "$kind" = persistent ]; then trigger='always on'
+            elif [ -n "$sched" ]; then trigger="\`$sched\`"
+            else trigger='started by another runner'; fi
+            [ "$(kv_get ENABLED <<<"$conf")" = no ] && trigger="$trigger (disabled)"
+            if [ "$effect" = none ]; then model=-
+            elif [ -z "$model" ]; then model='not in conf'; fi
+            [ -n "$route" ] && model="$model via $route"
+            printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+        done
+    done
+    [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
+    return 0
+}
+
 cmd_list() {
+    [ "${1:-}" = --md ] && { cmd_list_md; return; }
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     local -a names=()
@@ -766,6 +815,7 @@ agentctl — manage named long-running Claude agents via systemd
 
 Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
+  agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
   agentctl status <name>         Detailed status for one agent
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
   agentctl start <name>          Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it)
@@ -803,7 +853,7 @@ EOF
 # ----------------------------------------------------------------------
 
 case "${1:-}" in
-    list)              cmd_list ;;
+    list)              shift; cmd_list "$@" ;;
     status)            shift; cmd_status "$@" ;;
     report)            shift; cmd_report "$@" ;;
     start)             shift; cmd_start "$@" ;;
