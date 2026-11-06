@@ -84,7 +84,7 @@ JQ_EVAL='
   # Wilson score interval, 95%, for k right of n, in percent.
   def wilson($k; $n): if $n == 0 then [null, null] else
     ($k / $n) as $p | 3.8416 as $z2 | (1 + $z2 / $n) as $d
-    | (($p + $z2 / (2 * $n)) / $d) as $c | ((($p * (1 - $p) / $n) + $z2 / (4 * $n * $n)) | sqrt) * 1.96 / $d as $h
+    | (($p + $z2 / (2 * $n)) / $d) as $c | (((($p * (1 - $p) / $n) + $z2 / (4 * $n * $n)) | sqrt) * 1.96 / $d) as $h
     | [(($c - $h) * 1000 | round) / 10 | if . < 0 then 0 else . end, (($c + $h) * 1000 | round) / 10 | if . > 100 then 100 else . end] end;
   def kappa: (.tp + .fp + .fn + .tn) as $n | if $n == 0 then null else
     ((.tp + .tn) / $n) as $po | (((.tp + .fp) * (.tp + .fn) + (.fn + .tn) * (.fp + .tn)) / ($n * $n)) as $pe
@@ -121,7 +121,7 @@ JQ_EVAL='
    | ($verdicts | map(select(.verdict == "failed")) | map({key: "\(.project)\u0000\(.key)", value: (.at | epoch)})
       | group_by(.key) | map({(.[0].key): (map(.value) | max)}) | add // {}) as $failed
    | ($queue | map({key: (.from | ltrimstr("board:")), value: (.state + "/" + (.status // ""))}) | from_entries) as $item
-   | $askrows + [($verdicts | map(select(.verdict == "error"))[]
+   | ($askrows + [($verdicts | map(select(.verdict == "error"))[]
            | {agent: "dispatch-judge", id: .key, project, question: .key, rule: (.rule // ""), kind: "error",
               want: "", human: "", reason: (.reason // ""), at, judge_call: (.judge_call // ""), outcome: null}),
           ($verdicts | map(select(.verdict == "dispatch" or .verdict == "skip"))
@@ -133,7 +133,7 @@ JQ_EVAL='
               human: (if $fail then "failed" else $st end), reason: ($v.reason // ""), at: $v.at, answered_at: null, judge_call: ($v.judge_call // ""),
               outcome: (if $v.verdict == "skip" then "unscorable"
                 elif $fail or ($st | test("^done/(failed|cancelled)")) then "fp"
-                elif $st == "done/ok" then "tp" else "pending" end)})]
+                elif $st == "done/ok" then "tp" else "pending" end)})])
   as $all
 
   | ($all | map(select(.judge_call != "")) | group_by(.judge_call) | map({(.[0].judge_call): length}) | add // {}) as $share
