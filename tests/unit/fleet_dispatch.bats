@@ -2307,6 +2307,37 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run that was never logged"
 }
 
+@test "red: a red item starts --pr-only" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r"
+  cmd_start --item r >/dev/null || fail "start r"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial '/one-shot --pr-only fix r'
+}
+
+@test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
+  runnable() {
+    printf '%s\n' '{"slug":"a","waits":false}' '{"slug":"w","waits":true}' '{"slug":"b","waits":false,"tags":"reddish"}' \
+      '{"slug":"r1","waits":false,"tags":"red cause:x"}' '{"slug":"r2","waits":false,"tags":"cause:y red"}'
+  }
+  run next_items
+  assert_success
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 r2 a b '
+}
+
+@test "red: a board item with the red tag does not wait while the human is here, a plain one does" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug p --from board:game:p "plain"
+  agent-queue add --project game --slug r --from board:game:r --tags 'red cause:ab12' "red one"
+  stub fleet-presence 'echo here 0 x'
+  present_left() { echo 0; }
+  run runnable
+  assert_success
+  assert_equal "$(jq -r 'select(.slug == "p") | .waits' <<<"$output")" true
+  assert_equal "$(jq -r 'select(.slug == "r") | .waits' <<<"$output")" false
+}
+
 # ar-545: on 2026-11-06 dispatch was held and every start was a hand, plan or after: start, which
 # defaulted to opus (35 opus items to 5 sonnet). The pick lives in cmd_start, so every start gets it.
 @test "a hand start with no --model starts the model-lane pick and logs the run" {
