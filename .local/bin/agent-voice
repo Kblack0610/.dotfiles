@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agent-voice - say something into a Claude session: a gungan take is typed into a live
-# session's pane, or starts a new one. Super+Ctrl+R runs it. Usage: .config/hypr/docs/voice.md.
+# session's pane, or starts a new one. Super+R runs it. Usage: .config/hypr/docs/voice.md.
 #
 #   agent-voice                  the hotkey: first press starts a take, second opens the picker
 #   agent-voice pick <file>      fzf over the targets for the transcript in FILE; Enter sends
