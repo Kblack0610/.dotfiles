@@ -453,9 +453,7 @@ sweep() {
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
-  if "$HERE/agentctl-inbox-plan" --waiting; then
-    systemctl --user start --no-block agentctl@inbox-plan.service || say "could not start inbox-plan"
-  fi
+  "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
   [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
   [ "$rc" != 0 ] && verdict=FAILED

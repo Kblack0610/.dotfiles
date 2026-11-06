@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
 done
 case "${args[0]}" in
   projects) cat "$F/projects" 2>/dev/null ;;
+  board) if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"; else echo '{"rows": []}'; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in
@@ -116,6 +117,15 @@ project() {
 }
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
+
+# board_row <project> <lane> <id> <tags json> <details json> -- that fixture row as `notes board
+# --json` gives it (its raw line from rows.<project>.<lane>), with tags and details
+board_row() {
+  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" \
+    --arg raw "$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2")" \
+    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw}' \
+    >> "$NOTES_FIXTURE/board.rows"
+}
 
 # A tagged row the fleet worker may take.
 T='#worker/fleet #tier/1'
@@ -250,6 +260,102 @@ verdict() {
   run cmd_candidates
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
+}
+
+@test "candidates: the judge reads a row's details, and an edit to them re-judges only a verdict that recorded them" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] fix the jump $T <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] old verdict $T <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] no details $T <!-- id:ga-3 -->"
+  board_row game agent ga-1 '[]' '["the jump clips on ledges", "repro: level 2"]'
+  board_row game agent ga-2 '[]' '["first words"]'
+  verdict game agent ga-2 skip   # from before details were read: no dsig
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"; cat "$NOTES_FIXTURE/judge.out"'
+  echo '{"verdicts":[{"project":"game","lane":"agent","key":"ga-1","tier":1,"size":"S","clear":true,"agent_only":true,"area":"jump","verdict":"dispatch","rule":"fits","reason":"small"},{"project":"game","lane":"agent","key":"ga-3","tier":1,"size":"S","clear":false,"agent_only":true,"area":"x","verdict":"skip","rule":"unclear","reason":"vague"}]}' > "$NOTES_FIXTURE/judge.out"
+  run judge "$(cmd_candidates)"
+  assert_success
+  grep -qF '"key":"ga-1","text":"- [ ] fix the jump' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  grep -qF '"details":"the jump clips on ledges\nrepro: level 2"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  # negative control: a row with no details sends none
+  run grep -F '"key":"ga-3"' "$NOTES_FIXTURE/prompt"
+  refute_output --partial '"details"'
+  run cmd_candidates
+  assert_output ''
+  # Details change under all three: ga-1's verdict recorded them and is judged again; ga-2's is
+  # older than dsig and holds on its text; ga-3 recorded "none", so new details re-judge it too.
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent ga-1 '[]' '["the jump clips on ledges", "repro: level 3"]'
+  board_row game agent ga-2 '[]' '["other words"]'
+  board_row game agent ga-3 '[]' '["now it has some"]'
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-1,ga-3'
+}
+
+@test "candidates: a #plan row waits for inbox-plan and suggest says so" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] define me $T #plan <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] ready $T <!-- id:ga-2 -->"
+  board_row game agent ga-1 '["plan"]' '[]'
+  board_row game agent ga-2 '[]' '[]'
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-2'
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on a plan'
+  assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | length' <<<"$output")" 0
+}
+
+# plan_fixture -- agent rows skipped by each kind of rule, one already planned, one edited since,
+# a human row, and one row already waiting on its plan
+plan_fixture() {
+  printf '%s\n' '- (design) needs a product call' '- (bundle) several tasks' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in ga-1 ga-2 ga-3 ga-4 ga-5 ga-7; do row game agent "$k" "- [ ] row $k $T <!-- id:$k -->"; done
+  row game agent ga-6 "- [ ] row ga-6 #plan $T <!-- id:ga-6 -->"
+  row game human gh-1 "- [ ] row gh-1 $T <!-- id:gh-1 -->"
+  for k in ga-1 ga-2 ga-4 ga-5 ga-7; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent ga-3 '[]' '["goal: already planned"]'
+  board_row game agent ga-6 '["plan"]' '[]'
+  board_row game human gh-1 '[]' '[]'
+  rule() { verdict game "$1" "$2" skip; jq -c --arg r "$3" 'if .key == "'"$2"'" then .rule = $r else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  rule agent ga-1 unclear; rule agent ga-2 design; rule agent ga-3 unclear; rule agent ga-5 unclear
+  rule agent ga-7 bundle; rule human gh-1 unclear
+  verdict game agent ga-4 dispatch
+  # ga-5 was edited after its verdict
+  sed -i 's/row ga-5/row ga-5 now longer/' "$NOTES_FIXTURE/rows.game.agent"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in ga-1 ga-2 ga-4 ga-5 ga-7; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent ga-3 '[]' '["goal: already planned"]'
+  board_row game agent ga-6 '["plan"]' '[]'
+  board_row game human gh-1 '[]' '[]'
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+}
+
+@test "plan_skips: tags agent rows skipped as undefined and never planned, then kicks inbox-plan" {
+  plan_fixture
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 2
+  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-1
+ptask game --agent tag --add plan ga-7'
+  # negative controls: a design skip, a planned row, a dispatch, an edited row and a human row
+  run grep -E 'tag --add plan (ga-2|ga-3|ga-4|ga-5|ga-6|gh-1)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # ga-6 already waits, so inbox-plan's unit is started
+  grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
+}
+
+@test "plan_skips: stops at DISPATCH_PLAN_BACKLOG open #plan rows, and 0 turns it off" {
+  plan_fixture
+  DISPATCH_PLAN_BACKLOG=2 plan_skips
+  assert_equal "$PLAN_TAGGED" 1
+  : > "$NOTES_FIXTURE/calls.log"
+  DISPATCH_PLAN_BACKLOG=0 plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  run grep -c 'board --json' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "candidates: a live dispatched session does not hold its project" {
