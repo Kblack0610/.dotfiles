@@ -2386,14 +2386,16 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run that was never logged"
 }
 
-@test "red: a red item starts --pr-only" {
+@test "red: a red item merges its own PR: no --pr-only, and its brief names fix-red" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r"
   cmd_start --item r >/dev/null || fail "start r"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_output --partial '/one-shot --pr-only fix r'
+  assert_output --partial '/one-shot fix r'
+  refute_output --partial '--pr-only'
   assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
+  assert_output --partial 'Merge with agent-land <N>'
 }
 
 @test "red: a plain item's brief does not name fix-red" {
