@@ -318,6 +318,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     if tab == Some(Tab::Queue) {
         a.tab = Tab::Queue;
+        a.pipeline = Some(hub_core::pipeline::read());
+        // Only the link is needed here: the page's `o graph` hint reads the Grafana base.
+        a.infra = Some(hub_core::infra::Infra {
+            grafana: hub_core::infra::grafana(),
+            ..Default::default()
+        });
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

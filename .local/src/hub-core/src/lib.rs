@@ -15,6 +15,7 @@ pub mod outbox;
 pub mod outcomes;
 pub mod pager;
 pub mod phone;
+pub mod pipeline;
 pub mod projects;
 pub mod prom;
 pub mod queue;

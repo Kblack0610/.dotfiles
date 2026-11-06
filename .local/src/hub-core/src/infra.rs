@@ -91,6 +91,11 @@ pub struct Infra {
     pub instant: BTreeMap<&'static str, Vec<Series>>,
 }
 
+/// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
+pub fn grafana() -> Option<String> {
+    prom::config("CC_GRAFANA_URL").map(|g| grafana_base(&g))
+}
+
 fn grafana_base(url: &str) -> String {
     url.split("/d/")
         .next()
@@ -104,7 +109,7 @@ fn grafana_base(url: &str) -> String {
 pub fn gather() -> Infra {
     let mut out = Infra {
         at: crate::jobs::now().max(0) as u64,
-        grafana: prom::config("CC_GRAFANA_URL").map(|g| grafana_base(&g)),
+        grafana: grafana(),
         ..Default::default()
     };
     let base = match prom::base() {

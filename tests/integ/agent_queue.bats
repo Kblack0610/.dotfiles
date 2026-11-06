@@ -440,10 +440,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure 2
 }
 
-@test "add records the Claude session and the row grammar's type and area; claim adds a session once" {
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug typed "fix(agent-land): mine picks a waiting item"
-  f="$(item queued typed)"
+@test "add --running records the Claude session, a queued add does not; the row grammar's type and area; claim adds a session once" {
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
+  f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  [ -z "$(field "$(item queued later)" sessions)" ]
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
   "$AQ" add --project game --slug untyped "Menu: pick sides"
