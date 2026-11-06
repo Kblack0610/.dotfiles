@@ -1701,6 +1701,34 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
+@test "room: past board_open_max the upsert holds new rows and says why; #requested is never held; under it files" {
+  kpi_setup
+  printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  echo board_open_max=2 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_failure
+  assert_output 'full: board_open 3 past board_open_max 2'
+  rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED $UPSERT_HELD"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_line --partial '1 added, 0 refreshed, 1 held (full: board_open 3 past board_open_max 2)'
+  assert_line '1 1'
+  run grep -c ' add ' "$NLOG"
+  assert_output 1
+  run grep ' add ' "$NLOG"
+  assert_output --partial 'fix(x): asked #requested'
+  # Negative control: under the limit the held row files.
+  echo board_open_max=10 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_success
+  assert_output 'room: board_open 3 of board_open_max 10'
+  run up
+  assert_line '1 0'
+  run grep -c ' add ' "$NLOG"
+  assert_output 2
+}
+
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
   claim ar-2 interrupts_per_session 2 max 1 20
