@@ -130,7 +130,7 @@ Actions: {prs} PRs created, {issues} GitHub issues created
 
 ## Notes
 
-- PRs come from `day-log` (one record per day, same data as the hub Today tab); reviews use the `gh` CLI (per `gh-workflows` skill) + git + filesystem reads
+- PRs come from `day-log` (one record per day, same data as the hub Log tab); reviews use the `gh` CLI (per `gh-workflows` skill) + git + filesystem reads
 - `gh` auth comes from `gh auth login` state, not MCP server config
 - Notes activity reads `~/.notes/journal/daily/<date>.md` + `~/.notes/inbox/<date>.md`
 - Analysis data from `/daily:analysis` is automatically included if available

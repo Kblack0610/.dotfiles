@@ -1,5 +1,5 @@
 "use strict";
-// The Actions tab: what the fleet's machinery did (shepherd nudges, skips and escalations,
+// Log's Actions section: what the fleet's machinery did (shepherd nudges, skips and escalations,
 // dispatch starts and reaps, pages, failed runs, queue adds and finishes), newest first and
 // grouped by local day. /api/actions reads the ledgers each writer already keeps, through the
 // same reader as `hub actions`. The chips filter by actor, then verb; their counts cover the
@@ -12,15 +12,15 @@ const ast = { data: null, err: null, hours: 24, actor: "", verb: "" };
 
 const refreshActions = coalesce(async () => {
   try { ast.data = await api("/api/actions?hours=" + ast.hours); ast.err = null; } catch (e) { ast.err = e.message; }
-  if (st.tab === "actions") renderActions();
+  if (st.tab === "log") renderActions();
 });
 
-// Open the tab filtered to one actor (and verb), from another tab's link.
+// Open Log at its Actions section filtered to one actor (and verb), from another tab's link.
 function showActions(actor, verb) {
   ast.actor = actor || "";
   ast.verb = verb || "";
-  setTab("actions");
-  renderActions();
+  st.section = "actions";
+  setTab("log");
 }
 
 const chipBtn = (on, attr, val, label, n) =>
@@ -55,7 +55,7 @@ function byDay(rows) {
     if (k !== day) {
       if (day) html += `</div>`;
       day = k;
-      html += `<h2 class="sec">${esc(d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }))}</h2><div class="card flist">`;
+      html += `<h3 class="sub">${esc(d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }))}</h3><div class="card flist">`;
     }
     html += actionRow(a);
   }
@@ -74,11 +74,11 @@ function renderActions() {
   const verbs = d.counts[ast.actor] || {};
   const total = !ast.actor ? Object.values(d.counts).reduce((s, v) => s + sumOf(v), 0)
     : ast.verb ? verbs[ast.verb] || 0 : sumOf(verbs);
-  const shown = rows.length < total ? ` <span class="muted">newest ${rows.length} of ${total}</span>` : "";
+  const shown = rows.length < total ? ` <span class="muted">newest ${rows.length} of ${total} in the window</span>` : "";
   const errs = d.errors.map((e) => `<div class="card err">unread: ${esc(e)}</div>`).join("");
-  const list = rows.length ? byDay(rows)
+  const list = rows.length ? byDay(rows.slice(0, LOG_ROWS)) + older(rows.length - LOG_ROWS)
     : `<div class="empty">Nothing recorded${ast.actor ? " for this filter" : ""} in the window.</div>`;
-  paint(el, `<div class="bhead"><span>Actions${shown}</span></div>${windows}${actionChips(d.counts)}${errs}${list}`);
+  paint(el, `<div class="bhead"><span>what the machinery did${shown}</span></div>${windows}${actionChips(d.counts)}${errs}${list}`);
 }
 
 $("actions").addEventListener("click", (e) => {
@@ -93,8 +93,8 @@ $("actions").addEventListener("click", (e) => {
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".
-const actionsFeed = pushed("actions", ["actions", "fleet", "queue"], refreshActions);
-TABS.actions = {
+const actionsFeed = pushed("log", ["actions", "fleet", "queue"], refreshActions);
+LOG_PARTS.push({
   show() { renderActions(); actionsFeed.show(!ast.data); },
   onEvent: actionsFeed.onEvent,
-};
+});

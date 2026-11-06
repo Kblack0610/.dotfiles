@@ -197,8 +197,8 @@ mod tests {
             d.0.join("tab.sock").exists(),
             "the dead hub's socket is left"
         );
-        request(&d.0, Tab::History, None).unwrap();
-        assert_eq!(take(&d.0), Some((Tab::History, None)));
+        request(&d.0, Tab::Log, None).unwrap();
+        assert_eq!(take(&d.0), Some((Tab::Log, None)));
         assert!(
             listen(&d.0).unwrap().is_some(),
             "the next hub takes it over"

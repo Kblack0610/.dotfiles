@@ -7,7 +7,7 @@
 // ~/.agent/shepherd/rundowns). The chat is the shepherd's own session, pinned first in the list:
 // opening it shows its transcript and a box that types into its pane, so an answer it gives there
 // is also kept as a rundown. The lines a pass skipped on purpose, with why, are the shepherd's
-// skips in the Actions tab.
+// skips in Log's Actions section.
 
 const shst = { data: null, err: null, open: new Set() };
 
@@ -15,6 +15,7 @@ const refreshShepherd = coalesce(async () => {
   try { shst.data = await api("/api/shepherd"); shst.err = null; } catch (e) { shst.err = e.message; }
   if (shst.data && shst.data.rundowns.length && !shst.open.size) shst.open.add(shst.data.rundowns[0].file);
   if (st.tab === "sessions") { renderList(); renderOverview(); }
+  if (st.tab === "log") renderLogRundowns();
 });
 
 // A stamp as the reader's local time; the file keeps UTC.
@@ -76,20 +77,26 @@ function passLine() {
   return `shepherd: ${run}${due}${bad}`;
 }
 
-// The overview's shepherd sections: the pass and what is due, then the kept rundowns.
+// The overview's shepherd section: the pass and what is due.
 function shepherdOverview() {
   const d = shst.data;
-  const list = d ? d.rundowns : [];
   const chat = d && d.target ? `<button class="btn" data-chat>Chat: open ${esc(d.target)} (${esc(d.status)})</button>`
     : '<span class="muted">No shepherd armed. Its lease is set when fleet-shepherd starts a pass.</span>';
   const pass = shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
     : passHtml(d.stats) + dueHtml(d.ledger);
-  const rds = shst.err ? "" : !d ? '<div class="empty">Loading.</div>'
-    : list.length ? list.map(rundownCard).join("")
-    : '<div class="empty">No rundowns kept yet. The shepherd writes one with <code>fleet-shepherd log --rundown</code> each time it sums up the fleet or answers you in its session.</div>';
-  return fold("shep", "Shepherd", `<div class="ovbar">${chat}</div>${pass}`) +
-    fold("rundowns", `Rundowns <span class="muted">${list.length ? `${list.length} newest` : ""}</span>`, rds);
+  return fold("shep", "Shepherd", `<div class="ovbar">${chat}</div>${pass}`);
 }
+
+// Log's Rundowns section: the shepherd's kept sum-ups, newest first.
+function renderLogRundowns() {
+  const d = shst.data, list = d ? d.rundowns : [];
+  const el = $("log-rundowns");
+  paint(el, shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
+    : list.length ? `<div class="muted">${list.length} newest</div>` + list.slice(0, LOG_ROWS).map(rundownCard).join("") + older(list.length - LOG_ROWS)
+    : '<div class="empty">No rundowns kept yet. The shepherd writes one with <code>fleet-shepherd log --rundown</code> each time it sums up the fleet or answers you in its session.</div>');
+}
+const logShepFeed = pushed("log", ["shepherd"], refreshShepherd);
+LOG_PARTS.push({ show() { renderLogRundowns(); logShepFeed.show(!shst.data); }, onEvent: logShepFeed.onEvent });
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;
@@ -100,7 +107,7 @@ $("scroll").addEventListener("click", (e) => {
   }
 });
 // Remember which rundowns are open, so a re-render after a new one keeps the reader's place.
-$("scroll").addEventListener("toggle", (e) => {
+$("log-rundowns").addEventListener("toggle", (e) => {
   const f = e.target.dataset && e.target.dataset.file;
   if (f) { if (e.target.open) shst.open.add(f); else shst.open.delete(f); }
 }, true);
