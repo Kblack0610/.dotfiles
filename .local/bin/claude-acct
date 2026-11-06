@@ -169,14 +169,15 @@ cmd_pick() {
     IFS=$'\037' read -r _ name dir note <<< "$b"
     echo "claude-acct: $name ($note)" >&2
     # Told, never refused: a human start goes ahead whatever the pace, and never moves to the
-    # paid Lazer reserve on its own; the hint names it, `cl --lazer` is the human's choice.
+    # paid Lazer reserve on its own; the hint names it, `cl --lazer` is the human's choice. The
+    # one automatic path onto Lazer is a dispatch run pass's spill (fleet-dispatch start_item).
     local rows
     rows=$(usage_json nospend | jq -s .)
     if [[ "$(jq -r --arg n "$name" '.[] | select(.name == $n) | .over_pace' <<< "$rows")" == true ]]; then
         echo "claude-acct: $name is over its weekly pace" >&2
     fi
     if jq -e 'length > 0 and all(.[]; (.week_used // 0) >= 100 or (.five_hour // 0) >= 100)' <<< "$rows" >/dev/null; then
-        echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve" >&2
+        echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve, where dispatch passes already spill Sonnet-lane items" >&2
     fi
     printf '%s\n' "$dir"
 }
@@ -205,12 +206,13 @@ email_of() {
 
 # live_of -> one line per running claude, "@" and the account dir it runs under. The "@" keeps the
 # main account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as
-# one main session to grep.
+# one main session to grep. A claude on the Lazer gateway spends no account, so it is not one.
 live_of() {
     local c
     for c in "$PROC"/[0-9]*/comm; do
         [[ "$(cat "$c" 2>/dev/null)" == claude ]] || continue
         c="${c%/comm}"
+        [[ -z "$(gateway_of "${c##*/}")" ]] || continue
         printf '@%s\n' "$(config_dir_of "${c##*/}")"
     done
 }
@@ -524,6 +526,11 @@ norm_dir() {
 # config_dir_of <pid> -> the CLAUDE_CONFIG_DIR that process runs under, empty = main
 config_dir_of() {
     norm_dir "$(tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n1)"
+}
+
+# gateway_of <pid> -> the ANTHROPIC_BASE_URL that process runs on (claude-lazer), empty = an account
+gateway_of() {
+    tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | sed -n 's/^ANTHROPIC_BASE_URL=//p' | head -n1
 }
 
 # ppid_of <pid> -- the fourth field of stat, read after the comm, which may hold spaces
@@ -944,6 +951,8 @@ park_flow() {
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
     [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
     from=$(config_dir_of "$pid")
+    # A claude-lazer pane (a dispatch spill, a `cl --lazer`) is on no account: a resume would put it on one.
+    [[ -z "$(gateway_of "$pid")" ]] || { refuse "it runs on the Lazer gateway, not an account; a resume would put it on one"; return; }
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
     if [[ "$verb" == move && -n "$to_name" ]]; then
         # The named account's own score line, the same numbers best() ranks.
