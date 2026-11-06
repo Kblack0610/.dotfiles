@@ -106,6 +106,10 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # refactor) is cleanup (cleanup_row). Cleanup ranks behind a red and ahead of everything else, promotes as high whatever its #low, and a tier-3 one merges behind the red-fix gate
 # at any hour (the human's asks of 2026-11-05 and 2026-11-06). Empty turns it off.
 : "${DISPATCH_CLEANUP_PROJECTS=agent-runtime notes-cockpit}"
+# A row that touches what policy.md's tier 3 calls shared infrastructure is never cleanup, whatever
+# its kind: a `chore(deps): bump X` or a `fix: the deploy step` is an upgrade or a pipeline change,
+# not a deletion, so it stays off the merging lane (review of #1222, 2026-11-06). Matched case-blind.
+: "${DISPATCH_CLEANUP_NOT:=\b(deps?|dependenc(y|ies)|bump(s|ed)?|pin(s|ned)?|upgrade[sd]?|version|migrat(e|es|ion|ions)|schema|deploy(s|ment)?|release|ci|workflows?)\b}"
 # Runnable `cleanup` items under which a pass tops cleanup rows up from the board even above the low
 # water: a full queue of other work kept every cleanup row off the board (2026-11-06). 0 turns it off.
 : "${DISPATCH_CLEANUP_FLOOR:=2}"
@@ -325,14 +329,16 @@ row_worker() {
 
 # cleanup_row <project> <row text> -> 0 when the row cleans up an AI system: its project is in
 # DISPATCH_CLEANUP_PROJECTS and its kind is cleanup in kinds.json (KIND_CLEANUP: true, or a pattern
-# the body matches too), else 1. RANK_JQ's `cleanup`, sorted right behind a red; the one source.
+# the body matches too) and the body names no shared infrastructure (DISPATCH_CLEANUP_NOT), else 1.
+# RANK_JQ's `cleanup`; the one source.
 cleanup_row() {
   local body="${2%%<!--*}" k c
   [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || { echo 1; return; }
   load_kinds
   k=$(row_kind "$body")
   c=${KIND_CLEANUP[${k:-_}]:-}
-  if [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"${body#- \[?\] }"; }; then echo 0; else echo 1; fi
+  body=${body#- \[?\] }
+  if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
 }
 
 # red_row <row text> -> 0 when the row is a red triage filed (DISPATCH_RED_ROWS), else 1: RANK_JQ's `red`.
