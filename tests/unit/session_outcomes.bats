@@ -239,6 +239,20 @@ EOF
   assert_output '{"exits":2,"denied":1}'
 }
 
+@test "guards: each hook denial counted by the name its reason leads with, PreToolUse and Stop alike" {
+  cat > "$TR/guards.jsonl" <<'EOF'
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","is_error":true,"content":"PreToolUse:Bash hook error: block-poll: This foreground loop polls"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"PreToolUse:Bash hook error: block-poll: `gh run watch` polls"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c","is_error":true,"content":"PreToolUse:ExitPlanMode hook error: plan-standard: 1 gap(s)"}]}}
+{"type":"user","message":{"content":"Stop hook feedback:\nfocus-gate: this session edited files"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"d","is_error":true,"content":"PreToolUse:Bash hook error: Use uv add instead of bare pip."}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e","is_error":false,"content":"PreToolUse:Bash hook error: block-poll: quoted in output"}]}}
+{"type":"user","message":{"content":"please mention Stop hook feedback:\nfocus-gate: in the doc"}}
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_transcript_metrics '$TR/guards.jsonl' | jq -c '[.guards, .plan_gate.denied]'"
+  assert_output '[{"block-poll":2,"plan-standard":1,"focus-gate":1},1]'
+}
+
 @test "activity: a commit ends the edit count, for edits made through Bash" {
   cat > "$TR/act.jsonl" <<'EOF'
 {"type":"assistant","message":{"id":"m1","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"git add -A && git commit -m x"}}]}}

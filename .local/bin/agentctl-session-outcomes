@@ -181,6 +181,7 @@ cmd_run() {
           corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null),
           plan_gate: ($mm.plan_gate // null),
+          guards: ($mm.guards // null),
           activity: ($mm.activity // null),
           uses: ($mm.uses // null),
           time_use: $time_use[0],
