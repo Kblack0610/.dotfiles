@@ -344,3 +344,30 @@ EOF
   refute_output --partial 'a lesson'
   assert_output --partial 'Lessons: `~/.agent/lessons/proj.md`'
 }
+
+@test "regen-anchor: large plan directories stay capped without broken pipes" {
+  seed_anchor
+  python3 - "$HOME/.agent/plans/proj" <<'PYTHON'
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for i in range(2000):
+    path = root / (f"plan-{i:04d}-" + "x" * 160 + ".md")
+    path.touch()
+    os.utime(path, (1000000000, 1000000000))
+for i in range(7):
+    path = root / f"recent-{i}.md"
+    path.touch()
+    os.utime(path, (1000000010 + i, 1000000010 + i))
+for name in ("active", "archive", "_archive", "tasks"):
+    (root / name).mkdir()
+PYTHON
+  # An ignored SIGPIPE makes grep report EPIPE, as in the scheduled runner.
+  run bash -c 'trap "" PIPE; exec bash "$@"' _ "$REGEN" proj
+  assert_success
+  refute_output --partial 'Broken pipe'
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
+}
