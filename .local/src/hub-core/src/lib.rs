@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod projects;
 pub mod prom;
 pub mod queue;
+pub mod reds;
 pub mod session_actions;
 pub mod tasks;
 pub mod text;

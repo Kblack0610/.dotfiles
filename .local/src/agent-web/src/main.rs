@@ -25,6 +25,7 @@ mod outcomes;
 mod pipeline;
 mod projects;
 mod queue;
+mod reds;
 mod shepherd;
 mod transcript;
 
@@ -136,6 +137,7 @@ async fn main() -> Result<()> {
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
+        .route("/api/reds", get(reds::get))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))

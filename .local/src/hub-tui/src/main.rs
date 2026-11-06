@@ -475,6 +475,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     if app.tab == Tab::Fleet {
         app.read_fleet();
     }
+    if app.tab == Tab::Infra {
+        app.read_reds();
+    }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {
         app.read_focus();
