@@ -96,8 +96,8 @@ test("an ask on a queue card says it is a question for you, with its routing onl
   const html = card([pane()], [ask({ judge: "human" })], item());
   assert.match(html, /<div class="qask-h" title="p, lab\/game-agent-2:c1, question, a1">Question for you<\/div>/);
   assert.doesNotMatch(html, /<div class="meta">p, /);
-  assert.doesNotMatch(html, /judge would/, "a judge that leaves it to you says nothing");
-  assert.match(card([pane()], [ask({ judge: "take-recommend" })], item()), /judge would take the recommendation \(no\)/);
+  assert.match(html, /Judge: deferred/, "a deferral says the judge left it to you");
+  assert.match(card([pane()], [ask({ judge: "take-recommend" })], item()), /Judge: would take the recommendation/);
 });
 
 test("a running item shows its estimate, and a past one as overdue", () => {

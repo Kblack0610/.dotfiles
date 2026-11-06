@@ -72,12 +72,47 @@ function sessionCard(a, inQueue) {
   return `<div class="card need k-${k}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}<div class="err"></div></div>`;
 }
 
-// The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
-// A judge that would leave it to the human says nothing the buttons do not.
+// The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card: what
+// it did or would do, the rule that decided it, then its reason. A deferral shows too, so the
+// card says why the judge left the ask to you. Empty only for an ask it never judged.
 function judgeText(a) {
-  if (!a.judge || a.judge === "human" || a.judge === "error") return "";
-  return a.judge === "take-recommend" ? `judge would take the recommendation (${esc(a.recommend)})`
-    : `judge would answer "${esc(a.judge.replace(/^answer:/, ""))}"`;
+  const j = a.judge || "";
+  if (!j) return "";
+  const live = a.answered_by === "judge", ans = j.startsWith("answer:") ? `"${j.slice(7)}"` : "";
+  const what = j === "human" ? "deferred"
+    : j === "take-recommend" ? (live ? "answered" : "would take the recommendation")
+    : ans ? `${live ? "answered" : "would answer"} ${ans}` : j;
+  return esc(`Judge: ${what}${a.rule ? ` (${a.rule})` : ""}${a.reason ? ` - ${a.reason}` : ""}`);
+}
+
+// An ask's Full log (agent-ask trace --json), read when its fold opens (askTrace) and kept here by
+// id, so a redraw shows the last read instead of reading again: the timeline, then the judge's
+// call (model, time, cost, prompt sha) with its Langfuse session and raw reply.
+askst.trace = {};
+function traceHtml(t) {
+  const ev = (t.events || []).map((e) => [`${(e.at || "").slice(5, 10)} ${(e.at || "").slice(11, 19)} ${e.event}`, e.detail]);
+  const c = t.call;
+  if (!c) return facts(ev) + '<div class="muted">No judge call line for this ask.</div>';
+  const model = c["gen_ai.response.model"] || c["gen_ai.request.model"];
+  const tok = c["gen_ai.usage.output_tokens"] != null ? `${c["gen_ai.usage.input_tokens"] || 0} in / ${c["gen_ai.usage.output_tokens"]} out` : "";
+  const call = facts([["call", c.id], ["agent", c.agent], ["model", model],
+    ["time", c.duration_ms != null ? `${(c.duration_ms / 1000).toFixed(1)}s` : ""],
+    ["cost", c.cost_usd != null ? `$${c.cost_usd.toFixed(2)}` : ""], ["tokens", tok],
+    ["prompt", c.prompt_sha ? `${c.prompt || ""} ${c.prompt_sha.slice(0, 7)}` : ""], ["exit", c.exit != null ? String(c.exit) : ""]]);
+  const lf = /^https?:\/\//.test(t.langfuse || "") ? `<div class="cline"><a href="${esc(t.langfuse)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "";
+  return facts(ev) + call + lf + (c.raw ? `<pre class="araw">${esc(c.raw)}</pre>` : "");
+}
+// The toggle of an ask's Full log fold (data-k "trace:<id>"), called before askst.open records
+// it: opening it reads the trace again and redraws through `draw`; a read that fails shows why in
+// the fold. A redraw re-inserts an open fold, which fires toggle too: askst.open already says
+// open then, so it reads nothing, or every redraw would read again.
+async function askTrace(e, draw) {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (!k || !k.startsWith("trace:") || !e.target.open || askst.open[k]) return;
+  const id = k.slice(6);
+  try { askst.trace[id] = traceHtml(await api(`/api/asks/${encodeURIComponent(id)}/trace`)); }
+  catch (err) { askst.trace[id] = `<div class="err">${esc(err.message)}</div>`; }
+  draw();
 }
 
 // An ask's answers, one button per option with what it does (agent-ask `--options a=...`), the
@@ -110,7 +145,9 @@ function askCard(a, inQueue) {
   const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
   const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? ago(a.created) : ""]);
   const body = a.title ? a.body : "";
-  const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session]]), askst.open);
+  const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
+  const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],
+    ["judge", a.judge], ["rule", a.rule], ["reason", a.reason], ["answered by", a.answered_by], ["answer note", a.answer_note]]) + log, askst.open);
   return `<div class="card need k-ask" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
     `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}<div class="err"></div></div>`;
 }

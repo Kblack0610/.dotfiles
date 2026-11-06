@@ -107,6 +107,7 @@ async fn main() -> Result<()> {
         .route("/api/session-options", get(session_options))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/asks/{id}/trace", get(ask_trace))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
@@ -828,11 +829,18 @@ struct Ask {
     /// The background the asker gave (`--context`), and why it recommends its option (`--why`).
     context: String,
     why: String,
+    /// The judge's policy rule and its reason, who answered (human, judge, shepherd) and the
+    /// message an in-session answer came from: the card's Details fold.
+    rule: String,
+    reason: String,
+    answered_by: String,
+    answer_note: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
-/// claude_session, judge, answered_by, option_notes, context, recommend_why.
+/// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
+/// judge_reason, answer_note.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -864,6 +872,10 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     notes: col(18).split('|').map(String::from).collect(),
                     context: col(19).into(),
                     why: col(20).into(),
+                    answered_by: col(17).into(),
+                    rule: col(21).into(),
+                    reason: col(22).into(),
+                    answer_note: col(23).into(),
                 }
             })
         })
@@ -885,13 +897,28 @@ struct AnswerBody {
     answer: String,
 }
 
-async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
-    if b.id.is_empty()
-        || !b
-            .id
+/// An ask id as agent-ask makes them (mktemp's letters and digits), so nothing else reaches argv.
+fn ask_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+}
+
+/// One ask's Full log, `agent-ask trace <id> --json`: its timeline, the judge's call line and
+/// the Langfuse link. Read only when the card's Full log fold is opened.
+async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::Value>> {
+    if !ask_id_ok(&id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let out = run_cmd("agent-ask", &["trace", &id, "--json"], None).await?;
+    serde_json::from_str(&out)
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+}
+
+async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
+    if !ask_id_ok(&b.id) {
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
     if b.answer.trim().is_empty() {
@@ -1225,6 +1252,28 @@ mod tests {
             (a.context.as_str(), a.why.as_str()),
             ("the background", "it is cheaper")
         );
+        // judge_rule, judge_reason and answer_note after them, for the Details fold.
+        let ruled = "R1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\thuman\tjudge\t\t\t\ttaste\tonly you know\tin session: b\n";
+        let a = &parse_asks(ruled)[0];
+        assert_eq!(
+            (
+                a.judge.as_str(),
+                a.answered_by.as_str(),
+                a.rule.as_str(),
+                a.reason.as_str(),
+                a.answer_note.as_str()
+            ),
+            ("human", "judge", "taste", "only you know", "in session: b")
+        );
+        assert_eq!(parse_asks(noted)[0].rule, "");
+    }
+
+    #[test]
+    fn ask_ids_are_mktemp_shaped() {
+        assert!(ask_id_ok("JSVBgC"));
+        assert!(!ask_id_ok(""));
+        assert!(!ask_id_ok("../x"));
+        assert!(!ask_id_ok("a b"));
     }
 
     #[test]

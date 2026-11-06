@@ -117,6 +117,7 @@ $("home").addEventListener("click", (e) => {
 });
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {
+  askTrace(e, renderHome);
   if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;
 }, true);
 
