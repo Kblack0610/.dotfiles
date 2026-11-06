@@ -109,9 +109,20 @@ pub struct Page {
     /// Italic lead line, already carrying its own freshness stamp when the source has one.
     pub stat: Option<String>,
     pub rows: Vec<Row>,
+    /// Sections between the attention bucket and the quiet one, for what waits on the human but
+    /// is not an event of the feed; one with no lines is left out.
+    pub lead: Vec<Section>,
     /// Sections after the two buckets, each a heading and its bullet lines (without `- `);
     /// one with no lines is left out.
     pub more: Vec<(String, Vec<String>)>,
+}
+
+/// A lead section: its heading, a guide line under it saying what to do, and its bullet lines
+/// (without `- `).
+pub struct Section {
+    pub heading: String,
+    pub guide: Option<String>,
+    pub lines: Vec<String>,
 }
 
 /// Where a feed's page lives: `<root>/status/<slug>.md`.
@@ -170,6 +181,16 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
         }
         if attention.len() > cap {
             s.push_str(&format!("- ... and {} more\n", attention.len() - cap));
+        }
+    }
+
+    for sec in page.lead.iter().filter(|x| !x.lines.is_empty()) {
+        s.push_str(&format!("\n## {}\n", sec.heading));
+        if let Some(g) = &sec.guide {
+            s.push_str(&format!("{g}\n\n"));
+        }
+        for l in &sec.lines {
+            s.push_str(&format!("- {l}\n"));
         }
     }
 
@@ -302,6 +323,7 @@ mod tests {
     fn render_is_byte_stable_across_runs() {
         let page = Page {
             feed: Feed::Watches,
+            lead: Vec::new(),
             more: Vec::new(),
             stat: Some("10 watches - 8 OK, 2 tripped".into()),
             rows: vec![
@@ -318,6 +340,7 @@ mod tests {
     fn tripped_rows_sort_above_quiet_ones() {
         let page = Page {
             feed: Feed::Watches,
+            lead: Vec::new(),
             more: Vec::new(),
             stat: None,
             rows: vec![
@@ -347,6 +370,7 @@ mod tests {
     fn page_has_frontmatter_and_a_footer_rule() {
         let page = Page {
             feed: Feed::Comms,
+            lead: Vec::new(),
             more: Vec::new(),
             stat: Some("57 unread".into()),
             rows: vec![],
@@ -375,6 +399,7 @@ mod tests {
             .collect();
         let page = Page {
             feed: Feed::Comms,
+            lead: Vec::new(),
             more: Vec::new(),
             stat: None,
             rows,
@@ -410,6 +435,7 @@ mod tests {
     fn watches(stat: Option<&str>, rows: Vec<Row>) -> Page {
         Page {
             feed: Feed::Watches,
+            lead: Vec::new(),
             more: Vec::new(),
             stat: stat.map(str::to_string),
             rows,

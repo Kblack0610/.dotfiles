@@ -3,7 +3,7 @@
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
 #
-# `#p:` outbox lines and typed inbox lines need no model; the rest of a sweep goes to ONE model
+# `#p:` outbox lines, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
 # call (the conf's MODEL), which only proposes rows, a dup, a skip, and whether to plan first.
 # Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
 # edits a sheet, and a skipped or refused line stays put, recorded in the ingest record so later
@@ -14,7 +14,7 @@
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
-: "${INBOX_TRIAGE_CMD:=agentctl-run --role distill}"
+: "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # lines sent to the model per sweep, and rows per --backlog call
 : "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
@@ -28,11 +28,26 @@ LIB="$HERE/../lib"
 
 DRY=0; ONLY=""; BACKLOG=0; WATCH=0; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0
+OUT=""; WHY=""
 FLAG=""; RECORD=""; OUTBOX=""
 PAUSED="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/PAUSED"
 say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
+
+# ask <prompt>: one model call, its answer in OUT. A failed call keeps its stderr in the log and
+# its first words (a usage limit, an auth error) in WHY, which the sweep's outcome carries.
+# It runs from an empty directory, so no repo's Stop hook answers in place of the model.
+ask() {
+  local wd err rc
+  wd="$(mktemp -d)"; err="$(mktemp)"
+  # shellcheck disable=SC2086 # a word list by design, overridable in tests
+  OUT="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$1" 2>"$err")"; rc=$?
+  [ -s "$err" ] && head -n 20 "$err" >&2
+  [ "$rc" = 0 ] || WHY="$(cat - "$err" <<<"$OUT" | grep -m1 '[^[:space:]]' | clean 120)"
+  rm -rf -- "$wd" "$err"
+  return "$rc"
+}
 
 # One model answer line -> n, action, id, project, lane, plan (1 or empty), why, rows (joined
 # by RS), split by US.
@@ -82,6 +97,25 @@ move_out() {
   fi
 }
 
+# An outbox line that answers an open row: `<id>: <words>`.
+# shellcheck disable=SC2016 # jq source, not shell
+ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
+
+# answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
+# join the open row as a dup does (moved to the row's project, then `file --dup`, which keeps them
+# as the row's `was:` line), and a decide row is closed by it. No open row is `left`, with why.
+answer() {
+  local id="$1" raw="$2" text="$3" row p lane ty
+  row="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id and (.lane == "human" or .lane == "agent"))
+    | [.project, .lane, (.type // "-")] | join("\u001f")) // ""' <<<"$4")"
+  [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
+  IFS=$'\x1f' read -r p lane ty <<<"$row"
+  move_out "$p" "$raw" "$text" || return 1
+  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
+  [ "$ty" = decide ] || return 0
+  pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
+}
+
 # The flag every notes inbox writer touches (`ptask add`, the Focus sweep): its stamp, or empty.
 flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 
@@ -97,7 +131,7 @@ homes_rule() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open prompt out rc wd
+  local lines="$1" board="$2" names homes srcs wide batch open prompt out
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
@@ -115,7 +149,7 @@ route() {
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
@@ -129,12 +163,8 @@ skip: the line is not a task (a thought, a question, a note to self), you cannot
 $batch
 ## Open rows (id, project, lane, text)
 $open"
-  wd="$(mktemp -d)"
-  # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  # An empty directory, so no repo's Stop hook answers in place of the model.
-  out="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$prompt" 2>/dev/null)"; rc=$?
-  rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "model call failed"; return 1; }
+  ask "$prompt" || { say "model call failed: ${WHY:-no output}"; return 1; }
+  out="$OUT"
   grep -qx 'INBOX-TRIAGE-START' <<<"$out" || { say "model returned no answer block"; return 1; }
   local n action id dest lane plan why rows r from raw text src
   local -a args rowv
@@ -152,9 +182,9 @@ $open"
         if [ "$action" = dup ]; then
           id="$(clean 40 <<<"$id")"
           [ -n "$id" ] || { left "$from" "$text" "dup of no row"; continue; }
-          args=(--dup "$id")
-          # A dup's project is the open row's, never the model's word for it.
+          # A dup's project and lane are the open row's, never the model's word for them.
           dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$board")"
+          args=(--dup "$id" --lane "$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .lane) // "human"' <<<"$board")")
         else
           IFS=$'\x1e' read -r -a rowv <<<"$rows"
           for r in "${rowv[@]}"; do
@@ -216,7 +246,7 @@ backlog() {
 }
 
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" listing prompt out rc wd
+  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" listing prompt out
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
@@ -225,7 +255,7 @@ backlog_batch() {
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci run decide check. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
@@ -239,11 +269,8 @@ A row marked (doing) is in progress: keep or rewrite it only. Indented lines und
 
 ## Rows (n. [id] text, child rows indented)
 $listing"
-  wd="$(mktemp -d)"
-  # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  out="$(cd "$wd" && $INBOX_TRIAGE_CMD -p "$prompt" 2>/dev/null)"; rc=$?
-  rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "$p ($lane): model call failed"; return 1; }
+  ask "$prompt" || { say "$p ($lane): model call failed: ${WHY:-no output}"; return 1; }
+  out="$OUT"
   grep -qx 'INBOX-TRIAGE-START' <<<"$out" || { say "$p ($lane): model returned no answer block"; return 1; }
   local n action id dest row why raw own
   local -a seen=()
@@ -334,8 +361,14 @@ pass() {
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; return 1; }
+  # A `<id>: <words>` line answers its open row, with no model.
+  [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
+    answer "$p" "$raw" "$text" "$board" || rc=1
+  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" ".[] | select((.project | not) and (.text | test(\$re)))
+    | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
   all='[]'
-  [ -z "$ONLY" ] && all="$(jq -c '[.[] | select(.project | not) | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
+  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" '[.[] | select((.project | not) and (.text | test($re) | not))
+    | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
@@ -361,7 +394,7 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 summary verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; WHY=""
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
@@ -369,7 +402,7 @@ sweep() {
     [ "$DRY" = 1 ] && break
     [ "$OVER" = 0 ] && [ "$(flag_state)" = "$before" ] && break
   done
-  summary="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED"
+  summary="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED${WHY:+; model call failed: $WHY}"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
@@ -436,7 +469,7 @@ main() {
   local rc=0 summary verdict cfg dir
   if [ "$BACKLOG" = 1 ]; then
     backlog_pass || rc=1
-    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED"
+    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED${WHY:+; model call failed: $WHY}"
     say "$summary"
     [ "$DRY" = 1 ] && return "$rc"
     verdict=NOOP
