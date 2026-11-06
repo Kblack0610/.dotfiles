@@ -167,8 +167,9 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,
-# then the row's due date (overdue, today, within 3 days, later or none), then cleanup of an AI system
-# (cleanup_row), then worker order, then the row's priority, then stage, then oldest first.
+# then the row's due date (overdue, today, within 3 days, later or none), then what the human asked
+# for (#requested, as fill_night ranks it), then cleanup of an AI system (cleanup_row), then worker
+# order, then the row's priority, then stage, then oldest first.
 # rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
@@ -183,16 +184,18 @@ def rank_fields($today; $pprio):
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
   | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
-         due_in: $dd, age: (if $cd == null then 0 else -$cd end)}
+         due_in: $dd, age: (if $cd == null then 0 else -$cd end),
+         req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
   | . + {why: ([(if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
                  elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
+                (if .req == 0 then "requested" else empty end),
                 (if .cleanup == 0 then "cleanup" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
-def rank: sort_by((.pprio // 2), (.due // 3), (.cleanup // 1), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+def rank: sort_by((.pprio // 2), (.due // 3), (.req // 1), (.cleanup // 1), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -1179,6 +1182,7 @@ item_brief() {
   fi
   jq -r .task <<<"$it"
   echo
+  [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   row=$(item_row "$it")
   key=$(cut -d$'\x1f' -f4 <<<"$row")
   if [ -n "$row" ] && [ -n "$pr_only" ]; then

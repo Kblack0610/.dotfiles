@@ -586,6 +586,16 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app fix app stale'
 }
 
+@test "rank: a #requested row goes ahead of a cleanup row and a more urgent one in its due bucket; a due row stays ahead of it" {
+  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#high'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'; c lookalike 1 1 '#requested-ish')
+  run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
+  assert_output 'due asked cleanup urgent lookalike'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
+  assert_output 'requested, #low, beta'
+}
+
 @test "suggest: says so when no project has an open agent row" {
   project game beta "$SANDBOX/repos/game"
   run cmd_suggest
@@ -2383,6 +2393,16 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   cmd_start --item r >/dev/null || fail "start r"
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_output --partial '/one-shot --pr-only fix r'
+  assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
+}
+
+@test "red: a plain item's brief does not name fix-red" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug p --tags 'night' "fix p"
+  cmd_start --item p >/dev/null || fail "start p"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  refute_output --partial 'fix-red'
 }
 
 @test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
