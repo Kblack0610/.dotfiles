@@ -196,6 +196,17 @@ impl crate::table::Row for Job {
             s => self.state.name() == s,
         }
     }
+    /// A bare word searches what the row says, not its state, which the chips filter.
+    fn text(&self) -> String {
+        [
+            self.name.as_str(),
+            &self.detail,
+            &self.result,
+            self.source.name(),
+        ]
+        .join("\n")
+        .to_lowercase()
+    }
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -439,5 +450,23 @@ mod tests {
         sort(&mut v);
         let names: Vec<_> = v.iter().map(|j| j.name.as_str()).collect();
         assert_eq!(names, ["r", "q", "new", "old"]);
+    }
+
+    #[test]
+    fn a_bare_word_searches_what_a_job_says_not_its_state() {
+        use crate::table::View;
+        let jobs = vec![
+            Job::new(Source::Ci, "gate", State::Done),
+            Job::new(Source::Agentctl, "done-check", State::Running),
+        ];
+        let v = View::new::<Job>("done", "", "", "");
+        assert_eq!(v.apply(&jobs).len(), 1, "state is the chips' to filter");
+        let v = View::new::<Job>("source:ag", "", "", "");
+        let f = &v.facets(&jobs)[0];
+        assert_eq!(f.on.as_deref(), Some("ag"));
+        assert!(
+            f.values.iter().any(|x| x.value == "ag" && x.n == 1),
+            "a prefix is its own option"
+        );
     }
 }

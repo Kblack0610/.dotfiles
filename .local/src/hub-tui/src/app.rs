@@ -1997,7 +1997,7 @@ impl App {
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.table.typing.is_some() => {
-                "type a query (word, key:value, -key:value), Enter applies, Esc clears".into()
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Infra if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()

@@ -2,7 +2,7 @@
 //! alone decides what a query keeps and how a sort orders (docs/dashboards.md rule 7). agent-web
 //! draws the same view from the same summary.
 //!
-//! `/` types the query (Enter applies, Esc clears it), `f` steps the state chip, `s` sorts by
+//! `/` types the query (Enter applies, Esc drops the draft), `f` steps the state chip, `s` sorts by
 //! the next column, `S` flips the direction, `x` clears the whole view.
 
 use hub_core::table::{Dir, Row, View};
@@ -25,7 +25,7 @@ pub enum Took {
 #[derive(Debug, Default)]
 pub struct DataTable {
     pub view: View,
-    /// The query being typed after `/`, applied on Enter.
+    /// The query being typed after `/`, applied on Enter, dropped on Esc.
     pub typing: Option<String>,
 }
 
@@ -52,9 +52,10 @@ impl DataTable {
         if let Some(t) = self.typing.as_mut() {
             match code {
                 KeyCode::Enter => self.view.q = self.typing.take().unwrap_or_default(),
+                // The draft goes and the query in force stays; Esc again clears the view.
                 KeyCode::Esc => {
                     self.typing = None;
-                    self.view.q.clear();
+                    return Took::Typing;
                 }
                 KeyCode::Backspace => {
                     t.pop();
@@ -169,11 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn esc_while_typing_clears_the_query() {
+    fn esc_while_typing_keeps_the_query_in_force() {
         let mut t = DataTable::default();
         t.view.q = "dream".into();
         t.key::<Job>(KeyCode::Char('/'));
-        t.key::<Job>(KeyCode::Esc);
-        assert!(t.is_default());
+        t.key::<Job>(KeyCode::Char('x'));
+        assert_eq!(t.key::<Job>(KeyCode::Esc), Took::Typing);
+        assert_eq!((t.view.q.as_str(), t.typing.is_none()), ("dream", true));
     }
 }
