@@ -54,7 +54,7 @@
 #
 # ONE RECORD FOR "WAITING ON THE HUMAN". A session the human is attached to asks in the
 # conversation AND posts here in the same turn (a Stop check blocks a question left unfiled):
-# post prints the ask into the session and pages once, every board reads these files, and the
+# post prints the ask into the session (no page per ask: `hub needs --page` pages), every board reads these files, and the
 # ask closes itself when the human answers (typed into the session, or `answer` from a board,
 # which also types the answer into the session), or drops it. A human-only action the session
 # will not wait on is a human-sheet row, not an ask.
@@ -70,7 +70,7 @@
 # they post and exit, and the ask's `resume` command consumes the answer. `post --wait` is a
 # secondary convenience for an attended agent.
 #
-# ANSWERING IS STARTING. `answer` records the decision, notifies, and then hands the id to
+# ANSWERING IS STARTING. `answer` records the decision (no page: only the human answers) and then hands the id to
 # `ask-resume`, which runs the ask's `resume` command (detached, through agentctl-run) and
 # exits silently for an ask that has none. Every surface
 # that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
