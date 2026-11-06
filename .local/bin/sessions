@@ -109,10 +109,13 @@ load_live() {
   while IFS="$TAB" read -r id st nm cwd started pid entry; do
     [ -n "$id" ] || continue
     LIVE_STATUS["$id"]="$st"
-    LIVE_NAME["$id"]="$(_unsentinel "$nm")"
+    # _unsentinel inline: a $(...) per field is three forks per live session, on every
+    # keystroke of the search window.
+    [ "$nm" = - ] && nm=""; [ "$cwd" = - ] && cwd=""; [ "$entry" = - ] && entry=""
+    LIVE_NAME["$id"]="$nm"
     LIVE_START["$id"]="$started"
-    LIVE_CWD["$id"]="$(_unsentinel "$cwd")"
-    LIVE_ENTRY["$id"]="$(_unsentinel "$entry")"
+    LIVE_CWD["$id"]="$cwd"
+    LIVE_ENTRY["$id"]="$entry"
   done < <(live_lines)
 }
 
@@ -405,11 +408,13 @@ cmd_index() {
 }
 
 index_rows() {
-  # Ensure an index exists, refresh it cheaply, then emit it newest-first.
+  # [--cached] Ensure an index exists, refresh it unless --cached, then emit it newest-first.
+  # The refresh is a claude-recall run, most of the time a search keystroke took, so the
+  # search window opens on the cached index and refreshes once (cmd_search).
   if [ ! -f "$INDEX" ]; then
     printf 'sessions: building the index for the first time, one moment...\n' >&2
     cmd_index >/dev/null 2>&1 || return 1
-  else
+  elif [ "${1:-}" != --cached ]; then
     cmd_index >/dev/null 2>&1 || true
   fi
   sort -t"$TAB" -k4,4nr "$INDEX" 2>/dev/null
@@ -488,18 +493,20 @@ cmd_show() {
 # ----------------------------------------------------------------- search ---
 
 cmd_filter() {
-  # $1 = query (may be empty) -> "id \t rendered row" for every matching session.
+  # [--cached] query (may be empty) -> "id \t rendered row" for every matching session.
   #
   # fzf runs this on every keystroke via `reload`, with its own matcher disabled,
   # so that typing searches the WHOLE card (title history, first and last prompt,
   # touched files, project, branch) while the list stays a tidy fixed-width table.
   # Terms are ANDed and case-insensitive: "voice home" narrows to both.
+  local cached=""
+  [ "${1:-}" = --cached ] && { cached=--cached; shift; }
   local q="${*:-}"
   load_live
   local live_ids=""
   local k; for k in "${!LIVE_STATUS[@]}"; do live_ids+="${k} "; done
 
-  index_rows | awk -F"$TAB" -v q="$q" -v now="$(date +%s)" -v live="$live_ids" '
+  index_rows $cached | awk -F"$TAB" -v q="$q" -v now="$(date +%s)" -v live="$live_ids" '
     function age(t,   d) {
       d = now - t; if (d < 0) d = 0
       if (d < 60)     return "now"
@@ -555,11 +562,16 @@ cmd_search() {
     return 0
   fi
 
+  # It opens on the cached index, so the list is there at once, and refreshes the index in
+  # the background, detached so closing the popup does not kill it. A keystroke filters the
+  # index as it stands by then. Not a start:reload: rows reordering under the cursor while
+  # you arrow down to the session two back would resume the wrong one.
   local id
-  id=$(cmd_filter "$q" | fzf \
+  [ -f "$INDEX" ] && setsid -f "$SELF" index >/dev/null 2>&1 </dev/null
+  id=$(cmd_filter --cached "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
         --disabled --query="$q" --wrap \
-        --bind="change:reload('$SELF' _filter {q})" \
+        --bind="change:reload('$SELF' _filter --cached {q})" \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
         --prompt="session> " --header='enter resume | ctrl-g full-text' \
       | cut -f1)
