@@ -3,6 +3,9 @@
 # a message.
 #
 #   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
+#   agent-hold claim <resource> [--by name] "<what>"   one session's exclusive use: fails
+#                                   while another session holds it, and the holder's own
+#                                   `check` passes (the agent machine's desktop: mac-desktop)
 #   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
 #   agent-hold release <resource>
 #   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
@@ -92,6 +95,39 @@ cmd_set() {
   echo "held: $resource"
 }
 
+# claim: a hold that one session takes for its own use, so two sessions never drive the
+# same desktop at once. Unlike `set`, it never replaces someone else's hold: the file is
+# created with noclobber, so of two racing claims exactly one wins. Re-claiming your own
+# refreshes it. A claim left by a dead session is released by whoever finds it.
+cmd_claim() {
+  local resource="${1:-}"; shift || true
+  need_resource "$resource"
+  local by="" reason=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) by="${2:-}"; shift 2 ;;
+      --) shift; reason="$*"; break ;;
+      -*) echo "agent-hold claim: unknown flag $1" >&2; exit 2 ;;
+      *)  reason="$*"; break ;;
+    esac
+  done
+  [ -n "$reason" ] || { echo "agent-hold claim: say what you are doing with it" >&2; exit 2; }
+  [ -n "$by" ] || by="$(default_by)"
+  by="$(oneline "$by")"
+  mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
+  local f="$HOLD_ROOT/$resource" body
+  body="$(printf 'resource: %s\nkind: claim\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
+    "$resource" "$(now_iso)" "$by" "$(oneline "$reason")")"
+  if [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then
+    printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
+  fi
+  if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
+    echo "claimed: $resource"; return 0
+  fi
+  echo "busy: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)" >&2
+  return 1
+}
+
 # Who is asking, for `check`: the same name `set` records as `by`, which is also the name
 # the shepherd and fleet-sessions use for a session.
 caller() { default_by; }
@@ -144,6 +180,10 @@ cmd_check() {
   [ -f "$f" ] || return 0
   local me
   me="$(caller)"
+  if [ -n "$me" ] && [ "$(field "$f" kind)" = claim ] && [ "$(field "$f" by)" = "$me" ]; then
+    echo "claimed: $resource by $me" >&2
+    return 0
+  fi
   if [ -n "$me" ] && in_list "$me" "$(field "$f" granted)"; then
     echo "granted: $resource for $me" >&2
     return 0
@@ -168,11 +208,12 @@ cmd_show() {
   cat "$HOLD_ROOT/$resource" 2>/dev/null || { echo "agent-hold: $resource is not held" >&2; exit 1; }
 }
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
   set)     cmd_set "$@" ;;
+  claim)   cmd_claim "$@" ;;
   grant)   cmd_grant "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;

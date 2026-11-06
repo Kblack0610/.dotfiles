@@ -7,7 +7,8 @@
 #   BUDGET_DAY_USD    the most the name may spend today, summed from calls.jsonl
 #   MAX_CALLS_HOUR    the most calls the name may make in an hour, counted from calls.jsonl
 # A conf without a key gets the default below. The day and hour checks run BEFORE the call:
-# over either, the run does not call, says why, reports BLOCKED and exits 75 (EX_TEMPFAIL).
+# over either, the run does not call, says why, reports BLOCKED and exits 75 (EX_TEMPFAIL). A
+# wrapper around the call does the same, and the oneshot drop-in counts 75 as a clean exit.
 # Only a named call (--agent, or AGENTCTL_NAME from the unit) is budgeted; a person running
 # agentctl-run by hand is not an automated lane.
 #

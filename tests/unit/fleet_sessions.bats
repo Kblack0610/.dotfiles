@@ -251,10 +251,18 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'moved:a moved on (done)'
   run item_of "$(qi "running${t}lab:s2${t}sid-9${t}a${t}0")" sid-9 lab:s1 1 "$start"
   assert_output 'moved:a moved on (running in lab:s2)'
-  # running here is its own; waiting here is neither, and either beats one that moved on
+  # running here is its own; waiting here is only named (here:), and either beats one that moved on
   run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "running${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
   assert_output 'own:b'
   run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "waiting${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'here:b'
+  # an item added by hand records no session:, only this Claude session: it runs here, even in a
+  # tmux session shared by several claudes; one that names another Claude session is not this one's
+  run item_of "$(qi "running${t}-${t}sid-9${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
+  assert_output 'own:c'
+  run item_of "$(qi "waiting${t}-${t}sid-9${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
+  assert_output 'here:c'
+  run item_of "$(qi "running${t}-${t}sid-8${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
   [ "$output" = - ]
   # session: alone: a done item counts only when it finished after this claude started (names recycle)
   run item_of "$(qi "done${t}lab:s1${t}-${t}a${t}500")" sid-9 lab:s1 1 "$start"
@@ -804,6 +812,27 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = null ]
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
+}
+
+@test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .item <<<"$output")" = null ]
+  # dispatched: its tmux session, a board row
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ar-9\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-9\norigin: run\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\n---\nfix wave save\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-ar-9.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"ar-9","is":"own","row":"apociseum:ar-9","origin":"run"}' ]
+  # added by hand: no session:, only this Claude session among its sessions, its story row in row:
+  rm -r "$HOME/.agent/queue/running"; mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: hand-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nrow: agent-runtime:ar-660\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nfix it\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-hand-fix.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
@@ -1693,7 +1722,7 @@ state_doc() {
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
  "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
-  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
+  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123","item":{"slug":"fix-x","is":"own"}},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
   "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
 JSON
@@ -1743,6 +1772,9 @@ agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
 agent_sessions{bucket="WORKING"} 1
+# HELP agent_sessions_unlinked Live sessions with no agent-queue item, by the item_of join.
+# TYPE agent_sessions_unlinked gauge
+agent_sessions_unlinked 1
 # HELP agent_asks_open Pending asks waiting on the human.
 # TYPE agent_asks_open gauge
 agent_asks_open 2
