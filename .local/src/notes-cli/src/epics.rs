@@ -299,6 +299,21 @@ impl Index {
             .collect()
     }
 
+    /// The open rows of an agent board that sit under no feature: no epic, no `#of/`. Every
+    /// agent row is a story (`agent-queue add` files one per work item), so once the project has
+    /// an open epic, a row outside every epic is work no feature bar counts. Each row's id, else
+    /// its line. None while the project has no open epic: there is no feature to file it under.
+    pub(crate) fn stories_without_feature(&self, board: &str) -> Vec<String> {
+        if self.open_epics().next().is_none() {
+            return Vec::new();
+        }
+        md::section_numbered(board, sheet::TASKS)
+            .into_iter()
+            .filter(|(_, l)| md::is_open_task(l) && !is_epic(l) && parent_of(l).is_none())
+            .map(|(n, l)| md::row_id(l).unwrap_or_else(|| format!("line {n}")))
+            .collect()
+    }
+
     /// What is wrong with the tree, one line per open row: a parent that is not a row here,
     /// one closed under an open child, a loop, a chain past [`MAX_DEPTH`], and an epic with a
     /// parent. Where an epic or `#size/xl` may sit is row grammar (`projects::row_findings`).
@@ -551,6 +566,33 @@ Version: v1.4.0 #alpha
             "sheet line 14: 4 levels deep (epic, story, subtask is the most)",
         ];
         assert_eq!(f, want);
+    }
+
+    #[test]
+    fn doctor_names_the_board_stories_under_no_feature() {
+        let board = "## Tasks\n\
+                     - [/] feat(a): filed by an item #of/dm-1 <!-- id:dm-2 -->\n\
+                     - [/] feat(a): filed with no epic <!-- id:dm-3 -->\n\
+                     - [ ] chore(b): no id either\n\
+                     - [x] feat(a): done, never named <!-- id:dm-4 pr:7 -->\n\
+                     - [ ] feat(c): a subtask #of/dm-3 <!-- id:dm-5 -->\n";
+        let with_epic = project(
+            "unlinked",
+            &[
+                (
+                    "README.md",
+                    "# demo\nVersion: v1.4.0\n\n## Tasks\n- [ ] epic(a): menus <!-- id:dm-1 -->\n",
+                ),
+                ("agent/README.md", board),
+            ],
+        );
+        let ix = Index::of(&with_epic, V14);
+        assert_eq!(ix.stories_without_feature(board), vec!["dm-3", "line 4"]);
+        // NEGATIVE CONTROL: with no open epic there is no feature to name, so nothing is listed.
+        let none = project("unlinked-none", &[("agent/README.md", board)]);
+        assert!(Index::of(&none, V14)
+            .stories_without_feature(board)
+            .is_empty());
     }
 
     #[test]
