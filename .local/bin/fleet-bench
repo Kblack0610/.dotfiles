@@ -64,6 +64,10 @@
 #                                every open phase in expected order, all-done-by at the calibrated
 #                                and the recent pace, the drain, and the agent queue's items on the
 #                                dispatcher's slots; --baseline freezes it to compare
+#   fleet-bench epics [--json] [--project P]
+#                                each project's features from idea to verified: per epic its brief,
+#                                plans, rows, items, PRs and step, an ETA for the open ones, frozen
+#                                on first sight and on a scope change, and scored when it lands
 #   fleet-bench vs [<label>|latest] [--json]
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
@@ -78,7 +82,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
@@ -150,6 +154,9 @@ set -uo pipefail
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
+: "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
+: "${BENCH_ALL_ITEMS_CMD:=agent-queue list --json --state all}"   # every item, done included: an epic's items and PRs
+: "${BENCH_PLAN_DIRS:=$HOME/.claude/plans:$HOME/.claude-personal/plans:$HOME/.agent/plans}"   # an epic's plans, by their epic: line; the first dir wins a name
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -160,6 +167,7 @@ EFFECT="$DIR/effect.jsonl"   # improve: claims (each with its baseline) and verd
 RESPONSES="$DIR/responses.jsonl"   # fleet-bench respond: what answered each finding
 FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
+EPIC_BASELINES="$DIR/epic-baselines.jsonl"   # an open epic's ETA, frozen when first seen and on each scope change
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
@@ -188,6 +196,8 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
+# an epic (notes projects rollup) whose every leaf has closed: ready to verify
+def leaves_landed: .open == 0 and .done > 0;
 # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
 def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
   - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
@@ -469,6 +479,7 @@ cmd_sample() {
     say "no live session"
     publish_window "$t"
     findings_run "$t"
+    epics_step "$t"
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -485,7 +496,14 @@ cmd_sample() {
   say "$n sessions, $e new estimates, $s new scores"
   publish_window "$t"
   findings_run "$t"
+  epics_step "$t"
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
+}
+
+# epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is
+# said and the sample goes on: the session ETAs do not wait on the roadmaps.
+epics_step() {
+  epics_sample "$1" || say "epics: the step failed; nothing frozen or scored"
 }
 
 # latest_live -> the newest sample's rows joined with each session's newest estimate, and
@@ -791,6 +809,8 @@ cmd_scorecard() {
     echo
     queue_section "$t"
     echo
+    epics_section "$t"
+    echo
     models_section "$t"
     echo
     echo "## Sessions"
@@ -844,6 +864,31 @@ forecast_section() {
   else
     echo "- ? baseline $label could not be compared (fleet-bench vs $label)"
   fi
+}
+
+# epics_section <now>: per project how its epic ETAs ran (each scored against its newest frozen
+# baseline), the epics scored in the window, and the open ones behind their baseline.
+epics_section() {
+  local t="$1" ej
+  echo "## Epic ETAs"
+  echo
+  echo "An open epic's ETA is when its last leaf row should land, frozen when the epic is first seen and again on each scope change, then scored once every leaf has landed. Ratio is actual over predicted duration. Formulas: the fleet-bench skill."
+  echo
+  if ! ej=$(epics_json "$t" 2>/dev/null); then
+    echo "- ? the epics could not be read (fleet-bench epics)"
+    return 0
+  fi
+  jq -r --argjson t "$t" --argjson win "$BENCH_WINDOW_H" "$JQ_LIB"'
+    (.projects | map(select(.accuracy.scored > 0 or ([.epics[] | select(.baseline != null)] | length) > 0))) as $ps
+    | if ($ps | length) == 0 then "- no epic has a frozen ETA yet" else
+      ($ps[] | "- \(.project): \(.accuracy.scored) scored"
+        + (if .accuracy.scored > 0 then ", median ratio \(.accuracy.median_ratio // "-"), \(.accuracy.on_time) on time, \(.accuracy.within_slow) within the slow end" else "" end)
+        + ", \([.epics[] | select(.track == "behind")] | length) open behind, \([.epics[] | select(.track == "on track")] | length) on track"),
+      (.projects[] | .project as $p | .epics[] | select(.score != null and .score.landed_epoch >= $t - $win * 3600)
+        | "  - \($p) \(.id) \(.title): landed \(.score.landed_epoch | hm), predicted \(.score.pred_p50 | hm), ratio \(.score.ratio // "-"), \(.score.verdict)"),
+      (.projects[] | .project as $p | .epics[] | select(.track == "behind")
+        | "  - \($p) \(.id) \(.title): behind, frozen \(.baseline.p50 | hm), now \(.eta.cal_p50 // .eta.p50 | hm)")
+      end' <<<"$ej"
 }
 
 # bottleneck_section <now>: the hours lost in the window, biggest first, and the branches behind the
@@ -1233,7 +1278,7 @@ chain_counts() {
         else $a | map(select(.state == "running" and (.session // "") == "" and (.sessions // "") == "")) | length end))",
       "epic_linked_share=\(n(if $b == null or $p == null then null
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
-      "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(.open == 0 and .done > 0)] | length end))",
+      "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
       "requested_unstarted_h=\(n(if $b == null then null else [$agent[] | select(.requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
         | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
@@ -2572,18 +2617,21 @@ forecast_json() {
           | ($s | accuracy($minn; $lo; $hi) | INDEX(.basis)) as $acc
           | ($sch | map({key: (.target | sub(":[0-9]+$"; "")), value: {P: .finish_p50, S: .finish_slow}}) | from_entries) as $onsch
           | ($slots | if . == "" then 1 else tonumber end) as $K
+          # seconds a phase takes on each repo with enough measured phases, else the fleet: P as
+          # calibrated, S at the slow ratio
+          | def pace_of($pp): ($acc[$pp.basis | kind].factor // 1) as $fac
+              | {P: ($pp.m * 60 * $fac), S: ($pp.m * 60 * ($r24 // 1)),
+                 basis: ($pp.basis + (if $fac != 1 then " x\($fac)" else "" end))};
+          ($byp | map_values(select(length >= $minb) | pace_of({m: median, basis: "project-median(\(length))"}))) as $prp
+          | (if ($every | length) >= $minb then {m: ($every | median), basis: "fleet-median(\($every | length))"}
+             else {m: $def, basis: "default"} end | pace_of(.)) as $flp
           | ($it | map(
               (($map[0].trackers // {})[.project].repo // .project) as $repo
-              | ($byp[$repo] // []) as $j
-              | (if ($j | length) >= $minb then {m: ($j | median), basis: "project-median(\($j | length))"}
-                 elif ($every | length) >= $minb then {m: ($every | median), basis: "fleet-median(\($every | length))"}
-                 else {m: $def, basis: "default"} end) as $pp
-              | ($acc[$pp.basis | kind].factor // 1) as $fac
+              | ($prp[$repo] // $flp) as $pp
               | (.hold // "") as $h | ($h | sub("^after "; "")) as $par
               | {slug, project, state, mode,
                  phases: ((.phases // "" | [splits(" +")] | map(select(. != "")) | length | select(. > 0)) // $ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
-                 P: ($pp.m * 60 * $fac), S: ($pp.m * 60 * ($r24 // 1)),
-                 basis: ($pp.basis + (if $fac != 1 then " x\($fac)" else "" end)),
+                 P: $pp.P, S: $pp.S, basis: $pp.basis,
                  start: ((.started // .queued) | fromdateiso8601? // $t),
                  live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
                  after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
@@ -2603,7 +2651,12 @@ forecast_json() {
              finish_p50: ($rows | map(.p50) | max), finish_slow: ($rows | map(.slow) | max),
              not_scheduled: ($e | map(select(.why != null) | {slug, why})
                              + ($a.behind | map({slug: ., why: "behind an item that is not scheduled"}))),
-             schedule: ($rows | sort_by(.p50))} end)}'
+             schedule: ($rows | sort_by(.p50)),
+             # when each scheduled item ends, live or placed, and the pace per repo (fleet-bench epics)
+             ends: ($e | map(if .live != null then {key: .slug, value: {p50: .live.P, slow: .live.S}}
+                             elif $a.placed[.slug] != null then {key: .slug, value: {p50: $a.placed[.slug].end, slow: $b.placed[.slug].end}}
+                             else empty end) | from_entries),
+             pace: {repos: $prp, fleet: $flp}} end)}'
 }
 
 # cmd_forecast [--json] [--queue] [--baseline <label>]: when the live work should be done, and in
@@ -2743,6 +2796,219 @@ cmd_flow() {
 # usage: the verb list at the top of this file, through the line before its State note
 usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
 
+# epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}.
+# The dirs in BENCH_PLAN_DIRS are read in order and the first file of a name wins, so a plan in
+# ~/.claude/plans beats its ~/.agent/plans cache copy.
+epic_plans() {
+  local d f e seen=" " dirs
+  IFS=: read -ra dirs <<<"$BENCH_PLAN_DIRS"
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    while IFS= read -r f; do
+      case "$seen" in *" ${f##*/} "*) continue ;; esac
+      seen+="${f##*/} "
+      e=$(plan_epic "$f"); [ -n "$e" ] || continue
+      jq -cn --arg f "$f" --arg e "$e" --argjson ph "$(plan_phase_list "$f")" '{file: $f, epic: $e, phases: $ph}'
+    done < <(grep -rl --include='*.md' '^epic:' "$d" 2>/dev/null | sort)
+  done
+}
+
+# epic_projects -> one JSON line per project with its roadmap: {name, profile, dir, rm, ideas,
+# briefs}. A project whose roadmap cannot be read is left out and named on stderr.
+epic_projects() {
+  local stats name profile dir ideas briefs
+  stats=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || return 1
+  while IFS=$'\t' read -r name profile dir; do
+    ideas=$(grep -c '^- \[ \]' "$dir/ideas.md" 2>/dev/null) || ideas=0
+    briefs=$(for f in "$dir"/docs/briefs/*.md; do
+        [ -f "$f" ] && jq -cn --arg f "$f" --arg e "$(brief_epic "$f")" '{file: $f, epic: $e}'
+      done | jq -cs .)
+    # the roadmap goes in on stdin: a big project's is past the length of one argument
+    $BENCH_ROADMAP_CMD "$name" --json 2>/dev/null \
+      | jq -ce --arg n "$name" --arg p "$profile" --arg d "$dir" --argjson i "$ideas" --argjson b "$briefs" \
+          'arrays | {name: $n, profile: $p, dir: $d, rm: ., ideas: $i, briefs: $b}' \
+      || say "epics: no roadmap for $name"
+  done < <(jq -r '.[] | [.name, .profile // "", .dir // ""] | @tsv' <<<"$stats")
+}
+
+# epic_scores -> every epic score, oldest first (each project's outcomes/<p>/epics/scores.jsonl)
+epic_scores() {
+  local f
+  for f in "$BENCH_OUTCOMES_DIR"/*/epics/scores.jsonl; do [ -s "$f" ] && cat "$f"; done
+}
+
+# epics_json <now> -> one object: per project its flow counts, unlinked lists, ETA accuracy and
+# epics; per epic its brief, plans and phases, leaf rows, items, PRs, the derived step, an ETA
+# for open work, the newest frozen baseline, on track or behind, and its score once landed.
+# An open leaf whose item is on the forecast takes that item's end; the rest (the open leaves
+# with no scheduled item, or the plan phases no active item carries, whichever is more) run one
+# after another, after the agent queue drains, at the repo's calibrated phase pace.
+epics_json() {
+  local t="$1" pj items active plans fc=null map=/dev/null
+  pj=$(epic_projects | jq -cs .) || return 1
+  [ "$pj" != "[]" ] || { say "epics: no project could be read"; return 1; }
+  items=$($BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) || { say "epics: the agent queue could not be read"; items='[]'; }
+  active=$(jq -c '.[] | select(.state != "done")' <<<"$items")
+  plans=$(epic_plans | jq -cs .)
+  if [ -s "$PROGRESS" ]; then
+    fc=$(forecast_json "$t" "" "$active" | jq -c '.items') || fc=null
+  fi
+  [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
+  # the big inputs go in as files: the projects alone are past the length of one argument
+  jq -cn --argjson t "$t" --slurpfile pj <(printf '%s\n' "$pj") --slurpfile items <(printf '%s\n' "$items") \
+     --slurpfile plans <(printf '%s\n' "$plans") \
+     --slurpfile fc <(printf '%s\n' "$fc") --slurpfile map "$map" --slurpfile base <(cat "$EPIC_BASELINES" 2>/dev/null) \
+     --slurpfile sc <(epic_scores) "${CAL_ARGS[@]}" "$JQ_LIB$PLAN_ITEMS_JQ"'
+    ($map[0] // {}) as $map | $pj[0] as $pj | $items[0] as $items | $plans[0] as $plans
+    | $fc[0] as $fc
+    | ($base | group_by([.project, .epic]) | map({key: "\(.[0].project)/\(.[0].epic)",
+        value: (sort_by(.made_epoch) | last + {n: length})}) | from_entries) as $B
+    | ($sc | map({key: "\(.project)/\(.epic)", value: .}) | from_entries) as $S
+    | ($sc | accuracy($minn; $lo; $hi) | INDEX(.basis)) as $acc
+    | ($items | map(select((.row // "") | test(":"))) | group_by(.row) | map({key: .[0].row, value: .}) | from_entries) as $byrow
+    | ($items | map(select(.state != "done"))) as $act
+    | {made_epoch: $t, made_at: ($t | iso),
+       projects: [$pj[] | . as $P
+      | ([$P.rm[].epics[]] | unique_by(.id) | map(. + {state: "open"})) as $open
+      | ([$P.rm[].closed_epics[]] | unique_by(.id) | map(. + {state: "closed"})) as $closed
+      | ([$P.rm[].rows[]] | unique_by(.id)) as $rows
+      | (($open + $closed) | map(.id)) as $E
+      | ($rows | INDEX(.id)) as $R
+      # a leaf climbs its #of/ links to the epic above it, three levels at most (story, subtask)
+      | def up($id; $n): ($R[$id].parent // "") as $p
+          | if $p == "" then null elif ($E | index($p)) != null then $p elif $n > 0 then up($p; $n - 1) else null end;
+      ($rows | map(. + {epic: up(.id; 2)})) as $lv
+      | (($map.trackers // {})[$P.name].repo // $P.name) as $repo
+      | (if $fc == null then null else ($fc.pace.repos[$repo] // $fc.pace.fleet) end) as $pace
+      | [($open + $closed)[] | . as $e | "\($P.name)/\($e.id)" as $k
+        | ($lv | map(select(.epic == $e.id))) as $er
+        | ($er | map(. as $r | $byrow["\($P.name):\($r.id)"] // [] | .[]
+                     | {slug, state, pr: (.pr // null), row: $r.id})) as $ei
+        | ($plans | map(select(.epic == $e.id)) | map(. as $pl
+            | ($act | map(select(names_plan($pl.file))) | length) as $na
+            | {file, done: (.phases | map(select(.state != "open")) | length), total: (.phases | length),
+               open: (.phases | map(select(.state == "open") | .name)), queued: $na})) as $ep
+        | ($P.briefs | map(select(.epic == $e.id)) | first | .file // null) as $brief
+        | ($e.state == "closed" or ($e | leaves_landed)) as $over
+        | (if $e.state == "closed" and $e.verified then "verified" elif $over then "landed"
+           elif ($er | length) > 0 then "rows" elif ($ep | length) > 0 then "plan" elif $brief != null then "brief" else "epic" end) as $step
+        | (if $over then {eta: null, why: null}
+           else ($er | map(select(.state != "done")) | map(. as $r
+                   | ($byrow["\($P.name):\($r.id)"] // [] | map(select(.state != "done") | ($fc.ends // {})[.slug] // empty) | first))) as $ends
+             | ($ends | map(select(. != null))) as $sch
+             # the phases of a backfilled plan are the stories of its epic, so the two are the same work:
+             # the larger count is the tail, never their sum
+             | ([($ends | map(select(. == null)) | length), ($ep | map([(.open | length) - .queued, 0] | max) | add // 0)] | max) as $tail
+             | if ($sch | length) == 0 and $tail == 0 then {eta: null, why: "no rows or plan phases filed"}
+               elif $tail > 0 and $pace == null then {eta: null, why: "no phase pace measured yet"}
+               else (if $tail == 0 then "queue" elif ($sch | length) == 0 then "pace(\($pace.basis))" else "queue+pace(\($pace.basis))" end) as $basis
+                 | ([$sch[].p50] + (if $tail > 0 then [([$t, $fc.finish_p50 // $t] | max) + $tail * $pace.P] else [] end) | max | floor) as $p50
+                 | ([$sch[].slow] + (if $tail > 0 then [([$t, $fc.finish_slow // $t] | max) + $tail * $pace.S] else [] end) | max | floor) as $slow
+                 | ($acc[$basis | kind].factor) as $f
+                 | {eta: {p50: $p50, slow: ([$slow, $p50] | max), basis: $basis, scheduled: ($sch | length), unscheduled: $tail,
+                          factor: $f, cal_p50: (if $f == null then null else ($t + ($p50 - $t) * $f | floor) end)}, why: null}
+               end end) as $x
+        | $B[$k] as $b
+        | {id: $e.id, title: $e.title, version: $e.version, state: $e.state, verified: $e.verified, proof: $e.proof,
+           open: $e.open, done: $e.done, open_weight: $e.open_weight, done_weight: $e.done_weight,
+           progress: ratio($e.done_weight; $e.open_weight + $e.done_weight), step: $step, brief: $brief, plans: $ep,
+           rows: ($er | map({id, kind, title, size, state, prs})), items: $ei,
+           prs: ([$er[].prs[]?, ($ei[].pr | select(. != null) | tostring)] | unique),
+           eta: $x.eta, no_eta: $x.why,
+           baseline: (if $b == null then null else $b | {made_epoch, reason, total, total_weight, p50, slow, basis, n} end),
+           track: (if $b == null or $x.eta == null then null
+                   elif $t > $b.p50 or $x.eta.p50 > $b.slow then "behind" else "on track" end),
+           score: $S[$k]}] as $eps
+      | ($sc | map(select(.project == $P.name and .ratio != null))) as $ps
+      | {project: $P.name, profile: $P.profile, repo: $repo, pace: $pace,
+         flow: {ideas: ($P.ideas + ($rows | map(select(.kind == "decide" and .state != "done")) | length)),
+                briefs: ($P.briefs | length), plans: ($eps | map(.plans | length) | add // 0), epics: ($eps | length),
+                rows: ($lv | map(select(.epic != null)) | length),
+                landed: ($eps | map(select(.step == "landed")) | length), verified: ($eps | map(select(.step == "verified")) | length)},
+         unlinked: {rows: ($lv | map(select(.epic == null and .state != "done") | .id)),
+                    plans: ($act | map(select(.project == $P.name and (.plan // "") != "") | . as $i
+                                        | select(all($plans[]; . as $pl | $i | names_plan($pl.file) | not)) | .plan) | unique)},
+         accuracy: {scored: ($ps | length), median_ratio: ($ps | map(.ratio) | median),
+                    on_time: ($ps | map(select(.verdict == "ahead")) | length), within_slow: ($ps | map(select(.within_slow)) | length)},
+         epics: $eps}]}'
+}
+
+# epic_freeze <epics json> <now> -> a baseline line for each open epic with an ETA that has none
+# yet (first seen: an epic is filed only on a human yes) or whose total moved since its newest
+# (scope: a story added or dropped, or resized)
+epic_freeze() {
+  jq -c --argjson t "$2" '.projects[] | .project as $p | .epics[]
+    | select(.eta != null and (.baseline == null or .baseline.total != (.open + .done)
+                               or .baseline.total_weight != (.open_weight + .done_weight)))
+    | {project: $p, epic: .id, title, made_epoch: $t, reason: (if .baseline == null then "first seen" else "scope" end),
+       total: (.open + .done), total_weight: (.open_weight + .done_weight), done_weight,
+       p50: .eta.p50, slow: .eta.slow, cal_p50: .eta.cal_p50, basis: .eta.basis}' <<<"$1"
+}
+
+# epic_score <epics json> <now> -> a score for each epic whose newest baseline has none and
+# whose leaves have all landed (or that closed): actual against frozen, raw, as vs scores a
+# forecast. Landing is seen by the sample, so it is as exact as the sample cadence.
+epic_score() {
+  jq -c --argjson t "$2" "$JQ_LIB"'.projects[] | .project as $p | .epics[]
+    | select(.baseline != null and (.step == "landed" or .step == "verified")
+             and (.score == null or .score.made_epoch != .baseline.made_epoch))
+    | .baseline as $b
+    | {project: $p, epic: .id, title, made_epoch: $b.made_epoch, reason: $b.reason, baselines: $b.n, basis: $b.basis,
+       landed_epoch: $t, pred_p50: $b.p50, pred_slow: $b.slow,
+       ratio: (if $b.p50 > $b.made_epoch then (($t - $b.made_epoch) / ($b.p50 - $b.made_epoch) | round2) else null end),
+       error_min: (($t - $b.p50) / 60 | floor), within_slow: ($t <= $b.slow),
+       verdict: (if $t <= $b.p50 then "ahead" else "behind" end), prs: .prs}' <<<"$1"
+}
+
+# epics_sample <now>: freeze the baselines and write the scores this sample owes, and say how
+# many. Each score goes to its project's outcomes/<p>/epics/scores.jsonl.
+epics_sample() {
+  local t="$1" ej fr sc p
+  ej=$(epics_json "$t") || return 1
+  fr=$(epic_freeze "$ej" "$t") || return 1
+  sc=$(epic_score "$ej" "$t") || return 1
+  [ -n "$fr" ] && printf '%s\n' "$fr" >> "$EPIC_BASELINES"
+  if [ -n "$sc" ]; then
+    for p in $(jq -r .project <<<"$sc" | sort -u); do
+      mkdir -p "$BENCH_OUTCOMES_DIR/$p/epics"
+      jq -c --arg p "$p" 'select(.project == $p)' <<<"$sc" >> "$BENCH_OUTCOMES_DIR/$p/epics/scores.jsonl"
+    done
+  fi
+  say "epics: $(grep -c . <<<"$fr") baselines frozen, $(grep -c . <<<"$sc") scored"
+}
+
+# cmd_epics [--json] [--project P]: each feature's chain and ETA, per project
+cmd_epics() {
+  local json=0 proj='' ej
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --project) proj="${2:-}"; [ -n "$proj" ] || { say "--project needs a name"; return 2; }; shift 2 ;;
+      *) say "usage: fleet-bench epics [--json] [--project P]"; return 2 ;;
+    esac
+  done
+  ej=$(epics_json "$(now)") || return 1
+  [ -z "$proj" ] || ej=$(jq -c --arg p "$proj" '.projects |= map(select(.project == $p))' <<<"$ej")
+  if [ "$json" = 1 ]; then printf '%s\n' "$ej"; return 0; fi
+  jq -r "$JQ_LIB"'
+    def cut($n): if length > $n then .[:$n - 3] + "..." else . end;
+    def when: if .eta == null then "no ETA: \(.no_eta // "-")"
+      else "ETA \(.eta.cal_p50 // .eta.p50 | hm) (slow \(.eta.slow | hm)) \(.eta.basis)\(if .eta.factor != null then " x\(.eta.factor)" else "" end)" end;
+    .made_epoch as $t
+    | (.projects | map(.epics[]) ) as $all
+    | "epics \($t | hm): \($all | map(select(.state == "open" and .step != "landed")) | length) open, \($all | map(select(.step == "landed")) | length) landed, \($all | map(select(.step == "verified")) | length) verified, \($all | map(select(.score != null)) | length) scored",
+      (.projects[] | select((.epics | length) > 0 or (.unlinked.plans | length) > 0)
+       | "",
+         "\(.project)  ideas \(.flow.ideas) | briefs \(.flow.briefs) | plans \(.flow.plans) | epics \(.flow.epics) | rows \(.flow.rows) | landed \(.flow.landed) | verified \(.flow.verified)"
+           + (if .accuracy.scored > 0 then "  ETAs scored \(.accuracy.scored), median ratio \(.accuracy.median_ratio), \(.accuracy.on_time) on time" else "" end),
+         (.epics | sort_by(.state != "open", .step == "landed", -(.eta.p50 // 0)) | .[]
+          | "  \(.id)  \(.title | cut(48))  [\(.step)]  \(.done)/\(.open + .done)"
+            + (if .state == "open" and .step != "landed" then "  \(when)\(if .track != null then ", \(.track)" else "" end)"
+               elif .score != null then "  landed \(.score.landed_epoch | hm), ratio \(.score.ratio // "-"), \(.score.verdict)" else "" end)),
+         (if (.unlinked.rows | length) > 0 then "  \(.unlinked.rows | length) open rows with no epic" else empty end),
+         (if (.unlinked.plans | length) > 0 then "  plans with no epic: " + (.unlinked.plans | map(split("/") | last) | join(", ")) else empty end))' <<<"$ej"
+}
+
 main() {
   case "${1:-}" in
     sample) cmd_sample ;;
@@ -2769,6 +3035,7 @@ main() {
     throughput) shift; cmd_throughput "$@" ;;
     flow) shift; cmd_flow "$@" ;;
     forecast) shift; cmd_forecast "$@" ;;
+    epics) shift; cmd_epics "$@" ;;
     vs) shift; cmd_vs "$@" ;;
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;

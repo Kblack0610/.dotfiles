@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# hypr-binds - every live Hyprland bind as one TSV row each, with the full chord that reaches it.
+#
+#   hypr-binds    chord<TAB>description<TAB>dispatcher<TAB>arg, in `hyprctl binds -j` order
+#
+# A bind inside a submap is reached by the binds that enter that submap, so its chord is the path
+# from the top: a leaf `p` in pinbar-timebox reads "Super+A u t p". The first chord into a submap
+# wins, and an Esc that goes back to a parent is never taken as the way in. description is empty
+# for a bind made without one (bind rather than bindd).
+#
+# The one reader of `hyprctl binds -j`: control-menu lists its window rows from it and `keys`
+# its hypr layer, so a chord means the same thing in both.
+
+set -u
+
+hyprctl binds -j 2>/dev/null | jq -r '
+    def bit($n): (. / $n | floor) % 2 == 1;
+    def chord: [(.modmask | if bit(64) then "Super" else empty end, if bit(4) then "Ctrl" else empty end,
+                 if bit(8) then "Alt" else empty end, if bit(1) then "Shift" else empty end),
+                (if .modmask > 0 and (.key | length) == 1 then .key | ascii_upcase else .key end)] | join("+");
+    . as $all
+    | def path($s; $depth):
+        if $s == "" or $depth > 5 then ""
+        else ([$all[] | select(.dispatcher == "submap" and .arg == $s and .submap != $s and .key != "escape")][0]) as $e
+             | if $e == null then "[\($s)]" else (path($e.submap; $depth + 1) + " " + ($e | chord)) end
+        end;
+    .[] | [((path(.submap; 0) + " " + chord) | ltrimstr(" ")), (.description // ""), .dispatcher, .arg]
+    | map(gsub("[\t\n]"; " ")) | @tsv'
