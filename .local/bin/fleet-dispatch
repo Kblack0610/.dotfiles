@@ -1605,14 +1605,17 @@ last_run_start() {
 # all and by urgent/high; the low water and whether runnable is under it; the present trickle's rate
 # and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
 # reap moves in the last hour, and the items moved
-# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily).
+# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily); the open board rows
+# by lane, left out when the board is unreadable, so the chip reads - and never 0.
 cmd_stats() {
-  local now q aq since started pass=null starved=false hr=null
+  local now q aq since started pass=null starved=false hr=null board
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   # The last pass's headroom, while it is younger than three passes: an old one is no answer.
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
+  board=$(notes board --json 2>/dev/null | jq -c '.rows | {board_agent: map(select(.lane == "agent")) | length,
+    board_human: map(select(.lane == "human")) | length, board_playtest: map(select(.lane == "playtest")) | length}' 2>/dev/null)
   cmd_starved >/dev/null 2>&1 || starved=true
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
   # shellcheck source=/dev/null
@@ -1624,7 +1627,7 @@ cmd_stats() {
     $4 == "reaped" { print "settle", "-"; next }
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
-      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" \
+      --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select((.priority == "urgent" or .priority == "high") and (.waits | not)))) as $u
@@ -1638,6 +1641,7 @@ cmd_stats() {
          could_start: ($hr.could_start // null),
          low_water: $low, under_low_water: (if ($q | length) < $low then 1 else 0 end),
          present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length)}
+      + ($board // {})
       # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
       + (if $aq == null then {} else
           ($aq.sitting.held_by // {}) as $h
