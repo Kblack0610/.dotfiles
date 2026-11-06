@@ -165,11 +165,41 @@ write_binds() {
   assert_success
   assert_line "hub page: --once --tab queue at 61 columns"
   assert_line "enter: hub --popup --tab queue"
-  mkfifo "$FX/opened"
   run "$MENU" click hub left queue
   assert_success
-  run timeout 5 cat "$FX/opened"
-  assert_output "--class floating-term -e $HUB --popup --tab queue"
+  assert_output --partial "hub page: --popup --tab queue"
+  [ ! -e "$FX/opened" ]
+}
+
+# The 11-05 ask: walk the dropdowns from the keyboard and Esc back out. A click that opens a
+# terminal window runs in the menu's own window and fzf comes back to the list (execute); one
+# that goes elsewhere is launched and the menu closes (become).
+@test "a terminal dropdown runs in place and comes back to the list; anything else closes the menu" {
+  write_binds
+  jq '. + {"custom/term": {"exec": "true", "on-click": "kitty --class floating-term -e sh -c '"'"'echo dropped > \"$FX/inline\"'"'"'"}}' \
+    <(sed '/^[[:space:]]*\/\//d' "$W/config.base") > "$FX/conf" && mv "$FX/conf" "$W/config.base"
+  echo 'term|A dropdown chip|custom/term' >> "$W/modules.registry"
+
+  run "$MENU" action term left
+  assert_output "execute($MENU click {1} left {3})"
+  run "$MENU" action hub left queue
+  assert_output "execute($MENU click {1} left {3})"
+  run "$MENU" action win left "kitty --class floating-term -e agent-panel"
+  assert_output "execute($MENU click {1} left {3})"
+
+  # Negative control: a shell click, a URL and a non-terminal bind close the menu.
+  run "$MENU" action ok left
+  assert_output "become($MENU click {1} left {3})"
+  run "$MENU" action bad left
+  assert_output "become($MENU click {1} left {3})"
+  run "$MENU" action win left "timebox pause"
+  assert_output "become($MENU click {1} left {3})"
+
+  # In place means this process, not a new kitty.
+  run "$MENU" click term
+  assert_success
+  assert_equal "$(cat "$FX/inline")" dropped
+  [ ! -e "$FX/opened" ]
 }
 
 @test "pango_ansi: a close restores the tag still open; NO_COLOR strips; entities decode" {
