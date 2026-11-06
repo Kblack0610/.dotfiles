@@ -20,6 +20,9 @@ QUOTE_MAX=8
 # The registry's own resolver, beside this script in the repo, as fleet-dispatch reads it.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# The one-pane guard every scripted send shares (agent-voice too).
+# shellcheck source=../lib/agent-pane.sh
+. "${AGENT_PANE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-pane.sh}"
 
 die() { echo "agent-request: $*" >&2; exit 1; }
 
@@ -161,21 +164,11 @@ cmd_send() {
   fi
 
   if [ -z "$pane" ]; then
-    local rows count
+    local rows
     rows="$(agent-panel list --json 2>/dev/null |
       jq -c --arg r "$ROOT" 'select(.cwd == $r or (.cwd | startswith($r + "/")))')" || true
-    count="$(grep -c . <<< "$rows" || true)"
-    if [ "$count" -ne 1 ]; then
-      [ "$count" -eq 0 ] && echo "agent-request: no live Claude session in $ROOT; queue it, or start one there" >&2
-      [ "$count" -gt 1 ] && echo "agent-request: $count Claude sessions in $ROOT; pick one with --pane" >&2
-      [ -z "$rows" ] || jq -r '[.pane, .target, (.doing // "")] | @tsv' <<< "$rows"
-      exit 2
-    fi
-    if [ "$(jq -r .status <<< "$rows")" = waiting ]; then
-      echo "agent-request: the session in $ROOT is in a dialog; answer it, then send again" >&2
-      exit 2
-    fi
-    pane="$(jq -r .pane <<< "$rows")"
+    pane_one "$ROOT" "$rows" || exit 2
+    pane=$PANE
   fi
   local sent rc=0
   sent="$(archive)"

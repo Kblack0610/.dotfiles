@@ -11,6 +11,7 @@ setup() {
   sandbox_init basic
   AR="$REPO_ROOT/.local/bin/agent-request"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"   # for the PATH copy
+  export AGENT_PANE_LIB="$REPO_ROOT/.local/lib/agent-pane.sh"
   REPO="$SANDBOX/repo"
   mkdir -p "$REPO/cfg"
   printf '{\n  "spawnRate": 3,\n  "max": 10\n}\n' > "$REPO/cfg/a.json"
