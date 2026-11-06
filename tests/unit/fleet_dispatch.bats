@@ -2603,23 +2603,26 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_success
   assert_output --partial 'started game-agent-1: game: fix-menu'
   assert_called 'model-lane classify Fix the menu sides --floor sonnet'
+  assert_not_called 'model-lane classify Fix the menu sides --floor sonnet --size'
   assert_called 'claude --model sonnet'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" model) $(qfield "$f" lane_run)" 'sonnet run-7'
 }
 
-@test "the model-lane pick reads the item's title and weight, never its body" {
+@test "the model-lane pick reads the item's headline and #size tag, never its body or weight" {
   game_ready
-  agent-queue add --project game --slug fix-menu --priority high --weight light --title "fix(menu): sides overlap" \
-    "Fix the menu sides. Repo note: dotfiles-land says which repo; merge and deploy when done." >/dev/null
+  agent-queue add --project game --slug fix-menu --priority high --weight heavy --title "fix(menu): sides overlap" \
+    "Fix the menu sides #size/s. Repo note: dotfiles-land says which repo; merge and deploy when done." >/dev/null
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
     case "$1" in classify) echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\"}" ;; log) echo run-7 ;; esac'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_called 'model-lane classify fix(menu): sides overlap --floor sonnet --weight light'
+  assert_called 'model-lane classify fix(menu): sides overlap --floor sonnet --size s'
   assert_not_called 'model-lane classify Fix the menu sides'
+  assert_not_called 'weight'
+  assert_called 'model-lane log --item fix-menu --task fix(menu): sides overlap --lane sonnet'
 }
 
 @test "a failing model-lane still starts the item, on opus, with no lane_run" {
