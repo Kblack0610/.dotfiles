@@ -48,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml \
+      python3 python3-yaml sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
