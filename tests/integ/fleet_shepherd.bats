@@ -48,7 +48,7 @@ prom_q() {
 STUB
   # What a pass's launcher execs: it records its arguments and environment, not a model run.
   stub agentctl-run 'printf "%s\n" "$@" > "$HOME/run.args"; printf "%s" "${@: -1}" > "$HOME/last-prompt"
-echo "holder=$FLEET_SHEPHERD_HOLDER config=${CLAUDE_CONFIG_DIR:-}" >> "$HOME/run.env"'
+echo "holder=$FLEET_SHEPHERD_HOLDER account=${AGENTCTL_ACCOUNT:-}" >> "$HOME/run.env"'
 }
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 # The real fleet-sessions, by path: the one on PATH is a stub here.
@@ -189,7 +189,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line --index 2 --session-id
   assert_line --index 3 "$id"
   refute_output --partial --max-turns
-  assert_equal "$(cat "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct2"
+  assert_equal "$(cat "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct2"
 }
 
 @test "no world declares the session: run stops and says so, and touches no tmux" {
@@ -487,18 +487,18 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   doc "[$(row a WORKING false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner config=$HOME/.claude-acct3"
+  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct3"
   # the main account: room says so with an empty line, and no config dir is set
   STUB_ROOM='' run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" 'holder=runner config='
+  assert_equal "$(tail -n 1 "$HOME/run.env")" 'holder=runner account=default'
   [ ! -e "$HOME/pages" ]
   # no room anywhere is not a skip: the pass runs, and the human hears about it once
   STUB_NO_ROOM=1 run "$SH" run
   assert_success
   assert_equal "$(starts)" 3
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
-  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner config=$HOME/.claude-best"
+  assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-best"
   STUB_NO_ROOM=1 run "$SH" run
   assert_equal "$(starts)" 4
   assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1

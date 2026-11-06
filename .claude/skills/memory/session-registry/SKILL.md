@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, transcripts, resume]
-  reviewed: "2026-07-13"
+  reviewed: "2026-11-05"
 ---
 
 # session-registry
@@ -27,14 +27,14 @@ Every meaningful Claude session in a project auto-registers itself into an agent
 
 ```
 sessions list [project] [--all]     # registered sessions, newest first (default: current project)
-sessions resume <id|--pick>         # reopen a session transcript (exec claude -r <id>)
+sessions resume <id|--pick>         # reopen a session transcript (exec claude-acct run -r <id>, on the account it picks)
 sessions compact <id|--pick>        # distill a transcript into ~/.agent/sessions/{project}/<id>-digest.md
 ```
 
 ## How to use it
 
 - **"What did we work on / find that earlier session"** -> `sessions list` (this project) or `sessions list --all`. Read the `first_prompt` + `updated` columns to locate it. You can also read the JSONL directly for scripting.
-- **"Reopen / resume that session"** -> `sessions resume <id>`. This `exec`s `claude -r <id>` and replaces the current process, so only do it when the user genuinely wants to switch into that session. If you just need its content, read the transcript path from the registry instead.
+- **"Reopen / resume that session"** -> `sessions resume <id>`. This `exec`s `claude-acct run -r <id>` (the account `cl` would pick) and replaces the current process, so only do it when the user genuinely wants to switch into that session. If you just need its content, read the transcript path from the registry instead.
 - **"Compact / summarize that session"** -> `sessions compact <id>`. Spawns a headless `claude -p` that reads the transcript JSONL and writes a `<id>-digest.md` (what happened, files touched, decisions, next step). On-demand only - costs tokens, so run it when asked.
 - **Reading a transcript yourself:** grab `.transcript` from the registry line; it is a JSONL file (one message per line) under `~/.claude/projects/<encoded>/<id>.jsonl`. These are large - grep or read selectively, do not slurp whole files into context.
 

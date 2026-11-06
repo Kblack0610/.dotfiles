@@ -195,11 +195,39 @@ route_key() {
 # return non-zero and kills the caller -- which is exactly what happened the
 # first time this ran, and it presented as the whole command producing no output
 # and no error at all. An empty model pin is a normal state, not a failure.
+# route_account -- the subscription account a native oauth run spends from. The caller's
+# choice wins (AGENTCTL_ACCOUNT: an account name, a config dir, or "default" for main; shepherd
+# and dispatch pass the one `claude-acct room` named), else `claude-acct pick`, the choice `cl`
+# makes. An inherited CLAUDE_CONFIG_DIR never decides: unset means main, and "main" cannot be
+# told apart from "nobody chose", which is how every timer runner sat on a spent main account.
+# `pick`, not `room`: a runner is a small call, and room refuses whenever all accounts are over
+# pace. Without claude-acct the run refuses rather than falling back to main.
+route_account() {
+  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" want="${AGENTCTL_ACCOUNT:-}" dir
+  ROUTE_ACCOUNT_FROM='claude-acct pick'
+  if [ -n "$want" ]; then ROUTE_ACCOUNT_FROM='$AGENTCTL_ACCOUNT'; fi
+  if [ "$want" = default ]; then
+    dir=''
+  elif [ "${want:0:1}" = / ]; then
+    dir="$want"
+  else
+    command -v "$cmd" >/dev/null 2>&1 ||
+      role_die "no $cmd on PATH: a subscription run must pick its account. Install it or set AGENTCTL_ACCOUNT."
+    # The name, when one was given, goes through pick, which knows the account list.
+    dir="$("$cmd" pick ${want:+"$want"} 2>/dev/null)" ||
+      role_die "$cmd pick ${want} failed: no account to run on."
+  fi
+  ROUTE_ACCOUNT="${dir:-default}"
+  if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+  return 0
+}
+
 route_apply() {
   local key; key="$(route_key)"
   case "$ROUTE_TRANSPORT" in
     anthropic-native)
       if [ -n "$ROUTE_MODEL_CLAUDE" ]; then export ANTHROPIC_MODEL="$ROUTE_MODEL_CLAUDE"; fi
+      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_account; fi
       ;;
     anthropic-gateway)
       export ANTHROPIC_BASE_URL="$ROUTE_BASE_URL"
@@ -233,6 +261,9 @@ route_explain() {
   printf 'route file:  %s\n' "$ROUTE_FILE"
   printf 'transport:   %s%s\n' "$ROUTE_TRANSPORT" "${ROUTE_BASE_URL:+ -> $ROUTE_BASE_URL}"
   printf 'payer:       %s\n' "$ROUTE_PAYER"
+  if [ -n "${ROUTE_ACCOUNT:-}" ]; then
+    printf 'account:     %s  (from: %s)\n' "$ROUTE_ACCOUNT" "$ROUTE_ACCOUNT_FROM"
+  fi
   printf 'safety:      personal=%s work=%s fallback=%s\n' \
     "$ROUTE_PERSONAL_SAFE" "$ROUTE_WORK_SAFE" "$ROUTE_FALLBACK_SAFE"
   printf 'data class:  %s  -> ALLOW\n' "$(route_data_class)"

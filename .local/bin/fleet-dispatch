@@ -244,10 +244,11 @@ session_live() { tmux -L "$2" has-session -t "=$1" 2>/dev/null; }
 account_dir() {
   if [ "${RUN_ACCOUNT+set}" = set ]; then printf '%s' "$RUN_ACCOUNT"; else claude-acct pick || true; fi
 }
+# account_env [dir]: the prefix for that account (the chosen one when no argument). Main unsets
+# the dir: a pane gets the tmux server's environment, which may carry an alt account.
 account_env() {
-  local dir; dir=$(account_dir)
-  [ -n "$dir" ] && printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"
-  return 0
+  local dir; if [ "$#" -gt 0 ]; then dir=$1; else dir=$(account_dir); fi
+  if [ -n "$dir" ]; then printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"; else printf 'env -u CLAUDE_CONFIG_DIR '; fi
 }
 
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
@@ -687,7 +688,7 @@ cmd_start() {
     origin=${START_ORIGIN:-hand}
     model=${model:-opus}
     acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
-    cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") ${acct:+CLAUDE_CONFIG_DIR=$(printf '%q' "$acct") }claude --model $(printf '%q' "$model")"
+    cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(account_env "$acct")claude --model $(printf '%q' "$model")"
     [ "$mode" = plan ] || mode=bypassPermissions
     launch_mode "$mode"
     cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"

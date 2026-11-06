@@ -1527,7 +1527,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
   assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: resumed'
   assert_not_called 'start fix crash'
   assert_not_called 'wt new'
@@ -1962,10 +1962,10 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   agent-queue add --project game --slug p --mode plan "plan p"
   for s in a n p; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a claude --model opus --permission-mode bypassPermissions'
+  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a env -u CLAUDE_CONFIG_DIR claude --model opus --permission-mode bypassPermissions'
   assert_output --partial '/one-shot do a'
   assert_output --partial '/one-shot --pr-only do n'
-  assert_output --partial 'AGENT_QUEUE_ITEM=p claude --model opus --permission-mode plan --allow-dangerously-skip-permissions'
+  assert_output --partial 'AGENT_QUEUE_ITEM=p env -u CLAUDE_CONFIG_DIR claude --model opus --permission-mode plan --allow-dangerously-skip-permissions'
   refute_output --partial '/one-shot plan p'
   # An item with no board row still names itself in its PR body, and names no Task line.
   assert_output --partial 'The PR body carries the line "Item: a".'
@@ -2434,7 +2434,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
+  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
   assert_not_called 'new-session'
   assert_not_called 'set-option'
 }
@@ -2445,7 +2445,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 # world <instance> <pane lines...> -- what a stub server answers; no instance is a server that is down.
@@ -2567,8 +2567,8 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_called 'tmx ensure hub'
-  assert_called "-n planned -c $G claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
-  assert_called "-n working -c $G claude --permission-mode bypassPermissions --resume conv-work"
+  assert_called "-n planned -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-n working -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
   for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
@@ -2590,7 +2590,7 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work claude --permission-mode bypassPermissions --resume conv-item"
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
