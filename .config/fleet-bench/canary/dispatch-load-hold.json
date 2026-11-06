@@ -1,0 +1,25 @@
+{
+  "id": "dispatch-load-hold",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#884",
+  "base": "66cf14224496e04b6d2a8f319d7f74bf6792bf83",
+  "merge": "59edd9f7b1714c852839aebbb41e7c78053fdf5a",
+  "task": "fix(dispatch): a load hold is not starvation, and a shared session says nothing about one item",
+  "accept": [
+    "reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_dispatch.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back)$",
+      "tests/unit/fleet_dispatch.bats"
+    ]
+  }
+}

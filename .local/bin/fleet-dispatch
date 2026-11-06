@@ -1171,9 +1171,11 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through /one-shot (--pr-only for a `night` item). opencode has
 # no slash commands, hooks or human at the pane, so it reads the skill and closes differently.
+# A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
+  if [[ "$tags" == *" canary "* ]]; then jq -r .task <<<"$it"; return 0; fi
   [[ "$tags" == *" night "* || "$tags" == *" red "* ]] && pr_only=' --pr-only'
   if [ "$harness" = opencode ]; then
     printf 'Read ~/.claude/skills/one-shot/SKILL.md and follow it%s for this task:\n' "${pr_only:+ with$pr_only}"

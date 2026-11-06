@@ -1,0 +1,25 @@
+{
+  "id": "dispatch-requested-night",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#1068",
+  "base": "c15f9c6832be5f2916124048d536f1d6c2182bab",
+  "merge": "ac43b30f6acaa4a3479d7227253a57f28b5640b2",
+  "task": "fix(dispatch): a #requested row is night-eligible",
+  "accept": [
+    "night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_dispatch.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out)$",
+      "tests/unit/fleet_dispatch.bats"
+    ]
+  }
+}

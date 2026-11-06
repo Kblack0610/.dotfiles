@@ -1,0 +1,25 @@
+{
+  "id": "land-catchup-wait",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#1024",
+  "base": "300d734f7d3692875915df63234fed129a2c4b8f",
+  "merge": "7d6f25d3b5aca97bf34918da431939106882a3db",
+  "task": "fix(agent-land): a catch-up push waits on the PR checks again before the merge",
+  "accept": [
+    "behind after a green gate: base is merged in and pushed, and that head lands once its checks pass again"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/agent_land.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(behind after a green gate: base is merged in and pushed, and that head lands once its checks pass again)$",
+      "tests/unit/agent_land.bats"
+    ]
+  }
+}

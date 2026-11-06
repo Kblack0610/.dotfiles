@@ -2,7 +2,7 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug] [--from human|shepherd|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug] [--from human|shepherd|canary|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--epic <code>-<N>] [--running [--session s]] [task...]    the task from args, or stdin when there are none
 #       An item not from the board files its own story row: see file_story.
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix]
@@ -470,7 +470,7 @@ cmd_add() {
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
-  case "$from" in human | shepherd | board:?*:?*) ;; *) die "--from is human, shepherd or board:<project>:<key>, not $from" ;; esac
+  case "$from" in human | shepherd | canary | board:?*:?*) ;; *) die "--from is human, shepherd, canary or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   [ -z "$epic" ] || [[ "$epic" =~ ^[a-z0-9]+-[0-9]+$ ]] || die "--epic is a row id, <code>-<N>, not $epic"
   for tag in $tags; do
@@ -512,7 +512,8 @@ cmd_add() {
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story=''
-  case "$from" in board:*) ;; *) story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;; esac
+  # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
+  case "$from" in board:* | canary) ;; *) story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;; esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
