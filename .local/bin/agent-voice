@@ -51,7 +51,8 @@ cmd_targets() {
     awk -F'\t' '$5 ~ /^tmux:/ { r = substr($5, 6) } END { print r }')" || ref=''
   # A session in a dialog is left out: a line typed there would answer the dialog.
   jq -rs --arg ref "$ref" '
-    def rank: if .target == $ref then 0 elif .status == "busy" then 2 else 1 end;
+    # idle first; busy and shell (at its prompt, on its own background job) come after
+    def rank: if .target == $ref then 0 elif .status == "idle" then 1 else 2 end;
     def flat: gsub("[\t\n]+"; " ");
     map(select(.status != "waiting")) | sort_by(rank, -(.idle_since // 0))[]
     | "pane:\(.pane)\t\(if rank == 0 then "paged  " else "" end)\(.target)  \(.status)  \(.project // "")  \((.doing // "") | flat | .[0:60])"

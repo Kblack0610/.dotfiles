@@ -85,19 +85,20 @@ row() { # <pane> <target> [status] [idle_since]
   assert_output --partial 'queued said-it'
 }
 
-@test "targets: the paged session first, then idle by newest, busy, no dialogs, then new per project" {
+@test "targets: the paged session first, then idle by newest, busy and shell, no dialogs, then new per project" {
   {
     row hub/%1 hub/a:1 busy 50
     row hub/%2 hub/b:1 idle 10
     row hub/%3 hub/c:1 idle 30
     row hub/%4 hub/d:1 waiting 99
     row hub/%5 hub/e:1 busy 1
+    row hub/%6 hub/f:1 shell 80
   } > "$NOTES_FIXTURE/agent-panel.list"
   stub agent-notify 'printf "2026-11-05T10:00:00-08:00\tnormal\tt\tm\ttmux:hub/b:1\n2026-11-05T11:00:00-08:00\tnormal\tt\tm\ttmux:hub/e:1\n2026-11-05T12:00:00-08:00\tnormal\tt\tm\n"'
   run "$AV" targets
   assert_success
   assert_equal "$(cut -f1 <<< "$output" | paste -sd' ')" \
-    'pane:hub/%5 pane:hub/%3 pane:hub/%2 pane:hub/%1 new:dotfiles new:unity-core'
+    'pane:hub/%5 pane:hub/%3 pane:hub/%2 pane:hub/%6 pane:hub/%1 new:dotfiles new:unity-core'
   assert_line --partial $'pane:hub/%5\tpaged  hub/e:1'
 }
 
