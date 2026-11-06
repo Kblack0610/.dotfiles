@@ -308,6 +308,17 @@ header_set() {
     { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
 }
 
+# header_del <file> <key>... -> drop those header fields in place, atomically.
+header_del() {
+  local f="$1" tmp; shift
+  tmp="$(mktemp "$(dirname "$f")/.del.XXXXXX")" || die "cannot write in $(dirname "$f")"
+  awk -v ks="$*" '
+    BEGIN { n = split(ks, k, " ") }
+    !done && $0 == "---" { done = 1 }
+    !done { for (i = 1; i <= n; i++) if (index($0, k[i] ":") == 1) next }
+    { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
+}
+
 # move_to <file> <state> -> the new path. done/ is dated by today, and a name that is already
 # there (the same slug finished twice in a day) gets a numeric suffix.
 move_to() {
@@ -690,6 +701,10 @@ cmd_move() {
   from="$(state_of "$f")"
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
   case "$to" in
+    # Back in the queue, the item runs nowhere: the next start launches a fresh session and
+    # records it, and until then a stale `session:` points shepherd and fleet-sessions at a window
+    # that no longer works it. `sessions:` stays: it is the history of who worked the item.
+    queued) header_del "$f" session window started waiting origin ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)" ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
