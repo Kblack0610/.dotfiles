@@ -359,7 +359,7 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
-/// The card's queue in one line, on the list card's first line: `1 running, 0 waiting, 2 queued`.
+/// The card's queue in one line, at the head of `counts`: `1 running, 0 waiting, 2 queued`.
 fn queue(c: &Card) -> String {
     format!(
         "{} running, {} waiting, {} queued",
@@ -399,8 +399,8 @@ pub fn gather() -> Projects {
     }
 }
 
-/// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints the same
-/// words the TUI does and computes nothing.
+/// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
+/// the same words the TUI does and computes nothing.
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     if let Some(cards) = v["cards"].as_array_mut() {
