@@ -1,4 +1,4 @@
-//! The Focus tab: a day's `## Focus` from `hub_core::focus`, the reader agent-web's Focus tab
+//! The Daily tab: a day's `## Focus` from `hub_core::focus`, the reader agent-web's Daily tab
 //! uses, as lines. Read-only: Focus is written by `notes focus` and the editor. The open lanes
 //! are drawn item by item, word-wrapped; Done, the rollup and the note's other sections are
 //! counted and named, since a terminal has no fold to keep them in.
@@ -53,8 +53,10 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     });
     out.push(clip_line(
         Line::from(vec![
-            Span::styled(format!("FOCUS {day}"), p.head()),
+            Span::styled(format!("DAILY {day}"), p.head()),
             Span::styled(counts, p.dim()),
+            // The outbox lives under the note: `o` shows it (app.rs daily_key).
+            Span::styled("  o outbox", p.dim()),
         ]),
         w,
     ));
@@ -149,7 +151,7 @@ mod tests {
             "## Focus\n### Urgent\n- [ ] fix the menu #c1105\n  - [ ] a child\n- [/] wire the bar\n### High\n---\n### Done\n- [x] water plants\n## Notes\nhi\n",
         );
         let t = text(&v, 80);
-        assert_eq!(t[0], "FOCUS 2026-11-05  2 open, 1 done");
+        assert_eq!(t[0], "DAILY 2026-11-05  2 open, 1 done  o outbox");
         assert!(t.contains(&"URGENT  2".to_string()), "{t:?}");
         assert!(t.contains(&"  [ ] fix the menu #c1105".to_string()));
         assert!(

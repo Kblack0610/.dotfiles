@@ -1,4 +1,4 @@
-//! The Focus tab's reader: one note from `notes show --json` (the CLI resolves the target and
+//! The Daily tab's reader: one note from `notes show --json` (the CLI resolves the target and
 //! keeps it inside the notes), split so both hub surfaces draw the same thing. The daily note's
 //! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Low`, `### Done`, and
 //! the unheaded lines above them), the rollup block another profile's Focus is mirrored into

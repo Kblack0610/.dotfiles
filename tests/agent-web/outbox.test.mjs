@@ -1,4 +1,4 @@
-// Unit tests for the Outbox tab (.local/src/agent-web/static/outbox.js), run by `node --test` from
+// Unit tests for Daily's outbox view (.local/src/agent-web/static/outbox.js), run by `node --test` from
 // tests/unit/agent_web_queue.bats. The page's real scripts load into one vm context; the DOM and
 // fetch are stubs. The compare-and-swap itself is `notes outbox put --base` (notes-cli tests);
 // this checks the page's half: the line merge, the held-back cursor line, and a 409 re-save.
@@ -63,7 +63,7 @@ test("a 409 merges the sweep's doc and saves again against its hash; the typed l
     if (b.base === "aa") return ok(409, docs.swept);
     return ok(200, { path: "/n/outbox.md", hash: "cc", text: b.text, waiting: 2 });
   };
-  vm.runInContext(`st.tab = "outbox"; TABS.outbox.show();`, ctx);
+  vm.runInContext(`st.tab = "daily"; st.arg = "outbox"; OUTBOX.show();`, ctx);
   await new Promise((r) => setImmediate(r));
   assert.equal(area.value, "one\ntwo");
   area.value = "one\ntwo\nthree";
