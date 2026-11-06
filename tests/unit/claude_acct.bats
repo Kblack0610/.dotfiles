@@ -571,7 +571,7 @@ live() {
   live "" 12
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'after its live sessions'* ]]
+  [[ "$stderr" == *'live sessions use the rest of its week before the reset'* ]]
   # a hand start is told, never refused
   run --separate-stderr "$ACCT" pick
   assert_success
@@ -617,6 +617,27 @@ STUB
   run --separate-stderr "$ACCT" room
   assert_failure 1
   [[ "$stderr" == *'no account has room'* ]]
+}
+
+@test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
+  # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
+  # main) at 88%, inside its reserve. "no account has room" alone read as every account full.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 88 50
+  week alt 15 152
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_output ''
+  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
+  # the same row status prints
+  run "$ACCT" status
+  assert_line --regexp '^alt +- +15% +9% +over +Tue 02:40 '
+  # the reserve, when that is what refuses the closest one; it lasts to its reset
+  week main 88 2
+  week alt 90 100
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 88% of its week used, inside the last 15% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: the slack is the edge of the pace line" {
