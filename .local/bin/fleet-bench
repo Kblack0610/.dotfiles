@@ -1247,6 +1247,10 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+# cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
+# item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
+# over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
+# item with no cost yet is left out, never counted as free.
 KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
@@ -1259,7 +1263,7 @@ chain_counts() {
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
   ci=null; [ -r "$CI" ] && ci=$(jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
     'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))' "$CI")
-  jq -rn --argjson t "$t" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
+  jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
     def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
@@ -1288,7 +1292,10 @@ chain_counts() {
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
       "requested_unstarted_h=\(n(if $b == null then null else [$agent[] | select(.requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
-        | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))"'
+        | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))",
+      "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
+        | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
+        | if length == 0 then null else add / length * 100 | round / 100 end end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   local orphans
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
@@ -1415,7 +1422,7 @@ cmd_ledger() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN"
+KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -1551,7 +1558,9 @@ cmd_queue() {
 }
 
 # Items in, with $sessions (the state document's rows), $etas (a cell per target) and $since:
-# the requests. A request is an urgent item from the human or the shepherd; `<prefix>-pN` items
+# the requests. An item finds its live session row by the Claude session ids its `sessions:`
+# lists (the ledger join), never by window name: the newest such row when it has several.
+# A request is an urgent item from the human or the shepherd; `<prefix>-pN` items
 # linked by after: are one request, and n of m reads their phase numbers, so a plan queued from
 # phase 3 says 3 of 6. The shepherd's own intake leads, each group in queue order: sorted by source
 # alone a morning of human-queued items would bury the ask, and newest first would let the next ask
@@ -1565,10 +1574,8 @@ def open: any(.[]; live and asked);
 def keyed: . as $all | map(. as $i | ($i.slug | prefix) as $p
   | . + {key: (if any($all[]; (.slug == $i.after or .after == $i.slug) and (.slug | prefix) == $p)
                then $p else $i.slug end)});
-def session_row($c): ($c.session // "" | (if test(":") then sub(":"; "/") else "lab/" + . end) + ":") as $at
-  | ($sessions[0] | map(select(.target | startswith($at)))) as $rows
-  | ($rows | map(select((.dispatch // "") | endswith(": " + $c.slug))) | first)
-    // (if ($rows | length) == 1 then $rows[0] else null end);
+def session_row($c): ($c.sessions // "" | split(" ") | map(select(. != ""))) as $ids
+  | [$sessions[0][] | select(.session_id as $s | $ids | index($s))] | last;
 def active_row: sort_by(.slug | pnum // 0) as $c
   | ($c | map(select(live)) | sort_by(.state == "queued") | first) as $cur
   | session_row($cur) as $s

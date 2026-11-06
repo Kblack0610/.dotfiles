@@ -1435,7 +1435,7 @@ lane_pick() {
 lane_log() {
   local id
   [ -n "$3" ] || return 0
-  id=$(model-lane log --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
+  id=$(model-lane log --item "$1" --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
     --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" 2>/dev/null) && [ -n "$id" ] ||
     { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
@@ -1445,7 +1445,7 @@ lane_log() {
 # pairing, and an experiment must not count against the lane that shares its model.
 eval_log() {
   local id
-  id=$(model-lane log --task "$2" --lane eval --by human --harness "$3" --picked "$4" --ran "$4" 2>/dev/null) && [ -n "$id" ] ||
+  id=$(model-lane log --item "$1" --task "$2" --lane eval --by human --harness "$3" --picked "$4" --ran "$4" 2>/dev/null) && [ -n "$id" ] ||
     { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }

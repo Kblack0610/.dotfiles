@@ -1416,6 +1416,24 @@ chain_fixture() {
   assert_line 'doctor_fail=?'
 }
 
+@test "kpi: cost_per_merged_item averages the priced items landed with proof in the window, gateway spend included" {
+  chain_fixture
+  fin() { date -u -d "@$((T0 - $1 * 86400))" +%Y-%m-%dT%H:%M:%SZ; }
+  {
+    item a done high human "{\"merged\":\"a1\",\"finished\":\"$(fin 1)\",\"cost_usd\":\"4\"}"
+    item b done high human "{\"merged\":\"b1\",\"finished\":\"$(fin 2)\",\"cost_usd\":\"1\",\"gateway_cost_usd\":\"1\"}"
+    item unpriced done high human "{\"merged\":\"c1\",\"finished\":\"$(fin 1)\"}"
+    item unmerged done high human "{\"finished\":\"$(fin 1)\",\"cost_usd\":\"50\"}"
+    item old done high human "{\"merged\":\"d1\",\"finished\":\"$(fin 9)\",\"cost_usd\":\"50\"}"
+  } > "$DONE"
+  run "$SUBJECT" kpi
+  assert_success
+  assert_line '| cost_per_merged_item (now) | 3 | - | - | - |'
+  : > "$DONE"
+  run "$SUBJECT" kpi
+  assert_line '| cost_per_merged_item (now) | - | - | - | - |'
+}
+
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
 # started, three inbox lines, two items finished (one inside 24h), and a record that holds each
 # item where the queue folders do. Ages: queued 2h, running 1h, waiting 10m, the row 3 days and 4h.
@@ -2601,11 +2619,11 @@ requests_setup() {
   requests_setup
   row s28 lab/game-agent-28:1 0 5 > "$SNAP"
   "$SUBJECT" sample
-  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28","report":"https://claude.ai/artifact/1"}' >> "$ITEMS"
+  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28","sessions":"sid-0 sid-28","report":"https://claude.ai/artifact/1"}' >> "$ITEMS"
   item ci-p2 queued urgent shepherd '{"after":"ci-p1","hold":"after ci-p1"}' >> "$ITEMS"
   item ci-p3 queued urgent shepherd '{"after":"ci-p2","hold":"after ci-p2"}' >> "$ITEMS"
-  jq -n '{sessions: [{target: "lab/game-agent-28:1", bucket: "NEEDS", pr: "12", pr_state: "OPEN", ci: "PASS",
-    reason: "waiting on a prompt or permission", dispatch: "game: ci-p1"}]}' > "$FLEET_STATE_FILE"
+  jq -n '{sessions: [{target: "lab/game-agent-28:1", session_id: "sid-28", bucket: "NEEDS", pr: "12", pr_state: "OPEN", ci: "PASS",
+    reason: "waiting on a prompt or permission"}]}' > "$FLEET_STATE_FILE"
   run "$SUBJECT" requests --json
   assert_success
   [ "$(jq -c '.active | map(.request)' <<<"$output")" = '["ci"]' ]
@@ -2681,20 +2699,23 @@ requests_setup() {
   assert_output "--since 2026-11-02"
 }
 
-@test "requests: a session recorded without its server is on lab" {
+@test "requests: an item joins its session row by its Claude session ids, never by window name" {
   requests_setup
-  item ask running urgent human '{"session":"game-agent-28"}' >> "$ITEMS"
-  jq -n '{sessions: [{target: "lab/game-agent-28:1", bucket: "NEEDS", reason: "waiting on a prompt"}]}' > "$FLEET_STATE_FILE"
+  item ask running urgent human '{"session":"lab:game-agent-28","sessions":"sid-mine"}' >> "$ITEMS"
+  jq -n '{sessions: [{target: "lab/game-agent-28:1", session_id: "sid-other", bucket: "NEEDS", reason: "waiting on a prompt"}]}' > "$FLEET_STATE_FILE"
   run "$SUBJECT" requests --json
   assert_success
+  [ "$(jq -r '.active[0].bucket' <<<"$output")" = null ]
+  jq -n '{sessions: [{target: "lab/somewhere-else:1", session_id: "sid-mine", bucket: "NEEDS", reason: "waiting on a prompt"}]}' > "$FLEET_STATE_FILE"
+  run "$SUBJECT" requests --json
   [ "$(jq -r '.active[0].bucket' <<<"$output")" = NEEDS ]
 }
 
 @test "requests: a fleet state over the 128 KB argument cap still reads" {
   requests_setup
-  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28"}' >> "$ITEMS"
-  jq -n '{sessions: ([range(0; 2000) | {target: "lab/other-\(.):1", bucket: "WORKING", reason: ("x" * 100)}]
-    + [{target: "lab/game-agent-28:1", bucket: "NEEDS", reason: "waiting on a prompt", dispatch: "game: ci-p1"}])}' > "$FLEET_STATE_FILE"
+  item ci-p1 running urgent shepherd '{"session":"lab:game-agent-28","sessions":"sid-28"}' >> "$ITEMS"
+  jq -n '{sessions: ([range(0; 2000) | {target: "lab/other-\(.):1", session_id: "sid-o\(.)", bucket: "WORKING", reason: ("x" * 100)}]
+    + [{target: "lab/game-agent-28:1", session_id: "sid-28", bucket: "NEEDS", reason: "waiting on a prompt"}])}' > "$FLEET_STATE_FILE"
   [ "$(wc -c < "$FLEET_STATE_FILE")" -gt 131072 ]
   run "$SUBJECT" requests --json
   assert_success

@@ -71,14 +71,13 @@ groups_json() {
          repos: (map(select(.[0] == "r") | {key: .[1], value: .[2]}) | from_entries)}'
 }
 
-# outcome_prs <day> -> {"repo#N": session title} for PRs session-outcomes saw merge that day.
-outcome_prs() {
-  local m; m="${1:0:7}"
-  if compgen -G "$DAYLOG_OUTCOMES_DIR/*/$m.jsonl" >/dev/null; then
-    cat "$DAYLOG_OUTCOMES_DIR"/*/"$m".jsonl
-  fi | jq -cs '[.[] | select(.title and (.prs | type) == "array") | .title as $t
-      | .prs[] | select(.state == "MERGED") | {key: "\(.repo | sub(".*/"; ""))#\(.number)", value: $t}]
-    | from_entries'
+# ledger_prs <day> -> {"repo#N": {item, area}} from the work ledger: every item active or done
+# since the day whose pr: is owner/repo#N, keyed by the repo's name as gh search gives it. The item
+# that carries a PR is the one unit of work it landed (agent-land records it), so this is the credit.
+ledger_prs() {
+  $DAYLOG_QUEUE_CMD list --json --state all --since "$1" 2>/dev/null | jq -cs '
+    [.[] | . as $i | (.pr // "" | capture("^[^#/ ]+/(?<r>[^#/ ]+)#(?<n>[0-9]+)$")) // empty
+     | {key: "\(.r)#\(.n)", value: {item: $i.slug, area: ($i.area // null)}}] | from_entries'
 }
 
 # usage_json <since> <until> -> per-project spend from the agent-usage registry (no network).
@@ -113,7 +112,7 @@ gather() {
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
   $DAYLOG_USAGE_CMD tokens line --date "$day" 2>/dev/null | jq -Rs 'rtrimstr("\n") | if . == "" then null else . end' > "$tmp/tokens"
-  outcome_prs "$day" > "$tmp/outcomes"
+  ledger_prs "$day" > "$tmp/ledger" 2>/dev/null || rm -f "$tmp/ledger"
   groups_json > "$tmp/groups"
   # the project each PR's repo belongs to (the project registry), merged and open alike
   mapfile -t repos < <(cat "$tmp/merged" "$tmp/open" 2>/dev/null | jq -r '.[]?.repository.name' | sort -u)
@@ -129,30 +128,27 @@ gather() {
      --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
-     --slurpfile outcomes "$tmp/outcomes" --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
+     --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
      --slurpfile projects "$tmp/projects" '
     ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st | $projects[0] as $pm
     | def project($r): $pm[$r] // ($r | ltrimstr("."));
       def scope: (.title | capture("^(?<type>[a-z]+)(\\((?<scope>[^),]+)[^)]*\\))?!?:")? // {}) | (.scope // .type // "other");
       def who($repo): (.target // "" | sub("^[^/]*/"; "") | sub(":1$"; "")) as $t
         | ($t | ltrimstr($repo + "-")) as $l | if $l == "" then $t else $l end;
-    # the session that landed each PR: what the live sessions say now, then earlier passes, then outcomes
-    (if $st == null then {} else
-       [ $st.sessions[]? | select((.pr // "-") != "-") | . as $x | ($x.cwd // "" | sub(".*/"; "")) as $b
-         | ($merged[0] // [])[] | select((.number | tostring) == $x.pr)
-         | .repository.name as $r | select($b == $r or ($b | startswith($r + "-")))
-         | {key: "\($r)#\(.number)", value: ($x | who($r))} ] | from_entries end) as $now_by
-    | ($outcomes[0] + ($p.landed_by // {}) + $now_by) as $by
+    # the work item that landed each PR (the ledger); a pass that cannot read it keeps the credits
+    # its last record held
+    ($ledger[0] // ([($p.merged // [])[] | select(.by) | {key: "\(.repo)#\(.number)", value: {item: .by}}] | from_entries)) as $by
     | ($merged[0] // null) as $m
     | {schema: 2, date: $day, live: $live, gathered_at: $at,
        unreadable: ([if $m == null then "gh merged" else empty end,
+                     if $ledger[0] == null then "queue ledger" else empty end,
                      if $live and $open[0] == null then "gh open" else empty end,
                      if $live and $st == null then "fleet state" else empty end]),
-       landed_by: $by,
        merged: (if $m == null then ($p.merged // [])
-         else [$m[] | (scope) as $sc | .repository.name as $r
+         else [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i
+           | ($i.area // scope) as $sc
            | {repo: $r, project: project($r), number, title, url, merged_at: .closedAt, scope: $sc,
-              group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $by["\($r)#\(.number)"]}]
+              group: ($g.scopes[$sc] // $sc), area: ($g.repos[$r] // $r), by: $i.item}]
            | sort_by(.merged_at) end),
        open: (if $live and $open[0] != null then
            [$open[0][] | .repository.name as $r | (.number | tostring) as $n
