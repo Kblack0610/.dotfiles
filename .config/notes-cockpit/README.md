@@ -1,9 +1,6 @@
 # notes-cockpit - machine-local config for version rolls and summaries
 
-`notes-version-summary` (which `notes-roll` calls after every roll) reads two optional machine-local files from this directory.
-They are NOT committed - they carry repo paths and a key reference, so they live only in your real
-`~/.config/notes-cockpit/`. This README is the only tracked file here. (The directory keeps its name
-from the retired tmux task cockpit; `NOTES_COCKPIT_CONF` overrides it.)
+`notes-version-summary` (which `notes-roll` calls after every roll) reads one optional machine-local file from this directory, `repos`, which is NOT committed because it carries repo paths. The tracked files here are this README and `prompts/`. (The directory keeps its name from the retired tmux task cockpit; `NOTES_COCKPIT_CONF` overrides it.)
 
 ## Files
 
@@ -23,46 +20,16 @@ The `pathfilter` scopes `git log` to a subdir (for monorepos). Ticket/PR refs (`
 `CU-abc`) are auto-extracted from the note body + commit subjects and appended as a `Tickets:` line -
 shown only when refs are found.
 
-### `llm.env` - the LiteLLM gateway seam (for version summaries)
+### `prompts/` - what the model is told (tracked)
 
-Sourced by `notes-version-summary`. Points at the gateway, never a model host by IP.
+`version-summary.md` and `version-rewrite.md` are the system prompts of the two registered agents that write the summaries, `version-summary` and `version-rewrite`. Their confs (`~/.config/agentctl/agents/<name>.conf`, private overlay) name the route, the model, the token budget and `DATA_CLASS=personal`, so `agentctl-run` refuses any route not safe for the personal vault. Each call is a line in `~/.local/state/agentctl/calls.jsonl`, and a prompt edit starts a new `prompt_sha` there. What an agent is: `~/.config/agentctl/README.md`, "What an agent is".
 
-```
-# ~/.config/notes-cockpit/llm.env
-LLM_BASE_URL="https://<your-llm-gateway>/v1"           # OpenAI-compatible gateway (e.g. LiteLLM)
-LLM_MODEL="reasoning (deepseek-v4-pro)"                # primary
-LLM_MODEL_FALLBACK="reasoning (Qwen3.5-397B-A17B-4bit)"  # used only when primary errors (proxy down)
-# either point at an rbw item OR inline the scoped key (this file is chmod 600, uncommitted):
-LLM_API_KEY="sk-..."                                   # or: LLM_KEY_RBW="litellm_notes_summary_key"
-# LLM_MAXTOK=3000  LLM_MAXTOK_REWRITE=6000             # reasoning models need a big token budget
-```
-
-Model notes:
-- The primary may be a **paid** route (best prose); keep `LLM_MODEL_FALLBACK` on a **local** model so a
-  proxy outage degrades gracefully instead of failing the run. The tool tries primary, then fallback.
-- Reasoning models (deepseek, the large local Qwen) return their thinking in a separate
-  `reasoning_content` field the gateway keeps out of `content`, so summaries stay clean - but give them
-  a big token budget (`LLM_MAXTOK*`) or `content` comes back empty. The script also strips any inline
-  `<think>` blocks defensively. `fast (Qwen3-4B)` is the quick, free local option if you do not need
-  top prose quality.
-- The virtual key's `allowed_models` is the real guard on WHERE data can go: scope it to exactly the
-  tiers this consumer may use, so a wrong model name fails closed at the gateway. Do not route personal
-  data through a proxy you have not vetted for it.
-- If `LLM_BASE_URL` is unset the feature stays dormant: rolls still succeed, summaries are skipped.
-
-## One-time setup
-
-1. Mint a scoped LiteLLM virtual key (see `apps/litellm/README.md` in home-config) with
-   `allowed_models` limited to the LOCAL MLX tier only. Store it in rbw:
-   `rbw add litellm_notes_summary_key` (or reuse `litellm_comms_triage_key`, which is already
-   MLX-scoped).
-2. Write `llm.env` as above.
-3. Write `repos` for any project whose summaries should include git context.
+There is no `llm.env` and no fallback model any more: the route decides where the call goes, and a down origin fails the summary instead of answering from somewhere else. An old `llm.env` left here is not read.
 
 ## How summaries get written
 
 - On roll: `notes-roll <profile> <project>` freezes the version, then `notes-version-summary` writes a
-  `<!-- summary:auto -->` block at the top of the frozen note. Best-effort - a gateway outage never
+  `<!-- summary:auto -->` block at the top of the frozen note. Best-effort - a model outage never
   fails the roll.
 - On demand: `notes-version-summary [--force] <profile> <project> <frozen-file.md>`.
 - Backfill existing versions: `notes-version-summary --backfill <profile> <project>` (add `--all` for
