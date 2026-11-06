@@ -4,7 +4,7 @@ Rules for this repo only. Rules that span repos live in `~/.claude/CLAUDE.md`.
 
 ## Two repos, both stowed
 
-- This public repo (`~/.dotfiles`) and the private overlay (`~/.dotfiles-private`) are both stowed into `$HOME`. Which repo a file belongs in is decided by `.githooks/sensitive-tokens.txt`, not by taste; `dotfiles-land` routes a change. A change that touches both is two PRs, always.
+- This public repo (`~/.dotfiles`) and the private overlay (`~/.dotfiles-private`) are both stowed into `$HOME`. Which repo a file belongs in is decided by the public `.gitignore` (`git check-ignore`) plus a grep for private content, not by taste; `dotfiles-land` routes a change, and `.githooks/sensitive-tokens.txt` is the pre-commit leak scan that backs it. A change that touches both is two PRs, always.
 - Rule content is private: the global `CLAUDE.md`, `AGENTS.md` and the rulesync tree all live in `~/.dotfiles-private`. The `update-rules` skill picks the layer and runs the sync.
 - Stow links point at the main checkout, so edits made in a worktree are NOT deployed. Run a script by its path inside the worktree, and do not assume the one on PATH is the one you just edited.
 - This file is in `.stow-local-ignore`, like `AGENTS.md`. Deployed to `~/CLAUDE.md`, it would load into every session under `$HOME`.
