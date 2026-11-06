@@ -119,15 +119,15 @@ HEADER=$(
 # it back.
 
 # Key facts: the anchor (the project's front door) minus its decisions log, which
-# anchor_inject replaces with one pointer line, and minus the two generated sections
-# the preflight places itself, further down the priority order. Falls back to plain
+# anchor_inject replaces with one pointer line, and minus the generated plans section,
+# which the preflight places itself further down the priority order. Falls back to plain
 # `cat` when the lib is not stowed yet; the budget then decides whether that fits.
 SEC_FACTS=""
 if [ -f "$ANCHOR_FILE" ]; then
   SEC_FACTS=$(
     echo "=== Anchor: $PROJECT_NAME (project index) ==="
     if declare -F anchor_inject >/dev/null 2>&1; then
-      anchor_inject "$ANCHOR_FILE" '^(Active plans|Recent lessons)'
+      anchor_inject "$ANCHOR_FILE" '^Active plans'
     else
       cat "$ANCHOR_FILE"
     fi
@@ -203,26 +203,31 @@ fi
 # 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
 # Where an agent's own task goes is CLAUDE.md's rule ("Track your work in the queue").
 
-# Lessons digest and plans come from the anchor's generated AUTO block, which
-# stop-post.d/87-regen-anchor.sh rewrites on every Stop: the last 5 bullet lessons, each
-# cut to 200 chars, and the 5 most recent plans by mtime. The preflight used to print
-# its own copies from disjoint windows (5 plans ALPHABETICALLY out of 475 files), so the
-# anchor owns both and this only places them.
-#
-# An app in a monorepo also inherits its repo's corpus. Without the parent tail an app
-# session loses sight of every repo-wide lesson (CI, release plumbing, k8s) that still
-# binds it. Parent PLANS are deliberately not counted: a bare number is not actionable.
-SEC_LESSONS=$(
-  declare -F anchor_section >/dev/null 2>&1 && anchor_section "$ANCHOR_FILE" '^Recent lessons'
-  if [ -n "$PARENT_NAME" ]; then
-    PARENT_LESSONS="$HOME/.agent/lessons/${PARENT_NAME}.md"
-    if [ -f "$PARENT_LESSONS" ]; then
-      echo "Parent (repo-wide) lessons, last 10 lines of $PARENT_LESSONS:"
-      tail -10 "$PARENT_LESSONS" | sed 's/^/  /'
-    fi
-  fi
-  true
-)
+# Lessons by relevance: `lessons pick` ranks the project's lessons against the work this
+# session is on and fills the rest with the newest. SessionStart sees only the cwd, so the
+# work is the queue item's title for a dispatched session (about half of them), plus the
+# branch and the cwd's place in the repo; a hand session on main gets the newest. A
+# first-prompt hook would know more, but every prompt would pay for it.
+# Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
+# An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
+WORK_TEXT=""
+if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
+  WORK_TEXT=$(agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
+    sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)
+fi
+WORK_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
+case "$WORK_BRANCH" in main|master|develop|agent-[0-9]*) WORK_BRANCH="" ;; esac
+WORK_TEXT+=" $WORK_BRANCH $(git -C "$PROJECT_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+PARENT_LESSONS="$HOME/.agent/lessons/${PARENT_NAME}.md"
+[ -n "$PARENT_NAME" ] && [ -f "$PARENT_LESSONS" ] || PARENT_LESSONS=""
+PICK="" PARENT_PICK=""
+if command -v lessons >/dev/null 2>&1; then
+  PICK=$(lessons pick "$LESSONS_FILE" "$WORK_TEXT" 2>/dev/null || true)
+  [ -z "$PARENT_LESSONS" ] || PARENT_PICK=$(lessons pick "$PARENT_LESSONS" "$WORK_TEXT" 2>/dev/null || true)
+fi
+SEC_LESSONS="$PICK" PARENT_BODY="${PARENT_PICK#*$'\n'}"
+[ -z "$PARENT_PICK" ] ||
+  SEC_LESSONS+="${PICK:+$'\n'}Parent (repo-wide) lessons from $PARENT_LESSONS:"$'\n'"  ${PARENT_BODY//$'\n'/$'\n'  }"
 SEC_PLANS=$(declare -F anchor_section >/dev/null 2>&1 && anchor_section "$ANCHOR_FILE" '^Active plans' || true)
 
 # Commits only for one app of a monorepo, scoped to its subtree. Claude Code's own
@@ -283,6 +288,11 @@ add_section() { # <name> <where to read it> <body>
 add_section "key facts" "$ANCHOR_FILE" "$SEC_FACTS"
 add_section "agent board" "notes board --agent" "$SEC_BOARD"
 add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
+# A lesson counts as delivered only once it is in the context; the archive reads the log.
+if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
+  [ -z "$PICK" ] || printf '%s\n' "$PICK" | lessons log "$PROJECT_NAME" "$LESSONS_FILE" 2>/dev/null || true
+  [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
+fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
 add_section "commits" "git log" "$SEC_COMMITS"
 add_section "PRs" "gh pr list --state=all" "$SEC_PRS"
