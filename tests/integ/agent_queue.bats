@@ -127,6 +127,9 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run bash -c "'$AQ' list --json | jq -r .slug"
   # red beats urgent; cleanup beats an older item of its priority, never a higher priority; tags match whole words.
   assert_output $'d-red-low\nc-urgent\nb-cleanup\na-high\ne-reddish\nf-cleanup-low'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = d-red-low ]
 }
 
 @test "list orders by priority, then queued time, and next is the head" {

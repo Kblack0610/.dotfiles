@@ -2823,6 +2823,17 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 c a '
 }
 
+@test "next_items from the real queue: a low red, then high cleanup, then an older plain high" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug plain "plain"
+  agent-queue add --project game --slug tidy --tags cleanup "tidy"
+  agent-queue add --project game --slug broke --priority low --tags 'red cause:ab12' "broke"
+  stub fleet-presence 'echo away 0 x'
+  run next_items
+  assert_success
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke tidy plain '
+}
+
 @test "red: a board item with the red tag does not wait while the human is here, a plain one does" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug p --from board:game:p "plain"
