@@ -32,7 +32,8 @@
 #                                       set/replace the recommended option and its why
 #   agent-ask settle-session <sid> answered [text...]
 #                                       close every pending ask a Claude session owns (the
-#                                       UserPromptSubmit and SessionEnd hooks)
+#                                       UserPromptSubmit hook): answered when the text names one
+#                                       option or the ask has none, else cancelled
 #   agent-ask judge <id>                the answer judge: score a pending ask and record what it
 #                                       would answer (judge, judge_rule, judge_type, judge_reason,
 #                                       judge_evidence, judge_call), replacing any older verdict;
@@ -1111,31 +1112,36 @@ in_session_picks() {
                   | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
 }
 
-# settle-session <claude_session> answered [text...]: settle the pending asks that session owns,
-# when the human typed into it (the UserPromptSubmit hook). An ask with --options is
-# answered only by a message that names exactly one of them, and records that option; any other
-# message leaves it pending, because it was about something else. 2026-11-04: three go|later asks
-# about the sheet cleanup closed on "whats going on here?" and "ok how many phases left?", so the
-# cleanup never started. An ask with no options takes the message as its free-text answer.
+# settle-session <claude_session> answered [text...]: the human typed into the session (the
+# UserPromptSubmit hook), so every pending ask it owns leaves the human's list: the conversation
+# now holds the question. A message naming exactly one option answers with that option; an ask
+# with no options takes the message as its answer; any other message cancels it, recording no
+# answer, and the session asks again if it still needs one (88-ask-filed.sh makes it file that).
+# 2026-11-04 any message answered every ask, so "whats going on here?" closed three go|later
+# cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
+# "I already clicked that" kept a session on every board after the human had answered it
+# (2026-11-06). An answer a board typed in ("Answer to ask <id>: ...") is not the human typing:
+# `answer` already settled that ask and the session's other asks stay pending.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && [ "$to" = answered ] ||
     { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
   local text f opts pick; text="$(oneline "$*" | cut -c1-200)"
+  case "$text" in "Answer to ask "*) return 0 ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ "$(field "$f" claude_session)" = "$owner" ] || continue
     review_judge_answer "$f" "$text" "in session"
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
-    if [ -n "$opts" ]; then
-      pick="$(named_option "$opts" "$text")"
-      [ -n "$pick" ] || continue
+    if [ -z "$opts" ]; then
+      record_answer "$f" human "in session: ${text:-(no text)}"
+    elif pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
+      record_answer "$f" human "$pick"
     else
-      pick="in session: ${text:-(no text)}"
+      close_ask cancelled "$(field "$f" id)" "replied in session: ${text:-(no text)}" 2>/dev/null
     fi
-    record_answer "$f" human "$pick"
   done < <(ask_files --all)
   return 0
 }
@@ -1149,11 +1155,9 @@ cmd_settle_session() {
 # After an answer at post, the first message in the session closes the review with `none`, so
 # later ones about other things cannot read as an override. After an assumed answer the human may
 # not have seen the question yet, so a later pick still counts; so does a board answer on any
-# judge answer, which names its ask. An answer typed in from a board ("Answer to ask ...") is not
-# the human reviewing this one, and free text naming no option is never guessed at.
+# judge answer, which names its ask. Free text naming no option is never guessed at.
 review_judge_answer() {
   local f="$1" text="$2" where="$3" said pick pending=""
-  case "$text" in "Answer to ask "*) return 0 ;; esac
   load_ask "$f"
   if [ "${ASK[answered_by]:-}" = judge ]; then
     said="${ASK[answer]:-}"

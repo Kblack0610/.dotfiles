@@ -1095,6 +1095,24 @@ log_triage_setup() {
   jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
+@test "triage: a fault arriving while board_open is past board_open_max is still filed and queued as a red" {
+  log_triage_setup
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  echo board_open_max=1 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_failure
+  lock_route '#size/m'
+  run "$SUBJECT" triage
+  assert_success
+  refute_output --partial held
+  assert_output --partial '1 queued as red fixes'
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+}
+
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
   log_triage_setup
   run "$SUBJECT" triage --dry-run
@@ -1643,6 +1661,18 @@ pipeline_fixture() {
   assert_failure 1
 }
 
+@test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' '- [ ] c #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  run "$SUBJECT" kpi --check '^board_open$'
+  assert_failure 1
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+}
+
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" improve file revert_rate 'fix(ci): retry flaky steps once'
@@ -1748,7 +1778,7 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
-@test "room: past board_open_max the upsert holds new rows and says why; #requested is never held; under it files" {
+@test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
   printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
   export LEDGER_BOARDS="$SANDBOX/agent.md"
@@ -1757,23 +1787,18 @@ check_fixture() {
   assert_failure
   assert_output 'full: board_open 3 past board_open_max 2'
   rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
-  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED $UPSERT_HELD"' _ "$SUBJECT" "$rows" 2>&1; }
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
   run up
-  assert_line --partial '1 added, 0 refreshed, 1 held (full: board_open 3 past board_open_max 2)'
-  assert_line '1 1'
+  assert_line --partial '2 added, 0 refreshed'
+  refute_output --partial held
+  assert_line '2'
   run grep -c ' add ' "$NLOG"
-  assert_output 1
-  run grep ' add ' "$NLOG"
-  assert_output --partial 'fix(x): asked #requested'
-  # Negative control: under the limit the held row files.
+  assert_output 2
+  # Negative control: under the limit the room line says so.
   echo board_open_max=10 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_success
   assert_output 'room: board_open 3 of board_open_max 10'
-  run up
-  assert_line '1 0'
-  run grep -c ' add ' "$NLOG"
-  assert_output 2
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
@@ -1858,7 +1883,7 @@ check_fixture() {
   refute grep -q ' add ' "$NLOG"
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sizes and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -1872,9 +1897,10 @@ check_fixture() {
   assert_line --index 5 '## Queue'
   assert_line --index 6 '## Epic ETAs'
   assert_line --index 7 '## Models'
-  assert_line --index 8 '## Sessions'
-  assert_line --index 9 '## Agent depth'
-  assert_line --index 10 '## Session time'
+  assert_line --index 8 '## Sizes and kinds'
+  assert_line --index 9 '## Sessions'
+  assert_line --index 10 '## Agent depth'
+  assert_line --index 11 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -3180,4 +3206,60 @@ STUB
   run "$SUBJECT" kpi --trend 2 --json
   run jq -sc 'map(.canary_runs)' <<<"$output"
   assert_output '[0,1]'
+}
+
+@test "sizes: work minutes per row size from the item's row on its roadmap, calibrated at BENCH_SIZES_MIN, and cycle time per kind" {
+  export ITEMS="$SANDBOX/done.jsonl" BENCH_SIZES_MIN=2
+  export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  # two projects' roadmaps; ar-9 is unsized, ar-4 sits in an older version
+  cat > "$SANDBOX/bin/roadmap-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$2" = --json ] || exit 9
+case "$1" in
+  ar) echo '[{"version":"v2","rows":[{"id":"ar-1","size":"s","weight":1,"kind":"fix"},{"id":"ar-2","size":"s","weight":1,"kind":"feat"},{"id":"ar-3","size":"m","weight":3,"kind":"feat"},{"id":"ar-9","size":"","weight":1,"kind":"docs"}]},{"version":"v1","rows":[{"id":"ar-4","size":"m","weight":3,"kind":"feat"}]}]' ;;
+  game) echo '[{"version":"v1","rows":[{"id":"g-1","size":"l","weight":8,"kind":"perf"}]}]' ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
+  iso() { date -u -d "@$1" +%FT%TZ; }
+  item() {  # slug row work status queued-ago-h started-ago-h finished-ago-h [type]
+    jq -cn --arg s "$1" --arg r "$2" --arg w "$3" --arg st "$4" --arg q "$(iso $((T0 - $5 * 3600)))" \
+      --arg b "$(iso $((T0 - $6 * 3600)))" --arg f "$(iso $((T0 - $7 * 3600)))" --arg t "${8:-}" \
+      '{slug: $s, status: $st, queued: $q, started: $b, finished: $f, pr: (if $st == "ok" then "o/r#1" else null end)}
+       + (if $r == "" then {} else {row: $r} end) + (if $w == "" then {} else {work_min: $w} end) + (if $t == "" then {} else {type: $t} end)'
+  }
+  {
+    item a ar:ar-1 10 ok 5 4 2
+    item b ar:ar-2 30 ok 5 4 3
+    item c ar:ar-3 60 ok 9 6 1
+    item d ar:ar-4 90 failed 9 8 2
+    item e game:g-1 200 ok 9 8 1
+    item f ar:ar-9 15 ok 3 2 1
+    item g "" 5 ok 3 2 1 research
+    item h ar:ar-1 999 cancelled 3 2 1
+    item i ar:ar-2 "" ok 3 2 1
+    item j ar:ar-2 7 ok 900 899 898
+  } > "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --json
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
+  # s: 10 and 30 (the cancelled 999 and the item past the window left out); m: 60 and 90, failed included
+  assert_equal "$(jq -c '[.sizes[] | [.size, .n, .calibrated, .work_p50, .work_p75, .per_point, .measured_weight]]' <<<"$output")" \
+    '[["s",2,true,10,30,10,1],["m",2,true,60,90,20,6],["l",1,false,200,200,null,null]]'
+  assert_equal "$(jq -c '[.base, .unsized, .min_n, .days]' <<<"$output")" '["s",2,2,28]'
+  # kinds: the row's kind, the item's own type with no row; i has no work_min but still has a cycle
+  assert_equal "$(jq -c '[.kinds[] | [.kind, .done, .landed, .work_p50, .cycle_p50_h, .lead_p50_h]]' <<<"$output")" \
+    '[["feat",4,3,60,1,2],["docs",1,1,15,1,2],["fix",1,1,10,2,3],["perf",1,1,200,7,8],["research",1,1,5,1,2]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes
+  assert_success
+  assert_line '| m | 3 | 2 | 60 | 90 | 20 | 6 |'
+  assert_line '| l | 8 | 1 | - | - | - | too few (1 of 2) |'
+  assert_line '- base size: s; items with work_min and no sized row: 2'
+  assert_line '| feat | 4 | 3 | 60 | 1 | 6 | 2 |'
+  run "$SUBJECT" sizes --bogus
+  assert_failure 2
+  run env BENCH_DONE_ITEMS_CMD=false "$SUBJECT" sizes
+  assert_failure 1
 }

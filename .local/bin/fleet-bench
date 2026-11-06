@@ -48,8 +48,8 @@
 #                                a week (retro runs it), start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
 #                                once per run; verify proves each oracle fails at base, passes at merge
-#   fleet-bench room             whether the agent boards take a row nobody asked for: exit 1 while
-#                                board_open is past board_open_max (retro, triage and research-pick hold)
+#   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
+#                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
@@ -88,6 +88,8 @@
 #                                day, wait and time to PR, from `agent-queue stats`
 #   fleet-bench models [--json] landed rate, redo rate, reverts and cost per PR by model over
 #                                BENCH_QUEUE_DAYS: queue model= joined to outcomes and model-lane runs
+#   fleet-bench sizes [--json]  work minutes per row size over BENCH_SIZES_DAYS against the weight
+#                                the rollups use, and cycle and lead time per row kind
 #   fleet-bench requests [--json] [--since T]
 #                                the human's urgent requests, one row each (a plan chain is one row),
 #                                then those finished since T: the head of every shepherd summary
@@ -125,6 +127,8 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
+: "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
@@ -840,6 +844,8 @@ cmd_scorecard() {
     echo
     models_section "$t"
     echo
+    sizes_section "$t"
+    echo
     echo "## Sessions"
     echo
     echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
@@ -1216,9 +1222,9 @@ scheduled_runner() {
 # board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
 board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
 
-# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS, the WIP
-# limit that keeps intake at throughput. A filer holds a row nobody asked for (no #requested)
-# while it is full and says so; no threshold is no limit.
+# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
+# only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
+# board-open watch alerts on; no threshold is no limit.
 intake_room() {
   local n max
   n=$(board_open_count)
@@ -1787,6 +1793,79 @@ cmd_models() {
   if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else models_section "$(now)" | sed '1,4d'; fi
 }
 
+# sizes_json <now> -> the size calibration and per-kind cycle time over BENCH_SIZES_DAYS: each
+# done item (cancelled left out) joined through its `row:` to that row on its project's roadmap,
+# which gives the size, the weight and the kind (the item's own `type:` when no row is found).
+# A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
+# median work over the median of the calibrated weight-1 size with the most items. Percentiles
+# are nearest rank.
+sizes_json() {
+  local since rows projects p items
+  since=$(( $1 - BENCH_SIZES_DAYS * 86400 ))
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null | jq -cs .) || return 1
+  projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
+  # the roadmaps go in as a file: a big project's is past the length of one argument
+  rows=$(for p in $projects; do
+      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind}}'
+    done | jq -cs 'from_entries')
+  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson min "$BENCH_SIZES_MIN" --argjson since "$since" \
+     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
+    def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
+    def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
+    def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
+    $rows[0] as $R
+    | [$items[0][] | select(.status != "cancelled" and ((.finished | epoch) // 0) >= $since)
+       | ($R[.row // ""]) as $r
+       | {size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+          landed: (.status == "ok" and (.pr // "") != ""),
+          work: (.work_min // "" | tonumber? // null),
+          cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
+          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $all
+    | ($all | map(select(.work != null))) as $timed
+    | ($timed | map(select(.size != "")) | group_by(.size)
+       | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
+              work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
+    | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
+    | {days: $days, min_n: $min, base: ($base.size // null),
+       sizes: ($sz | sort_by(.weight, .size) | map(. + {
+         per_point: (if .calibrated then (.work_p50 / .weight * 10 | round / 10) else null end),
+         measured_weight: (if .calibrated and $base != null and $base.work_p50 > 0 then (.work_p50 / $base.work_p50 * 10 | round / 10) else null end)})),
+       unsized: ($timed | map(select(.size == "")) | length),
+       kinds: ($all | group_by(.kind) | map({kind: .[0].kind, done: length, landed: (map(select(.landed)) | length),
+         work_p50: (map(.work // empty) | pct(0.5)),
+         cycle_p50_h: (map(.cycle // empty) | pct(0.5) | hours), cycle_p90_h: (map(.cycle // empty) | pct(0.9) | hours),
+         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind))}'
+}
+
+# sizes_section <now>: the size calibration and the per-kind cycle time, in the scorecard
+sizes_section() {
+  local j
+  echo "## Sizes and kinds"
+  echo
+  echo "Queue items finished in the last ${BENCH_SIZES_DAYS} days, joined through their \`row:\` to the row's size and kind on its roadmap. Work is the items' work_min (minutes a session was working). A size is calibrated at ${BENCH_SIZES_MIN} or more items; its measured weight is its median work over the base size's, to set beside the weight the rollups use. Cycle is started to finished, lead is queued to finished."
+  echo
+  j=$(sizes_json "$1") || { echo "- sizes: ? (the done queue items are unreadable)"; return 0; }
+  jq -r 'def d: if . == null then "-" else tostring end;
+    "| Size | Weight | Items | Work p50 min | Work p75 min | Min per point | Measured weight |",
+    "|---|---|---|---|---|---|---|",
+    (.min_n as $m | .sizes[] | "| \(.size) | \(.weight) | \(.n) | " + (if .calibrated
+       then "\(.work_p50) | \(.work_p75) | \(.per_point) | \(.measured_weight | d) |"
+       else "- | - | - | too few (\(.n) of \($m)) |" end)),
+    "",
+    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)",
+    "",
+    "| Kind | Done | Landed | Work p50 min | Cycle p50 h | Cycle p90 h | Lead p50 h |",
+    "|---|---|---|---|---|---|---|",
+    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$j"
+}
+
+cmd_sizes() {
+  local j
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench sizes [--json]"; return 2 ;; esac
+  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else sizes_section "$(now)" | sed '1,4d'; fi
+}
+
 wakes_lines() {
   local w win="${BENCH_WINDOW_H}h"
   w=$($BENCH_WAKES_CMD --since "$win" --json 2>/dev/null) && jq -e .all <<<"$w" >/dev/null 2>&1 \
@@ -1924,12 +2003,14 @@ def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
 effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
-# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
+# board_open is never picked: a full board is the board-open watch's alert, and a session whose job
+# is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and .key != "board_open" and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
@@ -2129,20 +2210,16 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A new row with no #requested is held while intake_room says full. A row whose
-# condition cleared is left for whoever owns it. Every row is #size/s. Leaves the counts in
-# UPSERT_ADDED, UPSERT_EDITED, UPSERT_HELD and UPSERT_FULL (intake_room's line); FAILED is reported here.
+# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
+# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
-  local board p text pri have rc added=0 edited=0 held=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0
-  UPSERT_FULL=$(intake_room) && UPSERT_FULL=''
+  local board p text pri have rc added=0 edited=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
-    if [ -z "$have" ] && [ -n "$UPSERT_FULL" ] && [[ " $text $pri " != *' #requested '* ]]; then
-      held=$((held + 1))
-    elif [ -z "$have" ]; then
+    if [ -z "$have" ]; then
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
       case $rc in
@@ -2156,16 +2233,15 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_HELD=$held
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
-  [ "${UPSERT_HELD:-0}" -eq 0 ] || did+=", $UPSERT_HELD held ($UPSERT_FULL)"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_HELD:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -2479,7 +2555,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_HELD=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
   h=$(triage_human "$rows")
   q=$(triage_promote "$rows")
   upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
@@ -3447,6 +3523,7 @@ main() {
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
+    sizes) shift; cmd_sizes "$@" ;;
     -h | --help) usage ;;
     *) usage >&2; return 2 ;;
   esac
