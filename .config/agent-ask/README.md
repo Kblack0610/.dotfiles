@@ -16,7 +16,7 @@ An ask file is the only record that something waits on the human, for attended s
 
 - An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
-- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` closes the session's asks) or from a board (`agent-ask answer` also types the answer into the live session's pane).
+- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list) or from a board (`agent-ask answer` also types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone", where the answer will go, and that g reopens the session.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
 - On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, each row its question with the session's registry title under it (and `ended` once that session has), the selected one's card beside it (pgup/pgdn scroll it), answered in place. The `Prefix g` preview shows the card above the pane.
@@ -75,7 +75,7 @@ agent-ask sweep [project|--all]              judge every pending ask again and a
 agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again; `fleet-state.service` runs it each pass
 agent-ask cancel <id>                        status->cancelled
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
-agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); an ask with options closes only when the text names exactly one of them, recorded as the answer
+agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
 ```
 
 ## Ask file schema
