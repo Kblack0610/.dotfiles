@@ -13,7 +13,8 @@
 # target before the slash), each with its own counts and one line per session, worst first.
 #
 # Read from Prometheus (agent_session_age_minutes, one series per session that `fleet-sessions
-# tick` writes to fleet_sessions.prom every minute), the same stages the hub Sessions tab shows,
+# tick` writes to fleet_sessions.prom every minute, and agent_session_bucket, the bucket order and
+# which are in progress or finished, so no list of buckets lives here), the same stages the hub Sessions tab shows,
 # so the chip reads the same on the laptop thin client and there is one count of sessions, not
 # a pane count beside a stage count. Prometheus unreadable reads ? in amber, never a quiet nothing.
 
@@ -31,7 +32,7 @@ STATE_LATE_SECS=300
 
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
-q='agent_session_age_minutes or agent_session_idle_minutes or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
+q='agent_session_age_minutes or agent_session_idle_minutes or agent_session_bucket or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -48,11 +49,24 @@ done < <(jq -r --argjson now "$now" --argjson late "$STATE_LATE_SECS" '[.data.re
     | {h: (.metric.host // "?"), a: ($now - (.value[1] | tonumber | floor))}]
   | group_by(.h) | map({h: .[0].h, a: (map(.a) | min)})[] | select(.a > $late) | [.h, .a] | @tsv' <<< "$raw")
 
+# The bucket vocabulary fleet-sessions publishes: its order (ORDER), and the flags on each bucket.
+declare -A IN_PROGRESS=() FINISHED=()
+ORDER=()
+while IFS=$'\t' read -r b ip fin; do
+  ORDER+=("$b")
+  [ "$ip" = 1 ] && IN_PROGRESS[$b]=1
+  [ "$fin" = 1 ] && FINISHED[$b]=1
+done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_bucket")
+    | {b: .metric.bucket, o: (.value[1] | tonumber), i: .metric.in_progress, f: .metric.finished}]
+  | unique_by(.b) | sort_by(.o)[] | [.b, .i, .f] | @tsv' <<< "$raw")
+
 # One row per session (a second scrape of a host reads once): world, stage, target without its
 # world, age and idle minutes (- when unknown). Worst stage first, then the longest idle
 # and age.
 mapfile -t rows < <(jq -r '
-  [.data.result[] | select(.metric.target)
+  ([.data.result[] | select(.metric.__name__ == "agent_session_bucket")
+    | {key: .metric.bucket, value: (.value[1] | tonumber)}] | from_entries) as $order
+  | [.data.result[] | select(.metric.target)
    | {t: .metric.target, b: (.metric.bucket // "?"), n: .metric.__name__,
       v: (.value[1] | tonumber | floor)}]
   | group_by(.t)
@@ -61,7 +75,7 @@ mapfile -t rows < <(jq -r '
          idle: (map(select(.n == "agent_session_idle_minutes") | .v) | max)})
   | map(select(.age != null or .idle != null))
   | map(. + {w: (if (.t | contains("/")) then (.t | split("/")[0]) else "other" end),
-             s: ({STALLED: 0, NEEDS: 1, WORKING: 2, LANDED: 3, DONE: 4, CHAT: 5, PARKED: 6}[.b] // 7)})
+             s: ($order[.b] // 99)})
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
   | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-")] | map(tostring) | join("|")' <<< "$raw")
 
@@ -73,15 +87,15 @@ stage_paint() {
   esac
 }
 
-# counts <rows...>: "N in progress: 3 working, 2 need you, ..." for those rows, zeros left out.
-in_progress() { case "$1" in WORKING|NEEDS|STALLED) return 0 ;; esac; return 1; }
+# counts <rows...>: "N in progress: 3 working, 2 need you, ..." for those rows in the vocabulary's
+# order, zeros left out.
 counts() {
   local -A c=()
   local r b n=0 k label out=''
-  for r in "$@"; do IFS='|' read -r _ b _ <<< "$r"; c[$b]=$((${c[$b]:-0} + 1)); in_progress "$b" && n=$((n + 1)); done
-  for k in WORKING:working NEEDS:'need you' STALLED:stalled LANDED:landed DONE:done CHAT:chat PARKED:parked; do
-    label="${k#*:}" k="${k%%:*}"
+  for r in "$@"; do IFS='|' read -r _ b _ <<< "$r"; c[$b]=$((${c[$b]:-0} + 1)); [ -n "${IN_PROGRESS[$b]:-}" ] && n=$((n + 1)); done
+  for k in "${ORDER[@]}"; do
     ((${c[$k]:-0} > 0)) || continue
+    label="${k,,}"; [ "$k" = NEEDS ] && label='need you'
     out+=", $(stage_paint "$k" "${c[$k]}") $label"
   done
   printf '%s in progress' "$n"
@@ -91,8 +105,9 @@ counts() {
 total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ <<< "$r"
-  in_progress "$b" && total=$((total + 1))
-  case $b in WORKING) n_work=$((n_work + 1)) ;; LANDED|DONE) n_ready=$((n_ready + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
+  [ -n "${IN_PROGRESS[$b]:-}" ] && total=$((total + 1))
+  [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
+  case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
   ((${#t} > width)) && width=${#t}
 done
@@ -101,6 +116,7 @@ done
 if ! jq -e 'any(.data.result[]; .metric.__name__ == "node_textfile_mtime_seconds")' <<< "$raw" >/dev/null; then
   flag 1 "no fleet_sessions.prom on Prometheus: fleet-sessions tick writes it"
 fi
+((${#ORDER[@]} > 0)) || flag 1 "no agent_session_bucket on Prometheus: fleet-sessions tick writes the bucket order"
 ((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
 
 head="$title  $(counts "${rows[@]}")"

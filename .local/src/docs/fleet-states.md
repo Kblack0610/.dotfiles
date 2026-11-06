@@ -72,7 +72,11 @@ shared[]          {test, id, reason, fact, nudged, escalated, owners[]}: a test 
                   with the live sessions in those worktrees; `fact` keys the owner item, the nudge and the escalation
 asks[]            pending asks: {id, project, kind, question (160 chars), task, created, session}
 counts            {bucket: n} over sessions[], every bucket named, an empty one as 0
+vocab             {buckets[], finished[], in_progress[]}: the one bucket order (what needs the human first),
+                  the buckets whose work is done, and the ones at work, so no reader keeps a list
 ```
+
+Each session object also carries `project`, the canonical name `resolve_project_name` (`.config/shared-hooks/project-name.sh`) gives its cwd: a session in `freqtrade_trading_attempt-agent-1` is `trader`. Every reader takes the project from the row, and none strips `-agent-N` off a name itself. The same value is the last cell of the `watch.log` lines (`project - -> trader` when a session first appears), which is how `fleet-sessions stages` and `day-log` name a project for a session that has ended.
 
 A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, minus a NEEDS reason's `, carrying on` so a session flipping between busy and idle is one fact, the key the shepherd nudges once per; an open PR's adds its head commit, `@branch@<sha12>`, so a new push is a new fact, except a conflict's, which adds the merge base, ` base <sha12>`, so the same conflict at a new head or a further-moved default branch is the same fact and only a branch that took the default branch in and conflicts again is a new one), `activity`, `target`, `pane`, `session_id`, `cwd`, `branch`, `pr`, `pr_state`, `ci`, `behind`, `conflicts`, `dirty`, `ahead`, `idle_min`, `age_min` (minutes since the session started), `context_tokens`, `plan_file`, `phases_done`, `phases_total`, `next_phase`, `finished`, `labels[]`, `dispatch`, `nudged`, `escalated`, `owners[]`, `asks` (pending asks this session posted, matched on the ask's `claude_session` only), `blockers[]` (every reason `finished` is false, empty when it is true), `prs[]` (`{repo, number, state, merged_at}` for each PR the session's own `gh pr create` or `gh pr merge` printed, in any repo; `state` is `null` when the repo's list did not reach it or was unreadable), `time` (`{work_min, jobs_min, human_min, parked_min}`, see below), `compactions`, `topic` (agent-panel's summary), `doing` (the last tool call, `<Tool>: <description>`; a Bash command is never copied), `said` (the last assistant text, clipped), `eta` (the expected finish from `fleet-bench eta`, `HH:MM` today or `Thu HH:MM`, with its basis short: `s3` the session's own median over 3 phases, `p16` the project's; absent when the bench has no estimate), `main_red` (true when the session's repo has a red `main[]` entry, false when its default branch is green, `null` when its CI was unreadable or it is not in git). A fact the pass could not establish is `null`.
 
@@ -86,9 +90,10 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | --- | --- |
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
-| `hub` and agent-web Sessions tab | The whole document, plus `~/.agent/shepherd/watch.log` for the change feed |
+| `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
+| agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
-| waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), and the file's age |
+| waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), the bucket order and its in-progress and finished flags from `vocab` as `agent_session_bucket`, and the file's age |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 
@@ -109,5 +114,6 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | A window keeps a stage after its session ended | The next tick clears any window carrying `@fleet_stage` that no session claims; check `fleet-state.timer` is running |
 | The phone widget says `<chip>: the chip printed nothing` | Run that chip by hand (`.config/waybar/<chip>.sh`): it crashed or printed no JSON |
 | The agents chip reads `?` | Prometheus did not answer: check `CC_PROM_URL` in `~/.config/command-center/env` |
+| The agents chip robot is amber and the hover says no `agent_session_bucket` | `fleet_sessions.prom` predates the bucket order: the next `fleet-sessions tick` writes it |
 | The agents chip robot is amber and the hover says no `fleet_sessions.prom` | `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
 | The agents chip robot is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |

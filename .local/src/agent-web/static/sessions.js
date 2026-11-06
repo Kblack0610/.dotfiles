@@ -12,7 +12,7 @@ const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"],
 
 const refreshTable = coalesce(async () => {
   const q = tblParams(st.views.sessions).toString();
-  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); sst.err = null; } catch (e) { sst.err = e.message; }
+  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); setBuckets(sst.data.buckets); sst.err = null; } catch (e) { sst.err = e.message; }
   renderOverview();
 });
 const refreshCapacity = coalesce(async () => {
@@ -167,9 +167,18 @@ for (const kind of ["input", "change"]) {
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);
 const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd);
 const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions);
+// #sessions/<target> opens that session, as a Fleet row does. The agents list may not be
+// loaded yet, so the open waits for it (refreshAgents returns once it has).
+async function openArg() {
+  const target = st.arg;
+  if (!st.agents.length) await refreshAgents();
+  const a = st.agents.find((x) => x.target === target);
+  if (a && st.arg === target && (!st.sel || st.sel.target !== target)) select(a);
+}
 TABS.sessions = {
   show() {
-    if (!st.sel) overview();
+    if (st.arg) openArg();
+    else if (!st.sel) overview();
     watchFeed.show(!wst.data); shepFeed.show(!shst.data); tableFeed.show(!sst.data);
   },
   onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); },
