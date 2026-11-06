@@ -51,10 +51,11 @@ jobs:
         run: make -C tests bootstrap
       # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
       # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
-      - name: GNU parallel, inotify-tools
+      # sqlite3: session_outcomes.bats builds a fixture opencode DB.
+      - name: GNU parallel, inotify-tools, sqlite3
         run: |
-          { command -v parallel && command -v inotifywait; } >/dev/null ||
-            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools; }
+          { command -v parallel && command -v inotifywait && command -v sqlite3; } >/dev/null ||
+            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools sqlite3; }
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
