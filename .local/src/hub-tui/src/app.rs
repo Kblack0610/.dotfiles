@@ -265,6 +265,8 @@ pub struct App {
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Fleet tab shows each runner's registry lines (`d`) under its row.
     pub fleet_details: bool,
+    /// Fleet's Workers in hub-core's Tonight order (`t`), not the default.
+    pub fleet_tonight: bool,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -358,6 +360,7 @@ impl App {
             focus: None,
             daily_outbox: false,
             fleet_details: false,
+            fleet_tonight: false,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -950,6 +953,10 @@ impl App {
         }
         if self.tab == Tab::Fleet && k.code == KeyCode::Char('d') {
             self.fleet_details = !self.fleet_details;
+            return;
+        }
+        if self.tab == Tab::Fleet && k.code == KeyCode::Char('t') {
+            self.fleet_tonight = !self.fleet_tonight;
             return;
         }
         let n = self.page.max(1);
@@ -1641,7 +1648,8 @@ impl App {
             ),
             Tab::Fleet => {
                 let d = if self.fleet_details { "hide" } else { "show" };
-                format!("d {d} runner details  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+                let t = if self.fleet_tonight { "default order" } else { "tonight" };
+                format!("d {d} runner details  t {t}  {tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
             }
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
@@ -1783,7 +1791,7 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (
-                    fleettab::page(f, self.p, now, w, self.fleet_details),
+                    fleettab::page(f, self.p, now, w, self.fleet_details, self.fleet_tonight),
                     vec![],
                 ),
             },
@@ -2925,6 +2933,30 @@ mod tests {
         let s = screen(&mut a, 160, 40);
         assert!(s.contains("trigger *-*-* 03:00:00"), "{s}");
         assert!(s.contains("d hide runner details"), "{s}");
+    }
+
+    #[test]
+    fn t_on_the_fleet_tab_switches_the_workers_to_tonight_and_back() {
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::tonight_fixture())));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("t tonight") && !s.contains("always idle-one"),
+            "{s}"
+        );
+        a.handle(key('t'));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains("always idle-one") && s.contains("  `-   ask-sweep"),
+            "{s}"
+        );
+        assert!(s.contains("t default order"), "{s}");
+        a.handle(key('t'));
+        assert!(!screen(&mut a, 160, 40).contains("always idle-one"));
+        // Another tab's t is its own (Log's today), not this toggle.
+        a.handle(Msg::Tab(Tab::Log, None));
+        a.handle(key('t'));
+        assert!(!a.fleet_tonight);
     }
 
     #[test]

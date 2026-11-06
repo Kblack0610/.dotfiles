@@ -40,6 +40,7 @@ const worker = (name, registry) => ({
 const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d", disagreements: [] };
 const data = {
   at: 1793942659, errors: [], accounts: [], cost_24h: 1, judge,
+  tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [] },
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
     worker("ask-judge", {
@@ -88,4 +89,49 @@ test("a runner with no calls and no judge table shows only its registry lines", 
   assert.match(det, /trigger \*-\*-\* 03:00:00 \| 24h: 0 calls, <span class="">0 errors<\/span>, -, 0 tokens, p95 -/);
   assert.doesNotMatch(det, /<th>rule<\/th>|<th>trace<\/th>/);
   open("dream");
+});
+
+test("Tonight lists the slots in hub-core's order, a call under its caller, and the other timers as a count", () => {
+  const night = {
+    ...data,
+    workers: [...data.workers, worker("sentinel", { kind: "persistent" })],
+    tonight: {
+      until: 1793942659 + 6 * 3600, other_timers: 12,
+      slots: [
+        { name: "sentinel", at: null, under: null },
+        { name: "dream", at: 1793942659 + 3600, under: null },
+        { name: "ask-judge", at: null, under: "dream" },
+        { name: "gone", at: 1793942659 + 7200, under: null },
+      ],
+    },
+  };
+  const f = vm.runInContext("fst", ctx);
+  f.data = night;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<button class="btn sm" data-tonight>Tonight<\/button>/);
+  const rows = () => [...box.innerHTML.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"], "the default order is untouched");
+  click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
+  const h = box.innerHTML;
+  assert.deepEqual(rows(), ["sentinel", "dream", "ask-judge"], "a slot with no worker is skipped");
+  const clock = vm.runInContext("clock", ctx);
+  assert.match(h, /<td title="">always sentinel<\/td>/);
+  assert.match(h, new RegExp(`<td title="">${clock((1793942659 + 3600) * 1e3)} dream</td>`));
+  assert.match(h, /<td title=""><span class="muted" title="called by dream">`- <\/span> ask-judge<\/td>/);
+  assert.match(h, new RegExp(`\\+ 12 other timers before ${clock((1793942659 + 6 * 3600) * 1e3)}: <a href="#jobs">Infra Jobs</a>`));
+  assert.match(h, /data-tonight>Default order<\/button>/);
+  click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
+  assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"]);
+  assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.data = data;
+});
+
+test("an empty night says so and draws no count", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.data = data;
+  f.tonight = true;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /No runner runs before morning\./);
+  assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.tonight = false;
 });
