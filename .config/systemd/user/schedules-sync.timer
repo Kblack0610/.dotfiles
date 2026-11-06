@@ -1,0 +1,13 @@
+[Unit]
+Description=Sync GitHub scheduled-run facts into ~/.local/state/schedules/state.json every 10 minutes
+
+# GitHub sends this machine no event when a scheduled run ends, so this samples. A warm pass
+# is about two gh calls per repo in day-log-ci; ten minutes is how late a hold or the hub can
+# read a nightly's end.
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
