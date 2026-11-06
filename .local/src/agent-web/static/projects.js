@@ -25,16 +25,19 @@ function pRunning(r) {
 // A count chip, only when there is something to count.
 const pCount = (n, what, cls) => (n ? cchip(cls || "", `${n} ${what}`) : "");
 
-// A project card in the list: its name, stage and queue, then the open version's progress
-// (hub_core's summary word for word under the meter). The rest is the opened card's (pOpened).
+// A card's top, in the list and opened: its name and chips, profile and prio, then the open
+// version's progress (hub_core's summary word for word under the meter).
+const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
+  cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
+  `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
+  `<div class="psum">${esc(c.summary)}</div>`;
+
+// A project card in the list: its stage and queue over the top. The rest is the opened card's
+// (pOpened).
 function pCard(c) {
   const chips = [cchip("", esc(c.stage || "no stage")), pCount(c.running.length, "running", "running"),
     pCount(c.waiting, "waiting", "waiting"), pCount(c.queued, "queued")];
-  return `<div class="card qitem pcard" data-open="${esc(pKey(c))}">` +
-    cardHead(c.name, chips.filter(Boolean)) +
-    cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-    `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
-    `<div class="psum">${esc(c.summary)}</div>` +
+  return `<div class="card qitem pcard" data-open="${esc(pKey(c))}">` + pTop(c, chips) +
     `<div class="opts"><button class="btn sm" data-open="${esc(pKey(c))}">Open rows</button></div>` +
     `</div>`;
 }
@@ -48,11 +51,7 @@ const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` :
 // shown), then Build by system, Next stage, Shipped, In flight and the Agent note as folds whose
 // heads carry their counts, the TUI's opened card word for word.
 function pOpened(c) {
-  const chips = [cchip("", esc(c.stage || "no stage"))];
-  let html = `<div class="card qitem pcard">` + cardHead(c.name, chips) +
-    cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-    `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
-    `<div class="psum">${esc(c.summary)}</div>` +
+  let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
     `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
   const got = pst.page[c.name];
   if (!got) return html + `<div class="muted">Reading the page...</div></div>`;
@@ -62,17 +61,16 @@ function pOpened(c) {
   html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
   html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
   if (pg.needs.length) html += `<div class="card">${pLines(pg.needs, "qlate")}</div>`;
-  const epics = pg.systems.reduce((n, s) => n + s.epics.length, 0);
-  html += pFold("systems", "Build by system", `${pg.systems.length} systems, ${epics} open epics${pg.no_epic ? " " + pg.no_epic : ""}`,
+  html += pFold("systems", "Build by system", pg.systems_says,
     pg.systems.map((s) => `<div><b>${esc(s.head)}</b></div>` +
       s.epics.map((e) => `<div class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</div>`).join("") +
       (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : "")).join(""));
-  html += pFold("next", "Next stage", pg.next_stage || "no stage after this one",
+  html += pFold("next", "Next stage", pg.next_says,
     pg.next_rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join(""));
-  html += pFold("shipped", "Shipped", pg.shipped.length ? `${pg.shipped.length} versions` : "none yet", pLines(pg.shipped));
+  html += pFold("shipped", "Shipped", pg.shipped_says, pLines(pg.shipped));
   html += pFold("flight", "In flight", c.counts,
     c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`);
-  html += pFold("note", "Agent note", c.status ? `model-written, ${c.status_date}` : "none",
+  html += pFold("note", "Agent note", c.note_says,
     c.status ? `<div class="pstat">${esc(c.status)}</div>` : "");
   return html;
 }
@@ -155,9 +153,7 @@ $("projects").addEventListener("click", (e) => {
   if (o && !e.target.closest("#board")) pOpen(o.dataset.open);
 });
 $("projects").addEventListener("toggle", (e) => {
-  const k = e.target.dataset && e.target.dataset.k;
-  if (k === "unlinked") pst.unlinked = e.target.open;
-  else if (k && k.startsWith("pg:")) pst.folds[k] = e.target.open;
+  if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
 }, true);
 
 TABS.projects = {

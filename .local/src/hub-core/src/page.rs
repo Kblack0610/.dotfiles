@@ -20,8 +20,6 @@ pub const PLANS_SHOWN: usize = 5;
 /// One epic as its system's line: `one project page  [rows]  brief yes  plan 2 of 7 ...`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct EpicLine {
-    pub id: String,
-    pub step: String,
     pub line: String,
     /// Behind its frozen baseline, which a surface marks.
     pub behind: bool,
@@ -54,12 +52,15 @@ pub struct Page {
     pub flow_line: Option<String>,
     /// Verify an epic whose rows all landed, then plans that name no epic, in that order.
     pub needs: Vec<String>,
+    /// Build by system's head: `3 systems, 2 open epics (438 rows with no epic)`.
+    pub systems_says: String,
     pub systems: Vec<System>,
-    /// `(438 rows with no epic)`, empty when every row has one.
-    pub no_epic: String,
-    /// `beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet`; empty at the top stage.
-    pub next_stage: String,
+    /// Next stage's head: `beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet`, or
+    /// `no stage after this one` at the top.
+    pub next_says: String,
     pub next_rows: Vec<Requirement>,
+    /// Shipped's head: `2 versions`, `1 version` or `none yet`.
+    pub shipped_says: String,
     /// `v0.0.0: 20 rows closed; feat 9, fix 7, docs 4`, newest first.
     pub shipped: Vec<String>,
     pub errors: Vec<String>,
@@ -83,12 +84,13 @@ struct SystemsOut {
     systems: Vec<Criteria>,
 }
 
-#[derive(Deserialize, Default)]
+/// One system's criteria from `project-stage-check --systems`.
+#[derive(Clone, Debug, Deserialize, Default)]
 #[serde(default)]
-struct Criteria {
-    id: String,
-    met: u32,
-    total: u32,
+pub struct Criteria {
+    pub id: String,
+    pub met: u32,
+    pub total: u32,
 }
 
 /// The stage after `stage` on the ladder; None at the top or for a stage the ladder lacks.
@@ -174,20 +176,20 @@ pub fn needs(c: &Chain) -> Vec<String> {
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
 /// then any system an epic names that the type lacks, then epics with none.
-pub fn systems(c: &Chain, criteria: &[(String, u32, u32)], now: i64) -> Vec<System> {
+pub fn systems(c: &Chain, criteria: &[Criteria], now: i64) -> Vec<System> {
     let mut by: BTreeMap<&str, Vec<&Epic>> = BTreeMap::new();
     for e in &c.epics {
         by.entry(e.system.as_str()).or_default().push(e);
     }
     let mut out: Vec<System> = criteria
         .iter()
-        .map(|(id, met, total)| System {
-            id: id.clone(),
-            head: format!("{id}  criteria {met} of {total}"),
+        .map(|c| System {
+            id: c.id.clone(),
+            head: format!("{}  criteria {} of {}", c.id, c.met, c.total),
             ..Default::default()
         })
         .collect();
-    for (sys, _) in by.iter() {
+    for sys in by.keys() {
         if !out.iter().any(|s| s.id == *sys) {
             let id = if sys.is_empty() { "no system" } else { sys };
             out.push(System {
@@ -205,8 +207,6 @@ pub fn systems(c: &Chain, criteria: &[(String, u32, u32)], now: i64) -> Vec<Syst
             .iter()
             .filter(|e| e.state == "open")
             .map(|e| EpicLine {
-                id: e.id.clone(),
-                step: e.step.clone(),
                 line: epic_line(e, now),
                 behind: e.track.as_deref() == Some("behind"),
             })
@@ -263,12 +263,15 @@ fn stage_line(o: &StageOut) -> String {
     )
 }
 
-/// Run `project-stage-check`, whose exit is 1 when a row fails and whose JSON is still the
-/// answer; 2 is a usage error.
-fn stage_check(runner: &dyn Runner, argv: &[&str]) -> Result<String, String> {
+/// Run `project-stage-check` and parse its JSON. Its exit is 1 when a row fails and the JSON is
+/// still the answer; 2 is a usage error.
+fn stage_json<T: serde::de::DeserializeOwned>(
+    runner: &dyn Runner,
+    argv: &[&str],
+) -> Result<T, String> {
     let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
     match runner.output(&argv)? {
-        (0 | 1, out) => Ok(out),
+        (0 | 1, out) => serde_json::from_str(&out).map_err(|e| e.to_string()),
         (code, _) => Err(format!("{} exited {code}", argv.join(" "))),
     }
 }
@@ -279,6 +282,10 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         project: name.to_string(),
         ..Default::default()
     };
+    if !crate::projects::safe_name(name) {
+        p.errors.push(format!("refusing project name {name:?}"));
+        return p;
+    }
     let chain = match epics::chain(runner, name) {
         Ok(c) => Some(c),
         Err(e) => {
@@ -286,21 +293,11 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
             None
         }
     };
-    // A name epics::chain refused never reaches the other commands either.
-    if p.errors.iter().any(|e| e.starts_with("refusing")) {
-        return p;
-    }
-    let criteria: Vec<(String, u32, u32)> = match stage_check(
+    let criteria = match stage_json::<SystemsOut>(
         runner,
         &["project-stage-check", name, "--systems", "--json"],
-    )
-    .and_then(|o| serde_json::from_str::<SystemsOut>(&o).map_err(|e| e.to_string()))
-    {
-        Ok(o) => o
-            .systems
-            .into_iter()
-            .map(|c| (c.id, c.met, c.total))
-            .collect(),
+    ) {
+        Ok(o) => o.systems,
         Err(e) => {
             p.errors.push(format!("project-stage-check --systems: {e}"));
             vec![]
@@ -310,9 +307,15 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         p.flow_line = Some(epics::flow_line(&c.flow));
         p.needs = needs(c);
         p.systems = systems(c, &criteria, now);
-        if !c.unlinked.rows.is_empty() {
-            p.no_epic = format!("({} rows with no epic)", c.unlinked.rows.len());
-        }
+    }
+    let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
+    p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
+    if let Some(n) = chain
+        .as_ref()
+        .map(|c| c.unlinked.rows.len())
+        .filter(|n| *n > 0)
+    {
+        p.systems_says += &format!(" ({n} rows with no epic)");
     }
     let ladder: Vec<String> =
         match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
@@ -328,15 +331,15 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 vec![]
             }
         };
+    p.next_says = "no stage after this one".into();
     if let Some(next) = next_on(&ladder, stage) {
-        match stage_check(
+        p.next_says = format!("{next}  not read");
+        match stage_json::<StageOut>(
             runner,
             &["project-stage-check", name, "--stage", &next, "--json"],
-        )
-        .and_then(|o| serde_json::from_str::<StageOut>(&o).map_err(|e| e.to_string()))
-        {
+        ) {
             Ok(o) => {
-                p.next_stage = stage_line(&o);
+                p.next_says = stage_line(&o);
                 p.next_rows = o
                     .requirements
                     .into_iter()
@@ -363,6 +366,11 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         },
         Err(e) => p.errors.push(format!("notes projects --roadmap: {e}")),
     }
+    p.shipped_says = match p.shipped.len() {
+        0 => "none yet".into(),
+        1 => "1 version".into(),
+        n => format!("{n} versions"),
+    };
     p
 }
 
@@ -510,9 +518,12 @@ mod tests {
             "an estimate already past says so, never 0d"
         );
         assert!(p.systems[1].epics.is_empty() && p.systems[1].closed.is_empty());
-        assert_eq!(p.no_epic, "(2 rows with no epic)");
         assert_eq!(
-            p.next_stage,
+            p.systems_says,
+            "3 systems, 3 open epics (2 rows with no epic)"
+        );
+        assert_eq!(
+            p.next_says,
             "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet"
         );
         assert_eq!(
@@ -527,6 +538,7 @@ mod tests {
             p.shipped,
             vec!["v0.1.0: 20 rows closed; feat 9, fix 7, docs 4"]
         );
+        assert_eq!(p.shipped_says, "1 version");
     }
 
     #[test]
@@ -536,9 +548,10 @@ mod tests {
             p.errors.is_empty(),
             "exit 1 is a failing row, not a failed read"
         );
-        assert!(p.next_stage.starts_with("beta  4 of 12 met"));
+        assert!(p.next_says.starts_with("beta  4 of 12 met"));
         let p = read(&fake(2), "game", "alpha", NOW);
-        assert!(p.next_stage.is_empty() && p.systems.len() == 2);
+        assert_eq!(p.next_says, "beta  not read", "never the top stage's words");
+        assert_eq!(p.systems.len(), 2);
         assert_eq!(p.errors.len(), 2, "{:?}", p.errors);
         assert!(p.errors.iter().all(|e| e.contains("exited 2")));
         assert!(
@@ -551,7 +564,7 @@ mod tests {
     fn the_top_stage_has_no_next_and_an_unread_chain_is_an_error_not_an_empty_page() {
         let f = fake(0);
         let p = read(&f, "game", "prod", NOW);
-        assert!(p.next_stage.is_empty());
+        assert_eq!(p.next_says, "no stage after this one");
         assert!(!f.seen.borrow().iter().any(|l| l.contains("--stage ")));
         let f = Fake {
             answers: vec![("notes projects --stages", 0, "draft dev\n".into())],
@@ -574,7 +587,7 @@ mod tests {
             ),
         );
         let p = named(&f, "game", NOW).unwrap();
-        assert!(p.next_stage.starts_with("beta"), "{p:?}");
+        assert!(p.next_says.starts_with("beta"), "{p:?}");
         let e = named(&f, "nosuch", NOW).unwrap_err();
         assert!(e.contains("no project nosuch"), "{e}");
     }

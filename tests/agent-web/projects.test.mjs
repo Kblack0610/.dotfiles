@@ -68,16 +68,16 @@ test("the cards list All first, then each card with its stage, queue, bar and su
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
   needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
-  systems: [{ id: "ui", head: "ui  criteria 5 of 7", epics: [{ id: "gm-1", step: "rows", line: "Menus  [rows]  behind", behind: true }], closed: "+1 closed, 1 verified" }],
-  no_epic: "(2 rows with no epic)", next_stage: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
-  next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }], shipped: [], errors: [],
+  systems: [{ id: "ui", head: "ui  criteria 5 of 7", epics: [{ line: "Menus  [rows]  behind", behind: true }], closed: "+1 closed, 1 verified" }],
+  systems_says: "1 systems, 1 open epics (2 rows with no epic)", next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
+  next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }], shipped_says: "none yet", shipped: [], errors: [],
 };
 const settle = () => new Promise((r) => setImmediate(r));
 
 test("an opened card reads its page once and shows Needs you, then folds with their counts", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", note_says: "model-written, 2026-11-05" });
   let { head } = draw({ cards: [c], unlinked: [], errors: [] }, "bnb/demo");
   assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="muted">Reading the page\.\.\.<\/div>/);
   await settle();

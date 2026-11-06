@@ -141,15 +141,13 @@ fn wrapped(
     w: usize,
 ) -> Vec<Line<'static>> {
     // A line that fits keeps its own spacing: the epic lines' columns are two spaces apart.
-    if w == 0 || lead.len() + text.len() <= w {
-        return vec![Line::from(vec![
-            Span::styled(lead.to_string(), p.dim()),
-            Span::styled(text.to_string(), style),
-        ])];
-    }
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let room = w.saturating_sub(lead.len()).max(10);
-    wrap(&words, " ", room)
+    let lines = if w == 0 || lead.len() + text.len() <= w {
+        vec![text.to_string()]
+    } else {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        wrap(&words, " ", w.saturating_sub(lead.len()).max(10))
+    };
+    lines
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
@@ -230,11 +228,13 @@ pub fn open_lines(
 ) -> Vec<Line<'static>> {
     let mut out = vec![head(c, p, w, false)];
     out.extend(bar_lines(c, p, w));
-    if c.goal.is_empty() {
-        out.extend(wrapped("  goal     ", "no goal set", p.dim(), p, w));
+    let warn_if = |b: bool| if b { p.warn() } else { Default::default() };
+    let (goal, style) = if c.goal.is_empty() {
+        ("no goal set", p.dim())
     } else {
-        out.extend(wrapped("  goal     ", &c.goal, Default::default(), p, w));
-    }
+        (c.goal.as_str(), Default::default())
+    };
+    out.extend(wrapped("  goal     ", goal, style, p, w));
     let Some(pg) = page else {
         out.push(Line::styled("  reading the page...", p.dim()));
         return out;
@@ -263,56 +263,31 @@ pub fn open_lines(
     for n in &pg.needs {
         out.extend(wrapped("  ", n, p.warn(), p, w));
     }
-    let open_epics: usize = pg.systems.iter().map(|s| s.epics.len()).sum();
-    let mut says = format!("{} systems, {open_epics} open epics", pg.systems.len());
-    if !pg.no_epic.is_empty() {
-        says += &format!(" {}", pg.no_epic);
-    }
-    out.push(fold_head("BUILD BY SYSTEM", &says, folds, p, w));
+    out.push(fold_head("BUILD BY SYSTEM", &pg.systems_says, folds, p, w));
     if folds {
         for s in &pg.systems {
             out.extend(wrapped("  ", &s.head, Default::default(), p, w));
             for e in &s.epics {
-                let style = if e.behind {
-                    p.warn()
-                } else {
-                    Default::default()
-                };
-                out.extend(wrapped("    ", &e.line, style, p, w));
+                out.extend(wrapped("    ", &e.line, warn_if(e.behind), p, w));
             }
             if !s.closed.is_empty() {
                 out.extend(wrapped("    ", &s.closed, p.dim(), p, w));
             }
         }
     }
-    let next = if pg.next_stage.is_empty() {
-        "no stage after this one".to_string()
-    } else {
-        pg.next_stage.clone()
-    };
-    out.push(fold_head("NEXT STAGE", &next, folds, p, w));
+    out.push(fold_head("NEXT STAGE", &pg.next_says, folds, p, w));
     if folds {
         for r in &pg.next_rows {
-            let style = if r.result == "FAIL" {
-                p.warn()
-            } else {
-                Default::default()
-            };
             out.extend(wrapped(
                 &format!("  {:<6} ", r.result),
                 &format!("{} ({})", r.requirement, r.stage),
-                style,
+                warn_if(r.result == "FAIL"),
                 p,
                 w,
             ));
         }
     }
-    let shipped = if pg.shipped.is_empty() {
-        "none yet".to_string()
-    } else {
-        format!("{} versions", pg.shipped.len())
-    };
-    out.push(fold_head("SHIPPED", &shipped, folds, p, w));
+    out.push(fold_head("SHIPPED", &pg.shipped_says, folds, p, w));
     if folds {
         for s in &pg.shipped {
             out.extend(wrapped("  ", s, Default::default(), p, w));
@@ -332,12 +307,13 @@ pub fn open_lines(
             out.extend(wrapped("  running  ", &t, p.good(), p, w));
         }
     }
-    let note = if c.status.is_empty() {
-        "none".to_string()
-    } else {
-        format!("model-written, {}", c.status_date)
-    };
-    out.push(fold_head("AGENT NOTE", &note, folds, p, w));
+    out.push(fold_head(
+        "AGENT NOTE",
+        &projects::note_says(c),
+        folds,
+        p,
+        w,
+    ));
     if folds && !c.status.is_empty() {
         out.extend(wrapped("  ", &c.status, p.dim(), p, w));
     }
@@ -494,20 +470,19 @@ pub(crate) mod tests {
                 id: "ui".into(),
                 head: "ui  criteria 5 of 7".into(),
                 epics: vec![hub_core::page::EpicLine {
-                    id: "gm-1".into(),
-                    step: "rows".into(),
                     line: "Menus  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind".into(),
                     behind: true,
                 }],
                 closed: "+1 closed, 1 verified".into(),
             }],
-            no_epic: "(2 rows with no epic)".into(),
-            next_stage: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet".into(),
+            systems_says: "1 systems, 1 open epics (2 rows with no epic)".into(),
+            next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet".into(),
             next_rows: vec![hub_core::page::Requirement {
                 stage: "beta".into(),
                 result: "FAIL".into(),
                 requirement: "a soak test".into(),
             }],
+            shipped_says: "none yet".into(),
             shipped: vec![],
             errors: vec!["project-stage-check --systems: exited 2".into()],
         }
