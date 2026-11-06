@@ -474,7 +474,14 @@ enum FocusCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Reorganize today's `## Focus` by status (todo / in progress / done)
+    /// Hand the first open item whose text matches, with its indented lines, to the outbox
+    /// for the inbox sweep to file, and take it out of Focus. Nothing else ingests Focus.
+    Ingest {
+        /// A word (or two) from the task to ingest
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
+    /// Reorganize today's `## Focus` by status (todo / in progress / done); moves nothing out
     Sweep,
 }
 
@@ -907,6 +914,9 @@ fn main() -> Result<()> {
                     Some(FocusCmd::Add { text }) => focus::add(&prof, &log, &text.join(" "))?,
                     Some(FocusCmd::Done { query }) => focus::done(&prof, &log, &query.join(" "))?,
                     Some(FocusCmd::Rm { query }) => focus::rm(&prof, &log, &query.join(" "))?,
+                    Some(FocusCmd::Ingest { query }) => {
+                        focus::ingest(&prof, &log, &query.join(" "))?
+                    }
                     Some(FocusCmd::Mv {
                         query,
                         to,
