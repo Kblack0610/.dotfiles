@@ -728,7 +728,8 @@ launch_pass() {
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
     done
     echo 'export FLEET_SHEPHERD_HOLDER=runner'
-    if [ -n "$acct" ]; then printf 'export CLAUDE_CONFIG_DIR=%q\n' "$acct"; else echo 'unset CLAUDE_CONFIG_DIR'; fi
+    # agentctl-run spends from AGENTCTL_ACCOUNT ("default" is main) and ignores CLAUDE_CONFIG_DIR.
+    printf 'export AGENTCTL_ACCOUNT=%q\n' "${acct:-default}"
     # shellcheck disable=SC2016
     echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
     printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$2" "${3:-}")"
