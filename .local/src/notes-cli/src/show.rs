@@ -1,5 +1,5 @@
 //! `notes show [<target>] [--json]`: one note, resolved the way the editor's `gf` resolves a
-//! `[[wikilink]]`, for a viewer that is not the editor (agent-web's Focus tab, through
+//! `[[wikilink]]`, for a viewer that is not the editor (agent-web's Daily tab, through
 //! `hub_core::focus`).
 //!
 //! A target is `daily` (today's note, the default), `daily:YYYY-MM-DD`, or a wikilink target
@@ -241,7 +241,7 @@ pub(crate) fn put_note(p: &Profile, target: &str, base: &str, text: &str) -> Res
     };
     if fs::canonicalize(&p.outbox).ok().as_deref() == Some(file.as_path()) {
         bail!(
-            "the outbox is edited with `notes outbox put` (the Outbox tab), which holds its lock"
+            "the outbox is edited with `notes outbox put` (agent-web's Daily outbox), which holds its lock"
         );
     }
     let content = fs::read_to_string(&file)?;

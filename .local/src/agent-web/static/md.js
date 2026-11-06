@@ -1,8 +1,8 @@
 "use strict";
 // Markdown to HTML for what agents write: transcript text, plans, asks, rundowns. Everything is
 // escaped before any markup is added, so text can never become HTML; links are http(s) only,
-// plus, with md(text, { notes: true }) for a note on the Focus tab, `[[target|label]]` as an
-// in-app `#focus/<target>` link and `#p:<name>` as `#projects/<name>`, with HTML comments dropped.
+// plus, with md(text, { notes: true }) for a note on the Daily tab, `[[target|label]]` as an
+// in-app `#daily/<target>` link and `#p:<name>` as `#projects/<name>` and any other `#tag` as a tag chip, with HTML comments dropped.
 // With { notes: true, ack: true } (the inbox page only), a task item ending `<!-- ack:<key> -->`
 // gets a live checkbox carrying `data-ack="<key>"`; every other checkbox stays disabled.
 // Covers what Claude writes (headings, lists, task lists, code, tables, quotes, emphasis), not
@@ -28,7 +28,7 @@ const md = (() => {
   const ACK = new RegExp(`\\s*${ACK_KEY}\\s*$`), ACK_ONLY = new RegExp(`^${ACK_KEY}$`);
   // A vault-relative target as a URL fragment: each segment encoded, the slashes kept readable.
   const frag = (t) => t.trim().split("/").map(encodeURIComponent).join("/");
-  const wikilink = (target, label) => `<a href="#focus/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
+  const wikilink = (target, label) => `<a href="#daily/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
   const ptag = (name) => `<a href="#projects/${escape(encodeURIComponent(name))}" class="ptag">#p:${escape(name)}</a>`;
 
   const link = (url, label) => `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
@@ -45,7 +45,8 @@ const md = (() => {
       .replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]]/g, (url) => hold(link(url, url)));
     if (notes) {
       s = s.replace(/\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/g, (m, t, label) => hold(wikilink(t, label)))
-        .replace(/(^|[\s(])#p:([\w.-]+)/g, (m, pre, name) => pre + hold(ptag(name)));
+        .replace(/(^|[\s(])#p:([\w.-]+)/g, (m, pre, name) => pre + hold(ptag(name)))
+        .replace(/(^|[\s(])#([A-Za-z][\w/-]*)(?![\w:])/g, (m, pre, tag) => pre + hold(`<span class="ntag">#${escape(tag)}</span>`));
     }
     s = escape(s)
       .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>")
@@ -85,7 +86,7 @@ const md = (() => {
       const ack = acks && key && task && task[1] !== "/" ? key[1] : null;
       html += !task ? `<li>${inline(text)}`
         : task[1] === "/" ? `<li class="task doing"><input type="checkbox" disabled> <span class="cchip running">doing</span> ${inline(task[2])}`
-        : `<li class="task"><input type="checkbox"${ack ? ` data-ack="${escape(ack)}"` : " disabled"}${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
+        : `<li class="task${task[1] === " " ? "" : " done"}"><input type="checkbox"${ack ? ` data-ack="${escape(ack)}"` : " disabled"}${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
     }
     while (open.length) close();
     return html;

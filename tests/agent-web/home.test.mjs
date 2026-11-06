@@ -40,8 +40,23 @@ test("an ask or an open dialog on Needs you is its answer card; a red nightly is
   }), [{ target: "lab/w:1", short: "w", session: "c1", project: "p", summary: "Wire the join", items: [], actions: [], question: { kind: "tool", text: "Run it?" } }],
   [{ id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 }]);
   assert.match(html, /<h2 class="sec">Needs you <span class="muted">3<\/span><\/h2>/);
-  assert.match(html, /data-id="a1".*data-a="yes".*data-t="lab\/w:1".*data-k="1".*cchip bad">nightly failed<\/span>/s, html);
-  assert.match(html, /PlayMode\.Lobby red.*<div class="cline">unity-core<\/div>/s, "the id that only repeats the project is not shown twice");
+  assert.match(html, /<div class="ntally"><span class="nchip k-ask">Question <b>1<\/b><\/span><span class="nchip k-perm">Permission <b>1<\/b><\/span><span class="nchip k-red">Failing <b>1<\/b><\/span><\/div>/);
+  assert.match(html, /data-id="a1".*data-a="yes".*data-t="lab\/w:1".*data-k="1".*need k-red.*<span>nightly failed<\/span>/s, html);
+  assert.match(html, /<span class="nkind">Failing<\/span><span>unity-core<\/span><span>nightly failed<\/span><\/div><div class="ntitle">PlayMode\.Lobby red/, "the id that only repeats the project is not shown twice");
+});
+
+test("Needs you is grouped by kind, plans first, the server's order kept within a kind", () => {
+  const plan = (t) => ({ target: t, short: t, session: t, project: "p", summary: t, items: [], actions: [], question: { kind: "plan", text: "do it" } });
+  const html = draw(home({ needs: [
+    { kind: "queue", project: "p", text: "blocked one", id: "q1" },
+    { kind: "session", project: "p", text: "s1", id: "s1", target: "s1" },
+    { kind: "ask", project: "p", text: "first ask", id: "x1" },
+    { kind: "session", project: "p", text: "s2", id: "s2", target: "s2" },
+    { kind: "ask", project: "p", text: "second ask", id: "x2" },
+  ] }), [plan("s1"), plan("s2")]);
+  const at = (s) => html.indexOf(s);
+  assert.ok(at('data-t="s1"') < at('data-t="s2"') && at('data-t="s2"') < at("first ask") && at("first ask") < at("second ask") && at("second ask") < at("blocked one"), html);
+  assert.match(html, /<span class="nchip k-plan">Plan to approve <b>2<\/b><\/span><span class="nchip k-ask">Question <b>2<\/b><\/span><span class="nchip k-blocked">Blocked <b>1<\/b><\/span>/);
 });
 
 test("a need whose session is gone has no Open button; a waiting queue item opens the queue", () => {
@@ -50,7 +65,7 @@ test("a need whose session is gone has no Open button; a waiting queue item open
     { kind: "queue", project: "p", text: "Review the PR", id: "fix-it" },
   ] }));
   assert.doesNotMatch(html, /data-open/);
-  assert.match(html, /cchip waiting">waiting<\/span>.*data-tab="queue"/s);
+  assert.match(html, /need k-turn.*need k-blocked.*<span class="nkind">Blocked<\/span>.*data-tab="queue">Open the queue/s);
 });
 
 test("running rows carry their phase and next phase; empty sections say so", () => {
@@ -80,16 +95,18 @@ test("the summary leads, and a long list shows the cap with the rest folded", ()
   assert.ok(html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
   const fold = html.indexOf('<details class="cfold" data-k="home-needs"');
   assert.ok(fold > html.indexOf("red 7") && fold < html.indexOf("red 8"), "rows past the cap sit in the fold");
-  assert.match(html, /<summary>\+3 older<\/summary>/);
+  assert.match(html, /<summary>\+3 more<\/summary>/);
   assert.doesNotMatch(draw(home({ needs: needs.slice(0, 8) })), /cfold" data-k="home-needs/);
 });
 
-test("a retired tab name lands on its new tab, and anything unknown on the landing tab, Outbox", () => {
+test("a retired tab name lands on its new tab, and anything unknown on the landing tab, Home", () => {
   const of = (n) => vm.runInContext(`tabOf(${JSON.stringify(n)})`, ctx);
   assert.equal(of("waiting"), "home");
   assert.equal(of("asks"), "home");
   assert.equal(of("queue"), "queue");
   assert.equal(of("home"), "home");
-  assert.equal(of(""), "outbox");
-  assert.equal(of("nope"), "outbox");
+  assert.equal(of("outbox"), "daily");
+  assert.equal(of("focus"), "daily");
+  assert.equal(of(""), "home");
+  assert.equal(of("nope"), "home");
 });

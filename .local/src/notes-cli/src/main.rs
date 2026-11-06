@@ -663,7 +663,7 @@ enum OutboxCmd {
         #[arg(long)]
         json: bool,
     },
-    /// The items as the Outbox tab edits them (`--json`: `{path, hash, text, waiting}`)
+    /// The items as agent-web's Daily outbox edits them (`--json`: `{path, hash, text, waiting}`)
     Show {
         #[arg(long)]
         json: bool,

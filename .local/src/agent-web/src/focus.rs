@@ -1,10 +1,10 @@
-//! The Focus tab: one note through `hub_core::focus` (the same reader as the hub TUI's Focus
+//! The Daily tab: one note through `hub_core::focus` (the same reader as the hub TUI's Daily
 //! tab), today's daily note by default. The page sends a link target (`daily:2026-11-04`,
 //! `outbox`, `status/inbox`), never a path: `notes show` resolves it and refuses anything
 //! outside the notes, so this handler never touches the filesystem itself. `PUT /api/focus
 //! {t, base, text}` saves an edit through `notes put --base` (`cli.rs`): the CLI writes only when
 //! the note's hash is still the one the page read, else the page gets 409 and the note as it is
-//! now. Writing to the outbox is the Outbox tab's (`outbox.rs`); `notes put` refuses it.
+//! now. Writing to the outbox is Daily's outbox view's (`outbox.rs`); `notes put` refuses it.
 //! `POST /api/inbox/ack {key, ack}` ticks a Handled-today row of `status/inbox` through
 //! `notes inbox ack`, the mark's one writer, and answers with the page as it is after.
 
