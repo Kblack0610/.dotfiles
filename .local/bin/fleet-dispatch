@@ -56,6 +56,7 @@ unset _k _v
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
+: "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
@@ -367,6 +368,22 @@ live_units() {
   local u=0 w
   while read -r _ w; do u=$(( u + $(weight_units "$w") )); done < <(live_runs)
   echo "$u"
+}
+
+# floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
+# weekly pace and real idle do not hold this start. Load, fleet-assess, the reserve and holds still do.
+# FLOOR_LIVE is the count cmd_run read before its first start, so a start the session list has not
+# caught up with still counts once.
+floor_open() {
+  [ "${DISPATCH_RUN_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
+  local live=${FLOOR_LIVE:-$(live_runs | grep -c . || true)}
+  [ $(( live + ${STARTED:-0} )) -lt "$DISPATCH_RUN_FLOOR" ]
+}
+
+# acct_room -- claude-acct room for a run start, with the pace line lifted while the floor is open
+# (claude-acct still refuses an account in its reserve, its 5h window or emptied before its reset).
+acct_room() {
+  if floor_open; then CLAUDE_ACCT_PACE_SLACK_PCT=100 claude-acct room; else claude-acct room; fi
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
@@ -1314,18 +1331,19 @@ start_item() {
   # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
   # names the closest account and how far past its pace it is, as in gate.
   err=$(mktemp)
-  if ! acct=$(claude-acct room 2>"$err"); then
+  if ! acct=$(acct_room 2>"$err"); then
     why=$(tail -n 1 "$err"); rm -f "$err"
     settle BLOCKED "queue item $slug waits: ${why#claude-acct: }"; return 3
   fi
   rm -f "$err"
   verdict=$(model-lane classify "$task" --floor "$DISPATCH_LANE_FLOOR" 2>/dev/null | jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null) || verdict=''
   model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
+  local floor=''; floor_open && floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
   START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --model "${model:-opus}"
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
     lane_log "$slug" "$task" "$verdict" "${model:-opus}"
-    settle WORKED "started queue item $slug"
+    settle WORKED "started queue item $slug$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
   else
@@ -1413,8 +1431,9 @@ board_starved() {
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
 # here raises a limit.
 cmd_headroom() {
-  local live hand slots load cores idle runnable why could=0
+  local live hand slots load cores idle runnable why could=0 floor_live
   live=$(live_units)
+  floor_live=$(live_runs | grep -c . || true)
   hand=$(live_hand | grep -c . || true)
   slots=$(( DISPATCH_MAX_LIVE - live ))
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
@@ -1425,13 +1444,14 @@ cmd_headroom() {
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
-    --arg load "${load:-}" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" '
+    --arg load "${load:-}" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
+    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
-     idle: ($idle | num), min_idle: $min_idle,
+     idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
             elif $runnable == 0 then "nothing runnable" else null end)}
@@ -1445,7 +1465,8 @@ cmd_headroom() {
         (if .held then ", held: \(.held)" else "" end),
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
-        "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room"'
+        "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
+        "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start"'
     fi
 }
 
@@ -1538,7 +1559,8 @@ cmd_stats() {
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
-           room_load: $hr.load, room_load_cap: $hr.load_cap, room_idle: $hr.idle, room_min_idle: $hr.min_idle}
+           room_load: $hr.load, room_load_cap: $hr.load_cap, room_idle: $hr.idle, room_min_idle: $hr.min_idle,
+           room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null)}
           + (["slots", "load", "idle", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
 }
@@ -1622,7 +1644,7 @@ gate() {
   local load cores infra github idle acct rc out why=()
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
   # room's own last stderr line says which account is short and why; keep it.
-  acct=$(claude-acct room 2>&1 >/dev/null); rc=$?
+  acct=$(acct_room 2>&1 >/dev/null); rc=$?
   acct=$(tail -n 1 <<<"$acct"); acct=${acct#claude-acct: }
   case $rc in
     0) ;;
@@ -1642,7 +1664,8 @@ gate() {
     *LOW*) why+=("$github") ;;
   esac
   idle=$(real_idle)
-  if [ -z "$idle" ]; then why+=("real idle unreadable")
+  if floor_open; then :
+  elif [ -z "$idle" ]; then why+=("real idle unreadable")
   elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
     why+=("real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%")
   fi
@@ -1689,6 +1712,7 @@ cmd_run() {
   # fails here does not stop the queue: settle names it and turns a NOOP or BLOCKED pass into FAILED.
   agent-hold check dispatch >/dev/null 2>&1 && fill_night
   live=$(live_units)
+  FLOOR_LIVE=$(live_runs | grep -c . || true)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   room=$UNITS_FREE
   [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS

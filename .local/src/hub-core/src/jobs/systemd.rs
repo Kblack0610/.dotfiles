@@ -13,7 +13,7 @@ const MSG_STARTING: &str = "7d4958e842da4a758f6c1cdc7b36dcc5";
 const MSG_FINISHED: &str = "39f53479d3a045ac8e11786248231fbf";
 const MSG_FAILED: &str = "d9b373ed55a64feb8242e02dbe79a49c";
 
-const AGENTCTL_PREFIX: &str = "agentctl@";
+pub(crate) const AGENTCTL_PREFIX: &str = "agentctl@";
 
 fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     let out = Command::new(cmd)
