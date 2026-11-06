@@ -22,7 +22,7 @@ setup() {
   unset NOTES_PROFILE
   printf '{"paths": {"%s": "scratch"}, "trackers": {"scratch": {"code": "sc"}}}\n' "$SANDBOX/code/scratch" >"$PROJECT_MAP_FILE"
   export INBOX_PLAN_CMD=model-stub
-  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nprintf "%%s\\n" "$@" > "$NOTES_FIXTURE/args.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nprintf "%%s\\n" "$@" > "$NOTES_FIXTURE/args.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\nrc="$(sed -n "$(wc -l <"$NOTES_FIXTURE/model.log")p" "$NOTES_FIXTURE/model.rc" 2>/dev/null)"\nexit "${rc:-0}"\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
 }
 
@@ -118,4 +118,44 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   assert_output --partial 'would plan [scratch] sc-1 -> feat(brand): a brand kit #size/m'
   [ "$(cat "$SHEET")" = "$before" ] || fail "a dry run wrote the sheet"
   [ -z "$(record)" ] || fail "a dry run wrote the record"
+}
+
+# One exit code per model call, in order; a call past the list exits 0.
+rcs() { printf '%s\n' "$@" >"$NOTES_FIXTURE/model.rc"; }
+outcome() { cat "$HOME/.local/state/agentctl/inbox-plan/last-outcome"; }
+
+@test "a budget stop ends the pass BLOCKED with exit 75: one call, no refusal, the rows wait" {
+  sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  rcs 75
+  run "$PLAN"
+  assert_failure 75
+  assert_output --partial 'stopped at its budget'
+  refute_output --partial 'model call failed'
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/model.log")" 1
+  assert_equal "$(outcome)" BLOCKED
+  run tail -n 1 "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_output --regexp 'outcome=BLOCKED budget: .*why: stopped at its budget'
+  run record
+  refute_output --partial '"action":"refused"'
+  assert_equal "$(grep -c '#plan' "$SHEET")" 2
+}
+
+@test "a row planned before the budget stop stays planned, and the pass is BLOCKED" {
+  sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
+  rcs 0 75
+  run "$PLAN"
+  assert_failure 75
+  assert_output --partial 'planned 1'
+  assert_equal "$(outcome)" BLOCKED
+  assert_equal "$(grep -c '#plan' "$SHEET")" 1
+}
+
+@test "a row that failed before the budget stop keeps the pass FAILED, exit 1" {
+  sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  rcs 1 75
+  run "$PLAN"
+  assert_failure 1
+  assert_output --partial 'model call failed'
+  assert_equal "$(outcome)" FAILED
 }
