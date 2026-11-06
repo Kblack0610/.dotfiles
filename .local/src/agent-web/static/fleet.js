@@ -1,21 +1,30 @@
 "use strict";
-// The Fleet tab: who pays (Claude accounts), what each agentctl runner did, and one tile each for
-// the two judges; their verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core
-// `fleet`, the same reader as the hub's Fleet tab). `#fleet/<runner>` is one runner's page, read
-// from /api/fleet/runner only when it opens (hub-core `fleet::runner`).
+// The Fleet tab: who is working, on what, and can I afford it. One table (the shared one,
+// table.js) of every runner and live session by tier; a row opens its record, and a tier 1 row
+// folds the rows under it. Below it, who pays (Claude accounts). The judges' verdict lists are
+// Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
+// Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
+// opens (hub-core `fleet::runner`).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// open: the runners whose registry row is expanded; tonight: Workers in hub-core's Tonight
-// order, not the default. Both kept across refreshes.
-const fst = { data: null, err: null, open: new Set(), said: "all", tonight: false };
+// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
+const fst = { data: null, err: null, fold: new Set(), said: "all" };
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
 const runnerHref = (name) => "#fleet/" + encodeURIComponent(name);
 
+// The view keys of the URL plus the closed rows, as the API's query.
+function fleetParams() {
+  const p = tblParams(st.views.fleet);
+  if (fst.fold.size) p.set("fold", [...fst.fold].join(","));
+  const q = p.toString();
+  return q ? "?" + q : "";
+}
+
 const refreshFleet = coalesce(async () => {
-  try { fst.data = await api("/api/fleet"); fst.err = null; } catch (e) { fst.err = e.message; }
+  try { fst.data = await api("/api/fleet" + fleetParams()); fst.err = null; } catch (e) { fst.err = e.message; }
   if (st.tab === "fleet") renderFleet();
   if (st.tab === "log") renderLogVerdicts();
 });
@@ -80,125 +89,35 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
   `<tr><td class="n">${when(x.at)}</td><td class="n">${secs(x.ms / 1000)}</td><td class="muted">${esc(x.model)}</td><td class="n">${usd(x.cost)}</td><td class="n">${kTok(x.tokens)}</td>` +
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
-// The expanded row: what the runner is allowed and runs on, what it cost in 24h, its newest calls
-// with their Langfuse trace, and for a judge its judge-eval table. The rest is its page.
-function workerDetail(w) {
-  const r = w.registry, c = r.calls;
-  let h = registryLine(r);
-  h += `<div>trigger ${esc(r.trigger)} | 24h: ${c.n_24h} calls, <span class="${c.errors_24h ? "bad" : ""}">${c.errors_24h} errors</span>, ${usd(c.cost_24h)}, ${kTok(c.tokens_24h)} tokens, p95 ${secs(c.p95_ms && c.p95_ms / 1000)}` +
-    ` | <a href="${runnerHref(w.name)}">runs, logs, status and 7d on its page</a></div>`;
-  if (c.recent.length) h += callsTable(c.recent);
-  if (r.eval) h += evalTable(r.eval);
-  return `<tr class="wdet"><td colspan="10">${h}</td></tr>`;
+// The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
+const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], project: ["project"] };
+const STATE_CLASS = { failed: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
+// A runner opens its page, a session its record on the Sessions tab.
+const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
+
+function whoRow(r) {
+  const shut = fst.fold.has(r.key);
+  const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
+  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="n">${fold}${r.tier}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
+    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
+    `<td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
-// The Workers filter lives in the URL so a view can be linked: `#fleet?lane=deliver&s=failed`.
-// What keeps and orders a row mirrors hub_core::fleet (Worker::shown, hits, sort_value) as
-// askShown does; the two lists are hub-core's, checked by assets.rs.
-const W_FILTERS = ["all", "failed", "running", "idle", "off"];
-const W_SORTS = ["runs", "failed", "last"];
-const W_CHIP = { all: "All", failed: "Failed 24h", running: "Running", idle: "Idle", off: "Off" };
-const workerShown = (w, s) => s === "all" || (s === "failed" ? w.failed_24h > 0 : w.state === s);
-const W_VALUE = {
-  runs: (w) => w.runs_24h,
-  failed: (w) => w.failed_24h,
-  last: (w) => w.running_since ?? w.last?.at,
-};
-
-function fleetView() {
-  const p = new URLSearchParams(st.views.fleet);
-  const s = p.get("s"), sort = p.get("sort");
-  return { q: p.get("q") || "", lane: p.get("lane") || "", s: W_FILTERS.includes(s) ? s : "all", sort: W_SORTS.includes(sort) ? sort : "", asc: p.get("dir") === "asc" };
+function fleetBody(d) {
+  const t = d.table;
+  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a tier 1 row</div>` : "";
+  return d.who.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map(whoRow).join("")}</table>${more}</div>`
+    : `<div class="panel">${t.total ? "No runner or session matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
 }
 
-// Writes only what differs from the plain view, so the plain view is a bare `#fleet`.
-function setFleetView(patch) {
-  const v = { ...fleetView(), ...patch };
-  const p = new URLSearchParams();
-  if (v.q) p.set("q", v.q);
-  if (v.lane) p.set("lane", v.lane);
-  if (v.s !== "all") p.set("s", v.s);
-  if (v.sort) p.set("sort", v.sort);
-  if (v.sort && v.asc) p.set("dir", "asc");
-  setQuery(p.toString());
+function fleetHead(d) {
+  const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
+  return `<div class="bhead"><span>fleet <span class="muted">who is working, on what, and can I afford it; ${d.table.shown} of ${d.table.total} rows, spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+    (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
-// The search and lane, which the chips' counts follow; the chip itself is left out of them.
-function workerMatch(w, v) {
-  const q = v.q.trim().toLowerCase();
-  const hay = [w.name, w.description, w.why ? `${w.why.word} ${w.why.text}` : ""];
-  return (!v.lane || w.lane === v.lane) && (!q || hay.some((t) => t.toLowerCase().includes(q)));
-}
-const workerKept = (w, v) => workerMatch(w, v) && workerShown(w, v.s);
-
-// The kept rows in the sort, or in hub-core's order, exceptions first, with none. A runner with
-// no value goes last in either direction.
-function workersShown(ws, v) {
-  const out = ws.filter((w) => workerKept(w, v));
-  if (!v.sort) return out;
-  const val = W_VALUE[v.sort];
-  return out.sort((a, b) => {
-    const x = val(a) ?? null, y = val(b) ?? null;
-    if (x === null || y === null) return (x === null) - (y === null);
-    return v.asc ? x - y : y - x;
-  });
-}
-
-// slots, when given, prefixes each name with its Tonight slot: a time, "always", or a call's
-// indent under its caller, and the headers do not sort. v is the filter in force.
-function workersTable(ws, slots, v) {
-  const filtered = v.q || v.lane || v.s !== "all";
-  if (!ws.length) return `<div class="empty">${filtered ? "No runner matches this filter." : slots ? "No runner runs before morning." : "No runners configured in ~/.config/agentctl/agents."}</div>`;
-  // A click on a sortable header goes biggest first, smallest first, back to the default order.
-  const th = (key, label, cls) => {
-    const on = !slots && v.sort === key;
-    return `<th${cls ? ` class="${cls}"` : ""}${on ? ` aria-sort="${v.asc ? "ascending" : "descending"}"` : ""}>${slots ? label : `<button class="thsort" data-fsort="${key}" title="sort by ${label}">${label}${on ? (v.asc ? " ^" : " v") : ""}</button>`}</th>`;
-  };
-  return `<table class="tbl"><tr><th>runner</th><th>lane</th>${th("last", "last")}<th class="n">when</th>${th("runs", "runs 24h", "n")}${th("failed", "failed", "n")}<th>why</th><th class="n">next</th><th>score 7d</th></tr>${ws.map((w, i) => {
-    const over = w.overdue ? `, over its usual ${secs(w.usual_s)}` : "";
-    const last = w.running_since ? `<td class="${w.overdue ? "warn" : "muted"}">running since ${when(w.running_since)}${over}</td><td class="n">-</td>`
-      : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
-      : `<td class="muted">no run this week</td><td class="n">-</td>`;
-    const why = w.why ? `${esc(w.why.word)} ${cut(w.why.text || "")}` : "";
-    const open = fst.open.has(w.name);
-    // hub-core's score cell: judge-eval's counted 7d score, its title what it counted.
-    const score = w.score ? `<td title="${esc(w.score.title)}">${esc(w.score.text)}</td>` : `<td class="muted">-</td>`;
-    return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${slots ? `${slots[i]} ` : ""}<a href="${runnerHref(w.name)}">${esc(w.name)}</a>${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
-      `<td class="n">${w.runs_24h}</td><td class="n${w.failed_24h ? " bad" : ""}">${w.failed_24h}</td><td class="wrap muted">${why}</td>` +
-      `<td class="n">${w.next ? when(w.next) : "-"}</td>${score}</tr>` + (open ? workerDetail(w) : "");
-  }).join("")}</table>`;
-}
-
-// The Tonight order: hub-core's slots joined to their workers, and the other timers as a count
-// whose rows are Infra's Jobs.
-function tonightWorkers(d, v) {
-  const by = new Map(d.workers.filter((w) => workerKept(w, v)).map((w) => [w.name, w]));
-  const rows = d.tonight.slots.filter((s) => by.has(s.name));
-  const slot = (s) => (s.under ? `<span class="muted" title="called by ${esc(s.under)}">\`- </span>` : s.at ? clock(s.at * 1e3) : "always");
-  const n = d.tonight.other_timers;
-  return workersTable(rows.map((s) => by.get(s.name)), rows.map(slot), v) +
-    (n ? `<div class="muted more">+ ${n} other timers before ${clock(d.tonight.until * 1e3)}: <a href="#jobs">Infra Jobs</a></div>` : "");
-}
-
-const workersBody = (d, v) => (fst.tonight ? tonightWorkers(d, v) : workersTable(workersShown(d.workers, v), null, v));
-const workersChips = (d, v) => {
-  const ws = d.workers.filter((w) => workerMatch(w, v));
-  return W_FILTERS.map((f) => chipBtn(f === v.s, "data-fstate", f, W_CHIP[f], ws.filter((w) => workerShown(w, f)).length)).join("");
-};
-
-function workersFilter(d, v) {
-  const lanes = [...new Set([...d.workers.map((w) => w.lane), v.lane].filter(Boolean))].sort();
-  return `<div class="card bfilter qcfilter"><div class="opts"><input id="fw-q" placeholder="search name, description, why" value="${esc(v.q)}">` +
-    `<select id="fw-lane"><option value="">every lane</option>${bOpt(lanes, v.lane)}</select></div></div>` +
-    `<div class="seg fseg" id="fw-chips">${workersChips(d, v)}</div>`;
-}
-
-// Repaints what a filter changes and nothing around it, so the search box keeps its focus.
-function paintWorkers() {
-  const v = fleetView();
-  paint($("fw-chips"), workersChips(fst.data, v));
-  paint($("fw-body"), workersBody(fst.data, v));
-}
+const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
@@ -219,18 +138,10 @@ function dispatchList(d) {
   return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>row</th><th>verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
 }
 
-// The Fleet tab's one tile per judge; its tiles and newest verdicts are the judge's runner page.
-// The judge's runner is the one whose conf names that extras block (DETAIL=); no such conf, no link.
+// The runner whose page draws a judge's tiles is the one whose conf names that extras block
+// (DETAIL=); no such conf, no link. Log's verdict headers link there.
 const pageFor = (d, detail) => (d.workers || []).find((w) => w.detail === detail)?.name;
-const pageHref = (d, detail) => { const n = pageFor(d, detail); return n && runnerHref(n); };
 const pageLink = (name, label) => name ? `<a href="${runnerHref(name)}">${label}</a>` : label;
-function judgeSummary(f) {
-  const d = f.dispatch, j = f.judge, c = d.counts_24h;
-  return `<div class="tiles roomy">` +
-    tile("DISPATCH JUDGE", c.dispatch || 0, verdictColor("dispatch"), `dispatched 24h, ${c.skip || 0} skipped, ${(c.failed || 0) + (c.error || 0)} failed`, pageHref(f, "dispatch-verdicts")) +
-    tile("ANSWER JUDGE", j.precision == null ? "-" : `${j.precision}%`, "var(--b-done)", `precision, ${j.agree} agree, ${j.disagree} disagree, ${j.pending} pending`, pageHref(f, "ask-judge")) +
-    `</div>`;
-}
 
 // judge-eval's numbers under the judge's current prompt; nothing is recounted here.
 function judgeTiles(j) {
@@ -264,24 +175,26 @@ function renderFleet() {
   const el = $("fleet");
   if (st.arg) { renderRunner(el); return; }
   const d = fst.data;
-  if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
-  const v = fleetView();
-  const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  let head = `<div class="bhead"><span>fleet <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>`;
-  if (errs.length) head += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  head += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
-  const order = `<button class="btn sm" data-tonight>${fst.tonight ? "Default order" : "Tonight"}</button>`;
-  head += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, spend on <a href="#costs?by=runner&w=24h">Costs</a>`}; click a runner for its role, prompt, calls and judge table</span></h2>`;
-  const tail = `<h2 class="sec" id="sec-judges">Judges <span class="muted">24h; each judge's page has its tiles and newest verdicts, Log has every verdict</span></h2>${judgeSummary(d)}`;
-  // A refresh must not take the search box or an open lane list from under the human, so
-  // everything around them repaints and they stay.
-  if (["fw-q", "fw-lane"].includes(document.activeElement?.id)) {
-    paint($("fleet-head"), head);
-    paintWorkers();
-    paint($("fleet-tail"), tail);
+  if (!d || !d.table) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
+  // A refresh must not take the search box or an open dropdown from under the human, so
+  // everything around the control in use repaints and it stays.
+  const f = document.activeElement;
+  if (f?.id === "fleet-q" || f?.dataset?.tq !== undefined) {
+    paint($("fleet-head"), fleetHead(d));
+    if (f.id === "fleet-q") paint($("fleet-facets"), tblFacets(d.table));
+    paint($("fleet-chips"), tblChips(d.table));
+    paint($("fleet-body"), fleetBody(d));
+    paint($("fleet-tail"), fleetTail(d));
     return;
   }
-  paint(el, `<div id="fleet-head">${head}</div>${workersFilter(d, v)}<div class="panel scroll" id="fw-body">${workersBody(d, v)}</div><div id="fleet-tail">${tail}</div>`);
+  paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or tier:3 state:failed project:dotfiles -who:shepherd")}` +
+    `<div id="fleet-body">${fleetBody(d)}</div><div id="fleet-tail">${fleetTail(d)}</div>`);
+}
+
+// The view changed: the URL follows it and the server applies it.
+function fleetView(patch) {
+  setQuery(tblSet(st.views.fleet, patch));
+  refreshFleet();
 }
 
 // One run's log on the runner page, through Infra's reader and the run's byte range.
@@ -394,40 +307,23 @@ $("log-verdicts").addEventListener("click", (e) => {
 });
 
 $("fleet").addEventListener("click", (e) => {
-  if (e.target.closest("a")) return;
-  const said = e.target.closest("[data-said]");
+  const t = e.target;
+  const said = t.closest("[data-said]");
   if (said) { fst.said = said.dataset.said; renderFleet(); return; }
-  const run = e.target.closest("tr.rr");
+  const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
-  if (e.target.closest("[data-tonight]")) { fst.tonight = !fst.tonight; renderFleet(); return; }
-  const chip = e.target.closest("[data-fstate]");
-  if (chip) { setFleetView({ s: chip.dataset.fstate }); renderFleet(); return; }
-  const sort = e.target.closest("[data-fsort]");
-  if (sort) {
-    const k = sort.dataset.fsort, v = fleetView();
-    setFleetView(v.sort !== k ? { sort: k, asc: false } : v.asc ? { sort: "", asc: false } : { asc: true });
-    renderFleet();
-    return;
-  }
-  const row = e.target.closest("tr.wr");
-  if (!row) return;
-  const k = row.dataset.key;
-  if (!fst.open.delete(k)) fst.open.add(k);
-  renderFleet();
+  const fold = t.closest("[data-fold]");
+  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); refreshFleet(); return; }
+  const v = tblPatch(e);
+  if (v) { fleetView(v); return; }
+  if (t.closest("a, button, select, input")) return;
+  const row = t.closest("tr.wr");
+  if (row) location.hash = row.dataset.href;
 });
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
+for (const ev of ["input", "change"]) $("fleet").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); fleetView(v); });
 
-$("fleet").addEventListener("input", (e) => {
-  if (e.target.id !== "fw-q") return;
-  setFleetView({ q: e.target.value });
-  paintWorkers();
-});
-$("fleet").addEventListener("change", (e) => {
-  if (e.target.id !== "fw-lane") return;
-  setFleetView({ lane: e.target.value });
-  paintWorkers();
-});
-
-const logFleetFeed = pushed("log", ["fleet", "asks"], refreshFleet);
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], refreshFleet);
 LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
@@ -436,6 +332,6 @@ TABS.fleet = {
     pollFleet();
   },
   onEvent(ev) {
-    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
+    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
   },
 };

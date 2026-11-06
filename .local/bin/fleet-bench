@@ -15,7 +15,13 @@
 #                                each session's whole life since E: minutes per bucket, nudges,
 #                                escalations, phases ticked, peak context, merged PRs, lines, CI
 #                                runs and reds (session-outcomes joins it into its row)
-#   fleet-bench review           count failed CI runs (any workflow) before merge on PRs merged in the window
+#   fleet-bench review [--days N]
+#                                count failed CI runs (any workflow) before merge on PRs merged in the
+#                                window, and on a repo with section roots each PR's sections and gate
+#                                runs; --days widens the window and recounts rows that lack them
+#   fleet-bench sections [--days N] [--json]
+#                                per section of a repo: PRs, first-try share, gate reds and minutes,
+#                                greens lost, and the claiming session's cost and tokens per PR
 #   fleet-bench asks [--write]
 #                                pending asks in hub Home's order (hub needs --json), the ones
 #                                holding a live session listed first; --write also writes
@@ -134,6 +140,9 @@ set -uo pipefail
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
+: "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
+: "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
+: "${BENCH_PR_LIST_MAX:=1000}"       # the most a GitHub search returns: a full page means PRs were cut
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
@@ -229,7 +238,6 @@ now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
 # jq helpers shared by every verb.
 JQ_LIB='
-def project: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "") | sub("-agent-[0-9]+$"; "");
 def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
@@ -251,7 +259,11 @@ def move($b; $a; $dir; $flat): if $b == null or $a == null or $dir == 0 then "-"
 def dur: if . >= 3600 then "\(. / 3600 | round1)h" else "\(. / 60 | round)m" end;
 def run_rows: split("\n") | map(select(. != "") | split("\t")
   | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
+def total(f): map(f // 0) | add // 0;
 def key: "\(.repo)#\(.number)";
+def claimed: (.session_id // "") != "";
+def ran_gate: (.gate_runs // .ci_runs // 0) > 0;
+def first_try: (.gate_red // .ci_red // 0) == 0;
 def kind: sub("\\(.*"; "");
 # the ETA an estimate publishes and how it was made: calibrated when a factor was applied;
 # null for no estimate
@@ -435,7 +447,7 @@ sample_rows() {
   local t="$1"
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
     select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "SHARED") | not))
-    | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
+    | {epoch: $t, at: ($t | iso), session_id, target, project, bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
        context_tokens, nudged, escalated, pr, plan_file}'
 }
@@ -668,7 +680,7 @@ bench_prom() {
   kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
   pl=$(pipeline_json "$t") || pl='{"steps": []}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
-     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(in_window "$CI" merged_epoch "$t") --argjson k "$kpis" \
+     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(ci_window "$t") --argjson k "$kpis" \
      --slurpfile ef <(effect_lines) "$JQ_LIB$IMPROVE_JQ$PROM_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
@@ -734,11 +746,17 @@ in_window() {
   jq -c --arg f "$2" --argjson since "${4:-$(( $3 - BENCH_WINDOW_H * 3600 ))}" 'select(.[$f] >= $since)' "$1"
 }
 
+# ci_claimed -> the pr-ci rows a session claims; a repo with sections also holds every other merged
+# PR, and only `sections` and the review itself read those
+ci_claimed() { [ ! -s "$CI" ] || jq -c "$JQ_LIB"'select(claimed)' "$CI"; }
+# ci_window <now> [since] -> the same rows, merged in the window
+ci_window() { in_window "$CI" merged_epoch "$@" | jq -c "$JQ_LIB"'select(claimed)'; }
+
 cmd_headline() {
   local t; t=$(now)
   [ -s "$PROGRESS" ] || { echo "bench: no samples yet"; return 0; }
   jq -rn --arg win "$BENCH_WINDOW_H" --slurpfile w <(window_stats "$t") --slurpfile s <(in_window "$SCORES" done_epoch "$t") \
-     --slurpfile c <(in_window "$CI" merged_epoch "$t") "$JQ_LIB"'
+     --slurpfile c <(ci_window "$t") "$JQ_LIB"'
     def h: . / 60 * 10 | floor / 10;
     "bench \($win)h: \($w | length) sessions, \($w | map(.ticked) | add // 0) phases ticked, "
     + "\($w | map(.waiting_min) | add // 0 | h)h waiting on you, \($w | map(.stalled_min) | add // 0 | h)h stalled, "
@@ -772,7 +790,7 @@ session_rows() {
   spend=$(spend_by_session "$t") || spend=null
   # Through a file: the outcomes of a few thousand sessions are over the kernel's 128 KB limit on one argument.
   jq -cn --slurpfile w <(window_stats "$t") --slurpfile outcomes <(outcomes_latest) --argjson spend "$spend" \
-     --slurpfile c <(in_window "$CI" merged_epoch "$t") "$JQ_LIB"'
+     --slurpfile c <(ci_window "$t") "$JQ_LIB"'
     def h: . / 60 * 10 | floor / 10;
     ($c | group_by(.session_id) | map({key: .[0].session_id, value: (map(.ci_red) | add)}) | from_entries) as $red
     | $outcomes[0] as $o
@@ -807,7 +825,7 @@ cmd_stats() {
   done
   { [ "$json" = 1 ] && [[ "$since" =~ ^[0-9]+$ ]]; } || { echo "usage: fleet-bench stats --json [--since <epoch>]" >&2; return 2; }
   jq -cn --slurpfile w <([ -s "$PROGRESS" ] && window_stats "$(now)" "$since") \
-     --slurpfile c <(in_window "$CI" merged_epoch 0 "$since") '
+     --slurpfile c <(ci_window 0 "$since") '
     ($w | map({key: .session_id, value: del(.working_min, .waiting_min, .stalled_min)}) | from_entries) as $ws
     | ($c | group_by(.session_id)
        | map({key: .[0].session_id,
@@ -854,6 +872,8 @@ cmd_scorecard() {
     models_section "$t"
     echo
     sizes_section "$t"
+    echo
+    sections_section "$t"
     echo
     echo "## Sessions"
     echo
@@ -1060,44 +1080,101 @@ ledger_section() {
   fi
 }
 
-# merged_new <now> -> repo, number and session_id (tab-separated) for every PR session-outcomes
-# says merged in the window that pr-ci.jsonl has not counted yet
+# ci_file -> the CI rows file, or /dev/null when there are none
+ci_file() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
+
+# section_cfg -> the `sections` block of every tracker that has one, keyed by repo: {repo, gate,
+# roots}. Roots decide a path's section, gate names the workflow that first-try means.
+section_cfg() {
+  [ -r "$BENCH_PROJECT_MAP" ] || { echo '{}'; return 0; }
+  jq -c '[.trackers[] | objects | .sections // empty] | INDEX(.repo)' "$BENCH_PROJECT_MAP"
+}
+
+# merged_new <since> <cfg> -> repo, number and session_id (tab-separated) for every PR to count:
+# what session-outcomes says merged since then, plus on a repo with sections whatever merged
+# there, since about a third of those no session claims. A PR is counted once, except that a row
+# from before its repo had sections or from before a session claimed it counts again, and
+# ci_keep_newest drops the old one. A recount keeps the session an older row had.
 merged_new() {
-  local ci="$CI"
-  [ -s "$ci" ] || ci=/dev/null
-  outcomes_newest | jq -rs --argjson since $(( $1 - BENCH_WINDOW_H * 3600 )) --slurpfile c "$ci" "$JQ_LIB"'
-    ($c | INDEX(key)) as $have
+  local repo prs listed='[]'
+  for repo in $(jq -r 'keys[]' <<<"$2"); do
+    prs=$(gh pr list -R "$repo" --state merged --limit "$BENCH_PR_LIST_MAX" \
+      --search "merged:>=$(date -u -d "@$1" +%FT%TZ)" --json number) || return 1
+    [ "$(jq length <<<"$prs")" -lt "$BENCH_PR_LIST_MAX" ] || { say "$repo: $BENCH_PR_LIST_MAX PRs is a cut list, use fewer --days"; return 1; }
+    listed=$(jq -c --argjson l "$listed" --arg r "$repo" '$l + map({repo: $r, number, session_id: ""})' <<<"$prs")
+  done
+  outcomes_newest | jq -rs --argjson since "$1" --argjson cfg "$2" --argjson listed "$listed" --slurpfile c "$(ci_file)" "$JQ_LIB"'
+    ($c | INDEX(key)) as $old
+    | ($c | map(select($cfg[.repo] == null or .sections != null)) | INDEX(key)) as $have
     | [.[] | .session_id as $sid | (.prs // [])[]
        | select(.state == "MERGED" and .merged_at != null)
        | select((.merged_at | fromdateiso8601) >= $since)
-       | {repo, number, session_id: $sid}]
-    | unique_by(key) | map(select($have[key] | not)) | .[] | [.repo, .number, .session_id] | @tsv'
+       | {repo, number, session_id: $sid}] + $listed
+    | unique_by(key)
+    | map(if claimed then . else .session_id = ($old[key].session_id // "") end)
+    | map(. as $pr | $have[key] as $row | select($row == null or (($row | claimed | not) and ($pr | claimed))))
+    | .[] | [.repo, .number, .session_id] | @tsv'
 }
 
-# pr_ci <repo> <number> <session> -> its size and the CI runs on its branch from its first
+# ci_keep_newest -> the newest line per PR stays, so a recount replaces its row
+ci_keep_newest() {
+  [ -s "$CI" ] || return 0
+  jq -cs "$JQ_LIB"'group_by(key) | map(last) | sort_by(.merged_epoch) | .[]' "$CI" > "$CI.tmp" && mv "$CI.tmp" "$CI"
+}
+
+# pr_ci <repo> <number> <session> <cfg> -> its size and the CI runs on its branch from its first
 # commit to merge (earlier runs are a reused branch name); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red
+# startup_failure, and cancelled is superseded, not red. A repo with sections adds the PR's
+# sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
+# commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
-  local pr runs
+  local pr runs paths=''
   pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits) || return 1
-  runs=$(gh run list -R "$1" --branch "$(jq -r .headRefName <<<"$pr")" --limit 100 --json conclusion,createdAt) || return 1
-  jq -cn --argjson pr "$pr" --argjson runs "$runs" --arg repo "$1" --argjson n "$2" --arg sid "$3" "$JQ_LIB"'
+  runs=$(gh run list -R "$1" --branch "$(jq -r .headRefName <<<"$pr")" --limit 100 \
+    --json conclusion,createdAt,startedAt,updatedAt,workflowName,headSha) || return 1
+  if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
+    # REST, not `pr view --json files`: that stops at 100 files, and the first 100 by path hide the rest
+    paths=$(gh api --paginate "repos/$1/pulls/$2/files?per_page=100" --jq '.[].filename') || return 1
+  fi
+  jq -cn --argjson pr "$pr" --argjson runs "$runs" --arg repo "$1" --argjson n "$2" --arg sid "$3" \
+     --argjson cfg "$4" --arg paths "$paths" "$JQ_LIB"'
+    def red: .conclusion | IN("failure", "timed_out", "startup_failure");
+    def section($roots): split("/") as $c
+      | first($roots[] | split("/") as $r
+          | select(($c | length) > ($r | length) and ([range($r | length) as $i | $r[$i] == "*" or $r[$i] == $c[$i]] | all))
+          | $c[:$r | length] | join("/")) // "other";
     ([$pr.createdAt, ($pr.commits // [])[].committedDate] | map(fromdateiso8601) | min) as $start
     | ($pr.mergedAt | fromdateiso8601) as $merged
     | ($runs | map(select((.createdAt | fromdateiso8601) as $c | $c >= $start and $c <= $merged))) as $r
     | {repo: $repo, number: $n, session_id: $sid, merged_epoch: $merged, merged_at: ($merged | iso),
        additions: ($pr.additions), deletions: ($pr.deletions), ci_runs: ($r | length),
-       ci_red: ($r | map(select(.conclusion | IN("failure", "timed_out", "startup_failure"))) | length)}'
+       ci_red: ($r | map(select(red)) | length)}
+      + ($cfg[$repo] as $s | if $s == null then {} else
+          ($r | map(select(.workflowName == $s.gate))) as $g
+          | {sections: ($paths | split("\n") | map(select(. != "") | section($s.roots)) | unique),
+             gate_runs: ($g | length), gate_red: ($g | map(select(red)) | length),
+             gate_min: ($g | map((.updatedAt | fromdateiso8601) - (.startedAt | fromdateiso8601)) | add // 0 | . / 60 | round),
+             green_lost: ([0, ($g | map(select(.conclusion == "success") | .headSha) | unique | length) - 1] | max)}
+        end)'
 }
 
 cmd_review() {
-  local t new repo num sid row n=0 red=0 msg
+  local t since cfg new repo num sid row n=0 red=0 msg days=''
+  case "${1:-}" in
+    '') ;;
+    --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
+    *) say "usage: fleet-bench review [--days N]"; return 2 ;;
+  esac
   mkdir -p "$DIR"
   t=$(now)
-  new=$(merged_new "$t") || { report_outcome FAILED "outcomes unreadable"; return 1; }
+  since=$(( t - BENCH_WINDOW_H * 3600 )); [ -z "$days" ] || since=$(( t - days * 86400 ))
+  cfg=$(section_cfg) || { report_outcome FAILED "project map unreadable"; return 1; }
+  new=$(merged_new "$since" "$cfg") || { report_outcome FAILED "merged PRs unreadable"; return 1; }
+  # a recount leaves two lines for a PR until this runs, so it runs however the loop ends
+  [ -z "$new" ] || { trap ci_keep_newest EXIT; trap 'exit 143' TERM INT HUP; }
   while IFS=$'\t' read -r repo num sid; do
     [ -n "$repo" ] || continue
-    if ! row=$(pr_ci "$repo" "$num" "$sid"); then
+    if ! row=$(pr_ci "$repo" "$num" "$sid" "$cfg"); then
       say "gh failed counting $repo#$num"
       report_outcome FAILED "gh failed counting CI"
       return 1
@@ -1112,6 +1189,74 @@ cmd_review() {
   msg="$n PRs counted, $red CI reds"
   say "$msg"
   report_outcome WORKED "$msg"
+}
+
+# sections_json <now> <days> -> what each section cost over the window. A row is a merged PR with
+# sections; its session is whichever claims it in outcomes now (the row may predate the claim),
+# and takes an equal share of that session's cost, tokens and work minutes. A session with no
+# price stays out of the cost mean rather than counting as free.
+sections_json() {
+  outcomes_newest | jq -cs --argjson t "$1" --argjson days "$2" --slurpfile c "$(ci_file)" "$JQ_LIB"'
+    def gated: map(select(ran_gate));
+    def mean(f): map(f | numbers) | ratio(add // 0; length);
+    def stats: gated as $g | {prs: length, gated: ($g | length), with_session: (map(select(.share)) | length),
+      first_try: ratio($g | map(select(first_try)) | length; $g | length),
+      reds_per_pr: ratio($g | total(.gate_red); $g | length),
+      gate_min_per_pr: ratio($g | total(.gate_min); $g | length),
+      gate_h: ($g | total(.gate_min) / 60 | round), green_lost: total(.green_lost),
+      cost_per_pr: mean(.share.cost), tokens_per_pr: (mean(.share.tokens) | if . then round else . end),
+      work_min_per_pr: mean(.share.work)};
+    def per($n): if . then . / $n else null end;
+    ([.[] | . as $s | ((.prs // []) | map(select(.state == "MERGED"))) as $m | ($m | length) as $n | $m[]
+      | {key: key, share: {cost: ($s.cost_usd | per($n)), tokens: ($s.tokens_total | per($n)), work: ($s.time_use.work_min | per($n))}}]
+     | unique_by(.key) | INDEX(.key)) as $claimed
+    | ($c | map(select(.sections != null and .merged_epoch > $t - $days * 86400 and .merged_epoch <= $t)
+                | . + {share: $claimed[key].share})) as $rows
+    | {days: $days, all: ($rows | stats),
+       sections: ([$rows[] | .sections[] as $n | . + {section: $n}] | group_by(.section)
+                  | map({section: .[0].section} + stats) | sort_by(-.gate_h, -.prs))}'
+}
+
+# sections_table <json> <top, 0 for all>
+sections_table() {
+  jq -r --argjson top "$2" "$JQ_LIB"'def d: if . == null then "-" else tostring end;
+    def mins: if . == null then "-" else round | tostring end;
+    def usd: if . == null then "-" else "$\(round2)" end;
+    def mtok: if . == null then "-" else "\(. / 1000000 | round1)M" end;
+    def row($n): "| \($n) | \(.prs) | \(.first_try | d) | \(.reds_per_pr | d) | \(.gate_min_per_pr | mins) | \(.gate_h) | \(.green_lost) | \(.cost_per_pr | usd) | \(.tokens_per_pr | mtok) | \(.work_min_per_pr | mins) |";
+    "| Section | PRs | First try | Gate reds per PR | Gate min per PR | Gate h | Greens lost | Cost per PR | Tokens per PR | Work min per PR |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+    (.all | row("All PRs")),
+    ((if $top > 0 then .sections[:$top] else .sections end)[] | row(.section)),
+    "",
+    "- A PR counts in every section it touches, so sections sum past All PRs. Greens lost is a green head a later commit replaced, for any reason. Gate columns cover the \(.all.gated) PRs that ran a gate, and cost, tokens and work the \(.all.with_session) of \(.all.prs) a session claims.",
+    (if $top > 0 and (.sections | length) > $top then "- \(.sections | length - $top) more: `fleet-bench sections`." else empty end)' <<<"$1"
+}
+
+sections_section() {
+  local j
+  echo "## Sections"
+  echo
+  echo "Merged PRs in the last ${BENCH_SECTIONS_DAYS} days by section of the repo, from the paths each changed, the most gate hours first. First try is a PR whose gate never went red."
+  echo
+  j=$(sections_json "$1" "$BENCH_SECTIONS_DAYS") || { echo "- sections: ? (outcomes or pr-ci.jsonl unreadable)"; return 0; }
+  [ "$(jq .all.prs <<<"$j")" -gt 0 ] || { echo "_No PR merged in a repo with sections in this window._"; return 0; }
+  sections_table "$j" "$BENCH_SECTIONS_TOP"
+}
+
+cmd_sections() {
+  local json=0 days="$BENCH_SECTIONS_DAYS" j
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --days) days=${2:-}; shift ;;
+      *) say "usage: fleet-bench sections [--days N] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench sections [--days N] [--json]"; return 2; }
+  j=$(sections_json "$(now)" "$days") || return 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$j"; else sections_table "$j" 0; fi
 }
 
 # ask_rows -> a JSON array of pending asks in the order hub Home ranks them
@@ -1320,8 +1465,8 @@ chain_counts() {
   done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
   board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
-  ci=null; [ -r "$CI" ] && ci=$(jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
-    'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))' "$CI")
+  ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
+    'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))')
   jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
@@ -1591,13 +1736,12 @@ ask_kpi() {
 # _runner is where headless runs are filed. A canary session is an eval, not work: it leaves the
 # human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 KPI_DEFS="$JQ_LIB"'
-  def total(f): map(f // 0) | add // 0;
   def bots: ($o | map(select(.runner == true or .project == "_runner") | .session_id))
     + ($k | map(.session_id // empty)) | INDEX(.);
   def win($t; $d): bots as $bot | ($t - $d * 86400) as $since
     | ($o | map(select(($bot[.session_id] | not) and .updated_epoch != null
                        and .updated_epoch > $since and .updated_epoch <= $t))) as $s
-    | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id // ""] | not)))) as $ci
+    | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id] | not)))) as $ci
     | ($k | map(select((.harness // "claude") == "claude" and .epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
@@ -1610,6 +1754,7 @@ KPI_DEFS="$JQ_LIB"'
        interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
        cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
        ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
+       first_pass_share: ($ci | map(select(ran_gate)) as $ran | ratio($ran | map(select(first_try)) | length; $ran | length)),
        plan_gate_deny_rate: ratio(($s | total(.plan_gate.denied)); $s | total(.plan_gate.exits)),
        canary_runs: ($kw | length), canary_pass_rate: ratio(($kw | map(select(.pass == true)) | length); $kw | length),
        canary_cost_per_task: ratio(($ks | total(.cost_usd)); $ks | length),
@@ -1625,14 +1770,12 @@ KPI_DEFS="$JQ_LIB"'
        compactions_per_session: ratio(($tw | total(.compactions)); $tw | total(.sessions))};
   # which way is better: -1 lower, 1 higher, 0 neither (sessions is volume, not quality)
   def better: {sessions: 0, prs_per_session: 1, revert_rate: -1, interrupts_per_session: -1,
-               cost_per_pr: -1, ci_red_per_pr: -1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
+               cost_per_pr: -1, ci_red_per_pr: -1, first_pass_share: 1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
                canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1,
                responses_per_merged_pr: -1, context_per_merged_pr: -1, tool_chars_per_call: -1,
                locate_read_share: -1, reread_share: -1, cache_write_share: -1, start_share: -1,
                compactions_per_session: -1};'
 
-# kpi_ci -> the CI rows file, or /dev/null when there are none
-kpi_ci() { [ -s "$CI" ] && printf '%s' "$CI" || printf /dev/null; }
 # kpi_canary -> the canary score rows file, or /dev/null when there are none
 kpi_canary() { [ -s "$CANARY" ] && printf '%s' "$CANARY" || printf /dev/null; }
 # kpi_tokens -> each nightly token-usage snapshot (agent-usage tokens snapshot is its one writer), cut
@@ -1650,7 +1793,7 @@ kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
-  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
+  jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
      --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
@@ -1673,7 +1816,7 @@ kpi_json() {
 # kpi_trend <now> <days> -> one object a day, oldest first: {date, <kpi>: its 7d value as of that
 # day's end}. The outcome rows are the history, so a trend needs no store of its own.
 kpi_trend() {
-  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
+  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     range($n - 1; -1; -1) as $i | ($t - $i * 86400) as $at
     | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7)'
 }
@@ -2087,7 +2230,7 @@ cmd_effect() {
   fi
   local out
   out=$(jq -n --argjson t "$t" --argjson d "$days" --argjson now "$(now)" --argjson flat "$BENCH_EFFECT_FLAT" \
-        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c "$(kpi_ci)" --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
+        --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     win($t; $d) as $b | win($t + $d * 86400; $d) as $a | ($now >= $t + $d * 86400) as $done
     | {ref: $ref, at: ($t | todate), days: $d, kpis: [$b | keys_unsorted[] as $k | better[$k] as $dir
         | {kpi: $k, before: $b[$k], after: (if $done then $a[$k] else null end),
@@ -2723,10 +2866,10 @@ prom_snapshot() {
 
 # merge_rows <until> [since] -> project, merge epoch (tab-separated) for each project sampled in that
 # time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
-# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is a worktree's,
-# `<repo>-<slug>` (the `project` def strips only -agent-N, so unity-core-playground-agent-40-b gets
-# here whole): the longest registered checkout basename or alias it starts with names it, as
-# project-name.sh does for a reaped worktree, and its merges count under that name.
+# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is an app inside
+# a repo (project-name.sh resolves a bnb-platform worktree to its app) or a progress line written before
+# rows carried their project, a worktree's `<repo>-<slug>`: the longest registered checkout basename or
+# alias it starts with names it, and its merges count under that name.
 merge_rows() {
   local until="$1" since="${2:-$(($1 - 86400))}" p path head
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
@@ -3292,8 +3435,21 @@ canary_brief() {
 # task whose item exists in any state, so a second retro the same week queues nothing. `from:
 # canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
 # canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
+# a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
+# so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+canary_slug() {
+  local id tail
+  tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
+  id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//')
+  id=$(printf '%s' "${id:0:$((40 - 7 - ${#tail}))}" | sed 's/-*$//')
+  [ -n "$id" ] || return 1
+  printf 'canary-%s%s' "$id" "$tail"
+}
+
 canary_queue() {
   local tasks t id slug week lane="" harness="" model="" added=0 had=0
+  local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
@@ -3302,12 +3458,15 @@ canary_queue() {
     esac
   done
   [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
-  [ -z "$harness" ] || lane="-$harness${model:+-$model}"
+  [ -z "$harness" ] || lane="$harness${model:+-$model}"
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week$lane"
+    id=$(jq -r .id <<<"$t")
+    slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
+    [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
+    seen[$slug]=$id
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${harness:+ $harness${model:+/$model}}" \
@@ -3673,6 +3832,7 @@ main() {
     sessions) shift; cmd_sessions "$@" ;;
     stats) shift; cmd_stats "$@" ;;
     review) shift; cmd_review "$@" ;;
+    sections) shift; cmd_sections "$@" ;;
     asks) shift; cmd_asks "$@" ;;
     ledger) shift; cmd_ledger "$@" ;;
     rules) shift; cmd_rules "$@" ;;

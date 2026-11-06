@@ -129,7 +129,30 @@ test("past the cap the table offers the rest", () => {
   assert.doesNotMatch(boxes.scroll.innerHTML, /\+\d+ older/);
 });
 
+const VOCAB = ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"];
+
+test("the bucket order and colours come from the published vocabulary, not a list in the page", () => {
+  run(`BUCKETS = []`);
+  assert.equal(run(`bucketColor("WORKING")`), "var(--b-chat)", "no vocabulary yet: nothing is named here");
+  run(`setBuckets(__d)`, VOCAB);
+  assert.equal(run(`bucketColor("WORKING")`), "var(--b-working)");
+  assert.deepEqual([...run(`["PARKED", "NEEDS", "X"].map(bucketRank)`)], [6, 0, 7]);
+  setup();
+  run(`BUCKETS = []; setBuckets(sst.data.buckets)`);
+  assert.equal(run(`BUCKETS.length`), 0, "a table body with no buckets leaves the order alone");
+  run(`setBuckets(__d)`, VOCAB);
+});
+
+test("a freqtrade_trading_attempt-agent-1 session reads trader in the table", () => {
+  setup();
+  run(`sst.data.rows = [__d]`, row("lab/freqtrade_trading_attempt-agent-1:1", { project: "trader" }));
+  ctx.renderOverview();
+  assert.match(boxes.scroll.innerHTML, /trader/);
+  assert.doesNotMatch(boxes.scroll.innerHTML, /freqtrade_trading_attempt-agent-1<\/td>/);
+});
+
 test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's grey", () => {
+  run(`setBuckets(__d)`, VOCAB);
   assert.equal(run(`bucketColor("PARKED")`), "var(--b-parked)");
   assert.equal(run(`bucketColor("UNCLEAR")`), "var(--b-chat)");
   const css = readFileSync(new URL("app.css", dir), "utf8");

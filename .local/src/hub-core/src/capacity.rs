@@ -201,7 +201,7 @@ pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
 
 /// [`read`] over the sessions in `fleet-sessions`' state document.
 pub fn read_fleet(runner: &dyn Runner) -> Capacity {
-    read(runner, &read_state(&crate::boards::fleet_state()))
+    read(runner, &read_state(&crate::boards::fleet_state()).0)
 }
 
 /// Enable and start one of the two timers. Any other name is refused, and nothing here stops one.

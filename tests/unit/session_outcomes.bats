@@ -620,6 +620,22 @@ queue_stub() {
   [ ! -f "$SANDBOX/sets.log" ] || fail "wrote again: $(cat "$SANDBOX/sets.log")"
 }
 
+@test "ledger: an item whose sessions priced nothing gets no cost, never a 0" {
+  queue_stub
+  mkdir -p "$SO_OUT/proj"
+  {
+    jq -cn '{session_id: "sess-free", project: "proj", observed: "2026-10-18T00:00:00Z", updated: 1, cost_usd: null}'
+    jq -cn '{session_id: "sess-paid", project: "proj", observed: "2026-10-18T00:00:00Z", updated: 1, cost_usd: 2}'
+  } > "$SO_OUT/proj/2026-10.jsonl"
+  {
+    jq -cn '{slug: "it-free", sessions: "sess-free"}'
+    jq -cn '{slug: "it-mixed", sessions: "sess-free sess-paid"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SANDBOX/sets.log")" "set it-mixed cost_usd=2"
+}
+
 @test "ledger: a queue it cannot read changes nothing and the run still works" {
   export SO_QUEUE=false
   run "$SUBJECT" run

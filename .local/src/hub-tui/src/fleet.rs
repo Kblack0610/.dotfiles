@@ -319,6 +319,8 @@ pub mod tests {
     pub fn fixture() -> Watch {
         let state = serde_json::json!({
             "schema": 1, "generated_epoch": 1_000_000, "unreadable": [],
+            "vocab": {"buckets": ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
+                      "finished": ["DONE", "LANDED"], "in_progress": ["WORKING", "NEEDS", "STALLED"]},
             "sessions": [
                 {"bucket": "WORKING", "target": "lab/unity-core-playground-agent-10:1",
                  "branch": "feat/x", "pr": "1645", "pr_state": "OPEN", "ci": "PENDING",
@@ -356,7 +358,7 @@ pub mod tests {
     /// The page as the Sessions tab draws it: the fixture's sessions in the session table.
     fn page(watch: &Watch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         let mut c = crate::controls::Controls::default();
-        c.read(watch.state["sessions"].as_array().cloned(), None);
+        c.read(Some(&watch.state), None);
         super::page(watch, c.lines(p, now, w), p, now, w)
     }
 
