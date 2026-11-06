@@ -41,7 +41,7 @@ const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
   progress: { open: 2, done: 1, open_weight: 3, done_weight: 1 }, percent: 25, eta_days: 4,
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
-  summary: "v0.1.0 25% (1 of 4 by size), 7d 1, 28d 1, ETA 4d", in_flight: false, pace: 0.25, ...o,
+  summary: "v0.1.0 25% (1 of 4 by size), 7d 1, 28d 1, ETA 4d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
@@ -76,7 +76,7 @@ function board(u) {
 const read = () => ({ cards: box("p-top").innerHTML + box("p-bar").innerHTML + box("p-list").innerHTML, head: box("p-head").innerHTML, rows: box("b-list").innerHTML });
 function draw(data, open = null) {
   ctx.input = { data, feed: board("/api/board"), open };
-  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.data = input.data; pst.err = null; bst.feed = input.feed; pst.open = null;
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.data = input.data; pst.err = null; pst.viewed = ""; bst.feed = input.feed; pst.open = null;
     if (input.open) pOpen(input.open); else renderProjects();`, ctx);
   return read();
 }
@@ -95,14 +95,14 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.25 }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3 }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /2 projects, 1 in flight; progress is the open version's rows by size/);
   assert.match(cards, /<button class="btn sm" data-open="all">All rows 2<\/button>/);
   assert.match(cards, /id="projects-q".*id="projects-chips"/s);
   assert.match(cards, />all <.*>in flight <.*>waiting </s);
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><\/tr>/);
-  assert.match(cards, /<tr class="jr" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>/);
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
@@ -219,6 +219,22 @@ test("a row action after the server filtered names the row on screen, not its pl
   await settle(); await settle();
   assert.equal(JSON.parse(ctx.sent.find((s) => s.body).body).raw, "- [ ] water the beds");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the re-read keeps the view");
+});
+
+test("Enter on a row opens its project, and Back shows no list read under the old view", async () => {
+  await drawn(list());
+  ctx.answers = { "/api/projects?q=menu": list([card({ name: "narrowed" })]), "/api/projects": list(), "/api/projects/demo/page": "not read here" };
+  vm.runInContext(`st.views.projects = "q=menu"; refreshProjects();`, ctx);
+  await settle(); await settle();
+  assert.match(read().cards, /narrowed/);
+  const target = { matches: (sel) => sel === "tr[data-open]", dataset: { open: "bnb/demo" } };
+  for (const f of box("p-cards").on.keydown) f({ key: "Enter", target });
+  assert.equal(vm.runInContext(`pst.open`, ctx), "bnb/demo");
+  vm.runInContext(`pGo(null);`, ctx);
+  assert.equal(vm.runInContext(`pst.data`, ctx), null, "the filtered answer goes with its view");
+  assert.match(box("p-cards").innerHTML, /Reading notes projects/);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`pst.data.cards[0].name + pst.viewed`, ctx), "demo");
 });
 
 test("a click into a project or Back clears the query; a deep link keeps its own", async () => {

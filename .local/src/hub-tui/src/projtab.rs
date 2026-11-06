@@ -56,9 +56,15 @@ impl ProjView {
         self.table.view.apply(cards)
     }
 
+    /// The selected row of `n`: a re-read can leave `card` past what the view now keeps.
+    fn at(&self, n: usize) -> usize {
+        self.card.min(n.saturating_sub(1))
+    }
+
     /// The selected project, when the view keeps one.
     pub fn selected<'a>(&self, cards: &'a [Card]) -> Option<&'a Card> {
-        self.shown(cards).get(self.card).copied()
+        let shown = self.shown(cards);
+        shown.get(self.at(shown.len())).copied()
     }
 
     /// Open one project's rows, or with None every project's.
@@ -70,7 +76,7 @@ impl ProjView {
         self.open = true;
     }
 
-    /// Back to the list, with the project that was open still selected.
+    /// Back to the list, the selection on the row it was on.
     pub fn close(&mut self, tv: &mut TaskView) {
         self.open = false;
         tv.prompt = None;
@@ -108,7 +114,9 @@ impl ProjView {
             }
             Took::No => {}
         }
-        let last = self.shown(cards).len().saturating_sub(1);
+        let n = self.shown(cards).len();
+        let last = n.saturating_sub(1);
+        self.card = self.at(n);
         match k.code {
             KeyCode::Char('j') | KeyCode::Down => self.card = (self.card + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => self.card = self.card.saturating_sub(1),
@@ -419,7 +427,7 @@ pub fn page(
             ..Default::default()
         }
         .fit_wrapped(w, p.head());
-        if let Some(&start) = starts.get(pv.card) {
+        if let Some(&start) = starts.get(pv.at(shown.len())) {
             t[start].style = p.sel();
             at = Some(out.len() + start);
         }
@@ -602,6 +610,32 @@ pub(crate) mod tests {
             (tv.project.clone(), tv.table.view.q.as_str()),
             (None, "menu")
         );
+    }
+
+    #[test]
+    fn the_header_is_cards_columns_in_order() {
+        use hub_core::table::Row as _;
+        assert_eq!(HEADER.len(), Card::COLUMNS.len());
+        for (h, c) in HEADER.iter().zip(Card::COLUMNS) {
+            assert!(h.to_lowercase().starts_with(c), "{h} is not {c}");
+        }
+    }
+
+    #[test]
+    fn a_re_read_that_shrinks_the_view_leaves_the_last_row_selected() {
+        let pr = fixture();
+        let (mut pv, mut tv) = (
+            ProjView {
+                card: 5,
+                ..Default::default()
+            },
+            TaskView::default(),
+        );
+        assert_eq!(pv.selected(&pr.cards).unwrap().name, "demo");
+        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        assert!(plain(&l[at.unwrap()]).starts_with("demo"));
+        pv.key(&mut tv, key('k'), &pr.cards, 10);
+        assert_eq!(pv.card, 0, "k moves from the row on screen");
     }
 
     #[test]

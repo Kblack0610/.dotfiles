@@ -152,9 +152,11 @@ impl Card {
         !self.running.is_empty() || self.waiting > 0
     }
 
-    /// Rows closed per week: the open version's rows closed in the last 28 days, over 4.
+    /// Rows closed per week: the open version's rows closed in the last 28 days, over 4. Rounded
+    /// here to the one decimal a surface prints: quarters are ties, and Rust and JS break them
+    /// apart, so a surface formatting the raw value would read differently from the next.
     pub fn pace(&self) -> f64 {
-        f64::from(self.progress.closed_28d) / 4.0
+        (f64::from(self.progress.closed_28d) * 2.5).round() / 10.0
     }
 }
 
@@ -463,6 +465,12 @@ mod tests {
                 .collect()
         };
         assert_eq!(cards[0].pace(), 2.5, "28-day closes over 4 weeks");
+        assert_eq!(card("", "", "", "", 1).pace(), 0.3, "a tie rounds up, once");
+        assert_eq!(
+            names("pace:0.5", "", "", ""),
+            ["normal"],
+            "the figure shown"
+        );
         assert_eq!(names("", "", "", ""), ["low", "normal", "focus", "bare"]);
         assert_eq!(names("", "in flight", "", ""), ["normal", "focus"]);
         assert_eq!(names("", "waiting", "", ""), ["normal"]);

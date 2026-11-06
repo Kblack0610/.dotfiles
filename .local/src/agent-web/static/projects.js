@@ -8,8 +8,9 @@
 // for word. Two tables, one at a time, share st.views.projects: this one owns it when nothing is
 // open, the rows when a project is.
 
-// page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open.
-const pst = { data: null, err: null, open: null, unlinked: false, page: {}, folds: {} };
+// page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
+// viewed: the view pst.data was read under.
+const pst = { data: null, err: null, open: null, unlinked: false, page: {}, folds: {}, viewed: "" };
 
 // With something open, or a deep link on its way, the URL's view is the rows', so every card is
 // read: pDeep and the opened card need theirs whatever the list was showing. An answer for what
@@ -18,7 +19,7 @@ const refreshProjects = coalesce(async () => {
   const arg = st.arg, q = (arg ? new URLSearchParams() : tblParams(st.views.projects)).toString();
   try {
     const got = await api("/api/projects" + (q ? "?" + q : ""));
-    if (arg === st.arg) { pst.data = got; pst.err = null; }
+    if (arg === st.arg) { pst.data = got; pst.err = null; pst.viewed = q; }
   } catch (e) { if (arg === st.arg) pst.err = e.message; }
   if (st.tab === "projects") { pDeep(); renderProjects(); }
 });
@@ -41,8 +42,8 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
 const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], done: ["done", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
-// One line of the list; a click opens the project.
-const pLine = (c) => `<tr class="jr" data-open="${esc(pKey(c))}"><td>${esc(c.name)}</td><td>${esc(c.profile)}</td>` +
+// One line of the list; a click or Enter on it opens the project.
+const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${esc(c.name)}</td><td>${esc(c.profile)}</td>` +
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
   `<td class="n">${c.progress.open}</td><td class="n">${c.progress.done}</td>` +
   `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
@@ -160,13 +161,14 @@ function pView(patch) {
   refreshProjects();
 }
 
-// A click moves the tab: the URL names what is open and the old view's query goes with it. A
-// deep link is the other way in, and keeps its own (pDeep).
+// A click moves the tab: the URL names what is open and the old view's query goes with it, and
+// so do cards read under it. A deep link is the other way in, and keeps its own (pDeep).
 function pGo(key) {
   st.arg = key === null ? "" : key;
   setQuery("");
   if (key === null) {
     pst.open = null; bst.feed = null;
+    if (pst.viewed) pst.data = null;
     renderProjects(); refreshProjects(); refreshBoard();
   } else pOpen(key);
 }
@@ -194,6 +196,9 @@ $("projects").addEventListener("click", (e) => {
 for (const ev of ["click", "input", "change"]) {
   $("p-cards").addEventListener(ev, (e) => { const v = tblPatch(e); if (v) pView(v); });
 }
+$("p-cards").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
+});
 $("projects").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
 }, true);
