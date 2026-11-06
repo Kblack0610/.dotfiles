@@ -100,3 +100,48 @@ spent() {
   run "$RUN" --role watcher --explain -p x
   assert_output --partial 'budget:      none (a hand run)'
 }
+
+@test "the first stop of the day pages once, naming the raise; a second stop does not page" {
+  spent judge 11 "$(date -Iseconds)"
+  run "$RUN" --agent judge -p x
+  assert_failure 75
+  assert_output --partial 'To go on today: agentctl budget judge raise <usd>'
+  run "$RUN" --agent judge -p x
+  assert_failure 75
+  run grep -c '^agent-notify .*judge stopped at its budget' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "a raise lifts today's caps, and adds to an earlier raise" {
+  CTL="$REPO_ROOT/.local/bin/agentctl"
+  spent judge 11 "$(date -Iseconds)"
+  run "$CTL" budget judge raise 1
+  assert_success
+  run "$RUN" --agent judge -p x
+  assert_failure 75
+  run "$CTL" budget judge raise 2.5 1
+  assert_output --partial '$11 of $13.5'
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert_output OK
+}
+
+@test "yesterday's raise does not lift today's cap" {
+  spent judge 11 "$(date -Iseconds)"
+  mkdir -p "$HOME/.local/state/agentctl/judge"
+  printf '%s 50 0\n' "$(date +%F -d yesterday)" > "$HOME/.local/state/agentctl/judge/budget-raise"
+  run "$RUN" --agent judge -p x
+  assert_failure 75
+}
+
+@test "agentctl budget lists spend against each budgeted name, and refuses a bad raise" {
+  CTL="$REPO_ROOT/.local/bin/agentctl"
+  spent judge 1.5 "$(date -Iseconds)"
+  run "$CTL" budget
+  assert_success
+  assert_line --regexp '^judge +\$0.5 +\$1.5 of \$10 +1 of 3$'
+  run "$CTL" budget judge raise lots
+  assert_failure
+  run "$CTL" budget nobody raise 1
+  assert_failure
+}
