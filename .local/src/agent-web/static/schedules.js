@@ -8,13 +8,13 @@
 const SCHEDULES_REFRESH_MS = 60e3;
 // Runs a detail shows before folding the rest behind "+N older".
 const SCHEDULE_RUNS_OPEN = 2;
-const sst = { data: null, err: null, sel: null };
+const schst = { data: null, err: null, sel: null };
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
 const refreshSchedules = coalesce(async () => {
   const q = tblParams(st.views.schedules).toString();
-  try { sst.data = await api("/api/schedules" + (q ? "?" + q : "")); sst.err = null; } catch (e) { sst.err = e.message; }
+  try { schst.data = await api("/api/schedules" + (q ? "?" + q : "")); schst.err = null; } catch (e) { schst.err = e.message; }
   if (st.tab === "schedules") renderSchedules();
 });
 
@@ -24,7 +24,7 @@ const streakText = (n) => (n < 0 ? `red ${-n}` : n > 0 ? `green ${n}` : "");
 
 function scheduleRow(r) {
   const cls = r.ok === false ? "bad" : r.ok === true ? "" : "muted";
-  const open = schedKey(r) === sst.sel;
+  const open = schedKey(r) === schst.sel;
   const none = r.purpose ? "" : ` <span class="warn" title="this schedule does not say why it exists">no purpose</span>`;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(schedKey(r))}">` +
     `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td><td>${esc(r.schedule)}</td>` +
@@ -62,16 +62,16 @@ function schedulesBody(d) {
 
 function schedulesHead(d) {
   let html = `<h2 class="sec">Schedules <span class="muted">${esc(d.summary)}, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
-  if (sst.err) html += `<div class="panel down">${esc(sst.err)}</div>`;
+  if (schst.err) html += `<div class="panel down">${esc(schst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
 }
 
 function renderSchedules() {
   const el = $("schedules");
-  const d = sst.data;
+  const d = schst.data;
   if (!d || !d.table) {
-    const why = sst.err || (d?.errors || [])[0];
+    const why = schst.err || (d?.errors || [])[0];
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
     return;
   }
@@ -101,10 +101,10 @@ $("schedules").addEventListener("click", (e) => {
   if (v) { schedulesView(v); return; }
   const tr = t.closest("tr.jr");
   if (!tr) return;
-  const r = (sst.data.rows || []).find((x) => schedKey(x) === tr.dataset.key);
+  const r = (schst.data.rows || []).find((x) => schedKey(x) === tr.dataset.key);
   if (!r) return;
   if (r.page) { location.hash = "fleet/" + encodeURIComponent(r.page); return; }
-  sst.sel = sst.sel === schedKey(r) ? null : schedKey(r);
+  schst.sel = schst.sel === schedKey(r) ? null : schedKey(r);
   renderSchedules();
 });
 // A picked dropdown lets go of focus, so the answer redraws it with the new counts.

@@ -27,6 +27,7 @@ mod projects;
 mod queue;
 mod reds;
 mod schedules;
+mod sessions;
 mod shepherd;
 mod transcript;
 
@@ -75,6 +76,7 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     schedules: schedules::Cache,
+    session_table: sessions::Cache,
     fleet: fleet::Cache,
     pipeline: pipeline::Cache,
 }
@@ -101,6 +103,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
+        session_table: sessions::Cache::default(),
         fleet: fleet::Cache::default(),
         pipeline: pipeline::Cache::default(),
     });
@@ -112,6 +115,9 @@ async fn main() -> Result<()> {
         .route("/api/send", post(send))
         .route("/api/session/{target}/{action}", post(session_action))
         .route("/api/session-options", get(session_options))
+        .route("/api/sessions/table", get(sessions_table))
+        .route("/api/sessions/capacity", get(sessions_capacity))
+        .route("/api/sessions/timer/{name}/start", post(sessions_start))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
         .route("/api/asks/{id}/trace", get(ask_trace))
@@ -1064,6 +1070,38 @@ async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Quer
         s.schedules.get(q).await,
     )
         .into_response()
+}
+
+async fn sessions_table(
+    State(s): State<Shared>,
+    Query(q): Query<sessions::TableQuery>,
+) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.session_table.table(q).await,
+    )
+        .into_response()
+}
+
+async fn sessions_capacity(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let got = s
+        .session_table
+        .capacity()
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!(&*got)))
+}
+
+async fn sessions_start(
+    State(s): State<Shared>,
+    UrlPath(name): UrlPath<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let said = s
+        .session_table
+        .start(name)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "said": said })))
 }
 
 #[derive(Deserialize)]

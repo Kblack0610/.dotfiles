@@ -308,6 +308,11 @@ pub fn plan(
     })
 }
 
+/// A command as `Runner::run` takes it.
+pub fn argv(args: &[&str]) -> Vec<String> {
+    args.iter().map(|a| a.to_string()).collect()
+}
+
 /// Runs one argv: its stdout, or its stderr (else its exit status) when it fails.
 pub trait Runner {
     fn run(&self, argv: &[String]) -> Result<String, String>;

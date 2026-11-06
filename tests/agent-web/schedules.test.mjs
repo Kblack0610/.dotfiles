@@ -35,7 +35,7 @@ const ctx = vm.createContext({
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
-const sst = run("sst");
+const schst = run("schst");
 
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
@@ -55,7 +55,7 @@ const data = { at: 1793942700, summary: "3 scheduled, 2 red, 1 no purpose, CI re
   rows: [nightly, row("timer", "journal-sync"), row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9 })] };
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
-const show = () => { run("st.tab = 'schedules'"); Object.assign(sst, { data, err: null, sel: null }); run("renderSchedules()"); };
+const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("renderSchedules()"); };
 
 test("the table draws the summary, the mock's columns and a missing purpose", () => {
   show();
@@ -75,7 +75,7 @@ test("a row opens its detail and folds runs past the second", () => {
   show();
   on.click({ target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
   const h = box.innerHTML;
-  assert.equal(sst.sel, "ci|playground / Tests");
+  assert.equal(schst.sel, "ci|playground / Tests");
   assert.match(h, /red since 11-01, triage queued, next 02:00/);
   assert.match(h, /<b>Why it exists<\/b> the only full run/);
   assert.match(h, /<b>Inside<\/b> Plan -&gt; PlayMode 1..8/);
@@ -86,7 +86,7 @@ test("a row opens its detail and folds runs past the second", () => {
   assert.match(h, /<summary class="muted">\+2 older<\/summary>/);
   assert.equal((h.match(/Open run/g) || []).length, 4);
   on.click({ target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
-  assert.equal(sst.sel, null, "a second click closes it");
+  assert.equal(schst.sel, null, "a second click closes it");
 });
 
 test("a row with no purpose says so in its detail", () => {
@@ -100,7 +100,7 @@ test("an agentctl row goes to its runner's Fleet page and copies nothing", () =>
   loc.hash = "";
   on.click({ target: target({}, { dataset: { key: "agentctl|dream" } }) });
   assert.equal(loc.hash, "fleet/dream");
-  assert.equal(sst.sel, null);
+  assert.equal(schst.sel, null);
 });
 
 test("a header click, a chip and a query go to the server as view keys", async () => {
@@ -126,7 +126,7 @@ test("a repaint leaves the search box in use and a failed read says why", () => 
   assert.equal(box.innerHTML, "untouched");
   assert.match(parts["sched-body"].innerHTML, /playground \/ Tests/);
   doc.activeElement = null;
-  Object.assign(sst, { data: { rows: [], errors: ["schedules: gone"] }, err: null });
+  Object.assign(schst, { data: { rows: [], errors: ["schedules: gone"] }, err: null });
   run("renderSchedules()");
   assert.match(box.innerHTML, /schedules: gone/);
 });
