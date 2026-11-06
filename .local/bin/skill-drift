@@ -344,7 +344,7 @@ check_ascii() {
 }
 
 check_heading() {
-  grep -qE "^$HEADING[[:space:]]*$" "$2" || add NOHEADING "$1" SKILL.md "no '$HEADING' heading"
+  grep -qE "^${HEADING}[[:space:]]*$" "$2" || add NOHEADING "$1" SKILL.md "no '$HEADING' heading"
   return 0
 }
 
