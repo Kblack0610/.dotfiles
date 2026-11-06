@@ -23,7 +23,6 @@ setup() {
 
   TMX="$REPO_ROOT/.local/src/tmux/servers.sh"
   export TMX
-  export BACK_FILE="$XDG_STATE_HOME/tmx/back"
 
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"

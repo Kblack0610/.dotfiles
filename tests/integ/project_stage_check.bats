@@ -109,6 +109,19 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   refute_output --partial 'report-only'
 }
 
+@test "--json gives the stage, counts, gate and each row, with the text mode's exit" {
+  run "$CHECK" shooter --stage alpha --json
+  assert_success
+  assert_equal "$(jq -c '[.project, .type, .stage, .met, .total, .fail, .human, .todo, .enforced_from, .blocks]' <<<"$output")" \
+    '["shooter","game","alpha",4,6,0,1,1,"2026-11-19",false]'
+  assert_equal "$(jq -r '.requirements[5] | "\(.stage) \(.result) \(.requirement)"' <<<"$output")" 'alpha PASS A cell with a | pipe'
+  assert_equal "$(jq -r '.requirements[4].check' <<<"$output")" 'not yet: needs the forge API'
+  refute_output --partial 'gate:'
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --stage beta --json
+  assert_failure 1
+  assert_equal "$(jq -c '[.fail, .blocks, .requirements[-1].result]' <<<"$output")" '[1,true,"FAIL"]'
+}
+
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
   run "$CHECK" nobody
   assert_failure 2
