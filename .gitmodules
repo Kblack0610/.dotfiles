@@ -5,3 +5,6 @@
 [submodule ".local/src/gungan"]
 	path = .local/src/gungan
 	url = git@github.com:Kblack0610/gungan-speak.git
+[submodule ".local/src/muxpoon"]
+	path = .local/src/muxpoon
+	url = https://github.com/Kblack0610/muxpoon.git
