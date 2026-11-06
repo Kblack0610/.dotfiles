@@ -24,7 +24,7 @@ const refreshInfra = coalesce(async () => {
 // Status as the cc:* rules give it: 0 ok, 1 warn, 2 red, anything else no data. The colour
 // always comes with its word.
 const STATUS = [["OK", "var(--b-done)"], ["WARN", "var(--b-stalled)"], ["RED", "var(--b-needs)"]];
-const statusOf = (v) => STATUS[v] || ["NO DATA", "var(--b-unclear)"];
+const statusOf = (v) => STATUS[v] || ["NO DATA", "var(--c-other)"];
 const statusColor = (v) => statusOf(v)[1];
 
 // cc: "cc:pool_busy" -> {unity: 4, ...} by the series' key label (pool, host, site, or
@@ -252,7 +252,7 @@ function finishedTable(inst) {
   const head = `${t.runs} runs, ${pct(pass(t))} pass, main ${pct(pass(tm))}, ${t.bad} failed, ${t.can} cancelled`;
   const bad = all.filter((a) => a.bad + a.can > 0).sort((a, b) => (pass(a.main) ?? 2) - (pass(b.main) ?? 2) || (pass(a) ?? 2) - (pass(b) ?? 2) || b.bad - a.bad);
   const green = all.filter((a) => a.bad + a.can === 0);
-  const seg = (a) => `<span class="stack" data-tip="${esc(`${a.repo} ${a.wf}\nmain: ${a.main.ok} passed, ${a.main.bad} failed, ${a.main.can} cancelled\nbranches: ${a.branch.ok} passed, ${a.branch.bad} failed, ${a.branch.can} cancelled`)}">${[[a.ok, "var(--b-done)"], [a.bad, "var(--b-needs)"], [a.can, "var(--b-unclear)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
+  const seg = (a) => `<span class="stack" data-tip="${esc(`${a.repo} ${a.wf}\nmain: ${a.main.ok} passed, ${a.main.bad} failed, ${a.main.can} cancelled\nbranches: ${a.branch.ok} passed, ${a.branch.bad} failed, ${a.branch.can} cancelled`)}">${[[a.ok, "var(--b-done)"], [a.bad, "var(--b-needs)"], [a.can, "var(--c-other)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
   const cls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
   const body = (bad.length ? `<table class="tbl"><tr><th>repo</th><th>workflow</th><th></th><th class="n">main</th><th class="n">branches</th><th class="n">runs</th><th class="n">failed</th><th class="n">cancelled</th></tr>${bad.map((a) => {
     const pm = pass(a.main);
@@ -264,7 +264,7 @@ function finishedTable(inst) {
 // Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
 // A conclusion that is none of these (skipped, neutral) counts in no column, as in finishedTable.
 const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
-const OUTCOMES = [["ok", "passed", "var(--b-done)"], ["bad", "failed", "var(--b-needs)"], ["can", "cancelled", "var(--b-unclear)"]];
+const OUTCOMES = [["ok", "passed", "var(--b-done)"], ["bad", "failed", "var(--b-needs)"], ["can", "cancelled", "var(--c-other)"]];
 const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
 const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
 
@@ -326,7 +326,7 @@ function doneToday(inst, t1) {
     tile("CI RUNS", tc.ok + tc.bad + tc.can, "var(--c1)", `${pct(passOf(tc))} pass`)}${
     tile("FAILED ON MAIN", onMain, onMain ? "var(--b-needs)" : "var(--b-done)")}${
     tile("FAILED ON BRANCHES", failed("branch"), "var(--b-stalled)")}${
-    tile("CANCELLED", tc.can, "var(--b-unclear)")}${
+    tile("CANCELLED", tc.can, "var(--c-other)")}${
     tile("LOCAL UNITY", tl.ok + tl.bad, "var(--c3)", `${pct(passOf(tl))} pass`)}</div>`;
   const note = `Tiles count from midnight; CI is read every 10 minutes. Runs per hour and the 24h status lanes are in Grafana ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-command-center", "Command Center")}.`;
   return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
@@ -457,7 +457,7 @@ function cloudCard(inst) {
     const why = h.reason && h.reason !== "none" ? h.reason : "";
     const last = h.changedAt ? `${esc(h.changed)} ${when(h.changedAt)}${why ? ` (${esc(why)})` : ""}` : why ? esc(why) : "-";
     const cost = h.rate != null ? ` ~${usd((h.hours || 0) * h.rate)}` : "";
-    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--b-unclear)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns}</td></tr>`;
+    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--c-other)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns}</td></tr>`;
   }).join("");
   return `<h2 class="sec" id="sec-cloud">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel"><div class="scroll"><table class="tbl"><tr><th>host</th><th>state</th><th>rule</th><th>last</th><th></th><th class="n">today</th><th>override</th><th></th></tr>${rows}</table></div>${budgetLines(g)}<div class="err">${esc(cst.msg)}</div></div>`;
 }
@@ -470,7 +470,7 @@ function governorPanel(inst) {
   if (g.up == null && !hosts.length) return "";
   const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
     : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  const rows = hosts.map((h) => `<tr><td>${esc(h.host)}</td><td>${h.live === 1 ? "live" : '<span class="muted">dry run</span>'}</td><td>${esc(h.verdict || "-")}</td><td><span class="chip sm" style="--c:${ACTION_COLOR[h.action] || "var(--b-unclear)"}">${esc((h.action || "-").toUpperCase())}</span></td><td class="n">${h.admitted ?? "-"}</td></tr>`).join("");
+  const rows = hosts.map((h) => `<tr><td>${esc(h.host)}</td><td>${h.live === 1 ? "live" : '<span class="muted">dry run</span>'}</td><td>${esc(h.verdict || "-")}</td><td><span class="chip sm" style="--c:${ACTION_COLOR[h.action] || "var(--c-other)"}">${esc((h.action || "-").toUpperCase())}</span></td><td class="n">${h.admitted ?? "-"}</td></tr>`).join("");
   return `<h2 class="sec" id="sec-governor">Governor <span class="muted">${health} queue ${g.queue ?? "?"}; a dry-run host is logged, never changed</span></h2><div class="panel scroll"><table class="tbl"><tr><th>host</th><th>mode</th><th>verdict</th><th>action</th><th class="n">admitted</th></tr>${rows}</table></div>`;
 }
 

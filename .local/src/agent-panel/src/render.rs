@@ -88,11 +88,12 @@ pub struct Row {
 }
 
 /// The fleet stage beside the target, coloured as in the tmux status bar (`.tmux.conf`
-/// `@fleet_fmt`). WORKING and NEEDS print nothing: NEEDS is already the `!` glyph.
+/// `@fleet_fmt`). WORKING and NEEDS print nothing: NEEDS is already the `!` glyph. CHAT, the
+/// human's own conversation, prints uncoloured: it is not attention.
 fn stage(stage: &str) -> String {
     let colour = match stage {
         "STALLED" => RED,
-        "UNCLEAR" => YELLOW,
+        "CHAT" => return format!(" {stage}"),
         "LANDED" | "DONE" => GREEN,
         "PARKED" => DIM,
         _ => return String::new(),

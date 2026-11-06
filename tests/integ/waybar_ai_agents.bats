@@ -100,13 +100,14 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
 }
 
-@test "an unclear session turns the robot amber" {
-  feed hub/dotfiles:1=UNCLEAR:10
+@test "a CHAT session is listed uncoloured and leaves the robot green: the human's conversation is not attention" {
+  feed hub/dotfiles:1=CHAT:10
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 0 0 0)"
-  assert_equal "$(class)" warn
+  assert_equal "$(text)" "$(bar "$G" 0 0 0)"
+  assert_equal "$(class)" inactive
   run tip
-  assert_output --partial "<span color='$Y'>1</span> unclear"
+  assert_output --partial "0 in progress: 1 chat"
+  refute_output --partial "<span color='$Y'>"
 }
 
 @test "a sessions textfile older than five minutes is red: the tick stopped" {

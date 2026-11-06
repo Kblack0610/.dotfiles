@@ -81,6 +81,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `today`, `history` (TUI `hub --tab today`, `hub --tab history`, keys 7 and 8; agent-web `#today`, `#history`) | Log; `history` opens the TUI day list | #1077 |
 | `actions` (agent-web `#actions`, the tab) | Log, its Actions section | #1077 |
 | `watch`, `shepherd` (agent-web `#watch`, `#shepherd`; `hub --tab watch`, `hub --tab shepherd`) | Sessions | #961 |
+| `UNCLEAR` (the bucket, on every surface) | CHAT for the human's own conversation, DONE when its queue item moved on, STALLED when its item still runs here with nothing on the branch | #1137 |
 | `jobs`, `ci`, `machines` (TUI `hub --tab jobs`, `hub --tab ci`, `hub --tab machines`, keys 4 and 5; agent-web `#jobs`) | Infra, scrolled to that section; `jobs` opens the TUI jobs table | #971 |
 | `outbox` (agent-web `#outbox`, `hub --tab outbox`) | Daily, showing the outbox (`#daily/outbox`) | #1075 |
 | `focus` (agent-web `#focus`, `#focus/<note>`; `hub --tab focus`) | Daily (`#daily`, `#daily/<note>`) | #1075 |
