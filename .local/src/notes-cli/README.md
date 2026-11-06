@@ -139,7 +139,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | add a project | `project-map add <name> --type game\|app\|infra --lab <profile>`, plus `--repo <key> --path <dir>` for part of a repo or `--repo-dir <abs>` for a whole one; it writes the registry entry, scaffolds the folder, regenerates the anchor and runs `project-map-doctor`. Land the registry change with dotfiles-land |
 | fill in a missing shape file | `notes --profile bnb projects --new <name>` |
 | check every project's shape | `notes doctor --projects` |
-| set its maturity stage (what each one requires: `~/.local/src/docs/stages.md`) | `projects --stage <name> --set draft\|dev\|alpha\|beta\|prod`; `projects --stages` prints the ladder, the one list every shell reader uses |
+| set its maturity stage (what each one requires: `~/.local/src/docs/stages.md`) | `projects --stage <name> --set draft\|dev\|alpha\|beta\|prod`; a move up runs `project-stage-check <name> --stage <s>` first and refuses on its exit 1; `projects --stages` prints the ladder, the one list every shell reader uses |
 | set which projects agents work first (`#prio/<word>` on the `Version:` line; fleet-dispatch ranks by it) | `projects --prio <name> --set focus\|high\|low\|normal` |
 | show it under another group heading | `projects --group <name> --set <profile>\|tooling` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
