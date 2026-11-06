@@ -5,7 +5,7 @@
 #   machine-mode <mode>     switch to a mode from the modes file
 #   machine-mode next       switch to the next one, wrapping (the waybar chip's click)
 #
-# A mode sets three things, its numbers in .config/machine-mode/modes:
+# A mode sets four things, its numbers in .config/machine-mode/modes:
 #   runners      {"slots": N} under this host's key in the ci-runner-governor-override
 #                ConfigMap. The governor stays the only writer of runner labels, so a busy
 #                runner finishes its job. Takes minutes, and longer if a gate is running.
@@ -13,6 +13,8 @@
 #                file because slots.sh ignores its env overrides in an agent session.
 #   agent starts agent-hold on dispatch, by machine-mode. A hold set by anyone else is theirs:
 #                it is neither replaced nor released here.
+#   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
+#                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
 #
 # If the cluster cannot be reached the two local parts still apply, the command exits 1, and
 # RUNNERS_PINNED=no in the state file turns the chip amber until a retry lands. There is no
@@ -22,9 +24,10 @@ set -uo pipefail
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/prom.sh
 . "$here/../lib/prom.sh"
+# shellcheck source=../lib/machine-mode.sh
+. "$here/../lib/machine-mode.sh"
 
-MODES="$here/../../.config/machine-mode/modes"
-STATE="$HOME/.agent/machine-mode.env"
+STATE="$MACHINE_MODE_STATE"
 RUNNER_UNITS="${MACHINE_MODE_RUNNER_UNITS:-/etc/systemd/system/actions.runner.*-unity-pool-*.service}"
 CONFIGMAP=ci-runner-governor-override
 NAMESPACE=monitoring
@@ -32,18 +35,6 @@ HOLD_BY=machine-mode
 HOST="$(uname -n)"
 
 die() { echo "machine-mode: $*" >&2; exit 1; }
-
-mode_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MODES"; }
-mode_names() { mode_rows | cut -d'|' -f1; }
-mode_row() { mode_rows | awk -F'|' -v m="$1" '$1 == m { print; found = 1 } END { exit !found }'; }
-state_value() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -1; }
-
-# The mode in force: the state file's, or the last row with none set or one no longer listed.
-current_mode() {
-  local m
-  m="$(state_value MACHINE_MODE)"
-  if [ -n "$m" ] && mode_row "$m" >/dev/null; then printf '%s' "$m"; else mode_names | tail -1; fi
-}
 
 next_mode() {
   local names first
@@ -133,8 +124,9 @@ dispatch_line() {
 status() {
   local mode runners slots burst dispatch
   mode="$(current_mode)"
-  IFS='|' read -r _ runners slots burst dispatch <<< "$(mode_row "$mode")"
+  IFS='|' read -r _ runners slots burst dispatch _ <<< "$(mode_row "$mode")"
   echo "mode: $mode"
+  echo "level: $(machine_level)"
   runner_line "$runners" "$mode"
   echo "local Unity runs: $slots, plus $burst when there is room"
   dispatch_line "$dispatch" "$mode"
@@ -142,7 +134,7 @@ status() {
 
 switch() {
   local mode="$1" runners slots burst dispatch pinned=yes rc=0
-  IFS='|' read -r _ runners slots burst dispatch <<< "$(mode_row "$mode")"
+  IFS='|' read -r _ runners slots burst dispatch _ <<< "$(mode_row "$mode")"
   set_hold "$mode" "$dispatch"
   if ! pin_runners "$runners"; then
     pinned=no rc=1
