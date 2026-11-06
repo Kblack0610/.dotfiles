@@ -11,12 +11,16 @@ use serde_json::Value;
 
 use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
+use crate::projects::{Card, Projects};
 use crate::queue::Queue;
 use crate::text::cap;
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
 const ASK_MAX: usize = 44;
-/// How many projects the needs row names before the rest fold under "+N more".
+/// One whole widget line at 4x4: the oldest-ask row's "oldest 13h: " plus `ASK_MAX`.
+const LINE_MAX: usize = 12 + ASK_MAX;
+/// How many projects the needs row names before the rest fold under "+N more", and how many
+/// in-flight projects the projects section lists under its head.
 const PROJECTS: usize = 3;
 /// How many KPIs the over-limit row names, beside the count of all of them: one line at 4x4.
 const KPIS: usize = 2;
@@ -29,7 +33,7 @@ const KPI_LABELS: [(&str, &str); 2] =
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
     pub level: Level,
-    /// The section: red, error, needs, agents, queue or ci. A section's first row is its head line,
+    /// The section: red, error, needs, agents, queue, ci or projects. A section's first row is its head line,
     /// `Title: value`, and the widget bolds what is before the colon.
     pub head: &'static str,
     pub text: String,
@@ -47,6 +51,8 @@ pub struct Inputs<'a> {
     pub state: &'a Value,
     pub queue: Option<&'a Queue>,
     pub infra: Option<&'a Infra>,
+    /// The project cards (`projects::gather`), the ones the waybar chip and the hub draw.
+    pub projects: Option<&'a Projects>,
     /// PRs merged today, from the day-log record.
     pub merged: Option<usize>,
     pub now: i64,
@@ -267,6 +273,49 @@ fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
     Some(row(Level::Ok, "queue", text))
 }
 
+/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running".
+fn project(c: &Card) -> String {
+    let mut s = format!("{} {}%", c.name, c.percent.unwrap_or(0));
+    s += &match c.eta_days {
+        Some(0) => ", nothing open".to_string(),
+        Some(d) => format!(", ETA {d}d"),
+        None => ", no ETA".to_string(),
+    };
+    if !c.running.is_empty() {
+        s += &format!(", {} running", c.running.len());
+    }
+    if c.waiting > 0 {
+        s += &format!(", {} waiting", c.waiting);
+    }
+    cap(&s, LINE_MAX)
+}
+
+/// "Projects: 4 in flight of 25", then the first `PROJECTS` in flight, one line each, in the
+/// cards' own order (in flight first); the head's count says how many more there are. Nothing in
+/// flight is the head line alone, since a green section is one line.
+fn projects(p: &Projects) -> Vec<Row> {
+    let flying: Vec<&Card> = p.cards.iter().filter(|c| c.in_flight()).collect();
+    if p.cards.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![row(
+        Level::Ok,
+        "projects",
+        if flying.is_empty() {
+            format!("Projects: nothing in flight of {}", p.cards.len())
+        } else {
+            format!("Projects: {} in flight of {}", flying.len(), p.cards.len())
+        },
+    )];
+    out.extend(
+        flying
+            .iter()
+            .take(PROJECTS)
+            .map(|c| row(Level::Ok, "projects", project(c))),
+    );
+    out
+}
+
 /// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
     let v = infra.cc_values();
@@ -352,6 +401,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     rows.extend(agents(i));
     rows.extend(queue(home, i.queue));
     rows.extend(i.infra.filter(|x| x.ok).and_then(ci));
+    rows.extend(i.projects.map(projects).unwrap_or_default());
     let worst = |l: Level| rows.iter().any(|r| r.level == l);
     let state = if worst(Level::Red) {
         "critical"
@@ -514,6 +564,7 @@ mod tests {
                 state,
                 queue: q,
                 infra: inf,
+                projects: None,
                 merged: Some(85),
                 now: NOW,
             },
@@ -645,6 +696,84 @@ mod tests {
         assert_eq!(p.state, "warn");
         assert!(texts(&p, "needs").is_empty());
         assert!(texts(&p, "error")[0].starts_with("no fleet state yet"));
+    }
+
+    fn card(name: &str, percent: u32, eta: Option<u32>, running: usize, waiting: usize) -> Card {
+        let r = crate::home::Running {
+            slug: "s".into(),
+            title: "t".into(),
+            project: name.into(),
+            started: None,
+            target: None,
+            phases: None,
+        };
+        Card {
+            name: name.into(),
+            percent: Some(percent),
+            eta_days: eta,
+            running: vec![r; running],
+            waiting,
+            ..Card::default()
+        }
+    }
+
+    #[test]
+    fn projects_head_counts_in_flight_then_names_the_first_three() {
+        let p = Projects {
+            cards: vec![
+                card("agent-runtime", 35, Some(69), 4, 1),
+                card("unity-core-playground", 52, Some(54), 9, 0),
+                card("dodginballs", 2, None, 4, 0),
+                card("trader", 49, Some(40), 1, 0),
+                card("idle", 66, None, 0, 0),
+            ],
+            ..Projects::default()
+        };
+        let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "Projects: 4 in flight of 5",
+                "agent-runtime 35%, ETA 69d, 4 running, 1 waiting",
+                "unity-core-playground 52%, ETA 54d, 9 running",
+                "dodginballs 2%, no ETA, 4 running",
+            ]
+        );
+        assert!(lint(&rows), "{rows:#?}");
+    }
+
+    #[test]
+    fn projects_with_nothing_in_flight_is_one_line_and_no_cards_is_none() {
+        let p = Projects {
+            cards: vec![card("idle", 66, None, 0, 0)],
+            ..Projects::default()
+        };
+        let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
+        assert_eq!(rows, vec!["Projects: nothing in flight of 1"]);
+        assert!(projects(&Projects::default()).is_empty());
+    }
+
+    #[test]
+    fn build_carries_the_projects_rows_last() {
+        let s = state();
+        let h = home::build(&s, None, None);
+        let p = Projects {
+            cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
+            ..Projects::default()
+        };
+        let out = build(
+            &h,
+            &Inputs {
+                state: &s,
+                queue: None,
+                infra: None,
+                projects: Some(&p),
+                merged: None,
+                now: NOW,
+            },
+        );
+        assert_eq!(out.rows.last().unwrap().head, "projects");
+        assert_eq!(texts(&out, "projects")[0], "Projects: 1 in flight of 1");
     }
 
     /// `comms-lint --channel phone` over `rows`, from the repo's own script and channels.

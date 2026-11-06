@@ -43,7 +43,7 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 | `Prefix+C-s` | The worlds, sessions in the preview (bare `tmx` too) |
 | `Prefix+A` | Every world, session and window on every server, stranded sessions first |
 | `Prefix+C-h` / `Prefix+C-n` | Resume lab / hub, back where you left off |
-| `Prefix+H` / `Prefix+N` | Root of lab / hub: its landing page (projects index / today's daily) |
+| `Prefix+H` / `Prefix+N` | Notes pages on hub, put back if you wandered off: the projects index (session `lab`) / today's daily |
 | `Prefix+g` | Agent windows (`agent-panel`) |
 | `Prefix+G` | Jump to the next agent that needs you |
 | `Prefix+y` | The question card of the session you are on; with none asked here, every pending ask |
@@ -120,21 +120,21 @@ socket, and the blast radius of a kill is exactly one server.
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
 | `Prefix+A` | **everything, everywhere** - every session AND window across every server |
 | `Prefix+C-h` / `C-n` | **resume** lab / hub - back on the exact window you left |
-| `Prefix+H` / `N` | **root page** of lab / hub - projects overview, today's daily |
+| `Prefix+H` / `N` | **notes page** on hub - projects index (`tmx root hub lab`), today's daily (`tmx root hub`) |
 | `Prefix+C-s` | **compact**: just the worlds, sessions in the preview (also bare `tmx`) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
 
-One letter per world, so the only thing the Ctrl changes is resume-vs-root:
-`h` = lab, `n` = hub, set by `WORLD_H` / `WORLD_N` near the top of `~/.tmux.conf` - swap those two lines to swap every world key. (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
+`C-h` = lab, `C-n` = hub, set by `WORLD_H` / `WORLD_N` near the top of `~/.tmux.conf` - swap those two lines to swap the resume keys. `H` and `N` are both notes pages on hub: the lab world is agent worktrees and has had no landing page since the lab notes moved to hub (2026-11-05). (lab was on `M`/`C-m` and moved - Ctrl-M is a carriage
 return at the *terminal*, so a `bind C-m` can never fire.)
 
 **Resume vs root** is the whole point of having two pairs of keys. `C-h`/`C-n`
 attach to the most recently used session that is *not* the landing page, and a
 session restores its own active window - you land back exactly where you were,
-which makes flipping between two pieces of work cheap. `H`/`N` attach to the
-manifest's first entry instead, for when you want to start from the top of a world.
+which makes flipping between two pieces of work cheap. `H`/`N` attach to a notes page
+and put it back on screen, for when you want to start from the top. `tmx root <world>`
+is the world's first booted entry; `tmx root <world> <session>` is that session's page.
 
 **`Prefix+A` is the only view that crosses the server boundary.**
 `Prefix+w` is server-scoped by construction, and `Prefix+S` (sesh) shells out to
@@ -151,9 +151,9 @@ hub  2 sessions  2 need you
       11* main             WORKING  0m tmux-pick-all-overview
   hub           ~/.notes                2 win  nvim, hub
        1* master           nvim        2026-11-05.md (~/.notes/journal/daily)
+  lab           ~/.notes/lab            1 win  nvim
 lab  23 sessions  10 need you
   dotfiles-agent-3               NEEDS    9h  Dotfiles overnight report phase 4
-  lab           ~/.notes/lab            1 win  nvim
 work  not running
 ```
 
@@ -188,13 +188,13 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), lab (the lab notes, on `~/.notes/lab/projects/index.md`), dotfiles, home-config (on demand) | today's daily note |
+| `lab` - building | every agent worktree, platform and unity-core-playground (on demand) | no landing page: root resumes the last agent session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
 `<name> <dir> [startup command...]` per line. **The first entry is the landing
-session**: `tmx hop hub` attaches straight to it, so you arrive in today's note
+session** (an on-demand `?name` never is): `tmx hop hub` attaches straight to it, so you arrive in today's note
 rather than a bare shell.
 
 A name written `?name` is **on demand**: `ensure` does not boot it, so closing it sticks
@@ -231,6 +231,7 @@ The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-
 | `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
 | `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
+| `~/.notes/lab` | `hub`, session `lab` | hub.conf declares it; a declared directory inside a repo wins over the repo |
 | `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
 | `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
@@ -517,8 +518,8 @@ The worlds, discovered from `../../.config/tmux-servers/*.conf`:
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config (on demand) | today's daily note |
-| `lab` - building | **lab**, every agent worktree, platform and unity-core-playground (on demand) | `~/.notes/lab/projects/index.md` |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), lab (the lab notes, on `~/.notes/lab/projects/index.md`), dotfiles, home-config (on demand) | today's daily note |
+| `lab` - building | every agent worktree, platform and unity-core-playground (on demand) | no landing page: root resumes the last agent session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared one `<name> <dir> [startup command...]` per line. **The first entry is the

@@ -37,8 +37,8 @@
 # choose-tree is server-scoped by construction.
 #
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · pick-all · rows · hop <name>
-#        · root <name> · goto <name> <session> · open <name> <file> [line]
-#        · land <name> <last|root|session[:window]>
+#        · root <name> [<session>] · goto <name> <session> · open <name> <file> [line]
+#        · land <name> <last|root|root.<session>|session[:window]>
 #        · pick-session · back · reload
 
 set -uo pipefail
@@ -235,11 +235,13 @@ _sesh_config() {
   done <<< "$(world_rows)"
 }
 
-# The world's root page: the FIRST entry in its manifest. Three callers read this and
-# they must agree - `root` attaches to it, resume EXCLUDES it, and _record_back compares
-# against it - so it is derived in one place.
+# The world's root page: the FIRST booted entry in its manifest. Three callers read this
+# and they must agree - `root` attaches to it, resume EXCLUDES it, and _record_back compares
+# against it - so it is derived in one place. An on-demand `?name` is never a landing page,
+# so a world whose manifest opens with one (lab, since the notes moved to hub) has none and
+# its root resumes instead.
 _landing() {
-  awk '!/^[[:space:]]*[#@]/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
+  awk '!/^[[:space:]]*[#@?]/ && NF {print $1; exit}' "$MANIFEST_DIR/$1.conf" 2>/dev/null
 }
 
 # The landing session's OWN window: the first one that is not a declared board. The board
@@ -383,7 +385,8 @@ _current_loc() {
 _dest_session() {
   case "$2" in
     last) ;;
-    root) _landing "$1" ;;
+    root)   _landing "$1" ;;
+    root.*) printf '%s\n' "${2#root.}" ;;
     *)    printf '%s\n' "${2%%:*}" ;;
   esac
 }
@@ -468,7 +471,11 @@ cmd_land() {
 
   # An explicit session is passed through so ensure wakes it if it is on demand
   # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
-  case "$mode" in last|root) ;; *) want="${mode%%:*}" ;; esac
+  case "$mode" in
+    last|root) ;;
+    root.*)    want="${mode#root.}" ;;
+    *)         want="${mode%%:*}" ;;
+  esac
   cmd_ensure "$target" "$want" >/dev/null
 
   # Every session in the manifest was skipped as not-on-this-machine, so there is
@@ -476,13 +483,13 @@ cmd_land() {
   # and dying on tmux's "no sessions" — a client world reached from a machine that
   # does not hold any of that client's repos is the case that gets here.
   if [ "$(session_count "$target")" -eq 0 ]; then
-    die "$target has no sessions on this machine (every manifest entry's directory is missing)"
+    die "$target has no sessions running (nothing it boots exists on this machine, and nothing else is open there)"
   fi
 
   # An explicit target from pick-all. Anything that is not one of the two keywords
   # is a session name, optionally with a window after a colon.
   case "$mode" in
-    last|root) ;;
+    last|root|root.*) ;;
     *)
       local want_sess="${mode%%:*}" want_win=""
       case "$mode" in *:*) want_win="${mode#*:}" ;; esac
@@ -501,9 +508,12 @@ cmd_land() {
       ;;
   esac
 
-  if [ "$mode" = "root" ]; then
+  # `root.<session>` is the same move for a page that is not the world's landing session
+  # (Prefix+H: hub's `lab`, the projects index). A dot cannot appear in a tmux session name,
+  # so the split is unambiguous.
+  if [ "$mode" = "root" ] || [ "${mode#root.}" != "$mode" ]; then
     local landing
-    landing="$(_landing "$target")"
+    if [ "$mode" = "root" ]; then landing="$(_landing "$target")"; else landing="${mode#root.}"; fi
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
       # Select the page's window FIRST: _refresh_landing types into the current window,
       # which would otherwise be whichever board was last open.
@@ -573,7 +583,13 @@ _is_board() {
 }
 
 cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
-cmd_root() { _enter "${1:?root needs a server name}" root; }
+# root <server> [<session>] -- with a session, that declared session's page instead of the
+# world's landing one, restored the same way. The session's own world wins, as in goto.
+cmd_root() {
+  local srv="${1:?root needs a server name}" sess="${2:-}"
+  [ -n "$sess" ] || { _enter "$srv" root; return; }
+  _enter "$(_declared_world "$srv" "$sess")" "root.$sess"
+}
 
 # goto <server> <session> -- hop to a world and land on a NAMED session.
 #
@@ -901,7 +917,7 @@ main() {
   case "$verb" in
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
-    root)         shift; cmd_root "${1:-}" ;;
+    root)         shift; cmd_root "${1:-}" "${2:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
