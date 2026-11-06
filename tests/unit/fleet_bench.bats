@@ -21,6 +21,8 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
+  export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -694,6 +696,10 @@ kpi_setup() {
   printf '#!/usr/bin/env bash\nB=%q; L=%q\n' "$BOARD" "$NLOG" > "$SANDBOX/bin/notes"
   cat >> "$SANDBOX/bin/notes" <<'NS'
 echo "$*" >> "$L"
+if [ "$1 $2" = "ptask home-config" ]; then
+  case "$3" in list) cat "$B.home" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$B.home" ;; esac
+  exit 0
+fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
 case "$4" in
   list) cat "$B" ;;
@@ -950,7 +956,7 @@ ask_row() {
 # "unit Result LoadState" a line) and an empty Sentinel state and manifest dir
 triage_setup() {
   kpi_setup
-  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches"
+  export TRIAGE_SYSTEMCTL=systemctl-stub TRIAGE_WATCH_STATE="$SANDBOX/wc" TRIAGE_WATCHES="$SANDBOX/watches" TRIAGE_RED_CMD=true
   mkdir -p "$TRIAGE_WATCH_STATE" "$TRIAGE_WATCHES"; : > "$SANDBOX/failed"
   printf '#!/usr/bin/env bash\nF=%q\n' "$SANDBOX/failed" > "$SANDBOX/bin/systemctl-stub"
   cat >> "$SANDBOX/bin/systemctl-stub" <<'SC'
@@ -1058,11 +1064,15 @@ errlog() {
     '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
-# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty causes table
+# log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty route table
 log_triage_setup() {
   triage_setup
   mkdir -p "$AGENTCTL_STATE_DIR"; PLOG="$SANDBOX/promote.log"
-  export TRIAGE_CAUSES="$SANDBOX/triage-causes" TRIAGE_PROMOTE_CMD=promote-stub
+  export TRIAGE_ROUTES="$SANDBOX/triage-routes" TRIAGE_PROMOTE_CMD=promote-stub TRIAGE_HOLD_CMD=true TRIAGE_ITEMS_CMD=items-stub TRIAGE_NOTIFY_CMD=notify-stub
+  ITEMS="$SANDBOX/items.jsonl"; NOTIFY="$SANDBOX/notify.log"; : > "$ITEMS"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
+  chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   chmod +x "$SANDBOX/bin/promote-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
@@ -1086,26 +1096,125 @@ log_triage_setup() {
   [ ! -s "$PLOG" ]
 }
 
-@test "triage: a row a known cause explains is queued once as a night fix; no match queues nothing" {
+# route <ERE> <route> <skill> <fix> [tags]: one line of the route table
+route() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:--}" >> "$TRIAGE_ROUTES"; }
+lock_route() { route 'lock .* held by pid' agent fix-red 'clear the stale lock #2 in alpha' "${1:--}"; }
+cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
+
+@test "triage: an agent route is queued once as a red fix; no match queues nothing" {
   log_triage_setup
-  printf '# comment\nnot in any row\tnever used\n' > "$TRIAGE_CAUSES"
-  printf 'lock .* held by pid\tclear the stale lock #2 in alpha\n' >> "$TRIAGE_CAUSES"
+  printf '# comment\n' > "$TRIAGE_ROUTES"; route 'not in any row' agent - never
+  lock_route '#size/m hold:x'
   run "$SUBJECT" triage --dry-run
-  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; known cause: clear the stale lock no\.2 in alpha #low \(queued as a night fix\)$'
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; fix with fix-red: clear the stale lock no\.2 in alpha #size/m #low \(agent\)$'
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial '1 queued as night fixes'
+  assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
-  assert_output --regexp '^--agent --project agent-runtime --tags night --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*known cause'
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
+  run grep -c '#size/s' "$BOARD"
+  assert_output 0
   # started on the board: never queued twice
   sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  printf 'nothing matches\tx\n' > "$TRIAGE_CAUSES"
+  printf 'nothing matches\tagent\t-\tx\n' > "$TRIAGE_ROUTES"
   rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
   run "$SUBJECT" triage
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a cause already queued, or closed with the red still here, is not queued again" {
+  log_triage_setup
+  lock_route
+  for state in running done; do
+    jq -cn --arg t "red cause:$(cause_of)" --arg s "$state" '{tags: $t, state: $s, queued: "2020-01-01T00:00:00Z"}' > "$ITEMS"
+    run "$SUBJECT" triage
+    assert_success
+    [ ! -s "$PLOG" ]
+  done
+  run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
+  assert_output 1
+}
+
+@test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
+  log_triage_setup
+  lock_route
+  TRIAGE_HOLD_CMD=false run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  TRIAGE_ITEMS_CMD=false run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+}
+
+@test "triage: the daily cap stops a route, and two rows of one cause are one item" {
+  log_triage_setup
+  lock_route
+  today=$(date -u -d "@$T0" +%F)
+  jq -cn --arg d "${today}T01:00:00Z" '{tags: "red cause:other", state: "done", queued: $d}' > "$ITEMS"
+  TRIAGE_FIX_CAP=1 run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  TRIAGE_FIX_CAP=2 run "$SUBJECT" triage
+  [ "$(grep -c . "$PLOG")" = 1 ]
+  : > "$PLOG"; : > "$ITEMS"
+  triage_setup_two() { watch one TRIP -25200 high; watch two TRIP -25200 high; }
+  triage_setup_two
+  printf 'check.watch.: (one|two) tripped\tagent\t-\tshared\t-\n' > "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c . "$PLOG")" = 1 ]
+}
+
+@test "triage: alert and owned take no row and no item, script files a row, a human route files and pages once" {
+  log_triage_setup
+  watch spend TRIP -25200 high; watch drift TRIP -25200 high; watch nightly TRIP -25200 high; watch puck TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  route 'watch.: nightly' owned:ar-9 - 'its plan owns it'
+  route 'watch.: drift' script - 'dotfiles-deploy --apply'
+  route 'watch.: puck' human:home-config - 'check the puck'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 for the human'
+  [ ! -s "$PLOG" ]
+  run grep -c 'watch): spend\|watch): nightly\|watch): puck' "$BOARD"
+  assert_output 0
+  run grep -c 'tripped since .*; script: dotfiles-deploy' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
+  [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+@test "triage: a route the table does not know is unrouted, never a silent sink" {
+  log_triage_setup
+  route 'lock .* held by pid' agnet - 'typo'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'no such route: agnet'
+  [ ! -s "$PLOG" ]
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
+  log_triage_setup
+  export TRIAGE_RED_CMD=red-stub
+  printf '#!/usr/bin/env bash\necho "watch voice_kitchen_puck"\necho "watch local_one"\necho "runner alpha"\n' > "$SANDBOX/bin/red-stub"
+  chmod +x "$SANDBOX/bin/red-stub"
+  watch local-one TRIP -3600 low
+  printf 'NAME=alpha\n' > "$LEDGER_CONF_DIR/alpha.conf"
+  run "$SUBJECT" triage --dry-run
+  assert_line 'check(red): watch voice_kitchen_puck is red #low'
+  refute_line --partial 'local_one'
+  refute_line --partial 'runner alpha'
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
@@ -1489,7 +1598,7 @@ pipeline_fixture() {
   assert_output --partial NOOP
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the models and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -1501,10 +1610,11 @@ pipeline_fixture() {
   assert_line --index 3 '## Bottlenecks'
   assert_line --index 4 '## Where the time went'
   assert_line --index 5 '## Queue'
-  assert_line --index 6 '## Models'
-  assert_line --index 7 '## Sessions'
-  assert_line --index 8 '## Agent depth'
-  assert_line --index 9 '## Session time'
+  assert_line --index 6 '## Epic ETAs'
+  assert_line --index 7 '## Models'
+  assert_line --index 8 '## Sessions'
+  assert_line --index 9 '## Agent depth'
+  assert_line --index 10 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -2506,6 +2616,147 @@ requests_setup() {
   "$SUBJECT" scorecard
   run sed -n '/^## KPIs/,/^## Bottlenecks/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- week to 2026-10-27 (7 of 7 days): 14 merged (+7)'
+}
+
+# epics_fixture: one project, game, with a brief and two ideas; a plan for gm-1 with two open
+# phases and a plan with no epic line; gm-1 open with a done row, a queued row, and a row two
+# levels down; gm-9 open with nothing filed; gm-5 closed and verified; two rows with no epic.
+# The roadmap is $RM, so a test can move it.
+epics_fixture() {
+  local d="$SANDBOX/lab/game"
+  mkdir -p "$d/docs/briefs" "$SANDBOX/plans" "$SANDBOX/other"
+  printf -- '- [ ] one idea\n- [ ] two\n  - [ ] a note under it\n' > "$d/ideas.md"
+  printf '# Brief\n\nEpic: gm-1\n' > "$d/docs/briefs/b.md"
+  printf 'epic: gm-1\n\n## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plans/p.md"
+  printf '## Phases\n\n- [ ] only\n' > "$SANDBOX/other/loose.md"
+  export BENCH_PROJECTS_CMD=projects-stub BENCH_ROADMAP_CMD=roadmap-stub BENCH_ALL_ITEMS_CMD=all-items-stub
+  export BENCH_PLAN_DIRS="$SANDBOX/plans" RM="$SANDBOX/roadmap.json"
+  jq -cn --arg d "$d" '[{name: "game", profile: "lab", dir: $d}]' > "$SANDBOX/projects.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/projects.json" > "$SANDBOX/bin/projects-stub"
+  printf '#!/usr/bin/env bash\n[ "$1 $2" = "game --json" ] && cat "%s"\n' "$RM" > "$SANDBOX/bin/roadmap-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/all-items.jsonl" > "$SANDBOX/bin/all-items-stub"
+  chmod +x "$SANDBOX/bin/projects-stub" "$SANDBOX/bin/roadmap-stub" "$SANDBOX/bin/all-items-stub"
+  jq -cn --arg loose "$SANDBOX/other/loose.md" '
+    {slug: "q1", project: "game", mode: "oneshot", state: "queued", row: "game:gm-3"},
+    {slug: "d1", project: "game", mode: "oneshot", state: "done", row: "game:gm-2", pr: 101},
+    {slug: "l1", project: "game", mode: "plan", state: "queued", plan: $loose, hold: "night (22:00-06:00)"}' > "$SANDBOX/all-items.jsonl"
+  jq -n '[{version: "v1", epics: [
+      {id: "gm-1", title: "Menus", version: "v1", open: 2, done: 2, open_weight: 2, done_weight: 2, verified: false, proof: ""},
+      {id: "gm-9", title: "Nothing filed", version: "v1", open: 0, done: 0, open_weight: 0, done_weight: 0, verified: false, proof: ""}],
+    closed_epics: [{id: "gm-5", title: "Shipped", version: "v1", open: 0, done: 1, open_weight: 0, done_weight: 1, verified: true, proof: "played it"}],
+    rows: [
+      {id: "gm-2", kind: "feat", title: "done row", parent: "gm-1", size: "s", weight: 1, state: "done", prs: ["101"]},
+      {id: "gm-3", kind: "feat", title: "queued row", parent: "gm-1", size: "s", weight: 1, state: "open", prs: []},
+      {id: "gm-13", kind: "feat", title: "a story", parent: "gm-1", size: "m", weight: 1, state: "done", prs: []},
+      {id: "gm-4", kind: "feat", title: "under the story", parent: "gm-13", size: "s", weight: 1, state: "open", prs: []},
+      {id: "gm-6", kind: "feat", title: "shipped row", parent: "gm-5", size: "s", weight: 1, state: "done", prs: ["90"]},
+      {id: "gm-7", kind: "fix", title: "loose row", parent: "", size: "s", weight: 1, state: "open", prs: []},
+      {id: "gm-15", kind: "decide", title: "pick one", parent: "", size: "s", weight: 1, state: "open", prs: []}]}]' > "$RM"
+}
+
+@test "epics joins each epic to its brief, plans, rows, items and PRs, derives its step and counts the flow" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json
+  assert_success
+  run jq -c '.projects[0] | {flow, unlinked: (.unlinked | .plans |= map(split("/") | last))}' <<<"$output"
+  assert_output '{"flow":{"ideas":3,"briefs":1,"plans":1,"epics":3,"rows":5,"landed":0,"verified":1},"unlinked":{"rows":["gm-15","gm-7"],"plans":["loose.md"]}}'
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json
+  run jq -c '.projects[0].epics | map({id, step, brief: (.brief != null), plans: (.plans | map({done, total, open, queued})),
+      rows: (.rows | map(.id)), items: (.items | map("\(.slug) \(.row)")), prs}) | INDEX(.id) | [.["gm-1"], .["gm-9"].step, .["gm-5"].step]' <<<"$output"
+  assert_output '[{"id":"gm-1","step":"rows","brief":true,"plans":[{"done":1,"total":3,"open":["two","three"],"queued":0}],"rows":["gm-13","gm-2","gm-3","gm-4"],"items":["d1 gm-2","q1 gm-3"],"prs":["101"]},"epic","verified"]'
+}
+
+@test "epics gives an open epic an ETA from its queued rows plus its unqueued work, and none to an epic with nothing filed" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  # q1 (gm-3) runs on a free slot to T0+1h; then the tail, the larger of 1 unqueued leaf (gm-4)
+  # and 2 plan phases no item carries, runs one after the other at 60 min a phase: T0+3h
+  BENCH_NOW=$T0 run "$SUBJECT" epics --json
+  run jq -c --argjson t "$T0" '.projects[0].epics | INDEX(.id) | [(.["gm-1"].eta | .p50 -= $t | .slow -= $t), .["gm-9"].eta, .["gm-9"].no_eta, .["gm-5"].eta]' <<<"$output"
+  assert_output '[{"p50":10800,"slow":10800,"basis":"queue+pace(default)","scheduled":1,"unscheduled":2,"factor":null,"cal_p50":null},null,"no rows or plan phases filed",null]'
+  # the plan's phases queued as an item: only the 1 unqueued leaf is left after the queue
+  jq -c --arg p "$SANDBOX/plans/p.md" 'select(.slug == "l1") |= {slug: "p1", project: "game", mode: "oneshot", state: "queued", plan: $p, phases: "2"}' \
+    "$SANDBOX/all-items.jsonl" > "$SANDBOX/x" && mv "$SANDBOX/x" "$SANDBOX/all-items.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" epics
+  assert_success
+  assert_line --partial 'game  ideas 3 | briefs 1 | plans 1 | epics 3 | rows 5 | landed 0 | verified 1'
+  assert_line --regexp '^  gm-1  Menus  \[rows\]  2/4  ETA .* queue\+pace\(default\)'
+  assert_line --partial 'gm-9  Nothing filed  [epic]  0/0  no ETA: no rows or plan phases filed'
+  assert_line --partial '2 open rows with no epic'
+  BENCH_NOW=$T0 run "$SUBJECT" epics --json
+  run jq -c --argjson t "$T0" '.projects[0].epics[0].eta | [.p50 - $t, .unscheduled]' <<<"$output"
+  assert_output '[7200,1]'
+}
+
+@test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"
+  run sample_at 0
+  assert_line --partial 'epics: 1 baselines frozen, 0 scored'
+  B="$FLEET_BENCH_DIR/epic-baselines.jsonl"
+  run jq -c --argjson t "$T0" '[.epic, .reason, .total, .p50 - $t, .basis]' "$B"
+  assert_output '["gm-1","first seen",4,10800,"queue+pace(default)"]'
+  # on track as frozen; a sample later q1 has waited 10 minutes, so the ETA slipped past the
+  # slow end (no scored ratio yet, so slow is p50) and the same scope freezes nothing new
+  BENCH_NOW=$T0 run "$SUBJECT" epics --json
+  run jq -c '.projects[0].epics[0] | [.baseline.reason, .baseline.n, .track]' <<<"$output"
+  assert_output '["first seen",1,"on track"]'
+  run sample_at 600
+  assert_line --partial 'epics: 0 baselines frozen, 0 scored'
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json
+  run jq -c '.projects[0].epics[0].track' <<<"$output"
+  assert_output '"behind"'
+  # a row added under gm-1 moves its total: a scope baseline, T0+1200 + 1h for q1 + 2 phases
+  jq '.[0].epics[0].open = 3 | .[0].epics[0].open_weight = 3
+      | .[0].rows += [{id: "gm-16", kind: "feat", title: "added", parent: "gm-1", size: "s", weight: 1, state: "open", prs: []}]' "$RM" > "$RM.x" && mv "$RM.x" "$RM"
+  sample_at 1200
+  run jq -sc --argjson t "$T0" 'map([.reason, .total, .p50 - $t])' "$B"
+  assert_output '[["first seen",4,10800],["scope",5,12000]]'
+  # every row lands at T0+2400: scored against the scope baseline, made at T0+1200
+  jq '.[0].epics[0] |= (.open = 0 | .done = 5 | .open_weight = 0 | .done_weight = 5) | .[0].rows |= map(.state = "done")' "$RM" > "$RM.x" && mv "$RM.x" "$RM"
+  run sample_at 2400
+  assert_line --partial 'epics: 0 baselines frozen, 1 scored'
+  S="$HOME/.agent/outcomes/game/epics/scores.jsonl"
+  run jq -c --argjson t "$T0" '[.epic, .reason, .baselines, .landed_epoch - $t, .ratio, .error_min, .within_slow, .verdict, .prs]' "$S"
+  assert_output '["gm-1","scope",2,2400,0.11,-160,true,"ahead",["101"]]'
+  # scored once: the next sample owes nothing
+  sample_at 3000
+  run grep -c . "$S"
+  assert_output 1
+  BENCH_NOW=$((T0 + 3000)) run "$SUBJECT" epics
+  assert_line --regexp '^  gm-1  Menus  \[landed\]  5/5  landed .*, ratio 0.11, ahead'
+  assert_line --partial 'ETAs scored 1, median ratio 0.11, 1 on time'
+  # the scorecard section: the project's score and the epic scored in the window
+  run bash -c '. "$1"; epics_section "$2"' _ "$SUBJECT" $((T0 + 3000))
+  assert_line '- game: 1 scored, median ratio 0.11, 1 on time, 1 within the slow end, 0 open behind, 0 on track'
+  assert_line --regexp '^  - game gm-1 Menus: landed .*, ratio 0.11, ahead$'
+}
+
+@test "an open epic past its frozen ETA reads behind, in epics and in the scorecard" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  BENCH_NOW=$((T0 + 4 * 3600)) run "$SUBJECT" epics --json
+  run jq -c '.projects[0].epics[0].track' <<<"$output"
+  assert_output '"behind"'
+  run bash -c '. "$1"; epics_section "$2"' _ "$SUBJECT" $((T0 + 4 * 3600))
+  assert_line --partial '- game: 0 scored, 1 open behind, 0 on track'
+  assert_line --regexp '^  - game gm-1 Menus: behind, frozen '
+}
+
+@test "negative control: with no roadmap epics fails and says so, and the sample still writes its rows" {
+  epics_fixture
+  export BENCH_ROADMAP_CMD=false
+  row a lab/game-agent-1:1 0 1 > "$SNAP"
+  run sample_at 0
+  assert_success
+  assert_line --partial 'epics: no roadmap for game'
+  assert_line --partial 'epics: the step failed; nothing frozen or scored'
+  [ -s "$FLEET_BENCH_DIR/progress.jsonl" ]
+  [ ! -e "$FLEET_BENCH_DIR/epic-baselines.jsonl" ]
+  BENCH_NOW=$T0 run "$SUBJECT" epics
+  assert_failure
+  assert_output --partial 'no project could be read'
 }
 
 @test "chain: requested_unstarted_h is the oldest open #requested agent row; started and unrequested rows do not count" {
