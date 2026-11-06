@@ -427,11 +427,17 @@ cmd_infra() {
 
 # infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears (high and
 # urgent, `watch-companion-loop tripped`). On 2026-11-04 queue-starved was high, so the shepherd
-# never heard that dispatch had started nothing for 7.5h.
+# never heard that dispatch had started nothing for 7.5h. A watch with a live `red` item has an
+# owner (fleet-bench triage), so it raises no line.
 infra_sample() {
+  local owned
+  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red "))) | .task' \
+    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
   {
     infra_now
-    watch-companion-loop tripped 2>/dev/null | awk -F'\t' 'NF { printf "watch: %s tripped (%s)\n", $1, $2 }'
+    watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
+      BEGIN { n = split(owned, o, "\n"); for (i = 1; i <= n; i++) has[o[i]] = 1 }
+      NF && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
 }
 

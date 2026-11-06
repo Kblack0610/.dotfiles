@@ -2,6 +2,9 @@
 name: asset-store-audit
 description: >-
   Audit downloaded Unity Asset Store packs from their files and decide per pack if it fits the BNB URP stack. Use for "analyze my downloaded assets", "is this pack worth bringing in". Read-only; ingest: playground-ingest.
+paths:
+  - "Assets/**"
+  - "Packages/**"
 metadata:
   category: research
   tags: [unity, asset-store, audit, assets, catalog]
