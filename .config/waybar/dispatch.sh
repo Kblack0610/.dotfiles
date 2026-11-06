@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is two
-# labelled totals, "Queue 87 Board 1522": every queue item, and the open agent board rows. All the
-# detail is in the hover. The colour:
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
+# totals, "Q 87  B 1522  D 280": every queue item, the open agent board rows, and the items done in
+# the last 24h. Letters are dim so the numbers lead; all the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
@@ -36,7 +36,7 @@ title="<b>Queue</b>"
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 
 if ! raw="$(prom_q "$q")"; then
-  emit "$(paint "$C_YEL" 'Queue ?')" "$title"$'\n'"cannot read $PROM_URL" warn
+  emit "$(paint "$C_YEL" 'Q ?')" "$title"$'\n'"cannot read $PROM_URL" warn
   exit 0
 fi
 
@@ -49,6 +49,13 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
+# done_in <h>: items finished and not failed in the last h hours; - when the feed lacks the count.
+done_in() {
+  local dn fl
+  dn="$(get "dispatch.done_${1}h")" fl="$(get "dispatch.failed_${1}h")"
+  [ -n "$dn" ] && [ -n "$fl" ] && dn=$((dn - fl))
+  printf '%s' "${dn:--}"
+}
 
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
@@ -113,11 +120,10 @@ else
 
   # flow <h>: started, done (finished and not failed) and failed in the last h hours; failed is amber.
   flow() {
-    local st dn fl
-    st="$(d "started_${1}h")" dn="$(get "dispatch.done_${1}h")" fl="$(get "dispatch.failed_${1}h")"
-    [ -n "$dn" ] && [ -n "$fl" ] && dn=$((dn - fl))
+    local st fl
+    st="$(d "started_${1}h")" fl="$(get "dispatch.failed_${1}h")"
     ((${fl:-0} > 0)) && fl="$(paint "$C_YEL" "$fl")"
-    printf '%s started, %s done, %s failed' "$st" "${dn:--}" "${fl:--}"
+    printf '%s started, %s done, %s failed' "$st" "$(done_in "$1")" "${fl:--}"
   }
 
   [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
@@ -169,12 +175,13 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: the two totals, in the chip's level colour; a number the feed lacks reads -.
-board="$(get dispatch.board_agent)"
-text="Queue $total Board ${board:--}"
-((level > 0)) && text="$(paint "${LEVEL_COLOUR[$level]}" "$text")"
+# The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
+# feed lacks reads -.
+board="$(get dispatch.board_agent)" qn="$total"
+((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
+text="$(paint "$C_DIM" Q) $qn  $(paint "$C_DIM" B) ${board:--}  $(paint "$C_DIM" D) $(done_in 24)"
 
-tip="$qhead"
+tip="Q in the queue, B on the board, D done in 24h"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
