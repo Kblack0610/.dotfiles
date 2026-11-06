@@ -749,8 +749,6 @@ struct RecordArgs {
     /// The queue item it is about, when not this session's own (`AGENT_QUEUE_ITEM`)
     #[arg(long)]
     item: Option<String>,
-    #[arg(long)]
-    ticket: Option<String>,
     /// The writer, when it is a runner with no queue item or session of its own (fleet-dispatch)
     #[arg(long)]
     by: Option<String>,
@@ -1254,7 +1252,6 @@ fn main() -> Result<()> {
                     why,
                     id,
                     item,
-                    ticket,
                     by,
                     pr,
                     sha,
@@ -1271,7 +1268,6 @@ fn main() -> Result<()> {
                 ev.why = set(why);
                 ev.id = set(id);
                 ev.item = set(item).or(ev.item);
-                ev.ticket = set(ticket);
                 if let Some(b) = set(by) {
                     ev.by = b;
                 }
