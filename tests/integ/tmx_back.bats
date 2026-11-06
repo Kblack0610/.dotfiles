@@ -105,6 +105,30 @@ back_slot() { cat "$BACK_FILE" 2>/dev/null; }
   assert_equal "$(back_slot)" "$(printf 'lab\twork\t4')"
 }
 
+# ── toggle: Prefix+C-h, the other world ──────────────────────────────────────
+
+@test "toggle from hub goes to lab" {
+  at hub daily 0
+  run "$TMX" toggle
+  assert_success
+  assert_called "land lab last"
+}
+
+@test "toggle from lab goes to hub" {
+  at lab work 4
+  run "$TMX" toggle
+  assert_success
+  assert_called "land hub last"
+  assert_not_called "land lab"
+}
+
+@test "toggle from a third world goes to hub" {
+  at work client 1
+  run "$TMX" toggle
+  assert_success
+  assert_called "land hub last"
+}
+
 # ── goto: arriving at a NAMED session ────────────────────────────────────────
 #
 # The third arrival, beside hop (resume) and root (landing). sessionizer.sh asks for it when
@@ -290,18 +314,18 @@ bound_command() {
   # Guards the guard: if the parse silently returns nothing, every test below would pass
   # by vacuum. An empty list is failure, not "all clear".
   local key found=0
-  for key in N H C-n C-h; do
+  for key in N C-h; do
     local cmd; cmd="$(bound_command "$key")"
     [ -n "$cmd" ] || fail "no tmx command parsed for prefix key '$key' - has the binding form changed?"
     [[ "$cmd" == tmx\ * ]] || fail "prefix '$key' binds '$cmd', which is not a tmx command"
     found=$((found + 1))
   done
-  assert_equal "$found" 4
+  assert_equal "$found" 2
 }
 
 @test "each server-hop key records where it left, so L has something to go back to" {
   local key
-  for key in N H C-n C-h; do
+  for key in N C-h; do
     local cmd; cmd="$(bound_command "$key")"
     rm -f "$BACK_FILE"
     at lab work 4
