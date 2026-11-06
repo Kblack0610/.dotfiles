@@ -121,6 +121,22 @@ EOF
   refute_output --partial '105'
 }
 
+@test "pane_of: a process's pane as agent-panel names it, <server>/<pane id>, from its tmux env" {
+  # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each signals
+  # on a fifo once it runs under its own env, so the read never races the exec.
+  local ready="$BATS_TEST_TMPDIR/ready" in out
+  mkfifo "$ready"
+  env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo > "$0"; exec sleep 30' "$ready" &
+  in=$!; read -r _ < "$ready"
+  env -u TMUX -u TMUX_PANE sh -c 'echo > "$0"; exec sleep 30' "$ready" &
+  out=$!; read -r _ < "$ready"
+  run pane_of "$in"
+  assert_output 'lab/%8'
+  run pane_of "$out"
+  assert_output -
+  kill "$in" "$out"
+}
+
 # --- --textfile: what node_exporter publishes for the hub board ---------------------
 # gate_rows, session_of and agent_count read /proc and tmux; stubbed here so the rows are
 # fixtures, not whatever this machine is running.
