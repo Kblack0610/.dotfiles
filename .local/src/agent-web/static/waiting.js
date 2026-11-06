@@ -18,40 +18,58 @@ const refreshAsks = coalesce(async () => {
 const asking = () => st.agents.filter((a) => a.question);
 function renderBadge() {
   const n = asking().length + st.asks.length;
-  $("ask-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
+  const b = n ? `<span class="badge">${n}</span>` : "";
+  for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
 }
 
-// What each kind of open dialog is, as a chip and as the label on a Queue row.
+// What each kind of open dialog is: its Needs you kind (the stripe and label, app.css `.need`)
+// and the label on a Queue row.
 const DIALOG = {
-  choice: ["Asking", "The session is asking"],
-  tool: ["Permission", "The session needs permission"],
-  plan: ["Plan to approve", "A plan to approve"],
+  choice: ["ask", "The session is asking"],
+  tool: ["perm", "The session needs permission"],
+  plan: ["plan", "A plan to approve"],
 };
-const dialog = (q) => DIALOG[q.kind] || ["Your turn", "Your turn in the session"];
+const dialog = (q) => DIALOG[q.kind] || ["turn", "Your turn in the session"];
+
+// Every kind of row that waits on the human, in the order Needs you lists them: the label each
+// card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
+// amber, failing is red; the three dialog kinds take categorical colours.
+const NEED_KINDS = {
+  plan: "Plan to approve",
+  ask: "Question",
+  perm: "Permission",
+  turn: "Your turn",
+  blocked: "Blocked",
+  red: "Failing",
+};
+const NEED_ORDER = Object.keys(NEED_KINDS);
+// The band a Needs you card opens with: its kind, then where and how long, as quiet text.
+const needBand = (k, meta) =>
+  `<div class="nband"><span class="nkind">${NEED_KINDS[k]}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
 
 // A live session's open dialog: what the session is, what it wants and for how long, then the
-// question and its answers. The tmux target is the title's tooltip and sits in Details.
+// question and its answers. The tmux target is the title's tooltip and sits in Details. A plan
+// shows whole, its buttons above it, so a long plan never hides how to approve it.
 function sessionCard(a, inQueue) {
-  const q = a.question, [chip, label] = dialog(q);
+  const q = a.question, [k, label] = dialog(q);
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
   if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
   if (q.kind === "plan") opts = approveButtons(a);
   const body = `<div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>`;
   const reply = `<input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>`;
-  const attrs = `class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}"`;
   if (inQueue === true) {
-    return `<div ${attrs}><div class="qask-h" title="${esc(a.target)}">${label}</div>${body}<div class="opts">${opts}${reply}</div><div class="err"></div></div>`;
+    return `<div class="card" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}"><div class="qask-h" title="${esc(a.target)}">${label}</div>${body}<div class="opts">${opts}${reply}</div><div class="err"></div></div>`;
   }
   const p = a.phases;
-  const head = cardHead(a.summary || a.plan || a.short || a.target,
-    [cchip("waiting", `${chip}${a.waiting_since ? ` ${ago(a.waiting_since)}` : ""}`)], a.target);
-  const line = cardLine([esc(a.project), p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
-  const k = `ses:${a.target}`;
-  const more = cfold(k, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
+  const band = needBand(k, [esc(a.project), a.waiting_since ? ago(a.waiting_since) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
+  const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary || a.plan || a.short || a.target)}</div>`;
+  const more = cfold(`ses:${a.target}`, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
     ["plan", a.plan], ["next phase", p && p.next]]), askst.open);
-  return `<div ${attrs}>${head}${line}${body}` +
-    `<div class="opts">${opts}<button class="btn sm" data-open>Open session</button>${reply}</div>${more}<div class="err"></div></div>`;
+  const open = `<button class="btn sm" data-open>Open session</button>`;
+  const lead = q.kind === "plan" ? `<div class="opts">${opts}${open}</div>${body}<div class="opts">${reply}</div>`
+    : `${body}<div class="opts">${opts}${open}${reply}</div>`;
+  return `<div class="card need k-${k}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}<div class="err"></div></div>`;
 }
 
 // The answer judge runs in shadow: it only says what it would do, next to the human's buttons.
@@ -62,27 +80,39 @@ function judgeText(a) {
     : `judge would answer "${esc(a.judge.replace(/^answer:/, ""))}"`;
 }
 
+// An ask's answers, one button per option with what it does (agent-ask `--options a=...`), the
+// recommended one marked with its why (`--why`), then a free answer.
+function askOptions(a) {
+  const notes = a.notes || [];
+  const rows = a.options.map((o, i) => {
+    const rec = o === a.recommend;
+    const note = notes[i] ? `<span class="aon">${esc(notes[i])}</span>` : "";
+    const why = rec ? `<span class="aow">recommended${a.why ? ": " + esc(a.why) : ""}</span>` : "";
+    return `<button class="aopt${rec ? " rec" : ""}" data-a="${esc(o)}"><span class="aok">${esc(o)}</span>${note}${why}</button>`;
+  }).join("");
+  return `<div class="aopts">${rows}</div><div class="opts"><input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button></div>`;
+}
+
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
-// waited, who filed it, then the rest of the question, which the options often lean on.
+// waited, who filed it, then the rest of the question and its context, which the options lean on.
 function askCard(a, inQueue) {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
   const from = owner ? owner.short || owner.target : a.agent;
-  const opts = a.options.map((o) => `<button class="btn${o === a.recommend ? " rec" : ""}" data-a="${esc(o)}">${esc(o)}${o === a.recommend ? " (recommended)" : ""}</button>`).join("") +
-    `<input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>`;
+  const judge = judgeText(a);
+  // What follows the question on both cards: its context, the judge's view, then the answers.
+  const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
   if (inQueue === true) {
     // The Queue card around it already names the project and session, so routing is a tooltip.
     const route = `${esc(a.project)}, ${owner ? esc(owner.target) : "headless"}, ${esc(a.kind)}, ${esc(a.id)}`;
-    const judge = judgeText(a);
     return `<div class="card" data-id="${esc(a.id)}"><div class="qask-h" title="${route}">Question for you</div>` +
-      `<div class="q md">${md(a.question)}</div>${judge ? `<div class="cline">${judge}</div>` : ""}<div class="opts">${opts}</div><div class="err"></div></div>`;
+      `<div class="q md">${md(a.question)}</div>${tail}<div class="err"></div></div>`;
   }
-  const head = cardHead(a.title || a.question, [cchip("waiting", `${esc(a.kind)}${a.created ? ` ${ago(a.created)}` : ""}`)]);
-  const line = cardLine([esc(a.project), from ? `from ${esc(from)}` : "headless", judgeText(a)]);
+  const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
+  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? ago(a.created) : ""]);
   const body = a.title ? a.body : "";
-  const k = `ask:${a.id}`;
-  const more = cfold(k, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session]]), askst.open);
-  return `<div class="card" data-id="${esc(a.id)}">${head}${line}${body ? `<div class="q md">${md(body)}</div>` : ""}` +
-    `<div class="opts">${opts}</div>${more}<div class="err"></div></div>`;
+  const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session]]), askst.open);
+  return `<div class="card need k-ask" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
+    `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}<div class="err"></div></div>`;
 }
 
 // A session card answers through the session's own pane, so the answer lands in that
@@ -113,7 +143,8 @@ async function answerCard(card, e) {
     catch (err) { card.querySelector(".err").textContent = err.message; }
     return;
   }
-  let answer = e.target.dataset.a;
+  const opt = e.target.closest("[data-a]");
+  let answer = opt && opt.dataset.a;
   if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
   if (!answer || !answer.trim()) return;
   try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
