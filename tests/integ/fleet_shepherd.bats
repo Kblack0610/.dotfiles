@@ -31,7 +31,9 @@ esac'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
-  room) [ -z "${STUB_NO_ROOM:-}" ] || exit 1; printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
+  room) echo "claude-acct: room on alt (2% of its week, 9% gone)" >&2
+        [ -z "${STUB_NO_ROOM:-}" ] || { echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
+        printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
   status) printf "%b" "${STUB_ACCTS:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
   trust) echo "$*" >> "$HOME/trust.calls" ;;
@@ -481,7 +483,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_output --partial 'nobody is talking to it: no new pass'
 }
 
-@test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once" {
+@test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
   doc "[$(row a WORKING false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
@@ -499,11 +501,19 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner config=$HOME/.claude-best"
   STUB_NO_ROOM=1 run "$SH" run
   assert_equal "$(starts)" 4
-  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 1
+  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1
+  # the pass carries on as before, so it is normal, not high, and it says which account and how far
+  local page='Passes keep running on the closest account and dispatch starts nothing new. No account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate.'
+  assert_equal "$(cat "$HOME/pages")" "-p normal -t No account has room for new starts $page"
+  # the page channel's budgets from this repo; the prose checker is the private de-ai-writing one
+  echo 'raise SystemExit(0)' > "$HOME/prose-check"
+  COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml" COMMS_PROSE_CHECK="$HOME/prose-check" \
+    run "$REPO_ROOT/.local/bin/comms-lint" --channel page --priority normal --title 'No account has room for new starts' - <<<"$page"
+  assert_success
   # room came back: the next time none has any is news again
   run "$SH" run
   STUB_NO_ROOM=1 run "$SH" run
-  assert_equal "$(grep -c 'no account has room' "$HOME/pages")" 2
+  assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 2
 }
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind; the next run starts one" {

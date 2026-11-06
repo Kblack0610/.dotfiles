@@ -693,17 +693,21 @@ pass_prompt() {
 }
 
 # pass_account -> the config dir a pass starts on, empty for the main account: the one claude-acct
-# room names. With none it is the best there is, so the pass still runs, and the human hears once.
+# room names. With none it is the best there is, so the pass still runs, and the human hears once,
+# at normal: the pass carries on as before. The page is room's own line, which names that account
+# and how far past its pace it is; "no account has room" alone read as every account being full.
+# room's stdout (the dir) goes out as ours through fd 3, so one call gives both.
 pass_account() {
-  local acct
-  if acct="$(claude-acct room 2>/dev/null)"; then
+  local why
+  if { why="$(claude-acct room 2>&1 >&3 3>&-)"; } 3>&1; then
     rm -f "$NOROOM"
-    printf '%s' "$acct"
     return 0
   fi
   if [ ! -e "$NOROOM" ]; then
     : > "$NOROOM"
-    agent-notify -p high -t shepherd "no account has room: passes keep running on the best one (claude-acct status)" >/dev/null 2>&1 || true
+    why="$(tail -n 1 <<<"$why")"; why="${why#claude-acct: }"
+    agent-notify -p normal -t "No account has room for new starts" \
+      "Passes keep running on the closest account and dispatch starts nothing new. ${why^}." >/dev/null 2>&1 || true
   fi
   claude-acct pick 2>/dev/null || true
 }

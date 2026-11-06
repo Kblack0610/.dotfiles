@@ -1061,11 +1061,17 @@ held_by() {
 # account has room, which ends the pass: the next item would find none either. rc 4 when another
 # start (a hand start, say) took the item first: that is not a failed launch, and the pass goes on.
 start_item() {
-  local it="$1" slug acct model rc
+  local it="$1" slug acct err why model rc
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
-  # Asked again here, as launch does: the gate's answer may be minutes old.
-  acct=$(claude-acct room 2>/dev/null) || { settle BLOCKED "no account has room for queue item $slug"; return 3; }
+  # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
+  # names the closest account and how far past its pace it is, as in gate.
+  err=$(mktemp)
+  if ! acct=$(claude-acct room 2>"$err"); then
+    why=$(tail -n 1 "$err"); rm -f "$err"
+    settle BLOCKED "queue item $slug waits: ${why#claude-acct: }"; return 3
+  fi
+  rm -f "$err"
   model=$(model-lane classify "$(jq -r .task <<<"$it")" 2>/dev/null | jq -r '.dispatch_model // empty' 2>/dev/null)
   START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug" --model "${model:-opus}"
   rc=$?; exec 7>&-
