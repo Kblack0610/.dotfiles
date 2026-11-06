@@ -35,8 +35,48 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   "$AU" tokens snapshot >/dev/null
   assert_equal "$(snap '[.by_command[0].head, .by_project.demo.cost_usd]')" '["sleep",5.0]'
   # every tool call lands in exactly one by_tool row, so the rows sum to the total
-  assert_equal "$(snap '[(.by_tool | map(.calls) | add) == .totals.tool_calls, (.by_tool[0] | keys)]')" '[true,["calls","carried_tokens","chars","tool"]]'
+  assert_equal "$(snap '[(.by_tool | map(.calls) | add) == .totals.tool_calls, (.by_tool[0] | keys)]')" '[true,["allocated_cost_usd","calls","carried_tokens","chars","tool"]]'
   assert_equal "$(snap '.long_runs | [.turns_over, .stretches, .long]')" '[150,4,0]'
+}
+
+@test "snapshot: each session's cost is allocated over its tools by carried share, and one with none allocates nothing" {
+  "$AU" tokens snapshot >/dev/null
+  # s1 ($4) carried Bash output, so all of it is Bash's; h1 ($1) carried no tool output (negative control)
+  assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]]')" '[["Bash",4.0]]'
+  assert_equal "$(snap '.by_tool_unallocated_usd')" '1.0'
+  assert_equal "$(snap '((.by_tool | map(.allocated_cost_usd) | add) + .by_tool_unallocated_usd - .totals.cost_usd) | fabs < 0.01')" true
+}
+
+@test "snapshot: a session's cost splits over its tools in proportion to the output each carried" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  cat > "$stub/recall" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *session,tool*) echo '{"totals":{"turns":2,"calls":3},"rows":[{"key":["a","Bash"],"calls":2,"chars":8,"carried":300},{"key":["a","Read"],"calls":1,"chars":4,"carried":100},{"key":["b","Read"],"calls":1,"chars":4,"carried":0}]}' ;;
+  *) echo '{"totals":{"turns":2,"calls":3},"rows":[]}' ;;
+esac
+EOS
+  echo "#!/bin/sh
+echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8,\"b\":2}}}'" > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  # a: $8 over Bash 300 and Read 100 carried; b: $2 with nothing carried stays unallocated
+  assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",6.0],["Read",2.0]]\n2.0'
+}
+
+@test "snapshot: no per-session cost from burn keeps every by_tool field, the allocations null" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  cat > "$stub/recall" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *session,tool*) echo '{"totals":{"turns":1,"calls":1},"rows":[{"key":["a","Bash"],"calls":1,"chars":8,"carried":40}]}' ;;
+  *) echo '{"totals":{"turns":1,"calls":1},"rows":[]}' ;;
+esac
+EOS
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[.by_tool[] | [.tool, has("allocated_cost_usd"), .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",true,null]]\nnull'
 }
 
 @test "snapshot: the burn map keys add up to the totals they split" {

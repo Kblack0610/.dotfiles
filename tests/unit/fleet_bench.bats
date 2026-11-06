@@ -2719,6 +2719,36 @@ qstats_fixture() {
   assert_line '| sonnet | claude-lazer | 1 | 1 | 1 | 0 | 0 | 1 | $4.5 | $4.5 | gateway |'
 }
 
+@test "models: an item with no model= takes the model its sessions spent most on, then the one their rows name; no row is unrecorded" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  : > "$BENCH_LANE_LOG"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":3,"cost_by_model":{"claude-haiku-5-5":0.1,"claude-sonnet-5-5":2.9}}'
+    echo '{"session_id":"s2","cost_usd":1,"cost_by_model":{"claude-opus-5-5":1}}'
+    echo '{"session_id":"s3","cost_usd":null,"models":["claude-opus-5-5"]}'
+    echo '{"session_id":"s4","cost_usd":0,"cost_by_model":{"<synthetic>":0,"claude-haiku-5-5":0},"models":["<synthetic>","claude-sonnet-5-5"]}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","status":"ok","pr":"o/r#1","sessions":"s1 s2"}'
+    echo '{"slug":"b","status":"ok","pr":"o/r#2","sessions":"s3"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"gone"}'
+    echo '{"slug":"d","status":"ok","pr":"o/r#4"}'
+    echo '{"slug":"e","model":"haiku","status":"ok","pr":"o/r#5","sessions":"s2"}'
+    echo '{"slug":"f","model":"claude-opus-5-5","status":"ok","pr":"o/r#6"}'
+    echo '{"slug":"g","status":"ok","pr":"o/r#7","sessions":"s4"}'
+  } > "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  # a: sonnet $2.9 beats opus $1 over its two sessions; b: no cost, its row names opus;
+  # c and d: no outcomes row, so unrecorded (negative control); e: a stamped model= wins;
+  # f: a stamped full id is the same opus row; g: zero costs and <synthetic> are skipped, so sonnet
+  assert_equal "$(jq -c '[.models[] | select(.done > 0) | [.model, .done]]' <<<"$output")" '[["haiku",1],["opus",2],["sonnet",2],["unrecorded",2]]'
+}
+
 @test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub

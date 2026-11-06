@@ -723,7 +723,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
@@ -1836,6 +1836,9 @@ queue_section() {
 # finished in the last BENCH_QUEUE_DAYS days (the model= fleet-dispatch stamped at start) joined to
 # their sessions' outcomes (cost_usd, reverts), and model-lane's runs in the same days by the model
 # and harness they ran on (redo). Landed is done ok with a PR; a cancel counts against no pairing.
+# An item started before fleet-dispatch stamped model= takes the model its sessions spent most on
+# (cost_by_model), or with no cost the one their rows name most (models), as the alias an item names
+# (claude-opus-5-5 is opus); unrecorded is an item none of whose sessions has an outcomes row.
 # An item's gateway_cost_usd beats its sessions' sum: one is metered dollars, the other a list-price
 # estimate. A session counts once per row, however many items of a chain it ran. source says which
 # a row's cost is, and mixed means it holds both. cost_per_pr divides by priced, the landed items with a known cost: a landed item with none would pass as free and pull
@@ -1850,8 +1853,14 @@ models_json() {
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def landed: .status == "ok" and (.pr // "") != "";
     def metered: (.gateway_cost_usd // "") != "";
+    def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
-    | ($items | map(select(.status != "cancelled") | . + {m: (.model // "unrecorded"), h: (.agent // "claude")})) as $done
+    | def spent_most: [sids[] | $o[.] // empty] as $rows
+        | ([$rows[] | .cost_by_model // {} | to_entries[] | select(.value > 0 and (.key | startswith("<") | not))]
+            | group_by(.key) | map({key: .[0].key, usd: (map(.value) | add)}) | max_by(.usd) | .key)
+          // ([$rows[] | .models // [] | .[] | select(startswith("<") | not)] | group_by(.) | max_by(length) | .[0]);
+      ($items | map(select(.status != "cancelled")
+        | . + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude")})) as $done
     | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since) | . + {h: (.harness // "claude")})) as $rs
     | ([$done[] | [.m, .h]] + [$rs[] | [.ran, .h]] | unique) as $pairs
     | {days: $days, models: ($pairs | map(. as [$m, $h]
