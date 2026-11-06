@@ -14,11 +14,13 @@
 # pin-only machines chip). A chip hidden from the bar (modules.sh) still lists, because the
 # preview runs the command behind its `modules.sh gate <id>` prefix, not the gate. The window
 # rows are the described exec binds (bindd/bindpd in keybindings.conf and leader.conf), read
-# live from `hyprctl binds -j`, each with the chord that reaches it.
+# live from `hyprctl binds -j`, each with the chord that reaches it. The hub rows are `hub tabs`
+# (hub-core's layout), each previewed with `hub --once --tab` and opened as a hub popup.
 
 set -u
 
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
+HUB="${HUB:-$HOME/.local/bin/hub}"
 REGISTRY="$CONF_DIR/modules.registry"
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 # shellcheck source=../../.config/waybar/pango.sh
@@ -105,6 +107,10 @@ rows() {
         printf '%s\t%-9s %-34s %s\n' "$key" "$key" "$label" "$text"
     done < <(registry)
     rm -rf "$tmp"
+    local id title question
+    while IFS=$'\t' read -r id title question; do
+        printf 'hub\t%-9s %-34s %s\t%s\n' hub "$title" "$question" "$id"
+    done < <("$HUB" tabs 2>/dev/null)
     local chord desc arg
     while IFS=$'\t' read -r chord desc arg; do
         printf 'win\t%-9s %-34s %s\t%s\n' window "$desc" "$chord" "$arg"
@@ -117,6 +123,11 @@ preview() {
     local key="$1" id out rc err
     if [ "$key" = win ]; then
         printf 'enter runs this bind through hyprctl dispatch exec:\n\n%s\n' "${2:-}"
+        return 0
+    fi
+    if [ "$key" = hub ]; then
+        COLUMNS="${FZF_PREVIEW_COLUMNS:-80}" "$HUB" --once --tab "${2:-}" 2>&1
+        printf '\nenter: hub --popup --tab %s\n' "${2:-}"
         return 0
     fi
     id="$(id_of "$key")"
@@ -146,6 +157,11 @@ click() {
     if [ "$1" = win ]; then
         [ -n "${3:-}" ] || { echo "a window row needs its bind's arg" >&2; return 1; }
         hyprctl dispatch exec "$3" >/dev/null
+        return
+    fi
+    if [ "$1" = hub ]; then
+        [ -n "${3:-}" ] || { echo "a hub row needs its tab" >&2; return 1; }
+        setsid -f kitty --class floating-term -e "$HUB" --popup --tab "$3" >/dev/null 2>&1 </dev/null
         return
     fi
     [ "${2:-}" = right ] && which=on-click-right

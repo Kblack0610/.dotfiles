@@ -32,6 +32,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab projects [NAME]
        hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub tabs
   TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
           lands on its new tab; jobs, ci and machines open that section of Infra
@@ -42,6 +43,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would)
+  tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
@@ -69,6 +71,12 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("actions") {
         it.next();
         std::process::exit(actions(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("tabs") {
+        for t in hub_core::layout::landed() {
+            println!("{}\t{}\t{}", t.id, t.title, t.question);
+        }
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();

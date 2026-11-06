@@ -37,6 +37,15 @@ EOF
 printf '%s\n' "$*" >> "$FX/dispatched"
 EOF
   chmod +x "$SANDBOX/bin/hyprctl"
+  # hub: `tabs` lists two, `--once --tab X` prints a page; kitty logs what it would open.
+  export HUB="$FX/hub"
+  cat > "$HUB" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = tabs ] && exec printf 'home\tHome\tWhat needs me?\nqueue\tQueue\tWhat will agents do next?\n'
+echo "hub page: $* at ${COLUMNS:-?} columns"
+EOF
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$FX/opened"\n' > "$SANDBOX/bin/kitty"
+  chmod +x "$HUB" "$SANDBOX/bin/kitty"
   # The gate prefix points at a modules.sh that does not exist: the menu must run what is behind it.
   cat > "$W/config.base" <<EOF
 // -*- mode: jsonc -*-
@@ -58,7 +67,7 @@ EOF
 @test "rows are the registry in order; a chip the config lacks is named, not dropped" {
   run "$MENU" rows
   assert_success
-  assert_equal "$(cut -f1 <<< "$output" | tr '\n' ' ')" "ok bad gone "
+  assert_equal "$(cut -f1 <<< "$output" | tr '\n' ' ')" "ok bad gone hub hub "
   assert_line --partial "(not in the waybar config: custom/gone)"
 }
 
@@ -127,7 +136,7 @@ write_binds() {
   write_binds
   run "$MENU" rows
   assert_success
-  assert_equal "$(cut -f1 <<< "$output" | tr '\n' ' ')" "ok bad gone win win win win "
+  assert_equal "$(cut -f1 <<< "$output" | tr '\n' ' ')" "ok bad gone hub hub win win win win "
   assert_line $'win\twindow    app launcher                       Super+D\twofi --show drun'
   assert_line --regexp $'^win\twindow +stream transcription +Super\\+Alt\\+R\tgungan stream$'
   assert_line --regexp $'^win\twindow +agent panel +Super\\+A a\tkitty -e agent-panel$'
@@ -148,6 +157,21 @@ write_binds() {
   assert_failure
 }
 
+@test "hub rows are hub tabs; the preview is that tab's page and Enter opens it as a popup" {
+  run "$MENU" rows
+  assert_success
+  assert_line --regexp $'^hub\thub +Queue +What will agents do next\\?\tqueue$'
+  FZF_PREVIEW_COLUMNS=61 run "$MENU" preview hub queue
+  assert_success
+  assert_line "hub page: --once --tab queue at 61 columns"
+  assert_line "enter: hub --popup --tab queue"
+  mkfifo "$FX/opened"
+  run "$MENU" click hub left queue
+  assert_success
+  run timeout 5 cat "$FX/opened"
+  assert_output "--class floating-term -e $HUB --popup --tab queue"
+}
+
 @test "pango_ansi: a close restores the tag still open; NO_COLOR strips; entities decode" {
   . "$W/pango.sh"
   run pango_ansi <<< "<b>a <span alpha='60%'>b</span> c</b> &lt;x&gt;"
@@ -163,5 +187,5 @@ write_binds() {
   run "$MENU" rows
   assert_success
   refute_output --partial "not in the waybar config"
-  assert_equal "${#lines[@]}" "$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/waybar/modules.registry")"
+  assert_equal "$(grep -cvE $'^(hub|win)\t' <<< "$output")" "$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/waybar/modules.registry")"
 }
