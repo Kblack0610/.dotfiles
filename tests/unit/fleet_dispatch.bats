@@ -2363,6 +2363,16 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   cmd_start --item r >/dev/null || fail "start r"
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_output --partial '/one-shot --pr-only fix r'
+  assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
+}
+
+@test "red: a plain item's brief does not name fix-red" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug p --tags 'night' "fix p"
+  cmd_start --item p >/dev/null || fail "start p"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  refute_output --partial 'fix-red'
 }
 
 @test "red: next_items puts red first and keeps queue order within each; a waiting board item stays out" {
