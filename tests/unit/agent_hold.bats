@@ -129,3 +129,31 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   run "$HOLD" check unity
   assert_failure 1
 }
+
+@test "claim: a second session is refused, the holder's check passes, release frees it" {
+  run "$HOLD" claim mac-desktop --by agent-6 "store-console sign-in"
+  assert_success
+  assert_output 'claimed: mac-desktop'
+  run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
+  assert_failure 1
+  assert_output --partial 'busy: mac-desktop'
+  assert_output --partial 'by agent-6: store-console sign-in'
+  run "$HOLD" check mac-desktop
+  assert_failure 1
+  run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir agent-6 && cd agent-6 && \"$HOLD\" check mac-desktop"
+  assert_success
+  run "$HOLD" claim mac-desktop --by agent-6 "store-console upload"
+  assert_success
+  assert_output 'claimed: mac-desktop (refreshed)'
+  "$HOLD" release mac-desktop
+  run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
+  assert_success
+}
+
+@test "claim never replaces a set hold, and a set hold's owner is not let through by check" {
+  "$HOLD" set unity-tests --by binks "hot"
+  run "$HOLD" claim unity-tests --by agent-6 "mine"
+  assert_failure 1
+  run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
+  assert_failure 1
+}
