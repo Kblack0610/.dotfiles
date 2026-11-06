@@ -150,6 +150,7 @@ agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
+agent_bench_kpi{kpi="plans_unqueued",window="7d"} 0
 # HELP agent_bench_kpi_limit Each KPI's threshold from kpi-thresholds.
 # TYPE agent_bench_kpi_limit gauge
 agent_bench_kpi_limit{kpi="ci_red_per_pr"} 1
