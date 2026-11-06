@@ -408,7 +408,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   assert_output --partial "+ $SRV_A"
   refute_output --partial '  one'
 
-  "$TMX" tree-enter "$SRV_A" >/dev/null
+  "$TMX" tree-fold "$SRV_A" >/dev/null
   run bash -c "'$TMX' tree-rows | cut -f4"
   assert_output --partial "- $SRV_A"
   assert_output --partial 'one'

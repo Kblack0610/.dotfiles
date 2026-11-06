@@ -166,3 +166,78 @@ page1() { serve 'repos/o/game/actions/runs?event=schedule&per_page=100&page=1'; 
   assert_output --partial 'no repo list'
   [ ! -e "$STATE" ]
 }
+
+# pending: the nightly:<repo> hold's answer, from a hand-written state file. The desk is in
+# Los Angeles; 2026-11-06 is a Friday, PST, so Tests (10:00 UTC) is 02:00 and Multi (12:30 UTC) 04:30.
+# pstate <synced_at> <test.yml runs> <multi.yml runs>
+pstate() {
+  mkdir -p "$(dirname "$STATE")"
+  jq -n --arg s "$1" --argjson t "$2" --argjson m "$3" '{repos: [{repo: "o/game", synced_at: $s, workflows: [
+    {path: ".github/workflows/multi.yml", crons: ["30 12 * * *"], timeout_min: 300, runs: $m},
+    {path: ".github/workflows/perf.yml", crons: ["30 13 * * 6"], timeout_min: 60, runs: []},
+    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300, runs: $t}]}]}' > "$STATE"
+}
+prun() { jq -nc --arg c "$1" --arg s "$2" '[{id: 1, created_at: $c, status: $s}]'; }
+pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
+
+@test "pending: a slot still to come today holds, a finished run releases, a running one holds" {
+  export TZ=America/Los_Angeles
+  pstate 2026-11-06T08:55:00Z '[]' '[]'
+  SCHEDULES_NOW="$(pnow '2026-11-06 01:00')" run "$SUBJECT" pending game
+  assert_failure 1
+  assert_output 'multi.yml due 04:30, test.yml due 02:00'
+  pstate 2026-11-06T13:00:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z in_progress)"
+  SCHEDULES_NOW="$(pnow '2026-11-06 05:05')" run "$SUBJECT" pending o/game
+  assert_failure 1
+  assert_output 'multi.yml running'
+  pstate 2026-11-06T14:05:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
+  SCHEDULES_NOW="$(pnow '2026-11-06 06:10')" run "$SUBJECT" pending game
+  assert_success
+  assert_output ''
+  # A run from yesterday is not today's: Tests' slot has passed with no run of its own yet.
+  pstate 2026-11-06T10:30:00Z "$(prun 2026-11-05T10:04:00Z completed)" '[]'
+  SCHEDULES_NOW="$(pnow '2026-11-06 02:35')" run "$SUBJECT" pending game
+  assert_output 'multi.yml due 04:30, test.yml not started'
+}
+
+@test "pending: a run that never came, or never finished, releases at its slot or start plus the timeout" {
+  export TZ=America/Los_Angeles
+  pstate 2026-11-06T17:25:00Z "$(prun 2026-11-06T10:04:00Z completed)" '[]'
+  SCHEDULES_NOW="$(pnow '2026-11-06 09:29')" run "$SUBJECT" pending game
+  assert_output 'multi.yml not started'
+  pstate 2026-11-06T17:25:00Z "$(prun 2026-11-06T10:04:00Z completed)" '[]'
+  SCHEDULES_NOW="$(pnow '2026-11-06 09:30')" run "$SUBJECT" pending game
+  assert_success
+  # A late run that is still going counts its timeout from its own start.
+  pstate 2026-11-06T17:55:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T13:00:00Z in_progress)"
+  SCHEDULES_NOW="$(pnow '2026-11-06 09:59')" run "$SUBJECT" pending game
+  assert_output 'multi.yml running'
+  SCHEDULES_NOW="$(pnow '2026-11-06 10:00')" run "$SUBJECT" pending game
+  assert_success
+}
+
+@test "pending: a weekly cron holds only on its day" {
+  export TZ=America/Los_Angeles
+  pstate 2026-11-07T14:00:00Z "$(prun 2026-11-07T10:04:00Z completed)" "$(prun 2026-11-07T12:41:00Z completed)"
+  SCHEDULES_NOW="$(pnow '2026-11-07 06:00')" run "$SUBJECT" pending game
+  assert_output 'perf.yml not started'
+  # Friday's release in the first pending test already shows it holds nothing on other days.
+}
+
+@test "pending fails closed: no file, a repo not in it, a stale sync, an unreadable cron" {
+  export TZ=America/Los_Angeles
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'no schedules state'
+  pstate 2026-11-06T19:40:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending other
+  assert_failure 1; assert_output 'other not in the schedules state'
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_success
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:11')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'schedules state for game stale since 2026-11-06T19:40:00Z'
+  jq '.repos[0].workflows[0].crons = ["bad"]' "$STATE" > "$STATE.x" && mv "$STATE.x" "$STATE"
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'multi.yml cron unreadable'
+  run "$SUBJECT" pending
+  assert_failure 2
+}
