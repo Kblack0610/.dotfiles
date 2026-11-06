@@ -68,6 +68,8 @@ unset _k _v
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
+: "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
+: "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_NIGHT_PROJECTS:=agent-runtime notes-cockpit}"
@@ -243,23 +245,55 @@ account_env() {
 
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
-# state, weight. The item's `session:` is the one record of where it runs, `<server>:<tmux session>`
-# (tmux turns a ':' in a session name into '_', so one ':' splits).
+# state, weight, agent, started, Claude session ids. The item's `session:` is the one record of where
+# it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':' splits).
+# An item started in a hub window records no `session:`, only the Claude sessions that worked it
+# (`sessions:`); it comes out with an empty server and session, and only reap reads it.
 item_sessions() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
-    select(.state != "queued" and ((.session // "") | contains(":")))
-    | (.session | index(":")) as $i
-    | [.slug, .session[:$i], .session[$i + 1:],
-       (.origin // ""), .project, (.area // ""), .state, (.weight // "light")] | join("\u001f")' 2>/dev/null
+    select(.state != "queued")
+    | select(((.session // "") | contains(":")) or (.sessions // "") != "")
+    | ((.session // "") | index(":")) as $i
+    | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
+       (.origin // ""), .project, (.area // ""), .state, (.weight // "light"),
+       (.agent // "claude"), (.started // ""), (.sessions // "")] | join("\u001f")' 2>/dev/null
   return 0
+}
+
+# claude_gone <server> <tmux session> <agent> <started> <session ids> -- exit 0 when agent-panel
+# says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
+# of the Claude sessions that worked it is live). A tmux session alone is not a session: a shell
+# left after claude exits keeps it, and an item in a hub window has none of its own. Exit 1 (keep
+# the item) when it cannot tell: another agent than claude (agent-panel lists only Claude), a
+# parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
+# seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
+# REAP_PANEL caches one read per pass.
+claude_gone() {
+  local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
+  [ "$agent" = claude ] || return 1
+  if [ -n "$sess" ]; then
+    [ -e "$PARKED_DIR/$sess" ] && return 1
+    compgen -G "$PARKED_DIR/$sess:*" >/dev/null && return 1
+  else
+    [ -n "$sids" ] || return 1
+  fi
+  t=$(date -d "$started" +%s 2>/dev/null) || return 1
+  [ $(( $(date +%s) - t )) -ge "$DISPATCH_REAP_GRACE" ] || return 1
+  [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
+  [ -n "$REAP_PANEL" ] || return 1
+  jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
+    ($ids | split(" ") | map(select(. != ""))) as $ids
+    | any(.[]; ($t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t)
+               or ((.session_id // "") as $s | $s != "" and ($ids | index($s))))
+    | not' <<<"$REAP_PANEL" >/dev/null
 }
 
 # live_runs -> "<project>/<area> <weight>" for every running session this runner started itself. A
 # hand launch or a restore is tagged and tracked like any other, but holds none of the runner's
 # units: a dozen restored sessions must not stop dispatch for the day.
 live_runs() {
-  local slug server sess origin project area state weight
-  while IFS=$'\x1f' read -r slug server sess origin project area state weight; do
+  local slug server sess origin project area state weight _rest
+  while IFS=$'\x1f' read -r slug server sess origin project area state weight _rest; do
     [ -n "$slug" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
     session_live "$sess" "$server" && printf '%s/%s %s\n' "$project" "$area" "$weight"
@@ -280,8 +314,8 @@ live_units() {
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
 # or resumed. They add load, which the gate reads, but no run slot.
 live_hand() {
-  local slug server sess origin project area state _weight
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight; do
+  local slug server sess origin project area state _weight _rest
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight _rest; do
     [ -n "$slug" ] || continue
     case "$origin" in '' | run) continue ;; esac
     session_live "$sess" "$server" && printf '%s/%s\n' "$project" "$area"
@@ -1298,7 +1332,8 @@ cmd_stats() {
 # (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed),
 # running/ again once it does not. A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight want waits='' seen=''
+  local s d slug server sess origin project area state _weight agent started sids want waits='' seen=''
+  unset REAP_PANEL
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
@@ -1306,13 +1341,14 @@ cmd_reap() {
       jq -r 'select((.from | startswith("board:")) and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight; do
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids; do
     [ -n "$slug" ] || continue
-    if ! session_live "$sess" "$server"; then
-      settle_item "$slug" "$sess"
+    if { [ -n "$sess" ] && ! session_live "$sess" "$server"; } || claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then
+      settle_item "$slug" "${sess:-${sids##* }}"
       settle_row "$slug"
       continue
     fi
+    [ -n "$sess" ] || continue
     [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
     [ "$seen" = 1 ] || continue
     want=running; grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting

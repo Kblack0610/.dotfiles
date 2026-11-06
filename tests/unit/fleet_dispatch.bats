@@ -1386,10 +1386,50 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   [ -n "$(qitem waiting p)" ] || fail "the session at its plan is not waiting"
   [ -n "$(qitem waiting q)" ] || fail "the session with a pending ask is not waiting"
 
-  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}"'
+  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\"}" "{\"target\":\"lab/game-agent-2:1\",\"status\":\"idle\"}"'
   stub agent-ask 'exit 0'
   run cmd_reap
   [ -n "$(qitem running p)" ] && [ -n "$(qitem running q)" ] || fail "an answered session stayed waiting"
+}
+
+# 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
+# exited, or a hub-window item had no session of its own, and reap read both as live forever.
+@test "reap settles an item whose claude exited though its tmux session lives; a parked pane, another agent and a fresh start are kept" {
+  project game beta "$SANDBOX/repos/game"
+  started_item gone lab:game-agent-1
+  started_item parked lab:game-agent-2
+  started_item codex lab:game-agent-3
+  sed -i 's/^agent: claude/agent: codex/' "$AGENT_QUEUE_DIR"/running/*-codex.md
+  started_item fresh lab:game-agent-4
+  sed -i "s/^started: .*/started: $(date -u +%FT%TZ)/" "$AGENT_QUEUE_DIR"/running/*-fresh.md
+  started_item kept lab:game-agent-5
+  printf 'game-agent-%s\n' 1 2 3 4 5 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  mkdir -p "$HOME/.agent/parked"; : > "$HOME/.agent/parked/game-agent-2:1"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-5:1\",\"status\":\"busy\",\"session_id\":\"s5\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gone.md 2>/dev/null)" ] || fail "an item whose claude exited stayed active"
+  for k in parked codex fresh kept; do [ -n "$(qitem running "$k")" ] || fail "reaped $k"; done
+}
+
+@test "reap settles a hub-window item once none of its Claude sessions is live, and keeps one whose session is" {
+  project game beta "$SANDBOX/repos/game"
+  started_item hubgone '' && started_item hublive ''
+  sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h1 h2/' "$AGENT_QUEUE_DIR"/running/*-hubgone.md
+  sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h3/' "$AGENT_QUEUE_DIR"/running/*-hublive.md
+  stub agent-panel 'echo "{\"target\":\"hub/dotfiles:2\",\"status\":\"idle\",\"session_id\":\"h3\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hubgone.md 2>/dev/null)" ] || fail "a hub item with no live session stayed active"
+  [ -n "$(qitem running hublive)" ] || fail "reaped a hub item whose session is live"
+  grep -q 'reaped h2' "$FLEET_DISPATCH_DIR/log.md" || fail "the log does not name the session: $(cat "$FLEET_DISPATCH_DIR/log.md")"
+  stub agent-panel 'exit 0'
+  started_item hubblind ''
+  sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h9/' "$AGENT_QUEUE_DIR"/running/*-hubblind.md
+  run cmd_reap
+  [ -n "$(qitem running hubblind)" ] || fail "reaped on an empty panel"
 }
 
 @test "reap moves nothing when it cannot read the sessions or the asks" {
