@@ -554,7 +554,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -1431,6 +1431,70 @@ SH
   : > "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
+@test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
+  git init -q "$SANDBOX/r"; git -C "$SANDBOX/r" remote add origin https://github.com/O/R.git
+  echo '{"type":"user","message":{"content":"nothing about it"}}' > "$SANDBOX/t.jsonl"
+  phases_plan '- [x] Phase 1: work (#8750)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_failure
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" -
+  assert_success
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/other","number":875}]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  phases_plan '- [x] Phase 1: work (o/other#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_failure
+  phases_plan '- [x] Phase 1: work (#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_success
+  echo '{"content":"see https://github.com/o/r/pull/8750 and https://github.com/o/r2/pull/875"}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"opened https://github.com/o/r/pull/875"}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_success
+  echo '{"input":{"command":"git push -u origin feat/xy"}}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"   abc..def  feat/x -> origin/feat/x"}' > "$SANDBOX/t.jsonl" # a pull, not a push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"To github.com:o/r.git\n * [new branch]      HEAD -> feat/x\n"}' > "$SANDBOX/t.jsonl" # a bare git push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_success
+  for c in 'git push -u origin feat/x' 'git push origin HEAD:feat/x' 'git push origin refs/heads/feat/x'; do
+    printf '{"input":{"command":"%s"}}\n' "$c" > "$SANDBOX/t.jsonl"
+    run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+    assert_success
+  done
+}
+
+@test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
+  landed_fixture
+  # trader-real-money-plan: its plan and transcript never touched #875, which merged off feat/x.
+  phases_plan '- [x] Phase 1: investigate' '- [-] Phase 2: live money: queue item p2'
+  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  refute_output --partial '#875'
+
+  # The same session pushing feat/x made it: the PR is its own again.
+  echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+
+  # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
+  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tOPEN\\tPASS\\t%s\\n"\n' \
+    "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$SANDBOX/bin/gh"
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/fleet-sessions* 2>/dev/null || true
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
 }
 
 @test "json_rows: the newer fields, with a row that predates them still parsing" {
