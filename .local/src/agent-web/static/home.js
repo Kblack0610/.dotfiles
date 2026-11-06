@@ -20,7 +20,7 @@ function needKind(n) {
   if (n.kind === "ask") return "ask";
   if (n.kind === "session") {
     const a = st.agents.find((x) => x.target === n.target && x.question);
-    return a ? dialog(a.question)[0] : "turn";
+    return a ? dialog(a.question) : "turn";
   }
   if (n.kind === "queue") return "blocked";
   return "red";

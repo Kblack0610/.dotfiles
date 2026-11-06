@@ -14,7 +14,7 @@ const el = () => new Proxy({}, {
   set: (t, k, v) => { t[k] = v; return true; },
 });
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const doc = { getElementById: (id) => (id === "log" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+const doc = { getElementById: (id) => (id === "log-day" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
   document: doc,
@@ -50,7 +50,7 @@ const rec = (o = {}) => {
 };
 function draw(r, proj = null) {
   ctx.input = { r, proj };
-  return vm.runInContext(`lst.rec = input.r; lst.hist = []; lst.proj = input.proj; lst.open = {}; renderLog(); $("log").innerHTML`, ctx);
+  return vm.runInContext(`lst.rec = input.r; lst.hist = []; lst.proj = input.proj; lst.open = {}; renderLog(); $("log-day").innerHTML`, ctx);
 }
 const between = (html, a, b) => html.slice(html.indexOf(a), b ? html.indexOf(b) : undefined);
 
@@ -97,4 +97,11 @@ test("a busy day starts each group folded, and a legend pick opens the picked gr
   const g = grid(busy), r = rec({ merged: busy, hours: g, projects: g.rows.map((x) => x.project) });
   assert.match(draw(r), /<details class="panel area" data-k="m:trader"><summary>/);
   assert.match(draw(r, "\u0000other"), /<details class="panel area" data-k="m:trader:only" open><summary>/);
+});
+
+test("what waits on you is a count linking to Home, not a second list of it", () => {
+  const html = draw(rec({ waiting: { asks: [{ project: "p", question: "Ship it?" }], needs: [{ who: "w", reason: "r", idle_min: 3 }] } }));
+  assert.match(html, /<a href="#" data-asks><span class="chip sm"[^>]*>2 waiting on you<\/span> answer on Home<\/a>/);
+  assert.doesNotMatch(html, /Ship it/);
+  assert.doesNotMatch(draw(rec()), /waiting on you/);
 });

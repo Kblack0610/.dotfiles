@@ -1,11 +1,10 @@
-//! The Actions tab: everything the fleet's machinery did (shepherd, dispatch, pages, failed
+//! Log's Actions section: everything the fleet's machinery did (shepherd, dispatch, pages, failed
 //! runs, the queue), read by `hub_core::actions`, the same reader as `hub actions` and the
 //! briefing's digest.
 
 use axum::extract::Query;
 use axum::Json;
 use hub_core::actions::{self, Gathered};
-use hub_core::session_actions::System;
 use serde::Deserialize;
 
 const HOURS_DEFAULT: i64 = 24;
@@ -27,14 +26,7 @@ pub async fn get(Query(q): Query<Q>) -> Json<Gathered> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let since = now - span;
-        let (items, err) = match hub_core::queue::list(&System, "all") {
-            Ok(items) => (items, None),
-            Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
-        };
-        let mut g = actions::gather(&actions::Paths::from_env(), since, &items);
-        g.errors.extend(err);
-        g
+        actions::read(now - span)
     })
     .await
     .unwrap_or_else(|e| Gathered {
