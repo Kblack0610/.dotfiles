@@ -18,7 +18,7 @@ Runs the playground's tests without hurting the workstation, which is the human'
 - When gating and landing a playground PR.
 - When a nightly run on main is red and you need to read it.
 
-Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-failures`.
+Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-failures`. Taking a red nightly to green: `playground-nightly-fix`.
 
 ## Steps
 
