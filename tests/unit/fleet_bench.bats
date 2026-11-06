@@ -1002,7 +1002,7 @@ watch() {
   printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
   echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
   watch spend TRIP -25200 urgent    # 7h: a row
-  watch nightly TRIP -3600 high     # 1h: inside the flap window, no row
+  watch nightly TRIP -600 high      # 10m: inside the flap window, no row
   watch drift OK -90000 normal      # OK: no row
   run "$SUBJECT" triage --dry-run
   assert_success
@@ -1123,6 +1123,18 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
   run "$SUBJECT" triage
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a high or urgent watch is a row after one pass; a low one under 6h is not" {
+  triage_setup
+  watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'check(watch): hot tripped'
+  assert_output --partial 'check(watch): hotter tripped'
+  refute_output --partial 'young'
+  refute_output --partial 'slow'
+  refute_output --partial 'none'
 }
 
 @test "triage: a cause already queued, or closed with the red still here, is not queued again" {

@@ -570,7 +570,25 @@ _recent_session() {
     | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | head -1
 }
 
-cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
+# A world is a known name or a running server, hidden ones included: _enter explains those.
+# grep without -q: an early exit would SIGPIPE the writer, which pipefail reads as no match.
+_is_world() {
+  world_hidden "$1" && return 0
+  known_servers | grep -Fx -- "$1" >/dev/null && return 0
+  panel_live_servers | grep -Fx -- "$1" >/dev/null
+}
+
+# Anything else is a typo or a key still bound to a removed verb. It stops here: _enter
+# would detach the client and boot an empty server of that name, which kicks you out.
+cmd_hop() {
+  local target="${1:?hop needs a server name}"
+  if ! _is_world "$target"; then
+    [ -n "${TMUX:-}" ] || die "no world or command '$target' (tmx ls lists the worlds)"
+    tmux display-message "tmx: no world or command '$target'"
+    return 0
+  fi
+  _enter "$target" last
+}
 
 # toggle -- Prefix+C-h. On hub, resume lab; anywhere else (lab, another world, outside tmux),
 # resume hub. The two worlds every manifest and README names, so there is no knob to swap.
