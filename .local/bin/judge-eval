@@ -250,6 +250,9 @@ JQ_EVAL='
                             and ($any == 1 or (.prompt_sha // "") == ($shas[$ag] // "-"))))) as $cl
      | ($src[$ag] // "") as $sc
      | (if $sc == "ask-answers" then $live elif $sc == "dispatch-queue" then ["*"] else [] end) as $lv
+     # The word a score cell puts after its percent; a lane with no counted outcome has none.
+     | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
+         "plan-dispatched": "dispatched"}[$sc]) as $lb
      | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
         truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (override or none)",
                  "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
@@ -271,11 +274,23 @@ JQ_EVAL='
                  | map({id, project, question, judge: .want, reason, answer: .human, rule,
                         answered_at: (.answered_at // .at | epoch)}))}
        # What the human reads rather than a score, so every prompt counts: a policy change must
-       # not empty the list or reset the week.
-       + (if $src[$ag] != "ask-answers" then {} else ($all | map(select(.agent == $ag))) as $every
-          | {week: ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats),
-             verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
-               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end)]}'
+       # not empty the list or reset the week. score_7d is the week as the Workers score cell and
+       # the day-log rollup show it, a percent only past the bar; the runner_score KPI counts the
+       # current prompt only.
+       + (($all | map(select(.agent == $ag))) as $every
+          | ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats) as $wk
+          | ($wk.tp + $wk.fp) as $n
+          | {week: $wk,
+             score_7d: {window: "7d", right: $wk.tp, n: $n, pending: $wk.pending,
+                        value: (if $lb != null and $n >= $bar then $wk.precision else null end),
+                        text: (if $lb == null then "-" elif $n < $bar then "n<\($bar)"
+                               else "\($wk.precision | round)% \($lb)" end),
+                        title: (if $lb == null then "\($sc): no counted outcome"
+                                else "7d, \($wk.tp) of \($n) right, \($wk.pending) pending, \($sc)"
+                                     + (if $n < $bar then "; a percent at \($bar) rows" else "" end) end)}}
+          + (if $src[$ag] != "ask-answers" then {} else
+             {verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
+               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end))]}'
 
 # report <json>: the table, one block per agent.
 report() {
