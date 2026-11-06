@@ -37,7 +37,7 @@
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
 #        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
-#        · land <name> <last|root|session[:window]>
+#        · land <name> <last|root|session[:window]> · back
 #        · reload
 
 set -uo pipefail
@@ -319,16 +319,58 @@ cmd_open() {
   _enter "$srv" "$t"
 }
 
-# Where this client is now, as "<server>\t<session>\t<window>". Non-zero outside tmux, or
-# when tmux cannot resolve a current client.
+# Where this client is now, as "<server>\t<session>\t<window>\t<client tty>". Non-zero
+# outside tmux, or when tmux cannot resolve a current client.
 _current_loc() {
   [ -n "${TMUX:-}" ] || return 1
-  local loc sock sess win
-  # One display-message, not three: the fields have to describe the SAME moment.
-  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}" 2>/dev/null)" || return 1
-  IFS=$'\t' read -r sock sess win <<<"$loc"
+  local loc sock sess win tty
+  # One display-message, not four: the fields have to describe the SAME moment.
+  loc="$(tmux display-message -p "#{socket_path}"$'\t'"#{session_name}"$'\t'"#{window_index}"$'\t'"#{client_tty}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r sock sess win tty <<<"$loc"
   [ -n "$sock" ] && [ -n "$sess" ] || return 1
-  printf '%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win"   # socket path -> server name
+  printf '%s\t%s\t%s\t%s\n' "${sock##*/}" "$sess" "$win" "$tty"   # socket path -> server name
+}
+
+# Prefix+L is tmux's own switch-client -l whenever the client has a last session. It has none
+# right after a cross-world hop: the hop is a detach plus a fresh attach on another socket, and
+# a new client starts with no history. So a hop that leaves a server writes one crumb, per
+# terminal (the tty survives the detach, the client does not), and `back` reads it. Same-server
+# moves never need one: they are a switch-client, which tmux records itself.
+BACK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/back"
+
+_back_file() { printf '%s/%s\n' "$BACK_DIR" "${1//\//_}"; }
+
+# _mark_back <tty> <server> <session> -- remember where this terminal is leaving from.
+_mark_back() {
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || return 0
+  mkdir -p "$BACK_DIR" 2>/dev/null || return 0
+  printf '%s\t%s\n' "$2" "$3" > "$(_back_file "$1")" 2>/dev/null || return 0
+}
+
+# back -- the fallback half of Prefix+L: return across the last hop this terminal made.
+cmd_back() {
+  local loc tty="" srv sess
+  loc="$(_current_loc)" && IFS=$'\t' read -r _ _ _ tty <<<"$loc"
+  IFS=$'\t' read -r srv sess < "$(_back_file "${tty:-none}")" 2>/dev/null
+  if [ -z "${srv:-}" ] || [ -z "${sess:-}" ] || ! tmux -L "$srv" has-session -t "=$sess" 2>/dev/null; then
+    # A message, not a failure: run-shell shows a non-zero exit as a broken-key popup.
+    tmux display-message "tmx: no last session"
+    return 0
+  fi
+  _enter "$srv" "$sess"
+}
+
+# _arrive <server> [<session>] -- the last step of land: attach this terminal, or, when the
+# client is already on <server> (TMX_ARRIVE=switch), switch it there so tmux keeps its last
+# session. TMX_CLIENT names the client to switch; empty means tmux's current one.
+_arrive() {
+  local srv="$1" sess="${2:-}"
+  if [ "${TMX_ARRIVE:-}" = switch ]; then
+    exec tmux -L "$srv" switch-client ${TMX_CLIENT:+-c "$TMX_CLIENT"} ${sess:+-t "=$sess"}
+  fi
+  # $TMUX is still set after a detach -E (see _enter); attach refuses to nest while it is.
+  unset TMUX
+  exec tmux -L "$srv" attach ${sess:+-t "=$sess"}
 }
 
 # Two ways to arrive in a world, on purpose:
@@ -350,6 +392,15 @@ _enter() {
   fi
 
   if [ -n "${TMUX:-}" ]; then
+    local loc srv="" sess="" tty=""
+    loc="$(_current_loc)" && IFS=$'\t' read -r srv sess _ tty <<<"$loc"
+    # Already on that server: no socket to cross, so switch instead of re-attaching. A
+    # re-attach is a new client, and a new client has no last session for Prefix+L.
+    if [ "$srv" = "$target" ]; then
+      ( TMX_ARRIVE=switch cmd_land "$target" "$mode" )
+      return 0
+    fi
+    _mark_back "$tty" "$srv" "$sess"
     # -E runs after this client detaches, so the two halves read as one motion.
     #
     # It MUST dispatch to `land`, not back to hop/root. tmux does NOT clear $TMUX
@@ -393,6 +444,13 @@ _drive_newest() {
     setsid -f kitty -e "$SELF" land "$target" "$mode" >/dev/null 2>&1
     return 0
   fi
+  if [ "$srv" = "$target" ]; then
+    ( TMX_ARRIVE=switch TMX_CLIENT="$client" cmd_land "$target" "$mode" ) || return 1
+    _focus_terminal "$pid"
+    return 0
+  fi
+  _mark_back "$client" "$srv" \
+    "$(tmux -L "$srv" display-message -p -c "$client" '#{client_session}' 2>/dev/null)"
   tmux -L "$srv" detach-client -t "$client" -E \
     "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")" || return 1
   _focus_terminal "$pid"
@@ -472,8 +530,7 @@ cmd_land() {
         # session was left.
         [ -n "$want_win" ] &&
           tmux -L "$target" select-window -t "$want_sess:$want_win" 2>/dev/null
-        unset TMUX
-        exec tmux -L "$target" attach -t "=$want_sess"
+        _arrive "$target" "$want_sess"
       fi
       # Picked a session that died between listing and landing — fall through to
       # resume rather than dumping the user on an error.
@@ -491,10 +548,7 @@ cmd_land() {
       lwin="$(_landing_window "$target" "$landing")"
       [ -n "$lwin" ] && tmux -L "$target" select-window -t "$landing:$lwin" 2>/dev/null
       _refresh_landing "$target" "$landing"
-      # $TMUX is still set here (see _enter); attach refuses to nest while it is,
-      # so drop it. -L already selects the server, so nothing else needs it.
-      unset TMUX
-      exec tmux -L "$target" attach -t "=$landing"
+      _arrive "$target" "$landing"
     fi
   fi
 
@@ -520,11 +574,10 @@ cmd_land() {
   # Nothing but the root in this world — go there rather than nowhere.
   [ -n "$last" ] || last="$landing_name"
 
-  unset TMUX
   if [ -n "$last" ] && tmux -L "$target" has-session -t "=$last" 2>/dev/null; then
-    exec tmux -L "$target" attach -t "=$last"
+    _arrive "$target" "$last"
   fi
-  exec tmux -L "$target" attach
+  _arrive "$target"
 }
 
 # _recent_session <server> [exclude] -- the session you were last working on in a world:
@@ -897,6 +950,7 @@ main() {
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
+    back)         cmd_back ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
     pick)         cmd_pick ;;
     rows)         _all_rows ;;
