@@ -378,8 +378,19 @@ EOF
   ITEM_PROJECT=agent-runtime item prune 'human'
   run "$LAND" 42 --item prune
   assert_failure 1
-  assert_output --partial 'review failed: tier-3 item prune: no "Review: " line in the PR body'
+  assert_output --partial 'review failed: tier-3 item prune: no "Review: /code-review <level>, <what it found and what you did>" line in the PR body'
   run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+
+  # A Review: line that names no /code-review pass, or says n/a, is no review.
+  for line in 'Review: n/a' 'Review: /code-review high, n/a' 'Review: /code-review high,' 'Review: looked at it'; do
+    printf 'The change.\n\n%s\n' "$line" >"$NOTES_FIXTURE/body"
+    run "$LAND" 42 --item prune
+    assert_failure 1
+    assert_output --partial "review failed: tier-3 item prune: no \"Review: /code-review <level>"
+    assert_output --partial "(found: $line)"
+  done
+  run grep -c 'pr merge' "$LOG"
   assert_output 0
 
   # A Review: line, but no checks ever ran: the local gate is not enough for tier 3.
@@ -409,6 +420,20 @@ EOF
   assert_success
   refute_output --partial 'review:'
   assert_output --partial 'checks: none reported'
+}
+
+@test "tier 3: item-tier reads the dispatcher's conf, so a DISPATCH_CLEANUP_PROJECTS override there moves the gate" {
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf 'DISPATCH_CLEANUP_PROJECTS="dotfiles"\n' >"$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  item mine 'human'
+  run "$LAND" 42 --item mine
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item mine'
+  ITEM_PROJECT=agent-runtime item theirs 'human'
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item theirs
+  assert_success
+  refute_output --partial 'review:'
 }
 
 @test "no checks reported while an Actions run is queued: it keeps waiting past the bound" {

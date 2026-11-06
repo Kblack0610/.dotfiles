@@ -218,16 +218,21 @@ stamp_item() {
 }
 
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
-# queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review:" line in the body
-# naming the /code-review pass, and checks that ran (wait_checks refuses "none reported" for it).
+# queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
+# <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
+# (wait_checks refuses "none reported" for it). The line is a claim, not proof: CI and the post-merge
+# hold check are the backstops.
 # Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
 # tier counts as 3, the side that waits.
 tier='' body=''
 review_gate() {
   tier=$("$(dirname "$(readlink -f "$0")")/fleet-dispatch" item-tier "$item" 2>/dev/null) || tier=3
   [ "$tier" = 3 ] || return 0
-  grep -q '^Review: ' <<<"$body" ||
-    fail review "tier-3 item $item: no \"Review: \" line in the PR body. Run /code-review high, fix or answer each finding, then add \"Review: /code-review high, <what it found and what you did>\" (~/.claude/skills/fix-red/SKILL.md step 5)"
+  local line
+  line=$(grep -m1 '^Review: ' <<<"$body" || true)
+  [[ "$line" =~ ^Review:\ /code-review\ (low|medium|high|xhigh|max),\ *([^[:space:]].*)$ ]] &&
+    ! [[ "${BASH_REMATCH[2],,}" =~ ^(n/?a|none|-|tbd|todo)[[:space:].]*$ ]] ||
+    fail review "tier-3 item $item: no \"Review: /code-review <level>, <what it found and what you did>\" line in the PR body${line:+ (found: $line)}. Run /code-review high, fix or answer each finding, then add that line (~/.claude/skills/fix-red/SKILL.md step 5)"
   echo "review: present (tier 3)"
 }
 
