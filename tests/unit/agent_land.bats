@@ -31,6 +31,9 @@ case "$1 $2" in
   *mergeCommit*) echo fedcba9876543210fedcba9876543210fedcba98 ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
+# files: the PR's changed paths, one a line (none when absent); files.fail: the call fails
+'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }
+  cat "$NOTES_FIXTURE/files" 2>/dev/null || true ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
 'run list')
   # runs.queued: one count per poll, popped as read; 0 once empty
@@ -189,6 +192,7 @@ git -C . rev-parse --verify --quiet refs/remotes/origin/main
 git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{commit}
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
+gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
 EOF
 }
@@ -283,7 +287,7 @@ EOF
   assert_line --index 2 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
   assert_line --index 3 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
   assert_line --index 4 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 5 'item: agent-queue set ship pr=42 merged=<sha> && agent-queue move ship done --status ok'
+  assert_line --index 5 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
   assert_line --index 6 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
   assert_line --index 7 --partial 'plan: tick'
   run cat "$LOG"
@@ -353,7 +357,7 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 5 'item: agent-queue set tidy pr=42 merged=<sha> && agent-queue move tidy done --status ok'
+  assert_line --index 5 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
   assert_line --index 6 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
@@ -465,4 +469,29 @@ EOF
   assert_output --partial 'fix the crash on save'
   refute_output --partial 'stop the load crash'
   grep -qE -- '- \[x\] stop the load crash .*id:gm-1' "$sheet" || fail "the edited row did not close: $(cat "$sheet")"
+}
+
+@test "the PR's changed files credit the item to the game whose path owns the most" {
+  export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  jq -n '{paths: {"/x/game": "game"}, trackers: {"arena": {repo: "game", path: "Assets/Arena"},
+    "level": {repo: "game", path: "Assets/Level"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
+  item played
+  sed -i 's/^project: dotfiles$/project: game/' "$AGENT_QUEUE_DIR/running/20261103-100000-played.md"
+  printf '%s\n' Assets/Arena/A.cs Assets/Arena/B.cs Assets/Level/L.cs Assets/Shared/S.cs >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item played
+  assert_success
+  assert_line 'item: played done with pr:o/r#42, credited to arena (touches arena level)'
+  run agent-queue show played --json
+  assert_equal "$(jq -r '"\(.state) \(.project) \(.touches)"' <<<"$output")" 'done arena arena level'
+}
+
+@test "files that cannot be read leave the item's project and never fail the landing" {
+  item unread
+  touch "$NOTES_FIXTURE/files.fail"
+  run "$LAND" 42 --item unread
+  assert_success
+  assert_line 'item: unread done with pr:o/r#42, not credited (gh api: HTTP 502)'
+  assert_line 'landed #42'
+  run agent-queue show unread --json
+  assert_equal "$(jq -r '"\(.state) \(.project)"' <<<"$output")" 'done dotfiles'
 }

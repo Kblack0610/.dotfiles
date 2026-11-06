@@ -11,6 +11,7 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running or waiting item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled]
+#   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
@@ -331,14 +332,38 @@ move_to() {
 }
 
 # project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
-# start it: an alias becomes its project, and the project must reach a checkout through the
-# registry (project-name.sh's project_repo_path). A game inside a repo is runnable; a notes-only
-# project is not. With no map there is nothing to ask.
+# start it: an alias becomes its project, a repo key with an `owner` in the registry becomes that
+# lab project (dotfiles has no sheet; its work counts on agent-runtime's), and the project must
+# reach a checkout through the registry (project-name.sh's project_repo_path). A game inside a
+# repo is runnable; a notes-only project is not. With no map there is nothing to ask.
 project_resolve() {
   [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
   local name
-  name="$(jq -r --arg p "$1" '.aliases[$p] // $p' "$AQ_MAP" 2>/dev/null)"
+  name="$(jq -r --arg p "$1" '(.aliases[$p] // $p) as $n | (.trackers[$n] | objects | .owner) // $n' "$AQ_MAP" 2>/dev/null)"
   [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"
+}
+
+# The one resolver of which lab project an item's work counts on, inside a repo that holds several
+# (the playground's games, dotfiles' agent-runtime and notes-cockpit): project_credit at add,
+# cmd_attribute at land. Both only move an item between projects that share one checkout.
+
+# project_credit <project> <from> <plan> -> the project the item's own evidence names: the sheet its
+# row is on (`from: board:<p>:<key>`), else the sheet whose row code the plan's `epic: <code>-<N>`
+# line carries; when that project shares <project>'s checkout. Else <project>.
+project_credit() {
+  local p="" code dir
+  case "$2" in board:*) p="${2#board:}"; p="${p%%:*}" ;; esac
+  if [ -z "$p" ] && [ -f "$3" ] && [ -f "$AQ_MAP" ]; then
+    code="$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$3" | head -1)"
+    [ -z "$code" ] || p="$(jq -r --arg c "$code" \
+      'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$AQ_MAP")"
+  fi
+  if [ -n "$p" ] && [ "$p" != "$1" ] && p="$(project_resolve "$p")" &&
+    dir="$(project_repo_path "$1")" && [ -n "$dir" ] && [ "$(project_repo_path "$p")" = "$dir" ]; then
+    printf '%s\n' "$p"
+  else
+    printf '%s\n' "$1"
+  fi
 }
 
 project_of_cwd() {
@@ -405,7 +430,7 @@ cmd_add() {
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   local resolved
   resolved="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
-  project="$resolved"
+  project="$(project_credit "$resolved" "$from" "${AQ_ITEM_PLAN:-}")"
   [ -n "$weight" ] || weight="$(item_weight "$project" "$mode" "${AQ_ITEM_PHASES:-}")"
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
@@ -665,7 +690,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged cost_usd work_min report note status area origin lane profile from "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged cost_usd work_min report note status area origin lane profile from touches "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -686,6 +711,40 @@ cmd_set() {
     header_set "$f" "${kv%%=*}" "${kv#*=}"
   done
   echo "$slug: $*"
+}
+
+# attribute <slug> -- credit an item by the files its PR changed, repo-relative paths on stdin.
+# The candidates are the registry projects with a `path` in the item's repo (its project's `repo`,
+# else the project itself). The one owning the most changed files gets the item, and every one
+# owning any is recorded in `touches:`. No file under a path, or a tie for the most, leaves
+# `project:` as it is. agent-land runs it on a merge. Prints what it recorded, or nothing.
+cmd_attribute() {
+  [ $# -eq 1 ] || die "usage: agent-queue attribute <slug> < changed-paths"
+  local f project res win touches
+  [ -f "$AQ_MAP" ] || return 0
+  lock
+  f="$(find_item "$1" any)"; [ -n "$f" ] || die "no item: $1"
+  project="$(fm_get "$f" project)"
+  res="$(jq -nRr --slurpfile m "$AQ_MAP" --arg p "$project" '
+    ($m[0].trackers // {}) as $t
+    | (($t[$p] | objects | .repo) // $p) as $repo
+    | [$t | to_entries[] | select((.value | objects | .repo) == $repo and (.value.path // "") != "")
+       | {key, dir: (.value.path | rtrimstr("/") + "/")}] as $cands
+    | [inputs | select(. != "")] as $files
+    | [$cands[] | .dir as $d | {key, n: ([$files[] | select(startswith($d))] | length)} | select(.n > 0)]
+    | sort_by(-.n, .key)
+    | select(length > 0)
+    | (if length > 1 and .[0].n == .[1].n then "" else .[0].key end) + "\t" + (map(.key) | sort | join(" "))')" ||
+    die "could not read $AQ_MAP"
+  [ -n "$res" ] || return 0
+  win="${res%%$'\t'*}" touches="${res#*$'\t'}"
+  header_set "$f" touches "$touches"
+  if [ -n "$win" ] && [ "$win" != "$project" ]; then
+    header_set "$f" project "$win"
+    echo "credited to $win (touches $touches)"
+  else
+    echo "touches $touches"
+  fi
 }
 
 cmd_move() {
@@ -845,7 +904,7 @@ cmd_stats() {
 
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

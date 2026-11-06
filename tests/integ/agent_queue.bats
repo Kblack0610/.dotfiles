@@ -13,8 +13,12 @@ setup() {
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   REPO="$SANDBOX/repos/game"
   git init -q "$REPO"
-  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app"}, aliases: {"g2": "game"},
-    trackers: {"level": {repo: "game", path: "Assets/Level"}, "notes": {repo: null}, "app": {}}}' > "$AGENT_QUEUE_PROJECT_MAP"
+  # Two games in the game repo (level, arena), a repo whose work counts on its owner (tools ->
+  # cockpit), and a project with a row code in another checkout (elsewhere).
+  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app", "/x/tools": "tools"}, aliases: {"g2": "game"},
+    trackers: {"level": {repo: "game", path: "Assets/Level", code: "lv"}, "arena": {repo: "game", path: "Assets/Arena/", code: "ar"},
+      "notes": {repo: null}, "app": {}, "tools": {owner: "cockpit"}, "cockpit": {repo: "tools"},
+      "elsewhere": {repo: "app", code: "el"}}}' > "$AGENT_QUEUE_PROJECT_MAP"
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
@@ -794,4 +798,66 @@ EOF
   run "$AQ" list
   assert_success
   [ ! -e "$AGENT_QUEUE_DIR" ]
+}
+
+@test "add files a repo with an owner under its owner, and set refuses the repo name" {
+  run "$AQ" add --project tools --slug tool "x"
+  assert_success
+  [ "$(field "$(item queued tool)" project)" = cockpit ]
+  run "$AQ" set tool project=tools
+  assert_failure; assert_output --partial "unknown project: tools"
+}
+
+@test "add credits the sheet the item's row is on when it shares the checkout" {
+  "$AQ" add --project game --from board:level:lv-3 --slug from-row "x"
+  [ "$(field "$(item queued from-row)" project)" = level ]
+  "$AQ" add --project tools --from board:cockpit:c-1 --slug from-owner-row "x"
+  [ "$(field "$(item queued from-owner-row)" project)" = cockpit ]
+  # Negative control: a row on a project in another checkout leaves the item where it was filed.
+  "$AQ" add --project game --from board:app:a-1 --slug other-checkout "x"
+  [ "$(field "$(item queued other-checkout)" project)" = game ]
+}
+
+@test "add --plan credits the sheet whose row code the plan's epic: line carries" {
+  P="$SANDBOX/epic.md"
+  printf '%s\n' '# Arena' '' 'epic: ar-12' '' '## Phases' '' '- [ ] P1 one' > "$P"
+  run "$AQ" add --plan "$P" --project game --slug ep
+  assert_success
+  [ "$(field "$(item queued ep-p1)" project)" = arena ]
+  printf '%s\n' 'epic: el-4' '## Phases' '- [ ] P1 one' > "$SANDBOX/far.md"
+  "$AQ" add --plan "$SANDBOX/far.md" --project game --slug far
+  [ "$(field "$(item queued far-p1)" project)" = game ]
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/none.md"
+  "$AQ" add --plan "$SANDBOX/none.md" --project game --slug none
+  [ "$(field "$(item queued none-p1)" project)" = game ]
+}
+
+@test "attribute credits the game that owns the most changed files and records every one touched" {
+  "$AQ" add --project game --slug pr-a "x"
+  run "$AQ" attribute pr-a <<<$'Assets/Arena/A.cs\nAssets/Arena/B.cs\nAssets/Level/L.cs\nAssets/Shared/S.cs'
+  assert_success; assert_output "credited to arena (touches arena level)"
+  f="$(item queued pr-a)"
+  [ "$(field "$f" project)" = arena ]
+  [ "$(field "$f" touches)" = "arena level" ]
+  # A game's item stays in its repo's candidates: its own game's files can move it again.
+  run "$AQ" attribute pr-a <<<'Assets/Level/L.cs'
+  assert_output "credited to level (touches level)"
+}
+
+@test "attribute leaves the project on shared files, a tie, a prefix lookalike or a repo with no games" {
+  "$AQ" add --project game --slug shared "x"
+  run "$AQ" attribute shared <<<$'Assets/Shared/S.cs\nAssets/LevelEditor/E.cs\nProjectSettings/x.asset'
+  assert_success; assert_output ''
+  f="$(item queued shared)"
+  [ "$(field "$f" project)" = game ]
+  [ -z "$(field "$f" touches)" ]
+  run "$AQ" attribute shared <<<$'Assets/Arena/A.cs\nAssets/Level/L.cs'
+  assert_output "touches arena level"
+  [ "$(field "$f" project)" = game ]
+  "$AQ" add --project app --slug app-pr "y"
+  run "$AQ" attribute app-pr <<<'Assets/Level/L.cs'
+  assert_success; assert_output ''
+  [ "$(field "$(item queued app-pr)" project)" = app ]
+  run "$AQ" attribute nope </dev/null
+  assert_failure; assert_output --partial "no item: nope"
 }
