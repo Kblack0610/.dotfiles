@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """fleet-stages: time per delivery stage over a window, read from the shepherd's watch.log.
 
-  fleet-stages.py [--log FILE] [--from EPOCH] [--to EPOCH] [--json]
+  fleet-stages.py [--log FILE] [--state FILE] [--from EPOCH] [--to EPOCH] [--json]
 
 `fleet-sessions stages` runs this; `fleet-sessions tick` writes the log (one line per session
 per minute in which something moved: "YYYY-MM-DD HH:MM  <session>  <field a -> b>, ...", a stage
-change ending in "(<reason>)", plus "new: <STAGE> (<reason>)" and "gone"). The whole log is
+change ending in "(<reason>)", plus "new: <STAGE> (<reason>)" and "gone"). A session's project is its
+`project` field there, the one fleet-sessions wrote on its state.json row; the finished buckets are
+state.json's `vocab.finished`. Nothing here names a project or a bucket. The whole log is
 replayed so a stage entered before the window is known; then:
 
   minutes spent in a stage are clipped to the window;
@@ -19,6 +21,7 @@ import argparse
 import functools
 import json
 import math
+import os
 import re
 import statistics
 import sys
@@ -28,7 +31,7 @@ from pathlib import Path
 
 LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d)  (\S+)  (.*)$")
 STAGE = re.compile(r"stage ([A-Z]+) -> ([A-Z]+)(?:,.*?)?(?: \((.*)\))?$")
-FIELDS = "sync|conflicts|tree|pr|ci|plan|quality|labels"
+FIELDS = "sync|conflicts|tree|pr|ci|plan|quality|labels|project"
 FIELD = re.compile(rf"({FIELDS}) (.+?) -> (.*?)(?=, (?:{FIELDS}|stage) |$| \()")
 PLAN = re.compile(r"^(\d+)/(\d+)$")
 PR = re.compile(r"^#(\d+) (open|merged)$")
@@ -41,17 +44,8 @@ STALLED = (("main_red", ("nightly red after", "main red after")), ("merged_dirty
            ("green_unmerged", ("green, not merged",)), ("conflict", ("conflicts with",)),
            ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)),
            ("pr_closed", ("closed without merging",)), ("item_running", ("is running here",)))
-FINISHED = ("DONE", "LANDED")
 FLICKER_MIN = 2   # a gone and a new of one window this close is one session the probe missed for a tick
-AGENT_SUFFIX = re.compile(r"(-agent-\d+[\w-]*)?(:\d+)?$")
-
-
-def project_of(name):
-    """unity-core-playground-agent-10:1 -> unity-core-playground; dotfiles:3 -> "dotfiles (main)": a window in
-    the repo's own tmux session is a hand session the human talks to, an agent worktree's is not, so a wait
-    at the prompt means different things in each."""
-    base = AGENT_SUFFIX.sub("", name) or name
-    return base if "-agent-" in name else f"{base} (main)"
+UNKNOWN = "(unknown)"   # a session the log has no project line for: one that ended before projects were logged
 
 
 def classify(reason, table):
@@ -69,8 +63,9 @@ EMPTY = {**pct([]), "open": 0}
 
 
 class Window:
-    def __init__(self, start, end):
+    def __init__(self, start, end, finished):
         self.start, self.end = start, end
+        self.finished = finished   # the buckets whose work is done, state.json's vocab.finished
         self.minutes = {}          # stage -> minutes inside the window
         self.ended = {}            # (kind, key) -> [durations of episodes ending in the window]
         self.open = {}             # (kind, key) -> count still open at the end
@@ -105,7 +100,7 @@ class Window:
 
 class Session:
     def __init__(self, name, t):
-        self.project = project_of(name)
+        self.project = UNKNOWN
         self.born = t
         self.stage, self.since, self.reason = None, t, None
         self.ci, self.ci_since = None, t
@@ -134,7 +129,7 @@ def close_stage(w, s, t):
 def enter_stage(w, s, t, stage, reason):
     close_stage(w, s, t)
     s.stage, s.since, s.reason = stage, t, reason
-    if stage not in FINISHED:
+    if stage not in w.finished:
         s.finished_at = None
     elif s.finished_at is None:
         s.finished_at = t
@@ -196,6 +191,10 @@ def on_plan(w, s, t, old, new):
         w.bump("phases_removed", was_total - total, t=t)
 
 
+def on_project(w, s, t, old, new):
+    s.project = new
+
+
 def on_conflict(w, s, t, old, new):
     if new == "CONFLICT" and s.conflict_since is None:
         s.conflict_since = t
@@ -223,7 +222,7 @@ def gone(w, s, t):
         w.episode("wind_down", "finished_to_gone", s.finished_at, t)
 
 
-HANDLERS = {"ci": on_ci, "pr": on_pr, "plan": on_plan, "conflicts": on_conflict}
+HANDLERS = {"ci": on_ci, "pr": on_pr, "plan": on_plan, "conflicts": on_conflict, "project": on_project}
 
 
 @functools.lru_cache(maxsize=None)   # 25k lines share about 5k minute stamps, and strptime is most of a replay
@@ -341,12 +340,19 @@ def text(r):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="fleet-sessions stages")
     ap.add_argument("--log", default=str(Path.home() / ".agent/shepherd/watch.log"))
+    ap.add_argument("--state", default=os.environ.get("FLEET_STATE_FILE") or str(Path.home() / ".local/state/fleet/state.json"))
     ap.add_argument("--from", dest="start", type=int)
     ap.add_argument("--to", dest="end", type=int)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     end = a.end or int(time.time())
-    w = Window(a.start if a.start is not None else end - 86400, end)
+    try:
+        with open(a.state) as fh:
+            finished = tuple(json.load(fh)["vocab"]["finished"])
+    except (OSError, ValueError, KeyError) as e:
+        print(f"fleet-sessions stages: no finished buckets in {a.state}: {e!r}", file=sys.stderr)
+        return 1
+    w = Window(a.start if a.start is not None else end - 86400, end, finished)
     try:
         with open(a.log) as fh:
             replay(fh, w)

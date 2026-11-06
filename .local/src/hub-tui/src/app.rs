@@ -674,7 +674,7 @@ impl App {
                 use hub_core::{boards, capacity, session_table as table};
                 let feed = table::feed(runner.as_ref(), &table::registry());
                 let _ = tx.send(Msg::SessionFeed(Box::new(feed)));
-                let state = table::read_state(&boards::fleet_state());
+                let (state, _) = table::read_state(&boards::fleet_state());
                 let cap = capacity::read(runner.as_ref(), &state);
                 let _ = tx.send(Msg::Capacity(Box::new(cap)));
             });
@@ -982,8 +982,7 @@ impl App {
                 self.open_query(q);
             }
             Msg::Boards(b) => {
-                let state = b.watch.state["sessions"].as_array().cloned();
-                self.controls.read(Some(state.unwrap_or_default()), None);
+                self.controls.read(Some(&b.watch.state), None);
                 self.boards = Some(*b);
                 if self.boards_read.done() {
                     self.read_boards();

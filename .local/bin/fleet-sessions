@@ -80,6 +80,13 @@ PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # `shepherd` on the fleet-shepherd pass itself, which is listed but left out of every count.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"
+# The bucket vocabulary, written once: state.json `vocab` and the agent_session_bucket gauge carry it
+# to every reader (agent-web, hub, waybar, agent-panel, the phone), so none keeps its own list.
+# BUCKET_ORDER is what needs the human first; BUCKET_FINISHED is a session whose work is done, so it
+# is ready to wind down; BUCKET_IN_PROGRESS is a session an agent or the human still has to move.
+BUCKET_ORDER="NEEDS STALLED DONE LANDED CHAT WORKING PARKED"
+BUCKET_FINISHED="DONE LANDED"
+BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 
 # session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
@@ -784,6 +791,10 @@ handoff_of() {
 
 collect() {
   local now heavy line
+  # The one `project` every row carries is the name the hooks give its directory; a pass that cannot
+  # load it fails here, not as a row with no project.
+  # shellcheck source=/dev/null
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
   heavy="$(heavy_panes)"
   local panel items qjson qall qitems
@@ -904,12 +915,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")"
   done
   main_rows
   shared_rows
@@ -986,14 +997,14 @@ eta_cells() {
 }
 
 # board_cells [eta file]: collect's rows on stdin -> one line per session, in bucket order:
-#   sid target sync conflicts tree pr ci plan quality stage labels idle age reason eta prs work wait task now
+#   sid target sync conflicts tree pr ci plan quality stage labels idle age reason eta prs work wait task now project
 # Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
 # changing, and reason rides along to explain a stage change. Newer cells come last so a
 # watch.state written before them still lines up. now is what WHY shows: on a WORKING row, the
 # session's last action (its reason only says busy or shell), else the reason. NIGHTLY and SHARED
 # rows are rendered separately.
 board_cells() {
-  awk -F'\t' -v OFS='\t' -v etaf="${1:-}" '
+  awk -F'\t' -v OFS='\t' -v etaf="${1:-}" -v order="$BUCKET_ORDER" '
     # minutes -> 45m, 3h12m, 2d4h; "-" when the session start is unknown
     function dur(m) {
       if (m !~ /^[0-9]+$/) return "-"
@@ -1013,7 +1024,7 @@ board_cells() {
       return name ? wait_names[name] " " hrs(top) : "-"
     }
     BEGIN {
-      n = split("NEEDS STALLED DONE LANDED CHAT WORKING PARKED", o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
+      n = split(order, o, " "); for (i = 1; i <= n; i++) rank[o[i]] = i
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
@@ -1036,7 +1047,7 @@ board_cells() {
       print (rank[$1] ? rank[$1] : 9), $3, t, sync, conf, tree, pr, ci, plan,
             (q == "" ? "-" : q), $1, (l == "" ? "-" : l), $7 "m", dur($28), $11,
             ($3 in eta ? eta[$3] : "-"), ($33 == "" ? "-" : $33), hrs($34), wait_cell($42 + 0, $43 + 0, $35 + 0, $36 + 0, $37 + 0),
-            ($39 == "" ? "-" : $39), ($1 == "WORKING" && now != "-" && now != "" ? now : $11)
+            ($39 == "" ? "-" : $39), ($1 == "WORKING" && now != "-" && now != "" ? now : $11), ($51 == "" ? "-" : $51)
     }' | sort -t$'\t' -k1,1n -k3,3 | cut -f2-
 }
 
@@ -1048,10 +1059,12 @@ transitions() {
     NR == FNR { prev[$1] = $0; next }
     {
       seen[$1] = 1
-      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ")"; next }
+      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ")"; print $2 "  project - -> " $21; next }
       split(prev[$1], p, "\t"); out = ""
       for (i = 3; i <= 11; i++)
         if (p[i] != $i) out = out (out == "" ? "" : ", ") name[i] " " p[i] " -> " $i
+      # The project is the last cell, so a watch.state written before it has none: "-" is its old value.
+      if (p[21] != $21) out = out (out == "" ? "" : ", ") "project " (p[21] == "" ? "-" : p[21]) " -> " $21
       if (out != "") print $2 "  " out (p[10] != $10 ? " (" $14 ")" : "")
     }
     END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
@@ -1148,7 +1161,8 @@ json_rows() {
       account: (if (.[45] // "-") == "-" then null else .[45] end),
       item: (if (.[46] // "-") == "-" then null else
         {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
-         origin: (if .[49] == "-" then null else .[49] end)} end)}'
+         origin: (if .[49] == "-" then null else .[49] end)} end),
+      project: (if (.[50] // "") == "" then null else .[50] end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
@@ -1167,11 +1181,13 @@ write_state() {
   stopped="$(fleet-dispatch stopped --json 2>/dev/null)"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
+       --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \
        --arg asks "$asks" --arg rows "$json" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
+         vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" "))},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
@@ -1190,7 +1206,7 @@ write_state() {
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
       # The shepherd pass (label shepherd) is listed but not counted: it is not an agent session.
       | .counts = ((.sessions | map(select((.labels // []) | index("shepherd") | not) | .bucket)) as $b
-          | (["WORKING", "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "PARKED"] + $b | unique)
+          | (($order | split(" ")) + $b | unique)
           | map(. as $k | {key: $k, value: ($b | map(select(. == $k)) | length)}) | from_entries)' > "$tmp"; then
     rm -f "$tmp"; echo "fleet-sessions: could not build $STATE_FILE" >&2; return 1
   fi
@@ -1207,18 +1223,12 @@ write_state() {
 # sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per
 # fact it has, labelled {target, project, bucket}, an info series joining each target to its
 # session_id (the label claude_code_* metrics carry), bucket counts, and the open asks unless
-# agent-ask could not be read. project is the canonical name the hooks give the session's cwd.
+# agent-ask could not be read. project is the row's own, from resolve_project_name.
 sessions_prom() {
-  local d projects
-  # shellcheck source=/dev/null
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
-  projects="$(jq -r '.sessions[].cwd // empty' "$1" | sort -u | while IFS= read -r d; do
-    printf '%s\t%s\n' "$d" "$(resolve_project_name "$d")"
-  done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')"
-  jq -r --argjson p "$projects" "$PROM_JQ"'
+  jq -r "$PROM_JQ"'
     def per($name; $help; f): gauge($name; $help;
       .sessions | sort_by(.target)[] | select((.labels // []) | index("shepherd") | not)
-      | [{target, project: ($p[.cwd // ""] // ""), bucket}, f]);
+      | [{target, project: (.project // ""), bucket}, f]);
     per("agent_session_context_tokens"; "Context tokens the session holds."; .context_tokens),
     per("agent_session_idle_minutes"; "Minutes since the session went idle, by agent-panel."; .idle_min),
     per("agent_session_age_minutes"; "Minutes since the session started."; .age_min),
@@ -1229,9 +1239,13 @@ sessions_prom() {
     per("agent_session_conflicts"; "1 when the branch of the session conflicts with its base."; .conflicts),
     gauge("agent_session_info"; "Joins a session target to its Claude Code session_id; always 1.";
       .sessions | sort_by(.target)[] | select((.session_id // "") != "")
-      | [{target, project: ($p[.cwd // ""] // ""), session_id}, 1]),
+      | [{target, project: (.project // ""), session_id}, 1]),
     gauge("agent_sessions"; "Live sessions per fleet-sessions bucket.";
       .counts | to_entries[] | [{bucket: .key}, .value]),
+    gauge("agent_session_bucket"; "Place of a bucket in the order that needs the human first (0 is first), with its finished and in-progress flags.";
+      .vocab as $v | $v.buckets | to_entries[] | .value as $b
+      | [{bucket: $b, finished: (if ($v.finished | index($b)) then "1" else "0" end),
+          in_progress: (if ($v.in_progress | index($b)) then "1" else "0" end)}, .key]),
     gauge("agent_sessions_unlinked"; "Live sessions with no agent-queue item, by the item_of join.";
       [{}, ([.sessions[] | select((.labels // []) | index("shepherd") | not)
              | select(.bucket != "NIGHTLY" and .bucket != "SHARED" and .item == null)] | length)]),
@@ -1250,7 +1264,7 @@ main() {
     label) shift; label "$@"; return ;;
     tick) tick; return ;;
     explain) shift; explain "$@"; return ;;
-    stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" "$@"; return ;;
+    stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" --state "$STATE_FILE" "$@"; return ;;
     -h|--help) sed -n '2,25p' "$0"; return ;;
   esac
   CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
@@ -1262,7 +1276,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in NIGHTLY SHARED NEEDS STALLED DONE LANDED CHAT WORKING PARKED; do
+  for b in NIGHTLY SHARED $BUCKET_ORDER; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do

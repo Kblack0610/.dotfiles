@@ -60,10 +60,15 @@ setup() {
   chmod +x "$SANDBOX/bin/asks-all-stub"
 }
 
+# project_of_target <target> -> the project fleet-sessions would write on that row: the tmux session
+# without its server, window and -agent-N. A fixture standing in for resolve_project_name, which
+# the sessions' own tests cover; fleet-bench only reads the field.
+project_of_target() { local p="${1#*/}"; p="${p%%:*}"; printf '%s' "${p%-agent-*}"; }
+
 # row <session> <target> <done> <total> [finished]
 row() {
-  printf '{"session_id":"%s","target":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s}\n' \
-    "$1" "$2" "$3" "$4" "${5:-false}"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${5:-false}"
 }
 
 # sample_at <offset-seconds>: one sample of whatever $SNAP holds
@@ -79,6 +84,17 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output "$(printf 'a\tgame\t0')"
   run outcome
   assert_output --partial WORKED
+}
+
+@test "a session in freqtrade_trading_attempt-agent-1 is project trader: the row's project, not its name stripped" {
+  jq -cn '{session_id:"f", target:"lab/freqtrade_trading_attempt-agent-1:1", project:"trader", bucket:"WORKING",
+           phases_done:0, phases_total:2, finished:false}' > "$SNAP"
+  run sample_at 0
+  assert_success
+  run jq -r '.project' "$FLEET_BENCH_DIR/progress.jsonl"
+  assert_output trader
+  # negative control: the old suffix strip would have read freqtrade_trading_attempt
+  refute_output --partial freqtrade
 }
 
 @test "fleet-sessions failing writes nothing and publishes FAILED with exit 1" {
@@ -100,7 +116,8 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
 
 # brow <session> <target> <bucket>: a live row in that bucket
 brow() {
-  printf '{"session_id":"%s","target":"%s","bucket":"%s","phases_done":1,"phases_total":4,"finished":false}\n' "$1" "$2" "$3"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"%s","phases_done":1,"phases_total":4,"finished":false}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3"
 }
 
 @test "sample publishes the window per project to node_exporter as fleet_bench.prom" {
@@ -394,7 +411,7 @@ past_scores() {
 }
 
 # rowj <jq object fields>: a fleet-sessions row with any fields, for the scorecard tests
-rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
+rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", project: \"game\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
 
 @test "a new plan is a new timeline: the gap across the switch is not measured as a phase" {
   rowj 'plan_file: "p1", phases_done: 1' > "$SNAP"; sample_at 0
@@ -2448,8 +2465,8 @@ scorecard_with_data() {
 
 # rowp <session> <target> <done> <total> <plan> [finished]: a row carrying its plan file
 rowp() {
-  printf '{"session_id":"%s","target":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"plan_file":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "${6:-false}" "$5"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"plan_file":"%s"}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${6:-false}" "$5"
 }
 
 @test "flow counts ticked, added, removed and started apart, and balances the open phases" {

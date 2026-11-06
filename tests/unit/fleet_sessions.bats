@@ -1155,17 +1155,19 @@ research_item() {
   [ "$hub" = "tmux -L hub set-option -wq -t =dotfiles:2 @fleet_stage LANDED ; set-option -wqu -t =dotfiles:2 @fleet_labels" ]
 }
 
-# cells <sid> <target> <ci> <stage>: one board_cells line with everything else fixed
-cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
+# cells <sid> <target> <ci> <stage> [project]: one board_cells line with everything else fixed
+cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\t-\t-\t-\t-\t-\t-\t%s\n' "$1" "$2" "$3" "$4" "$4" "${5:-proj}"; }
 
 @test "transitions names what appeared, left, or changed a stage cell, and nothing else" {
-  { cells a s-a pending WORKING; cells b s-b pass DONE; } > "$SANDBOX/prev"
-  # a: CI went red and the stage followed; b: only idle and age moved; c: new; (nothing left yet)
-  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; } > "$SANDBOX/cur"
+  { cells a s-a pending WORKING; cells b s-b pass DONE; cells d s-d pass DONE one; } > "$SANDBOX/prev"
+  # a: CI went red and the stage followed; b: only idle and age moved; c: new; d: its project moved
+  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; cells d s-d pass DONE two; } > "$SANDBOX/cur"
   run transitions "$SANDBOX/prev" "$SANDBOX/cur"
   assert_line 's-a  ci pending -> fail, stage WORKING -> STALLED (why STALLED)'
   assert_line 's-c  new: LANDED (why LANDED)'
-  [ "${#lines[@]}" -eq 2 ]
+  assert_line 's-c  project - -> proj'
+  assert_line 's-d  project one -> two'
+  [ "${#lines[@]}" -eq 4 ]
   run transitions "$SANDBOX/cur" "$SANDBOX/prev"
   assert_line 's-c  gone'
 }
@@ -1258,10 +1260,17 @@ age_row() {
 @test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
   run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
   assert_success
-  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy$'
+  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+}
+
+@test "board_cells: the row's project is the last cell, and - when it has none (negative control)" {
+  run board_cells < <(time_row WORKING 0 0 0 0 | awk -F'\t' -v OFS='\t' '{ $51 = "trader"; print }')
+  assert_output --regexp $'\tbusy\ttrader$'
+  run board_cells < <(time_row WORKING 0 0 0 0)
+  assert_output --regexp $'\tbusy\t-$'
 }
 
 # time_row <stage> <work> <jobs> <human> <parked> [doing] [gate] [test]: a collect row with the newer fields set.
@@ -1272,26 +1281,26 @@ time_row() {
 @test "board_cells: PRS, WORK, the largest WAIT, TASK, and WHY as the last action on a WORKING row" {
   run board_cells < <(time_row WORKING 190 300 60 620 'Bash: Commit P3')
   assert_success
-  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3$'
+  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3\t-$'
   run board_cells < <(time_row WORKING 45 90 300 60 'Read')
-  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead$'
+  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead\t-$'
   # a tie goes to jobs: something was running, so it is not the session sitting still
   run board_cells < <(time_row WORKING 0 120 120 120)
-  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 300 50)
-  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 50 300)
-  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy\t-$'
   # a tie goes to the gate ahead of the test, and the test ahead of jobs
   run board_cells < <(time_row WORKING 0 120 120 120 - 120 120)
-  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 0 120)
-  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 0 0 0)
-  assert_output --regexp $'\t-\t-\tthe-topic\tbusy$'
+  assert_output --regexp $'\t-\t-\tthe-topic\tbusy\t-$'
   # any other stage keeps its reason: it says what the stage needs
   run board_cells < <(time_row STALLED 5 5 5 5 'Bash: Commit P3')
-  assert_output --regexp $'\tbusy$'
+  assert_output --regexp $'\tbusy\t-$'
 }
 
 @test "eta_cells: a calibrated basis is shortened like a plain one" {
@@ -1720,10 +1729,11 @@ SH
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
+ "vocab":{"buckets":["NEEDS","DONE","WORKING"],"finished":["DONE"],"in_progress":["WORKING","NEEDS"]},
  "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
- {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
+ {"bucket":"WORKING","target":"lab/game-agent-2:1","project":"game-agent-2","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
   "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123","item":{"slug":"fix-x","is":"own"}},
- {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
+ {"bucket":"NEEDS","target":"hub/dot\"files:1","project":"dotfiles","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
   "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
 JSON
 }
@@ -1772,6 +1782,11 @@ agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
 agent_sessions{bucket="WORKING"} 1
+# HELP agent_session_bucket Place of a bucket in the order that needs the human first (0 is first), with its finished and in-progress flags.
+# TYPE agent_session_bucket gauge
+agent_session_bucket{bucket="NEEDS",finished="0",in_progress="1"} 0
+agent_session_bucket{bucket="DONE",finished="1",in_progress="0"} 1
+agent_session_bucket{bucket="WORKING",finished="0",in_progress="1"} 2
 # HELP agent_sessions_unlinked Live sessions with no agent-queue item, by the item_of join.
 # TYPE agent_sessions_unlinked gauge
 agent_sessions_unlinked 1

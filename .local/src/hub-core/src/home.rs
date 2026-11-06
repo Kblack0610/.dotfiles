@@ -275,15 +275,6 @@ fn short(s: &str) -> String {
     format!("{}...", cut.trim_end())
 }
 
-/// The last path segment of a session's cwd, the project a session row shows without a queue item.
-pub(crate) fn dir_name(cwd: &str) -> String {
-    cwd.rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or("")
-        .trim_start_matches('.')
-        .to_string()
-}
-
 /// The tmux target of session `name` in `sessions`, when exactly one window carries it.
 fn target_in(sessions: &[&Value], name: &str) -> Option<String> {
     let mut m = sessions
@@ -434,7 +425,7 @@ pub fn needs(
         let since = now.zip(s["idle_min"].as_i64()).map(|(g, m)| g - m * 60);
         out.push(Need {
             kind: Kind::Session,
-            project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
+            project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
             text: short(&item.map_or_else(|| str_of(s, "reason").to_string(), |i| i.title())),
             id: target.into(),
             target: Some(target.into()),
@@ -676,9 +667,9 @@ mod tests {
             "generated_epoch": NOW,
             "counts": {"WORKING": 2, "NEEDS": 2, "STALLED": 0},
             "sessions": [
-                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo"},
+                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
                 {"target": "hub/dotfiles:2", "bucket": "NEEDS", "asks": 0, "idle_min": 3,
-                 "cwd": "/home/k/.dotfiles", "reason": "waiting on a prompt or permission"},
+                 "cwd": "/home/k/.dotfiles", "project": "dotfiles", "reason": "waiting on a prompt or permission"},
                 {"target": "lab/repo-agent-2:1", "bucket": "WORKING", "phases_done": 2,
                  "phases_total": 4, "next_phase": "three"},
             ],
@@ -753,7 +744,8 @@ mod tests {
         let mut st = state();
         st["sessions"] = json!([
             {"target": "lab/big-agent-1:1", "bucket": "NEEDS", "idle_min": 30,
-             "phases_done": 1, "phases_total": 4, "cwd": "/w/big"},
+             "phases_done": 1, "phases_total": 4, "cwd": "/w/freqtrade_trading_attempt-agent-1",
+             "project": "trader"},
         ]);
         st["asks"] = json!([
             // Ten days old, but the judge said a machine can answer it: below every human row.
@@ -790,6 +782,8 @@ mod tests {
                 "auto"
             ]
         );
+        // The project is the one the row carries: a freqtrade_trading_attempt worktree is trader.
+        assert_eq!(h.needs[0].project, "trader");
         // (1 + session + 3 phases left) * 30 min.
         assert_eq!(score(&h.needs[0]), (true, true, 3, 0, 30, 150));
         assert_eq!(
@@ -988,6 +982,5 @@ mod tests {
         assert_eq!(tmux_name("lab/repo-agent-1:1"), "repo-agent-1");
         assert_eq!(tmux_name("lab:repo-agent-1"), "repo-agent-1");
         assert_eq!(tmux_name("repo-agent-1"), "repo-agent-1");
-        assert_eq!(dir_name("/home/k/.dotfiles"), "dotfiles");
     }
 }

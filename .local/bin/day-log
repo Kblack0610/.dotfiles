@@ -161,7 +161,7 @@ gather() {
             | (.cwd // "" | sub(".*/"; "")) as $b
             | ([$g.repos | keys[] | . as $k | ltrimstr(".") as $r
                 | select($b == $k or $b == $r or ($b | startswith($r + "-")))] | max_by(length)) as $k
-            | {area: (if $k then $g.repos[$k] else ($b | sub("-agent-[0-9]+$"; "")) end), who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")),
+            | {area: (if $k then $g.repos[$k] else (.project // $b) end), who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")),
                phase: .next_phase, done: .phases_done, total: .phases_total}]
          else ($p.next // null) end),
        waiting: (if $live and $st != null then
