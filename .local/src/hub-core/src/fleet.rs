@@ -566,6 +566,8 @@ pub fn judge(asks: &[Ask]) -> Judge {
                 j.deferred += 1;
                 continue;
             }
+            // A failed call neither defers nor answers.
+            "error" => continue,
             "take-recommend" => a.recommend.as_str(),
             call => call.strip_prefix("answer:").unwrap_or(call),
         };
