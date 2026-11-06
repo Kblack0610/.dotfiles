@@ -242,18 +242,20 @@ fn workers(
                 ),
                 r.next.map_or("-".into(), |t| clock(t, now)).into(),
                 usd(r.cost_24h).into(),
-                cell(why, p.dim()),
                 r.score.as_ref().map_or("-", |s| &s.text).into(),
+                cell(why, p.dim()),
             ]
         })
         .collect();
     let table = Table {
         header: vec![
-            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "WHY", "SCORE",
+            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "SCORE", "WHY",
         ],
         rows,
-        keep: vec![0, 2, 9, 3, 5, 4, 6, 7, 1],
-        flex: Some(8),
+        // WHY is the flex column and stays last: fit neither pads nor clips it, so a column
+        // after it would be pushed off the line by a long WHY.
+        keep: vec![0, 2, 8, 3, 5, 4, 6, 7, 1],
+        flex: Some(9),
         flexmin: 20,
         right: vec![4, 5, 7],
         cap: vec![(0, if slots.is_some() { 35 } else { 28 })],
@@ -822,10 +824,17 @@ pub mod tests {
     }
 
     #[test]
-    fn the_score_column_ends_each_row_in_both_orders_and_a_lane_with_none_is_a_dash() {
+    fn the_score_column_sits_before_why_in_both_orders_and_a_lane_with_none_is_a_dash() {
         let p = Palette { no_color: true };
+        // A WHY longer than the page: the score before it still shows.
+        let mut f = tonight_fixture();
+        for w in &mut f.workers {
+            if let Some(o) = w.why.as_mut() {
+                o.text = "moved 0 from the outbox, filed 0, left 0, refused 3 ".repeat(6);
+            }
+        }
         for tonight in [false, true] {
-            let lines: Vec<String> = page(&tonight_fixture(), p, NOW, 200, false, tonight)
+            let lines: Vec<String> = page(&f, p, NOW, 150, false, tonight)
                 .iter()
                 .map(plain)
                 .collect();
@@ -838,12 +847,15 @@ pub mod tests {
                     .to_string()
             };
             assert!(
-                lines.iter().any(|l| l.trim_end().ends_with("SCORE")),
+                lines
+                    .iter()
+                    .any(|l| l.trim_end().ends_with("WHY") && l.contains("$24H  SCORE ")),
                 "{lines:#?}"
             );
             // dream is the row with its lane, memory.
-            assert!(row("memory").ends_with("81% kept"), "{}", row("memory"));
-            assert!(row("idle-one").ends_with(" -"), "{}", row("idle-one"));
+            assert!(row("memory").contains("81% kept"), "{}", row("memory"));
+            assert!(row("memory").ends_with('~'), "{}", row("memory"));
+            assert!(row("idle-one").contains(" -  "), "{}", row("idle-one"));
         }
     }
 
