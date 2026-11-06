@@ -360,6 +360,48 @@ gate_t() {
   refute_blocks "$(gate_t s2)"
 }
 
+@test "session: an item whose sessions list this one is tracking, though the transcript lost the add" {
+  # 2026-11-05 a compaction dropped the add from the transcript the gate reads, and it blocked
+  # a session its own item already named. A stub answers for the queue: s1 has an item.
+  printf '#!/bin/sh\n[ "$1 $2 $3" = "mine --sid s1" ] && { echo the-item; exit 0; }\nexit 1\n' > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  tcall s1 Edit
+  refute_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  assert_blocks "$(gate_t s2)"
+}
+
+# filler <session> -- 1 MB of later calls, far past a pipe buffer (64 KB), so a grep that stops
+# at an earlier match always leaves its writer unwritten bytes. 100 KB a call: one argument's limit is 128 KB.
+filler() {
+  local i x
+  x=$(head -c 100000 /dev/zero | tr '\0' x)
+  for i in $(seq 10); do tcall "$1" Bash "echo $x"; done
+}
+
+@test "session: a long session's early PR and agent-land still count past a pipe buffer" {
+  # 2026-11-05 under pipefail `printf "$CALLS" | grep -q` read a match as no match once the
+  # calls passed 64 KB: grep exits on the match, printf takes SIGPIPE, the pipeline is 141.
+  # A session that landed with agent-land was blocked, and one with no item could pass.
+  tcall s1 Edit
+  tcall s1 Bash 'gh pr create --title t'
+  filler s1
+  assert_blocks "$(gate_t s1)"
+  tcall s2 Edit
+  tcall s2 Bash 'gh pr create --title t'
+  tcall s2 Bash 'agent-land 42 --item fix-thing'
+  filler s2
+  refute_blocks "$(gate_t s2)"
+}
+
+@test "session: its own agent-queue claim is tracking" {
+  tcall s1 Edit
+  tcall s1 Bash 'agent-queue claim fix-thing'
+  refute_blocks "$(gate_t s1)"
+}
+
 @test "session: a read-only agent-queue verb is not tracking" {
   tcall s1 Edit
   tcall s1 Bash 'agent-queue list'
@@ -372,4 +414,36 @@ gate_t() {
   local reason
   reason="$(gate s1 | jq -r '.reason')"
   [[ "$reason" == *'agent-queue add --running'* ]]
+}
+
+# ── a PR is a unit of work: only a queue item tracks it ──────────────────────
+# 2026-11-05 only 26% of merged PRs had a queue item: a board write or a Focus item in
+# progress let a PR session pass with nothing on the work ledger.
+
+@test "session: a PR with only a board write or a Focus item in progress blocks, once" {
+  focus '- [/] something in progress'
+  tcall s1 Edit
+  tcall s1 Bash 'notes ptask dotfiles --agent done "the row" --proof pr:42'
+  tcall s1 Bash 'gh pr create --title t --body b'
+  local out
+  out="$(gate_t s1)"
+  assert_blocks "$out"
+  [[ "$(jq -r .reason <<<"$out")" == *'agent-queue claim <slug>'* ]]
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: a PR with its own agent-queue add, claim or agent-land passes" {
+  tcall s1 Edit; tcall s1 Bash 'gh pr create --title t'; tcall s1 Bash 'agent-queue add --running --project dotfiles "fix(x): y"'
+  refute_blocks "$(gate_t s1)"
+  tcall s2 Bash 'gh pr merge 7 --squash'; tcall s2 Bash 'agent-queue claim fix-x-y'
+  refute_blocks "$(gate_t s2)"
+  tcall s3 Edit; tcall s3 Bash 'gh pr create'; tcall s3 Bash 'agent-land 7 --item fix-x-y'
+  refute_blocks "$(gate_t s3)"
+}
+
+@test "session: an earlier Edit nudge does not spend the PR nudge" {
+  tcall s1 Edit
+  assert_blocks "$(gate_t s1)"
+  tcall s1 Bash 'gh pr create --title t'
+  assert_blocks "$(gate_t s1)"
 }

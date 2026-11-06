@@ -13,11 +13,15 @@
 mod assets;
 mod auth;
 mod board;
+mod cli;
 mod cloud;
 mod feed;
 mod fleet;
+mod focus;
 mod infra;
 mod jobs;
+mod outbox;
+mod outcomes;
 mod projects;
 mod queue;
 mod shepherd;
@@ -114,12 +118,17 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
+        .route("/api/focus", get(focus::get).put(focus::save))
+        .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
+        .route("/api/queue/candidates", get(queue::candidates))
         .route("/api/shepherd", get(shepherd::get))
+        .route("/api/outcomes", get(outcomes::ranked))
+        .route("/api/outcomes/card", get(outcomes::card))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
@@ -224,7 +233,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 .map(|p| (p, flat)),
         );
     }
-    let asks = session::home().join(".agent").join("asks");
+    let asks = boards::asks_dir();
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
     }
@@ -262,6 +271,18 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let rundowns = boards::shepherd_dir().join("rundowns");
     std::fs::create_dir_all(&rundowns)?;
     targets.push((rundowns, flat));
+    // The Outbox tab: the outbox's directory, from the CLI that owns its path, and the notes
+    // state directory that holds ingest.jsonl. Both files are replaced by a rename.
+    if let Some(dir) = hub_core::outbox::doc(&hub_core::session_actions::System)
+        .ok()
+        .and_then(|d| PathBuf::from(d.path).parent().map(Path::to_path_buf))
+    {
+        targets.push((dir, flat));
+    }
+    let notes_state = session::home().join(".local/state/notes");
+    if notes_state.is_dir() {
+        targets.push((notes_state, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -313,6 +334,11 @@ fn classify(p: &Path) -> Option<String> {
     // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
     if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
         return Some(r#"{"kind":"actions"}"#.to_string());
+    }
+    // The Outbox tab: the doc and the ingest record of what intake did with its lines. Before
+    // `ext`, which reads any other `.jsonl` as a transcript.
+    if name == "outbox.md" || (parent == "notes" && name == "ingest.jsonl") {
+        return Some(r#"{"kind":"outbox"}"#.to_string());
     }
     let ext = p.extension()?.to_str()?;
     if (parent == "agentctl" && name == "runs.jsonl")
@@ -617,32 +643,6 @@ async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
     capture(agent.pane).await
 }
 
-/// Sampling a pane while a paste renders. tmux has no event for "the program in this pane has
-/// read its input", so this is the one bounded loop on one cadence. 40 samples is 2s.
-const PASTE_POLL: Duration = Duration::from_millis(50);
-const PASTE_POLLS: u32 = 40;
-
-/// Wait until `capture` has moved away from `before` and then held still for one sample: the
-/// program has read the paste and drawn it. Claude Code drops an Enter that arrives on the heels
-/// of a paste, which leaves the message sitting unsent in its input box. False when the pane never
-/// settles, as under a running spinner; the caller presses Enter regardless, once.
-async fn paste_settled<F, Fut>(before: &str, mut capture: F, polls: u32, cadence: Duration) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = String>,
-{
-    let mut last: Option<String> = None;
-    for _ in 0..polls {
-        let now = capture().await;
-        if now != before && last.as_deref() == Some(now.as_str()) {
-            return true;
-        }
-        last = Some(now);
-        tokio::time::sleep(cadence).await;
-    }
-    false
-}
-
 async fn capture(pane: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || tmux::capture_pane(&pane, false, SCREEN_LINES))
         .await
@@ -720,30 +720,19 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
 
     if !b.text.is_empty() {
-        let before = capture(agent.pane.clone()).await?;
-        // A bracketed paste, not send-keys -l: a newline inside the text stays part of
-        // the message instead of submitting it half-written.
-        run_tmux(
-            server,
-            &["load-buffer", "-b", "agent-web", "-"],
-            Some(&b.text),
-        )
-        .await?;
-        run_tmux(
-            server,
-            &["paste-buffer", "-p", "-d", "-b", "agent-web", "-t", pane],
-            None,
-        )
-        .await?;
-        if b.submit.unwrap_or(true) {
-            paste_settled(
-                &before,
-                || async { capture(agent.pane.clone()).await.unwrap_or_default() },
-                PASTE_POLLS,
-                PASTE_POLL,
-            )
-            .await;
-            run_tmux(server, &["send-keys", "-t", pane, "Enter"], None).await?;
+        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
+        // drawn before Enter, and the check that the Enter was taken.
+        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
+        let sent =
+            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
+                .await
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if sent == agent_panel::send::Sent::NotSubmitted {
+            return Err(bad(
+                StatusCode::CONFLICT,
+                "the session did not take the Enter; the text is in its input box",
+            ));
         }
     }
     if let Some(k) = b.key.as_deref() {
@@ -913,6 +902,7 @@ async fn watch_board() -> ApiResult<Json<boards::Watch>> {
         boards::watch(
             &boards::fleet_state(),
             &boards::shepherd_dir().join("watch.log"),
+            &actions::System,
         )
     })
     .await
@@ -952,15 +942,12 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-/// The Home tab: hub_core::home over the fleet state, the queue and the cached Prometheus
-/// answer, the same join the hub TUI's Home draws.
+/// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
+/// Prometheus answer, the same join the hub TUI's Home draws.
 async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
     let infra = s.infra.infra().await;
     tokio::task::spawn_blocking(move || {
-        let state = std::fs::read_to_string(boards::fleet_state())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(serde_json::Value::Null);
+        let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
         hub_core::home::build(&state, Some(&queue), Some(&infra))
     })
@@ -1035,24 +1022,6 @@ async fn events_stream(
 mod tests {
     use super::*;
 
-    /// Run `paste_settled` over scripted captures; returns its answer and how many it read.
-    async fn settle(script: &[&str], polls: u32) -> (bool, usize) {
-        let mut it = script.iter();
-        let mut read = 0;
-        let settled = paste_settled(
-            "before",
-            || {
-                read += 1;
-                let next = it.next().copied().unwrap_or("before").to_string();
-                async move { next }
-            },
-            polls,
-            Duration::ZERO,
-        )
-        .await;
-        (settled, read)
-    }
-
     #[test]
     fn only_a_dir_directly_under_projects_is_a_new_project() {
         use notify::event::{CreateKind, ModifyKind};
@@ -1066,24 +1035,6 @@ mod tests {
         ));
         let modify = EventKind::Modify(ModifyKind::Any);
         assert!(!is_new_project(&modify, &projects.join("-new"), projects));
-    }
-
-    #[tokio::test]
-    async fn settles_once_the_paste_is_drawn_and_still() {
-        let got = settle(&["before", "before", "pasted", "pasted", "unread"], 40).await;
-        assert_eq!(got, (true, 4));
-    }
-
-    #[tokio::test]
-    async fn a_pane_still_redrawing_has_not_settled() {
-        let got = settle(&["a", "b", "c", "c"], 40).await;
-        assert_eq!(got, (true, 4));
-        assert_eq!(settle(&["a", "b", "c", "d"], 4).await, (false, 4));
-    }
-
-    #[tokio::test]
-    async fn an_unchanged_pane_gives_up_at_the_bound() {
-        assert_eq!(settle(&[], 5).await, (false, 5));
     }
 
     /// A path that cannot be watched comes back as failed and does not stop the others; the
@@ -1210,6 +1161,14 @@ mod tests {
         );
         assert_eq!(classify(Path::new("/h/.agent/parked/.agent-3.Xy12")), None);
         assert_eq!(classify(Path::new("/h/notes/x.md")), None);
+        for p in ["/h/.notes/outbox.md", "/h/.local/state/notes/ingest.jsonl"] {
+            assert_eq!(
+                classify(Path::new(p)).as_deref(),
+                Some(r#"{"kind":"outbox"}"#),
+                "{p}"
+            );
+        }
+        assert_eq!(classify(Path::new("/h/.notes/.outbox.lock")), None);
         assert_eq!(classify(Path::new("/h/.claude/sessions/123.key")), None);
         assert_eq!(
             classify(Path::new("/h/.claude/projects/-h-x/abc.json")),

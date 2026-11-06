@@ -109,7 +109,7 @@ Path: `~/.agent/evals/{project}/stack-review-<YYYY-MM-DD>/report.md`. Never insi
 
 Run as a subagent, you may not be allowed to write files: return the full report as text and the parent writes it to the path. Skip the Artifact offer in that case too.
 
-Run in the main session, offer in one line to publish it as an Artifact when the user will share it; publish without asking if they said a team or reviewer will read it.
+Run in the main session with the Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it), offer in one line to publish it as an Artifact when the user will share it; publish without asking if they said a team or reviewer will read it.
 
 In the chat reply give the top findings per tier with their why, the verified/unverified count, and the report path. The full report stays in the file.
 
@@ -122,7 +122,7 @@ In the chat reply give the top findings per tier with their why, the verified/un
 
 ## plan
 
-1. For each non-safe finding, one agent-board row (`notes ptask <project> --agent add "<short title>"`) or the repo's tracker, with the report path. Fold into existing rows; do not duplicate.
+1. For each non-safe finding, one agent-board row (`notes ptask <project> --agent add "<short title>"`) or the repo's tracker, with the report path. Fold into an existing row that says the same thing in other words; an exact open twin is refused by `ptask add` (exit 3).
 2. Findings that need a design (a module split, a workspace, a new shared lib with several callers) go to `kb-architect` as a spec request quoting the finding, its evidence and its why.
 3. Never place rows into a planned release/wave - that is the human's call.
 

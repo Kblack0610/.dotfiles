@@ -9,7 +9,7 @@ const pst = { data: null, err: null, open: null, unlinked: false };
 
 const refreshProjects = coalesce(async () => {
   try { pst.data = await api("/api/projects"); pst.err = null; } catch (e) { pst.err = e.message; }
-  if (st.tab === "projects") renderProjects();
+  if (st.tab === "projects") { pDeep(); renderProjects(); }
 });
 
 const pKey = (c) => c.profile + "/" + c.name;
@@ -29,7 +29,7 @@ function pCard(c, rowsOpen) {
     `${c.requested} rows #requested, ${c.inbox} in the inbox`;
   return `<div class="card qitem pcard"${rowsOpen ? "" : ` data-open="${esc(pKey(c))}"`}>` +
     cardHead(c.name.toUpperCase(), chips) +
-    cardLine([esc(c.profile), esc(c.stage)]) +
+    cardLine([esc(c.profile), esc(c.stage)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
     `<div class="pprog">${meter((c.percent || 0) / 100)}<span>${esc(c.summary)}</span></div>` +
     (c.goal ? `<div class="pline"><span class="plead">goal</span><span>${esc(c.goal)}</span></div>` : "") +
     c.running.map(pRunning).join("") +
@@ -57,6 +57,16 @@ function pCards() {
       `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div></details>`;
   }
   return html;
+}
+
+// `#projects/<name>` (a `#p:<name>` link on Focus) or `#projects/<profile>/<name>` opens that
+// project's rows, once the cards say which project the name is; `#projects/all` opens All.
+function pDeep() {
+  const want = st.arg;
+  if (!want) return;
+  if (want === "all") { if (pst.open !== "all") pOpen("all"); return; }
+  const c = pst.data && pst.data.cards.find((x) => pKey(x) === want || x.name === want);
+  if (c && pst.open !== pKey(c)) pOpen(pKey(c));
 }
 
 // The rows view: the card (or the All heading) on top, then board.js's rows and controls.
@@ -87,7 +97,11 @@ function renderProjects() {
 }
 
 $("projects").addEventListener("click", (e) => {
-  if (e.target.id === "p-back") { pst.open = null; renderProjects(); refreshProjects(); return; }
+  if (e.target.id === "p-back") {
+    pst.open = null;
+    if (st.arg) { st.arg = ""; try { history.replaceState(null, "", "#projects"); } catch (err) { /* not fatal */ } }
+    renderProjects(); refreshProjects(); return;
+  }
   const o = e.target.closest("[data-open]");
   if (o && !e.target.closest("#board")) pOpen(o.dataset.open);
 });
@@ -96,7 +110,7 @@ $("projects").addEventListener("toggle", (e) => {
 }, true);
 
 TABS.projects = {
-  show() { renderProjects(); refreshProjects(); refreshBoard(); },
+  show() { pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
     if (["watch", "queue", "resync"].includes(ev.kind)) refreshProjects();

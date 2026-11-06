@@ -125,6 +125,30 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_not_called 'ptask'
 }
 
+@test "an answer to a live session is typed into its pane through agent-panel send" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  # The sandbox sets AGENT_ASK_NO_RESUME, which also skips typing into the session.
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" answer "$a" yes
+  assert_success
+  assert_called "agent-panel send --pane lab/%1 Answer to ask $a: yes"
+  refute_output --partial 'did not submit'
+}
+
+@test "an answer the pane did not take still records, and says where the text is" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  : > "$NOTES_FIXTURE/agent-panel.unsent"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  # The sandbox sets AGENT_ASK_NO_RESUME, which also skips typing into the session.
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" answer "$a" yes
+  assert_success
+  assert_output --partial "did not submit in dotfiles"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+}
+
 @test "a board that refuses the row does not fail the answer" {
   local a
   a="$("$AGENT_ASK" post --project demo 'ship it?')"

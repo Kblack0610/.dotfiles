@@ -40,11 +40,51 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
+    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    pub prio: String,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
     pub status: String,
     pub status_date: String,
+}
+
+/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low.
+pub fn next_prio(cur: &str) -> &'static str {
+    match cur {
+        "" => "focus",
+        "focus" => "high",
+        "high" => "low",
+        _ => "normal",
+    }
+}
+
+/// `notes projects --prio <name> --profile <profile> --set <value>`: the one writer.
+pub fn set_prio(
+    runner: &dyn Runner,
+    profile: &str,
+    name: &str,
+    value: &str,
+) -> Result<String, String> {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('-')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !ok(profile) || !ok(name) || !["focus", "high", "low", "normal"].contains(&value) {
+        return Err(format!("refusing prio {value} for {profile}/{name}"));
+    }
+    runner.run(&[
+        "notes".into(),
+        "projects".into(),
+        "--prio".into(),
+        name.into(),
+        "--profile".into(),
+        profile.into(),
+        "--set".into(),
+        value.into(),
+    ])
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
@@ -83,6 +123,7 @@ pub struct Card {
     pub profile: String,
     pub name: String,
     pub stage: String,
+    pub prio: String,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -166,6 +207,7 @@ pub fn build(
             profile: s.profile.clone(),
             name: s.name.clone(),
             stage: s.stage.clone(),
+            prio: s.prio.clone(),
             version: s.version.clone(),
             goal: s.goal.clone(),
             progress: s.progress,
@@ -253,11 +295,121 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
+/// The whole join every surface reads: `notes projects --stats --json`, the inbox feed, fleet
+/// state and the queue, built into cards. agent-web's `/api/projects` and `hub projects --json`
+/// both call this, so the chip, the phone, the web tab and the TUI agree.
+pub fn gather() -> Projects {
+    let runner = crate::session_actions::System;
+    let repos = std::fs::read_to_string(map_path())
+        .map(|t| repos(&t))
+        .unwrap_or_default();
+    let state = std::fs::read_to_string(crate::boards::fleet_state())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let queue = Queue::read(&runner);
+    let feed = crate::tasks::feed(&runner).ok();
+    match stats(&runner) {
+        Ok(stats) => build(&stats, feed.as_ref(), &state, Some(&queue), &repos),
+        Err(e) => Projects {
+            errors: vec![e],
+            ..Default::default()
+        },
+    }
+}
+
+/// The cards as JSON, each with its `summary` line and `in_flight`, so a reader prints the same
+/// words the TUI does and computes nothing.
+pub fn to_json(p: &Projects) -> Value {
+    let mut v = serde_json::to_value(p).unwrap_or_default();
+    if let Some(cards) = v["cards"].as_array_mut() {
+        for (j, c) in cards.iter_mut().zip(&p.cards) {
+            j["summary"] = summary(c).into();
+            j["in_flight"] = c.in_flight().into();
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn each_card_carries_the_summary_the_tui_prints() {
+        let c = Card {
+            name: "demo".into(),
+            version: Some("v0.1.0".into()),
+            progress: Progress {
+                open: 1,
+                done: 1,
+                open_weight: 3,
+                done_weight: 1,
+                ..Default::default()
+            },
+            percent: Some(25),
+            ..Default::default()
+        };
+        let v = to_json(&Projects {
+            cards: vec![c.clone()],
+            ..Default::default()
+        });
+        assert_eq!(v["cards"][0]["summary"], summary(&c));
+        assert!(v["cards"][0]["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("v0.1.0 25% (1 of 4 by size)"));
+        assert_eq!(v["cards"][0]["in_flight"], false);
+    }
+
+    struct Argv(std::cell::RefCell<Vec<String>>);
+    impl Runner for Argv {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            *self.0.borrow_mut() = argv.to_vec();
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn the_prio_key_cycles_and_writes_through_the_cli_only() {
+        assert_eq!(next_prio(""), "focus");
+        assert_eq!(next_prio("focus"), "high");
+        assert_eq!(next_prio("high"), "low");
+        assert_eq!(next_prio("low"), "normal");
+        let r = Argv(Default::default());
+        set_prio(&r, "bnb", "shape-city", "focus").unwrap();
+        assert_eq!(
+            *r.0.borrow(),
+            [
+                "notes",
+                "projects",
+                "--prio",
+                "shape-city",
+                "--profile",
+                "bnb",
+                "--set",
+                "focus"
+            ]
+        );
+        // nothing that could read as a flag, and no value outside the vocabulary, reaches argv
+        r.0.borrow_mut().clear();
+        assert!(set_prio(&r, "bnb", "--all", "focus").is_err());
+        assert!(set_prio(&r, "bnb", "demo", "urgent").is_err());
+        assert!(r.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_card_carries_the_sheet_prio() {
+        let s: Vec<Stats> =
+            serde_json::from_value(json!([{"profile": "bnb", "name": "a", "prio": "focus"}, {"profile": "bnb", "name": "b"}]))
+                .unwrap();
+        let p = build(&s, None, &json!({}), None, &HashMap::new());
+        let prio = |n: &str| p.cards.iter().find(|c| c.name == n).unwrap().prio.clone();
+        assert_eq!(prio("a"), "focus");
+        assert_eq!(prio("b"), "");
+    }
 
     fn prog(open_w: u32, done_w: u32, closed_28: u32) -> Progress {
         Progress {

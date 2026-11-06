@@ -107,15 +107,19 @@ $open"
   if [ "$DRY" = 1 ]; then
     printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
   fi
-  local err
+  local err rc
   if ! { err="$(notes ptask "$p" "${lanes[@]}" --exact edit --text "$new" "${dets[@]}" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
     refused "$p" "$(tail -n 1 <<<"${err:-not edited}" | clean 160)" "$text"; return 1
   fi
   PLANNED=$((PLANNED + 1))
   for r in "${rows[@]}"; do
     r="$(clean 150 <<<"$r")"; [ -n "$r" ] || continue
-    if notes ptask "$p" "${lanes[@]}" add --detail "part of $id: $new" -- "$r" >/dev/null 2>&1; then
+    notes ptask "$p" "${lanes[@]}" add --detail "part of $id: $new" -- "$r" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = 0 ]; then
       n=$((n + 1)); SPLIT=$((SPLIT + 1))
+    elif [ "$rc" = 3 ]; then
+      say "$p $id: split row already open: $r"
     else
       say "$p $id: split row not added: $r"; FAILED=$((FAILED + 1))
     fi

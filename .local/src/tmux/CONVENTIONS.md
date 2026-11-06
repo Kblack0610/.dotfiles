@@ -140,7 +140,7 @@ on `PATH`, which a popup does not guarantee) and never a bare `$0`.
 
 ## Layout: one helper
 
-A panel with a preview passes `"${PANEL_FZF_LAYOUT[@]}"` after `panel_fzf_layout` and never spells `--preview-window` itself. Stacked is the default (list on top, preview below, 60%); `ctrl-/` cycles to side by side (preview right, 55%), then hidden, then back. `set-environment -g PANEL_LAYOUT side` in `.tmux.conf` flips every panel at once. Why: each panel chose its own side and size, and only one could toggle; one helper means one key and one setting everywhere. agent-panel is Rust and cannot source the library, so it emits the same strings and tests that they match.
+A panel with a preview passes `"${PANEL_FZF_LAYOUT[@]}"` after `panel_fzf_layout [default]` and never spells `--preview-window` itself. Stacked is the default (list on top, preview below, 60%); `ctrl-/` cycles to side by side (preview right, 65%: the preview is the read, the list only picks), then hidden, then back. A panel reopens in the layout `ctrl-/` last showed: it is saved per panel, by script name, in `${XDG_STATE_HOME:-~/.local/state}/panels/<panel>.layout` (hidden is never saved). With nothing saved, `set-environment -g PANEL_LAYOUT side` in `.tmux.conf` sets every panel, and a panel's own `[default]` comes after that. Why: each panel chose its own side and size, only one could toggle, and none remembered; one helper means one key and one rule everywhere. agent-panel is Rust and cannot source the library, so it takes the same two arguments from `panel-layout.sh args agent-panel`.
 
 ## Speed: first paint under 300 ms
 

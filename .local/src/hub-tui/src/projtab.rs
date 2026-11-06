@@ -2,7 +2,8 @@
 //! `hub_core::projects` (the same cards and words as agent-web's Projects tab), in flight
 //! first, under an All entry. j/k pick a card, Enter opens its rows (tasktab.rs, every row key
 //! works there), `/` opens All with a search; in the rows Esc clears a filter first and then
-//! comes back here, as Backspace does at once. This file reads and writes nothing.
+//! comes back here, as Backspace does at once. `P` steps the selected project's priority
+//! (normal, focus, high, low); app.rs runs the write. This file reads and writes nothing.
 
 use std::collections::HashMap;
 
@@ -158,6 +159,14 @@ pub fn card_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled(c.name.to_uppercase(), p.head()),
             Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
+            Span::styled(
+                if c.prio.is_empty() {
+                    String::new()
+                } else {
+                    format!(", prio {}", c.prio)
+                },
+                if c.prio == "focus" { p.head() } else { p.dim() },
+            ),
         ]),
         w,
     )];

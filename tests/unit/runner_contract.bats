@@ -105,7 +105,10 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
   run headless_launches "$REPO_ROOT/.local"
-  assert_output ''
+  # The one known HTTP call with no registered agent, until it moves behind one (judges plan,
+  # phase 7). Pinned, so a second one fails here instead of joining it.
+  assert_output --regexp '^[^ ]*/\.local/bin/notes-version-summary:[0-9]+: .*chat/completions'
+  assert_equal "${#lines[@]}" 1
   run headless_launches "$REPO_ROOT/.config"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"
@@ -117,8 +120,12 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
   mkdir -p "$d"
   printf '#!/bin/sh\n# claude -p in a comment is fine\nclaude -p "do it" --max-turns 5\n' > "$d/runner"
   printf '#!/bin/sh\nprintf x | "$CLAUDE_BIN" --print\n' > "$d/piped"
+  printf '#!/bin/sh\n# OpenAI chat/completions in prose is fine\ncurl -s "$BASE/v1/chat/completions" -d @q\ncurl -s https://api.anthropic.com/v1/messages\n' > "$d/http"
   run headless_launches "$d"
   assert_line --partial 'runner:3:'
   assert_line --partial 'piped:2:'
+  assert_line --partial 'http:3:'
+  assert_line --partial 'http:4:'
   refute_output --partial 'runner:2:'
+  refute_output --partial 'http:2:'
 }

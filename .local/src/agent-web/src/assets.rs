@@ -31,6 +31,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("waiting.js", JS, include_bytes!("../static/waiting.js")),
     ("home.js", JS, include_bytes!("../static/home.js")),
+    ("outbox.js", JS, include_bytes!("../static/outbox.js")),
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
     ("infra.js", JS, include_bytes!("../static/infra.js")),
@@ -41,6 +42,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
+    ("focus.js", JS, include_bytes!("../static/focus.js")),
     (
         "inter.woff2",
         WOFF2,

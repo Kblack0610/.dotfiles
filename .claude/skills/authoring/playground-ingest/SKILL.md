@@ -2,6 +2,11 @@
 name: playground-ingest
 description: >-
   Bring an Asset Store pack into the BNB asset-library and a unity-core-playground game, by the runbook. Use for "bring this pack in", "ingest X into the library". Whether a pack is worth it: asset-store-audit first.
+paths:
+  - "Assets/**"
+  - "ProjectSettings/**"
+  - "Packages/**"
+  - "store/**"
 metadata:
   category: authoring
   tags: [unity, asset-library, ingest, addressables, playground]

@@ -9,7 +9,8 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
-use hub_core::queue::Queue;
+use hub_core::outcomes::{self, Ranked};
+use hub_core::queue::{Candidate, Candidates, Queue};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -25,7 +26,7 @@ use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
-use crate::{board, day, fleet, fleettab, hometab};
+use crate::{board, day, fleet, fleettab, focustab, hometab, outboxtab};
 
 /// How often Prometheus is read again, and the job sources with no file to watch (CI, k8s,
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
@@ -36,33 +37,39 @@ const PREVIEW_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
+    Outbox,
     Home,
     Queue,
     Projects,
     Sessions,
     Infra,
+    Focus,
     Log,
     Fleet,
 }
 
 impl Tab {
     /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 9] = [
+        Tab::Outbox,
         Tab::Home,
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
         Tab::Infra,
+        Tab::Focus,
         Tab::Log,
         Tab::Fleet,
     ];
     pub fn title(self) -> &'static str {
         match self {
+            Tab::Outbox => "Outbox",
             Tab::Home => "Home",
             Tab::Queue => "Queue",
             Tab::Projects => "Projects",
             Tab::Sessions => "Sessions",
             Tab::Infra => "Infra",
+            Tab::Focus => "Focus",
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
         }
@@ -84,7 +91,7 @@ impl Tab {
     fn digit(self) -> char {
         char::from_digit(self.index() as u32 + 1, 10).unwrap_or(' ')
     }
-    /// The tab a digit opens; 8, 9 and 0 open none.
+    /// The tab a digit opens; 0 opens none.
     fn by_digit(c: char) -> Option<Tab> {
         let n = c.to_digit(10)? as usize;
         n.checked_sub(1).and_then(|i| Tab::ALL.get(i).copied())
@@ -94,7 +101,13 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Queue | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
+            Tab::Outbox
+            | Tab::Queue
+            | Tab::Projects
+            | Tab::Sessions
+            | Tab::Focus
+            | Tab::Log
+            | Tab::Fleet => None,
         }
     }
 }
@@ -115,6 +128,8 @@ const JOBS_SHOWN: usize = 8;
 #[derive(Clone)]
 pub struct BoardFiles {
     pub state: PathBuf,
+    /// agent-ask's store: Home's asks are read live, so an ask filed or answered re-reads them.
+    pub asks: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
 }
@@ -123,6 +138,7 @@ impl BoardFiles {
     pub fn from_env() -> BoardFiles {
         BoardFiles {
             state: boards::fleet_state(),
+            asks: boards::asks_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
         }
@@ -134,6 +150,7 @@ impl BoardFiles {
     pub fn is_board_file(&self, p: &Path) -> bool {
         p == self.state
             || p == self.watch_log()
+            || p.starts_with(&self.asks) && p.extension().is_some_and(|e| e == "md")
             || p.parent() == Some(self.daylog.as_path())
                 && p.file_name()
                     .and_then(|n| n.to_str())
@@ -153,7 +170,7 @@ pub struct Boards {
 impl Boards {
     pub fn read(f: &BoardFiles, day: Option<&str>) -> Boards {
         Boards {
-            watch: boards::watch(&f.state, &f.watch_log()),
+            watch: boards::watch(&f.state, &f.watch_log(), &actions::System),
             days: boards::days(&f.daylog),
             rec: boards::record(&f.daylog, day),
             hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
@@ -174,7 +191,13 @@ pub enum Msg {
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
     Forecast(Box<Forecast>),
+    /// `agentctl-session-outcomes worst`, or why it failed.
+    Ranked(Result<Vec<Ranked>, String>),
     Fleet(Box<hub_core::fleet::Fleet>),
+    /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
+    Focus(Box<Result<hub_core::focus::View, String>>),
+    /// The outbox and today's intake steps (hub_core::outbox), or why the read failed.
+    Outbox(Box<Result<hub_core::outbox::View, String>>),
     Log(u64, Result<String, String>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
@@ -183,8 +206,10 @@ pub enum Msg {
     /// An item file under the queue dir was written, moved or removed.
     QueueFiles,
     Queue(Box<Queue>),
-    /// A queue cancel or bump ended: its output, or why it failed.
+    /// A queue cancel, bump or promote ended: its output, or why it failed.
     QueueActed(Result<String, String>),
+    /// `fleet-dispatch suggest --json` (hub_core::queue::candidates), or why it failed.
+    Candidates(Result<Candidates, String>),
     /// `notes board --json`, or why it failed.
     Tasks(Box<Result<Feed, String>>),
     /// A board write ended: notes' output, or why it failed.
@@ -229,10 +254,21 @@ pub struct App {
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
+    pub ranked: Option<Result<Vec<Ranked>, String>>,
     pub fleet: Option<hub_core::fleet::Fleet>,
+    /// The Focus tab's note; None until the first read.
+    pub focus: Option<Result<hub_core::focus::View, String>>,
+    /// The Outbox tab's view; None until the first read.
+    pub outbox: Option<Result<hub_core::outbox::View, String>>,
+    /// What Enter on the Outbox tab did: the editor opened, or why it did not.
+    pub outbox_said: Option<Result<String, String>>,
+    /// The day the Focus tab shows (`YYYY-MM-DD`); None is today.
+    pub focus_day: Option<String>,
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
     pub qv: QueueView,
+    /// The ranked board rows for the Queue tab's Candidates fold.
+    pub candidates: Option<Result<Candidates, String>>,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
     /// Every project's open rows, for the Projects tab; None until the first read.
@@ -261,14 +297,20 @@ pub struct App {
     /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
+    /// `hub --popup`: a floating window, so Esc with nothing left to close quits.
+    pub popup: bool,
     tx: Sender<Msg>,
     infra_read: Read,
     jobs_read: Read,
     boards_read: Read,
     forecast_read: Read,
+    ranked_read: Read,
     fleet_read: Read,
+    focus_read: Read,
+    outbox_read: Read,
     sessions_read: Read,
     queue_read: Read,
+    candidates_read: Read,
     tasks_read: Read,
     projects_read: Read,
     log_gen: u64,
@@ -293,9 +335,15 @@ impl App {
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
+            ranked: None,
             fleet: None,
+            focus: None,
+            outbox: None,
+            outbox_said: None,
+            focus_day: None,
             queue: None,
             qv: QueueView::default(),
+            candidates: None,
             queue_dir: queue_dir(),
             tasks: None,
             tv: TaskView::default(),
@@ -311,14 +359,19 @@ impl App {
             infra_jobs: false,
             scroll: 0,
             quit: false,
+            popup: false,
             tx,
             infra_read: Read::default(),
             jobs_read: Read::default(),
             boards_read: Read::default(),
             forecast_read: Read::default(),
+            ranked_read: Read::default(),
             fleet_read: Read::default(),
+            focus_read: Read::default(),
+            outbox_read: Read::default(),
             sessions_read: Read::default(),
             queue_read: Read::default(),
+            candidates_read: Read::default(),
             tasks_read: Read::default(),
             projects_read: Read::default(),
             log_gen: 0,
@@ -336,6 +389,7 @@ impl App {
             (self.files.shepherd.clone(), false),
             (self.files.daylog.clone(), false),
             (self.queue_dir.clone(), true),
+            (self.files.asks.clone(), true),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -367,6 +421,17 @@ impl App {
         }
     }
 
+    /// The outcome rows change once a night, so the ranked list is read only when its fold
+    /// opens and on `r` while it is open.
+    pub fn read_ranked(&mut self) {
+        if self.ranked_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
+            });
+        }
+    }
+
     /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger and the dispatch and ask
     /// files, so it reads on entering, on `r`, on the tick and on an agentctl file event while
     /// it is shown.
@@ -375,6 +440,40 @@ impl App {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
+            });
+        }
+    }
+
+    /// Nothing here watches the vault (`notes` is its writer), so the Focus tab reads its day
+    /// on entering, on a day key, on `r` and on the tick while it is shown.
+    pub fn read_focus(&mut self) {
+        if self.focus_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            let target = self
+                .focus_day
+                .as_ref()
+                .map_or("daily".to_string(), |d| format!("daily:{d}"));
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Focus(Box::new(hub_core::focus::read(
+                    runner.as_ref(),
+                    &target,
+                ))));
+            });
+        }
+    }
+
+    /// The outbox has no watch here: the tab reads it on entering, on `r` and on the tick.
+    pub fn read_outbox(&mut self) {
+        if self.outbox_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Outbox(Box::new(hub_core::outbox::read(
+                    runner.as_ref(),
+                    &today,
+                ))));
             });
         }
     }
@@ -428,7 +527,20 @@ impl App {
         }
     }
 
-    /// Run a queue cancel or bump in a worker; the answer comes back as Msg::QueueActed.
+    /// The candidates read every board (seconds), so they are read in a worker on entering the
+    /// Queue tab, on `r` there and after a queue action, never on a queue file event.
+    pub fn read_candidates(&mut self) {
+        if self.candidates_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(
+                    runner.as_ref(),
+                )));
+            });
+        }
+    }
+
+    /// Run a queue cancel, bump or promote in a worker; the answer comes back as Msg::QueueActed.
     fn queue_act(
         &mut self,
         label: String,
@@ -521,6 +633,22 @@ impl App {
         });
     }
 
+    /// Step one project's priority in a worker; the answer comes back like a board write.
+    fn prio_act(&mut self, profile: String, name: String, value: &'static str) {
+        let label = format!("{name} prio {value}");
+        self.tv.running = Some(label.clone());
+        self.tv.said = None;
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = said(
+                &label,
+                hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value),
+            );
+            let _ = tx.send(Msg::TasksActed(r));
+        });
+    }
+
     pub fn read_infra(&mut self) {
         if self.infra_read.want() {
             let tx = self.tx.clone();
@@ -570,6 +698,12 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
                 }
+                if self.tab == Tab::Focus {
+                    self.read_focus();
+                }
+                if self.tab == Tab::Outbox {
+                    self.read_outbox();
+                }
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
@@ -600,10 +734,28 @@ impl App {
                     self.read_forecast();
                 }
             }
+            Msg::Ranked(r) => {
+                self.ranked = Some(r);
+                if self.ranked_read.done() {
+                    self.read_ranked();
+                }
+            }
             Msg::Fleet(f) => {
                 self.fleet = Some(*f);
                 if self.fleet_read.done() {
                     self.read_fleet();
+                }
+            }
+            Msg::Focus(v) => {
+                self.focus = Some(*v);
+                if self.focus_read.done() {
+                    self.read_focus();
+                }
+            }
+            Msg::Outbox(v) => {
+                self.outbox = Some(*v);
+                if self.outbox_read.done() {
+                    self.read_outbox();
                 }
             }
             Msg::Infra(i) => {
@@ -651,7 +803,7 @@ impl App {
                     .as_ref()
                     .and_then(|old| self.qv.selected(old))
                     .map(|i| i.slug.clone());
-                self.qv.reselect(was, &q);
+                self.qv.reselect(was, &q, cands_of(&self.candidates));
                 self.queue = Some(*q);
                 if self.queue_read.done() {
                     self.read_queue();
@@ -661,6 +813,17 @@ impl App {
                 self.qv.running = None;
                 self.qv.said = Some(r);
                 self.read_queue();
+                self.read_candidates();
+            }
+            Msg::Candidates(c) => {
+                self.candidates = Some(c);
+                if let Some(q) = &self.queue {
+                    let was = self.qv.selected(q).map(|i| i.slug.clone());
+                    self.qv.reselect(was, q, cands_of(&self.candidates));
+                }
+                if self.candidates_read.done() {
+                    self.read_candidates();
+                }
             }
             Msg::Tasks(f) => {
                 if let Ok(new) = f.as_ref() {
@@ -706,6 +869,20 @@ impl App {
         if self.tab == Tab::Today && self.today_key(k) {
             return;
         }
+        if self.tab == Tab::Focus && self.focus_key(k) {
+            return;
+        }
+        if self.tab == Tab::Outbox && k.code == KeyCode::Enter {
+            let path = match &self.outbox {
+                Some(Ok(v)) if !v.doc.path.is_empty() => Some(v.doc.path.clone()),
+                _ => None,
+            };
+            self.outbox_said = Some(match path {
+                Some(p) => edit_in_tmux(&p, 1),
+                None => Err("the outbox has not been read yet: press r".into()),
+            });
+            return;
+        }
         if self.tab == Tab::History && self.history_key(k) {
             return;
         }
@@ -722,6 +899,8 @@ impl App {
         let tabs = Tab::ALL.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
+            // Every tab's own Esc (a pane, filter, prompt or table) ran above and kept the key.
+            KeyCode::Esc if self.popup => self.quit = true,
             // Each digit opens what DIGITS says, as on the tab bar.
             KeyCode::Char(c @ '0'..='9') => {
                 if let Some((_, t, sec)) = DIGITS.iter().find(|(d, _, _)| *d == c) {
@@ -738,12 +917,24 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
+                if self.tab == Tab::Queue {
+                    self.read_candidates();
+                }
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
                     self.read_sessions();
+                    if self.controls.ranked {
+                        self.read_ranked();
+                    }
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet();
+                }
+                if self.tab == Tab::Focus {
+                    self.read_focus();
+                }
+                if self.tab == Tab::Outbox {
+                    self.read_outbox();
                 }
                 if self.tab == Tab::Projects {
                     self.read_projects();
@@ -810,8 +1001,16 @@ impl App {
         if t == Tab::Fleet {
             self.read_fleet();
         }
+        if t == Tab::Focus {
+            self.read_focus();
+        }
+        if t == Tab::Outbox {
+            self.outbox_said = None;
+            self.read_outbox();
+        }
         if t == Tab::Queue {
             self.read_queue();
+            self.read_candidates();
         }
         if t == Tab::Projects {
             self.read_projects();
@@ -823,6 +1022,17 @@ impl App {
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         if !self.pv.open {
             let cards = self.cards().cards;
+            if k.code == KeyCode::Char('P') {
+                // Card 0 is All, so card i is cards[i - 1].
+                if let Some(c) = self.pv.card.checked_sub(1).and_then(|i| cards.get(i)) {
+                    self.prio_act(
+                        c.profile.clone(),
+                        c.name.clone(),
+                        hub_core::projects::next_prio(&c.prio),
+                    );
+                }
+                return true;
+            }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
         if self.tv.prompt.is_none() {
@@ -865,10 +1075,14 @@ impl App {
         }
     }
 
-    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item, c arms a cancel, +/-
-    /// move its priority. The page scrolls with PgUp/PgDn, space and g/G.
+    /// The Queue tab's own keys (queuetab.rs): j/k pick an active item or a candidate, c arms
+    /// a cancel, +/- move its priority, f folds the candidates and p promotes one. The page
+    /// scrolls with PgUp/PgDn, space and g/G.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
-        match self.qv.key(k, self.queue.as_ref()) {
+        match self
+            .qv
+            .key(k, self.queue.as_ref(), cands_of(&self.candidates))
+        {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
@@ -883,18 +1097,25 @@ impl App {
                 });
                 true
             }
+            queuetab::Ask::Promote(label, w) => {
+                self.queue_act(label, move |r| hub_core::tasks::apply(r, &w));
+                true
+            }
         }
     }
 
     /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
     /// confirm, and with one armed every key is the confirm's; Enter opens the selected
-    /// session's detail and f the forecast at the bottom. The page scrolls with
+    /// session's detail, f the forecast at the bottom and w the ranked sessions. The page scrolls with
     /// PgUp/PgDn, space and g/G, and keeps the selected row in view.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
             Ask::Run(t, a, acct) => self.act(t, a, acct),
+        }
+        if self.controls.ranked && self.ranked.is_none() {
+            self.read_ranked();
         }
         // The stage counts and the table header sit above the first row.
         let at = 2 + self.controls.sel;
@@ -905,6 +1126,47 @@ impl App {
             self.scroll = at + 1 - h;
         }
         true
+    }
+
+    /// The RANKED fold under the forecast: the week's sessions worst first, one line each, and
+    /// the command that prints any one's full card.
+    fn ranked_lines(&self, w: usize) -> Vec<Line<'static>> {
+        let clip = |t: String, st| crate::fit::clip_line(Line::styled(t, st), w);
+        if !self.controls.ranked {
+            return vec![clip(
+                format!(
+                    "RANKED  w opens the sessions ranked by friction, last {}d",
+                    outcomes::DAYS
+                ),
+                self.p.head(),
+            )];
+        }
+        let mut l = vec![clip(
+            format!("RANKED  last {}d by friction; w folds it", outcomes::DAYS),
+            self.p.head(),
+        )];
+        match &self.ranked {
+            None => l.push(clip(
+                "Reading agentctl-session-outcomes worst.".into(),
+                self.p.dim(),
+            )),
+            Some(Err(e)) => l.push(clip(format!("No ranking: {e}"), self.p.warn())),
+            Some(Ok(rows)) if rows.is_empty() => l.push(clip(
+                "No session with friction this week.".into(),
+                self.p.dim(),
+            )),
+            Some(Ok(rows)) => {
+                l.extend(
+                    rows.iter()
+                        .map(|r| clip(r.line(), ratatui::style::Style::default())),
+                );
+                l.push(clip(
+                    "  a full card: agentctl-session-outcomes card <id>".into(),
+                    self.p.dim(),
+                ));
+            }
+        }
+        l
     }
 
     /// Today's own keys: `[` and `]` step a day, n and N jump between sections.
@@ -929,6 +1191,30 @@ impl App {
             KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
             _ => return false,
         }
+        true
+    }
+
+    /// Focus's own keys: `[` and `]` step to the day before or after that has a note, `t`
+    /// goes back to today.
+    fn focus_key(&mut self, k: KeyEvent) -> bool {
+        let note = match &self.focus {
+            Some(Ok(v)) => Some(&v.note),
+            _ => None,
+        };
+        let day = match k.code {
+            KeyCode::Char('[') => note.and_then(|n| n.prev.clone()),
+            KeyCode::Char(']') => note.and_then(|n| n.next.clone()),
+            KeyCode::Char('t') if self.focus_day.is_some() => None,
+            _ => return false,
+        };
+        if k.code != KeyCode::Char('t') && day.is_none() {
+            return true;
+        }
+        // The next day with a note may be today's, which is the live view.
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        self.focus_day = day.filter(|d| *d != today);
+        self.scroll = 0;
+        self.read_focus();
         true
     }
 
@@ -1174,7 +1460,11 @@ impl App {
     fn tab_bar(&self) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         for t in Tab::ALL.iter() {
-            let label = format!(" {} {} ", t.digit(), t.title());
+            // A tab with no digit yet (Focus) shows its title alone.
+            let label = match t.digit() {
+                ' ' => format!(" {} ", t.title()),
+                d => format!(" {d} {} ", t.title()),
+            };
             s.push(if *t == self.tab {
                 Span::styled(label, self.p.sel())
             } else {
@@ -1233,10 +1523,17 @@ impl App {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
             }
             Tab::Sessions => format!(
-                "j/k pick  Enter detail  i p u m x c a act  f forecast  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter detail  i p u m x c a act  f forecast  w ranked  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet => {
                 format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  q quit")
+            }
+            Tab::Focus if self.focus_day.is_some() => {
+                "[ ] day  t today  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
+            }
+            Tab::Focus => "[ ] day  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into(),
+            Tab::Outbox => {
+                "Enter edit in $EDITOR  j/k PgUp/PgDn scroll  r refresh  Tab pages  q quit".into()
             }
             Tab::Today if self.day.is_some() => {
                 format!("[ ] day  t today  n/N section  j/k PgUp/PgDn scroll  {tabs} tabs  q quit")
@@ -1245,7 +1542,7 @@ impl App {
             Tab::History => format!("j/k pick a day  Enter open it in Today  {tabs} tabs  q quit"),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue => format!(
-                "j/k pick  c cancel  +/- priority  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "j/k pick  c cancel  +/- priority  f candidates  p promote  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -1254,7 +1551,7 @@ impl App {
                 "j/k pick  / search  l lane  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open rows  / search all  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
             _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn scroll  r refresh  o Grafana  q quit"),
         }
@@ -1344,7 +1641,10 @@ impl App {
             },
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
-                Some(q) => (queuetab::page(q, &self.qv, self.p, now, w), vec![]),
+                Some(q) => (
+                    queuetab::page(q, &self.qv, self.candidates.as_ref(), self.p, now, w),
+                    vec![],
+                ),
             },
             // One row per session (its controls, stage and ETA), the selected one's detail, the
             // asks and the changes, then the forecast folded at the bottom.
@@ -1374,12 +1674,34 @@ impl App {
                         w,
                     ));
                 }
+                l.push(Line::raw(""));
+                l.extend(self.ranked_lines(w));
                 (l, vec![])
             }
             // The machinery that runs the sessions: accounts, runners and the judges.
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (fleettab::page(f, self.p, now, w), vec![]),
+            },
+            // The outbox and today's intake steps (outboxtab.rs); Enter edits the file.
+            (Tab::Outbox, ..) => match &self.outbox {
+                None => reading("the outbox"),
+                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                Some(Ok(v)) => {
+                    let mut l = match &self.outbox_said {
+                        Some(Ok(m)) => vec![Line::styled(m.clone(), self.p.dim())],
+                        Some(Err(e)) => vec![Line::styled(e.clone(), self.p.warn())],
+                        None => vec![],
+                    };
+                    l.extend(outboxtab::page(v, self.p, w));
+                    (l, vec![])
+                }
+            },
+            // A day's Focus lanes, read-only (focustab.rs).
+            (Tab::Focus, ..) => match &self.focus {
+                None => reading("the daily note"),
+                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                Some(Ok(v)) => (focustab::page(v, self.p, w), vec![]),
             },
             (Tab::Today | Tab::History, None, _) => reading("the board files"),
             (Tab::Today, Some(b), _) => {
@@ -1500,6 +1822,14 @@ fn said(label: &str, r: Result<String, String>) -> Result<String, String> {
             out.lines().collect::<Vec<_>>().join("; ")
         )),
         Err(e) => Err(format!("{label}: {e}")),
+    }
+}
+
+/// The candidates read, or none while it is reading or failed.
+fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
+    match c {
+        Some(Ok(c)) => &c.rows,
+        _ => &[],
     }
 }
 
@@ -1747,6 +2077,54 @@ mod tests {
     }
 
     #[test]
+    fn the_ranked_sessions_fold_under_the_forecast_and_read_only_when_opened() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Sessions, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        let s = screen(&mut a, 200, 60);
+        assert!(
+            s.contains("RANKED  w opens the sessions ranked by friction, last 7d"),
+            "{s}"
+        );
+        assert!(
+            fake.0.lock().unwrap().is_empty(),
+            "nothing is read while it is folded"
+        );
+        a.handle(key('w'));
+        // The worker sends Ranked when the read ends: wait for that message, not a timer.
+        loop {
+            match rx.recv().unwrap() {
+                Msg::Ranked(r) => {
+                    a.handle(Msg::Ranked(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        assert_eq!(
+            fake.0.lock().unwrap().as_slice(),
+            ["agentctl-session-outcomes worst --json --days 7 -n 20"]
+        );
+        assert!(screen(&mut a, 200, 60).contains("No session with friction this week."));
+        a.handle(Msg::Ranked(Ok(vec![Ranked {
+            session_id: "6f296b73-b7a5".into(),
+            project: "dotfiles".into(),
+            title: "fix the gate".into(),
+            friction: 11,
+            why: "9 nudges".into(),
+            prs_merged: 1,
+            ..Ranked::default()
+        }])));
+        let s = screen(&mut a, 200, 60);
+        assert!(s.contains("RANKED  last 7d by friction; w folds it"), "{s}");
+        assert!(s.contains(" 11  6f296b73  dotfiles"), "{s}");
+        assert!(s.contains("agentctl-session-outcomes card <id>"), "{s}");
+        a.handle(key('w'));
+        assert!(screen(&mut a, 200, 60).contains("RANKED  w opens"));
+    }
+
+    #[test]
     fn a_confirmed_move_runs_claude_acct_through_hub_core() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Sessions, tx);
@@ -1848,6 +2226,60 @@ mod tests {
         assert_eq!(ran.iter().filter(|c| c.contains("cancel")).count(), 1);
     }
 
+    #[test]
+    fn the_queue_tab_reads_candidates_and_p_promotes_through_fleet_dispatch() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.handle(Msg::QueueFiles);
+        a.handle(key('2'));
+        // Both workers reply when their read ends: wait for the two messages, not a timer.
+        let (mut queue, mut cands) = (false, false);
+        while !(queue && cands) {
+            let m = rx.recv().unwrap();
+            queue |= matches!(m, Msg::Queue(_));
+            cands |= matches!(m, Msg::Candidates(_));
+            a.handle(m);
+        }
+        // The fake's queue read came back empty; put the fixture back.
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        let ran = fake.0.lock().unwrap().clone();
+        assert_eq!(
+            ran.iter()
+                .filter(|c| *c == "fleet-dispatch suggest --json")
+                .count(),
+            1,
+            "read once, on entering the tab, not on a queue file event: {ran:?}"
+        );
+        assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
+        a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
+        a.handle(key('f'));
+        for _ in 0..4 {
+            a.handle(key('j'));
+        }
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("bar-17") && s.contains("auto dispatch"), "{s}");
+        assert!(s.contains("f candidates  p promote"), "{s}");
+        a.handle(key('p'));
+        assert_eq!(a.qv.running.as_deref(), Some("promote shape-city bar-17"));
+        loop {
+            match rx.recv().unwrap() {
+                Msg::QueueActed(r) => {
+                    a.handle(Msg::QueueActed(r));
+                    break;
+                }
+                m => a.handle(m),
+            }
+        }
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.contains(&"fleet-dispatch promote --project shape-city --profile bnb --agent --raw - [ ] fix the jump arc #high <!-- id:bar-17 -->".to_string()),
+            "{ran:?}"
+        );
+    }
+
     /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
     fn loaded() -> projtab::Loaded {
         let stat = |profile: &str, name: &str, done: u32, open: u32| hub_core::projects::Stats {
@@ -1887,6 +2319,44 @@ mod tests {
     }
 
     #[test]
+    fn p_on_a_card_steps_its_priority_through_the_cli_and_all_writes_nothing() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.handle(key('0'));
+        settle(&mut a, &rx);
+        a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
+        let mut l = loaded();
+        if let Ok(st) = l.stats.as_mut() {
+            st[1].prio = "focus".into();
+        }
+        a.handle(Msg::Projects(Box::new(l)));
+        let s = screen(&mut a, 140, 30);
+        assert!(s.contains("DEMO  bnb, alpha, prio focus"), "{s}");
+        assert!(!s.contains("GARDEN  personal, alpha, prio"), "{s}");
+        assert!(s.lines().last().unwrap().contains("P priority"), "{s}");
+        fake.0.lock().unwrap().clear();
+        a.handle(key('P'));
+        assert!(fake.0.lock().unwrap().is_empty(), "All is not a project");
+        a.handle(key('j'));
+        a.handle(key('P'));
+        assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
+        loop {
+            if let Msg::TasksActed(r) = rx.recv().unwrap() {
+                a.handle(Msg::TasksActed(r));
+                break;
+            }
+        }
+        let ran = fake.0.lock().unwrap().clone();
+        assert!(
+            ran.iter()
+                .any(|c| c == "notes projects --prio demo --profile bnb --set high"),
+            "{ran:?}"
+        );
+    }
+
+    #[test]
     fn the_projects_tab_lists_cards_then_opens_one_projects_rows_under_its_card() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
@@ -1899,7 +2369,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Infra") && bar.contains("9 Fleet  0 Projects"),
+            bar.contains("3 Infra") && bar.contains("9 Fleet  Focus  0 Projects"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -1911,7 +2381,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("ALL PROJECTS  5 open rows") < at("DEMO  bnb, alpha"),
+            at("ALL PROJECTS  4 open rows") < at("DEMO  bnb, alpha"),
             "{s}"
         );
         assert!(
@@ -2091,6 +2561,54 @@ mod tests {
             assert!(i >= at, "{} is out of layout order: {titles:?}", t.title);
             at = i;
         }
+    }
+
+    #[test]
+    fn the_focus_tab_reads_today_then_steps_a_day_with_its_keys() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        assert_eq!(Tab::parse("focus"), Some(Tab::Focus));
+        a.handle(Msg::Tab(Tab::Focus, None));
+        // The fake answers nothing, so the read fails, and says why.
+        let first = rx.recv().unwrap();
+        a.handle(first);
+        assert!(
+            screen(&mut a, 100, 20).contains("notes show --json"),
+            "the error is drawn"
+        );
+        let note = hub_core::focus::Note {
+            exists: true,
+            date: Some("2026-11-05".into()),
+            prev: Some("2026-11-04".into()),
+            markdown: "## Focus\n### Urgent\n- [ ] fix the menu\n".into(),
+            ..Default::default()
+        };
+        a.handle(Msg::Focus(Box::new(Ok(hub_core::focus::build(note)))));
+        let s = screen(&mut a, 100, 20);
+        assert!(
+            s.contains("FOCUS 2026-11-05  1 open, 0 done") && s.contains("[ ] fix the menu"),
+            "{s}"
+        );
+        a.handle(key('['));
+        assert_eq!(a.focus_day.as_deref(), Some("2026-11-04"));
+        // Each answer is handled, as the loop would, so the read is free for the next key.
+        let m = rx.recv().unwrap();
+        a.handle(m);
+        a.handle(key('t'));
+        assert_eq!(a.focus_day, None);
+        let m = rx.recv().unwrap();
+        a.handle(m);
+        let ran = fake.0.lock().unwrap().clone();
+        assert_eq!(
+            ran,
+            [
+                "notes show --json -- daily",
+                "notes show --json -- daily:2026-11-04",
+                "notes show --json -- daily"
+            ]
+        );
     }
 
     #[test]
@@ -2282,6 +2800,40 @@ mod tests {
         assert_eq!(a.tab, Tab::Sessions);
         a.handle(key('q'));
         assert!(a.quit);
+    }
+
+    #[test]
+    fn esc_quits_a_popup_only_when_nothing_is_left_to_close() {
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        // Negative control: the tmux hub pane is never closed by Esc.
+        let mut a = app(Tab::Home);
+        a.handle(esc());
+        assert!(!a.quit);
+        // A popup: Esc first backs out of the jobs table, then quits.
+        let mut a = app(Tab::Infra);
+        a.popup = true;
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert!(a.infra_jobs);
+        a.handle(esc());
+        assert!(!a.infra_jobs && !a.quit);
+        a.handle(esc());
+        assert!(a.quit);
+        // An armed confirm keeps its Esc.
+        let mut a = app(Tab::Queue);
+        a.popup = true;
+        a.qv.confirm = Some("x".into());
+        a.handle(esc());
+        assert!(a.qv.confirm.is_none() && !a.quit);
+        a.handle(esc());
+        assert!(a.quit);
+    }
+
+    #[test]
+    fn a_start_query_opens_its_infra_section() {
+        let (t, q) = crate::tabreq::parse("infra ci").unwrap();
+        let mut a = app(t);
+        a.open_query(q);
+        assert_eq!((a.tab, a.seek), (Tab::Infra, Some("ci")));
     }
 
     #[test]

@@ -12,7 +12,7 @@ setup() {
   sandbox_init basic
   mkdir -p "$HOME/.config/agentctl/agents"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047purpose of %s\047\nCOMMAND=true\nSCHEDULE=daily\n' "$n" "$n" \
+    printf 'NAME=%s\nKIND=oneshot\nLANE=observe\nDESCRIPTION=\047purpose of %s\047\nEFFECT=none\nCOMMAND=true\nSCHEDULE=daily\n' "$n" "$n" \
       > "$HOME/.config/agentctl/agents/$n.conf"
   done
   # The matches come first, then far more than a pipe buffer of other timers.
@@ -59,4 +59,47 @@ setup() {
   sed -i '/^DESCRIPTION=/d' "$HOME/.config/agentctl/agents/alpha.conf"
   run "$AGENTCTL_BIN" list
   assert_line --regexp '^  alpha +.*missing DESCRIPTION'
+}
+
+@test "a KIND=call agent is listed as call and needs no COMMAND; its caller starts it, never agentctl" {
+  printf 'NAME=judge\nKIND=call\nLANE=observe\nROLE=observe\nDESCRIPTION=\047a judge\047\nEFFECT=shadow\n' \
+    > "$HOME/.config/agentctl/agents/judge.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --regexp '^  judge +call +- +- +a judge$'
+  run "$AGENTCTL_BIN" start judge
+  assert_failure
+  assert_output --partial 'agentctl-run --agent judge'
+}
+
+@test "a KIND=call agent with a SCHEDULE or no ROLE is invalid (negative control)" {
+  printf 'NAME=judge\nKIND=call\nLANE=observe\nROLE=observe\nSCHEDULE=daily\nDESCRIPTION=x\n' \
+    > "$HOME/.config/agentctl/agents/judge.conf"
+  printf 'NAME=judge2\nKIND=call\nLANE=observe\nDESCRIPTION=x\n' > "$HOME/.config/agentctl/agents/judge2.conf"
+  run "$AGENTCTL_BIN" list
+  assert_line --partial 'no SCHEDULE or AUTOSTART'
+  assert_line --partial 'missing ROLE'
+  refute_line --regexp '^  judge2? +call'
+}
+
+@test "a conf with no EFFECT, or one outside the four, is invalid (negative control)" {
+  sed -i '/^EFFECT=/d' "$HOME/.config/agentctl/agents/alpha.conf"
+  sed -i 's/^EFFECT=none/EFFECT=maybe/' "$HOME/.config/agentctl/agents/beta.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --regexp '^  alpha +.*missing EFFECT'
+  assert_line --regexp '^  beta +invalid EFFECT=maybe'
+}
+
+@test "list --md is the catalog: one row per runner from the confs, model shown only when a model runs" {
+  printf 'NAME=judge\nKIND=call\nLANE=deliver\nROLE=distill\nMODEL=m1\nDESCRIPTION=\047a | judge\047\nEFFECT=shadow\n' \
+    > "$HOME/.config/agentctl/agents/judge.conf"
+  printf 'NAME=writer\nKIND=oneshot\nLANE=learn\nROLE=curate\nCOMMAND=true\nSCHEDULE=daily\nENABLED=no\nDESCRIPTION=w\nEFFECT=acts\n' \
+    > "$HOME/.config/agentctl/agents/writer.conf"
+  run "$AGENTCTL_BIN" list --md
+  assert_success
+  assert_line --index 0 '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |'
+  assert_line --index 2 '| judge | deliver | called by its caller | distill | m1 | shadow | a \| judge |'
+  assert_line '| alpha | observe | `daily` | - | - | none | purpose of alpha |'
+  assert_line '| writer | learn | `daily` (disabled) | curate | not in conf | acts | w |'
 }

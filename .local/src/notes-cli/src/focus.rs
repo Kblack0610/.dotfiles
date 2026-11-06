@@ -73,6 +73,61 @@ pub(crate) fn open_focus_positions(content: &str) -> Vec<(usize, String, String)
         .collect()
 }
 
+/// How many days back, today included, `focus list` and `doctor` look for loose lines.
+pub(crate) const LOOSE_DAYS: i64 = 7;
+
+/// Text in `## Focus` that is not an item: a top-level line that is not a task, a lane
+/// heading, a rule or a comment. Indented lines are notes under an item and stay out. The
+/// sweep, `focus mv` and the day's rollover read items only, so a block pasted without
+/// checkboxes is never moved or carried and is lost with its day (2026-11-04: 22 phone
+/// captures). Reported, never rewritten: a paste can hold timestamps and prompts.
+pub(crate) fn loose_focus_lines(content: &str) -> Vec<(usize, String)> {
+    md::section_numbered(content, FOCUS)
+        .into_iter()
+        .filter(|(_, l)| {
+            let t = l.trim_end();
+            !t.is_empty()
+                && !t.starts_with(char::is_whitespace)
+                && !t.starts_with('#')
+                && !t.starts_with("---")
+                && !t.starts_with("<!--")
+                && !md::is_task(t)
+        })
+        .map(|(n, l)| (n, l.trim_end().to_string()))
+        .collect()
+}
+
+/// Loose Focus lines in each daily note of the last `days` days, newest first:
+/// `(note, lines)` for each note that has any.
+pub(crate) fn loose_recent(
+    p: &Profile,
+    days: i64,
+) -> Vec<(std::path::PathBuf, Vec<(usize, String)>)> {
+    let today = Local::now().date_naive();
+    (0..days)
+        .map(|back| {
+            p.daily.join(format!(
+                "{}.md",
+                (today - chrono::Duration::days(back)).format("%Y-%m-%d")
+            ))
+        })
+        .filter_map(|note| {
+            let lines = loose_focus_lines(&fs::read_to_string(&note).ok()?);
+            (!lines.is_empty()).then_some((note, lines))
+        })
+        .collect()
+}
+
+/// One line per note: how many loose lines, and where the first one is.
+pub(crate) fn loose_summary(note: &std::path::Path, lines: &[(usize, String)]) -> String {
+    format!(
+        "{}:{}: {} line(s) in Focus are not items, so nothing moves or carries them",
+        note.display(),
+        lines[0].0,
+        lines.len()
+    )
+}
+
 /// `notes focus --all` — aggregate every configured profile's open Focus items for the
 /// cross-profile cockpit. One TSV row per open task:
 /// `profile <TAB> file <TAB> line <TAB> key <TAB> text`. Read-only; the caller closes a
@@ -107,10 +162,12 @@ pub fn list(p: &Profile, _log: &Logger) -> Result<i32> {
     };
     if items.is_empty() {
         println!("focus clear — add one: notes focus add \"<a couple words>\"");
-        return Ok(0);
     }
     for l in &items {
         println!("{l}");
+    }
+    for (note, lines) in loose_recent(p, LOOSE_DAYS) {
+        println!("loose: {}", loose_summary(&note, &lines));
     }
     Ok(0)
 }
@@ -149,6 +206,10 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     let new_content = md::insert_under_heading(&content, "Focus", std::slice::from_ref(&line));
     md::write_atomic(&note, &new_content)?;
     log.info("focus", &format!("added to {}", note.display()));
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("added", "focus", "", "", &line),
+    );
     println!("{line}");
     Ok(0)
 }
@@ -174,6 +235,10 @@ pub fn done(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
         Some((new_content, closed)) => {
             md::write_atomic(&note, &new_content)?;
             log.info("focus", &format!("done in {}", note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("done", "focus", "", "", &closed),
+            );
             println!("done {}", closed.trim());
             Ok(0)
         }
@@ -205,6 +270,10 @@ pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
         Some((new_content, removed)) => {
             md::write_atomic(&note, &new_content)?;
             log.info("focus", &format!("removed in {}", note.display()));
+            crate::ingest::record(
+                p,
+                &crate::ingest::Event::row("removed", "focus", "", "", &removed),
+            );
             println!("removed {}", removed.trim());
             Ok(0)
         }
@@ -221,6 +290,31 @@ pub fn rm(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_writes_leave_a_record() {
+        let root = std::env::temp_dir().join(format!("notes-focus-rec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let log = Logger::new(root.join(".state/log"), false);
+        let note = daily::today_path(&p);
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, "## Focus\n- [ ] keep this\n- [ ] drop this\n").unwrap();
+        add(&p, &log, "a new thing").unwrap();
+        done(&p, &log, "keep this").unwrap();
+        rm(&p, &log, "drop this").unwrap();
+        let events = crate::ingest::since(&p, 1);
+        let got: Vec<(&str, &str)> = events
+            .iter()
+            .map(|e| (e.action.as_str(), e.from.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [("added", "focus"), ("done", "focus"), ("removed", "focus")]
+        );
+        assert!(events[2].text.contains("drop this"), "{:?}", events[2]);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     const NOTE: &str = "\
 # 2026-07-16
@@ -250,6 +344,46 @@ after
         assert!(!items.iter().any(|l| l.contains("universal boot")));
         assert!(!items.iter().any(|l| md::is_checked(l)));
         assert!(!items.iter().any(|l| md::is_empty_unchecked(l)));
+    }
+
+    #[test]
+    fn loose_focus_lines_reports_top_level_text_only() {
+        let note = "## Focus\nCalculated returns risk\n- [ ] an item\n- [ ]\n- a bare bullet\n    an indented note\n### Urgent\n---\n<!-- c -->\n- [x] done\n\n## Notes\nprose outside\n";
+        assert_eq!(
+            loose_focus_lines(note),
+            vec![
+                (2, "Calculated returns risk".to_string()),
+                (5, "- a bare bullet".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn loose_focus_lines_is_empty_when_every_line_is_an_item() {
+        let note = "## Focus\n- [ ] an item\n    - [ ] a sub item\n- [ ]\n\n### High\n---\n### Done\n- [x] done\n    1. a note under it\n";
+        assert!(loose_focus_lines(note).is_empty());
+    }
+
+    #[test]
+    fn list_names_a_recent_note_with_loose_lines() {
+        let root = std::env::temp_dir().join(format!("notes-loose-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        fs::create_dir_all(&p.daily).unwrap();
+        let day = |back: i64| {
+            p.daily.join(format!(
+                "{}.md",
+                (Local::now().date_naive() - chrono::Duration::days(back)).format("%Y-%m-%d")
+            ))
+        };
+        fs::write(day(1), "## Focus\n- [ ] ok\npasted line\nanother\n").unwrap();
+        fs::write(day(LOOSE_DAYS), "## Focus\ntoo old to report\n").unwrap();
+        let found = loose_recent(&p, LOOSE_DAYS);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, day(1));
+        assert!(loose_summary(&found[0].0, &found[0].1)
+            .ends_with(":3: 2 line(s) in Focus are not items, so nothing moves or carries them"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

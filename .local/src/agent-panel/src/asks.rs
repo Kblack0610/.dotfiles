@@ -20,7 +20,7 @@ pub fn root() -> PathBuf {
 
 /// `agent-ask` from PATH, else the dotfiles install location: a tmux hook's `run-shell` and
 /// Hyprland's `exec` do not always carry ~/.local/bin.
-pub fn agent_ask_path() -> PathBuf {
+fn agent_ask_path() -> PathBuf {
     std::env::var_os("PATH")
         .and_then(|p| {
             std::env::split_paths(&p)

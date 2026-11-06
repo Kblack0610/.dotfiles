@@ -1,7 +1,8 @@
-//! The ingest record: one JSONL event per line an intake step moved, filed or left, at
-//! `<state_dir>/ingest.jsonl`. It is the one source for "what was ingested and where": the
-//! inbox status page reads it, and the triager's eval scores against it. Runtime state, so it
-//! lives outside the vault, as the rule on telemetry in `notes-system` says.
+//! The ingest record: one JSONL event per line an intake step moved, filed or left, and per
+//! row a CLI verb wrote, at `<state_dir>/ingest.jsonl`. It is the one source for "what happened
+//! to this row": `notes log` and the inbox status page read it, and the triager's eval scores
+//! against it. Hand edits never pass through here; vault git history holds those. Runtime
+//! state, so it lives outside the vault, as the rule on telemetry in `notes-system` says.
 
 use crate::config::Profile;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,11 @@ use std::path::PathBuf;
 pub struct Event {
     /// RFC 3339, local time.
     pub ts: String,
-    /// `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `left` (waits for the human) or
-    /// `refused` (a write the CLI turned down).
+    /// Intake: `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
+    /// for the human) or `refused` (a write the CLI turned down). A verb's write to a row:
+    /// `added`, `edited`, `detailed`, `tagged`, `toggled`, `done`, `dropped`, `placed` (another
+    /// version on the same sheet), `rehomed` (another project), `removed` (left Focus undone),
+    /// `swept` or `archived`.
     pub action: String,
     /// Where the line was: `outbox`, `focus`, or the project whose inbox held it.
     pub from: String,
@@ -34,9 +38,12 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// For `filed`: the first row's words as filed ([`row_words`]), which [`kept`] compares
-    /// with the row's words now.
+    /// with the row's words now. For `edited`: the row's new words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row: Option<String>,
+    /// Who wrote it ([`by`]).
+    #[serde(default)]
+    pub by: String,
 }
 
 impl Event {
@@ -47,9 +54,34 @@ impl Event {
             from: from.into(),
             to: to.into(),
             text: text.trim().into(),
+            by: by(
+                std::env::var("AGENT_QUEUE_ITEM").ok().as_deref(),
+                std::env::var("CLAUDE_CODE_SESSION_ID").ok().as_deref(),
+            ),
             ..Default::default()
         }
     }
+
+    /// A verb's write to the row `line`, on `lane` when the write has one.
+    pub fn row(action: &str, from: &str, to: &str, lane: &str, line: &str) -> Self {
+        Event {
+            lane: lane.into(),
+            id: crate::md::row_id(line),
+            ..Event::new(action, from, to, &crate::md::task_text(line))
+        }
+    }
+}
+
+/// Who a write belongs to: the queue item, else the session's first 8 characters, else `human`.
+fn by(item: Option<&str>, session: Option<&str>) -> String {
+    let set = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    set(item)
+        .or_else(|| set(session).map(|s| s.chars().take(8).collect()))
+        .unwrap_or_else(|| "human".into())
 }
 
 pub fn path(p: &Profile) -> PathBuf {
@@ -57,7 +89,9 @@ pub fn path(p: &Profile) -> PathBuf {
 }
 
 /// Past this size the record is cut to its last [`KEEP_DAYS`], so the page's read stays cheap.
-const MAX_BYTES: u64 = 512 * 1024;
+/// Well over those days' usual size (about 1400 writes a day, 11 MB), because a record that sits
+/// at the cap is rewritten on every append.
+const MAX_BYTES: u64 = 32 * 1024 * 1024;
 const KEEP_DAYS: i64 = 30;
 
 /// Append `ev`. Best effort, like the inbox flag: a record that cannot be written must not
@@ -73,7 +107,8 @@ pub fn record(p: &Profile, ev: &Event) {
             .append(true)
             .open(&path)?;
         let line = serde_json::to_string(ev).map_err(std::io::Error::other)?;
-        writeln!(f, "{line}")?;
+        // One write, so two sessions appending at once cannot interleave within a line.
+        f.write_all(format!("{line}\n").as_bytes())?;
         if f.metadata()?.len() > MAX_BYTES {
             prune(&path)?;
         }
@@ -99,26 +134,137 @@ fn prune(path: &std::path::Path) -> std::io::Result<()> {
 /// `ts` is serialized first, so a line from another day is passed over without parsing it:
 /// `notes today` reads this on every shell start.
 pub fn on_day(p: &Profile, day: &str) -> Vec<Event> {
+    read_day(p, day).0
+}
+
+fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
     let head = format!("{{\"ts\":\"{day}");
-    fs::read_to_string(path(p))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.starts_with(&head))
-        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-        .collect()
+    read(p, |l| l.starts_with(&head))
 }
 
 /// Every event of the last `days` days, today included, oldest first.
 pub fn since(p: &Profile, days: i64) -> Vec<Event> {
+    read_since(p, days).0
+}
+
+fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {
     let cut = (chrono::Local::now() - chrono::Duration::days(days - 1))
         .format("%Y-%m-%d")
         .to_string();
-    fs::read_to_string(path(p))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.get(7..17).is_some_and(|d| d >= &cut[..]))
-        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-        .collect()
+    read(p, |l| l.get(7..17).is_some_and(|d| d >= &cut[..]))
+}
+
+/// A line of the record that does not read as an event (a torn write), as `notes log --json`
+/// prints it so comms-lint counts it: dated by the event before it.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Reject {
+    pub ts: String,
+    pub text: String,
+    pub reject: &'static str,
+}
+
+/// The record's lines that `keep` picks, as events, and the ones that do not read.
+fn read(p: &Profile, keep: impl Fn(&str) -> bool) -> (Vec<Event>, Vec<Reject>) {
+    let (mut events, mut rejects) = (vec![], vec![]);
+    let text = fs::read_to_string(path(p)).unwrap_or_default();
+    for l in text.lines().filter(|l| keep(l)) {
+        match serde_json::from_str::<Event>(l) {
+            Ok(e) => events.push(e),
+            Err(_) => rejects.push(Reject {
+                ts: events
+                    .last()
+                    .map(|e: &Event| e.ts.clone())
+                    .unwrap_or_default(),
+                text: l.to_string(),
+                reject: "a record line that does not read as an event",
+            }),
+        }
+    }
+    (events, rejects)
+}
+
+/// What `notes log` shows: every set field narrows it.
+#[derive(Default)]
+pub struct Filter {
+    pub project: Option<String>,
+    pub id: Option<String>,
+    pub action: Option<String>,
+    pub by: Option<String>,
+}
+
+impl Filter {
+    fn is_empty(&self) -> bool {
+        self.project.is_none() && self.id.is_none() && self.action.is_none() && self.by.is_none()
+    }
+
+    fn hits(&self, e: &Event) -> bool {
+        let is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| w == got);
+        self.project
+            .as_deref()
+            .is_none_or(|w| e.from == w || e.to == w)
+            && self
+                .id
+                .as_deref()
+                .is_none_or(|w| e.id.as_deref() == Some(w))
+            && is(&self.action, &e.action)
+            && is(&self.by, &e.by)
+    }
+}
+
+/// One event as `notes log` prints it.
+pub fn log_line(e: &Event) -> String {
+    let at = e.ts.get(..16).unwrap_or(&e.ts).replace('T', " ");
+    let id = e.id.as_deref().map(|i| format!(" {i}")).unwrap_or_default();
+    let place = match (e.from.as_str(), e.to.as_str()) {
+        (f, t) if t.is_empty() || t == f => f.to_string(),
+        (f, t) => format!("{f} -> {t}"),
+    };
+    let lane = if e.lane.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", e.lane)
+    };
+    let by = if e.by.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", e.by)
+    };
+    let words = e.row.as_deref().unwrap_or(&e.text);
+    let why = e
+        .why
+        .as_deref()
+        .map(|w| format!(" [{w}]"))
+        .unwrap_or_default();
+    format!("{at} {}{id} {place}{lane}{by}: {words}{why}", e.action)
+}
+
+/// `notes log`: the events of `day`, or of the last `days`, today when neither is given.
+pub fn log(
+    p: &Profile,
+    day: Option<&str>,
+    days: Option<i64>,
+    filter: &Filter,
+    json: bool,
+) -> anyhow::Result<i32> {
+    let (events, rejects) = match (day, days) {
+        (Some(d), _) => read_day(p, d),
+        (None, Some(n)) => read_since(p, n),
+        (None, None) => read_since(p, 1),
+    };
+    for e in events.iter().filter(|e| filter.hits(e)) {
+        if json {
+            println!("{}", serde_json::to_string(e)?);
+        } else {
+            println!("{}", log_line(e));
+        }
+    }
+    // A line that does not read has no fields to filter on, so only the unfiltered log has it.
+    if json && filter.is_empty() {
+        for r in &rejects {
+            println!("{}", serde_json::to_string(r)?);
+        }
+    }
+    Ok(0)
 }
 
 /// A row's words as [`kept`] compares them: its text without the hashtags, so the planner's
@@ -221,6 +367,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_write_belongs_to_the_queue_item_then_the_session_then_the_human() {
+        assert_eq!(by(Some("fix-menu"), Some("6e736295-7629")), "fix-menu");
+        assert_eq!(by(None, Some("6e736295-7629")), "6e736295");
+        assert_eq!(by(Some(" "), None), "human");
+        assert_eq!(by(None, None), "human");
+    }
+
+    #[test]
+    fn a_line_from_before_by_still_parses() {
+        let old = r#"{"ts":"2026-11-05T10:53:09-08:00","action":"filed","from":"a","text":"t"}"#;
+        assert_eq!(serde_json::from_str::<Event>(old).unwrap().by, "");
+    }
+
+    #[test]
+    fn a_log_line_says_what_where_who_and_why() {
+        let mut e = Event::row(
+            "rehomed",
+            "ucp",
+            "home-config",
+            "agent",
+            "- [ ] fix(runners): a pool #low <!-- id:ar-302 -->",
+        );
+        e.ts = "2026-11-05T11:14:50-08:00".into();
+        e.by = "6e736295".into();
+        e.why = Some("hosts live there".into());
+        assert_eq!(
+            log_line(&e),
+            "2026-11-05 11:14 rehomed ar-302 ucp -> home-config (agent) by 6e736295: \
+             fix(runners): a pool [hosts live there]"
+        );
+    }
+
+    #[test]
+    fn a_filter_matches_either_end_of_a_move_and_narrows_on_each_field() {
+        let e = Event::row("rehomed", "ucp", "hc", "agent", "- [ ] a <!-- id:ucp-1 -->");
+        let f = |project: Option<&str>, id: Option<&str>| Filter {
+            project: project.map(Into::into),
+            id: id.map(Into::into),
+            ..Default::default()
+        };
+        assert!(f(None, None).hits(&e));
+        assert!(f(Some("ucp"), None).hits(&e));
+        assert!(f(Some("hc"), Some("ucp-1")).hits(&e));
+        assert!(!f(Some("other"), None).hits(&e));
+        assert!(!f(None, Some("ucp-2")).hits(&e));
+    }
+
+    #[test]
     fn a_filing_is_kept_only_where_it_was_filed_with_its_words() {
         let dir = std::env::temp_dir().join(format!("ingest-kept-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -303,6 +497,33 @@ mod tests {
             }]
         );
         assert_eq!(on_day(&p, "2026-01-01").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_torn_line_is_a_reject_dated_by_the_event_before_it() {
+        let dir = std::env::temp_dir().join(format!("ingest-torn-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        let ev = Event::new("filed", "outbox", "nc", "a row");
+        record(&p, &ev);
+        let day = &ev.ts[..10];
+        let torn = format!("{{\"ts\":\"{day}T23:59:00-08:00\",\"action\":\"fi");
+        let mut f = fs::OpenOptions::new().append(true).open(path(&p)).unwrap();
+        writeln!(f, "{torn}").unwrap();
+        let (events, rejects) = read_since(&p, 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(rejects.len(), 1);
+        assert_eq!(
+            (rejects[0].ts.as_str(), rejects[0].text.as_str()),
+            (ev.ts.as_str(), torn.as_str())
+        );
+        assert!(read_day(&p, day).1.len() == 1, "the day read keeps it too");
+        assert_eq!(
+            since(&p, 1).len(),
+            1,
+            "callers that want events see only events"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

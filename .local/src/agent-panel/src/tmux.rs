@@ -197,22 +197,6 @@ pub fn current_target() -> Option<String> {
     (!s.is_empty()).then(|| format!("{server}/{s}"))
 }
 
-/// A status-line message on one client for a few seconds; keys keep going to the pane.
-pub fn notice(socket: &str, client: &str, msg: &str) {
-    let _ = Command::new("tmux")
-        .args(["-S", socket, "display-message", "-c", client, "-d", "6000", msg])
-        .status();
-}
-
-/// Open a popup running `cmd` on `client` of the server at `socket`. `-EE` closes it when the
-/// command exits 0 and keeps it open on a failure, so an error is read rather than flashed.
-pub fn popup(socket: &str, client: &str, title: &str, cmd: &[String]) {
-    let _ = Command::new("tmux")
-        .args(["-S", socket, "display-popup", "-EE", "-c", client, "-w", "90%", "-h", "70%", "-T", title])
-        .args(cmd)
-        .status();
-}
-
 /// Jump to a target. Within the server we are already in, that is `switch-client`.
 /// Anything else is a cross-server hop, which tmux has no command for; `tmx goto`
 /// owns it (detach-client -E + attach, and it records the Prefix+L way back), so
@@ -231,6 +215,11 @@ pub fn jump(target: &str) {
             let _ = tmux(server).args(["attach", "-t", local]).status();
         }
     }
+}
+
+/// Show a line in the caller's tmux message bar.
+pub fn message(text: &str) {
+    let _ = Command::new("tmux").args(["display-message", text]).status();
 }
 
 /// `tmx` from PATH, else the dotfiles install location: Hyprland's `exec` PATH does

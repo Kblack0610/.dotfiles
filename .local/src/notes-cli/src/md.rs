@@ -5,6 +5,18 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
+/// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
+/// a page read with one `notes` still matches after an upgrade.
+pub fn fnv1a(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Atomically write `contents` to `path`: stage into a sibling `.<name>.tmp` file, then
 /// `rename` it over the target. The rename is atomic on POSIX, so a concurrent reader (a
 /// daily note open in Nvim, the session preflight, another `notes` run) never observes a
@@ -564,6 +576,20 @@ pub fn split_version(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(|t| format!("#{t}")))
 }
 
+/// True when `tag` (bare, no `#`) names a row's parent: `of/` then a row id (`of/ar-12`).
+/// The one link of the epic -> story -> subtask tree; the parent is a field on the child so a
+/// move, archive or release carries it.
+pub fn is_parent_tag(tag: &str) -> bool {
+    tag.strip_prefix("of/").is_some_and(is_row_id)
+}
+
+/// Strip a row's `#of/<id>` tags, like [`split_version`], and return the first parent id.
+/// A row's identity must not change when it is attached to an epic.
+pub fn split_parent(line: &str) -> (String, Option<String>) {
+    let (cleaned, found) = cut_tags(line, is_parent_tag);
+    (cleaned, found.map(|t| t["of/".len()..].to_string()))
+}
+
 /// How a date tag spells its date: month and day, `#c1026` (created) and `#due1031` (due).
 /// The year is left off because it is nearly always this one and every task line pays for
 /// it; the reader takes the occurrence NEAREST `today` ([`tag_date`]). A date further than
@@ -668,7 +694,7 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
 
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
-/// The shared half of [`split_version`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
+/// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
 /// tags instead of taking the first, so it keeps its own loop.
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
@@ -1247,6 +1273,7 @@ pub fn task_text(line: &str) -> String {
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_version(&stripped);
+    let (stripped, _) = split_parent(&stripped);
     let stripped = strip_trailing_day(&stripped);
     let t = stripped.trim();
     // Every checkbox state must strip, including the in-progress `[/]` - otherwise an
@@ -1297,6 +1324,7 @@ pub fn retext_task(line: &str, text: &str) -> String {
     let (bare, due) = split_due(&bare);
     let (bare, _) = split_priority(&bare);
     let (bare, _) = split_version(&bare);
+    let (bare, parent) = split_parent(&bare);
     let no_day = strip_trailing_day(&bare);
     let day = bare[no_day.len()..].trim();
     let mut out = format!("{indent}{checkbox} {text}");
@@ -1314,6 +1342,10 @@ pub fn retext_task(line: &str, text: &str) -> String {
     }
     if let Some(w) = version_tag(before_marker) {
         out = add_tag(&out, &w);
+    }
+    // `task_text` strips the parent link, so a rewrite keeps it the way it keeps the release.
+    if let Some(id) = parent {
+        out = add_tag(&out, &format!("#of/{id}"));
     }
     out
 }

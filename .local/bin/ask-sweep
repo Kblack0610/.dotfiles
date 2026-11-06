@@ -23,7 +23,7 @@ set -uo pipefail
 : "${ASK_SWEEP_MAX:=15}"
 : "${ASK_SWEEP_MSG_BYTES:=70000}"
 : "${ASK_SWEEP_QUIET_MIN:=60}"                  # a transcript written this recently is a live session
-: "${ASK_SWEEP_CMD:=agentctl-run --role observe}"
+: "${ASK_SWEEP_CMD:=agentctl-run --agent ask-sweep}"
 
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
@@ -37,7 +37,8 @@ say() { printf 'ask-sweep: %s\n' "$*" >&2; }
 ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
 sig() { sha256sum | cut -c1-12; }
 
-# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed.
+# file_row [--sheet] <board> <text>: one row within the night's cap. Returns 1 when not filed;
+# an open twin already on the board (`ptask add` exit 3) counts as filed.
 file_row() {
   local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
   local board="$1" text="$2"
@@ -45,6 +46,8 @@ file_row() {
   FILED=$((FILED + 1))
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
   notes ptask "$board" "${lane[@]}" add "$text" >/dev/null 2>&1
+  local rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
 
 board_of() {
@@ -120,15 +123,8 @@ sweep_asks() {
   open_rows="$({ notes ptask "$ASK_SWEEP_BOARD" --agent list 2>/dev/null; notes ptask "$ASK_SWEEP_BOARD" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
   prs="$(gh pr list --repo "$ASK_SWEEP_PR_REPO" --state merged --limit 200 \
     --search "merged:>=$date" --json title -q '.[].title' 2>/dev/null)"
-  prompt="You find what a person asked for that no one recorded. Below are their messages to coding agents on $date, the board's open rows and the PRs merged since.
-
-List each separate thing they asked to have built or changed that NO open row and NO merged PR covers. Match by meaning, not wording: a reworded row counts as covered, and when unsure treat it as covered. Leave out questions, reactions, instructions about how to work, one-off commands, anything they later rejected, and anything they called future or not wanted.
-
-For each one, one JSON object per line, between a line ASK-SWEEP-START and a line ASK-SWEEP-END, nothing else between them:
-{\"quote\": \"<their words, short>\", \"row\": \"<what to do, plain ASCII, under 150 characters>\", \"tier\": 1|2|3, \"size\": \"S|M|L\", \"done_is_stated\": true|false, \"human_only\": true|false}
-tier: 2 is ordinary game code, 3 is CI, build, tooling or dependencies. human_only: only a person can do it (a purchase, a playtest, a decision). done_is_stated: the row says how anyone would know it is finished.
-
-## Messages
+  # The instructions are the ask-sweep agent's PROMPT file; agentctl-run puts them ahead of this.
+  prompt="## Messages ($date)
 $msgs
 
 ## Open rows

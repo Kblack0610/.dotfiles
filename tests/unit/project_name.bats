@@ -636,3 +636,44 @@ EOF
   run resolve_project_name "$WT_ROOT/unrelated-name"
   assert_output 'mono-canon'
 }
+
+@test "project_inherited: a project's own type wins" {
+  write_map '{"mono": {"type": "game"}, "app": {"repo": "mono", "path": "apps/a", "type": "app"}}'
+  run project_inherited mono type
+  assert_output game
+}
+
+@test "project_inherited: a repo with no type takes the one its projects share" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "infra"}}'
+  run project_inherited mono type
+  assert_output infra
+}
+
+@test "project_inherited: a repo whose projects disagree has no type" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "type": "infra"}, "b": {"repo": "mono", "path": "apps/b", "type": "game"}}'
+  run project_inherited mono type
+  assert_success
+  assert_output ''
+}
+
+@test "project_inherited: any field inherits, so a client repo takes its projects' client" {
+  write_map '{"a": {"repo": "mono", "path": "apps/a", "client": "acme"}}'
+  run project_inherited mono client
+  assert_output acme
+}
+
+@test "project_inherited: an unknown project has no type" {
+  write_map '{}'
+  run project_inherited nothing type
+  assert_success
+  assert_output ''
+}
+
+@test "project_slug: the registry's slug wins, else a short name stays, else hyphen initials, else 8 characters" {
+  write_map '{"lunchtracker": {"slug": "lt"}}'
+  assert_equal "$(project_slug lunchtracker)" lt
+  assert_equal "$(project_slug dotfiles)" dotfiles
+  assert_equal "$(project_slug unity-core-playground)" ucp
+  assert_equal "$(project_slug agent-runtime)" ar
+  assert_equal "$(project_slug supercalifragilistic)" supercal
+}

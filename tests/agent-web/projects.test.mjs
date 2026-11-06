@@ -19,6 +19,7 @@ const doc = { getElementById: box, addEventListener() {}, createElement: el, bod
 const ctx = vm.createContext({
   console,
   document: doc,
+  window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
 for (const f of ["ui.js", "charts.js", "app.js", "board.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
@@ -36,6 +37,7 @@ const feed = {
     { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", text: "fix the menu", raw: "- [ ] fix the menu", sheet: "a.md", tags: [] },
     { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
   ],
+  focus: [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }],
 };
 function draw(data, open = null) {
   ctx.input = { data, feed, open };
@@ -63,9 +65,11 @@ test("opening a card shows its rows under it, with Tags... among the row actions
   assert.match(rows, /fix the menu/);
   assert.doesNotMatch(rows, /water the beds/, "another project's row is filtered out");
   assert.match(rows, /data-tag="0">Tags\.\.\./);
+  assert.doesNotMatch(rows, /href="#focus"/, "one project's rows have no Focus count");
 });
 
 test("All opens every project's rows, and a stats error is shown, not hidden", () => {
   assert.match(draw({ cards: [card()], unlinked: [], errors: [] }, "all").rows, /fix the menu.*water the beds/s);
+  assert.match(draw({ cards: [card()], unlinked: [], errors: [] }, "all").rows, /<a class="btn sm" href="#focus">Focus: personal 3, bnb 1 open<\/a>/, "Focus is a count linking to its tab");
   assert.match(draw({ cards: [], unlinked: [], errors: ["notes projects failed"] }).cards, /panel down">notes projects failed/);
 });

@@ -123,6 +123,22 @@ project_of_repos_json() {
        | {key: ., value: ($by_base[.] // $map.aliases[.] // $map.aliases[$b] // $b)}] | from_entries'
 }
 
+# project_slug <project> -> a short name for a row that has no room: `trackers.<project>.slug`
+# when the registry sets one, else the name itself up to 8 characters, else the initials of
+# its hyphenated parts (unity-core-playground -> ucp), else its first 8 characters.
+project_slug() {
+  local own name="$1" part out=""
+  own="$(project_field "$name" slug)"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  if [ "${#name}" -le 8 ]; then printf '%s\n' "$name"; return 0; fi
+  if [[ "$name" == *-* ]]; then
+    for part in ${name//-/ }; do out+="${part:0:1}"; done
+    printf '%s\n' "$out"
+    return 0
+  fi
+  printf '%s\n' "${name:0:8}"
+}
+
 # ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
@@ -216,6 +232,18 @@ project_lab_names() {
     | select(.value.repo == $n or .key == $n)
     | .key
   ' "$map_file" 2>/dev/null || true
+}
+
+# project_inherited <repo or project> <field> -> its own value, else the one value shared by
+# every project under it, else "". `.dotfiles` has no type of its own, but both its projects
+# are infra.
+project_inherited() {
+  local own name vals
+  own="$(project_field "$1" "$2")"
+  [ -n "$own" ] && { printf '%s\n' "$own"; return 0; }
+  vals="$(project_lab_names "$1" | while IFS= read -r name; do project_field "$name" "$2"; done | sort -u)"
+  [ -n "$vals" ] && [ "$(wc -l <<<"$vals")" -eq 1 ] && printf '%s\n' "$vals"
+  return 0
 }
 
 # project_keys -> every registered project key, sorted, one per line: the `paths` names

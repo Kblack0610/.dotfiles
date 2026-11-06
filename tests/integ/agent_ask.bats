@@ -57,10 +57,41 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$id"
   assert_line 'claude_session: sid-1'
   # agents pass their own tmux name as --session; the owner is still the poster
+  "$AGENT_ASK" cancel "$id" >/dev/null
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session agent-1 'merge it?')"
   run "$AGENT_ASK" show "$id"
   assert_line 'claude_session: sid-1'
   assert_line 'session: agent-1'
+}
+
+@test "a session with a pending ask cannot post a second one, and is told how to fold it" {
+  local first; first="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  CLAUDE_CODE_SESSION_ID=sid-1 run --separate-stderr post other 'ship it too?'
+  assert_failure 2
+  [[ "$stderr" == *"pending ask $first"* ]]
+  [[ "$stderr" == *'merge it?'* ]]
+  [[ "$stderr" == *"agent-ask cancel $first superseded"* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" '1'
+}
+
+@test "once its ask is answered or cancelled, the session can ask again" {
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  "$AGENT_ASK" answer "$id" yes 2>/dev/null
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'ship it?')"
+  [ -n "$id" ]
+  "$AGENT_ASK" cancel "$id" >/dev/null
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'tag it?'
+  assert_success
+}
+
+@test "another session, or a post with no session id, is not held by someone else's ask" {
+  CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
+  run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'
+  assert_success
+  run post demo 'tag it?'
+  assert_success
+  run post demo 'and this?'
+  assert_success
 }
 
 @test "an attended session files its ask and sees it in its pane, with no page per ask" {
@@ -106,10 +137,10 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 @test "settle-session closes only that session's pending asks" {
   local mine other done_
-  mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
-  other="$(CLAUDE_CODE_SESSION_ID=sid-2 post demo 'ship it?')"
   done_="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'old?')"
   "$AGENT_ASK" answer "$done_" yes 2>/dev/null
+  mine="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?')"
+  other="$(CLAUDE_CODE_SESSION_ID=sid-2 post demo 'ship it?')"
   run "$AGENT_ASK" settle-session sid-1 answered "yes, go ahead"
   assert_success
   run "$AGENT_ASK" show "$mine"
@@ -181,7 +212,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   printf 'judge: take-recommend\njudge_reason: the policy says wait\n' >> "$HOME/.agent/asks/demo/$id.md"
   run env COLUMNS=80 "$AGENT_ASK" card "$id"
   assert_success
-  assert_line --partial "asking you  demo . agent-1 . "
+  assert_line --partial "asking you  demo:1 . "
   assert_line 'run the sweep?'
   assert_line '  1  go     run it now'
   assert_line '  2  later  after the release  (recommended)'
@@ -202,6 +233,111 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   local g; g="$("$AGENT_ASK" post --project demo --kind gate 'ship it?')"
   run env COLUMNS=80 "$AGENT_ASK" card "$g"
   assert_line --index 0 --partial 'gate - asking you  demo'
+}
+
+# The real agentctl-session-outcomes, reading its lib from the repo and its rows from the sandbox.
+outcomes_cli() {
+  printf '#!/bin/sh\nSO_LIB_DIR="%s/.local/lib" exec "%s/.local/bin/agentctl-session-outcomes" "$@"\n' \
+    "$REPO_ROOT" "$REPO_ROOT" > "$SANDBOX/bin/agentctl-session-outcomes"
+  chmod +x "$SANDBOX/bin/agentctl-session-outcomes"
+}
+
+# The story under the card: where the ask came from, the request, the asking turn's prompt and
+# words (agent-panel said, stubbed from a fixture), and the nightly outcome row, which the real
+# agentctl-session-outcomes reads from the sandbox.
+@test "card tells the story: source, request, the asking turn, its words, telemetry" {
+  mkdir -p "$HOME/.claude/sessions" "$HOME/.claude/projects/p" "$HOME/.agent/sessions/demo" "$HOME/.agent/outcomes/demo"
+  printf '{"pid":%d,"sessionId":"sid-s"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  : > "$HOME/.claude/projects/p/sid-s.jsonl"
+  printf '{"session_id":"sid-s","title":"merge-queue-review","first_prompt":"cut"}\n' > "$HOME/.agent/sessions/demo/sessions.jsonl"
+  printf '%s\n' '{"first":"review the merge queue","prompt":"should we keep it?","said":["Looked at the queue.","Keep it? 1 keep 2 drop"]}' \
+    > "$NOTES_FIXTURE/agent-panel.said"
+  local now iso; now="$(date +%s)"; iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  { printf '{"session_id":"sid-s","project":"demo","title":"t","updated":"%s","updated_epoch":%d,"observed":"%s","cost_usd":1.5,"duration_s":3720,"prs":[],"prs_merged":1,"prs_open":0,"corrections":{"lessons_written":1}}\n' "$iso" "$now" "$iso"
+    printf '{"session_id":"sid-o","project":"demo","title":"o","updated":"%s","updated_epoch":%d,"observed":"%s","prs":[],"corrections":{"interrupts":3}}\n' "$iso" "$now" "$iso"
+  } > "$HOME/.agent/outcomes/demo/2026-11.jsonl"
+  outcomes_cli
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo --session agent-3 --agent runner-x \
+    --task item-y --options 'keep|drop' 'keep the merge queue?')"
+  run env COLUMNS=110 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line 'from      queue item item-y, runner runner-x, tmux agent-3, claude sid-s (live)'
+  assert_line 'request   merge-queue-review: review the merge queue'
+  assert_line 'you said  should we keep it?'
+  # The newest block is where the session stands; the older one is left to the session.
+  assert_line 'it said   Keep it? 1 keep 2 drop'
+  refute_output --partial 'Looked at the queue.'
+  assert_line --regexp '^telemetry friction 2 \(#2 of 2 this week\): 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
+  grep -qx "agent-panel said $HOME/.claude/projects/p/sid-s.jsonl --around $id" "$NOTES_FIXTURE/calls.log"
+  # The asking pane's own copy is the card alone: that session already holds the story.
+  run env CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo 'again?'
+  refute_output --partial 'it said'
+}
+
+@test "card leaves out each story block that has no data" {
+  mkdir -p "$HOME/.agent/sessions/demo"
+  printf '{"session_id":"sid-t","title":"only-a-title"}\n' > "$HOME/.agent/sessions/demo/sessions.jsonl"
+  # A session with a registry title but no transcript, no live process and no outcome row.
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-t "$AGENT_ASK" post --project demo --options 'a|b' 'which?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_line 'from      claude sid-t (ended)'
+  assert_line 'request   only-a-title'
+  refute_output --partial 'you said'
+  refute_output --partial 'it said'
+  refute_output --partial 'telemetry'
+  refute_line --partial 'only-a-title:'
+  # A session with no friction has no rank; its row still gives the telemetry line.
+  mkdir -p "$HOME/.agent/outcomes/demo"; outcomes_cli
+  printf '{"session_id":"sid-t","project":"demo","title":"t","updated":"x","updated_epoch":%d,"observed":"%s","prs":[],"prs_merged":0}\n' \
+    "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOME/.agent/outcomes/demo/2026-11.jsonl"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_line 'telemetry friction 0 . 0 PRs merged . seen 0m ago'
+  # An ask no session owns, posted outside tmux, tells no story at all.
+  local loose; loose="$("$AGENT_ASK" post --project demo 'headless?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$loose"
+  refute_output --partial 'from'
+  refute_output --partial 'request'
+}
+
+# The panel's card reads on one screen (human, 2026-11-05): the newest words with the ask itself
+# and tables taken out, each story block capped, long meanings hung under themselves.
+@test "card fits a page: it said drops the repeated ask and tables, blocks are capped, notes hang" {
+  mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/demo"
+  : > "$HOME/.claude/projects/p/sid-p.jsonl"
+  local long; long="$(printf 'word%.0s ' $(seq 1 120))"
+  jq -cn --arg long "$long" '{first: $long, prompt: "go on", said: [
+    "Older status that still says something.",
+    "Merged #1 and **rebuilt** the hub.\n\n| col | col |\n|---|---|\n| a | b |\n```\ncode here\n```\nShip it now?\n\n1. yes: ship\n2. no: wait\n\nIt stays open until you answer.",
+    "## Ship it now?\n\n1. yes: ship\n2. no: wait"]}' > "$NOTES_FIXTURE/agent-panel.said"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-p "$AGENT_ASK" post --project demo \
+    --options "yes=ship it to every store today, after the last check is green and the notes are in|no=wait" \
+    --recommend no 'Ship it now?')"
+  run env COLUMNS=60 "$AGENT_ASK" card "$id"
+  assert_success
+  # The newest block only repeats the ask, so the one before it speaks; its tables, code, bold
+  # marks, the question and its option list are gone.
+  assert_line 'it said   Merged #1 and rebuilt the hub.'
+  assert_line '          It stays open until you answer.'
+  refute_output --partial 'col'
+  refute_output --partial 'code here'
+  refute_output --partial '1. yes'
+  refute_output --partial 'Older status'
+  # A request of 120 words keeps three lines, the last cut with "...".
+  assert_equal "$(grep -c 'word' <<<"$output")" 3
+  assert_line --regexp '^          (word )+\.\.\.$'
+  # The long meaning wraps under itself, past the number and slug column.
+  assert_line '  1  yes  ship it to every store today, after the last'
+  assert_line '          check is green and the notes are in'
+  local w; w="$(awk '{ if (length > m) m = length } END { print m }' <<<"$output")"
+  [ "$w" -le 60 ]
+}
+
+@test "card names an agent session the way the questions panel row does: slug:N, then the project" {
+  registry
+  local id; id="$("$AGENT_ASK" post --project big-platform --session big-platform-agent-60 'which?')"
+  run env COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_line --index 0 --regexp '^asking you  bp:60 \. big-platform \. [0-9]+m ago \. '
 }
 
 @test "card of an old ask with bare options and no notes still lists the options" {
@@ -454,21 +590,25 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   # A live session is a Claude process file naming it whose pid runs (this test's own pid).
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
-  # sid-9's file names a pid that is not running, so it is gone all the same.
+  # sid-9's and sid-8's files name pids that are not running, so they are gone all the same.
   printf '{"pid":999999999,"sessionId":"sid-9"}\n' > "$HOME/.claude/sessions/999999999.json"
+  printf '{"pid":999999998,"sessionId":"sid-8"}\n' > "$HOME/.claude/sessions/999999998.json"
   live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
   gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
-  resumed="$(CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
+  resumed="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
   loose="$(post demo 'headless?')"
   run "$AGENT_ASK" card "$gone"
   assert_output --partial 'session gone: the answer becomes a row on the demo board'
   run "$AGENT_ASK" card "$resumed"
   assert_output --partial 'session gone: the answer starts `/captain resume`'
+  assert_output --partial 'g reopens the session'
   # Negative controls: a live session, and an ask no session owns.
   run "$AGENT_ASK" card "$live"
   refute_output --partial 'session gone'
+  refute_output --partial 'g reopens'
   run "$AGENT_ASK" card "$loose"
   refute_output --partial 'session gone'
+  refute_output --partial 'g reopens'
   # The questions panel's gone mark reads the same source.
   run "$AGENT_ASK" live-sessions
   assert_output 'sid-1'
@@ -515,7 +655,7 @@ printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
 printf 'thinking...\nASK-JUDGE-START\n%s\nASK-JUDGE-END\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
-  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge" AGENT_ASK_POLICY="$REPO_ROOT/.config/agent-ask/policy.md"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
 }
 
 @test "judge records its call and reason, and leaves the ask pending" {
@@ -528,10 +668,10 @@ SH
   assert_line 'judge_reason: landing is standing authorization'
   assert_line 'status: pending'
   assert_line --regexp '^judged_at: .+'
-  # the prompt carries the policy and the ask
+  # the input carries the ask; the policy is the agent's PROMPT, added by agentctl-run
   run cat "$BATS_TEST_TMPDIR/judge.calls"
   assert_output --partial 'open the PR?'
-  assert_output --partial 'Always `human`'
+  refute_output --partial 'Always `human`'
 }
 
 @test "judge never sends a gate to the model, and the gate's judge is the human" {
@@ -552,7 +692,7 @@ SH
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: human'
   "$AGENT_ASK" judge "$id"
-  run grep -c "^## The ask$" "$BATS_TEST_TMPDIR/judge.calls"
+  run grep -c "^question: no recommendation here?$" "$BATS_TEST_TMPDIR/judge.calls"
   assert_output '1'
 }
 

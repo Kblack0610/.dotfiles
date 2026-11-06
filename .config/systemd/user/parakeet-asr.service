@@ -1,5 +1,5 @@
 [Unit]
-Description=Parakeet ONNX ASR daemon (gungan dictation backend)
+Description=Parakeet ONNX ASR daemon (gungan dictation backend: batch + live stream)
 Documentation=https://github.com/k2-fsa/sherpa-onnx
 After=network.target
 
@@ -14,7 +14,10 @@ Environment=ASR_DECODING=modified_beam_search
 Environment=ASR_HOTWORDS_FILE=/home/kblack0610/.local/share/asr/hotwords.txt
 Environment=ASR_HOTWORDS_SCORE=2.0
 Environment=ASR_BPE_VOCAB=/home/kblack0610/.local/share/asr/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/bpe.vocab
-ExecStart=/home/kblack0610/.local/share/asr/parakeet-venv/bin/python /home/kblack0610/.local/share/asr/parakeet_server.py
+# gungan stream (/v1/stream): why this model, docs/streaming-research.md in the gungan repo
+Environment=ASR_STREAM_MODEL_DIR=/home/kblack0610/.local/share/asr/models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25
+Environment=ASR_STREAM_THREADS=4
+ExecStart=/home/kblack0610/.local/share/asr/parakeet-venv/bin/python /home/kblack0610/.local/src/gungan/server/asr_server.py
 Restart=on-failure
 RestartSec=3
 

@@ -110,6 +110,16 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #board summary { cursor: pointer; }
 #board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+/* Focus (focus.js): one note read like a page, phone width first; a link into another note or a
+   project is in-app (#focus/..., #projects/...), so it is styled apart from an external one. */
+#focus > *, #focus h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
+#focus .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+#focus a.btn { text-decoration: none; display: inline-block; }
+a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
+#focus .opts a.wl { font: 12px var(--mono); }
+#focus pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#focus #f-edit { display: block; width: 100%; box-sizing: border-box; min-height: 60vh; max-height: none; margin: 8px 0; font: var(--fs-sm)/1.45 var(--mono); }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
 .qitem .q { margin-bottom: 6px; max-height: 24em; overflow-y: auto; font-size: var(--fs-sm); background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 /* Card pieces (ui.js cardHead, cchip, cardLine, cfold), shared by Queue and Waiting: title and
@@ -265,6 +275,7 @@ button.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
 .cores { display: flex; gap: 1px; width: 100%; height: 16px; }
@@ -344,3 +355,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; vertical-align: top; }
 .md th { background: var(--tool); font-weight: 600; }
 .md a { color: var(--accent); }
+
+/* The Outbox tab: one column, the doc as tall as the screen allows, on a phone too. */
+#outbox > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+#o-doc { display: block; width: 100%; box-sizing: border-box; min-height: 40vh; max-height: none; font: var(--fs-lg)/1.5 var(--mono); }
+#o-said { margin: 6px auto 14px; font-size: 12px; }
+.o-steps { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.o-steps li { padding: 3px 0; overflow-wrap: anywhere; }
+.o-steps li.warn { color: var(--wait); }

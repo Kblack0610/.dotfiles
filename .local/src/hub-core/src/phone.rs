@@ -11,13 +11,19 @@ use serde_json::Value;
 
 use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
+use crate::projects::{Card, Projects};
 use crate::queue::Queue;
 use crate::text::cap;
 
-/// How much of an ask one row keeps: about two lines at 4x4.
-const ASK_MAX: usize = 70;
-/// How many projects the needs row names before the rest fold under "+N more".
+/// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
+const ASK_MAX: usize = 44;
+/// One whole widget line at 4x4: the oldest-ask row's "oldest 13h: " plus `ASK_MAX`.
+const LINE_MAX: usize = 12 + ASK_MAX;
+/// How many projects the needs row names before the rest fold under "+N more", and how many
+/// in-flight projects the projects section lists under its head.
 const PROJECTS: usize = 3;
+/// How many KPIs the over-limit row names, beside the count of all of them: one line at 4x4.
+const KPIS: usize = 2;
 /// Fleet-state buckets of a session that has stopped, so its ETA means nothing.
 const FINISHED: [&str; 3] = ["DONE", "LANDED", "PARKED"];
 /// KPI names that do not read as words once the underscores go.
@@ -27,7 +33,8 @@ const KPI_LABELS: [(&str, &str); 2] =
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
     pub level: Level,
-    /// The section: red, error, needs, agents, queue or ci. A section's first row is its head line.
+    /// The section: red, error, needs, agents, queue, ci or projects. A section's first row is its head line,
+    /// `Title: value`, and the widget bolds what is before the colon.
     pub head: &'static str,
     pub text: String,
 }
@@ -44,6 +51,8 @@ pub struct Inputs<'a> {
     pub state: &'a Value,
     pub queue: Option<&'a Queue>,
     pub infra: Option<&'a Infra>,
+    /// The project cards (`projects::gather`), the ones the waybar chip and the hub draw.
+    pub projects: Option<&'a Projects>,
     /// PRs merged today, from the day-log record.
     pub merged: Option<usize>,
     pub now: i64,
@@ -100,7 +109,7 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     let mut out = vec![row(
         Level::Warn,
         "needs",
-        format!("Needs you {}: {split}", waiting.len()),
+        format!("Needs you: {} ({split})", waiting.len()),
     )];
 
     let mut by: BTreeMap<&str, usize> = BTreeMap::new();
@@ -167,7 +176,7 @@ fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
         .and_then(|s| s.value)
 }
 
-/// "over limit: CI reds per PR 0.86 (0.5), board 372 (60)". fleet-bench judges, this only words it.
+/// "5 over limit: CI reds per PR 0.86 (0.5), board 372 (60)". fleet-bench judges, this only words it.
 fn over_limit(infra: &Infra) -> Option<String> {
     let mut said: Vec<String> = infra
         .get("bench")
@@ -185,7 +194,9 @@ fn over_limit(infra: &Infra) -> Option<String> {
         })
         .collect();
     said.sort();
-    (!said.is_empty()).then(|| format!("over limit: {}", said.join(", ")))
+    let past = said.len();
+    said.truncate(KPIS);
+    (past > 0).then(|| format!("{past} over limit: {}", said.join(", ")))
 }
 
 fn agents(i: &Inputs) -> Vec<Row> {
@@ -193,7 +204,7 @@ fn agents(i: &Inputs) -> Vec<Row> {
         return vec![];
     };
     let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
-    let mut head = format!("Agents {} working", n("WORKING"));
+    let mut head = format!("Agents: {} working", n("WORKING"));
     let rest = counted(&[
         (n("STALLED"), "stalled", "stalled"),
         (n("UNCLEAR"), "unclear", "unclear"),
@@ -220,7 +231,7 @@ fn agents(i: &Inputs) -> Vec<Row> {
             out.push(row(
                 Level::Ok,
                 "agents",
-                format!("waited on you {waited:.0}h in 24h"),
+                format!("agents waited {waited:.0}h on you in 24h"),
             ));
         }
     }
@@ -249,20 +260,63 @@ fn agents(i: &Inputs) -> Vec<Row> {
 
 fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
     let count = home.numbers.iter().find(|n| n.label == "queue")?;
-    let mut text = format!("Queue {}", count.value);
+    let mut text = format!("Queue: {}", count.value);
     let sitting = q
         .and_then(|q| q.stats.as_ref())
         .and_then(|s| s.sitting.as_ref());
     if let Some(s) = sitting.filter(|s| s.runnable > 0) {
         text += &format!(", {} can start", s.runnable);
         if let Some(o) = s.oldest_runnable.first() {
-            text += &format!(", oldest {}", age(o.minutes * 60));
+            text += &format!(" ({})", age(o.minutes * 60));
         }
     }
     Some(row(Level::Ok, "queue", text))
 }
 
-/// "CI 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
+/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running".
+fn project(c: &Card) -> String {
+    let mut s = format!("{} {}%", c.name, c.percent.unwrap_or(0));
+    s += &match c.eta_days {
+        Some(0) => ", nothing open".to_string(),
+        Some(d) => format!(", ETA {d}d"),
+        None => ", no ETA".to_string(),
+    };
+    if !c.running.is_empty() {
+        s += &format!(", {} running", c.running.len());
+    }
+    if c.waiting > 0 {
+        s += &format!(", {} waiting", c.waiting);
+    }
+    cap(&s, LINE_MAX)
+}
+
+/// "Projects: 4 in flight of 25", then the first `PROJECTS` in flight, one line each, in the
+/// cards' own order (in flight first); the head's count says how many more there are. Nothing in
+/// flight is the head line alone, since a green section is one line.
+fn projects(p: &Projects) -> Vec<Row> {
+    let flying: Vec<&Card> = p.cards.iter().filter(|c| c.in_flight()).collect();
+    if p.cards.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![row(
+        Level::Ok,
+        "projects",
+        if flying.is_empty() {
+            format!("Projects: nothing in flight of {}", p.cards.len())
+        } else {
+            format!("Projects: {} in flight of {}", flying.len(), p.cards.len())
+        },
+    )];
+    out.extend(
+        flying
+            .iter()
+            .take(PROJECTS)
+            .map(|c| row(Level::Ok, "projects", project(c))),
+    );
+    out
+}
+
+/// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
     let v = infra.cc_values();
     let sum = |name: &str| -> f64 {
@@ -275,7 +329,7 @@ fn ci(infra: &Infra) -> Option<Row> {
     if slots == 0.0 {
         return None;
     }
-    let mut said = vec![format!("CI {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
+    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
     let queued = sum("cc:pool_waiting");
     if queued > 0.0 {
         said.push(format!("{queued:.0} queued"));
@@ -347,6 +401,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     rows.extend(agents(i));
     rows.extend(queue(home, i.queue));
     rows.extend(i.infra.filter(|x| x.ok).and_then(ci));
+    rows.extend(i.projects.map(projects).unwrap_or_default());
     let worst = |l: Level| rows.iter().any(|r| r.level == l);
     let state = if worst(Level::Red) {
         "critical"
@@ -509,6 +564,7 @@ mod tests {
                 state,
                 queue: q,
                 infra: inf,
+                projects: None,
                 merged: Some(85),
                 now: NOW,
             },
@@ -535,7 +591,7 @@ mod tests {
             .count();
         let needs = texts(&p, "needs");
         assert_eq!(shown, 4);
-        assert_eq!(needs[0], "Needs you 4: 2 asks, 1 session, 1 queue item");
+        assert_eq!(needs[0], "Needs you: 4 (2 asks, 1 session, 1 queue item)");
         assert!(needs[1].starts_with("dotfiles 1"), "{}", needs[1]);
     }
 
@@ -551,12 +607,30 @@ mod tests {
         assert_eq!(
             agents,
             [
-                "Agents 8 working, 1 stalled, 3 unclear".to_string(),
-                "waited on you 193h in 24h".to_string(),
+                "Agents: 8 working, 1 stalled, 3 unclear".to_string(),
+                "agents waited 193h on you in 24h".to_string(),
                 format!("2 past ETA, worst 2h, next done {next}"),
-                "over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
+                "2 over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
                 "$6.54 per PR (28d $7.00), 85 merged today".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn over_limit_stays_one_line_however_many_kpis_are_past() {
+        let mut bench = bench();
+        bench.extend([
+            metric(
+                "agent_bench_kpi",
+                json!({"kpi": "zz_extra", "window": "7d"}),
+                "9",
+            ),
+            metric("agent_bench_kpi_limit", json!({"kpi": "zz_extra"}), "1"),
+            metric("agent_bench_kpi_past", json!({"kpi": "zz_extra"}), "1"),
+        ]);
+        assert_eq!(
+            over_limit(&infra(vec![("bench", bench)])).as_deref(),
+            Some("3 over limit: CI reds per PR 0.86 (0.5), board 372 (60)")
         );
     }
 
@@ -571,7 +645,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI 6/29 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
         );
     }
 
@@ -586,10 +660,10 @@ mod tests {
             p.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
             [
                 "Needs you: nothing",
-                "Agents 2 working",
+                "Agents: 2 working",
                 "85 merged today",
-                "Queue 1 running, 0 up next",
-                "CI 6/29 busy, 80% passed",
+                "Queue: 1 running, 0 up next",
+                "CI: 6/29 busy, 80% passed",
             ]
         );
     }
@@ -612,7 +686,7 @@ mod tests {
         assert_eq!(texts(&p, "error"), ["Prometheus: cannot read https://p"]);
         assert!(texts(&p, "ci").is_empty());
         let agents = texts(&p, "agents");
-        assert_eq!(agents[0], "Agents 8 working, 1 stalled, 3 unclear");
+        assert_eq!(agents[0], "Agents: 8 working, 1 stalled, 3 unclear");
         assert_eq!(agents.last().unwrap(), "85 merged today");
     }
 
@@ -622,6 +696,84 @@ mod tests {
         assert_eq!(p.state, "warn");
         assert!(texts(&p, "needs").is_empty());
         assert!(texts(&p, "error")[0].starts_with("no fleet state yet"));
+    }
+
+    fn card(name: &str, percent: u32, eta: Option<u32>, running: usize, waiting: usize) -> Card {
+        let r = crate::home::Running {
+            slug: "s".into(),
+            title: "t".into(),
+            project: name.into(),
+            started: None,
+            target: None,
+            phases: None,
+        };
+        Card {
+            name: name.into(),
+            percent: Some(percent),
+            eta_days: eta,
+            running: vec![r; running],
+            waiting,
+            ..Card::default()
+        }
+    }
+
+    #[test]
+    fn projects_head_counts_in_flight_then_names_the_first_three() {
+        let p = Projects {
+            cards: vec![
+                card("agent-runtime", 35, Some(69), 4, 1),
+                card("unity-core-playground", 52, Some(54), 9, 0),
+                card("dodginballs", 2, None, 4, 0),
+                card("trader", 49, Some(40), 1, 0),
+                card("idle", 66, None, 0, 0),
+            ],
+            ..Projects::default()
+        };
+        let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "Projects: 4 in flight of 5",
+                "agent-runtime 35%, ETA 69d, 4 running, 1 waiting",
+                "unity-core-playground 52%, ETA 54d, 9 running",
+                "dodginballs 2%, no ETA, 4 running",
+            ]
+        );
+        assert!(lint(&rows), "{rows:#?}");
+    }
+
+    #[test]
+    fn projects_with_nothing_in_flight_is_one_line_and_no_cards_is_none() {
+        let p = Projects {
+            cards: vec![card("idle", 66, None, 0, 0)],
+            ..Projects::default()
+        };
+        let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
+        assert_eq!(rows, vec!["Projects: nothing in flight of 1"]);
+        assert!(projects(&Projects::default()).is_empty());
+    }
+
+    #[test]
+    fn build_carries_the_projects_rows_last() {
+        let s = state();
+        let h = home::build(&s, None, None);
+        let p = Projects {
+            cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
+            ..Projects::default()
+        };
+        let out = build(
+            &h,
+            &Inputs {
+                state: &s,
+                queue: None,
+                infra: None,
+                projects: Some(&p),
+                merged: None,
+                now: NOW,
+            },
+        );
+        assert_eq!(out.rows.last().unwrap().head, "projects");
+        assert_eq!(texts(&out, "projects")[0], "Projects: 1 in flight of 1");
     }
 
     /// `comms-lint --channel phone` over `rows`, from the repo's own script and channels.

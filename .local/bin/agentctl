@@ -65,10 +65,17 @@ load_agent() {
         source "$conf"
         : "${NAME:?missing NAME}"
         : "${KIND:?missing KIND}"
-        : "${COMMAND:?missing COMMAND}"
+        # KIND=call is a model call another script makes (a judge): its caller starts it
+        # through `agentctl-run --agent <name>`, so it has no COMMAND, unit or timer. It is
+        # in the roster so every model call is defined, listed and scored the same way.
         case "$KIND" in
-            oneshot|persistent) ;;
-            *) printf 'invalid KIND=%s\n' "$KIND" >&2; exit 1 ;;
+            oneshot|persistent) : "${COMMAND:?missing COMMAND}" ;;
+            call)
+                [ -z "${SCHEDULE:-}" ] && [ "${AUTOSTART:-no}" = no ] \
+                    || { printf 'KIND=call is started by its caller: no SCHEDULE or AUTOSTART\n' >&2; exit 1; }
+                : "${ROLE:?missing ROLE (KIND=call)}"
+                COMMAND="agentctl-run --agent $NAME" ;;
+            *) printf 'invalid KIND=%s (oneshot|persistent|call)\n' "$KIND" >&2; exit 1 ;;
         esac
         [ "$NAME" = "$name" ] || { printf 'NAME=%s does not match filename %s\n' "$NAME" "$name" >&2; exit 1; }
         # Every runner says which lane it is in and what it is for, so `agentctl list` can
@@ -79,6 +86,15 @@ load_agent() {
             *) printf 'invalid LANE=%s (%s)\n' "$LANE" "$AGENTCTL_LANES" >&2; exit 1 ;;
         esac
         : "${DESCRIPTION:?missing DESCRIPTION (one line: what it is for)}"
+        # What a run may change on its own, so the catalog (`list --md`) says which runners
+        # act unattended: none (runs no model, itself or through a session it starts), draft
+        # (a report or draft for the human), shadow (a verdict nothing acts on yet), acts
+        # (model output changes state: rows, files, labels, sessions, merges).
+        : "${EFFECT:?missing EFFECT (none|draft|shadow|acts)}"
+        case "$EFFECT" in
+            none|draft|shadow|acts) ;;
+            *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
+        esac
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -103,6 +119,10 @@ load_agent() {
         printf 'ENABLED=%s\n' "$ENABLED"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
         printf 'INBOX=%s\n' "$INBOX"
+        printf 'EFFECT=%s\n' "$EFFECT"
+        printf 'ROLE=%s\n' "${ROLE:-}"
+        printf 'MODEL=%s\n' "${MODEL:-}"
+        printf 'ROUTE=%s\n' "${ROUTE:-}"
     )
 }
 
@@ -384,7 +404,43 @@ cmd_report() {
 # kv_get <KEY> - read one key from load_agent output on stdin.
 kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, length(k)+2); exit}'; }
 
+# cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
+# so it prints the same on any machine. PIPELINES.md points here instead of copying it.
+cmd_list_md() {
+    local name conf lane kind sched trigger model effect role route
+    printf '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|\n'
+    local -a names=() invalid=()
+    mapfile -t names < <(list_agent_names)
+    declare -A confs=()
+    for name in "${names[@]}"; do
+        if conf=$(load_agent "$name" 2>/dev/null); then confs[$name]=$conf; else invalid+=("$name"); fi
+    done
+    for lane in $AGENTCTL_LANES; do
+        for name in "${names[@]}"; do
+            conf=${confs[$name]:-}
+            [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
+            kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
+            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
+            if [ "$kind" = call ]; then trigger='called by its caller'
+            elif [ "$kind" = persistent ]; then trigger='always on'
+            elif [ -n "$sched" ]; then trigger="\`$sched\`"
+            else trigger='started by another runner'; fi
+            [ "$(kv_get ENABLED <<<"$conf")" = no ] && trigger="$trigger (disabled)"
+            if [ "$effect" = none ]; then model=-
+            elif [ -z "$model" ]; then model='not in conf'; fi
+            [ -n "$route" ] && model="$model via $route"
+            printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+        done
+    done
+    [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
+    return 0
+}
+
 cmd_list() {
+    [ "${1:-}" = --md ] && { cmd_list_md; return; }
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     local -a names=()
@@ -417,6 +473,7 @@ cmd_list() {
             [ "$header" -eq 1 ] || { printf '%s\n' "$lane"; header=1; }
             state=$(unit_state "$name")
             case "$state" in active) state=running ;; inactive|"") state=idle ;; esac
+            [ "$(kv_get KIND <<<"$conf")" = call ] && state=call
             [ "$(kv_get ENABLED <<<"$conf")" = no ] && [ "$state" != running ] && state=off
             last=-
             out=$(_outcome_file "$name")
@@ -522,6 +579,7 @@ cmd_start() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl start <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user start "agentctl@${name}.service"
 }
 
@@ -535,6 +593,7 @@ cmd_restart() {
     local name="${1:-}"
     [ -n "$name" ] || die "usage: agentctl restart <name>"
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
+    [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
     systemctl --user restart "agentctl@${name}.service"
 }
 
@@ -756,9 +815,10 @@ agentctl — manage named long-running Claude agents via systemd
 
 Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
+  agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
   agentctl status <name>         Detailed status for one agent
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
-  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn)
+  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
   agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)
@@ -775,6 +835,8 @@ See ~/.config/agentctl/README.md for the schema.
 Headless LLM runs go through agentctl-run, the one launcher: it applies the role and
 route contract and refuses (exit 78) rather than degrade. A runner's COMMAND, or a script
 it calls, invokes it; the caller scores the run with proof_verdict (agent-proof.sh).
+A model call made inside a script (a judge) is a KIND=call conf, started by its caller as
+`agentctl-run --agent <name>`; each call is one line in ~/.local/state/agentctl/calls.jsonl.
 
 The status contract (what a headless runner publishes, and readers consume):
   agentctl report state=working project=bnb-platform item='queue: fix-login'
@@ -791,7 +853,7 @@ EOF
 # ----------------------------------------------------------------------
 
 case "${1:-}" in
-    list)              cmd_list ;;
+    list)              shift; cmd_list "$@" ;;
     status)            shift; cmd_status "$@" ;;
     report)            shift; cmd_report "$@" ;;
     start)             shift; cmd_start "$@" ;;

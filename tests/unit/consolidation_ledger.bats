@@ -79,6 +79,22 @@ setup() {
   assert_output 'runners grew: 3 > baseline 2'
 }
 
+@test "a KIND=call agent is counted as a call, not a runner, and holds the check" {
+  printf 'NAME=judge\nKIND=call\nROLE=observe\n' > "$LEDGER_CONF_DIR/judge.conf"
+  run "$SUBJECT" ledger
+  assert_line 'runners=2'
+  assert_line 'agents_call=1'
+  run "$SUBJECT" ledger --check
+  assert_success
+}
+
+@test "a raw HTTP model call fails the check like a direct claude -p" {
+  printf '#!/bin/sh\ncurl -s "$URL/chat/completions" -d @q\n' > "$LEDGER_SRC/runner"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output 'launches_direct grew: 1 > baseline 0'
+}
+
 @test "a direct claude -p fails the check" {
   printf '#!/bin/sh\nclaude -p "do it"\n' > "$LEDGER_SRC/runner"
   run "$SUBJECT" ledger --check

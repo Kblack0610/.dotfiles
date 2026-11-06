@@ -18,6 +18,7 @@ const doc = { getElementById: (id) => (id === "log-day" ? box : el()), addEventL
 const ctx = vm.createContext({
   console,
   document: doc,
+  window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });

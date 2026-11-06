@@ -312,6 +312,7 @@ pub fn add(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
+    refuse_epic_on_board(lane, &[text])?;
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !is_typed(text) {
@@ -323,17 +324,38 @@ pub fn add(
         block.extend(md::detail_lines("", details));
         let path = inbox_put(p, &proj_dir, name, &block)?;
         log.info("ptask", &format!("inboxed in {} ({name})", path.display()));
+        crate::ingest::record(
+            p,
+            &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
+        );
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
+    }
+    if let Some(open) = open_twin(&content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+        return Ok(3);
     }
     let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     md::write_atomic(&path, &new)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
+    );
     for l in &block {
         println!("{l}");
     }
     Ok(0)
+}
+
+/// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
+/// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
+fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+    let key = md::task_key(&format!("- [ ] {text}"));
+    content
+        .lines()
+        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
 }
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
@@ -415,6 +437,12 @@ fn new_rows(
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
+        );
+    }
+    if code.is_none() && texts.iter().any(|t| crate::epics::is_epic(t)) {
+        bail!(
+            "'{name}' has no `code` in project-map.json trackers, so an epic would get no id \
+             for its stories' #of/<id> to name"
         );
     }
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
@@ -582,6 +610,10 @@ pub(crate) fn file(
                 refuse_behind(v, cur)?;
             }
             details.extend(extra.iter().cloned());
+            refuse_epic_on_board(
+                dest_lane,
+                &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+            )?;
             let today = chrono::Local::now().date_naive();
             let block = new_rows(
                 dest_name,
@@ -735,6 +767,9 @@ pub fn move_task(
         "ptask",
         &format!("moved to {to_s} in {} ({name})", path.display()),
     );
+    let mut ev = crate::ingest::Event::row("placed", name, "", lane.name(), &line);
+    ev.why = Some(to_s.clone());
+    crate::ingest::record(p, &ev);
     println!("moved {}\n  -> {to_s}", line.trim());
     Ok(0)
 }
@@ -797,6 +832,10 @@ pub fn move_to_project(
             src_sheet.display(),
             dest_sheet.display()
         ),
+    );
+    crate::ingest::record(
+        p,
+        &crate::ingest::Event::row("rehomed", src, dest, lane.name(), &moved.line),
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
     Ok(0)
@@ -938,6 +977,9 @@ pub fn step(
         "ptask",
         &format!("{dir_word}d to {to_s} in {} ({name})", path.display()),
     );
+    let mut ev = crate::ingest::Event::row("placed", name, "", lane.name(), &line);
+    ev.why = Some(format!("{at_s} -> {to_s}"));
+    crate::ingest::record(p, &ev);
     println!("{} {}", dir_word, md::task_text(&line));
     println!("  {at_s} -> {to_s}");
     if let Some(n) = note {
@@ -972,8 +1014,9 @@ pub fn done(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    refuse_open_children(p, name, pick, lane, "finish")?;
     let on = done_token(chrono::Local::now().date_naive());
-    Ok(edit(p, log, name, pick, "done", lane, |l| {
+    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
         Some(md::add_marker(&ticked, &stamp))
     })?
@@ -1009,10 +1052,18 @@ pub fn tag(
     if add.is_empty() && remove.is_empty() {
         bail!("tag needs --add <tag> or --remove <tag>");
     }
-    Ok(edit(p, log, name, pick, "tagged", lane, |l| {
-        Some(retag(l, &add, &remove))
-    })?
-    .0)
+    let change = add
+        .iter()
+        .map(|t| format!("+{t}"))
+        .chain(remove.iter().map(|t| format!("-{t}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(
+        edit(p, log, name, pick, "tagged", Some(&change), lane, |l| {
+            Some(retag(l, &add, &remove))
+        })?
+        .0,
+    )
 }
 
 /// `t` as the `#tag` a row carries, or why it is not one. A release tag is refused: moving a
@@ -1077,10 +1128,52 @@ pub fn drop(
     lane: Lane,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
-    Ok(edit(p, log, name, pick, "dropped", lane, move |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
-    })?
-    .0)
+    refuse_open_children(p, name, pick, lane, "finish or drop")?;
+    Ok(
+        edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
+            Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+        })?
+        .0,
+    )
+}
+
+/// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
+/// one as a session. `add` and `file` both write rows, so both ask here.
+fn refuse_epic_on_board(lane: Lane, texts: &[&str]) -> Result<()> {
+    if lane == Lane::Agent && texts.iter().any(|t| crate::epics::is_epic(t)) {
+        bail!("an epic belongs on the human sheet: file it on the human lane, not the agent board");
+    }
+    Ok(())
+}
+
+/// Refuse to close the row `pick` names while a child of it (`#of/<its id>`) is open: a
+/// parent weighs what its children weigh, so closing it first would report open work as
+/// done. Checked before the edit, so a refusal writes nothing.
+fn refuse_open_children(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    verb: &str,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    let Some(id) = find_open(&content, pick).and_then(|l| md::row_id(&l)) else {
+        return Ok(());
+    };
+    let dir = projects::project_dir(p, name)?;
+    let open = crate::epics::Index::of(&dir, projects::open_version(&dir)).open_children(&id);
+    if !open.is_empty() {
+        // One line: agent-land reports only a failure's last line.
+        bail!(
+            "{id} has {} open child row(s) ({}); {verb} them first, or re-parent them with \
+             `ptask tag <id> --remove of/{id} --add of/<other>`",
+            open.len(),
+            open.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// The marker a `drop` stamps, or the error saying it needs a reason.
@@ -1186,12 +1279,22 @@ pub fn retext(
             "ptask",
             &format!("detailed in {} ({name})", sheet.display()),
         );
+        let row = content.lines().find(|l| pick.hits(l));
+        let mut ev = crate::ingest::Event::row(
+            "detailed",
+            name,
+            "",
+            lane.name(),
+            row.unwrap_or(&pick.to_string()),
+        );
+        ev.why = Some(details.join("; "));
+        crate::ingest::record(p, &ev);
         if text.or(append).is_none_or(str::is_empty) {
             println!("detailed '{pick}'");
             return Ok(0);
         }
     }
-    Ok(edit(p, log, name, pick, "edited", lane, |l| {
+    Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
             (Some(t), _) => t.to_string(),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
@@ -1213,7 +1316,7 @@ pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> 
     let id = crate::registry::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
-    let (code, matched) = edit(p, log, name, pick, "toggled", lane, |l| {
+    let (code, matched) = edit(p, log, name, pick, "toggled", None, lane, |l| {
         Some(toggle_started(l, id.as_deref()))
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
@@ -1261,6 +1364,9 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
     }
     md::write_atomic(&sheet, &new)?;
     log.info("ptask", &format!("swept {name}'s tasks"));
+    let mut ev = crate::ingest::Event::new("swept", name, "", &report.join("; "));
+    ev.lane = lane.name().into();
+    crate::ingest::record(p, &ev);
     println!("{}", sheet.display());
     Ok(0)
 }
@@ -1370,6 +1476,9 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
         "ptask",
         &format!("archived {n} done rows ({name}) -> {}", note.display()),
     );
+    let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+    ev.lane = lane.name().into();
+    crate::ingest::record(p, &ev);
     println!("moved {n} done rows -> {}", note.display());
     Ok(0)
 }
@@ -1417,12 +1526,14 @@ pub(crate) fn archive_done_rows(
 /// `query`. Returns `(exit_code, matched_line)`. Non-zero exit on no-match (the cockpit
 /// drives these through `execute-silent`, which discards stdout, so a zero exit would hide
 /// "matched nothing").
+#[allow(clippy::too_many_arguments)]
 fn edit<F>(
     p: &Profile,
     log: &Logger,
     name: &str,
     pick: &Pick,
     verb: &str,
+    why: Option<&str>,
     lane: Lane,
     f: F,
 ) -> Result<(i32, Option<String>)>
@@ -1432,10 +1543,22 @@ where
     let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
-    match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), f) {
+    let after = std::cell::RefCell::new(None);
+    let write = |l: &str| {
+        let new = f(l);
+        after.borrow_mut().clone_from(&new);
+        new
+    };
+    match md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), write) {
         Some((new, matched)) => {
             md::write_atomic(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
+            let mut ev = crate::ingest::Event::row(verb, name, "", lane.name(), &matched);
+            ev.why = why.map(str::to_string);
+            if verb == "edited" {
+                ev.row = after.into_inner().map(|l| md::task_text(&l));
+            }
+            crate::ingest::record(p, &ev);
             println!("{verb} {}", matched.trim());
             Ok((0, Some(matched)))
         }
@@ -1703,6 +1826,14 @@ Version: v1.13.0
 
     // THE proof gate. A bare `done` must be refused - if this ever passes, "closed" and
     // "finished" have come apart again and the roll gate above is counting nothing.
+    #[test]
+    fn an_open_twin_is_found_whatever_its_stamps_and_a_done_one_is_not() {
+        let sheet = "## Tasks\n- [ ] fix(x): the thing #c1101 #high <!-- id:ar-1 -->\n- [x] feat(y): shipped #c1101\n";
+        assert!(open_twin(sheet, "fix(x): the thing").is_some());
+        assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
+        assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
     #[test]
     fn done_without_evidence_is_refused() {
         let e = proof_stamp(None, None).unwrap_err().to_string();
@@ -2156,6 +2287,91 @@ mod inbox_tests {
     }
 
     /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
+    #[test]
+    fn row_writes_leave_a_record_with_id_words_and_lane() {
+        let v = vault(
+            "record",
+            "",
+            "- [ ] fix(ui): the menu flickers #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): the sound is late #low <!-- id:sc-2 -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let new = Some("fix(ui): the menu blinks #high");
+        retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            new,
+            None,
+            &[],
+            false,
+            Lane::Human,
+        )
+        .unwrap();
+        let details = ["seen on the pause screen".to_string()];
+        retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            None,
+            None,
+            &details,
+            false,
+            Lane::Human,
+        )
+        .unwrap();
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            Some("pr:7"),
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let two = Pick::Id("sc-2".into());
+        drop(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            Some("stale"),
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let ev = crate::ingest::since(&v.p, 1);
+        let got: Vec<(&str, Option<&str>, &str)> = ev
+            .iter()
+            .map(|e| (e.action.as_str(), e.id.as_deref(), e.lane.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("edited", Some("sc-1"), "human"),
+                ("detailed", Some("sc-1"), "human"),
+                ("done", Some("sc-1"), "human"),
+                ("dropped", Some("sc-2"), "human"),
+            ]
+        );
+        assert!(
+            ev[0].text.contains("flickers"),
+            "the old words: {:?}",
+            ev[0]
+        );
+        assert!(
+            ev[0].row.as_deref().is_some_and(|r| r.contains("blinks")),
+            "the new words: {:?}",
+            ev[0]
+        );
+        assert_eq!(ev[1].why.as_deref(), Some("seen on the pause screen"));
+        assert_eq!(ev[2].why.as_deref(), Some("pr:7"));
+        assert_eq!(ev[3].why.as_deref(), Some("dropped: stale"));
+    }
+
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

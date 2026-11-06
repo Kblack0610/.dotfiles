@@ -13,6 +13,10 @@ Sources and what each one is trusted for:
                here) and the account, read from the transcript path's account dir.
   outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window.
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
+  requests     the api-request-shape and api-request-blob lines Claude Code writes before a
+               session's first response: what that first request carried, part by part, in
+               chars (first_request_parts). Chars, because only the request total has a
+               token count; chars_per_token is that total over these chars.
 There is no price table on purpose; see the agent-usage header.
 """
 import argparse
@@ -28,8 +32,54 @@ from collections import Counter, defaultdict
 WAIT_RE = re.compile(
     r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b"
     r"|/tasks/[^\s'\"]+\.output")
+# A response's turn class, from its tool calls: write wins over wait, wait over investigate;
+# a response with no tool call is a reply.
+WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|edit|comment)\b|\bagent-land\b")
+MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
+
+# Where each part of the first request's system-role text starts. Text before the first
+# marker is system_other.
+SYS_PARTS = [("preflight", r"SessionStart hook additional context"), ("environment", r"^# Environment\n"),
+             ("deferred_list", r"^The following deferred tools are now available"),
+             ("agent_listing", r"^Available agent types for the Agent tool"),
+             ("mcp_instructions", r"^# MCP Server Instructions"),
+             ("skill_listing", r"^The following skills are available for use with the Skill tool")]
+
+
+def request_parts(shape, blobs):
+    """Chars per part of one recorded first request: system prompt, tool schemas, the
+    system-role listings, and the CLAUDE.md / MEMORY.md files in the first user block."""
+    parts, tools = Counter(), Counter()
+    parts["system_prompt"] = sum(len(b.get("text", "")) for b in shape.get("system") or [])
+    for t in shape.get("tools") or []:
+        n = t.get("name", "?")
+        tools[n] = len(json.dumps(t))
+        parts["tools_mcp" if n.startswith("mcp__") else "tools_builtin"] += tools[n]
+    for m in blobs:
+        for j, b in enumerate(m.get("content") or []):
+            txt = b.get("text", "") if isinstance(b, dict) else ""
+            if m.get("role") == "system":
+                pos = sorted((x.start(), n) for n, pat in SYS_PARTS for x in [re.search(pat, txt, re.M)] if x)
+                parts["system_other"] += pos[0][0] if pos else len(txt)
+                for k, (at, n) in enumerate(pos):
+                    parts[n] += (pos[k + 1][0] if k + 1 < len(pos) else len(txt)) - at
+            elif j == 0 and "Contents of /" in txt:
+                for seg in re.split(r"(?=Contents of /)", txt):
+                    f = re.match(r"Contents of (\S+)", seg)
+                    if not f:
+                        parts["instructions_other"] += len(seg)
+                    elif f.group(1).endswith("MEMORY.md"):
+                        parts["memory_md"] += len(seg)
+                    elif os.path.basename(os.path.dirname(f.group(1))).startswith(".claude"):
+                        parts["global_claude_md"] += len(seg)
+                    else:
+                        parts["repo_claude_md"] += len(seg)
+            else:
+                parts["prompt"] += len(txt)
+    return parts, tools
 
 
 def ts(s):
@@ -71,6 +121,23 @@ def trigger(d):
     return "human"
 
 
+def session_of(path):
+    """The session a transcript belongs to: its own id, or its parent's for a subagent thread."""
+    parts = path.split(os.sep)
+    if "subagents" in parts:
+        return parts[parts.index("subagents") - 1]
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def turn_class(tools):
+    if not tools:
+        return "reply"
+    for c in ("write", "wait"):
+        if c in tools:
+            return c
+    return "investigate"
+
+
 def kind_of(path, first):
     if "/subagents/" in path:
         return "subagent"
@@ -83,8 +150,10 @@ def kind_of(path, first):
 
 def scan(path, start, end, acc):
     seen, last_t, pending, after_compact = set(), None, "human", False
-    ctx_by_mid, wait_mids = {}, set()
+    ctx_by_mid, wait_mids, tools_by_mid = {}, set(), defaultdict(set)
+    sess = acc["session"][session_of(path)]
     first, turns, seq = None, 0, 0  # seq: the session's responses, in the window or not
+    shape, blobs = None, []  # the first request, as recorded before the first response
     try:
         fh = open(path, errors="ignore")
     except OSError:
@@ -98,9 +167,17 @@ def scan(path, start, end, acc):
             if first is None and d.get("type") in ("user", "assistant"):
                 first = d
             t = d.get("type")
+            if t == "api-request-shape" and shape is None and seq == 0:
+                shape = d.get("shape") or {}
+                continue
+            if t == "api-request-blob" and seq == 0 and len(blobs) < 2:
+                blobs.append(d.get("message") or {})
+                continue
             if t == "system" and "compact" in str(d.get("subtype", "")):
                 after_compact = True
-                acc["compactions"] += 1 if start <= (ts(d.get("timestamp", "")) or 0) < end else 0
+                n = 1 if start <= (ts(d.get("timestamp", "")) or 0) < end else 0
+                acc["compactions"] += n
+                sess["compactions"] += n
                 continue
             if t == "user":
                 pending = trigger(d)
@@ -116,9 +193,16 @@ def scan(path, start, end, acc):
                         continue
                     inp = b.get("input") or {}
                     probe = inp.get("command") or inp.get("file_path") or ""
-                    if isinstance(probe, str) and WAIT_RE.search(probe):
+                    probe = probe if isinstance(probe, str) else ""
+                    tmid = msg.get("id") or d.get("requestId")
+                    if WAIT_RE.search(probe):
                         acc["wait_calls"] += 1
-                        wait_mids.add(msg.get("id") or d.get("requestId"))
+                        wait_mids.add(tmid)
+                        tools_by_mid[tmid].add("wait")
+                    elif b.get("name") in WRITE_TOOLS or (b.get("name") == "Bash" and WRITE_RE.search(probe)):
+                        tools_by_mid[tmid].add("write")
+                    else:
+                        tools_by_mid[tmid].add("investigate")
             mid = msg.get("id") or d.get("requestId")
             if not mid or mid in seen:
                 continue
@@ -147,8 +231,15 @@ def scan(path, start, end, acc):
                 b["cache_write"] += cw
                 b["cache_read"] += cr
             acc["kind_files"][kind].add(path)
+            sess["turns"] += 1
+            sess["context"] += ctx
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
+                sess["first_turn_context"] = ctx
+                if shape is not None:
+                    parts, tools = request_parts(shape, blobs)
+                    acc["first_parts"].append((ctx, parts))
+                    acc["first_tools"].update(tools)
                 cause = "first-turn"
             elif after_compact:
                 cause = "after-compaction"
@@ -167,10 +258,16 @@ def scan(path, start, end, acc):
             after_compact = False
     # A message's tool_use blocks can sit on lines after the one carrying its usage.
     acc["wait_ctx"] += sum(ctx_by_mid.get(x, 0) for x in wait_mids)
+    sess["wait_context"] += sum(ctx_by_mid.get(x, 0) for x in wait_mids)
+    for mid, ctx in ctx_by_mid.items():
+        c = turn_class(tools_by_mid.get(mid))
+        acc["mix"][c]["turns"] += 1
+        acc["mix"][c]["context"] += ctx
+        sess[c] += 1
 
 
 def registry(start, end, root):
-    by_acct, by_proj, n, cost = defaultdict(lambda: Counter()), defaultdict(lambda: Counter()), 0, 0.0
+    by_acct, by_proj, n, cost, last = defaultdict(lambda: Counter()), defaultdict(lambda: Counter()), 0, 0.0, {}
     for f in glob.glob(os.path.join(root, "*", "sessions.jsonl")):
         rows = {}
         for line in open(f, errors="ignore"):
@@ -180,6 +277,7 @@ def registry(start, end, root):
                 continue
             if r.get("session_id"):
                 rows[r["session_id"]] = r
+        last.update(rows)
         for r in rows.values():
             up = r.get("updated") or 0
             if not isinstance(up, (int, float)) or not start <= up < end:
@@ -196,11 +294,11 @@ def registry(start, end, root):
                 b[k]["output"] += tok.get("output", 0) or 0
             n += 1
             cost += c
-    return n, cost, by_acct, by_proj
+    return n, cost, by_acct, by_proj, last
 
 
 def merged_prs(start, end, root):
-    prs, zero_ctx, all_ctx, last = set(), 0, 0, {}
+    prs, zero_ctx, all_ctx, last, by_sess = set(), 0, 0, {}, defaultdict(set)
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         for line in open(f, errors="ignore"):
             try:
@@ -219,7 +317,8 @@ def merged_prs(start, end, root):
             m = ts(p.get("merged_at") or "")
             if p.get("state") == "MERGED" and m and start <= m < end:
                 prs.add((p.get("repo"), p.get("number")))
-    return len(prs), zero_ctx, all_ctx
+                by_sess[r["session_id"]].add(f"{p.get('repo')}#{p.get('number')}")
+    return len(prs), zero_ctx, all_ctx, by_sess
 
 
 def dream_runs(start, end, path):
@@ -240,13 +339,21 @@ def dream_runs(start, end, path):
 def main():
     ap = argparse.ArgumentParser(prog="agent-usage burn")
     ap.add_argument("--days", type=float, default=7)
+    ap.add_argument("--since", help="start of the window (YYYY-MM-DD, an ISO time, or 90m/12h/2d ago); overrides --days")
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
+    ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
     if end is None:
         ap.error(f"bad --before {a.before!r} (use YYYY-MM-DD or an ISO time)")
     start = end - a.days * 86400
+    if a.since:
+        rel = re.fullmatch(r"(\d+)([mhd])", a.since)
+        start = (dt.datetime.now().timestamp() - int(rel.group(1)) * {"m": 60, "h": 3600, "d": 86400}[rel.group(2)]
+                 if rel else ts(a.since))
+        if start is None or start >= end:
+            ap.error(f"bad --since {a.since!r} (use YYYY-MM-DD, an ISO time, or 90m/12h/2d, before the end)")
     env = os.environ
     home = os.path.expanduser("~")
     proj_root = env.get("PROJECTS_ROOT", f"{home}/.claude/projects")
@@ -255,6 +362,8 @@ def main():
         return Counter()
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
+           "mix": defaultdict(tok), "session": defaultdict(tok),
+           "first_parts": [], "first_tools": Counter(),
            "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
@@ -264,13 +373,32 @@ def main():
             continue
         scan(p, start, end, acc)
 
-    n, cost, by_acct, by_proj = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
-    prs, zero_ctx, out_ctx = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
+    n, cost, by_acct, by_proj, reg_last = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
+    prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
+    sessions = {}
+    for sid, v in acc["session"].items():
+        if not v["turns"] and not v["compactions"]:
+            continue
+        r = reg_last.get(sid) or {}
+        sp = sorted(prs_by_sess.get(sid, ()))
+        c = r.get("cost_usd")
+        sessions[sid] = {
+            "project": r.get("project") or "?", "cost_usd": round(c, 2) if c is not None else None,
+            "turns": v["turns"], "context": v["context"],
+            "mix": {k: v[k] for k in MIX},
+            "wait_share": round(v["wait_context"] / v["context"], 3) if v["context"] else None,
+            "compactions": v["compactions"], "first_turn_context": v.get("first_turn_context"),
+            "merged_prs": sp, "cost_per_merged_pr": round(c / len(sp), 2) if sp and c is not None else None}
+    sessions = dict(sorted(sessions.items(), key=lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"])))
+    turns_all = sum(v["turns"] for v in acc["mix"].values())
 
     def q(p):
         return fc[min(len(fc) - 1, int(len(fc) * p))] if fc else None
+    fp = acc["first_parts"]
+    fp_chars = sum(sum(p.values()) for _, p in fp)
+    fp_keys = sorted({k for _, p in fp for k in p}, key=lambda k: (-sum(p.get(k, 0) for _, p in fp), k))
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
@@ -288,8 +416,20 @@ def main():
         "zero_merge_context_share": round(zero_ctx / out_ctx, 3) if out_ctx else None,
         "first_turn_context": {"sessions": len(fc), "p10": q(0.1),
                                "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9)},
+        "first_request_parts": {
+            "sessions": len(fp),
+            "chars_per_token": round(fp_chars / sum(c for c, _ in fp), 2) if fp else None,
+            "parts": {k: {"median_chars": int(statistics.median([p.get(k, 0) for _, p in fp])),
+                          "mean_chars": sum(p.get(k, 0) for _, p in fp) // len(fp),
+                          "share": round(sum(p.get(k, 0) for _, p in fp) / fp_chars, 3)} for k in fp_keys},
+            "tools_mean_chars": {k: v // len(fp) for k, v in acc["first_tools"].most_common(12)} if fp else {},
+        },
         "waits": {"calls": acc["wait_calls"], "context": acc["wait_ctx"],
                   "share": round(acc["wait_ctx"] / ctx_all, 3) if ctx_all else None},
+        "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
+                         "share": round(acc["mix"][k]["turns"] / turns_all, 3) if turns_all else None}
+                     for k in MIX},
+        "by_session": sessions,
         "cache_write_by_cause": {k: dict(v) for k, v in sorted(acc["cw_cause"].items(), key=lambda x: -x[1]["cache_write"])},
         "idle_wakes_by_trigger": {k: dict(v) for k, v in sorted(acc["idle_wakes"].items(), key=lambda x: -x[1]["wakes"])},
         "turns_by_trigger": {k: dict(v) for k, v in sorted(acc["trigger"].items(), key=lambda x: -x[1]["context"])},
@@ -320,9 +460,25 @@ def main():
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
     f = out["first_turn_context"]
     print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
+    r = out["first_request_parts"]
+    if r["sessions"]:
+        print(f"first request by part ({r['sessions']} sessions, {r['chars_per_token']} chars a token): "
+              + ", ".join(f"{k} {v['mean_chars']:,} ({v['share']:.0%})" for k, v in r["parts"].items() if v["share"] >= 0.005))
+        print("  largest tools (mean chars): " + ", ".join(f"{k} {v:,}" for k, v in r["tools_mean_chars"].items()))
     wt = out["waits"]
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
+    print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
+    print(f"by session (top {a.top} of {len(sessions)}; cost is the session's whole run, from the registry)")
+    print("  " + "\t".join(["session", "project", "cost_usd", "turns", "context", "inv/wait/write/reply",
+                            "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
+    for sid, v in list(sessions.items())[:a.top]:
+        print("  " + "\t".join(str(x) for x in (
+            sid[:8], v["project"], "-" if v["cost_usd"] is None else f"{v['cost_usd']:,.2f}", v["turns"],
+            m(v["context"]), "/".join(str(v["mix"][k]) for k in MIX), v["wait_share"], v["compactions"],
+            v["first_turn_context"] or "-", len(v["merged_prs"]),
+            "-" if v["cost_per_merged_pr"] is None else f"{v['cost_per_merged_pr']:,.2f}")))
+    print()
     table("cache write by cause", out["cache_write_by_cause"], ["turns", "cache_write"])
     table("wakes after an idle gap over 1h, by trigger", out["idle_wakes_by_trigger"], ["wakes", "cache_write"])
     table("turns by trigger", out["turns_by_trigger"], ["turns", "context"])

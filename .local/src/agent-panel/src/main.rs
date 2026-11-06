@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Cycle to the next attention-needed agent (else next in list).
+    /// Jump to the next agent that needs you; with none, say so and stay put.
     Next,
     /// Print one plain TSV row per live agent, for other surfaces to consume.
     List {
@@ -40,32 +40,35 @@ enum Cmd {
     /// Print a transcript's closed time by what it waited on, as one JSON object. The nightly
     /// session-outcomes run reads this, so the rule lives only in `time_use`.
     TimeUse { transcript: PathBuf },
-    /// Show the question card of the session a tmux client is on, in a popup on that client.
-    /// Run by the tmux arrival hooks (silent when the session asks nothing) and Prefix y (`--key`:
-    /// with nothing asked here, list every pending ask).
-    AskHere {
-        /// The server's socket (`#{socket_path}`).
-        #[arg(long)]
-        socket: String,
-        /// The client to show it on (`#{client_name}`).
-        #[arg(long)]
-        client: String,
-        /// The tmux session and window index the client is on.
-        #[arg(long)]
-        session: String,
-        #[arg(long)]
-        window: String,
-        /// Run from a key: with no ask here, open the list of every pending ask.
-        #[arg(long)]
-        key: bool,
-    },
     /// Jump to a `<server>/<session>:<window>` target from `list`.
     Jump { target: String },
+    /// Type a message into a pane (`list --json`'s `pane`, `<server>/<pane>`) and submit it once
+    /// the paste is drawn. Exits 3 when the pane never took the Enter: the text is still in its
+    /// input box.
+    Send {
+        #[arg(long)]
+        pane: String,
+        /// Paste only; do not press Enter.
+        #[arg(long)]
+        no_submit: bool,
+        text: String,
+    },
+    /// The turn of a transcript that posted an ask, as JSON {"first","prompt","said"}: the
+    /// session's first typed prompt, the prompt that turn answered, and its text blocks, oldest
+    /// first (the ask card's story). Exits 1 when no tool result in the transcript printed the id.
+    Said {
+        transcript: PathBuf,
+        #[arg(long)]
+        around: String,
+    },
     /// Internal fzf reload callback: print the chooser rows again (not meant to be run by hand).
     #[command(hide = true)]
     Rows {
         #[arg(long)]
         map_file: PathBuf,
+        /// Only the sessions waiting on the human: a pending ask or a prompt (ctrl-y).
+        #[arg(long)]
+        asking: bool,
     },
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
@@ -89,11 +92,22 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?);
             Ok(())
         }
-        Some(Cmd::AskHere { socket, client, session, window, key }) => {
-            chooser::run_ask_here(&socket, &client, &session, &window, key)
-        }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
-        Some(Cmd::Rows { map_file }) => chooser::run_rows(&map_file),
+        Some(Cmd::Send { pane, no_submit, text }) => {
+            if agent_panel::send::message(&pane, &text, !no_submit)? == agent_panel::send::Sent::NotSubmitted {
+                eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
+                std::process::exit(3);
+            }
+            Ok(())
+        }
+        Some(Cmd::Said { transcript, around }) => match agent_panel::jsonl::said_around_at(&transcript, &around) {
+            Some(said) => {
+                println!("{}", serde_json::to_string(&said)?);
+                Ok(())
+            }
+            None => std::process::exit(1),
+        },
+        Some(Cmd::Rows { map_file, asking }) => chooser::run_rows(&map_file, asking),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

@@ -5,11 +5,17 @@
 #   agent-ask post [opts] "question?"   create a pending ask; print its id
 #     --options a|b|c   the fixed answer vocabulary; `a=what a means|b=...` adds each meaning
 #     --recommend b     which of them YOU recommend; shown marked on the card
+#     --why "reason"    why you recommend it, one sentence; shown under that option
 #     --context "why"   the background the human needs; the question itself stays one line
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, judge
+#   agent-ask target [--reopen] <id>    where the asking session runs now, as an agent-panel
+#                                       jump target; fails saying why (ended, or no session).
+#                                       --reopen starts an ended one again first
 #   agent-ask live-sessions             the Claude session ids running now, one per line
+#   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
+#                                       each one the session registry has a title for
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge
 #   agent-ask show <id>                 print the ask file
@@ -21,7 +27,8 @@
 #   agent-ask count [project|--all]     number of pending asks (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
-#   agent-ask recommend <id> <option>   set/replace the recommended option
+#   agent-ask recommend <id> <option> [why...]
+#                                       set/replace the recommended option and its why
 #   agent-ask settle-session <sid> answered [text...]
 #                                       close every pending ask a Claude session owns (the
 #                                       UserPromptSubmit and SessionEnd hooks)
@@ -74,18 +81,18 @@
 # on as a board row nobody could answer. `stale` in old files is history; nothing writes it now.
 # cancel stamps `closed_at` and, when given, `closed_reason`.
 #
-# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one observe-role
-# model call with $AGENT_ASK_POLICY writes `judge: human | take-recommend | answer:<text>` and
-# `judge_reason` into the ask. It never answers: the human still does, and `judge-report`
-# scores its calls against their answers. A gate or approval is never sent to the model; it is
-# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it).
+# THE ANSWER JUDGE (shadow). `post` starts `judge <id>` in the background: one call to the
+# registered agent `ask-judge` (its conf sets role, model and the policy prompt) writes
+# `judge: human | take-recommend | answer:<text>` and `judge_reason` into the ask. It never
+# answers: the human still does, and `judge-report` scores its calls against their answers. A gate or approval is never sent to the model; it is
+# the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the test sandbox sets it), and
+# AGENT_ASK_JUDGE_CMD replaces the call (tests).
 
 set -uo pipefail
 
 ASKS_ROOT="$HOME/.agent/asks"
 : "${AGENT_ASK_QUESTION_MAX:=150}"
-: "${AGENT_ASK_POLICY:=$HOME/.config/agent-ask/policy.md}"
-: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --role observe}"
+: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
 SHARED_HOOKS="$HOME/.config/shared-hooks"
 
 # --- helpers ---------------------------------------------------------------
@@ -167,6 +174,18 @@ wrap() {
   printf '%s\n' "$2" | fold -s -w "$w" | sed -e "s/^/$pad/" -e 's/ *$//'
 }
 
+# card_slug <project>: its short name (project-name.sh project_slug), the one the questions
+# panel rows use; the name itself where the shared hooks are not installed.
+card_slug() {
+  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SHARED_HOOKS/project-name.sh"
+    project_slug "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
 # (post), the questions panel and the agent-panel preview (card). Colour only on a terminal
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
@@ -186,7 +205,13 @@ render_ask() {
   # out when it only repeats the project, and the kind only shows when it is not a question.
   where="${ASK[project]:-}"
   local sess; sess="${ASK[session]:-}"
-  [ -n "$sess" ] && [ "$sess" != "$where" ] && where+=" . $sess"
+  # An agent session reads as the questions panel row does: slug:N, then the project in full.
+  if [[ "$sess" =~ ^(.*-)?agent-([0-9]+)$ ]]; then
+    where="$(card_slug "$where"):${BASH_REMATCH[2]}"
+    [ "${where%:*}" = "${ASK[project]:-}" ] || where+=" . ${ASK[project]:-}"
+  elif [ -n "$sess" ] && [ "$sess" != "$where" ]; then
+    where+=" . $sess"
+  fi
   [ -n "$age" ] && where+=" . $age ago"
   where+=" . $id"
   local head="asking you" hc="$c"
@@ -202,7 +227,16 @@ render_ask() {
     for i in "${!opts[@]}"; do
       n=$((i + 1)); note="${notes[i]:-}"
       [ "${opts[i]}" = "$rec" ] && note="${note:+$note  }${g}(recommended)${x}"
-      printf '  %s%d%s  %-*s  %s\n' "$b" "$n" "$x" "$w" "${opts[i]}" "$note" | sed 's/ *$//'
+      # A long meaning wraps under itself, so the numbers and slugs stay a clean column.
+      if [ -n "$note" ]; then
+        printf '  %s%d%s  %-*s  ' "$b" "$n" "$x" "$w" "${opts[i]}"
+        wrap "$(printf '%*s' $((w + 7)) '')" "$note" | sed '1s/^ *//'
+      else
+        printf '  %s%d%s  %s\n' "$b" "$n" "$x" "${opts[i]}"
+      fi
+      if [ "${opts[i]}" = "$rec" ] && [ -n "${ASK[recommend_why]:-}" ]; then
+        printf '%s' "$g"; wrap "     " "because: ${ASK[recommend_why]}"; printf '%s' "$x"
+      fi
     done
   fi
   ctx="${ASK[context]:-}"
@@ -219,7 +253,7 @@ render_ask() {
     printf '%s' "$d"; wrap "" "$judge${reason:+ - $reason}"; printf '%s' "$x"
   fi
   if [ "$st" != pending ]; then
-    [ -n "${ASK[answer]:-}" ] && printf '%sanswer: %s%s\n' "$b" "${ASK[answer]:-}" "$x"
+    [ -n "${ASK[answer]:-}" ] && { printf '%s' "$b"; wrap "        " "answer: ${ASK[answer]}" | sed '1s/^ *//'; printf '%s' "$x"; }
   fi
   return 0
 }
@@ -228,7 +262,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" resume="" wait=0 question="" context=""
+        options="" recommend="" why="" resume="" wait=0 question="" context=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -239,6 +273,7 @@ cmd_post() {
       --kind)    kind="$2"; shift 2 ;;
       --options) options="$2"; shift 2 ;;
       --recommend) recommend="$2"; shift 2 ;;
+      --why)     why="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
@@ -250,7 +285,7 @@ cmd_post() {
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
   if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
-    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\" and what each option does in --options 'slug=meaning|slug=meaning'." >&2
+    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
     return 2
   fi
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
@@ -292,6 +327,19 @@ cmd_post() {
   if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
     session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
   fi
+  # One open question per session: the board is then one row per session, and a session with
+  # several decisions asks them as one. 2026-11-05: 22 sessions had posted bursts of 2 to 6 asks
+  # minutes apart (54 extra rows), one trader session 6 in the same second.
+  if [ -n "$owner" ]; then
+    local f mine
+    while IFS= read -r f; do
+      [ "$(field "$f" status)" = pending ] || continue
+      mine="$(basename "$f" .md)"
+      echo "agent-ask post: this session already has pending ask $mine: \"$(field "$f" question)\"" >&2
+      echo "One open question per session. Fold this decision into that one: agent-ask cancel $mine superseded, then post one question that covers both (several decisions -> options like 'take-all=<each recommendation>|one-by-one=go through them here', the per-decision detail in --context). If $mine is moot, cancel it and post this one." >&2
+      return 2
+    done < <(grep -lx "claude_session: $owner" "$ASKS_ROOT"/*/*.md 2>/dev/null)
+  fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
@@ -304,6 +352,8 @@ cmd_post() {
       *) echo "agent-ask post: --recommend '$recommend' is not one of '$options'" >&2; return 2 ;;
     esac
   fi
+  [ -z "$why" ] || [ -n "$recommend" ] ||
+    { echo "agent-ask post: --why says why the --recommend option is the one; give --recommend too" >&2; return 2; }
 
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
@@ -333,6 +383,7 @@ cmd_post() {
     # recommendation the human reads only if they open the ask. As a field the picker can
     # mark it, the way any decent approval UI does.
     printf 'recommend: %s\n'  "$(oneline "$recommend")"
+    printf 'recommend_why: %s\n' "$(oneline "$why")"
     printf 'answer: \n'
     printf 'answered_at: \n'
     printf 'answered_by: \n'
@@ -485,6 +536,61 @@ cmd_answer() {
   fi
 }
 
+# cmd_target [--reopen] <id>: the live asking session's `<server>/<session>:<window>`, for a
+# board that jumps to it (the questions panel's g). When there is none it fails and says why;
+# --reopen starts an ended session again (reopen_session) and prints where it now runs.
+cmd_target() {
+  local reopen=0
+  [ "${1:-}" = --reopen ] && { reopen=1; shift; }
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask target [--reopen] <id>" >&2; return 2; }
+  local f sid row; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  sid="$(field "$f" claude_session)"
+  [ -n "$sid" ] || { echo "no Claude session owns this ask" >&2; return 1; }
+  row="$(live_row "$sid")"
+  if [ -z "$row" ]; then
+    [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
+    reopen_session "$f" "$sid"
+    return
+  fi
+  jq -r .target <<< "$row"
+}
+
+# reopen_session <ask file> <claude session>: start an ended conversation again and print its
+# jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
+# it too); this picks only where: the directory the conversation started in, which `claude
+# --resume` needs to find it, and the world and session that directory routes to, as window
+# ask-<id>. A world session that is up gains the window; one that is not starts with it.
+reopen_session() {
+  local f="$1" sid="$2" cwd world sess win out
+  # A running process outside tmux has no pane to go to, and a second resume would fork it.
+  session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
+  cwd="$(session_cwd "$sid")"
+  [ -n "$cwd" ] && [ -d "$cwd" ] ||
+    { echo "session ended and its directory ${cwd:+$cwd }is gone; resume with claude --resume $sid" >&2; return 1; }
+  read -r world sess <<< "$(tmux-world route "$cwd")"
+  # `here` is the caller's own world: the server this panel runs on.
+  [ "$world" != here ] || { world="${TMUX%%,*}"; world="${world##*/}"; }
+  [ -n "$world" ] && [ -n "$sess" ] || { echo "no world to reopen $cwd in; resume with claude --resume $sid" >&2; return 1; }
+  win="ask-$(field "$f" id)"
+  out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
+    --window "$win" --cwd "$cwd" --resume "$sid" </dev/null 2>&1)" ||
+    { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
+  echo "$world/$sess:$win"
+}
+
+# session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
+# any copy will do.
+session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+
+# session_cwd <claude session>: the directory the conversation started in, from the first
+# transcript line that records one.
+session_cwd() {
+  local t; t="$(session_transcript "$1")"
+  [ -n "$t" ] || return 0
+  grep -m1 '"cwd":' "$t" | jq -r '.cwd // empty' 2>/dev/null
+}
+
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
 live_row() {
   [ -n "${1:-}" ] && command -v agent-panel >/dev/null 2>&1 || return 0
@@ -495,13 +601,15 @@ live_row() {
 # in that session too, so a board answer and a typed answer reach the same place. Skipped when
 # the session sits in a permission/question dialog that a paste would answer by accident.
 deliver_to_session() {
-  local f="$1" answer="$2" row="$3" pane server
+  local f="$1" answer="$2" row="$3" pane
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
   [ "$(jq -r .status <<< "$row")" = waiting ] && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
-  pane="$(jq -r .pane <<< "$row")"; server="${pane%%/*}"; pane="${pane#*/}"
-  printf 'Answer to ask %s: %s' "$(field "$f" id)" "$answer" | tmux -L "$server" load-buffer -b agent-ask - 2>/dev/null &&
-    tmux -L "$server" paste-buffer -p -d -b agent-ask -t "$pane" 2>/dev/null &&
-    tmux -L "$server" send-keys -t "$pane" Enter 2>/dev/null || true
+  # agent-panel send owns typing into a pane: it waits for the paste to be drawn before Enter
+  # (Claude Code drops an Enter on the heels of a paste) and says when the Enter was not taken.
+  pane="$(jq -r .pane <<< "$row")"
+  agent-panel send --pane "$pane" "Answer to ask $(field "$f" id): $answer" ||
+    echo "agent-ask: answer recorded, but it did not submit in $(field "$f" session); it is in that session's input box" >&2
+  return 0
 }
 
 # file_board_row <ask file> <text>: an answer nobody is left to act on, as one plain agent board
@@ -528,6 +636,7 @@ cmd_card() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
   session_gone_note "$f"
+  render_story "$f"
 }
 
 # session_alive <claude session id>: a Claude process holding that session is running. Reads
@@ -544,6 +653,17 @@ session_alive() {
 
 # live_sessions: every Claude session id with a running process, one per line; the questions
 # panel marks the rest gone. Same source as session_alive.
+# session_titles: Claude session ids on stdin -> "<id><TAB><title>", the newest titled registry
+# row per id. The card's request line and the questions panel's rows both read it here.
+session_titles() {
+  local ids
+  ids="$(grep . | sed 's/.*/"session_id":"&"/')"
+  [ -n "$ids" ] || return 0
+  grep -hF -f <(printf '%s\n' "$ids") "$HOME"/.agent/sessions/*/sessions.jsonl 2>/dev/null |
+    jq -r 'select((.title // "") != "") | [.session_id, .title] | @tsv' 2>/dev/null |
+    awk -F'\t' '{ t[$1] = $2 } END { for (s in t) print s "\t" t[s] }'
+}
+
 live_sessions() {
   local f pid live=()
   for f in "$HOME"/.claude*/sessions/*.json; do
@@ -568,6 +688,123 @@ session_gone_note() {
   else
     echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
   fi
+  echo "  g reopens the session"
+}
+
+# render_story <file>: what a panel's card adds under render_ask, one labelled block per line
+# of story, each only with data: where the ask came from, the request that started the
+# session, the prompt the asking turn answered, the agent's newest words in that turn, and the
+# session's nightly telemetry. Each block is capped so the whole card reads on one screen; the
+# session (g in the questions panel) holds the rest. post leaves it out of the asking pane's
+# copy: that session already holds all of it.
+render_story() {
+  local f="$1" d="" x="" sid src tele
+  load_ask "$f"
+  if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
+    d=$'\e[2m' x=$'\e[0m'
+  fi
+  local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
+  [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
+  local CARD_WIDTH="$cols"
+  sid="${ASK[claude_session]:-}"
+  src=""
+  [ -n "${ASK[task]:-}" ] && src="queue item ${ASK[task]}"
+  [ -n "${ASK[agent]:-}" ] && src+="${src:+, }runner ${ASK[agent]}"
+  [ -n "${ASK[session]:-}" ] && src+="${src:+, }tmux ${ASK[session]}"
+  if [ -n "$sid" ]; then
+    src+="${src:+, }claude ${sid:0:8}"
+    if session_alive "$sid"; then src+=" (live)"; else src+=" (ended)"; fi
+  fi
+  [ -n "$src" ] && echo
+  story_line from "$src" 2
+  [ -n "$sid" ] || return 0
+  # The registry's title names the session. The transcript gives the request (its first typed
+  # prompt), the prompt the asking turn answered, and that turn's own words.
+  local title="" first="" prompt="" words="" t said
+  title="$(session_titles <<<"$sid" | cut -f2)"
+  t="$(session_transcript "$sid")"
+  if [ -n "$t" ] && command -v agent-panel >/dev/null 2>&1 &&
+     said="$(agent-panel said "$t" --around "${ASK[id]:-}" 2>/dev/null)"; then
+    first="$(jq -r '.first // ""' <<<"$said")"
+    prompt="$(jq -r '.prompt // ""' <<<"$said")"
+    words="$(story_words "${ASK[question]:-}" <<<"$said")"
+  fi
+  [ "$prompt" = "$first" ] && prompt=""
+  story_line request "${title:+$title${first:+: }}$first" 3
+  story_line "you said" "$prompt" 2
+  story_line "it said" "$words" 6
+  tele="$(story_telemetry "$sid")"
+  story_line telemetry "$tele" 2
+  return 0
+}
+
+# story_line <label> <text> <max lines>: the dim label, then the text wrapped beside it with a
+# hanging indent, blank lines dropped, cut to <max> lines with "..." on the last.
+story_line() {
+  [ -n "$2" ] || return 0
+  local pad="          " w
+  w=$(( CARD_WIDTH - ${#pad} )); [ "$w" -lt 20 ] && w=20
+  printf '%s%-10s%s' "$d" "$1" "$x"
+  wrap "$pad" "$2" | awk -v max="$3" -v w="$w" -v pad="$pad" '
+    /^ *$/ { next }
+    { n++; if (n <= max) line[n] = $0 }
+    END {
+      if (n > max) { l = substr(line[max], length(pad) + 1)
+                     if (length(l) > w - 4) { l = substr(l, 1, w - 4); sub(/ +[^ ]*$/, "", l) }
+                     sub(/ +$/, "", l); line[max] = pad l " ..."; n = max }
+      for (i = 1; i <= n; i++) { if (i == 1) sub(/^ +/, "", line[i]); print line[i] }
+    }'
+}
+
+# story_words <question> < said-json: the newest text block of the asking turn that still says
+# something once the card's own parts are gone: the question and the option list under it,
+# markdown tables (they wrap into noise), code fences and bold marks. The newest block is
+# where the session stands now; an older one only when the newest just repeats the ask.
+story_words() {
+  local q="$1" said n i words
+  said="$(cat)"
+  n="$(jq -r '.said | if type == "array" then length else 0 end' <<<"$said" 2>/dev/null)" || return 0
+  for (( i = n - 1; i >= 0; i-- )); do
+    words="$(jq -r --argjson i "$i" '.said[$i]' <<<"$said" | awk -v q="$q" '
+      function norm(s) { gsub(/[*_`#>]/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return tolower(s) }
+      BEGIN { nq = norm(q) }
+      /^[ \t]*```/ { fence = !fence; next }
+      fence || /^[ \t]*\|/ { next }
+      { line = $0; sub(/^#+[ \t]*/, "", line) }
+      nq != "" && norm(line) == nq { inq = 1; next }
+      inq && (line ~ /^[ \t]*$/ || line ~ /^[ \t]*([0-9]+[.)]|[-*])[ \t]/) { next }
+      { inq = 0; gsub(/\*\*/, "", line); print line }')"
+    [ -n "${words//[[:space:]]/}" ] && { printf '%s\n' "$words"; return 0; }
+  done
+}
+
+# story_telemetry <sid>: one line from the nightly outcome row (agentctl-session-outcomes), and
+# where its friction ranks among this week's sessions with any. Friction's terms are its own
+# "why"; the rest is size. Nothing when the session has no row yet.
+story_telemetry() {
+  command -v agentctl-session-outcomes >/dev/null 2>&1 || return 0
+  local row rank
+  # The week's ranking holds the row of any session with friction; one with none has no rank,
+  # so its row comes from its card.
+  rank="$(agentctl-session-outcomes worst --days 7 -n 100000 --json 2>/dev/null |
+    jq -cs --arg s "$1" '(map(.session_id) | index($s)) as $i
+      | if $i == null then empty else {rank: "#\($i + 1) of \(length) this week", row: .[$i]} end')"
+  if [ -n "$rank" ]; then
+    row="$(jq -c .row <<<"$rank")"; rank="$(jq -r .rank <<<"$rank")"
+  else
+    row="$(agentctl-session-outcomes card "$1" --json 2>/dev/null)" && [ -n "$row" ] || return 0
+  fi
+  jq -r --arg rank "$rank" --arg seen "$(age_of "$(jq -r '.observed // ""' <<<"$row")")" '
+    def dur: if . == null then empty elif . >= 3600 then "\(. / 3600 | floor)h\(. % 3600 / 60 | floor)m"
+             else "\(. / 60 | floor)m" end;
+    [ "friction \(.friction // 0)" + (if $rank != "" then " (\($rank))" else "" end)
+        + (if (.why // "") != "" then ": \(.why)" else "" end),
+      (if .cost_usd then (.cost_usd * 100 | round) as $c
+         | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)" else empty end),
+      (.duration_s | dur),
+      "\(.prs_merged // 0) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end),
+      (if $seen != "" then "seen \($seen) ago" else empty end)
+    ] | join(" . ")' <<<"$row"
 }
 
 # named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
@@ -630,7 +867,8 @@ close_ask() {
 cmd_cancel() { close_ask cancelled "$@"; }
 cmd_recommend() {
   local id="${1:-}" opt="${2:-}"
-  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option> [why...]" >&2; return 2; }
+  shift 2
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local options; options="$(field "$f" options)"
@@ -639,7 +877,9 @@ cmd_recommend() {
     *) echo "agent-ask recommend: '$opt' is not one of '$options'" >&2; return 2 ;;
   esac
   set_field "$f" recommend "$opt"
-  echo "recommend $id: $opt" >&2
+  # A why belongs to the option it argued for, so a new recommendation replaces or clears it.
+  set_field "$f" recommend_why "$(oneline "$*")"
+  echo "recommend $id: $opt${*:+ ($*)}" >&2
 }
 
 # --- the producer half of the loop -----------------------------------------
@@ -706,11 +946,9 @@ cmd_judge() {
       set_field "$f" judged_at "$(now_iso)"
       return 0 ;;
   esac
-  [ -r "$AGENT_ASK_POLICY" ] || { echo "agent-ask: no policy at $AGENT_ASK_POLICY" >&2; return 1; }
   local prompt out wd rc verdict call
-  prompt="$(cat "$AGENT_ASK_POLICY")
-
-## The ask
+  # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
+  prompt="## The ask
 
 project: $(field "$f" project)
 agent: $(field "$f" agent)
@@ -718,6 +956,7 @@ task: $(field "$f" task)
 question: $(field "$f" question)
 options: $(field "$f" options)
 recommend: $(field "$f" recommend)
+recommend_why: $(field "$f" recommend_why)
 
 ## Answer
 
@@ -788,7 +1027,9 @@ case "$sub" in
   count)  cmd_count "$@" ;;
   show)   cmd_show "$@" ;;
   card)   cmd_card "$@" ;;
+  target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
+  titles) session_titles ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   recommend)    cmd_recommend "$@" ;;

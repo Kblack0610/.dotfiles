@@ -104,6 +104,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // 3. Heading validity on current daily notes
     check_headings(&mut r, p);
 
+    // 3b. Text in a recent Focus that no verb will move or carry
+    check_loose_focus(&mut r, p);
+
     // 4. Sync freshness (sync layer is owned elsewhere; we only observe)
     check_sync(&mut r);
 
@@ -321,6 +324,20 @@ fn check_gaps(r: &mut Report, p: &Profile) {
                     ""
                 }
             ),
+        );
+    }
+}
+
+fn check_loose_focus(r: &mut Report, p: &Profile) {
+    let found = crate::focus::loose_recent(p, crate::focus::LOOSE_DAYS);
+    if found.is_empty() {
+        r.add(Status::Pass, "loose focus", "every Focus line is an item");
+    }
+    for (note, lines) in found {
+        r.add(
+            Status::Warn,
+            "loose focus",
+            &crate::focus::loose_summary(&note, &lines),
         );
     }
 }

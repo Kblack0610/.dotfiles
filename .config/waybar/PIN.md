@@ -8,6 +8,12 @@ without leaving whatever is fullscreen.
 It is separate from the main bar (which runs as the `waybar.service` systemd user
 unit). The pin is toggle-on-demand and never autostarts.
 
+The pin covers the window under it. To see the full main bar over a fullscreen window
+without covering anything, press `Ctrl+Alt+Shift+B` (`hypr/scripts/fullscreen-bar.sh`):
+the window drops to fullscreen under the bar (Hyprland maximizes it, so it ends below
+waybar, while the app still thinks it is fullscreen); press again for true fullscreen.
+It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
+
 ## Use
 
 - `Super+Shift+M`  - toggle the pin on/off (restores the last size)
@@ -23,7 +29,7 @@ unit). The pin is toggle-on-demand and never autostarts.
 `esc` = up one level, `q` = exit. Defined in `hypr/conf.d/leader.conf`.
 
 ```
-Super+A                L1 pinbar          t toggle | u utils> | s settings> | esc/q exit
+Super+A                L1 pinbar          space control menu | t toggle | a agents | n pages | o open newest page | h triage newest page | u utils> | s settings> | esc/q exit
   u utils              L2 pinbar-utils    a agents | h ssh | r reload | t timebox> | y sync> | g git> | esc back
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
@@ -34,13 +40,15 @@ Super+A                L1 pinbar          t toggle | u utils> | s settings> | es
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
+**Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "hub" row per hub tab (`hub tabs`, from hub-core's layout): the preview is that tab's `hub --once` page and Enter opens it as a hub popup. Then one "window" row per described exec bind (`bindd`/`bindpd` in `keybindings.conf` and `leader.conf`) with the chord that reaches it (`Super+D`, `Super+A u t s`); Enter runs it through `hyprctl dispatch exec`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `rules.conf`).
+
 **Swap the leader key:** in `leader.conf`, comment the active bind pair and uncomment
 another (Super+A is the default - all left-hand, low accidental-hit risk; Super+;
 is right-hand/tmux-ish; Super+Space is comfiest but easiest to fat-finger).
 
-**Add a leaf:** in the target submap add three lines - `bind = , <key>, exec, <cmd>`,
-`bind = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bind = , <key>, submap, reset`
-- then add the key to that level's legend in `pin-hint.sh`.
+**Add a leaf:** in the target submap add three lines - `bindpd = , <key>, <description>, exec, <cmd>`,
+`bindp = , <key>, exec, ~/.config/waybar/pin-hint.sh close`, `bindp = , <key>, submap, reset`.
+The description (no commas: Hyprland splits on them) is the leaf's legend entry and its control-menu row; `pin-hint.sh` builds each level's popup from the described binds via `hyprctl binds -j`, so there is no legend to edit. A submap entry, Esc and q carry the description on their `submap` line. `tests/integ/pin_hint.bats` fails a leader key with no described bind.
 
 ## Views
 
@@ -98,7 +106,7 @@ survives a reboot, unlike `pin.sh`'s `/tmp` state.
 **Add a toggle:** add a row to `modules.registry` (`key|label|module-id ...`, one key
 may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and give it
 `"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
-`leader.conf` and the key to `pin-hint.sh`'s settings legend.
+`leader.conf` with a description (it is the legend entry).
 
 Only **custom** modules can be toggled. Built-ins (memory, clock, tray...) have
 no `exec` to gate; hiding those would mean generating the config and restarting the
@@ -114,7 +122,8 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 ## Files
 
 - `modules.sh`       - module toggles (`gate|list|menu|on|off|toggle`)
-- `modules.registry` - which modules are toggleable (`key|label|ids`)
+- `modules.registry` - which modules are toggleable (`key|label|ids`), and the control menu's chips
+- `pango.sh`         - the chips' markup helpers, and `pango_ansi` (a tooltip as terminal text, for the control menu)
 - `machines.sh`      - fleet probe module (`min|full`) + `pick` ssh chooser
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
@@ -122,7 +131,7 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds
-- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals
+- `hypr/conf.d/rules.conf`       - floats the `floating-term` popup terminals and the `control-menu` window
 
 ## Add a machine
 

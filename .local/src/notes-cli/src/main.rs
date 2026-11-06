@@ -14,6 +14,7 @@ mod comms;
 mod config;
 mod daily;
 mod doctor;
+mod epics;
 mod focus;
 mod focus_move;
 mod focus_sweep;
@@ -33,6 +34,7 @@ mod project_tasks;
 mod projects;
 mod registry;
 mod sheet;
+mod show;
 mod status;
 mod summarize;
 mod sweep;
@@ -76,6 +78,22 @@ enum Cmd {
     Path {
         #[arg(default_value = "daily")]
         target: String,
+    },
+    /// One note for a viewer: daily (default), daily:YYYY-MM-DD, or a [[wikilink]] target,
+    /// resolved like the editor's gf and kept inside the notes
+    Show {
+        #[arg(default_value = "daily")]
+        target: String,
+        /// One JSON object: path, rel, title, exists, date, prev, next, hash, markdown, links
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace a note with stdin when its hash (`show --json`'s `hash`) is still BASE; exit 3
+    /// and write nothing when it changed since
+    Put {
+        target: String,
+        #[arg(long, value_name = "BASE")]
+        base: String,
     },
     /// Link today's ref files into today's note's `## Refs` section
     LinkRefs,
@@ -239,7 +257,7 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a draft or alpha project
+        /// `Version:` moves to the next one. Refused for a project below beta
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
@@ -296,7 +314,8 @@ enum Cmd {
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
         /// Print a project's roadmap: the open version, then the releases rows are aimed at
-        /// (TSV: `version<TAB>state<TAB>open<TAB>done`)
+        /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>open_weight<TAB>done_weight<TAB>
+        /// unsized_open`, both lanes' leaf rows; --json adds closes, scope growth and epics)
         #[arg(long, value_name = "NAME")]
         roadmap: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
@@ -305,18 +324,26 @@ enum Cmd {
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats: one JSON array instead, adding each project's dir, done count, STATUS line and date, and summary path
-        #[arg(long, requires = "stats")]
+        /// With --stats or --roadmap: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        #[arg(long)]
         json: bool,
-        /// Print a project's maturity stage; with --set, declare it.
-        /// One of: draft, alpha, beta, prod
+        /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
+        /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,
+        /// Print the maturity ladder, least to most real, on one line. Shell readers take
+        /// the vocabulary from here instead of keeping a copy
+        #[arg(long)]
+        stages: bool,
         /// Print a project's index group; with --set, declare it. Unset means the
-        /// project's own profile (bnb, personal); `dev` is the tooling lane.
+        /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// The value to write, for --stage / --group. Omit to read.
+        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
+        /// normal (clears it). fleet-dispatch ranks the project's board rows by it first.
+        #[arg(long, value_name = "NAME")]
+        prio: Option<String>,
+        /// The value to write, for --stage / --group / --prio. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
         /// Print (creating if absent) the path to a version's agent note,
@@ -346,6 +373,30 @@ enum Cmd {
         /// `<profile>/<project>: <finding>` line each
         #[arg(long)]
         projects: bool,
+    },
+    /// What was written to which row, and by whom: today, or `--day` / `--days`
+    Log {
+        /// One day, `YYYY-MM-DD`
+        #[arg(long, conflicts_with = "days")]
+        day: Option<String>,
+        /// The last N days, today included
+        #[arg(long)]
+        days: Option<i64>,
+        /// Only events from or to this project, or `focus` or `outbox`
+        #[arg(long)]
+        project: Option<String>,
+        /// Only this row, like ucp-79
+        #[arg(long)]
+        id: Option<String>,
+        /// Only this action, like `dropped`
+        #[arg(long)]
+        action: Option<String>,
+        /// Only this writer: `human`, a queue item or a session's first 8 characters
+        #[arg(long)]
+        by: Option<String>,
+        /// One JSON event per line
+        #[arg(long)]
+        json: bool,
     },
     /// Print the resolved profile + paths
     Config {
@@ -440,7 +491,8 @@ enum PtaskCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Add a task to the open version, or aim it at a later release with --to
+    /// Add a task to the open version, or aim it at a later release with --to. Exit 3 and
+    /// write nothing when an open row with the same text is already on the sheet
     Add {
         /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
@@ -601,6 +653,17 @@ enum OutboxCmd {
         /// One JSON array of `{line, raw, text, details, project}` instead
         #[arg(long)]
         json: bool,
+    },
+    /// The items as the Outbox tab edits them (`--json`: `{path, hash, text, waiting}`)
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the items with stdin when the file's hash is still BASE; exit 3 and write
+    /// nothing when it changed since
+    Put {
+        #[arg(long, value_name = "BASE")]
+        base: String,
     },
     /// Append a line and wake the inbox sweep
     Add {
@@ -786,6 +849,12 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Show { target, json } => show::run(&prof, &target, json)?,
+        Cmd::Put { target, base } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            show::put(&prof, &log, &target, &base, &text)?
+        }
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
             Some(path) => {
                 println!("{}", path.display());
@@ -865,6 +934,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let op = playtest_op(sub, exact)?;
             if let playtest::Op::Done { pick, .. } | playtest::Op::Drop { pick, .. } = &op {
                 pick.sole_in(&playtest::path(&projects::project_dir(&prof, &name)?))?;
@@ -878,6 +948,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
+            let name = registry::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -1047,11 +1118,34 @@ fn main() -> Result<()> {
         Cmd::Outbox { sub } => match sub {
             None => outbox::list(&prof, false)?,
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
+            Some(OutboxCmd::Put { base }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::put(&prof, &log, &base, &text)?
+            }
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
             }
         },
+        Cmd::Log {
+            day,
+            days,
+            project,
+            id,
+            action,
+            by,
+            json,
+        } => {
+            let filter = ingest::Filter {
+                project: project.map(|n| registry::canonical(&n)),
+                id,
+                action,
+                by,
+            };
+            ingest::log(&prof, day.as_deref(), days, &filter, json)?
+        }
         Cmd::Ingest { sub } => match sub {
             IngestCmd::Record {
                 action,
@@ -1149,7 +1243,9 @@ fn main() -> Result<()> {
             agent_note,
             version,
             stage,
+            stages,
             group,
+            prio,
             set,
         } => {
             let level = if major {
@@ -1175,6 +1271,10 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
+            if stages {
+                projects::stages();
+                std::process::exit(0);
+            }
             if let Some(n) = stage {
                 projects::stage(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {
@@ -1189,11 +1289,21 @@ fn main() -> Result<()> {
                 }
                 std::process::exit(0);
             }
+            if let Some(n) = prio {
+                projects::prio(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
+                std::process::exit(0);
+            }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
             if let (Some(n), Some(dest)) = (move_project, to_profile) {
                 projects::move_to_profile(&prof, &log, &n, &dest)?;
                 lab_refresh::kick();
                 std::process::exit(0);
+            }
+            if json && !stats && roadmap.is_none() {
+                anyhow::bail!("--json goes with --stats or --roadmap");
             }
             if stats {
                 projects::stats(json)?;
@@ -1234,7 +1344,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n)?,
+                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n, json)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
                     projects::show_agent_note(&prof, &n, version.as_deref())?
                 }

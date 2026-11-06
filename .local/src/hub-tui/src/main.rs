@@ -10,9 +10,11 @@ mod fit;
 mod fleet;
 mod fleettab;
 mod fmt;
+mod focustab;
 mod forecast;
 mod hometab;
 mod jobs;
+mod outboxtab;
 mod projtab;
 mod queuetab;
 mod tabreq;
@@ -25,20 +27,27 @@ use app::{App, Msg, Tab, PROM_REFRESH};
 use fit::plain;
 use notify::{RecursiveMode, Watcher};
 
-const USAGE: &str = "usage: hub [--once] [--tab TAB]
+const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
-       hub actions --since WHEN [--json]
+       hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub projects --json
+       hub tabs
   TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
           lands on its new tab; jobs, ci and machines open that section of Infra
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
-  --tab   start on this page; with --once, print only it
+  --popup a floating window: Esc with nothing left to close quits
+  --tab   start on this page; with --once, print only it ('projects NAME' prints that card
+          over its open rows)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would)
+  tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
+  projects every project's card as {cards, unlinked, errors}, each card with its summary line
+          and in_flight: what the waybar projects chip reads
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -46,6 +55,7 @@ const USAGE: &str = "usage: hub [--once] [--tab TAB]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut once = false;
+    let mut popup = false;
     let mut tab = None;
     let mut it = args.iter().peekable();
     if it.peek().map(|a| a.as_str()) == Some("tab") {
@@ -65,6 +75,21 @@ fn main() {
         it.next();
         std::process::exit(actions(it.cloned().collect()));
     }
+    if it.peek().map(|a| a.as_str()) == Some("tabs") {
+        for t in hub_core::layout::landed() {
+            println!("{}\t{}\t{}", t.id, t.title, t.question);
+        }
+        return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("projects") {
+        it.next();
+        if it.cloned().collect::<Vec<_>>() != ["--json"] {
+            die(USAGE);
+        }
+        let p = hub_core::projects::gather();
+        println!("{}", hub_core::projects::to_json(&p));
+        return;
+    }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
@@ -72,6 +97,7 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--once" => once = true,
+            "--popup" => popup = true,
             "--tab" => {
                 tab = Some(
                     it.next()
@@ -90,19 +116,22 @@ fn main() {
     let start = tabreq::take(&tabreq::dir())
         .or(tab)
         .unwrap_or((Tab::Home, None));
-    if let Err(e) = run(start) {
+    if let Err(e) = run(start, popup) {
         die(&format!("hub: {e}"));
     }
 }
 
 /// `hub actions`: hub-core's actions reader, so the briefing's digest is the Actions tab's.
+/// `--records` streams the whole window as JSONL, one action or reject per line, with none
+/// capped: comms-lint's `fleet-log` channel reads it.
 fn actions(args: Vec<String>) -> i32 {
-    let (mut since, mut json) = (None, false);
+    let (mut since, mut json, mut records) = (None, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--since" => since = it.next().and_then(|s| parse_since(s)),
             "--json" => json = true,
+            "--records" => records = true,
             _ => die(USAGE),
         }
     }
@@ -111,9 +140,20 @@ fn actions(args: Vec<String>) -> i32 {
         Ok(items) => (items, None),
         Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
     };
-    let mut g = hub_core::actions::gather(&hub_core::actions::Paths::from_env(), since, &items);
+    let paths = hub_core::actions::Paths::from_env();
+    let mut g = if records {
+        hub_core::actions::window(&paths, since, &items)
+    } else {
+        hub_core::actions::gather(&paths, since, &items)
+    };
     g.errors.extend(err);
-    if json {
+    if records {
+        let lines = g.actions.iter().map(serde_json::to_string);
+        for line in lines.chain(g.rejects.iter().map(serde_json::to_string)) {
+            println!("{}", line.unwrap_or_default());
+        }
+        g.errors.iter().for_each(|e| eprintln!("hub actions: {e}"));
+    } else if json {
         println!("{}", serde_json::to_string(&g).unwrap_or_default());
     } else {
         print!("{}", hub_core::actions::digest(&g));
@@ -126,22 +166,24 @@ fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let state = std::fs::read_to_string(hub_core::boards::fleet_state())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(serde_json::Value::Null);
+    let state = hub_core::boards::state(
+        &hub_core::boards::fleet_state(),
+        &hub_core::session_actions::System,
+    );
     let (queue, infra) = std::thread::scope(|s| {
         let infra = s.spawn(hub_core::infra::gather);
         let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
         (queue, infra.join().unwrap_or_default())
     });
     let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
         &hub_core::phone::Inputs {
             state: &state,
             queue: Some(&queue),
             infra: Some(&infra),
+            projects: Some(&projects),
             merged: hub_core::phone::merged_today(),
             now: chrono::Utc::now().timestamp(),
         },
@@ -202,6 +244,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    if tab == Some(Tab::Outbox) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.outbox = Some(hub_core::outbox::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.tab = Tab::Outbox;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
         a.queue = Some(hub_core::queue::Queue::read(
@@ -221,6 +275,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tasks = Some(hub_core::tasks::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
+        // `--tab 'projects <name>'` prints that project's card over its rows, what Enter shows:
+        // the Prefix+p preview.
+        a.open_project(section);
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -258,10 +315,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     i32::from(failed)
 }
 
-fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
+fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tab, tx.clone());
-    app.open_project(query);
+    app.popup = popup;
+    // The same reader as `hub tab`: an Infra section on Infra, else a project.
+    app.open_query(query);
 
     let input = tx.clone();
     std::thread::spawn(move || {
@@ -329,6 +388,9 @@ fn run((tab, query): tabreq::Req) -> std::io::Result<()> {
     app.read_jobs();
     app.read_boards();
     app.read_queue();
+    if app.tab == Tab::Queue {
+        app.read_candidates();
+    }
     if app.tab == Tab::Sessions {
         app.read_forecast();
         app.read_sessions();

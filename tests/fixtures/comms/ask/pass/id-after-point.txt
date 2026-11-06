@@ -1,0 +1,1 @@
+The fast tier fix (dotfiles#910) is stuck on its 10m timeout. Start a session on that row now, or wait for dispatch?

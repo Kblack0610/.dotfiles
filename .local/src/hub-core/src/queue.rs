@@ -2,7 +2,8 @@
 //! session actions. agent-queue is the store's only reader and writer (design:
 //! `~/.config/agentctl/QUEUE.md`), so this module never opens `~/.agent/queue`: it runs
 //! `agent-queue list --json` and `agent-queue stats --json` through a `Runner` and types what
-//! they print. Cancel and bump are argv for agent-queue too.
+//! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
+//! rows `fleet-dispatch suggest --json` prints, for the tabs' Candidates section.
 
 use std::collections::BTreeMap;
 
@@ -169,7 +170,7 @@ pub struct Stats {
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
-fn dur(m: Option<i64>) -> String {
+pub(crate) fn dur(m: Option<i64>) -> String {
     match m {
         None => "-".into(),
         Some(m) if m >= 120 => format!("{}h", m / 60),
@@ -320,6 +321,113 @@ impl Queue {
     pub fn count(&self, s: State) -> usize {
         self.in_state(s).count()
     }
+}
+
+/// How many candidates a view lists; its heading counts them all.
+pub const CANDIDATES_SHOWN: usize = 30;
+
+/// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
+/// section shows. fleet-dispatch ranks it and nothing stores it; this only types it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Candidate {
+    pub profile: String,
+    pub project: String,
+    /// `agent` or `human`.
+    pub lane: String,
+    /// The row's id (`ucp-408`), or its text when it has none.
+    pub key: String,
+    /// The board line as it stands, what a promote passes back.
+    pub text: String,
+    pub stage: String,
+    pub priority: String,
+    /// Why it ranks where it does, e.g. "focus project, due today, #high, beta".
+    pub why: String,
+    /// A dispatch worker takes it.
+    pub auto: bool,
+    /// The judge's cached verdict, or `unjudged`.
+    pub verdict: String,
+    /// An active queue item holds its area.
+    pub held: bool,
+    pub area: String,
+}
+
+impl Candidate {
+    /// The row's words: no checkbox, no `#tags`, no trailing `<!-- -->` comment, capped.
+    pub fn title(&self) -> String {
+        let t = self.text.trim_start();
+        let t = t.strip_prefix("- [").and_then(|r| r.get(2..)).unwrap_or(t);
+        let t = t.split("<!--").next().unwrap_or(t);
+        let words: Vec<&str> = t
+            .split_whitespace()
+            .filter(|w| !w.starts_with('#'))
+            .collect();
+        cap(&words.join(" "), TITLE_MAX)
+    }
+
+    /// How it would start: auto or man, the judge's verdict once it has one, and held.
+    pub fn start_label(&self) -> String {
+        let mut l = vec![if self.auto { "auto" } else { "man" }];
+        if !self.verdict.is_empty() && self.verdict != "unjudged" {
+            l.push(&self.verdict);
+        }
+        if self.held {
+            l.push("held");
+        }
+        l.join(" ")
+    }
+
+    /// The board write that starts it: `fleet-dispatch promote`, the Projects tab's Start.
+    pub fn start(&self) -> crate::tasks::Write {
+        crate::tasks::Write {
+            profile: self.profile.clone(),
+            project: self.project.clone(),
+            lane: self.lane.clone(),
+            verb: crate::tasks::Verb::Start {
+                raw: self.text.clone(),
+            },
+        }
+    }
+}
+
+/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Candidates {
+    pub total: usize,
+    pub auto: usize,
+    pub rows: Vec<Candidate>,
+}
+
+impl Candidates {
+    pub fn more(&self) -> usize {
+        self.total - self.rows.len()
+    }
+}
+
+/// `fleet-dispatch suggest --json` prints one object per line, in rank order, and nothing when
+/// there is no row; a line that does not parse is skipped.
+pub fn parse_candidates(jsonl: &str) -> Candidates {
+    let mut c = Candidates::default();
+    for row in jsonl
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Candidate>(l).ok())
+    {
+        c.total += 1;
+        c.auto += usize::from(row.auto);
+        if c.rows.len() < CANDIDATES_SHOWN {
+            c.rows.push(row);
+        }
+    }
+    c
+}
+
+/// The ranked candidates. Slow (it reads every board), so a view reads it off its draw loop.
+pub fn candidates(runner: &dyn Runner) -> Result<Candidates, String> {
+    let argv: Vec<String> = ["fleet-dispatch", "suggest", "--json"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    runner.run(&argv).map(|out| parse_candidates(&out))
 }
 
 /// A slug as agent-queue writes it, so nothing else reaches its argv.
@@ -538,6 +646,76 @@ mod tests {
         assert_eq!(
             *fake.calls.borrow(),
             ["agent-queue cancel w", "agent-queue bump q urgent"]
+        );
+    }
+
+    const SUGGEST: &str = concat!(
+        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"pprio":0,"due":0,"due_in":0,"age":5,"why":"focus project, due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
+        "\n",
+        "not json\n",
+        r##"{"profile":"personal","project":"trader","stage":"alpha","lane":"human","key":"backtest report","text":"- [ ] backtest report","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":true,"area":"unity"}"##,
+        "\n",
+    );
+
+    #[test]
+    fn candidates_type_suggest_lines_in_rank_order() {
+        struct Out(&'static str, RefCell<Vec<String>>);
+        impl Runner for Out {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                self.1.borrow_mut().push(argv.join(" "));
+                Ok(self.0.into())
+            }
+        }
+        let r = Out(SUGGEST, RefCell::default());
+        let c = candidates(&r).unwrap();
+        assert_eq!(r.1.borrow()[0], "fleet-dispatch suggest --json");
+        assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
+        let c = c.rows;
+        let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["bar-17", "backtest report"], "a bad line is skipped");
+        assert!(c[1].lane == "human");
+        assert_eq!(c[0].title(), "fix the jump arc");
+        assert_eq!(c[1].title(), "backtest report");
+        assert_eq!(c[0].start_label(), "auto dispatch");
+        assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
+        assert_eq!(
+            candidates(&Out("", RefCell::default())).unwrap(),
+            Candidates::default(),
+            "no rows prints nothing"
+        );
+    }
+
+    #[test]
+    fn candidates_count_every_row_and_keep_the_first_shown() {
+        let line = r#"{"key":"k","auto":true}"#;
+        let c = parse_candidates(&vec![line; CANDIDATES_SHOWN + 8].join("\n"));
+        assert_eq!((c.total, c.auto, c.rows.len()), (38, 38, CANDIDATES_SHOWN));
+        assert_eq!(c.more(), 8);
+    }
+
+    #[test]
+    fn a_candidate_starts_through_the_boards_start() {
+        let c = parse_candidates(SUGGEST).rows;
+        assert_eq!(
+            crate::tasks::argv(&c[0].start()).unwrap(),
+            [
+                "fleet-dispatch",
+                "promote",
+                "--project",
+                "shape-city",
+                "--profile",
+                "bnb",
+                "--agent",
+                "--raw",
+                "- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->"
+            ]
+        );
+        // NEGATIVE CONTROL: a human-lane row is promoted without --agent.
+        let human = crate::tasks::argv(&c[1].start()).unwrap();
+        assert!(!human.contains(&"--agent".to_string()), "{human:?}");
+        assert_eq!(
+            human.last().map(String::as_str),
+            Some("- [ ] backtest report")
         );
     }
 

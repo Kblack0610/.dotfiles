@@ -18,6 +18,7 @@ const doc = { getElementById: (id) => (id === "home" ? box : el()), addEventList
 const ctx = vm.createContext({
   console,
   document: doc,
+  window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
 for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "home.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
@@ -83,11 +84,12 @@ test("the summary leads, and a long list shows the cap with the rest folded", ()
   assert.doesNotMatch(draw(home({ needs: needs.slice(0, 8) })), /cfold" data-k="home-needs/);
 });
 
-test("a retired tab name lands on its new tab, and anything unknown on Home", () => {
+test("a retired tab name lands on its new tab, and anything unknown on the landing tab, Outbox", () => {
   const of = (n) => vm.runInContext(`tabOf(${JSON.stringify(n)})`, ctx);
   assert.equal(of("waiting"), "home");
   assert.equal(of("asks"), "home");
   assert.equal(of("queue"), "queue");
-  assert.equal(of(""), "home");
-  assert.equal(of("nope"), "home");
+  assert.equal(of("home"), "home");
+  assert.equal(of(""), "outbox");
+  assert.equal(of("nope"), "outbox");
 });
