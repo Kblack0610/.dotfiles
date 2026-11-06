@@ -35,6 +35,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub needs --json | --page
        hub projects --json
+       hub projects --epics NAME
        hub tabs
   TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
@@ -54,6 +55,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
+  projects --epics NAME
+          one project's chain from idea to verified, as fleet-bench epics joins it, with its
+          flow_line: what a card reads when it is opened
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -89,7 +93,18 @@ fn main() {
     }
     if it.peek().map(|a| a.as_str()) == Some("projects") {
         it.next();
-        if it.cloned().collect::<Vec<_>>() != ["--json"] {
+        let rest: Vec<String> = it.cloned().collect();
+        if let [flag, name] = rest.as_slice() {
+            if flag != "--epics" {
+                die(USAGE);
+            }
+            match hub_core::epics::chain(&hub_core::session_actions::System, name) {
+                Ok(c) => println!("{}", hub_core::epics::to_json(&c)),
+                Err(e) => die(&format!("hub projects --epics: {e}")),
+            }
+            return;
+        }
+        if rest != ["--json"] {
             die(USAGE);
         }
         let p = hub_core::projects::gather();
