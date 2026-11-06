@@ -194,8 +194,8 @@ role_denied_tools() {
   [ "$ROLE_BASH"  = "no" ] && d="$d,Bash"
   [ -n "$ROLE_MCP_DENY" ] && d="$d,$ROLE_MCP_DENY"
   # Extras exist for capabilities the yes/no keys cannot express, e.g. "may
-  # create new files but must never modify an existing one" (agentctl-skill-refine
-  # is propose-only and documented as such, but nothing enforced it).
+  # create new files but must never modify an existing one" (the retired
+  # skill-refine runner was propose-only and documented as such, but nothing enforced it).
   [ -n "$ROLE_DENY_EXTRA" ] && d="$d,$ROLE_DENY_EXTRA"
   echo "${d#,}"
 }
