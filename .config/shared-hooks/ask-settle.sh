@@ -1,9 +1,9 @@
 #!/bin/bash
 # ask-settle.sh answered - settle the pending asks of the Claude session in the hook payload
-# (UserPromptSubmit: the human typed into the session). An ask with --options closes only when
-# the message names exactly one option; others take the message as the answer (`agent-ask
-# answer` from a board types its answer in too). A session ending leaves its asks pending: the
-# question keeps its one home, the ask file, until the human answers or drops it.
+# (UserPromptSubmit: the human typed into the session). Every pending ask leaves the list: one
+# naming an option is answered, the rest are cancelled (`agent-ask settle-session`). A session
+# ending leaves its asks pending: the question keeps its one home, the ask file, until the
+# human answers or drops it.
 #
 # Without this an ask outlives what it asked about: 2026-10-28 an ask held its session open
 # after the human had answered in the conversation. A hook must never fail the prompt, so

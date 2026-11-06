@@ -104,6 +104,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 - `repeat` is an exact call in the same compaction stretch; `repeat_unchanged` has no mutating call between.
 - `fail` classes the error text; `retry` says whether the next response reran the same input. `exit` is mostly a failed test or grep doing its job, so read `denied`, `hook` and `zsh` for waste.
 - `bg_wait` bands each background shell by run time and by whether any other work ran before it woke; `bg_short_idle` is the runs under 10 minutes that nothing else used, by command. Its `ctx` is the start ack plus the wake.
+- `reads` counts file reads (Read, or sed, cat, head and tail of a path). `locate_then_read` is a read of a file a grep, rg, Grep or Glob found in the 8 calls before: two round trips where one call could locate and print. `reread_same_lines` is a read of lines this stretch already read with no write to the file between (a non-read-only run resets every non-code file; logs, data and /tmp never count). `hot_target` is files by the responses their reads caused, calls being the sessions that read each. The nightly snapshot keeps the shares as `locate_read_share` and `reread_share`.
 - Message ids dedupe across files here, so totals differ slightly from `tool-output`.
 
 ## Notes

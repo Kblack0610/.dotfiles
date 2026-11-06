@@ -157,13 +157,14 @@ case "$verb" in
     # '#{session_name}:#{window_index}' as its human label, and that string CONTAINS
     # session_name -- so the composite must be matched before the bare one or the label
     # comes back as just the session and the sentinel records the wrong thing.
-    # servers.sh `_current_loc` asks for all three at once, on purpose -- the fields have
+    # servers.sh `_current_loc` asks for all four at once, on purpose -- the fields have
     # to describe one moment. It must be matched BEFORE socket_path and session_name,
     # both of which it contains; either of those arms would answer a 3-field question
-    # with 1 field and toggle would read a server name as a session.
+    # with 1 field and toggle would read a server name as a session. The fourth is the
+    # client tty, STUB_CLIENT_TTY, which keys the Prefix+L crumb.
     # STUB_SOCKET empty is the "no current client" case: _current_loc must reject it.
     if printf '%s ' "$@" | grep -q 'socket_path.*session_name.*window_index'; then
-      printf '%s\t%s\t%s\n' "${STUB_SOCKET:-}" "${STUB_SESSION:-}" "${STUB_WINDOW_INDEX:-}"
+      printf '%s\t%s\t%s\t%s\n' "${STUB_SOCKET:-}" "${STUB_SESSION:-}" "${STUB_WINDOW_INDEX:-}" "${STUB_CLIENT_TTY:-}"
     elif printf '%s ' "$@" | grep -q 'window_activity'; then
       f="$FIX/tmux.activity.$(target_key "$target")"
       [ -f "$f" ] && cat "$f"
