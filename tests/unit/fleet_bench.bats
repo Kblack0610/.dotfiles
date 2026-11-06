@@ -761,7 +761,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -903,7 +903,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task |'
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | compactions_per_session |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -918,13 +918,62 @@ ask_row() {
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
   assert_success
   run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
-  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"]]'
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["compactions_per_session",null,null,"-"]]'
   run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
   assert_success
   run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
   assert_output $'["pending"]\n[null]'
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10
   assert_line '| cost_per_pr | 5 | 1 | improved |'
+}
+
+# tok_day <days before T0> <jq object>: one nightly token-usage snapshot for that local day
+tok_day() {
+  mkdir -p "$HOME/.agent/token-usage"
+  local d; d=$(date -d "@$((T0 - $1 * 86400))" +%F)
+  jq -n --arg d "$d" "{date: \$d} + $2" > "$HOME/.agent/token-usage/$d.json"
+}
+tok_fixture() {
+  local i
+  for i in 1 2 4 5 6 7 8 9 10; do   # after the change at T0 - 10d, and the 7d window
+    tok_day $i '{merged_prs: 10, compactions: 2, by_kind: {a: {sessions: 4}}, context_split: {start: 400},
+      totals: {responses: 1000, context: 1000, cache_write: 10, tool_chars: 200, tool_calls: 100},
+      reads: {reads: 100, locate_then_read: 52, reread_same_lines: 10}}'
+  done
+  # burn failed that day: its responses never reach a per-PR KPI
+  tok_day 3 '{merged_prs: null, totals: {responses: 99999, context: 0}}'
+  for i in 11 12 13 14 15; do       # before the change; no context split yet
+    tok_day $i '{merged_prs: 10, compactions: 2, by_kind: {a: {sessions: 4}},
+      totals: {responses: 1000, context: 1000, cache_write: 10, tool_chars: 300, tool_calls: 100},
+      reads: {reads: 100, locate_then_read: 50, reread_same_lines: 5}}'
+  done
+}
+
+@test "kpi: the token KPIs are sums over the nightly snapshots of the window's days" {
+  kpi_setup; tok_fixture
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.responses_per_merged_pr, .context_per_merged_pr, .tool_chars_per_call, .locate_read_share, .reread_share,
+              .cache_write_share, .start_share, .compactions_per_session] | map(.["7d"])' <<<"$output"
+  assert_output '[100,100,2,0.52,0.1,0.01,0.4,0.5]'
+}
+
+@test "effect: a token lever gets a verdict from the snapshots before and after it" {
+  kpi_setup; tok_fixture
+  run "$SUBJECT" effect $((T0 - 864000)) --days 5 --json
+  assert_success
+  run jq -c '[.kpis[] | select(.kpi | IN("responses_per_merged_pr", "tool_chars_per_call", "locate_read_share", "reread_share", "start_share")) | [.kpi, .before, .after, .verdict]]' <<<"$output"
+  assert_output '[["responses_per_merged_pr",100,100,"flat"],["tool_chars_per_call",3,2,"improved"],["locate_read_share",0.5,0.52,"flat"],["reread_share",0.05,0.1,"regressed"],["start_share",null,0.4,"-"]]'
+}
+
+@test "retro check: a claimed token KPI gets its verdict like any other" {
+  kpi_setup; tok_fixture
+  claim ar-7 locate_read_share 0.6 max 0.35 20
+  closed '{id: "ar-7", action: "done", why: "pr:991", ts: ago(15)}'
+  run "$SUBJECT" retro
+  assert_success
+  run jq -c 'select(.type == "verdict") | [.subject, .kpi, .verdict, .from, .after]' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output '["ar-7","locate_read_share","improved",0.6,0.52]'
 }
 
 @test "effect: a PR is read as its merge time; an unmerged PR or a bare number is refused" {
@@ -1093,6 +1142,24 @@ log_triage_setup() {
   errlog alpha -3600 '[2026-11-05T02:00:00-08:00] error: lock /run/b/2.lock held by pid 98' 'fatal: only once'
   errlog alpha -200000 'error: lock /run/c.lock held by pid 7'
   jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
+@test "triage: a fault arriving while board_open is past board_open_max is still filed and queued as a red" {
+  log_triage_setup
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  echo board_open_max=1 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" room
+  assert_failure
+  lock_route '#size/m'
+  run "$SUBJECT" triage
+  assert_success
+  refute_output --partial held
+  assert_output --partial '1 queued as red fixes'
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
 }
 
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
@@ -1643,6 +1710,18 @@ pipeline_fixture() {
   assert_failure 1
 }
 
+@test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' '- [ ] a #low' '- [ ] b #low' '- [ ] c #low' > "$SANDBOX/agent.md"
+  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  run "$SUBJECT" kpi --check '^board_open$'
+  assert_failure 1
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+}
+
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" improve file revert_rate 'fix(ci): retry flaky steps once'
@@ -1748,7 +1827,7 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
-@test "room: past board_open_max the upsert holds new rows and says why; #requested is never held; under it files" {
+@test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
   printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
   export LEDGER_BOARDS="$SANDBOX/agent.md"
@@ -1757,23 +1836,18 @@ check_fixture() {
   assert_failure
   assert_output 'full: board_open 3 past board_open_max 2'
   rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
-  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED $UPSERT_HELD"' _ "$SUBJECT" "$rows" 2>&1; }
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
   run up
-  assert_line --partial '1 added, 0 refreshed, 1 held (full: board_open 3 past board_open_max 2)'
-  assert_line '1 1'
+  assert_line --partial '2 added, 0 refreshed'
+  refute_output --partial held
+  assert_line '2'
   run grep -c ' add ' "$NLOG"
-  assert_output 1
-  run grep ' add ' "$NLOG"
-  assert_output --partial 'fix(x): asked #requested'
-  # Negative control: under the limit the held row files.
+  assert_output 2
+  # Negative control: under the limit the room line says so.
   echo board_open_max=10 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_success
   assert_output 'room: board_open 3 of board_open_max 10'
-  run up
-  assert_line '1 0'
-  run grep -c ' add ' "$NLOG"
-  assert_output 2
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {

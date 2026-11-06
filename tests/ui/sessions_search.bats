@@ -16,7 +16,7 @@ setup() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$CLAUDE_RECALL"; chmod +x "$CLAUDE_RECALL"
   TITLE='Waybar right-side overflow and agent chips across both monitors, wrapped'
   mkdir -p "$HOME/.agent/sessions"
-  printf '%s\t' aaaaaaaa-1 dotfiles - 200 /w main "$TITLE" "$TITLE" first last f.sh - \
+  printf '%s\t' aaaaaaaa-1 dotfiles - 200 /w main "$TITLE" "$TITLE" first last f.sh - hand \
     | sed 's/\t$/\n/' > "$HOME/.agent/sessions/index.tsv"
 }
 
