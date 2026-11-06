@@ -32,6 +32,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab projects [NAME]
        hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub projects --json
        hub tabs
   TAB     home|queue|infra|sessions|today|history|fleet|projects, or a retired name
           (overview, waiting, asks, board, forecast, watch, shepherd, jobs, ci, machines) that
@@ -45,6 +46,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           no card has opens every project's rows searched for it, as `/` would)
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
+  projects every project's card as {cards, unlinked, errors}, each card with its summary line
+          and in_flight: what the waybar projects chip reads
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -76,6 +79,15 @@ fn main() {
         for t in hub_core::layout::landed() {
             println!("{}\t{}\t{}", t.id, t.title, t.question);
         }
+        return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("projects") {
+        it.next();
+        if it.cloned().collect::<Vec<_>>() != ["--json"] {
+            die(USAGE);
+        }
+        let p = hub_core::projects::gather();
+        println!("{}", hub_core::projects::to_json(&p));
         return;
     }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
@@ -164,12 +176,14 @@ fn phone(args: Vec<String>) -> i32 {
         (queue, infra.join().unwrap_or_default())
     });
     let home = hub_core::home::build(&state, Some(&queue), Some(&infra));
+    let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
         &hub_core::phone::Inputs {
             state: &state,
             queue: Some(&queue),
             infra: Some(&infra),
+            projects: Some(&projects),
             merged: hub_core::phone::merged_today(),
             now: chrono::Utc::now().timestamp(),
         },
