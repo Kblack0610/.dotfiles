@@ -586,6 +586,16 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app fix app stale'
 }
 
+@test "rank: a #requested row goes ahead of a cleanup row and a more urgent one in its due bucket; a due row stays ahead of it" {
+  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#high'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'; c lookalike 1 1 '#requested-ish')
+  run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
+  assert_output 'due asked cleanup urgent lookalike'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
+  assert_output 'requested, #low, beta'
+}
+
 @test "suggest: says so when no project has an open agent row" {
   project game beta "$SANDBOX/repos/game"
   run cmd_suggest
@@ -1058,6 +1068,26 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_success
   assert_output ''
+}
+
+# 2026-11-06 (P3 live): the pass's own fleet-bench triage reported NOOP under AGENTCTL_NAME=fleet-dispatch,
+# which ended the hold at the top of every pass, so the Stopped line never reached its threshold.
+@test "the pass's fleet-bench triage reports under its own name and leaves the hold standing" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  two_items
+  export AGENTCTL_NAME=fleet-dispatch DISPATCH_PER_PASS=1 DISPATCH_RUN_FLOOR=0
+  stub fleet-bench '[ "$1" = triage ] || exit 0; . "$HOME/.local/lib/agent-proof.sh"; proof_outcome "${AGENTCTL_NAME:-fleet-bench}" NOOP "every row already current"'
+  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 5 points over its weekly pace" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
+  echo "$(( $(date +%s) - 2 * 3600 - 30 ))" > "$d/held_since"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --partial 'Dispatch stopped 2h00m: no account has room'
+  grep -q 'every row already current' "$HOME/.local/state/agentctl/fleet-bench/activity.log" || fail "triage's outcome went nowhere"
+  ! grep -q 'every row already current' "$d/activity.log" || fail "triage reported as fleet-dispatch"
 }
 
 @test "the run floor never lifts the load pace or a room refusal it cannot lift" {
@@ -2356,14 +2386,16 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run that was never logged"
 }
 
-@test "red: a red item starts --pr-only" {
+@test "red: a red item merges its own PR: no --pr-only, and its brief names fix-red" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r"
   cmd_start --item r >/dev/null || fail "start r"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_output --partial '/one-shot --pr-only fix r'
+  assert_output --partial '/one-shot fix r'
+  refute_output --partial '--pr-only'
   assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
+  assert_output --partial 'Merge with agent-land <N>'
 }
 
 @test "red: a plain item's brief does not name fix-red" {
@@ -3397,6 +3429,18 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_not_called '--lane eval'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" origin) $(qfield "$f" model)" 'lazer-reserve gateway run sonnet'
+}
+
+@test "a spill start leaves the account hold standing: the Stopped line keeps its duration" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  spill_ready
+  mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'no account has room; alt is the closest, 4 points over its weekly pace' > "$d/held_why"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item fix-menu on Lazer'
+  assert_equal "$(outcome)" WORKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --partial 'Dispatch stopped 3h00m: no account has room'
 }
 
 @test "spill refuses an Opus-lane item and says so, and a later pass does not ask model-lane again that day" {
