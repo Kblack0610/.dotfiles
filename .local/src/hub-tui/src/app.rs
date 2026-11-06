@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::fleet::ASK_FILTERS;
+use hub_core::home::Need;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
@@ -275,6 +276,8 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
+    /// The view over Home's Needs you table.
+    pub hv: DataTable,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -396,6 +399,7 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
+            hv: DataTable::default(),
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -1181,6 +1185,9 @@ impl App {
             }
             return;
         }
+        if self.tab == Tab::Home && self.home_key(k) {
+            return;
+        }
         if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
@@ -1769,6 +1776,24 @@ impl App {
         }
     }
 
+    /// Home's Needs you table: the shared keys, and Esc back to the plain view first. Every other
+    /// key stays the page's.
+    fn home_key(&mut self, k: KeyEvent) -> bool {
+        if k.code == KeyCode::Esc && self.hv.typing.is_none() && !self.hv.is_default() {
+            self.hv.clear();
+            self.scroll = 0;
+            return true;
+        }
+        match self.hv.key::<Need>(k.code) {
+            Took::View => {
+                self.scroll = 0;
+                true
+            }
+            Took::Typing => true,
+            Took::No => false,
+        }
+    }
+
     /// Infra's own keys. The summary: n/N jump between sections, Enter and the jobs keys
     /// (/ s f h) open the jobs table. The table: the jobs keys, and Esc with nothing to clear
     /// goes back to the summary.
@@ -1993,6 +2018,12 @@ impl App {
     fn hints(&self) -> String {
         let tabs = "1-8";
         match self.tab {
+            Tab::Home if self.hv.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Home => format!(
+                "/ query  f state  s sort  S asc/desc  x clear  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+            ),
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
@@ -2054,7 +2085,6 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -2110,7 +2140,7 @@ impl App {
                     self.tasks.as_ref(),
                     i.as_ref(),
                 );
-                (hometab::page(&home, self.p, now, w), vec![])
+                (hometab::page(&home, &self.hv, self.p, now, w), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),

@@ -22,13 +22,10 @@ function renderBadge() {
   for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
 }
 
-// What each kind of open dialog is: its Needs you kind (the stripe and label, app.css `.need`).
-const DIALOG = { choice: "ask", tool: "perm", plan: "plan" };
-const dialog = (q) => DIALOG[q.kind] || "turn";
-
-// Every kind of row that waits on the human, in the order its tally chips list them: the label each
-// card leads with and its stripe class. Status hues stay status (dashboards rule 5): blocked is
-// amber, failing is red; the three dialog kinds take categorical colours.
+// Every kind of row that waits on the human (hub_core::home::NeedKind decides a row's, and its
+// chips): the label a row and its card lead with, and the card's stripe class. Status hues stay
+// status (dashboards rule 5): blocked is amber, failing is red; the three dialog kinds take
+// categorical colours.
 const NEED_KINDS = {
   stopped: "Stopped",
   plan: "Plan to approve",
@@ -39,16 +36,16 @@ const NEED_KINDS = {
   todo: "To do",
   red: "Failing",
 };
-const NEED_ORDER = Object.keys(NEED_KINDS);
 // The band a Needs you card opens with: its kind, then where and how long, as quiet text.
 const needBand = (k, meta) =>
   `<div class="nband"><span class="nkind">${NEED_KINDS[k]}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
 
 // A live session's open dialog: what the session is, what it wants and for how long, then the
-// question and its answers. The tmux target is the title's tooltip and sits in Details. A plan
-// shows whole, its buttons above it, so a long plan never hides how to approve it.
-function sessionCard(a) {
-  const q = a.question, k = dialog(q);
+// question and its answers. `k` is its row's kind. The tmux target is the title's tooltip and sits
+// in Details. A plan shows whole, its buttons above it, so a long plan never hides how to approve
+// it.
+function sessionCard(a, k) {
+  const q = a.question;
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
   if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
@@ -56,7 +53,7 @@ function sessionCard(a) {
   const body = `<div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>`;
   const reply = `<input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>`;
   const p = a.phases;
-  const band = needBand(k, [esc(a.project), a.waiting_since ? ago(a.waiting_since) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
+  const band = needBand(k, [esc(a.project), a.waiting_since ? waited(a.waiting_since) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
   const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary || a.plan || a.short || a.target)}</div>`;
   const more = cfold(`ses:${a.target}`, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
     ["plan", a.plan], ["next phase", p && p.next]]), askst.open);
@@ -135,7 +132,7 @@ function askCard(a, held = "") {
   // What follows the question: its context, the judge's view, then the answers.
   const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
   const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
-  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? ago(a.created) : "", held]);
+  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? waited(a.created) : "", held]);
   const body = a.title ? a.body : "";
   const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
   const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],

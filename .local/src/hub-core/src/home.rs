@@ -64,10 +64,81 @@ pub enum Kind {
     Red,
 }
 
+/// What a row asks of the human, the one naming both surfaces filter and draw it by: the
+/// serialized slug is what `kind:` matches and the label is its chip and KIND cell. A session
+/// takes its open dialog's, read by `boards::state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeedKind {
+    Plan,
+    Ask,
+    Perm,
+    Turn,
+    Blocked,
+    Todo,
+    Red,
+    Stopped,
+}
+
+impl NeedKind {
+    /// In chip order.
+    pub const ALL: [NeedKind; 8] = [
+        NeedKind::Plan,
+        NeedKind::Ask,
+        NeedKind::Perm,
+        NeedKind::Turn,
+        NeedKind::Blocked,
+        NeedKind::Todo,
+        NeedKind::Red,
+        NeedKind::Stopped,
+    ];
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            NeedKind::Plan => "plan",
+            NeedKind::Ask => "ask",
+            NeedKind::Perm => "perm",
+            NeedKind::Turn => "turn",
+            NeedKind::Blocked => "blocked",
+            NeedKind::Todo => "todo",
+            NeedKind::Red => "red",
+            NeedKind::Stopped => "stopped",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NeedKind::Plan => "Plan to approve",
+            NeedKind::Ask => "Question",
+            NeedKind::Perm => "Permission",
+            NeedKind::Turn => "Your turn",
+            NeedKind::Blocked => "Blocked",
+            NeedKind::Todo => "To do",
+            NeedKind::Red => "Failing",
+            NeedKind::Stopped => "Stopped",
+        }
+    }
+
+    /// A session row's, from its open dialog (`transcript::Question::kind`); a session with
+    /// no dialog, or only its last message, waits for its turn.
+    fn of_dialog(dialog: &str) -> NeedKind {
+        match dialog {
+            "choice" => NeedKind::Ask,
+            "tool" => NeedKind::Perm,
+            "plan" => NeedKind::Plan,
+            _ => NeedKind::Turn,
+        }
+    }
+}
+
 /// One row of NEEDS YOU.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Need {
     pub kind: Kind,
+    /// What it asks of the human.
+    pub need: NeedKind,
+    /// Its place in `needs`' order, from 1, whatever a view does to the rows.
+    pub rank: usize,
     pub project: String,
     pub text: String,
     /// What the row acts on: the ask id, the session's tmux target, the queue slug, the sheet
@@ -86,6 +157,75 @@ pub struct Need {
     /// a condition, not a wait, and has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<Score>,
+}
+
+impl Need {
+    /// Why it sits where it does: what it holds, or a sheet row's `#priority`.
+    pub fn holds(&self) -> String {
+        match &self.score {
+            Some(s) if !s.holds.is_empty() => s.holds.clone(),
+            Some(Score {
+                priority: Some(p), ..
+            }) => format!("#{p}"),
+            _ => String::new(),
+        }
+    }
+}
+
+impl crate::table::Row for Need {
+    const COLUMNS: &'static [&'static str] =
+        &["rank", "kind", "project", "waited", "holds", "what"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        "Plan to approve",
+        "Question",
+        "Permission",
+        "Your turn",
+        "Blocked",
+        "To do",
+        "Failing",
+        "Stopped",
+    ];
+    const FACETS: &'static [&'static str] = &["project"];
+    const HIDE_EMPTY: bool = true;
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: &str| {
+            if s.is_empty() {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
+        };
+        match col {
+            "rank" => Val::Num(self.rank as f64),
+            "kind" => text(self.need.slug()),
+            "project" => text(&self.project),
+            // Earlier is bigger, so a header's first click puts the longest wait on top.
+            "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
+            "holds" => text(&self.holds()),
+            "what" => text(&self.text),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        self.need.label() == s
+    }
+
+    /// A bare word searches what the row says, its kind as drawn and the id it acts on.
+    fn text(&self) -> String {
+        [
+            self.need.label(),
+            &self.project,
+            &self.holds(),
+            &self.text,
+            &self.id,
+        ]
+        .join("\n")
+        .to_lowercase()
+    }
 }
 
 /// What a row of NEEDS YOU counted, so it says why it sits where it does (dashboards rule 6).
@@ -373,6 +513,8 @@ pub fn needs(
     for st in state["stopped"].as_array().into_iter().flatten() {
         out.push(Need {
             kind: Kind::Stopped,
+            need: NeedKind::Stopped,
+            rank: 0,
             project: String::new(),
             text: short(str_of(st, "line")),
             id: format!("stopped:{}", str_of(st, "runner")),
@@ -407,6 +549,8 @@ pub fn needs(
         work(&mut worked, item_of(session));
         out.push(Need {
             kind: Kind::Ask,
+            need: NeedKind::Ask,
+            rank: 0,
             project: str_of(a, "project").into(),
             text: short(str_of(a, "question")),
             id: str_of(a, "id").into(),
@@ -434,6 +578,8 @@ pub fn needs(
         let since = now.zip(s["idle_min"].as_i64()).map(|(g, m)| g - m * 60);
         out.push(Need {
             kind: Kind::Session,
+            need: NeedKind::of_dialog(str_of(s, "dialog")),
+            rank: 0,
             project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
             text: short(&item.map_or_else(|| str_of(s, "reason").to_string(), |i| i.title())),
             id: target.into(),
@@ -462,6 +608,8 @@ pub fn needs(
         let since = waited.or(i.started.as_deref()).and_then(ts);
         out.push(Need {
             kind: Kind::Queue,
+            need: NeedKind::Blocked,
+            rank: 0,
             project: i.project.clone(),
             text: short(&i.title()),
             id: i.slug.clone(),
@@ -491,6 +639,8 @@ pub fn needs(
         score.priority = Some(r.priority.clone());
         out.push(Need {
             kind: Kind::Sheet,
+            need: NeedKind::Todo,
+            rank: 0,
             project,
             text: short(&r.text),
             id: r.id.clone().unwrap_or_else(|| short(&r.text)),
@@ -503,6 +653,8 @@ pub fn needs(
     for m in state["main"].as_array().into_iter().flatten() {
         out.push(Need {
             kind: Kind::Nightly,
+            need: NeedKind::Red,
+            rank: 0,
             project: str_of(m, "repo").into(),
             text: short(str_of(m, "reason")),
             id: str_of(m, "repo").into(),
@@ -524,6 +676,8 @@ pub fn needs(
         for r in red {
             out.push(Need {
                 kind: Kind::Red,
+                need: NeedKind::Red,
+                rank: 0,
                 project: String::new(),
                 text: r.into(),
                 id: r.into(),
@@ -545,6 +699,9 @@ pub fn needs(
                 .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
         )
     });
+    for (i, n) in out.iter_mut().enumerate() {
+        n.rank = i + 1;
+    }
     out
 }
 
@@ -981,6 +1138,83 @@ mod tests {
         let h = build(&state(), None, None, Some(&i));
         assert!(h.health.is_empty());
         assert_eq!(h.errors, ["Prometheus: timeout"]);
+    }
+
+    #[test]
+    fn a_rows_rank_and_kind_are_counted_here_and_the_chips_are_the_kinds() {
+        use crate::table::Row;
+        let labels = NeedKind::ALL.map(NeedKind::label);
+        assert_eq!(Need::STATES[1..], labels);
+        let q = Queue {
+            items: vec![item("lone", State::Waiting, None)],
+            ..Default::default()
+        };
+        let mut s = state();
+        s["sessions"][1]["dialog"] = "tool".into();
+        s["stopped"] = json!([{"runner": "d", "line": "held", "since": NOW - 60}]);
+        let rows = needs(&s, Some(&q), None, None);
+        let got: Vec<(usize, NeedKind)> = rows.iter().map(|n| (n.rank, n.need)).collect();
+        assert_eq!(
+            got,
+            [
+                (1, NeedKind::Stopped),
+                (2, NeedKind::Ask),
+                (3, NeedKind::Perm),
+                (4, NeedKind::Blocked),
+                (5, NeedKind::Red),
+            ]
+        );
+        for (dialog, need) in [
+            ("choice", NeedKind::Ask),
+            ("plan", NeedKind::Plan),
+            ("text", NeedKind::Turn),
+            ("", NeedKind::Turn),
+        ] {
+            assert_eq!(NeedKind::of_dialog(dialog), need);
+        }
+    }
+
+    #[test]
+    fn a_view_of_needs_filters_by_kind_and_project_and_sorts_by_the_wait() {
+        use crate::table::View;
+        let rows = needs(&state(), None, None, None);
+        let ids =
+            |v: View| -> Vec<String> { v.apply(&rows).iter().map(|n| n.id.clone()).collect() };
+        let q = |q: &str| View::new::<Need>(q, "", "", "");
+        assert_eq!(ids(q("kind:ask")), ["a1"]);
+        assert_eq!(ids(q("kind:turn project:dotfiles")), ["hub/dotfiles:2"]);
+        assert_eq!(ids(q("-kind:red -kind:turn")), ["a1"]);
+        assert_eq!(ids(q("failing")), ["repo"], "a bare word reads the label");
+        assert_eq!(ids(q("a1")), ["a1"], "and the id the row acts on");
+        let chip = View::new::<Need>("", "your turn", "", "");
+        assert_eq!(ids(chip), ["hub/dotfiles:2"]);
+        // The first click: longest wait on top, a condition with no start time last.
+        let longest = View::new::<Need>("", "", "waited", "");
+        assert_eq!(ids(longest), ["a1", "hub/dotfiles:2", "repo"]);
+    }
+
+    #[test]
+    fn only_the_chips_with_rows_or_in_force_are_offered() {
+        use crate::table::View;
+        let rows = needs(&state(), None, None, None);
+        let names = |v: &View| -> Vec<&str> { v.states(&rows).iter().map(|c| c.name).collect() };
+        let v = View::default();
+        assert_eq!(names(&v), ["all", "Question", "Your turn", "Failing"]);
+        let v = View::new::<Need>("kind:ask", "Blocked", "", "");
+        assert_eq!(names(&v), ["all", "Question", "Blocked"]);
+    }
+
+    #[test]
+    fn holds_is_what_the_row_holds_or_a_sheet_rows_priority() {
+        let mut n = needs(&state(), None, None, None).remove(0);
+        n.score = Some(Score::new(true, true, 2, 0, 5));
+        assert_eq!(n.holds(), "session, 2 phases");
+        let mut s = Score::new(true, false, 0, 0, 5);
+        s.priority = Some("high".into());
+        n.score = Some(s);
+        assert_eq!(n.holds(), "#high");
+        n.score = None;
+        assert_eq!(n.holds(), "");
     }
 
     #[test]
