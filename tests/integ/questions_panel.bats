@@ -90,6 +90,75 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   assert_output ''
 }
 
+# fleet_doc <session json>...: the fleet state document fleet-sessions writes, those sessions in it.
+fleet_doc() {
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  local IFS=,
+  printf '{"sessions":[%s]}\n' "$*" >"$XDG_STATE_HOME/fleet/state.json"
+}
+# session <target> <bucket> <reason> <idle min> <doing> <topic>: one session object.
+session() {
+  printf '{"target":"%s","bucket":"%s","reason":"%s","idle_min":%s,"doing":"%s","topic":"%s","said":"the last thing it said","cwd":"/nowhere/demo"}' "$@"
+}
+
+@test "a session waiting on a prompt in its terminal is a row after the questions, so the count matches the chip's" {
+  local id
+  id="$(ask demo agent-1 'a=the first|b=the second' 'filed question?')"
+  fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')" \
+    "$(session hub/demo:2 NEEDS 'waiting on a prompt or permission' 90 ExitPlanMode 'Stop issues')" \
+    "$(session lab/demo-agent-5:1 NEEDS '1 pending ask(s)' 5 Bash 'Has an ask')" \
+    "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
+  run rows
+  assert_success
+  # The ask first, then the prompts oldest first; an ask's NEEDS and a WORKING session add nothing.
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$id @hub/demo:2 @lab/demo-agent-4:1 "
+  assert_line --index 1 --partial 'demo:2'
+  assert_line --index 1 --partial 'plan waiting for approval in its terminal~'
+  assert_line --index 1 --partial 'Stop issues'
+  assert_line --index 2 --partial 'demo:4'
+  assert_line --index 2 --partial 'question waiting in its terminal'
+  # The header names both, and each alone.
+  . "$Q"
+  assert_equal "$(waiting $("$Q" rows | rows_count))" '1 question . 2 prompts waiting'
+  assert_equal "$(waiting 0 1)" '1 prompt waiting'
+  assert_equal "$(waiting 3 0)" '3 questions waiting'
+  assert_equal "$(waiting 0 0)" 'no questions waiting'
+}
+
+@test "with no state document, or no question at all, a prompt row never appears" {
+  run rows
+  assert_output ''
+  fleet_doc "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
+  run rows
+  assert_success
+  assert_output ''
+}
+
+@test "a prompt row is answered in its session: g goes there, the answer keys say so and arm nothing" {
+  run "$Q" key g @lab/demo-agent-4:1
+  assert_output 'execute-silent(agent-panel jump lab/demo-agent-4:1)+abort'
+  local k
+  for k in 1 t d; do
+    run "$Q" key "$k" @lab/demo-agent-4:1
+    assert_output 'change-footer~answer this one in its session . g goes there~'
+  done
+  run "$Q" key enter @lab/demo-agent-4:1
+  assert_output --partial 'press a number, t or d first'
+}
+
+@test "a prompt row's card is the session from the state document and the bottom of its pane" {
+  fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')"
+  printf 'earlier output\n\nWhich check forms should this build?\n1. KPI key only\n\n\n' >"$NOTES_FIXTURE/tmux.capture.demo-agent-4_1"
+  run "$Q" card @lab/demo-agent-4:1
+  assert_success
+  assert_line --index 0 'lab/demo-agent-4:1  waiting on a prompt or permission'
+  assert_line 'topic  Trading plan'
+  assert_line 'doing  AskUserQuestion'
+  assert_line 'Which check forms should this build?'
+  # The pane's trailing blank lines are not the card's last lines.
+  assert_equal "${lines[-1]}" '1. KPI key only'
+}
+
 @test "a number only arms its option; enter sends exactly that one" {
   local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   run "$Q" key 2 "$id"
@@ -170,7 +239,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   assert_output --regexp '^show-input\+clear-query\+'
   run "$Q" key enter "$a" 'one'
   assert_output --partial 'hide-input'
-  assert_output --partial 'change-header~1 waiting~'
+  assert_output --partial 'change-header~1 question waiting~'
   # A t that beats the reload lands on the row just answered: it refreshes, types nothing.
   run "$Q" key t "$a"
   assert_output --partial 'reload('
@@ -182,7 +251,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   # esc out of typing puts the count back and closes nothing.
   run "$Q" key esc "$b"
   assert_output --partial 'hide-input+change-prompt~~'
-  assert_output --partial 'change-header~1 waiting~'
+  assert_output --partial 'change-header~1 question waiting~'
   refute_output --partial 'abort'
   run grep -c '^answer: one$' "$(ask_file "$a")"
   assert_output 1

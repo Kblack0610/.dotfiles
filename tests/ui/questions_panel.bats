@@ -42,7 +42,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   echo "# first paint with the card: $((($(date +%s%N) - t0) / 1000000)) ms" >&3
-  screen_has '3 waiting'
+  screen_has '3 questions waiting'
   screen_has '1-9 pick . enter send'
   side_by_side
   keep_screen side_80x24
@@ -159,7 +159,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen armed_80x24
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
   screen_has 'sent "stacked" to'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
@@ -172,7 +172,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'screen_has "send 1"'
   tmux_keys Escape
   wait_until 'screen_has "1-9 pick . enter send"'
-  screen_has '3 waiting'
+  screen_has '3 questions waiting'
   [ "$(status_of "$OLD")" = pending ]
 }
 
@@ -185,7 +185,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen typing_80x24
   tmux_type 'both, stacked first'
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting"'
+  wait_until 'screen_has "2 questions waiting"'
   grep -qx 'answer: both, stacked first' "$(ask_file "$OLD")"
 }
 
@@ -196,20 +196,20 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until "screen_has 'answering alpha:1'"
   tmux_type 'stacked'
   tmux_keys Enter
-  wait_until 'screen_has "2 waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
   tmux_keys t
   wait_until "screen_has 'answering beta:2:'"
   screen_matches '^│ answer> +│'
   screen_lacks 'stacked'
   tmux_type 'keep'
   tmux_keys Enter
-  wait_until 'screen_has "1 waiting" && screen_lacks "Keep the merge queue?"'
+  wait_until 'screen_has "1 question waiting" && screen_lacks "Keep the merge queue?"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
   # esc from typing puts the count back in the header.
   tmux_keys t
   wait_until "screen_has 'answering gamma:3'"
   tmux_keys Escape
-  wait_until 'screen_has "1 waiting" && screen_lacks "answering"'
+  wait_until 'screen_has "1 question waiting" && screen_lacks "answering"'
 }
 
 @test "g goes to the asking session and closes the panel" {
