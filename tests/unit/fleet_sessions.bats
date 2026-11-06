@@ -847,6 +847,45 @@ clean_fixture() {
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
+# research_item <state> <type> -- a queue item of session sid-9 on lab:s1 that recorded a doc and an ask.
+research_item() {
+  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
+  mkdir -p "$d"
+  printf 'slug: research-engine\nproject: apociseum\nmode: oneshot\npriority: high\ntype: %s\narea: game\nfrom: board:apociseum:ar-9\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: sid-9\nreport: %s\nask: Rq1\nfinished: %s\n---\n%s(game): which engine\n' \
+    "$2" "$SANDBOX/doc.md" "$(date -u +%FT%TZ)" "$2" > "$d/20261103-100000-research-engine.md"
+}
+
+@test "end to end: a doc+ask kind whose doc exists and ask is filed is DONE; its ask is handed over, not open" {
+  clean_fixture
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json" ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum"
+  printf 'id: Rq1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq1.md"
+  touch "$SANDBOX/doc.md"
+  research_item done research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item research-engine handed off its doc doc.md and ask Rq1' ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  # still running here: the same hand-off
+  rm -r "$HOME/.agent/queue/done"; research_item running research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # another open question of its own still waits on the human
+  printf 'id: Rq2\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  rm "$ASK_ROOT/apociseum/Rq2.md"
+  # no doc on disk: its ask is an open question (NEEDS), as at HEAD
+  rm "$SANDBOX/doc.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  # a kind whose exit is a PR: its ask is an open question too
+  touch "$SANDBOX/doc.md"; rm -r "$HOME/.agent/queue/running"; research_item running fix
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+}
+
 @test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
