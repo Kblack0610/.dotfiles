@@ -1079,6 +1079,7 @@ LOCATE_WINDOW = 8
 LOCATE_HEADS = {"grep", "rg", "ugrep", "ag"}
 SED_RANGE = re.compile(r"^(\d+)(?:,(\d+))?p$")
 REDIRECT = re.compile(r"^\d*[<>]")  # 2>/dev/null, 2>&1
+REDIRECT_OP = re.compile(r"\d*[<>]+&?")  # a bare 2> or >>, whose target is the next word
 VOLATILE = {"output", "data"}
 HOME = os.path.expanduser("~")
 
@@ -1116,8 +1117,11 @@ def read_spans(name, inp, cwd):
                 or any(x.startswith((">", "<<", "-i")) for x in w[1:]):
             continue
         head = os.path.basename(w[0])
-        paths = [x for x in w[1:] if not x.startswith("-") and ("." in x or "/" in x)
-                 and not SED_RANGE.match(x) and not REDIRECT.match(x)]
+        args = [x for i, x in enumerate(w[1:]) if not REDIRECT.match(x) and not REDIRECT_OP.fullmatch(w[i])]
+        if head == "sed" and not any(x in ("-e", "-f") or x.startswith("--expr") for x in args):
+            args = [x for x in args if x.startswith("-")] + [x for x in args if not x.startswith("-")][1:]
+        paths = [x for x in args if not x.startswith("-") and ("." in x or "/" in x)
+                 and not SED_RANGE.match(x) and not x.startswith(("/dev/", "/proc/"))]
         if not paths:
             continue
         lo, hi = 1, None
