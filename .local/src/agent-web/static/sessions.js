@@ -102,17 +102,8 @@ function renderOverview() {
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading the sessions."}</div>`;
     return;
   }
-  // A refresh must not take the search box from under the human, so everything around it repaints and it stays.
-  if (document.activeElement?.id === "sessions-q") {
-    paint($("sessions-head"), sessionsHead());
-    paint($("sessions-facets"), tblFacets(d.table));
-    paint($("sessions-chips"), tblChips(d.table));
-    paint($("sessions-body"), sessionsBody(d));
-    paint($("sessions-folds"), overviewFolds(), wst.open);
-    return;
-  }
-  paint(el, `<div id="sessions-head">${sessionsHead()}</div>${tblBar("sessions", d.table, "search, or project:dotfiles pr:open item:none")}` +
-    `<div id="sessions-body">${sessionsBody(d)}</div><div id="sessions-folds">${overviewFolds()}</div>`, wst.open);
+  tblPaint(el, "sessions", d.table, "search, or project:dotfiles pr:open item:none",
+    { head: sessionsHead(), body: sessionsBody(d), folds: overviewFolds() }, wst.open);
 }
 
 // The view changed: the URL follows it and the server applies it.
@@ -143,9 +134,8 @@ function sessionClick(r) {
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;
-  const patch = tblPatch(e), d = e.target.dataset || {};
-  if (patch) sessionsView(patch);
-  else if (d.start) { sst.confirm = d.start; renderOverview(); }
+  const d = e.target.dataset || {};
+  if (d.start) { sst.confirm = d.start; renderOverview(); }
   else if (d.keep !== undefined) { sst.confirm = null; renderOverview(); }
   else if (d.go) startTimer(d.go);
   else if (d.unlinked !== undefined) sessionsView({ q: "item:none", s: "" });
@@ -156,12 +146,7 @@ $("scroll").addEventListener("click", (e) => {
     if (r) sessionClick(r);
   }
 });
-for (const kind of ["input", "change"]) {
-  $("scroll").addEventListener(kind, (e) => {
-    const patch = !st.sel && tblPatch(e);
-    if (patch) sessionsView(patch);
-  });
-}
+tblBind($("scroll"), (patch) => { if (!st.sel) sessionsView(patch); });
 
 // fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);

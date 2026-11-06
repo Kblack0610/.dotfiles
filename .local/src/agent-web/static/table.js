@@ -42,16 +42,16 @@ function tblBar(id, t, hint) {
 // Draw a table view. `parts` is its regions' html in order, each in an `<id>-<part>` element:
 // `head` above the bar, the rest below it. A refresh must not take the search box or an open
 // dropdown from under the human, so while one has focus everything around it repaints and it stays.
-function tblPaint(el, id, t, hint, parts) {
+function tblPaint(el, id, t, hint, parts, open) {
   const f = document.activeElement, region = ([k, html]) => `<div id="${id}-${k}">${html}</div>`;
   if (f && el.contains(f) && (f.id === `${id}-q` || f.dataset.tq !== undefined)) {
     if (f.id === `${id}-q`) paint($(`${id}-facets`), tblFacets(t));
     paint($(`${id}-chips`), tblChips(t));
-    for (const [k, html] of Object.entries(parts)) paint($(`${id}-${k}`), html);
+    for (const [k, html] of Object.entries(parts)) paint($(`${id}-${k}`), html, open);
     return;
   }
   const { head, ...rest } = parts;
-  paint(el, region(["head", head]) + tblBar(id, t, hint) + Object.entries(rest).map(region).join(""));
+  paint(el, region(["head", head]) + tblBar(id, t, hint) + Object.entries(rest).map(region).join(""), open);
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
