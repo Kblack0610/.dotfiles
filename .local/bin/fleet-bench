@@ -33,7 +33,9 @@
 #                                and per lesson that recurred in BENCH_GUARD_RECUR sessions (a guard row)
 #   fleet-bench triage [--dry-run]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
-#                                user unit and Sentinel watch tripped past TRIAGE_WATCH_AFTER
+#                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER and runner
+#                                stderr error signature recurring in BENCH_GUARD_RECUR runs; a row a
+#                                TRIAGE_CAUSES line explains is queued as a night fix
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -108,6 +110,10 @@ set -uo pipefail
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
+: "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
+: "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
+: "${TRIAGE_CAUSES:=$HOME/.config/agentctl/triage-causes}"   # triage: <ERE> TAB <fix> lines; a row they match is queued
+: "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
 : "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
@@ -1711,16 +1717,18 @@ cmd_retro() {
     report_outcome NOOP "$(IFS=';'; echo "${why[*]}")"
     return 0
   fi
-  board_upsert "$rows"
+  board_upsert "$rows" || return 1
+  upsert_report "$rows"
 }
 
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
 # it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
-# #size/s. Reports the outcome: WORKED with the counts, NOOP when every row was current.
+# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
   local board p text pri have rc added=0 edited=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     text+=" #size/s"
@@ -1739,11 +1747,17 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  say "$(grep -c . <<<"$1") rows due: $added added, $edited refreshed"
-  if [ $((added + edited)) -eq 0 ]; then
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
+}
+
+# upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
+upsert_report() {
+  local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed${2:+, $2}"
+  say "$(grep -c . <<<"$1") rows due: $did"
+  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
-    report_outcome WORKED "$added added, $edited refreshed"
+    report_outcome WORKED "$did"
   fi
 }
 
@@ -1793,23 +1807,101 @@ triage_rows() {
   done
 }
 
+# log_norm: a stderr line with what varies between runs taken out, so one error is one signature:
+# a leading timestamp, quoted strings, paths, hex ids and numbers become placeholders.
+log_norm() {
+  sed -E 's/^\[[^]]*\][[:space:]]*//; s/"[^"]*"/"Q"/g; s/'"'"'[^'"'"']*'"'"'/'"'"'Q'"'"'/g
+          s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
+}
+
+# triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
+# runs of the last TRIAGE_LOG_HOURS. Each run's bytes come from its runs.jsonl err range; a range
+# past the end of the log was rotated away and is skipped. #high at twice the recurrence.
+triage_log_rows() {
+  local sd t ledger name a b f sig
+  proof_lib && sd=$(proof_state_dir)
+  [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 0
+  t=$(now)
+  ledger=$(jq -r --argjson s $((t - TRIAGE_LOG_HOURS * 3600)) \
+    'select((.finished // 0) >= $s and (.err[1] // 0) > (.err[0] // 0)) | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null)
+  while IFS=$'\t' read -r name a b; do
+    [ -n "$name" ] || continue
+    f="$sd/$name.stderr.log"
+    [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
+    tail -c +$((a + 1)) "$f" | head -c $((b - a)) | grep -aiE -- "$TRIAGE_ERR_RE" | tr -d '\t\r' |
+      while IFS= read -r line; do printf '%s\t%s\t%s\t%s\n' "$name" "$a" "$(log_norm <<<"$line")" "$line"; done
+  done <<<"$ledger" |
+  awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
+    { k = $1 FS $3; if (!((k, $2) in seen)) { seen[k, $2] = 1; n[k]++ } if (!(k in s)) s[k] = $4 }
+    END { for (k in n) if (n[k] >= min) print k FS n[k] FS s[k] }' |
+  while IFS=$'\t' read -r name norm n sample; do
+    sig=$(printf '%s\t%s' "$name" "$norm" | sha1sum | cut -c1-8)
+    # a # would read as a tag on the board
+    sample=$(sed -E 's/^\[[^]]*\][[:space:]]*//; s/#/no./g' <<<"$sample" | cut -c1-80)
+    printf 'fix(logs): %s error %s:\tfix(logs): %s error %s: %s\t%s\n' "$name" "$sig" "$name" "$sig" "$sample" \
+      "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
+  done | sort
+}
+
+# triage_causes <rows> -> the rows, each one a TRIAGE_CAUSES line matches carrying "; known cause:
+# <fix>" and a fourth field, 1. The table is content: <ERE> TAB <fix>, # comments.
+triage_causes() {
+  local key text pri re fix hit
+  while IFS=$'\t' read -r key text pri; do
+    hit=''
+    if [ -r "$TRIAGE_CAUSES" ]; then
+      while IFS=$'\t' read -r re fix; do
+        [[ -n "$re" && "$re" != \#* && -n "$fix" ]] || continue
+        grep -qE -- "$re" <<<"$text" && { hit=$fix; break; }
+      done < "$TRIAGE_CAUSES"
+    fi
+    if [ -n "$hit" ]; then
+      printf '%s\t%s; known cause: %s\t%s\t1\n' "$key" "$text" "${hit//#/no.}" "$pri"
+    else
+      printf '%s\t%s\t%s\t0\n' "$key" "$text" "$pri"
+    fi
+  done <<<"$1"
+}
+
+# triage_promote <rows with the cause flag> -> how many it queued: each known-cause row still open
+# and not yet started is promoted as it stands on the board, tagged night (a fix at tier 3 stops at
+# a PR). A started row is already someone's.
+triage_promote() {
+  local board key raw n=0
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
+  while IFS=$'\t' read -r key _ _ known; do
+    [ "$known" = 1 ] || continue
+    raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
+    [[ "$raw" == '- [ ]'* ]] || continue
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags night --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+  done <<<"$1"
+  echo "$n"
+}
+
 # triage [--dry-run] files one agent-board row per runtime fault (triage_rows) through
 # board_upsert, so a fault that persists is one row refreshed in place, never a row a day.
 # --dry-run prints the rows and writes nothing.
 cmd_triage() {
-  local rows
+  local rows dry=0 q
   case "${1:-}" in
     "") ;;
-    --dry-run) triage_rows | cut -f2,3 | tr '\t' ' '; return 0 ;;
+    --dry-run) dry=1 ;;
     *) say "usage: fleet-bench triage [--dry-run]"; return 2 ;;
   esac
-  rows=$(triage_rows | grep .)
-  if [ -z "$rows" ]; then
-    say "no runner, unit or watch at fault"
-    report_outcome NOOP "no runner, unit or watch at fault"
+  rows=$({ triage_rows; triage_log_rows; } | grep .)
+  [ -n "$rows" ] && rows=$(triage_causes "$rows")
+  if [ "$dry" = 1 ]; then
+    [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == 1 ? " (queued as a night fix)" : "") }' <<<"$rows"
     return 0
   fi
-  board_upsert "$rows"
+  if [ -z "$rows" ]; then
+    say "no runner, unit, watch or log error at fault"
+    report_outcome NOOP "no runner, unit, watch or log error at fault"
+    return 0
+  fi
+  board_upsert "$(cut -f1-3 <<<"$rows")" || return 1
+  q=$(triage_promote "$rows")
+  upsert_report "$rows" "$([ "$q" -gt 0 ] && echo "$q queued as night fixes")"
 }
 
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
