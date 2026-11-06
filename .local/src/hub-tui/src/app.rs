@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hub_core::boards::{self, DayRow, Watch};
+use hub_core::fleet::ASK_FILTERS;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
@@ -304,6 +305,8 @@ pub struct App {
     pub hist_sel: usize,
     /// Log's open folds, by `FOLDS` name.
     pub log_open: Vec<&'static str>,
+    /// Which of `ASK_FILTERS` the answer judge's verdict list shows.
+    pub ask_filter: usize,
     /// Log's Actions section; None until it is first opened.
     pub actions: Option<hub_core::actions::Gathered>,
     /// Where the page's sections start, from the last draw (n/N jump between them on Log and
@@ -379,6 +382,7 @@ impl App {
             log_days: false,
             hist_sel: 0,
             log_open: vec![],
+            ask_filter: 0,
             actions: None,
             sections: vec![],
             seek: None,
@@ -1255,6 +1259,9 @@ impl App {
                     self.seek = Some(name);
                 }
             }
+            KeyCode::Char('V') if self.log_open.contains(&"verdicts") => {
+                self.ask_filter = (self.ask_filter + 1) % ASK_FILTERS.len();
+            }
             _ => return self.today_key(k),
         }
         true
@@ -1664,7 +1671,7 @@ impl App {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  a c s v f w fold  n/N section  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit",
+                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
@@ -1894,7 +1901,7 @@ impl App {
                 "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
                 "verdicts" => match &self.fleet {
                     None => reading("the fleet"),
-                    Some(f) => fleettab::verdicts(f, self.p, now, w),
+                    Some(f) => fleettab::verdicts(f, ASK_FILTERS[self.ask_filter], self.p, now, w),
                 },
                 "forecast" => match &self.forecast {
                     None => reading("fleet-bench forecast"),
@@ -2353,6 +2360,24 @@ mod tests {
         let mut want = vec!["day", "history"];
         want.extend(FOLDS.iter().map(|f| f.0));
         assert_eq!(log.sections, want.as_slice());
+    }
+
+    #[test]
+    fn capital_v_steps_the_verdict_filter_only_while_the_fold_is_open() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.tab = Tab::Log;
+        let key =
+            |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        key(&mut a, 'V');
+        assert_eq!(a.ask_filter, 0);
+        a.log_open.push("verdicts");
+        key(&mut a, 'V');
+        assert_eq!(ASK_FILTERS[a.ask_filter], "answered");
+        for _ in 1..ASK_FILTERS.len() {
+            key(&mut a, 'V');
+        }
+        assert_eq!(a.ask_filter, 0);
     }
 
     #[test]

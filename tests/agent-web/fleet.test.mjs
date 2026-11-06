@@ -15,14 +15,16 @@ const el = () => new Proxy({}, {
 });
 let click = null;
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") click = f; } });
-const doc = { getElementById: (id) => (id === "fleet" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+let logClick = null;
+const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
+const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
@@ -37,7 +39,13 @@ const worker = (name, registry) => ({
     ...registry,
   },
 });
-const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d", disagreements: [] };
+const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d",
+  week: { live_pct: 25, coverage: 40, precision: 91 },
+  verdicts: [
+    { id: "a", project: "ucp", question: "land it?", type: "ship_deploy", rule: "ship_deploy", said: "answered", judge: "a", reason: "merged, not live", evidence: "merged", you: "kept", score: "right", at: 1793942659 },
+    { id: "b", project: "trader", question: "which login?", type: "human_fact", rule: "knowledge", said: "passed", judge: "", reason: "only you know", evidence: "your login", you: "pending", score: "pending", at: 1793942600 },
+    { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
+  ] };
 const data = {
   at: 1793942659, errors: [], accounts: [], cost_24h: 1, judge,
   tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [] },
@@ -81,6 +89,23 @@ test("an open judge shows its role, prompt, 24h calls with Langfuse links, and i
   assert.match(h, /<td>restates-rule<\/td><td class="n">9<\/td><td class="n">6<\/td><td class="n">100%<\/td><td class="n">-<\/td><td>yes<\/td>/);
   assert.match(h, /<td>taste<\/td>.*<td class="n">18%<\/td><td>no \(6\/30 to bar\)<\/td>/);
   open("ask-judge");
+});
+
+test("Log lists every answer verdict with why and what you did, and a filter narrows it", () => {
+  vm.runInContext("fst", ctx).data = data;
+  ctx.renderLogVerdicts();
+  assert.match(logBox.innerHTML, /7d: 25% answered, 40% would answer, 91% right/);
+  assert.match(logBox.innerHTML, /<b>knowledge<\/b> "your login" only you know/);
+  assert.match(logBox.innerHTML, /<td>ship_deploy<\/td>/);
+  assert.match(logBox.innerHTML, /class="cchip bad">b</);
+  const pick = (said) => logClick({ target: { closest: (sel) => (sel === "[data-said]" ? { dataset: { said } } : null) } });
+  pick("passed");
+  assert.match(logBox.innerHTML, /which login/);
+  assert.doesNotMatch(logBox.innerHTML, /land it/);
+  pick("wrong");
+  assert.match(logBox.innerHTML, /quarantine it/);
+  assert.doesNotMatch(logBox.innerHTML, /which login/);
+  pick("all");
 });
 
 test("a runner with no calls and no judge table shows only its registry lines", () => {

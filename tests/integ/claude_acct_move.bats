@@ -435,6 +435,8 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_output --partial "claude-acct: parked agent-1: $(PARKED_LEDGER agent-1); claude-acct unpark agent-1 resumes it"
   # a park is a fleet action like a hold: one low page, which is its record in agent-notify's log
   assert_called 'agent-notify -p low -t park: agent-1 parked on main (idle) (by '
+  # and a dispatch step on the chain record, so `notes log --item` shows the stop
+  assert_called 'notes ingest record --stage dispatch --action parked --from - --item  --why agent-1 --by claude-acct -- parked on main (idle)'
   [ ! -d "$CLAUDE_ACCT_PROC/101" ]
   [ ! -f "$FIX/started" ]
   run tmux_calls
@@ -525,6 +527,7 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_success
   assert_output 'claude-acct: unparked agent-1 on main (5h 5%, 7d 10%): claude 900, busy'
   assert_called 'agent-notify -p low -t park: agent-1 unparked on main (by '
+  assert_called 'notes ingest record --stage dispatch --action unparked --from - --item  --why agent-1 --by claude-acct -- unparked on main'
   run cat "$FIX/started"
   assert_output --partial "cd $(q "$HOME/wt") && env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume sid-1 This\ session\ was\ parked\ to\ save\ Claude\ usage"
   assert_output --partial 're-check\ it'

@@ -169,3 +169,99 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_output --partial 'SKIP  project-stage-check could not run for "shooter"'
   refute_output --partial 'declare a stage and meet it'
 }
+
+# -- systems mode: the Criteria rows of systems.md, met/total per system --
+
+write_systems_doc() {
+  export SYSTEMS_DOC="$HOME/systems.md"
+  cat > "$SYSTEMS_DOC" <<'DOC'
+# Systems
+
+## Systems
+
+| System | Applies | What it is |
+| --- | --- | --- |
+| docs | base | The docs |
+| netcode | game | Multiplayer |
+| payments | app | Purchases |
+
+## Criteria
+
+| System | Applies | Criterion | Check | Why |
+| --- | --- | --- | --- | --- |
+| docs | base | A README | `[ -f README.md ]` | first read |
+| docs | base | An architecture doc | `[ -f docs/architecture.md ]` | the shape |
+| netcode | game | A pipeline that exits early | `ls "$REPO" "$REPO/missing" 2>/dev/null \| grep -q .` | pipefail |
+| netcode | game | Plays under lag | human | real players |
+| netcode | app | An app-only row inside a game system | `false` | never runs |
+| payments | app | Receipts verified | `false` | never runs |
+DOC
+}
+
+@test "systems: rows run for base and the type, with met/total per system, and a FAIL exits 1" {
+  write_systems_doc
+  run "$CHECK" shooter --systems
+  assert_failure 1
+  assert_line --index 0 --regexp '^PASS +docs +A README$'
+  assert_line --index 1 --regexp '^FAIL +docs +An architecture doc$'
+  assert_line --index 2 --regexp '^PASS +netcode +A pipeline that exits early$'
+  assert_line --index 3 --regexp '^HUMAN +netcode +Plays under lag$'
+  assert_line --index 4 'systems: shooter: docs 1/2, netcode 1/2'
+  refute_output --partial 'app-only'
+  refute_output --partial 'payments'
+}
+
+@test "systems: a project missing docs/architecture.md fails the docs criterion, and adding it passes" {
+  write_systems_doc
+  run "$CHECK" shooter --system docs
+  assert_failure 1
+  assert_output --regexp 'FAIL +docs +An architecture doc'
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# arch\n' > "$REPO/Assets/Games/Shooter/docs/architecture.md"
+  run "$CHECK" shooter --system docs
+  assert_success
+  assert_line 'systems: shooter: docs 2/2'
+}
+
+@test "systems: --json gives met, total and each row per system; the alias is the same mode" {
+  write_systems_doc
+  run "$CHECK" shooter --systems --json
+  assert_failure 1
+  assert_equal "$(jq -c '[.project, .type, .met, .total]' <<<"$output")" '["shooter","game",2,4]'
+  assert_equal "$(jq -c '[.systems[] | [.id, .met, .total, .fail, .human, .todo]]' <<<"$output")" '[["docs",1,2,1,0,0],["netcode",1,2,0,1,0]]'
+  assert_equal "$(jq -r '.systems[0].criteria[1] | "\(.result) \(.criterion)"' <<<"$output")" 'FAIL An architecture doc'
+  ln -s "$CHECK" "$HOME/project-system-check"
+  run "$HOME/project-system-check" shooter --json
+  assert_equal "$(jq -c '[.met, .total]' <<<"$output")" '[2,4]'
+}
+
+@test "systems: an unknown system, one that does not apply, or a Criteria row naming no system exits 2" {
+  write_systems_doc
+  run "$CHECK" shooter --system nope
+  assert_failure 2
+  assert_output --partial 'unknown system "nope" (want: docs netcode payments)'
+  run "$CHECK" shooter --system payments
+  assert_failure 2
+  assert_output --partial 'system "payments" does not apply to a game project'
+  printf '| ghost | base | A row with no system | `true` | none |\n' >> "$SYSTEMS_DOC"
+  run "$CHECK" shooter --systems
+  assert_failure 2
+  assert_output --partial 'a Criteria row names unknown system "ghost"'
+}
+
+@test "a stage row can require a system by calling the checker, so the predicate lives in one doc" {
+  write_systems_doc
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` |
+EOF2
+  mkdir -p "$HOME/bin"; ln -s "$CHECK" "$HOME/bin/project-stage-check"
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter
+  assert_output --regexp 'FAIL +dev +The docs system meets its criteria'
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# arch\n' > "$REPO/Assets/Games/Shooter/docs/architecture.md"
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter
+  assert_output --regexp 'PASS +dev +The docs system meets its criteria'
+}

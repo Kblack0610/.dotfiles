@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use hub_core::fleet::{Dispatch, Eval, Fleet, Judge, Registry, Worker};
+use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, Worker, ASK_FILTERS};
 use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
@@ -90,13 +90,14 @@ pub fn page(
     out
 }
 
-/// Log's Judges' verdicts section: both judges' counts and their lists, each at most `FOLD_ROWS`.
-pub fn verdicts(f: &Fleet, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// Log's Judges' verdicts section: both judges' counts and their lists, each at most `FOLD_ROWS`;
+/// `filter` is one of `ASK_FILTERS`, for the answer judge's.
+pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![dispatch_head(&f.dispatch, p, w)];
     out.extend(dispatch_list(&f.dispatch, p, now, w));
     out.push(Line::raw(""));
     out.push(judge_head(&f.judge, p, w));
-    out.extend(judge_list(&f.judge, p, now, w));
+    out.extend(judge_list(&f.judge, filter, p, now, w));
     out
 }
 
@@ -513,46 +514,95 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
-fn judge_list(j: &Judge, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    if j.disagreements.is_empty() {
-        return vec![Line::styled("No disagreements.", p.dim())];
+/// The week's line, the filters, then what the judge said on each ask and why.
+fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
+    let filters = ASK_FILTERS
+        .map(|f| {
+            if f == filter {
+                format!("[{f}]")
+            } else {
+                f.to_string()
+            }
+        })
+        .join(" ");
+    let mut out = vec![
+        clip_line(
+            Line::styled(
+                format!(
+                    "  7d: {} answered, {} would answer, {} right",
+                    share(j.week.live_pct),
+                    share(j.week.coverage),
+                    share(j.week.precision)
+                ),
+                p.dim(),
+            ),
+            w,
+        ),
+        clip_line(Line::styled(format!("  V: {filters}"), p.dim()), w),
+    ];
+    let shown: Vec<&AskVerdict> = j.verdicts.iter().filter(|v| v.shown(filter)).collect();
+    if shown.is_empty() {
+        out.push(Line::styled("No verdicts here.", p.dim()));
+        return out;
     }
-    let mut out = vec![];
-    let rows = j
-        .disagreements
+    let rows = shown
         .iter()
         .take(FOLD_ROWS)
         .map(|x| {
+            let wrong = x.score == "wrong";
             vec![
-                x.answered_at.map_or("-".into(), |t| clock(t, now)).into(),
+                x.at.map_or("-".into(), |t| clock(t, now)).into(),
                 x.project.clone().into(),
-                cell(x.judge.clone(), p.warn()),
-                x.answer.clone().into(),
+                if x.kind.is_empty() { &x.rule } else { &x.kind }
+                    .clone()
+                    .into(),
+                x.said.clone().into(),
                 x.question.clone().into(),
+                why(x).into(),
+                if wrong {
+                    cell(x.you.clone(), p.warn())
+                } else {
+                    x.you.clone().into()
+                },
             ]
         })
         .collect();
     out.extend(
         Table {
-            header: vec!["ANSWERED", "PROJECT", "JUDGE", "YOU", "QUESTION"],
+            header: vec!["WHEN", "PROJECT", "TYPE", "SAID", "QUESTION", "WHY", "YOU"],
             rows,
-            keep: vec![0, 2, 3, 1],
-            flex: Some(4),
+            keep: vec![0, 3, 6, 2, 1, 4],
+            flex: Some(5),
             flexmin: 20,
-            cap: vec![(1, 20), (2, 24), (3, 24)],
+            cap: vec![(1, 20), (2, 20), (4, 40), (6, 16)],
             ..Default::default()
         }
         .fit(w, p.head()),
     );
-    out.extend(older(j.disagreements.len(), FOLD_ROWS, p));
+    out.extend(older(shown.len(), FOLD_ROWS, p));
     out
+}
+
+/// The rule behind the call, the quote that decided it, then the judge's reason.
+fn why(x: &AskVerdict) -> String {
+    let rule = if x.rule.is_empty() || x.rule == x.kind {
+        String::new()
+    } else {
+        format!("{}: ", x.rule)
+    };
+    if x.evidence.is_empty() {
+        format!("{rule}{}", x.reason)
+    } else {
+        format!("{rule}\"{}\" {}", x.evidence, x.reason)
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{Bar, Call, Calls, Disagreement, Outcome, Score, Slot, Tonight, Verdict};
+    use hub_core::fleet::{Bar, Call, Calls, JudgeWeek, Outcome, Score, Slot, Tonight, Verdict};
 
     pub const NOW: i64 = 1_793_661_428;
 
@@ -687,15 +737,39 @@ pub mod tests {
                 precision: Some(75.0),
                 kappa: Some(0.2),
                 prompt: "60c840b".into(),
-                disagreements: vec![Disagreement {
-                    id: "abc".into(),
-                    project: "dotfiles".into(),
-                    question: "land the fleet tab now?".into(),
-                    judge: "yes".into(),
-                    reason: "tests pass".into(),
-                    answer: "wait".into(),
-                    answered_at: Some(NOW - 60),
-                }],
+                week: JudgeWeek {
+                    live_pct: Some(25.0),
+                    coverage: Some(40.0),
+                    precision: Some(91.0),
+                },
+                verdicts: vec![
+                    AskVerdict {
+                        id: "abc".into(),
+                        project: "dotfiles".into(),
+                        question: "land the fleet tab now?".into(),
+                        kind: "ship_deploy".into(),
+                        rule: "ship_deploy".into(),
+                        said: "would answer".into(),
+                        judge: "yes".into(),
+                        reason: "tests pass".into(),
+                        evidence: "CI green".into(),
+                        you: "wait".into(),
+                        score: "wrong".into(),
+                        at: Some(NOW - 60),
+                    },
+                    AskVerdict {
+                        id: "def".into(),
+                        project: "trader".into(),
+                        question: "which login?".into(),
+                        rule: "knowledge".into(),
+                        said: "passed".into(),
+                        reason: "only you know it".into(),
+                        you: "pending".into(),
+                        score: "pending".into(),
+                        at: Some(NOW - 120),
+                        ..Default::default()
+                    },
+                ],
             },
         }
     }
@@ -705,7 +779,7 @@ pub mod tests {
         let p = Palette { no_color: true };
         page(f, p, NOW, w, false, false)
             .iter()
-            .chain(verdicts(f, p, NOW, w).iter())
+            .chain(verdicts(f, "all", p, NOW, w).iter())
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n")
@@ -741,11 +815,40 @@ pub mod tests {
             "no data",
             "No runners configured",
             "No verdicts yet.",
-            "No disagreements.",
+            "No verdicts here.",
             "agree 0  disagree 0",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }
+    }
+
+    #[test]
+    fn the_verdict_list_says_what_the_judge_said_and_why_under_each_filter() {
+        let p = Palette { no_color: true };
+        let list = |filter| {
+            verdicts(&fixture(), filter, p, NOW, 200)
+                .iter()
+                .map(plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let all = list("all");
+        for want in [
+            "7d: 25% answered, 40% would answer, 91% right",
+            "[all] answered would answer passed wrong",
+            "ship_deploy",
+            "\"CI green\" tests pass",
+            "knowledge: only you know it",
+        ] {
+            assert!(all.contains(want), "{want:?} missing from\n{all}");
+        }
+        let passed = list("passed");
+        assert!(
+            passed.contains("which login?") && !passed.contains("land the fleet tab"),
+            "{passed}"
+        );
+        assert!(list("wrong").contains("land the fleet tab"));
+        assert!(list("answered").contains("No verdicts here."));
     }
 
     #[test]

@@ -37,6 +37,7 @@ mod registry;
 mod sheet;
 mod show;
 mod status;
+mod steps;
 mod summarize;
 mod sweep;
 mod tags;
@@ -399,7 +400,11 @@ enum Cmd {
         /// Only events of this agent-queue item, like fix-menu
         #[arg(long)]
         item: Option<String>,
-        /// One JSON event per line
+        /// The whole record replayed into the chain's steps, inbox to done: per step what it
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
+        steps: bool,
+        /// One JSON event per line (one object per step with --steps)
         #[arg(long)]
         json: bool,
     },
@@ -701,7 +706,7 @@ enum IngestCmd {
     /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
     /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
-    /// agent-land's `merged`). An empty flag value is no value.
+    /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
@@ -713,6 +718,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
+        "parked", "unparked",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
@@ -1197,6 +1203,9 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Log {
+            steps: true, json, ..
+        } => steps::print(&prof, json)?,
+        Cmd::Log {
             day,
             days,
             project,
@@ -1205,6 +1214,7 @@ fn main() -> Result<()> {
             by,
             item,
             json,
+            ..
         } => {
             let filter = ingest::Filter {
                 project: project.map(|n| registry::canonical(&n)),
