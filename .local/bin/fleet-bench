@@ -23,9 +23,10 @@
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
-#   fleet-bench kpi [--json] [--at T | --trend DAYS]
+#   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions, against KPI_THRESHOLDS;
-#                                --at as of a past time, --trend one row a day of the 7d values
+#                                --at as of a past time, --trend one row a day of the 7d values,
+#                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
 #                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
 #   fleet-bench pipeline [--json]
@@ -1671,17 +1672,28 @@ report_line() {
   echo "- $l"
 }
 
+# kpi_past <json>: one line per KPI in it past its threshold, and exit 1 when any is: what each
+# --check prints.
+kpi_past() {
+  jq -re 'to_entries | map(select(.value.status == "past")
+    | "\(.key) \(.value["7d"]) (\(.value.bound) \(.value.threshold))") | if length == 0 then empty else .[] end' <<<"$1" && return 1
+  return 0
+}
+
 cmd_kpi() {
-  local json=0 at='' trend='' t
+  local json=0 at='' trend='' check='' re='' t
+  local usage="usage: fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
       --at) at="${2:?--at needs a time}"; shift ;;
       --trend) trend="${2:?--trend needs a day count}"; shift ;;
-      *) say "usage: fleet-bench kpi [--json] [--at T | --trend DAYS]"; return 2 ;;
+      --check) check=1; if [ $# -gt 1 ] && [[ "$2" != --* ]]; then re=$2; shift; fi ;;
+      *) say "$usage"; return 2 ;;
     esac
     shift
   done
+  [ -z "$check" ] || [ -z "$at$trend" ] || { say "$usage"; return 2; }
   t=$(now)
   [ -z "$at" ] || t=$(throughput_epoch "$at") || { say "kpi: cannot read the time $at"; return 2; }
   if [ -n "$trend" ]; then
@@ -1693,6 +1705,13 @@ cmd_kpi() {
     return 0
   fi
   if [ -n "$at" ]; then t=$(kpi_json "$t" "" 1); else t=$(kpi_json "$t" "$(ledger_counts)"); fi || return 1
+  if [ -n "$check" ]; then
+    # A scope that names no KPI is a typo, not a pass: a watch on it would never trip.
+    t=$(jq -c --arg re "$re" 'with_entries(select(.key | test($re)))' <<<"$t") || { say "kpi: --check takes an ERE"; return 2; }
+    [ "$t" != "{}" ] || { say "kpi: no KPI matches $re"; return 2; }
+    kpi_past "$t"
+    return
+  fi
   if [ "$json" = 1 ]; then jq -c . <<<"$t"; else kpi_table "$t"; fi
 }
 
@@ -1705,9 +1724,7 @@ cmd_chain() {
   json=$(kpi_json "$t" "$(chain_counts "$t")" | jq -c --arg k "$KPI_CHAIN" '($k | split(" ")) as $ks | with_entries(select(.key | IN($ks[])))') || return 1
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
-    --check) jq -re 'to_entries | map(select(.value.status == "past")
-        | "\(.key) \(.value["7d"]) (\(.value.bound) \(.value.threshold))") | if length == 0 then empty else .[] end' <<<"$json" && return 1
-      return 0 ;;
+    --check) kpi_past "$json" ;;
     *) kpi_table "$json" ;;
   esac
 }

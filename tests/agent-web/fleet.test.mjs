@@ -29,7 +29,7 @@ for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, running_since: null, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null,
+  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null,
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -148,6 +148,27 @@ test("Tonight lists the slots in hub-core's order, a call under its caller, and 
   click({ target: { closest: (sel) => (sel === "[data-tonight]" ? {} : null) } });
   assert.deepEqual(rows(), ["ask-judge", "dream", "sentinel"]);
   assert.doesNotMatch(box.innerHTML, /other timers/);
+  f.data = data;
+});
+
+test("the score cell ends each row in both orders, its title what it counted, and no score is a dash", () => {
+  const score = { value: 93.2, right: 41, n: 44, window: "7d", source: "triage-untouched", text: "93% untouched", title: "7d, 41 of 44 right, 3 pending, triage-untouched" };
+  const scored = {
+    ...data,
+    workers: [{ ...data.workers[0], score }, data.workers[1]],
+    tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [{ name: "ask-judge", at: null, under: null }, { name: "dream", at: 1793942659 + 3600, under: null }] },
+  };
+  const f = vm.runInContext("fst", ctx);
+  f.data = scored;
+  for (const tonight of [false, true]) {
+    f.tonight = tonight;
+    ctx.renderFleet();
+    const h = box.innerHTML;
+    assert.match(h, /<th class="n">\$ 24h<\/th><th>score 7d<\/th><\/tr>/);
+    assert.match(h, /<td title="7d, 41 of 44 right, 3 pending, triage-untouched">93% untouched<\/td><\/tr>/, `tonight=${tonight}`);
+    assert.match(h, /data-key="dream">.*?<td class="muted">-<\/td><\/tr>/, `tonight=${tonight}`);
+  }
+  f.tonight = false;
   f.data = data;
 });
 

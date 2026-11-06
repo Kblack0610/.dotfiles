@@ -295,6 +295,8 @@ SH
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
   assert_equal "$(jq -c '.agents[0].total | [.scored, .tp, .fp, .precision]' <<<"$output")" '[30,0,30,0]'
+  # the score cell: the week at the bar
+  assert_equal "$(jq -c '.agents[0].score_7d' <<<"$output")" '{"window":"7d","right":0,"n":30,"pending":0,"value":0,"text":"0% untouched","title":"7d, 0 of 30 right, 0 pending, triage-untouched"}'
   run "$JUDGE_EVAL" inbox-triage
   assert_line --regexp '^  all +30 +0 +100% +30 +0% \[0-11\.4\]'
   run "$JUDGE_EVAL" kpi --json
@@ -303,6 +305,11 @@ SH
   sed -i '1,2d' "$INGEST"
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].score_7d | [.n, .value, .text, .title]' <<<"$output")" '[29,null,"n<30","7d, 0 of 29 right, 0 pending, triage-untouched; a percent at 30 rows"]'
+  # a lane with no counted outcome has no score word
+  run "$JUDGE_EVAL" ask-sweep --json
+  assert_equal "$(jq -c '.agents[0].score_7d | [.text, .title]' <<<"$output")" '["-","unrecorded: no counted outcome"]'
 }
 
 @test "inbox-plan: a planned row is right when it, or a row it split into, starts before anyone re-splits it" {
