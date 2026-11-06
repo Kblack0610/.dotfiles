@@ -143,6 +143,49 @@ so_transcript_metrics() {
   ' < "$1"
 }
 
+# so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
+# has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
+# `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
+# subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
+# `gh pr create|merge` call's own output printed it. No DB is no rows; a schema it cannot read is rc 1.
+so_opencode_rows() {
+  local db="$1" work="$2" tree dir
+  [ -e "$db" ] || return 0
+  tree="WITH RECURSIVE tree(root, id) AS (SELECT id, id FROM session_v2 WHERE parent_id IS NULL
+        UNION ALL SELECT tree.root, c.id FROM session_v2 c JOIN tree ON c.parent_id = tree.id)"
+  sqlite3 -readonly -json "$db" "$tree
+    SELECT t.root AS session_id, r.directory, r.title, r.model, r.summary_files AS edits, r.time_created AS created_ms,
+           max(s.time_updated) AS updated_ms, sum(s.cost) AS cost_usd,
+           sum(s.tokens_input) AS input, sum(s.tokens_output) AS output, sum(s.tokens_reasoning) AS reasoning,
+           sum(s.tokens_cache_read) AS cache_read, sum(s.tokens_cache_write) AS cache_write
+    FROM tree t JOIN session_v2 r ON r.id = t.root JOIN session_v2 s ON s.id = t.id GROUP BY t.root" > "$work/oc.sessions.json" || return 1
+  sqlite3 -readonly -json "$db" "$tree
+    SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
+    WHERE m.type = 'assistant' AND m.data LIKE '%gh pr %'" > "$work/oc.messages.json" || return 1
+  # shellcheck source=/dev/null
+  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
+  jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
+    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+  done | jq -cs from_entries > "$work/oc.projects.json" || return 1
+  jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" '
+    (($m[0] // []) | group_by(.root)
+     | map({key: .[0].root,
+            value: [ .[].data | fromjson | .content[]?
+                     | select(.type == "tool" and .name == "bash" and .state.status == "completed"
+                              and (.state.input.command // "" | test("\\bgh pr (create|merge)\\b")))
+                     | [.state.content[]?.text] | join("\n")
+                     | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
+                     | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ] | unique})
+     | from_entries) as $prs
+    | ($s[0] // [])[]
+    | { session_id, harness: "opencode", project: $p[0][.directory], title,
+        updated: (.updated_ms / 1000 | floor), duration_s: ((.updated_ms - .created_ms) / 1000 | floor),
+        edits: (.edits // 0), cost_usd, models: [(.model // "{}") | fromjson | .id // empty],
+        tokens: {input, output, cacheCreation: .cache_write, cacheRead: .cache_read,
+                 total: (.input + .output + .reasoning + .cache_read + .cache_write)},
+        prs: ($prs[.session_id] // []) }'
+}
+
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,
 # file}. A lesson opts in by ending with `<!-- sig:YYYY-MM-DD <regex> -->`: the regex (jq) matches
 # the mistake as a Bash command, anchored so a grep for its words does not count, and the date is
