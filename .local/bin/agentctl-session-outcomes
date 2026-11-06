@@ -41,7 +41,7 @@ RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
 BENCH="${SO_BENCH:-fleet-bench}"
 QUEUE="${SO_QUEUE:-agent-queue}"
-OPENCODE_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
+OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
 HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
 # Money as `worst` and `card` print it.
 FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
@@ -85,7 +85,7 @@ cmd_run() {
   # A DB opencode's next upgrade reshapes loses its lines and says so, like the bench below: it must
   # not stall every Claude session's row. Nothing reads as zero, because no line is written.
   local oc_note=""
-  so_opencode_rows "$OPENCODE_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
+  so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
     { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
 
   # Registry rows due for an observation. A session id can sit in two project files
