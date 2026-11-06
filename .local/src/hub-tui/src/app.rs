@@ -12,6 +12,7 @@ use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::queue::{Candidate, Candidates, Queue};
+use hub_core::schedules::{Schedule, Schedules};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -27,6 +28,7 @@ use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::queuetab::{self, QueueView};
+use crate::schedules::{self, SchedulesView};
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 
@@ -37,6 +39,9 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
+/// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
+/// the hour: agent-web's cache keeps one this long too.
+pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -50,11 +55,12 @@ pub enum Tab {
     Infra,
     Log,
     Fleet,
+    Schedules,
 }
 
 impl Tab {
     /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
@@ -64,6 +70,7 @@ impl Tab {
         Tab::Infra,
         Tab::Log,
         Tab::Fleet,
+        Tab::Schedules,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -75,6 +82,7 @@ impl Tab {
             Tab::Infra => "Infra",
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
+            Tab::Schedules => "Schedules",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -94,7 +102,7 @@ impl Tab {
     fn digit(self) -> char {
         char::from_digit(self.index() as u32 + 1, 10).unwrap_or(' ')
     }
-    /// The tab a digit opens; 0 and 9 open none.
+    /// The tab a digit opens; 0 opens none.
     fn by_digit(c: char) -> Option<Tab> {
         let n = c.to_digit(10)? as usize;
         n.checked_sub(1).and_then(|i| Tab::ALL.get(i).copied())
@@ -105,7 +113,9 @@ impl Tab {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
             Tab::Queue => Some("kb-agents-overview"),
-            Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
+            Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet | Tab::Schedules => {
+                None
+            }
         }
     }
 }
@@ -201,6 +211,7 @@ pub enum Msg {
     Boards(Box<Boards>),
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
+    Schedules(Box<Schedules>),
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
@@ -272,6 +283,8 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
+    pub sv: SchedulesView,
+    pub schedules: Option<Schedules>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -359,8 +372,11 @@ pub struct App {
     forecast_read: Read,
     ranked_read: Read,
     reds_read: Read,
+    schedules_read: Read,
     /// When the last Red fixes read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
+    /// When the last Schedules read finished, for `SCHEDULES_REFRESH`.
+    schedules_at: Option<std::time::Instant>,
     actions_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
@@ -392,6 +408,8 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
+            sv: SchedulesView::default(),
+            schedules: None,
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -441,7 +459,9 @@ impl App {
             forecast_read: Read::default(),
             ranked_read: Read::default(),
             reds_read: Read::default(),
+            schedules_read: Read::default(),
             reds_at: None,
+            schedules_at: None,
             actions_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
@@ -522,6 +542,20 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Reds(hub_core::reds::read(runner.as_ref())));
+            });
+        }
+    }
+
+    /// Schedules come from systemd, Prometheus and files with no one thing to watch, so the tab
+    /// reads on entering, on `r` and on the tick while it is shown, at most every
+    /// `SCHEDULES_REFRESH`.
+    pub fn read_schedules(&mut self) {
+        if self.schedules_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let paths = hub_core::fleet::Paths::from_env();
+                let s = hub_core::schedules::read(&paths, runner.as_ref());
+                let _ = tx.send(Msg::Schedules(Box::new(s)));
             });
         }
     }
@@ -922,6 +956,13 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet_shown();
                 }
+                if self.tab == Tab::Schedules
+                    && self
+                        .schedules_at
+                        .is_none_or(|t| t.elapsed() >= SCHEDULES_REFRESH)
+                {
+                    self.read_schedules();
+                }
                 if self.tab == Tab::Queue {
                     self.read_pipeline();
                 }
@@ -977,6 +1018,17 @@ impl App {
                 self.reds_at = Some(std::time::Instant::now());
                 if self.reds_read.done() && self.tab == Tab::Infra {
                     self.read_reds();
+                }
+            }
+            Msg::Schedules(s) => {
+                let id = self.selected_schedule().map(schedules::row_id);
+                self.schedules = Some(*s);
+                self.schedules_at = Some(std::time::Instant::now());
+                if let Some(s) = &self.schedules {
+                    self.sv.reselect(s, id);
+                }
+                if self.schedules_read.done() && self.tab == Tab::Schedules {
+                    self.read_schedules();
                 }
             }
             Msg::Fleet(f) => {
@@ -1166,6 +1218,9 @@ impl App {
         if self.tab == Tab::Fleet && self.fleet_key(k) {
             return;
         }
+        if self.tab == Tab::Schedules && self.schedules_key(k) {
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -1187,6 +1242,9 @@ impl App {
                 self.read_queue();
                 if self.tab == Tab::Infra {
                     self.read_reds();
+                }
+                if self.tab == Tab::Schedules {
+                    self.read_schedules();
                 }
                 if self.tab == Tab::Queue {
                     self.read_candidates();
@@ -1392,6 +1450,9 @@ impl App {
         }
         if t == Tab::Infra {
             self.read_reds();
+        }
+        if t == Tab::Schedules {
+            self.read_schedules();
         }
         if t == Tab::Daily {
             self.daily_outbox = false;
@@ -1817,6 +1878,71 @@ impl App {
         true
     }
 
+    fn selected_schedule(&self) -> Option<&Schedule> {
+        let s = self.schedules.as_ref()?;
+        self.sv.shown(s).get(self.sv.sel).copied()
+    }
+
+    /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
+    /// which already says all the pane would.
+    fn schedules_key(&mut self, k: KeyEvent) -> bool {
+        match self.sv.table.key::<Schedule>(k.code) {
+            Took::View => {
+                self.sv.sel = 0;
+                return true;
+            }
+            Took::Typing => return true,
+            Took::No => {}
+        }
+        let rows = self
+            .schedules
+            .as_ref()
+            .map_or(0, |s| self.sv.shown(s).len());
+        let last = rows.saturating_sub(1);
+        let n = self.page.max(1);
+        let before = self.sv.sel;
+        let sv = &mut self.sv;
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down => sv.sel = (sv.sel + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => sv.sel = sv.sel.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => sv.sel = 0,
+            KeyCode::Char('G') | KeyCode::End => sv.sel = last,
+            KeyCode::PageDown => sv.sel = (sv.sel + n).min(last),
+            KeyCode::PageUp => sv.sel = sv.sel.saturating_sub(n),
+            KeyCode::Char('J') if sv.open => sv.down += 1,
+            KeyCode::Char('K') if sv.open => sv.down = sv.down.saturating_sub(1),
+            KeyCode::Enter => {
+                let page = self.selected_schedule().map(|r| r.page.clone());
+                match page.filter(|p| !p.is_empty()) {
+                    Some(name) => {
+                        self.go(Tab::Fleet);
+                        self.open_runner(&name);
+                    }
+                    None => self.sv.open = !self.sv.open,
+                }
+            }
+            KeyCode::Esc => {
+                if sv.open {
+                    sv.open = false;
+                } else {
+                    sv.table.clear();
+                    sv.sel = 0;
+                }
+            }
+            KeyCode::Char('o') => {
+                let run = self.selected_schedule().and_then(|r| r.runs.first());
+                if let Some(u) = run.filter(|u| !u.url.is_empty()) {
+                    open(&u.url);
+                }
+            }
+            _ => return false,
+        }
+        if self.sv.sel != before {
+            self.sv.down = 0;
+        }
+        true
+    }
+
     fn open_log(&mut self) {
         let Some(j) = self.selected() else { return };
         let title = format!("{} {}", j.source.name(), j.name);
@@ -1849,7 +1975,7 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(f.area());
-        f.render_widget(Paragraph::new(self.tab_bar()), bar);
+        f.render_widget(Paragraph::new(self.tab_bar(bar.width as usize)), bar);
         // One project's rows get the selected row in full underneath, under a rule, in at
         // most a third of the window; a short window keeps every line for the rows.
         let preview = self.preview(body.width as usize);
@@ -1868,6 +1994,8 @@ impl App {
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
+        } else if self.tab == Tab::Schedules {
+            self.draw_schedules(f, body);
         } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
@@ -1902,12 +2030,16 @@ impl App {
         );
     }
 
-    fn tab_bar(&self) -> Line<'static> {
+    fn tab_bar(&self, w: usize) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
+        // Too narrow for every title, the tabs not shown keep their digit, so none is cut off.
+        let full: usize = Tab::ALL.iter().map(|t| t.title().len() + 4).sum();
+        let tight = " HUB ".len() + full > w;
         for t in Tab::ALL.iter() {
             // A tab with no digit yet (Daily) shows its title alone.
             let label = match t.digit() {
                 ' ' => format!(" {} ", t.title()),
+                d if tight && *t != self.tab => format!(" {d} "),
                 d => format!(" {d} {} ", t.title()),
             };
             s.push(if *t == self.tab {
@@ -1952,7 +2084,7 @@ impl App {
     }
 
     fn hints(&self) -> String {
-        let tabs = "1-8";
+        let tabs = "1-9";
         match self.tab {
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
@@ -1965,6 +2097,15 @@ impl App {
             }
             Tab::Infra => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Schedules if self.sv.table.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Schedules if self.sv.open => {
+                "Esc close  J/K scroll pane  j/k move  o open newest run  q quit".into()
+            }
+            Tab::Schedules => format!(
+                "Enter open  / query  f state  s sort  S asc/desc  x clear  o open newest run  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Sessions if self.controls.confirm.is_some() => {
                 "y/Enter yes  n/Esc no  Left/Right account (move)".into()
@@ -2299,6 +2440,48 @@ impl App {
         let mut out: Vec<Line> = lines.iter().take(1).cloned().collect();
         out.extend(lines.into_iter().skip(1 + self.scroll).take(h));
         f.render_widget(Paragraph::new(out), area);
+    }
+
+    fn draw_schedules(&mut self, f: &mut Frame, area: Rect) {
+        let Some(s) = &self.schedules else {
+            f.render_widget(
+                Paragraph::new(Line::styled("Reading schedules...", self.p.dim())),
+                area,
+            );
+            return;
+        };
+        let (list, pane) = if self.sv.open {
+            let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(area);
+            (a, Some(b))
+        } else {
+            (area, None)
+        };
+        let status = self.sv.status(s, self.p);
+        let table = self.sv.table(s, self.p, list.width as usize, true);
+        let h = (list.height as usize)
+            .saturating_sub(status.len() + 1)
+            .max(1);
+        self.page = h;
+        // Keep the selection in view: the table header stays, rows scroll under it.
+        let sv = &mut self.sv;
+        if sv.sel < sv.top {
+            sv.top = sv.sel;
+        } else if sv.sel >= sv.top + h {
+            sv.top = sv.sel + 1 - h;
+        }
+        let mut lines = status;
+        lines.extend(table.iter().take(1).cloned());
+        lines.extend(table.into_iter().skip(1 + sv.top).take(h));
+        f.render_widget(Paragraph::new(lines), list);
+        let row = self.sv.shown(s).get(self.sv.sel).copied();
+        if let (Some(area), Some(r)) = (pane, row) {
+            let lines = schedules::detail(r, self.p, s.at, area.width as usize);
+            let max = lines.len().saturating_sub(area.height as usize);
+            self.sv.down = self.sv.down.min(max);
+            let shown: Vec<Line> = lines.into_iter().skip(self.sv.down).collect();
+            f.render_widget(Paragraph::new(shown), area);
+        }
     }
 
     fn draw_jobs(&mut self, f: &mut Frame, area: Rect) {
@@ -3346,7 +3529,7 @@ mod tests {
             let d = char::from_digit(i as u32 + 1, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!((Tab::by_digit('9'), Tab::by_digit('0')), (None, None));
+        assert_eq!(Tab::by_digit('0'), None);
     }
 
     #[test]
@@ -3827,6 +4010,86 @@ mod tests {
         assert!(a.infra_jobs);
     }
 
+    fn schedule(kind: &str, name: &str, page: &str) -> Schedule {
+        let mut r = Schedule::default();
+        (r.kind, r.name, r.page) = (kind.into(), name.into(), page.into());
+        r
+    }
+
+    #[test]
+    fn enter_on_schedules_opens_the_pane_and_an_agentctl_row_its_fleet_page() {
+        let mut a = app(Tab::Schedules);
+        a.schedules_read.busy = true;
+        a.handle(Msg::Schedules(Box::new(Schedules {
+            rows: vec![
+                schedule("ci", "app / Tests", ""),
+                schedule("agentctl", "dream", "dream"),
+            ],
+            ..Default::default()
+        })));
+        let key = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        a.handle(key(KeyCode::Enter));
+        assert!(a.sv.open);
+        a.handle(key(KeyCode::Esc));
+        assert!(!a.sv.open, "Esc closes the pane before it clears the view");
+        a.handle(key(KeyCode::Char('j')));
+        a.fleet_read.busy = true;
+        a.handle(key(KeyCode::Enter));
+        assert_eq!(
+            (a.tab, a.fleet_page.as_deref()),
+            (Tab::Fleet, Some("dream"))
+        );
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_selected_schedule_and_a_query_takes_every_key() {
+        let mut a = app(Tab::Schedules);
+        let rows = |r: Vec<Schedule>| {
+            Msg::Schedules(Box::new(Schedules {
+                rows: r,
+                ..Default::default()
+            }))
+        };
+        a.schedules_read.busy = true;
+        a.handle(rows(vec![schedule("ci", "a", ""), schedule("ci", "b", "")]));
+        let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        a.handle(key('j'));
+        a.schedules_read.busy = true;
+        a.handle(rows(vec![
+            schedule("ci", "new", ""),
+            schedule("ci", "a", ""),
+            schedule("ci", "b", ""),
+        ]));
+        assert_eq!(a.selected_schedule().map(|r| r.name.as_str()), Some("b"));
+        a.handle(key('/'));
+        a.handle(key('q'));
+        a.handle(key('2'));
+        assert!(!a.quit && a.tab == Tab::Schedules);
+        assert_eq!(a.sv.table.typing.as_deref(), Some("q2"));
+    }
+
+    #[test]
+    fn a_narrow_tab_bar_keeps_every_digit_and_the_open_tab_s_title() {
+        let a = app(Tab::Schedules);
+        let bar: String = a
+            .tab_bar(80)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9 Schedules "),
+            "{bar:?}"
+        );
+        let wide: String = a
+            .tab_bar(120)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(wide.contains(" 1 Home "), "{wide:?}");
+    }
+
     #[test]
     fn number_keys_switch_pages_and_q_quits() {
         let mut a = app(Tab::Home);
@@ -3835,8 +4098,8 @@ mod tests {
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
         a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
-        a.handle(key('9'));
-        assert_eq!(a.tab, Tab::Log, "9 opens nothing");
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Log, "0 opens nothing");
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);

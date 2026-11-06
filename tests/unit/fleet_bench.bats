@@ -1341,6 +1341,15 @@ coverage_setup() {
   assert_output 'runner alpha'
 }
 
+@test "triage --route: each text gets its first matching line, and no line is a dash" {
+  coverage_setup
+  run "$SUBJECT" triage --route 'check(watch): standing tripped' 'fix(runner): alpha is' 'check(watch): gone tripped'
+  assert_success
+  assert_line --index 0 "$(printf 'check(watch): standing tripped\talert\t-\t-')"
+  assert_line --index 1 "$(printf 'fix(runner): alpha is\tagent\t-\t-')"
+  assert_line --index 2 "$(printf 'check(watch): gone tripped\t-\t-\t')"
+}
+
 @test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
   log_triage_setup
   export TRIAGE_RED_CMD=red-stub

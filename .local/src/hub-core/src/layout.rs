@@ -12,7 +12,7 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 8] = [
+pub const TABS: [Tab; 9] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -68,6 +68,13 @@ pub const TABS: [Tab; 8] = [
         title: "Fleet",
         question: "Can I afford more agents, and are the judges right?",
         sections: &["accounts", "workers", "judges"],
+    },
+    // Last, so the older tabs keep their digits.
+    Tab {
+        id: "schedules",
+        title: "Schedules",
+        question: "What runs on its own, and why?",
+        sections: &["table", "detail"],
     },
 ];
 

@@ -341,6 +341,9 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 /* Fleet: a runner's expanded registry row (fleet.js workerDetail). */
 .tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
 .tbl tr.wdet .tbl { margin-top: 6px; }
+/* Schedules: an open row reads at the box's width, however far the table is scrolled. */
+.sched { container-type: inline-size; }
+.sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
   .board { padding: 12px; }
@@ -354,6 +357,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }
+  .sched tr > :nth-child(1), .sched tr > :nth-child(3) { display: none; }
+  .sched tr.wdet > :nth-child(1) { display: table-cell; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }

@@ -22,6 +22,7 @@ pub mod projects;
 pub mod prom;
 pub mod queue;
 pub mod reds;
+pub mod schedules;
 pub mod session_actions;
 pub mod table;
 pub mod tasks;
