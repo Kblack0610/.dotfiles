@@ -29,8 +29,11 @@
 # calls, and typed /commands. Calls made inside a subagent live in its own transcript and
 # are not counted here; `claude-recall stats` folds those in. A compaction is a
 # compact_boundary record, split by what triggered it: auto (the context filled) or manual.
-# plan_gate counts ExitPlanMode calls and how many plan-standard.sh denied; the human rejecting
-# a plan is `denied` under hard_errors, not a gate denial.
+# guards counts each hook denial by the hook's name: a PreToolUse deny reaches the transcript as
+# `PreToolUse:<Tool> hook error: <name>: ...` and a Stop block as `Stop hook feedback:\n<name>: ...`,
+# so a hook whose reason starts with `<name>: ` is counted and one that does not is invisible.
+# plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
+# the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
   jq -nR '
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
@@ -43,7 +46,7 @@ so_transcript_metrics() {
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
-        plan_exits: 0, plan_denied: 0,
+        plan_exits: 0, plan_denied: 0, guards: {},
         compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
@@ -91,6 +94,8 @@ so_transcript_metrics() {
           .uses.slash[$cmd] += 1)
         | if ($r.message.content | type) == "string" then
           (if ($r.message.content | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)
+          | ((($r.message.content | capture("^Stop hook feedback:\\n(?<g>[a-z][a-z0-9-]+): ") | .g) // null) as $g
+             | if $g then .guards[$g] += 1 else . end)
         else
           reduce ($r.message.content | if type == "array" then .[] else empty end) as $c (.;
             if $c.type == "tool_result" then
@@ -98,7 +103,12 @@ so_transcript_metrics() {
               | ($c.is_error == true) as $err
               | (if $err then .tool_errors += 1 else . end)
               | (if $err and ($t | startswith("The user doesn'"'"'t want to proceed")) then .denied += 1 else . end)
-              | (if $err and ($t | startswith("PreToolUse:ExitPlanMode hook error: plan-standard: ")) then .plan_denied += 1 else . end)
+              | (if $err then
+                   (($t | capture("^PreToolUse:(?<tool>[A-Za-z_]+) hook error: (?<g>[a-z][a-z0-9-]+): ")) // null) as $m
+                   | if $m then .guards[$m.g] += 1
+                       | (if $m == {tool: "ExitPlanMode", g: "plan-standard"} then .plan_denied += 1 else . end)
+                     else . end
+                 else . end)
               | (if ($err | not) and .pr_ids[$c.tool_use_id] then
                    .prs += ([ $t | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
                               | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ]
@@ -122,6 +132,7 @@ so_transcript_metrics() {
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
         plan_gate: { exits: .plan_exits, denied: .plan_denied },
+        guards,
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
                     tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
                     compactions },
