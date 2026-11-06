@@ -1858,7 +1858,7 @@ check_fixture() {
   refute grep -q ' add ' "$NLOG"
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sizes and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -1872,9 +1872,10 @@ check_fixture() {
   assert_line --index 5 '## Queue'
   assert_line --index 6 '## Epic ETAs'
   assert_line --index 7 '## Models'
-  assert_line --index 8 '## Sessions'
-  assert_line --index 9 '## Agent depth'
-  assert_line --index 10 '## Session time'
+  assert_line --index 8 '## Sizes and kinds'
+  assert_line --index 9 '## Sessions'
+  assert_line --index 10 '## Agent depth'
+  assert_line --index 11 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -3180,4 +3181,60 @@ STUB
   run "$SUBJECT" kpi --trend 2 --json
   run jq -sc 'map(.canary_runs)' <<<"$output"
   assert_output '[0,1]'
+}
+
+@test "sizes: work minutes per row size from the item's row on its roadmap, calibrated at BENCH_SIZES_MIN, and cycle time per kind" {
+  export ITEMS="$SANDBOX/done.jsonl" BENCH_SIZES_MIN=2
+  export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  # two projects' roadmaps; ar-9 is unsized, ar-4 sits in an older version
+  cat > "$SANDBOX/bin/roadmap-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$2" = --json ] || exit 9
+case "$1" in
+  ar) echo '[{"version":"v2","rows":[{"id":"ar-1","size":"s","weight":1,"kind":"fix"},{"id":"ar-2","size":"s","weight":1,"kind":"feat"},{"id":"ar-3","size":"m","weight":3,"kind":"feat"},{"id":"ar-9","size":"","weight":1,"kind":"docs"}]},{"version":"v1","rows":[{"id":"ar-4","size":"m","weight":3,"kind":"feat"}]}]' ;;
+  game) echo '[{"version":"v1","rows":[{"id":"g-1","size":"l","weight":8,"kind":"perf"}]}]' ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
+  iso() { date -u -d "@$1" +%FT%TZ; }
+  item() {  # slug row work status queued-ago-h started-ago-h finished-ago-h [type]
+    jq -cn --arg s "$1" --arg r "$2" --arg w "$3" --arg st "$4" --arg q "$(iso $((T0 - $5 * 3600)))" \
+      --arg b "$(iso $((T0 - $6 * 3600)))" --arg f "$(iso $((T0 - $7 * 3600)))" --arg t "${8:-}" \
+      '{slug: $s, status: $st, queued: $q, started: $b, finished: $f, pr: (if $st == "ok" then "o/r#1" else null end)}
+       + (if $r == "" then {} else {row: $r} end) + (if $w == "" then {} else {work_min: $w} end) + (if $t == "" then {} else {type: $t} end)'
+  }
+  {
+    item a ar:ar-1 10 ok 5 4 2
+    item b ar:ar-2 30 ok 5 4 3
+    item c ar:ar-3 60 ok 9 6 1
+    item d ar:ar-4 90 failed 9 8 2
+    item e game:g-1 200 ok 9 8 1
+    item f ar:ar-9 15 ok 3 2 1
+    item g "" 5 ok 3 2 1 research
+    item h ar:ar-1 999 cancelled 3 2 1
+    item i ar:ar-2 "" ok 3 2 1
+    item j ar:ar-2 7 ok 900 899 898
+  } > "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --json
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
+  # s: 10 and 30 (the cancelled 999 and the item past the window left out); m: 60 and 90, failed included
+  assert_equal "$(jq -c '[.sizes[] | [.size, .n, .calibrated, .work_p50, .work_p75, .per_point, .measured_weight]]' <<<"$output")" \
+    '[["s",2,true,10,30,10,1],["m",2,true,60,90,20,6],["l",1,false,200,200,null,null]]'
+  assert_equal "$(jq -c '[.base, .unsized, .min_n, .days]' <<<"$output")" '["s",2,2,28]'
+  # kinds: the row's kind, the item's own type with no row; i has no work_min but still has a cycle
+  assert_equal "$(jq -c '[.kinds[] | [.kind, .done, .landed, .work_p50, .cycle_p50_h, .lead_p50_h]]' <<<"$output")" \
+    '[["feat",4,3,60,1,2],["docs",1,1,15,1,2],["fix",1,1,10,2,3],["perf",1,1,200,7,8],["research",1,1,5,1,2]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes
+  assert_success
+  assert_line '| m | 3 | 2 | 60 | 90 | 20 | 6 |'
+  assert_line '| l | 8 | 1 | - | - | - | too few (1 of 2) |'
+  assert_line '- base size: s; items with work_min and no sized row: 2'
+  assert_line '| feat | 4 | 3 | 60 | 1 | 6 | 2 |'
+  run "$SUBJECT" sizes --bogus
+  assert_failure 2
+  run env BENCH_DONE_ITEMS_CMD=false "$SUBJECT" sizes
+  assert_failure 1
 }
