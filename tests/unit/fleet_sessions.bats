@@ -181,6 +181,25 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'UNCLEAR not in a git repo'
 }
 
+@test "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR" {
+  # a session in the main checkout lands from worktrees; 2026-11-05 hub/dotfiles:9 read UNCLEAR
+  # for 7h after #975 merged, and the shepherd escalated it once and never wound it down
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#975'
+  assert_output 'DONE clean, nothing on the branch, its PRs #975 merged, no plan file, its PR landed'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/2 'Phase 2' - - - '#975,#976'
+  assert_output 'LANDED clean, nothing on the branch, its PRs #975,#976 merged, next phase: Phase 2'
+  # no PRs of its own (a conversation) stays the human's call
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - -
+  assert_output 'UNCLEAR clean, nothing on the branch, no plan file: done or never started'
+  # dirty still wins
+  run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - '#975'
+  assert_output 'STALLED 3 dirty file(s), no PR'
+  session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#975'
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#975')" ]
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - -
+  assert_output 'no plan file and nothing merged'
+}
+
 @test "the plan decides once nothing is unlanded: all phases ticked is DONE, one left is LANDED" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'DONE PR #875 merged, tree clean, all 3 phases done'

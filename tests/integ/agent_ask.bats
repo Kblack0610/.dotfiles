@@ -228,22 +228,87 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line '  1  go     run it now'
   assert_line '  2  later  after the release  (recommended)'
   assert_line 'why: the sweep is ready'
-  assert_line 'the judge would take the recommendation - the policy says wait'
+  assert_line 'Judge: would take the recommendation - the policy says wait'
   # No colour off a terminal: the card lands in a session's tool output as plain text.
   ! grep -q $'\e' <<< "$output"
 }
 
-@test "card leaves out a session that repeats the project, a judge that only says needs you, and the kind of a question" {
+@test "card leaves out a session that repeats the project and the kind of a question, and still says the judge deferred" {
   local id; id="$("$AGENT_ASK" post --project demo --session demo --options 'a=the first|b=the second' 'which?')"
-  printf 'judge: human\njudge_reason: only you know\n' >> "$HOME/.agent/asks/demo/$id.md"
+  printf 'judge: human\njudge_rule: taste\njudge_reason: only you know\n' >> "$HOME/.agent/asks/demo/$id.md"
   run env COLUMNS=80 "$AGENT_ASK" card "$id"
   assert_success
   assert_line --index 0 --regexp "^asking you  demo \. [0-9]+m ago \. $id\$"
-  refute_output --partial 'judge'
-  refute_output --partial 'only you know'
+  assert_line 'Judge: deferred (taste) - only you know'
   local g; g="$("$AGENT_ASK" post --project demo --kind gate 'ship it?')"
   run env COLUMNS=80 "$AGENT_ASK" card "$g"
   assert_line --index 0 --partial 'gate - asking you  demo'
+}
+
+@test "the card's question block ends with the judge line: not judged, an answer it gave live, an override, an error" {
+  local id; id="$(post demo 'which?')"
+  run env COLUMNS=200 "$AGENT_ASK" card "$id"
+  assert_equal "${lines[-1]}" 'Judge: not judged'
+  local f="$HOME/.agent/asks/demo/$id.md"
+  # A live answer sets answered_by in place; post wrote it empty, and the first key wins.
+  sed -i 's/^answered_by: $/answered_by: judge/' "$f"
+  printf 'judge: take-recommend\njudge_rule: restates-rule\njudge_reason: rules say fix failing CI yourself\n' >> "$f"
+  run env COLUMNS=200 "$AGENT_ASK" card "$id"
+  assert_equal "${lines[-1]}" 'Judge: answered (restates-rule) - rules say fix failing CI yourself'
+  printf 'judge_override: wrong\n' >> "$f"
+  run env COLUMNS=200 "$AGENT_ASK" card "$id"
+  assert_line --partial 'Judge: answered, overridden: wrong (restates-rule)'
+  local e; e="$(post demo 'and this?')"
+  printf 'judge: error\njudge_reason: the call failed\n' >> "$HOME/.agent/asks/demo/$e.md"
+  run env COLUMNS=200 "$AGENT_ASK" card "$e"
+  assert_equal "${lines[-1]}" 'Judge: error - the call failed'
+}
+
+# An ask the judge called on, its call line in a sandboxed calls.jsonl.
+traced_ask() {
+  local id; id="$("$AGENT_ASK" post --project demo --session agent-1 'ship it?')"
+  printf 'judge: human\njudge_rule: taste\njudge_reason: only you know\njudge_call: c0ffee000001\njudged_at: 2026-11-05T10:00:04Z\n' >> "$HOME/.agent/asks/demo/$id.md"
+  export AGENTCTL_CALLS="$BATS_TEST_TMPDIR/calls.jsonl"
+  printf '%s\n' '{"id":"c0ffee000000","agent":"other"}' \
+    '{"id":"c0ffee000001","agent":"ask-judge","duration_ms":3100,"exit":0,"gen_ai.request.model":"m1","prompt":"judge.md","prompt_sha":"fffabcc1234","session_id":"s-1","gen_ai.usage.input_tokens":2,"gen_ai.usage.output_tokens":76,"cost_usd":0.081,"raw":"VERDICT: human"}' > "$AGENTCTL_CALLS"
+  echo "$id"
+}
+
+@test "trace shows the timeline, the judge's call and its Langfuse session, and --json the same as one document" {
+  local id; id="$(traced_ask)"
+  export AGENTCTL_CALLS="$BATS_TEST_TMPDIR/calls.jsonl" AGENT_ASK_LANGFUSE_SESSIONS='https://lf.example/project/p/sessions/'
+  run "$AGENT_ASK" answer "$id" no
+  run "$AGENT_ASK" trace "$id"
+  assert_success
+  assert_line "ask $id  demo  answered"
+  assert_line 'ship it?'
+  assert_line --regexp '^  [0-9-]{5} [0-9:]{8}  posted      by agent-1$'
+  assert_line '  11-05 10:00:04  judged      deferred (taste) - only you know'
+  assert_line --regexp '^  [0-9-]{5} [0-9:]{8}  answered    no by human$'
+  assert_line 'call      c0ffee000001  ask-judge  m1  3.1s  $0.08  2 in / 76 out tokens  prompt fffabcc  exit 0'
+  assert_line 'langfuse  https://lf.example/project/p/sessions/s-1'
+  assert_line '  VERDICT: human'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_success
+  run jq -r '[.status, .judge, (.events | map(.event) | join(",")), .call.id, .langfuse] | join("|")' <<<"$output"
+  assert_output "answered|Judge: deferred (taste) - only you know|posted,judged,answered|c0ffee000001|https://lf.example/project/p/sessions/s-1"
+}
+
+@test "trace says when the call line is gone or no Langfuse link is configured, and lists overrides and closes" {
+  local id; id="$(traced_ask)"
+  export AGENTCTL_CALLS="$BATS_TEST_TMPDIR/calls.jsonl" AGENT_ASK_LANGFUSE_SESSIONS=''
+  printf 'judge_override: wrong\njudge_override_note: it was taste\njudge_override_at: 2026-11-05T11:00:00Z\nclosed_at: 2026-11-05T12:00:00Z\nclosed_reason: session ended\n' >> "$HOME/.agent/asks/demo/$id.md"
+  run "$AGENT_ASK" trace "$id"
+  assert_success
+  assert_line '  11-05 11:00:00  overridden  wrong (it was taste)'
+  assert_line --regexp '^  11-05 12:00:00  closed      [a-z]+: session ended$'
+  assert_line 'session   s-1 (no Langfuse link: SO_LF_URL and SO_LF_PROJECT in session-outcomes.conf)'
+  : > "$AGENTCTL_CALLS"
+  run "$AGENT_ASK" trace "$id"
+  assert_success
+  assert_line "call      none (judge_call c0ffee000001 has no line in $AGENTCTL_CALLS)"
+  run "$AGENT_ASK" trace nosuch
+  assert_failure
 }
 
 # The real agentctl-session-outcomes, reading its lib from the repo and its rows from the sandbox.
@@ -370,10 +435,17 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 21 tab-separated fields per ask" {
+@test "list emits 24 tab-separated fields per ask" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '21'
+  assert_output '24'
+}
+
+@test "the last three fields are judge_rule, judge_reason and answer_note, for agent-web's Details fold" {
+  local id; id="$(post demo 'ship it?')"
+  printf 'judge: human\njudge_rule: taste\njudge_reason: only you know\nanswer_note: in session\n' >> "$HOME/.agent/asks/demo/$id.md"
+  run bash -c '"$AGENT_ASK" list demo | cut -f22-24'
+  assert_output "$(printf 'taste\tonly you know\tin session')"
 }
 
 @test "the last three fields are option_notes, context and recommend_why, for agent-web's answer cards" {

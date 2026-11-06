@@ -84,10 +84,45 @@ test("an ask's options say what each does, the recommended one why, and its cont
   assert.match(html, /<div class="actx md"><p>the release is Friday<\/p><\/div>/);
 });
 
-test("the judge's shadow call sits on the line, and only when it would act", () => {
-  assert.doesNotMatch(askHtml(ask({ judge: "human" })), /judge would/);
-  assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">judge would take the recommendation \(no\)<\/div>/);
-  assert.match(askHtml(ask({ judge: "answer:yes" })), /judge would answer "yes"<\/div>/);
+test("the judge's line says what it did or would do, a deferral included, with its rule and reason", () => {
+  assert.match(askHtml(ask({ judge: "human", rule: "taste", reason: "only you know" })), /<div class="cline">Judge: deferred \(taste\) - only you know<\/div>/);
+  assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">Judge: would take the recommendation<\/div>/);
+  assert.match(askHtml(ask({ judge: "take-recommend", answered_by: "judge", rule: "restates-rule", reason: "rules say fix failing CI yourself" })),
+    /Judge: answered \(restates-rule\) - rules say fix failing CI yourself<\/div>/);
+  assert.match(askHtml(ask({ judge: "answer:yes" })), /Judge: would answer &quot;yes&quot;<\/div>/);
+  assert.doesNotMatch(askHtml(ask()), /Judge:/, "an ask never judged has no line");
+});
+
+test("an ask's Details fold carries the judge's fields and a Full log fold that reads the trace when opened", () => {
+  const html = askHtml(ask({ judge: "human", rule: "taste", reason: "only you know", answered_by: "", answer_note: "" }));
+  assert.match(html, /<details class="cfold" data-k="ask:a1"><summary>Details<\/summary><dl>.*<dt>judge<\/dt><dd>human<\/dd><dt>rule<\/dt><dd>taste<\/dd><dt>reason<\/dt><dd>only you know<\/dd><\/dl>/s);
+  assert.doesNotMatch(html, /answered by/, "an empty field is left out");
+  assert.match(html, /<details class="cfold" data-k="trace:a1"><summary>Full log<\/summary><div class="muted">Reading\.\.\.<\/div><\/details>/);
+});
+
+test("the Full log shows the timeline, the judge's call, a Langfuse link and the raw reply", () => {
+  const t = { events: [{ at: "2026-11-05T10:00:00Z", event: "posted", detail: "by shepherd" }, { at: "2026-11-05T10:00:04Z", event: "judged", detail: "human (taste)" }],
+    call: { id: "c9", agent: "ask-judge", "gen_ai.request.model": "m", duration_ms: 3100, cost_usd: 0.081, "gen_ai.usage.input_tokens": 2,
+      "gen_ai.usage.output_tokens": 76, prompt: "judge.md", prompt_sha: "fffabcc123", exit: 0, raw: "{\"verdict\":\"<human>\"}" },
+    langfuse: "https://lf.example/project/x/sessions/s1" };
+  const html = run("traceHtml(input)", t);
+  assert.match(html, /<dt>11-05 10:00:00 posted<\/dt><dd>by shepherd<\/dd><dt>11-05 10:00:04 judged<\/dt><dd>human \(taste\)<\/dd>/);
+  assert.match(html, /<dt>model<\/dt><dd>m<\/dd><dt>time<\/dt><dd>3\.1s<\/dd><dt>cost<\/dt><dd>\$0\.08<\/dd><dt>tokens<\/dt><dd>2 in \/ 76 out<\/dd><dt>prompt<\/dt><dd>judge\.md fffabcc<\/dd><dt>exit<\/dt><dd>0<\/dd>/);
+  assert.match(html, /<a href="https:\/\/lf\.example\/project\/x\/sessions\/s1" target="_blank" rel="noopener">Langfuse trace<\/a>/);
+  assert.match(html, /<pre class="araw">\{&quot;verdict&quot;:&quot;&lt;human&gt;&quot;\}<\/pre>/);
+  assert.doesNotMatch(run("traceHtml(input)", { ...t, langfuse: "javascript:alert(1)" }), /<a /, "only an http link is a link");
+  assert.match(run("traceHtml(input)", { events: [], call: null }), /No judge call line for this ask\./);
+});
+
+test("the Full log reads its trace when you open it, not when a redraw re-inserts it open", async () => {
+  const toggle = (open) => ({ target: { dataset: { k: "trace:a1" }, open } });
+  run("globalThis.drew = 0; askst.trace = {}; askst.open['trace:a1'] = true");
+  await run("askTrace(input, () => drew++)", toggle(true));
+  assert.equal(run("drew"), 0, "a redraw of an open fold reads nothing");
+  run("askst.open['trace:a1'] = false");
+  await run("askTrace(input, () => drew++)", toggle(true));
+  assert.equal(run("drew"), 1);
+  assert.match(run("askst.trace.a1"), /No judge call line/);
 });
 
 test("an ask from an older server with no title shows the whole question as the title", () => {

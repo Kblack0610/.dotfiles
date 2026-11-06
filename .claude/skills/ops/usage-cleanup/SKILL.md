@@ -24,7 +24,7 @@ Siblings: one task's model is `model-lane`; ETAs and the scorecard are `fleet-be
 
 ## Hard limits
 
-The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no deny, no `--max-budget-usd`, no skipped scheduled run, no blanket model or effort downgrade, and never refuse `cl` or a hand start. Savings come only from waste: work nobody needed, and context paid on every turn. A lever that cuts work someone needed is out of scope, however much it saves.
+The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no deny, no blanket model or effort downgrade, and never refuse `cl` or a hand start. Automated lanes already stop at the budgets in their confs; lowering one is a conf edit, not a new mechanism. Savings come only from waste: work nobody needed, and context paid on every turn. A lever that cuts work someone needed is out of scope, however much it saves.
 
 ## Steps
 
