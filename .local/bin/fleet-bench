@@ -138,6 +138,7 @@ set -uo pipefail
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
 : "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
+: "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
 : "${BENCH_NOTES_CMD:=notes}"
@@ -2106,10 +2107,11 @@ upsert_report() {
 
 # triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
 # scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
-# watch held at TRIP past TRIAGE_WATCH_AFTER. FAILED, a failed unit and a high or urgent watch
-# are #high. Sentinel stays observe-only: this reads its state files.
+# watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
+# FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
+# reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t
+  local c name sd v detail u res load f n since sev what why t after
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -2137,8 +2139,9 @@ triage_rows() {
     [ "$(cat "$f")" = TRIP ] || continue
     n=$(basename "$f" .state)
     since=$(cat "$TRIAGE_WATCH_STATE/$n.since" 2>/dev/null) || continue
-    [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$TRIAGE_WATCH_AFTER" ] || continue
     sev=$(sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null | head -1)
+    case "$sev" in high|urgent) after=$TRIAGE_WATCH_HIGH_AFTER ;; *) after=$TRIAGE_WATCH_AFTER ;; esac
+    [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$after" ] || continue
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \

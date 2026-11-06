@@ -36,7 +36,7 @@
 # ever list that server's sessions. That is the whole point and needs no code:
 # choose-tree is server-scoped by construction.
 #
-# Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle
+# Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
 #        · land <name> <last|root|session[:window]>
 #        · pick-session · reload
@@ -395,7 +395,61 @@ _enter() {
     return 0
   fi
 
+  # Outside tmux with no terminal of our own (a Hyprland key, a waybar click, the pin): the
+  # hop belongs in the terminal you were typing in, not in a new window. Same move as above,
+  # aimed at that client by name.
+  if [ ! -t 0 ]; then
+    _drive_newest "$target" "$mode" && return 0
+  fi
   cmd_land "$target" "$mode"
+}
+
+# _newest_client -- "<server> <client> <pid>" of the client typed in most recently, across
+# every live world. Empty when no terminal is attached anywhere.
+_newest_client() {
+  local s
+  while IFS= read -r s; do
+    [ -n "$s" ] && tmux -L "$s" list-clients \
+      -F "#{client_activity} $s #{client_name} #{client_pid}" 2>/dev/null
+  done < <(panel_live_servers) | sort -rn | head -1 | cut -d' ' -f2-
+}
+
+# _drive_newest <server> <mode> -- hop the newest client to <server> and focus its terminal.
+# With no client anywhere, a new terminal is the only place left to land.
+_drive_newest() {
+  local target="$1" mode="$2" srv client pid
+  read -r srv client pid < <(_newest_client)
+  if [ -z "${client:-}" ]; then
+    command -v kitty >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || return 1
+    setsid -f kitty -e "$SELF" land "$target" "$mode" >/dev/null 2>&1
+    return 0
+  fi
+  tmux -L "$srv" detach-client -t "$client" -E \
+    "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")" || return 1
+  _focus_terminal "$pid"
+  return 0
+}
+
+# _focus_terminal <pid> -- on Hyprland, focus the window whose process is an ancestor of
+# <pid> (the tmux client runs under the terminal's shell). Nothing elsewhere, or over ssh.
+_focus_terminal() {
+  local pid="$1" wins
+  [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1 || return 0
+  wins=" $(hyprctl clients -j 2>/dev/null | jq -r '.[].pid' 2>/dev/null | tr '\n' ' ')"
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+    case "$wins" in *" $pid "*) hyprctl dispatch focuswindow "pid:$pid" >/dev/null 2>&1; return 0 ;; esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  done
+  return 0
+}
+
+# client -- "<server> <client>" of the terminal you typed in last, so another script can
+# aim display-popup -c or switch-client -c at it (scratch.sh popup).
+cmd_client() {
+  local srv client pid
+  read -r srv client pid < <(_newest_client)
+  [ -n "${client:-}" ] || die "no tmux client is attached to any world"
+  printf '%s %s\n' "$srv" "$client"
 }
 
 # land <server> [last|root|<session>|<session>:<window>] -- the far side of a hop.
@@ -499,7 +553,25 @@ _recent_session() {
     | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | head -1
 }
 
-cmd_hop()  { _enter "${1:?hop needs a server name}"  last; }
+# A world is a known name or a running server, hidden ones included: _enter explains those.
+# grep without -q: an early exit would SIGPIPE the writer, which pipefail reads as no match.
+_is_world() {
+  world_hidden "$1" && return 0
+  known_servers | grep -Fx -- "$1" >/dev/null && return 0
+  panel_live_servers | grep -Fx -- "$1" >/dev/null
+}
+
+# Anything else is a typo or a key still bound to a removed verb. It stops here: _enter
+# would detach the client and boot an empty server of that name, which kicks you out.
+cmd_hop() {
+  local target="${1:?hop needs a server name}"
+  if ! _is_world "$target"; then
+    [ -n "${TMUX:-}" ] || die "no world or command '$target' (tmx ls lists the worlds)"
+    tmux display-message "tmx: no world or command '$target'"
+    return 0
+  fi
+  _enter "$target" last
+}
 
 # toggle -- Prefix+C-h. On hub, resume lab; anywhere else (lab, another world, outside tmux),
 # resume hub. The two worlds every manifest and README names, so there is no knob to swap.
@@ -807,6 +879,7 @@ main() {
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
     toggle)       cmd_toggle ;;
+    client)       cmd_client ;;
     root)         shift; cmd_root "${1:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;

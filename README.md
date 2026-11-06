@@ -36,6 +36,15 @@ The tmux cockpit (`.tmux.conf`, `.local/src/tmux/`, `.config/tmux-servers/`) has
 - Test: `make -C tests bootstrap` once, then `make -C tests test-fast` (unit + integ, host-safe). The tmux ui tier runs only in the container: `make -C tests test-ui`.
 - Standards: `.local/src/tmux/CONVENTIONS.md` (panel rules, each with the test that enforces it).
 
+## Agent runtime
+
+The agent fleet (`agentctl` runners, `agentctl-run`, `agent-queue`, `fleet-dispatch`, `fleet-sessions`, `agent-land`, `agent-ask`) has its own docs: [overview](docs/overview.md#agent-runtime), [architecture](docs/architecture.md#agent-runtime), [deploy](docs/operations/deploy.md#deploying-agent-runtime). Runner confs and runbooks are in the private overlay, at `~/.config/agentctl/`.
+
+- Build: nothing for the scripts. The views (`agent-web`, `hub`, `agent-panel`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
+- Run: `stow --no-folding .` in both repos, then `agentctl reload` and `agentctl list`. `agentctl pause` stops every oneshot runner, `agentctl resume` lifts it.
+- Test: `make -C tests bootstrap` once, then `make -C tests test-fast`, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
+- Standards: `.local/src/docs/standards.md` (each invariant with the test that holds it).
+
 ## Submodules
 
 Tracked in `.gitmodules`:
