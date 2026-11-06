@@ -900,7 +900,7 @@ settle_row() {
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
-  np "$prof" ptask "$project" "${flag[@]}" start "$key" >/dev/null 2>&1
+  np "$prof" ptask "$project" "${flag[@]}" unstart "$key" >/dev/null 2>&1
   jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
     '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
   logline "settled queue item $1: $project $lane row un-started: $key"
@@ -935,7 +935,7 @@ unstart_orphans() {
           seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first"$'\n'
           continue
         fi
-        np "$prof" ptask "$name" --agent start "$key" >/dev/null 2>&1 ||
+        np "$prof" ptask "$name" --agent unstart "$key" >/dev/null 2>&1 ||
           { logline "orphan $name agent row $key: un-start failed"; continue; }
         jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
           '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
@@ -1641,7 +1641,7 @@ promote() {
   id=$(sed -n 's/^  id://p' <<<"$out")
   [ -n "$id" ] || [[ "$line" != *"id:$key "* ]] || id=$key
   if [ -z "$id" ]; then
-    np "$prof" ptask "$project" "${flag[@]}" --exact start -- "- [/]${line#- \[ \]}" >/dev/null 2>&1
+    np "$prof" ptask "$project" "${flag[@]}" --exact unstart -- "- [/]${line#- \[ \]}" >/dev/null 2>&1
     say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
     return 1
   fi
@@ -1650,7 +1650,7 @@ promote() {
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
   if ! out=$(agent-queue add --project "$project" --priority "$(row_priority "$line")" --from "board:$project:$id" --slug "$id" \
       ${title:+--title "$title"} ${tags:+--tags "$tags"} -- "$task" 2>&1); then
-    np "$prof" ptask "$project" "${flag[@]}" start "$id" >/dev/null 2>&1
+    np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
     say "could not queue $project row, un-started: $id ($out)"
     return 1
   fi
