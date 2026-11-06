@@ -260,7 +260,7 @@ fn needs_the_human(r: &Row) -> bool {
             .is_some_and(|t| HUMAN_TYPES.contains(&t))
 }
 
-fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
+pub(crate) fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
 
@@ -276,7 +276,7 @@ fn short(s: &str) -> String {
 }
 
 /// The last path segment of a session's cwd, the project a session row shows without a queue item.
-fn dir_name(cwd: &str) -> String {
+pub(crate) fn dir_name(cwd: &str) -> String {
     cwd.rsplit('/')
         .find(|s| !s.is_empty())
         .unwrap_or("")

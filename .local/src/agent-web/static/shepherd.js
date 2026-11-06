@@ -1,10 +1,10 @@
 "use strict";
-// Sessions' shepherd half (the Shepherd tab until phase 3 of the hub layout). The pass from
-// `fleet-shepherd stats` is the first line of the Sessions list; the overview folds the full
+// Sessions' shepherd half (the Shepherd tab until phase 3 of the hub layout). The header's
+// shepherd part is `hub_core::capacity`'s; the fold under the table holds the full
 // pass, what Binks owes (each line the last `fleet-shepherd check` handed to a pass: its role, how
 // long it has been due, and whether the last pass left it unhandled) and every rundown and chat
 // answer the shepherd kept (`fleet-shepherd log --rundown`, one file each in
-// ~/.agent/shepherd/rundowns). The chat is the shepherd's own session, pinned first in the list:
+// ~/.agent/shepherd/rundowns). The chat is the shepherd's own session:
 // opening it shows its transcript and a box that types into its pane, so an answer it gives there
 // is also kept as a rundown. The lines a pass skipped on purpose, with why, are the shepherd's
 // skips in Log's Actions section.
@@ -14,7 +14,7 @@ const shst = { data: null, err: null, open: new Set() };
 const refreshShepherd = coalesce(async () => {
   try { shst.data = await api("/api/shepherd"); shst.err = null; } catch (e) { shst.err = e.message; }
   if (shst.data && shst.data.rundowns.length && !shst.open.size) shst.open.add(shst.data.rundowns[0].file);
-  if (st.tab === "sessions") { renderList(); renderOverview(); }
+  renderOverview();
   if (st.tab === "log") renderLogRundowns();
 });
 
@@ -64,17 +64,6 @@ function dueHtml(l) {
     : `<div class="empty">Nothing due: the last check found nothing to move.</div>`;
   const skips = `<div class="row-end"><button class="btn" data-skips>Skipped on purpose, in Actions</button></div>`;
   return `<h3 class="sub">Due <span class="muted">${l.due.length}, ${pass}</span></h3>${owed}${skips}`;
-}
-
-// The pass in one line, the first row of the Sessions list.
-function passLine() {
-  const d = shst.data, x = d && d.stats;
-  if (shst.err) return `shepherd: ${esc(shst.err)}`;
-  if (!x) return d ? "shepherd: stats gave nothing" : "shepherd: reading";
-  const run = x.pass_running ? `pass ${dur(x.pass_age_s / 60)} ${esc(x.pass_status)}` : `no pass running, last verdict ${esc(x.last_verdict || "?")}`;
-  const due = d.ledger ? `, ${d.ledger.due.length} due` : "";
-  const bad = (x.stuck ? ", <b class=\"ci fail\">stuck</b>" : "") + (x.unhandled ? `, <b class="ci fail">${x.unhandled} unhandled</b>` : "");
-  return `shepherd: ${run}${due}${bad}`;
 }
 
 // The overview's shepherd section: the pass and what is due.
