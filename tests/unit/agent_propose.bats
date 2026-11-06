@@ -120,3 +120,25 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   assert_equal "$("$AP" list --json | jq -r '.[].id')" "$b"
   assert_equal "$("$AP" list --json --status all --stream dream | jq length)" 1
 }
+
+@test "list --json says what an accept will run, for each verb" {
+  add_queue >/dev/null
+  "$AP" add --stream s --project dotfiles --verb row --arg "a row" "second"  >/dev/null
+  "$AP" add --stream s --project dotfiles --verb none "third" >/dev/null
+  run bash -c "\"$AP\" list --json | jq -r 'sort_by(.verb) | .[].does'"
+  assert_success
+  assert_line --index 0 "nothing runs: the decision is recorded"
+  assert_line --index 1 "agent-queue add --project dotfiles -- fix it"
+  assert_line --index 2 "notes ptask dotfiles --agent add a row"
+}
+
+@test "accept passes the arg as one argument, spaces and newlines intact" {
+  cat > "$BATS_TEST_TMPDIR/bin/agent-queue" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$#" "${!#}" > "$CALLS"
+STUB
+  id="$("$AP" add --stream s --project p --verb queue --arg $'two  words\nand a line' "Keep it whole")"
+  "$AP" accept "$id"
+  assert_equal "$(sed -n 1p "$CALLS")" 5
+  assert_equal "$(sed -n '2,$p' "$CALLS")" $'two  words\nand a line'
+}

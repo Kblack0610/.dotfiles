@@ -11,6 +11,7 @@ use hub_core::fleet::ASK_FILTERS;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
+use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -26,6 +27,7 @@ use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
+use crate::proptab::ProposalsView;
 use crate::queuetab::{self, QueueView};
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
@@ -130,6 +132,8 @@ pub struct BoardFiles {
     pub state: PathBuf,
     /// agent-ask's store: Home's asks are read live, so an ask filed or answered re-reads them.
     pub asks: PathBuf,
+    /// agent-propose's store: a proposal filed or decided re-reads Home's section.
+    pub proposals: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
 }
@@ -139,6 +143,7 @@ impl BoardFiles {
         BoardFiles {
             state: boards::fleet_state(),
             asks: boards::asks_dir(),
+            proposals: boards::proposals_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
         }
@@ -150,6 +155,10 @@ impl BoardFiles {
     pub fn rundowns(&self) -> PathBuf {
         self.shepherd.join("rundowns")
     }
+    pub fn is_proposal_file(&self, p: &Path) -> bool {
+        hub_core::boards::is_proposal_file(&self.proposals, p)
+    }
+
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
     pub fn is_board_file(&self, p: &Path) -> bool {
         p == self.state
@@ -192,6 +201,11 @@ impl Boards {
 pub enum Msg {
     Input(Event),
     Tick,
+    /// agent-propose wrote a record.
+    ProposalFiles,
+    Proposals(Box<Result<Vec<Proposal>, String>>),
+    /// What an accept or a reject answered.
+    ProposalActed(Result<String, String>),
     /// A job source's file changed (a run started or ended).
     Files,
     /// The fleet state, watch.log or a day record changed.
@@ -317,6 +331,8 @@ pub struct App {
     pub queue_dir: PathBuf,
     /// Every project's open rows, for the Projects tab; None until the first read.
     pub tasks: Option<Result<Feed, String>>,
+    pub proposals: Option<Result<Vec<Proposal>, String>>,
+    pub prv: ProposalsView,
     pub tv: TaskView,
     /// The Projects tab's card inputs; None until the first read.
     pub projects: Option<projtab::Loaded>,
@@ -375,6 +391,7 @@ pub struct App {
     queue_read: Read,
     candidates_read: Read,
     tasks_read: Read,
+    proposals_read: Read,
     projects_read: Read,
     proj_page_read: Read,
     log_gen: u64,
@@ -420,6 +437,8 @@ impl App {
             candidates: None,
             queue_dir: queue_dir(),
             tasks: None,
+            proposals: None,
+            prv: ProposalsView::default(),
             tv: TaskView::default(),
             projects: None,
             pv: ProjView::default(),
@@ -457,6 +476,7 @@ impl App {
             queue_read: Read::default(),
             candidates_read: Read::default(),
             tasks_read: Read::default(),
+            proposals_read: Read::default(),
             projects_read: Read::default(),
             proj_page_read: Read::default(),
             proj_page: None,
@@ -478,6 +498,7 @@ impl App {
             (self.files.daylog.clone(), false),
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
+            (self.files.proposals.clone(), false),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -774,6 +795,41 @@ impl App {
         }
     }
 
+    /// Home's reads beside the fleet state: the human-sheet rows and the proposals.
+    pub fn read_home(&mut self) {
+        self.read_tasks();
+        self.read_proposals();
+    }
+
+    fn read_proposals(&mut self) {
+        if self.proposals_read.want() {
+            let tx = self.tx.clone();
+            let runner = self.runner.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Proposals(Box::new(proposals::read(runner.as_ref()))));
+            });
+        }
+    }
+
+    /// Accept or reject the selected proposal in a worker; the answer comes back as
+    /// Msg::ProposalActed.
+    fn decide_proposal(&mut self, accept: bool) {
+        let rows = open_rows(&self.proposals);
+        let Some(id) = self.prv.selected(rows).map(|p| p.id.clone()) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let r = if accept {
+                proposals::accept(runner.as_ref(), &id)
+            } else {
+                proposals::reject(runner.as_ref(), &id)
+            };
+            let _ = tx.send(Msg::ProposalActed(said("proposal", r)));
+        });
+    }
+
     /// Both of the Projects tab's reads: the rows and the cards.
     pub fn read_projects(&mut self) {
         self.read_tasks();
@@ -965,7 +1021,7 @@ impl App {
                     self.read_projects();
                 }
                 if self.tab == Tab::Home {
-                    self.read_tasks();
+                    self.read_home();
                 }
             }
             Msg::Files => {
@@ -977,6 +1033,7 @@ impl App {
                 }
             }
             Msg::BoardFiles => self.read_boards(),
+            Msg::ProposalFiles => self.read_proposals(),
             Msg::Tab(t, q) => {
                 self.go(t);
                 self.open_query(q);
@@ -1135,6 +1192,18 @@ impl App {
                     self.read_tasks();
                 }
             }
+            Msg::Proposals(r) => {
+                self.proposals = Some(*r);
+                let last = self.prv.shown(open_rows(&self.proposals)).len();
+                self.prv.sel = self.prv.sel.min(last.saturating_sub(1));
+                if self.proposals_read.done() {
+                    self.read_proposals();
+                }
+            }
+            Msg::ProposalActed(r) => {
+                self.prv.said = Some(r);
+                self.read_proposals();
+            }
             Msg::TasksActed(r) => {
                 self.tv.running = None;
                 self.tv.said = Some(r);
@@ -1182,6 +1251,9 @@ impl App {
             return;
         }
         if self.tab == Tab::Infra && self.infra_key(k) {
+            return;
+        }
+        if self.tab == Tab::Home && self.home_key(k) {
             return;
         }
         if self.tab == Tab::Log && self.log_key(k) {
@@ -1247,7 +1319,7 @@ impl App {
                     self.read_proj_page();
                 }
                 if self.tab == Tab::Home {
-                    self.read_tasks();
+                    self.read_home();
                 }
             }
             KeyCode::Char('o') => {
@@ -1443,7 +1515,7 @@ impl App {
             self.read_projects();
         }
         if t == Tab::Home {
-            self.read_tasks();
+            self.read_home();
         }
     }
 
@@ -1769,6 +1841,43 @@ impl App {
         }
     }
 
+    /// Home's own keys. The page: Enter and the table keys (/ f s) open the proposals table.
+    /// The table: those keys, j/k, Enter the record, a accept, d reject; Esc steps back out.
+    fn home_key(&mut self, k: KeyEvent) -> bool {
+        if !self.prv.open {
+            let opens = k.code == KeyCode::Enter || DataTable::owns(k.code);
+            if !opens || open_rows(&self.proposals).is_empty() {
+                return false;
+            }
+            self.prv.open = true;
+            if k.code == KeyCode::Enter {
+                return true;
+            }
+        }
+        match self.prv.table.key::<Proposal>(k.code) {
+            Took::View => {
+                self.prv.sel = 0;
+                return true;
+            }
+            Took::Typing => return true,
+            Took::No => {}
+        }
+        let rows = self.prv.shown(open_rows(&self.proposals)).len();
+        let pv = &mut self.prv;
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down => pv.sel = (pv.sel + 1).min(rows.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => pv.sel = pv.sel.saturating_sub(1),
+            KeyCode::Enter => pv.detail = !pv.detail,
+            KeyCode::Char('a') => self.decide_proposal(true),
+            KeyCode::Char('d') => self.decide_proposal(false),
+            KeyCode::Esc | KeyCode::Backspace if pv.detail => pv.detail = false,
+            KeyCode::Esc if !pv.table.is_default() => pv.table.clear(),
+            KeyCode::Esc | KeyCode::Backspace => pv.open = false,
+            _ => return false,
+        }
+        true
+    }
+
     /// Infra's own keys. The summary: n/N jump between sections, Enter and the jobs keys
     /// (/ s f h) open the jobs table. The table: the jobs keys, and Esc with nothing to clear
     /// goes back to the summary.
@@ -1907,6 +2016,8 @@ impl App {
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
+        } else if self.tab == Tab::Home && self.prv.open {
+            self.draw_proposals(f, body);
         } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
@@ -1993,6 +2104,12 @@ impl App {
     fn hints(&self) -> String {
         let tabs = "1-8";
         match self.tab {
+            Tab::Home if self.prv.table.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Home if self.prv.open => format!(
+                "a accept  d reject  Enter record  / query  f state  s sort  S asc/desc  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
@@ -2054,7 +2171,7 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            _ => format!("{tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
+            _ => format!("Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -2104,12 +2221,15 @@ impl App {
             (Tab::Home, b, i) => {
                 let null = serde_json::Value::Null;
                 let state = b.as_ref().map_or(&null, |b| &b.watch.state);
-                let home = hub_core::home::build(
+                let mut home = hub_core::home::build(
                     state,
                     self.queue.as_ref(),
                     self.tasks.as_ref(),
                     i.as_ref(),
                 );
+                if let Some(open) = &self.proposals {
+                    home.set_proposals(open);
+                }
                 (hometab::page(&home, self.p, now, w), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
@@ -2344,6 +2464,31 @@ impl App {
         f.render_widget(Paragraph::new(out), area);
     }
 
+    fn draw_proposals(&mut self, f: &mut Frame, area: Rect) {
+        let rows = open_rows(&self.proposals);
+        let w = area.width as usize;
+        let mut lines = self.prv.status(rows, self.p);
+        let record = if self.prv.detail {
+            self.prv.record(rows, self.p, w)
+        } else {
+            vec![]
+        };
+        let table = self.prv.lines(rows, self.p, jobs::now(), w);
+        let h = (area.height as usize)
+            .saturating_sub(lines.len() + 1 + record.len())
+            .max(1);
+        let pv = &mut self.prv;
+        if pv.sel < pv.top {
+            pv.top = pv.sel;
+        } else if pv.sel >= pv.top + h {
+            pv.top = pv.sel + 1 - h;
+        }
+        lines.extend(table.iter().take(1).cloned());
+        lines.extend(table.into_iter().skip(1 + pv.top).take(h));
+        lines.extend(record);
+        f.render_widget(Paragraph::new(lines), area);
+    }
+
     fn draw_jobs(&mut self, f: &mut Frame, area: Rect) {
         let Some(js) = &self.jobs else {
             f.render_widget(
@@ -2418,6 +2563,13 @@ fn said(label: &str, r: Result<String, String>) -> Result<String, String> {
 }
 
 /// The candidates read, or none while it is reading or failed.
+fn open_rows(p: &Option<Result<Vec<proposals::Proposal>, String>>) -> &[proposals::Proposal] {
+    match p {
+        Some(Ok(r)) => r,
+        _ => &[],
+    }
+}
+
 fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
     match c {
         Some(Ok(c)) => &c.rows,
@@ -3330,6 +3482,87 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn proposal(id: &str, stream: &str) -> Proposal {
+        Proposal {
+            id: id.into(),
+            stream: stream.into(),
+            project: "dotfiles".into(),
+            title: format!("Do {id}"),
+            why: "it costs".into(),
+            verb: "queue".into(),
+            does: "agent-queue add --project dotfiles -- x".into(),
+            created: "2026-11-05T10:00:00Z".into(),
+            ..Proposal::default()
+        }
+    }
+
+    #[test]
+    fn home_shows_proposals_and_enter_opens_the_table_and_the_record() {
+        let mut a = app(Tab::Home);
+        a.proposals = Some(Ok(vec![proposal("aa", "dream"), proposal("bb", "ci")]));
+        let s = screen(&mut a, 120, 40);
+        assert!(
+            s.contains("PROPOSALS (2 from 2 streams)") && s.contains("Do aa"),
+            "{s}"
+        );
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('j')))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        let s = screen(&mut a, 120, 40);
+        assert!(s.contains("STREAM") && s.contains("a accept"), "{s}");
+        assert!(s.contains("accept runs") && s.contains("Do bb"), "{s}");
+        // Esc steps out one level at a time.
+        for _ in 0..2 {
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        }
+        assert!(!a.prv.open && !a.prv.detail);
+    }
+
+    #[test]
+    fn table_keys_stay_on_home_with_nothing_proposed() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        a.proposals = Some(Ok(vec![]));
+        for c in ['s', 'f', '/'] {
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        }
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert!(!a.prv.open);
+    }
+
+    #[test]
+    fn a_and_d_decide_the_selected_proposal_only() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.proposals = Some(Ok(vec![proposal("aa", "dream"), proposal("bb", "ci")]));
+        // Closed, a and d are nobody's: nothing is decided from the page.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('a')))));
+        a.prv.open = true;
+        for c in ['j', 'a', 'd'] {
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        }
+        let mut answers = 0;
+        while answers < 2 {
+            if let Msg::ProposalActed(r) = rx.recv().unwrap() {
+                assert!(r.is_ok());
+                answers += 1;
+            }
+        }
+        let calls = fake.0.lock().unwrap();
+        let decided: Vec<_> = calls.iter().filter(|c| !c.contains("list")).collect();
+        assert_eq!(decided.len(), 2, "{calls:?}");
+        assert!(
+            decided.iter().any(|c| *c == "agent-propose accept bb"),
+            "{calls:?}"
+        );
+        assert!(
+            decided.iter().any(|c| *c == "agent-propose reject bb"),
+            "{calls:?}"
+        );
     }
 
     #[test]
