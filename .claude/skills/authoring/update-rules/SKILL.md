@@ -109,7 +109,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 ### Register a new MCP server
 
 1. For Claude: add it to the committed `.mcp.json` of the repo that uses it (`enableAllProjectMcpServers` in settings.json approves it). Never at user scope (`claude mcp add -s user`) and never in a `.mcp.json` above the repos: Claude Code walks up from the cwd, so either one starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
-2. For Codex / Gemini / OpenCode: edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` and run the sync. The sync only merges new keys, so a removal also needs a hand edit of `~/.config/opencode/opencode.json`.
+2. For Codex / Gemini / OpenCode: edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` and run the sync.
 3. Restart any tool already running to pick up the change.
 
 ### A new skill and CLAUDE.md

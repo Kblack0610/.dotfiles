@@ -94,10 +94,10 @@ gh api --paginate repos/owner/name/issues
 ## Safety rules
 
 - Never use `--no-verify`, `--no-gpg-sign`, or similar hook-bypass flags unless the user explicitly asks.
-- Never force-push to `main` / `master`. Warn the user if they request it.
+- Never force push: not `--force`, not `--force-with-lease`, on any branch, and do not offer it as an option. If a branch's pushed history is wrong, open a new branch and a new PR and close the old one.
 - Prefer creating new commits over `git commit --amend` when a pre-commit hook fails - the failed commit did not happen, so `--amend` would modify the previous commit.
 - Before commenting on a PR or closing an issue, confirm with the user unless the action was explicitly requested - these are visible to others.
-- For destructive ops (force-push, branch delete, release delete), confirm first.
+- For destructive ops (branch delete, release delete), confirm first.
 - Pushing a branch, opening a PR, and merging your own green PR are none of the above - they are covered by the Landing rule in `CLAUDE.md` and need no confirmation. Do not invent a gate for them here.
 
 ## Tips

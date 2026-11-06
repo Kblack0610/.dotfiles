@@ -258,7 +258,7 @@ pub enum Outcome {
 
 /// Render and write a page, only when the bytes change.
 ///
-/// `source_present` is the cross-machine guard. The vault git-syncs between machines on a 30s
+/// `source_present` is the cross-machine guard. The vault git-syncs between machines on a 5 min
 /// timer and `git-sync-notes.sh` aborts the rebase and exits on conflict with no retry and no
 /// notification, so two machines disagreeing about one page silently wedges the sync rather
 /// than merely churning. A machine not hosting a feed's source leaves that page alone.
@@ -475,7 +475,7 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
-    /// The cross-machine guard. The vault git-syncs on a 30s timer and the sync script aborts
+    /// The cross-machine guard. The vault git-syncs on a 5 min timer and the sync script aborts
     /// its rebase and exits on conflict, so a machine that does not host the source must not
     /// touch the page at all - not write it, and above all not blank it.
     #[test]
