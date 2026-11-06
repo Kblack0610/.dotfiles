@@ -37,8 +37,8 @@
 # choose-tree is server-scoped by construction.
 #
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle
-#        · root <name> [<session>] · goto <name> <session> · open <name> <file> [line]
-#        · land <name> <last|root|root.<session>|session[:window]>
+#        · root <name> · goto <name> <session> · open <name> <file> [line]
+#        · land <name> <last|root|session[:window]>
 #        · pick-session · reload
 
 set -uo pipefail
@@ -253,7 +253,7 @@ _landing_window() {
     ' "$MANIFEST_DIR/$srv.conf" -
 }
 
-# The manifest's startup command for one session, e.g. `nvim ~/.notes/lab/projects/index.md`.
+# The manifest's startup command for one session, e.g. `nvim "$(notes path)"`.
 _startup_cmd() {
   awk -v s="$2" \
     '!/^[[:space:]]*#/ && $1 == s { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' \
@@ -408,7 +408,6 @@ cmd_land() {
   # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
   case "$mode" in
     last|root) ;;
-    root.*)    want="${mode#root.}" ;;
     *)         want="${mode%%:*}" ;;
   esac
   cmd_ensure "$target" "$want" >/dev/null
@@ -424,7 +423,7 @@ cmd_land() {
   # An explicit target from pick. Anything that is not one of the two keywords
   # is a session name, optionally with a window after a colon.
   case "$mode" in
-    last|root|root.*) ;;
+    last|root) ;;
     *)
       local want_sess="${mode%%:*}" want_win=""
       case "$mode" in *:*) want_win="${mode#*:}" ;; esac
@@ -443,12 +442,9 @@ cmd_land() {
       ;;
   esac
 
-  # `root.<session>` is the same move for a page that is not the world's landing session
-  # (Prefix+H: hub's `lab`, the projects index). A dot cannot appear in a tmux session name,
-  # so the split is unambiguous.
-  if [ "$mode" = "root" ] || [ "${mode#root.}" != "$mode" ]; then
+  if [ "$mode" = "root" ]; then
     local landing
-    if [ "$mode" = "root" ]; then landing="$(_landing "$target")"; else landing="${mode#root.}"; fi
+    landing="$(_landing "$target")"
     if [ -n "$landing" ] && tmux -L "$target" has-session -t "=$landing" 2>/dev/null; then
       # Select the page's window FIRST: _refresh_landing types into the current window,
       # which would otherwise be whichever board was last open.
@@ -512,12 +508,10 @@ cmd_toggle() {
   cur_srv="$(_current_loc | cut -f1)" || cur_srv=""
   if [ "$cur_srv" = hub ]; then cmd_hop lab; else cmd_hop hub; fi
 }
-# root <server> [<session>] -- with a session, that declared session's page instead of the
-# world's landing one, restored the same way. The session's own world wins, as in goto.
+
+# root <server> -- the world's landing page (Prefix+N: hub's daily), put back if you wandered off it.
 cmd_root() {
-  local srv="${1:?root needs a server name}" sess="${2:-}"
-  [ -n "$sess" ] || { _enter "$srv" root; return; }
-  _enter "$(_declared_world "$srv" "$sess")" "root.$sess"
+  _enter "${1:?root needs a server name}" root
 }
 
 # goto <server> <session> -- hop to a world and land on a NAMED session.
@@ -813,7 +807,7 @@ main() {
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
     toggle)       cmd_toggle ;;
-    root)         shift; cmd_root "${1:-}" "${2:-}" ;;
+    root)         shift; cmd_root "${1:-}" ;;
     goto)         shift; cmd_goto "${1:-}" "${2:-}" ;;
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
