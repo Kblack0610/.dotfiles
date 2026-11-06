@@ -334,13 +334,40 @@ EOF
   assert_success
 }
 
-@test "regen-anchor: a long lesson is cut on a word boundary, in ASCII" {
-  # Cut mid-word, `~/.dotfiles-private` became `~/.d` plus an ellipsis: a dead path.
+@test "regen-anchor: the anchor carries no lessons digest; the preflight ranks lessons itself" {
   seed_anchor
-  { printf -- '- **2026-11-05** '; for i in $(seq 1 40); do printf 'word%02d ' "$i"; done; printf '%s\n' '~/.dotfiles-private/x'; } > "$HOME/.agent/lessons/proj.md"
+  echo "- **2026-11-05** a lesson" > "$HOME/.agent/lessons/proj.md"
   run bash "$REGEN" proj
   assert_success
-  run grep -E '^- \*\*2026-11-05' "$ANCHOR"
-  assert_output --regexp 'word[0-9]+\.\.\.$'
-  refute_output --partial '…'
+  run cat "$ANCHOR"
+  refute_output --partial 'Recent lessons'
+  refute_output --partial 'a lesson'
+  assert_output --partial 'Lessons: `~/.agent/lessons/proj.md`'
+}
+
+@test "regen-anchor: large plan directories stay capped without broken pipes" {
+  seed_anchor
+  python3 - "$HOME/.agent/plans/proj" <<'PYTHON'
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for i in range(2000):
+    path = root / (f"plan-{i:04d}-" + "x" * 160 + ".md")
+    path.touch()
+    os.utime(path, (1000000000, 1000000000))
+for i in range(7):
+    path = root / f"recent-{i}.md"
+    path.touch()
+    os.utime(path, (1000000010 + i, 1000000010 + i))
+for name in ("active", "archive", "_archive", "tasks"):
+    (root / name).mkdir()
+PYTHON
+  # An ignored SIGPIPE makes grep report EPIPE, as in the scheduled runner.
+  run bash -c 'trap "" PIPE; exec bash "$@"' _ "$REGEN" proj
+  assert_success
+  refute_output --partial 'Broken pipe'
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
 }

@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""schedules-sync - the one local writer of GitHub scheduled-run facts.
+
+For each repo in the day-log-ci list (`<owner/name> <base> [clone]`, private overlay), it
+records every workflow on the base branch that has an `on.schedule`: its crons, its
+timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job sets
+none), its purpose (the comment block right above `on:`, else the file's first comment
+block), its job graph, and its last SCHEDULES_RUNS scheduled runs (id, url, status,
+conclusion, start, end, failed jobs). It writes them to one file, SCHEDULES_STATE
+(~/.local/state/schedules/state.json), which the agent-queue `nightly:` hold, fleet-sessions
+and the hub Schedules tab read instead of asking gh themselves.
+
+  schedules-sync          sync every repo, write the state file, print its path
+  schedules-sync pending <repo>
+                          what an agent-queue `nightly:<repo>` hold still waits for, one line;
+                          exit 0 and no output when nothing is (repo: owner/name or name)
+
+Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
+machine no event when a run ends, so it samples.
+
+gh cost per repo per pass: one workflows listing, one runs page (more only on a cold start
+or after a gap), one blob per changed workflow file and one jobs call per newly failed run.
+The previous state is the cache: a workflow whose blob sha is unchanged is not re-read, a
+finished run's failed jobs are not re-asked. Runs come from actions/runs?event=schedule,
+not `gh run list`, which looks workflows up under actions/workflows, the bucket used up on
+2026-10-29 (fleet-sessions main_runs).
+
+A repo gh cannot read keeps its last good entry, with `error` set and `synced_at` left at
+the last success, so a reader can tell stale from fresh per repo; the exit status is 1.
+A repo with no scheduled workflow is an empty list, not an error.
+
+`pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
+today's local date must each have a finished run, or be past the slot (or the run's start)
+plus the workflow's timeout, which a triage reads as red. A slot still to come today holds.
+A missing file, a repo not in it, or one not synced in 30 minutes holds (fails
+closed, like the `pr:` hold when gh cannot answer). A frequent cron holds all day, so tag
+only repos whose schedules run nightly.
+"""
+
+import base64
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+
+import yaml
+
+HOME = os.path.expanduser("~")
+GH = os.environ.get("SCHEDULES_GH", "gh")
+REPOS = os.environ.get("SCHEDULES_REPOS", os.path.join(HOME, ".config/agentctl/day-log-ci"))
+STATE = os.environ.get(
+    "SCHEDULES_STATE",
+    os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "schedules/state.json"),
+)
+RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
+PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
+MAX_PAGES = int(os.environ.get("SCHEDULES_MAX_PAGES", "20"))  # a cold start of a busy repo
+GH_JOB_TIMEOUT_MIN = 360  # GitHub's default timeout-minutes for a job that sets none
+OVERLAP = timedelta(hours=1)  # re-read this far behind the last sync
+FAILED = ("failure", "timed_out")
+GH_CALL_TIMEOUT_S = 60  # a guard: one hung call must not eat the whole pass
+STALE = timedelta(minutes=30)  # three missed 10-minute passes
+CRON_NAMES = {n: i for i, n in enumerate(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])}
+CRON_NAMES.update({n: i + 1 for i, n in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])})
+
+
+class GhError(Exception):
+    pass
+
+
+def now():
+    s = os.environ.get("SCHEDULES_NOW")
+    return datetime.fromtimestamp(int(s), timezone.utc) if s else datetime.now(timezone.utc)
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(s):
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def gh(path, missing=None):
+    """gh api <path> as JSON. A 404 returns `missing` when one is given, else it is an error."""
+    try:
+        p = subprocess.run([GH, "api", path], capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh api {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    try:
+        body = json.loads(p.stdout)
+    except ValueError:
+        body = None
+    if p.returncode == 0 and body is not None:
+        return body
+    if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
+        return missing
+    raise GhError(f"gh api {path}: {(p.stderr or p.stdout).strip()[:200]}")
+
+
+def read_repos():
+    out = []
+    with open(REPOS) as f:
+        for line in f:
+            line = line.split("#", 1)[0].split()
+            if len(line) >= 2:
+                out.append((line[0], line[1]))
+    return out
+
+
+def read_prev():
+    try:
+        with open(STATE) as f:
+            return {r["repo"]: r for r in json.load(f).get("repos", [])}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def purpose_of(text):
+    """The comment block right above top-level `on:`, else the file's first comment block."""
+    blocks, cur = [], []
+    above_on = None
+    for line in text.splitlines():
+        if line.startswith("#"):
+            cur.append(line.lstrip("#").strip())
+            continue
+        if cur:
+            blocks.append(cur)
+        if line.startswith(("on:", '"on":', "'on':")) and cur:
+            above_on = cur
+        cur = []
+        if line.startswith("jobs:"):
+            break
+    chosen = above_on or (blocks[0] if blocks else None)
+    if not chosen:
+        return None
+    return " ".join(w for w in chosen if w) or None
+
+
+def job_timeout(job):
+    t = job.get("timeout-minutes")
+    return t if isinstance(t, (int, float)) and not isinstance(t, bool) else GH_JOB_TIMEOUT_MIN
+
+
+def needs_of(job):
+    n = job.get("needs") or []
+    return [n] if isinstance(n, str) else [x for x in n if isinstance(x, str)]
+
+
+def parse_workflow(text):
+    """-> (name, crons, jobs, timeout_min) or None when the file has no schedule."""
+    doc = yaml.safe_load(text)
+    if not isinstance(doc, dict):
+        return None
+    on = doc.get("on", doc.get(True))  # YAML 1.1 reads a bare `on` key as true
+    sched = on.get("schedule") if isinstance(on, dict) else None
+    crons = [s["cron"] for s in sched or [] if isinstance(s, dict) and isinstance(s.get("cron"), str)]
+    if not crons:
+        return None
+    raw = doc.get("jobs") if isinstance(doc.get("jobs"), dict) else {}
+    jobs = [
+        {"id": k, "name": v.get("name", k) if isinstance(v, dict) else k,
+         "needs": needs_of(v) if isinstance(v, dict) else [],
+         "timeout_min": job_timeout(v) if isinstance(v, dict) else GH_JOB_TIMEOUT_MIN}
+        for k, v in raw.items()
+    ]
+    by_id = {j["id"]: j for j in jobs}
+    memo = {}
+
+    def path_end(jid, seen=()):
+        if jid in memo:
+            return memo[jid]
+        if jid not in by_id or jid in seen:
+            return 0
+        j = by_id[jid]
+        memo[jid] = j["timeout_min"] + max((path_end(n, seen + (jid,)) for n in j["needs"]), default=0)
+        return memo[jid]
+
+    timeout = max((path_end(j["id"]) for j in jobs), default=0)
+    return str(doc.get("name") or ""), crons, jobs, timeout
+
+
+def scheduled_workflows(repo, base, prev):
+    """-> (scheduled workflows, {path: sha} of the unscheduled ones). A file whose blob sha
+    the last pass already read, scheduled or not, is not read again."""
+    known = {w["path"]: w for w in prev.get("workflows", [])} if prev else {}
+    seen = (prev or {}).get("unscheduled") or {}
+    listing = gh(f"repos/{repo}/contents/.github/workflows?ref={base}", missing=[])
+    out, unscheduled = [], {}
+    for f in listing if isinstance(listing, list) else []:
+        if f.get("type") != "file" or not f.get("name", "").endswith((".yml", ".yaml")):
+            continue
+        path, sha = f["path"], f["sha"]
+        old = known.get(path)
+        if old and old.get("sha") == sha:
+            out.append({k: v for k, v in old.items() if k != "runs"})
+            continue
+        if seen.get(path) == sha:
+            unscheduled[path] = sha
+            continue
+        blob = gh(f"repos/{repo}/git/blobs/{sha}")
+        text = base64.b64decode(blob.get("content", "")).decode("utf-8", "replace")
+        try:
+            parsed = parse_workflow(text)
+        except yaml.YAMLError:
+            parsed = None  # GitHub would not schedule an unparseable file either
+        if not parsed:
+            unscheduled[path] = sha
+            continue
+        name, crons, jobs, timeout = parsed
+        out.append({"path": path, "sha": sha, "name": name or f["name"], "crons": crons,
+                    "timeout_min": timeout, "purpose": purpose_of(text), "jobs": jobs})
+    return sorted(out, key=lambda w: w["path"]), unscheduled
+
+
+def run_record(r):
+    done = r.get("status") == "completed"
+    return {"id": r["id"], "attempt": r.get("run_attempt", 1), "url": r.get("html_url"),
+            "title": r.get("name"), "sha": r.get("head_sha"), "created_at": r.get("created_at"),
+            "status": r.get("status"), "conclusion": r.get("conclusion") if done else None,
+            "started_at": r.get("run_started_at"), "ended_at": r.get("updated_at") if done else None}
+
+
+def fetch_runs(repo, prev):
+    """Scheduled runs, newest first, paged back until the window overlaps the last sync
+    (and every run that was still going then), or MAX_PAGES on a cold start."""
+    stop = None
+    if prev and prev.get("synced_at"):
+        stop = parse_iso(prev["synced_at"]) - OVERLAP
+        for w in prev.get("workflows", []):
+            for r in w.get("runs", []):
+                if r.get("status") != "completed" and r.get("created_at"):
+                    stop = min(stop, parse_iso(r["created_at"]))
+    runs = []
+    for page in range(1, MAX_PAGES + 1):
+        got = gh(f"repos/{repo}/actions/runs?event=schedule&per_page={PER_PAGE}&page={page}")
+        batch = got.get("workflow_runs", []) if isinstance(got, dict) else []
+        runs.extend(batch)
+        if len(batch) < PER_PAGE:
+            break
+        oldest = batch[-1].get("created_at")
+        if stop and oldest and parse_iso(oldest) < stop:
+            break
+    return runs
+
+
+def failed_jobs(repo, run, old):
+    """Names of the failed jobs of a failed run; reused from the last pass for the same attempt."""
+    if run["conclusion"] not in FAILED:
+        return []
+    if (old and old.get("attempt") == run["attempt"] and old.get("conclusion") == run["conclusion"]
+            and old.get("failed_jobs") is not None):
+        return old["failed_jobs"]
+    try:
+        got = gh(f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['attempt']}/jobs?per_page=100")
+    except GhError:
+        return None  # unknown, asked again next pass
+    return [j["name"] for j in got.get("jobs", []) if j.get("conclusion") in FAILED]
+
+
+def sync_repo(repo, base, prev, t):
+    workflows, unscheduled = scheduled_workflows(repo, base, prev)
+    paths = {w["path"] for w in workflows}
+    old_runs = {r["id"]: (w["path"], r) for w in (prev or {}).get("workflows", []) for r in w.get("runs", [])}
+    merged = {rid: pr for rid, pr in old_runs.items() if pr[0] in paths}
+    for raw in fetch_runs(repo, prev) if workflows else []:
+        if raw.get("path") in paths:
+            merged[raw["id"]] = (raw["path"], run_record(raw))
+    for w in workflows:
+        mine = [r for p, r in merged.values() if p == w["path"]]
+        w["runs"] = sorted(mine, key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)[:RUNS_KEPT]
+        for r in w["runs"]:  # only the kept runs are asked about
+            r["failed_jobs"] = failed_jobs(repo, r, old_runs.get(r["id"], (None, None))[1])
+    return {"repo": repo, "base": base, "synced_at": iso(t), "error": None,
+            "workflows": workflows, "unscheduled": unscheduled}
+
+
+def cron_field(spec, lo, hi):
+    vals = set()
+    for part in spec.upper().split(","):
+        part, _, step = part.partition("/")
+        step = int(step) if step else 1
+        if part == "*":
+            a, b = lo, hi
+        else:
+            a, _, b = part.partition("-")
+            a = CRON_NAMES[a] if a in CRON_NAMES else int(a)
+            b = (CRON_NAMES[b] if b in CRON_NAMES else int(b)) if b else (hi if step > 1 else a)
+        vals.update(range(a, b + 1, step))
+    return vals
+
+
+def cron_slots(cron, start, end):
+    """The UTC minutes in [start, end) that a 5-field cron fires on, as GitHub reads it (UTC,
+    and a day matches on day-of-month OR day-of-week when both are restricted)."""
+    f = cron.split()
+    if len(f) != 5:
+        raise ValueError(cron)
+    mins, hours, doms, months = cron_field(f[0], 0, 59), cron_field(f[1], 0, 23), cron_field(f[2], 1, 31), cron_field(f[3], 1, 12)
+    dows = {d % 7 for d in cron_field(f[4], 0, 7)}
+    either = f[2] != "*" and f[4] != "*"
+    out, t = [], start
+    while t < end:
+        dom, dow = t.day in doms, t.isoweekday() % 7 in dows
+        if (t.month in months and t.hour in hours and t.minute in mins
+                and ((dom or dow) if either else (dom and dow))):
+            out.append(t)
+        t += timedelta(minutes=1)
+    return out
+
+
+def pending(name, t):
+    """-> what a nightly:<name> hold still waits for; empty when it releases."""
+    try:
+        with open(STATE) as f:
+            repos = json.load(f).get("repos", [])
+    except (OSError, ValueError, AttributeError):
+        return ["no schedules state"]
+    entry = next((r for r in repos if name in (r.get("repo"), r.get("repo", "").split("/")[-1])), None)
+    if not entry:
+        return [f"{name} not in the schedules state"]
+    if not entry.get("synced_at") or t - parse_iso(entry["synced_at"]) > STALE:
+        return [f"schedules state for {name} stale since {entry.get('synced_at')}"]
+    day = t.astimezone().date()  # today, local time; naive datetimes below are local too
+    start = datetime(day.year, day.month, day.day).astimezone(timezone.utc)
+    end = (datetime(day.year, day.month, day.day) + timedelta(days=1)).astimezone(timezone.utc)
+    out = []
+    for w in entry.get("workflows", []):
+        wf = os.path.basename(w["path"])
+        try:
+            slots = sorted({s for c in w.get("crons", []) for s in cron_slots(c, start, end)})
+        except (ValueError, KeyError):
+            out.append(f"{wf} cron unreadable")
+            continue
+        timeout = timedelta(minutes=w.get("timeout_min") or 0)
+        for i, slot in enumerate(slots):
+            if slot > t:
+                out.append(f"{wf} due {slot.astimezone():%H:%M}")
+                break
+            upto = slots[i + 1] if i + 1 < len(slots) else end
+            run = next((r for r in w.get("runs", []) if r.get("created_at")
+                        and slot <= parse_iso(r["created_at"]) < upto), None)
+            if run and run.get("status") == "completed":
+                continue
+            if t < (parse_iso(run["created_at"]) if run else slot) + timeout:
+                out.append(f"{wf} {'running' if run else 'not started'}")
+                break
+    return out
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if argv and argv[0] == "pending":
+        if len(argv) != 2:
+            print("schedules-sync: pending <repo>", file=sys.stderr)
+            return 2
+        left = pending(argv[1], now())
+        if left:
+            print(", ".join(left))
+        return 1 if left else 0
+    if argv and argv[0] != "sync":
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, --help)", file=sys.stderr)
+        return 2
+    try:
+        repos = read_repos()
+    except OSError as e:
+        print(f"schedules-sync: no repo list: {e}", file=sys.stderr)
+        return 1
+    prev, t, out, bad = read_prev(), now(), [], 0
+    for repo, base in repos:
+        try:
+            out.append(sync_repo(repo, base, prev.get(repo), t))
+        except GhError as e:
+            bad += 1
+            print(f"schedules-sync: {repo}: {e}", file=sys.stderr)
+            kept = dict(prev.get(repo) or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
+            kept["error"] = str(e)
+            out.append(kept)
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = f"{STATE}.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump({"generated_at": iso(t), "repos": out}, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, STATE)
+    print(STATE)
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

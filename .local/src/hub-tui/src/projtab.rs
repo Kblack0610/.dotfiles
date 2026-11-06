@@ -5,8 +5,7 @@
 //! comes back here, as Backspace does at once. `P` steps the selected project's priority
 //! (normal, focus, high, low); app.rs runs the write. This file reads and writes nothing.
 
-use std::collections::HashMap;
-
+use hub_core::page::Page;
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
 use hub_core::tasks::Feed;
@@ -17,21 +16,15 @@ use crate::fit::{clip_line, wrap};
 use crate::fmt::Palette;
 use crate::tasktab::{Kind, Prompt, TaskView};
 
-/// One read of the cards' inputs that are not the board feed: `notes projects --stats --json`
-/// and project-map.json's repos (the queue join).
+/// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
 #[derive(Debug)]
 pub struct Loaded {
     pub stats: Result<Vec<Stats>, String>,
-    pub repos: HashMap<String, String>,
 }
 
 pub fn load(runner: &dyn Runner) -> Loaded {
-    let repos = std::fs::read_to_string(projects::map_path())
-        .map(|t| projects::repos(&t))
-        .unwrap_or_default();
     Loaded {
         stats: projects::stats(runner),
-        repos,
     }
 }
 
@@ -43,6 +36,8 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
+    /// The opened card's folded sections are open (`f`).
+    pub folds: bool,
 }
 
 impl ProjView {
@@ -137,9 +132,14 @@ fn wrapped(
     p: Palette,
     w: usize,
 ) -> Vec<Line<'static>> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let room = w.saturating_sub(lead.len()).max(10);
-    wrap(&words, " ", room)
+    // A line that fits keeps its own spacing: the epic lines' columns are two spaces apart.
+    let lines = if w == 0 || lead.len() + text.len() <= w {
+        vec![text.to_string()]
+    } else {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        wrap(&words, " ", w.saturating_sub(lead.len()).max(10))
+    };
+    lines
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
@@ -153,59 +153,161 @@ fn wrapped(
         .collect()
 }
 
-/// One card: name, the bar and its numbers, the goal, what is running, the counts, the status.
-pub fn card_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![clip_line(
-        Line::from(vec![
-            Span::styled(c.name.to_uppercase(), p.head()),
-            Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
-            Span::styled(
-                if c.prio.is_empty() {
-                    String::new()
-                } else {
-                    format!(", prio {}", c.prio)
-                },
-                if c.prio == "focus" { p.head() } else { p.dim() },
-            ),
-        ]),
-        w,
-    )];
+/// The card's first line: name, profile, stage, priority, then its queue (`queue` adds it).
+fn head(c: &Card, p: Palette, w: usize, queue: bool) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(c.name.to_uppercase(), p.head()),
+        Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
+        Span::styled(
+            if c.prio.is_empty() {
+                String::new()
+            } else {
+                format!(", prio {}", c.prio)
+            },
+            if c.prio == "focus" { p.head() } else { p.dim() },
+        ),
+    ];
+    if queue {
+        spans.push(Span::styled(format!("  {}", projects::queue(c)), p.dim()));
+    }
+    clip_line(Line::from(spans), w)
+}
+
+/// The bar and the open version's numbers, wrapped under the bar when they do not fit beside it.
+fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut b = vec![Span::raw("  ")];
     b.extend(bar(c.percent, p));
     let numbers = projects::summary(c);
     if w == 0 || BAR + 5 + numbers.len() <= w {
         b.push(Span::raw(format!("  {numbers}")));
-        out.push(Line::from(b));
+        vec![Line::from(b)]
     } else {
-        out.push(Line::from(b));
+        let mut out = vec![Line::from(b)];
         out.extend(wrapped("  ", &numbers, Default::default(), p, w));
+        out
     }
-    if !c.goal.is_empty() {
-        out.extend(wrapped("  goal     ", &c.goal, Default::default(), p, w));
+}
+
+/// One card in the list: what it is, its stage and queue, then the bar and its numbers. The rest
+/// is the opened card's (open_lines).
+pub fn card_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![head(c, p, w, true)];
+    out.extend(bar_lines(c, p, w));
+    out
+}
+
+/// A folded section's head: `TITLE  what it holds`, then the key when it is folded.
+fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(title.to_string(), p.head()),
+        Span::styled(format!("  {says}"), p.dim()),
+    ];
+    if !folds {
+        spans.push(Span::styled("  f opens it", p.dim()));
     }
-    for r in &c.running {
-        let mut t = r.title.clone();
-        if let Some(ph) = &r.phases {
-            t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
-            if let Some(n) = &ph.next {
-                t += &format!(": {n}");
+    clip_line(Line::from(spans), w)
+}
+
+/// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
+/// open), then Build by system, Next stage, Shipped, In flight and the Agent note as folded
+/// heads with their counts, which `f` opens together. `page` is None while it is read.
+pub fn open_lines(
+    c: &Card,
+    page: Option<&Page>,
+    folds: bool,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out = vec![head(c, p, w, false)];
+    out.extend(bar_lines(c, p, w));
+    let warn_if = |b: bool| if b { p.warn() } else { Default::default() };
+    let (goal, style) = if c.goal.is_empty() {
+        ("no goal set", p.dim())
+    } else {
+        (c.goal.as_str(), Default::default())
+    };
+    out.extend(wrapped("  goal     ", goal, style, p, w));
+    let Some(pg) = page else {
+        out.push(Line::styled("  reading the page...", p.dim()));
+        return out;
+    };
+    if let Some(f) = &pg.flow_line {
+        out.extend(wrapped("  flow     ", f, Default::default(), p, w));
+    }
+    for e in &pg.errors {
+        out.extend(wrapped("  ", e, p.warn(), p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(clip_line(
+        Line::from(vec![
+            Span::styled("NEEDS YOU", p.head()),
+            Span::styled(
+                if pg.needs.is_empty() {
+                    "  nothing".to_string()
+                } else {
+                    format!("  {}", pg.needs.len())
+                },
+                p.dim(),
+            ),
+        ]),
+        w,
+    ));
+    for n in &pg.needs {
+        out.extend(wrapped("  ", n, p.warn(), p, w));
+    }
+    out.push(fold_head("BUILD BY SYSTEM", &pg.systems_says, folds, p, w));
+    if folds {
+        for s in &pg.systems {
+            out.extend(wrapped("  ", &s.head, Default::default(), p, w));
+            for e in &s.epics {
+                out.extend(wrapped("    ", &e.line, warn_if(e.behind), p, w));
             }
-            t += ")";
+            if !s.closed.is_empty() {
+                out.extend(wrapped("    ", &s.closed, p.dim(), p, w));
+            }
         }
-        out.extend(wrapped("  running  ", &t, p.good(), p, w));
     }
-    let counts = format!(
-        "{} running, {} waiting, {} queued; {} rows #requested, {} in the inbox",
-        c.running.len(),
-        c.waiting,
-        c.queued,
-        c.requested,
-        c.inbox
-    );
-    out.extend(wrapped("  queue    ", &counts, Default::default(), p, w));
-    if !c.status.is_empty() {
-        let lead = format!("  {} ", c.status_date);
-        out.extend(wrapped(&lead, &c.status, p.dim(), p, w));
+    out.push(fold_head("NEXT STAGE", &pg.next_says, folds, p, w));
+    if folds {
+        for r in &pg.next_rows {
+            out.extend(wrapped(
+                &format!("  {:<6} ", r.result),
+                &format!("{} ({})", r.requirement, r.stage),
+                warn_if(r.result == "FAIL"),
+                p,
+                w,
+            ));
+        }
+    }
+    out.push(fold_head("SHIPPED", &pg.shipped_says, folds, p, w));
+    if folds {
+        for s in &pg.shipped {
+            out.extend(wrapped("  ", s, Default::default(), p, w));
+        }
+    }
+    out.push(fold_head("IN FLIGHT", &projects::counts(c), folds, p, w));
+    if folds {
+        for r in &c.running {
+            let mut t = r.title.clone();
+            if let Some(ph) = &r.phases {
+                t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
+                if let Some(n) = &ph.next {
+                    t += &format!(": {n}");
+                }
+                t += ")";
+            }
+            out.extend(wrapped("  running  ", &t, p.good(), p, w));
+        }
+    }
+    out.push(fold_head(
+        "AGENT NOTE",
+        &projects::note_says(c),
+        folds,
+        p,
+        w,
+    ));
+    if folds && !c.status.is_empty() {
+        out.extend(wrapped("  ", &c.status, p.dim(), p, w));
     }
     out
 }
@@ -327,29 +429,104 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_card_draws_its_bar_numbers_and_queue_and_wraps_to_the_width() {
+    fn a_list_card_is_its_head_with_the_queue_and_its_bar_and_wraps_to_the_width() {
         let pr = fixture();
         let l: Vec<String> = card_lines(&pr.cards[0], Palette { no_color: true }, 120)
             .iter()
             .map(plain)
             .collect();
-        assert_eq!(l[0], "GARDEN  personal, alpha");
         assert_eq!(
-            l[1],
-            "  [###############.....]  v0.0.1 75% (3 of 4 by size), 7d 2, 28d 4, ETA 7d"
+            l,
+            [
+                "GARDEN  personal, alpha  0 running, 0 waiting, 0 queued",
+                "  [###############.....]  v0.0.1 75% (3 of 4 by size), 7d 2, 28d 4, ETA 7d",
+            ],
+            "the goal, running list and status are the opened card's"
         );
-        assert_eq!(l[2], "  goal     the human can see where each project is");
-        assert!(
-            l[3].starts_with("  queue    0 running, 0 waiting, 0 queued"),
-            "{l:?}"
-        );
-        assert_eq!(l[4], "  2026-11-05 landed the cards");
         let narrow: Vec<String> = card_lines(&pr.cards[0], Palette { no_color: true }, 40)
             .iter()
             .map(plain)
             .collect();
         assert!(narrow.iter().all(|s| s.len() <= 40), "{narrow:?}");
         assert!(narrow.join(" ").contains("ETA 7d"), "{narrow:?}");
+    }
+
+    fn a_page() -> Page {
+        Page {
+            project: "garden".into(),
+            flow_line: Some(
+                "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
+            ),
+            needs: vec!["verify: Saves (4 of 4 rows landed, no live proof)".into()],
+            systems: vec![hub_core::page::System {
+                id: "ui".into(),
+                head: "ui  criteria 5 of 7".into(),
+                epics: vec![hub_core::page::EpicLine {
+                    line: "Menus  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind".into(),
+                    behind: true,
+                }],
+                closed: "+1 closed, 1 verified".into(),
+            }],
+            systems_says: "1 systems, 1 open epics (2 rows with no epic)".into(),
+            next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet".into(),
+            next_rows: vec![hub_core::page::Requirement {
+                stage: "beta".into(),
+                result: "FAIL".into(),
+                requirement: "a soak test".into(),
+            }],
+            shipped_says: "none yet".into(),
+            shipped: vec![],
+            errors: vec!["project-stage-check --systems: exited 2".into()],
+        }
+    }
+
+    #[test]
+    fn the_opened_card_puts_needs_you_open_and_folds_the_rest_to_heads_with_counts() {
+        let pr = fixture();
+        let np = Palette { no_color: true };
+        let draw = |pg: Option<&Page>, folds: bool| -> Vec<String> {
+            open_lines(&pr.cards[0], pg, folds, np, 200)
+                .iter()
+                .map(plain)
+                .collect()
+        };
+        let pg = a_page();
+        let l = draw(Some(&pg), false);
+        assert_eq!(l[0], "GARDEN  personal, alpha");
+        assert_eq!(l[2], "  goal     the human can see where each project is");
+        assert!(l[3].starts_with("  flow     ideas 3 | briefs 1"), "{l:?}");
+        assert_eq!(l[4], "  project-stage-check --systems: exited 2");
+        assert_eq!(
+            l[6..].to_vec(),
+            [
+                "NEEDS YOU  1",
+                "  verify: Saves (4 of 4 rows landed, no live proof)",
+                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  f opens it",
+                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  f opens it",
+                "SHIPPED  none yet  f opens it",
+                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  f opens it",
+                "AGENT NOTE  model-written, 2026-11-05  f opens it",
+            ]
+        );
+        let open = draw(Some(&pg), true).join("\n");
+        for s in [
+            "  ui  criteria 5 of 7\n    Menus  [rows]",
+            "    +1 closed, 1 verified",
+            "  FAIL   a soak test (beta)",
+            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
+        ] {
+            assert!(open.contains(s), "{s} in {open}");
+        }
+        assert!(!open.contains("f opens it"));
+        let reading = draw(None, true);
+        assert_eq!(reading.last().unwrap(), "  reading the page...");
+        let mut c = pr.cards[0].clone();
+        c.goal.clear();
+        let l: Vec<String> = open_lines(&c, None, false, np, 200)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(l[2], "  goal     no goal set");
     }
 
     #[test]
@@ -401,7 +578,10 @@ pub(crate) mod tests {
             s[2].starts_with("ALL PROJECTS  reading notes board"),
             "{s:?}"
         );
-        assert_eq!(s[at.unwrap()], "GARDEN  personal, alpha");
+        assert_eq!(
+            s[at.unwrap()],
+            "GARDEN  personal, alpha  0 running, 0 waiting, 0 queued"
+        );
         let tail = s.join("\n");
         assert!(
             tail.contains("NOT ON A CARD  1 active queue items"),

@@ -17,20 +17,15 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/worlds.sh" || exit 1
 
 # protected <name> -> the manifest that declares <name>, exit 1 when none does. Any world's
-# manifest counts on any server, a hidden one too: a name the human works in is never a
-# disposable session. `?name` is declared on demand, `name:window` declares a window of session
-# name. Fed by `<<<` for the reason world_of_dir gives.
+# manifest counts on any server (worlds.sh world_declared). Fed by `<<<` for the reason
+# world_of_dir gives.
 protected() {
-  local f name rest
-  for f in "$MANIFEST_DIR"/*.conf; do
-    [ -r "$f" ] || continue
-    while read -r name rest; do
-      name="${name#\?}"
-      [ "${name%%:*}" = "$1" ] || continue
-      printf '%s\n' "$f"
-      return 0
-    done <<< "$(world_entries "$f")"
-  done
+  local name f
+  while read -r name f; do
+    [ "$name" = "$1" ] || continue
+    printf '%s\n' "$f"
+    return 0
+  done <<< "$(world_declared)"
   return 1
 }
 

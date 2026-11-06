@@ -167,9 +167,11 @@ pub async fn headers(mut res: Response) -> Response {
 mod tests {
     use super::*;
 
-    /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in app.js.
-    fn js_list(name: &str) -> Vec<String> {
-        let js = include_str!("../static/app.js");
+    const APP_JS: &str = include_str!("../static/app.js");
+    const FLEET_JS: &str = include_str!("../static/fleet.js");
+
+    /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
+    fn js_list(js: &str, name: &str) -> Vec<String> {
         let at = js
             .find(&format!("const {name} = "))
             .unwrap_or_else(|| panic!("no {name}"));
@@ -183,13 +185,23 @@ mod tests {
     }
 
     #[test]
+    fn the_workers_filters_are_hub_cores() {
+        // docs/dashboards.md rule 8: the chips and sorts are the TUI's, in its order.
+        assert_eq!(
+            js_list(FLEET_JS, "W_FILTERS"),
+            hub_core::fleet::WORKER_FILTERS
+        );
+        assert_eq!(js_list(FLEET_JS, "W_SORTS"), hub_core::fleet::WORKER_SORTS);
+    }
+
+    #[test]
     fn tab_names_are_the_layout() {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs, in its order.
-        let names = js_list("TAB_NAMES");
+        let names = js_list(APP_JS, "TAB_NAMES");
         let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.id).collect();
         assert_eq!(names, layout);
         // A retired name the TUI also knows is never a live web tab, and lands where hub-core says.
-        let retired = js_list("RETIRED_TABS");
+        let retired = js_list(APP_JS, "RETIRED_TABS");
         for pair in retired.chunks(2) {
             let (old, new) = (&pair[0], &pair[1]);
             assert!(!names.contains(old), "{old} is retired and live");

@@ -1,11 +1,11 @@
 ---
 name: day-log
 description: >-
-  What a day shipped: merged PRs by area, the session behind each, what waits on the human, spend. Use for "what got done today", "what merged this week", "what moved this week", "which session landed #N". ETAs are fleet-bench.
+  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]
-  reviewed: "2026-11-05"
+  reviewed: 2026-11-06
 ---
 
 # day-log
@@ -14,7 +14,7 @@ Answers "what did the day produce" from one record per day, so a chat answer, th
 
 ## Scope and triggers
 
-What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the session that landed each one, what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub's Log tab (Prefix i, then 7) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
+What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the work item that landed each one (the agent-queue item whose `pr:` it is), what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub's Log tab (Prefix i, then 7) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
 
 ## When to Use
 
@@ -31,7 +31,7 @@ Not for what sessions are doing right now (`shepherd status`, the hub Sessions t
 3. Answer in the status shape (`comms-standard`, the shape `day-log show` prints): the headline (merged count, repos, spend), then Done (each area with its notable PRs), Doing (open PRs), Next (each live session's next plan phase) and Needs you, then the scorecard headline (`.bench.headline`, quote it as is). Name the session that landed a PR from `.by` only when it is set.
 4. For a page, publish an Artifact built from the same JSON (one section per area, every PR linked), so it cannot disagree with the board.
 
-Record fields: `merged[]` (repo, number, title, url, merged_at, scope, group, area, by), `open[]` (repo, number, title, created_at, updated_at, draft, area, ci, by), `next[]` (area, who, phase, done, total: each unfinished session's next plan phase, from the last live gather), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`, and the three sections below.
+Record fields: `merged[]` (repo, number, title, url, merged_at, scope (the item's area, else the title's scope), group, area, by (the item slug, null when no item carries the PR)), `open[]` (repo, number, title, created_at, updated_at, draft, area, ci, by), `next[]` (area, who, phase, done, total: each unfinished session's next plan phase, from the last live gather), `waiting` (main, needs, asks), `fleet` (sessions, buckets, holds, unity_runs), `bench` (headline, sessions), `usage[]` (project, sessions, tokens, cost_usd), `timeline[]`, `unreadable[]`, `live`, and the three sections below.
 
 ## The snapshot schema
 

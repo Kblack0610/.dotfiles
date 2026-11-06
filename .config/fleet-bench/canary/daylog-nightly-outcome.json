@@ -1,0 +1,27 @@
+{
+  "id": "daylog-nightly-outcome",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#975",
+  "base": "c167bd76e59c98a3332b274d4b8a4eef31217235",
+  "merge": "56248e63741022a52789e88ea6e0e71bf1992ac9",
+  "task": "fix(day-log): nightly declares its outcome so token-usage stops tripping fleet-liveness",
+  "accept": [
+    "nightly under agentctl declares WORKED, so the runner is not promoted to STALLED",
+    "nightly under agentctl declares FAILED when a part fails",
+    "nightly by hand writes no runner outcome"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/day_log.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(nightly under agentctl declares WORKED, so the runner is not promoted to STALLED|nightly under agentctl declares FAILED when a part fails|nightly by hand writes no runner outcome)$",
+      "tests/unit/day_log.bats"
+    ]
+  }
+}

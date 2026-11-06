@@ -20,13 +20,14 @@ pub const TABS: [Tab; 8] = [
         question: "What needs me, and is everything OK?",
         sections: &["needs", "running", "numbers", "health"],
     },
-    // The daily note, its links row first; the outbox (the doc and Handled today) opens from
-    // that row, so it is a section here, not a tab of its own.
+    // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
+    // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
+    // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
         title: "Daily",
         question: "What is my day?",
-        sections: &["links", "lanes", "rollup", "sections", "outbox"],
+        sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
     },
     Tab {
         id: "queue",
@@ -51,7 +52,7 @@ pub const TABS: [Tab; 8] = [
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
-            "health", "red", "machines", "ci", "jobs", "cloud", "governor",
+            "health", "red", "fixes", "machines", "ci", "jobs", "cloud", "governor",
         ],
     },
     Tab {
@@ -99,7 +100,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("actions", "log"),
     ("forecast", "log"),
     // The Outbox tab (the landing page until 2026-11-05) is a section of Daily, opened from its
-    // links row; Focus is Daily, the daily note's own name.
+    // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
 ];
@@ -163,6 +164,14 @@ mod tests {
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
         assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
         assert_eq!(resolve("nope"), None);
+    }
+
+    #[test]
+    fn infra_shows_red_fixes_right_under_red_now() {
+        let infra = resolve("infra").unwrap().sections;
+        let at = |s: &str| infra.iter().position(|x| *x == s).unwrap();
+        assert_eq!(at("fixes"), at("red") + 1);
+        assert_eq!(section("fixes"), None, "a new section is no retired name");
     }
 
     #[test]

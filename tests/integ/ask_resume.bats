@@ -155,6 +155,32 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_output --partial 'agentctl-run --agent ask-resume -p /captain alpha go --max-turns 60'
 }
 
+@test "under a systemd unit the resume leaves the unit's cgroup through a scope; outside one it does not" {
+  # A oneshot's cgroup kills every child when it exits, setsid ones too.
+  cat > "$SANDBOX/bin/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+while [ "${1#--}" != "$1" ]; do shift; done
+"$@"
+EOF
+  chmod +x "$SANDBOX/bin/systemd-run"
+  local id; id="$(gate alpha)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  INVOCATION_ID=abc run ask-resume "$id"
+  assert_success
+  run calls
+  assert_output --partial 'systemd-run --user --scope --quiet setsid -f agentctl-run --agent ask-resume -p /captain alpha go'
+  assert_output --partial $'\nagentctl-run --agent ask-resume -p /captain alpha go'
+  # negative control: a resume started outside a unit uses setsid alone
+  : > "$NOTES_FIXTURE/calls.log"
+  id="$(gate beta)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  env -u INVOCATION_ID ask-resume "$id"
+  run calls
+  refute_output --partial 'systemd-run'
+  assert_output --partial 'agentctl-run --agent ask-resume -p /captain beta go'
+}
+
 # The single most important test in this file. Resuming twice means two scope-outs of the
 # same items, which means duplicate tickets on a real tracker and two branches for one task.
 @test "an ask resumes EXACTLY ONCE across repeated drains" {

@@ -81,5 +81,5 @@ undescribed() {
   sed '0,/^bindpd = ,a, agent panel,/s//bindp = ,a,/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf" > "$FX/leader.conf"
   run undescribed "$FX/leader.conf"
   assert_failure
-  assert_output "pinbar a: 0 described"
+  assert_output "pinbar-agents a: 0 described"
 }

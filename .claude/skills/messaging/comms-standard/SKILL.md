@@ -1,7 +1,7 @@
 ---
 name: comms-standard
 description: >-
-  The standard for anything the fleet writes for the human to read: pages, the briefing, the Morning block, rundowns, status, PR bodies, client EODs, UI text. Use before writing or changing one, or for "why is this message bad". Prose tells: de-ai-writing.
+  The standard for anything the fleet writes for the human to read: pages, the briefing, the Morning block, rundowns, status, PR bodies, client EODs, UI text, answers in chat. Use before writing or changing one, or for "why is this message bad". Prose tells: de-ai-writing.
 metadata:
   category: messaging
   tags: [writing, notifications, briefing, status, standards]
@@ -65,6 +65,12 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 - An error says what failed and what to do next ("Could not load the queue. Reload, or check agent-web's log.").
 - A summary line is a sentence that starts with its subject ("Queue: nothing can start now."), and an id comes after the point (rule 3).
 - An empty state says what would appear there and why it is empty.
+
+**Answers in chat** (a session answering the human in conversation). The reader built the system, so the UI rule against internal terms does not apply here:
+- Use the system's own names (shepherd, dispatch, lane, pace, queue item, pass) without defining them, and never explain how a piece of the system works unless asked.
+- Lead with the finding and its cause, measured against the last point the system recorded (the previous pass report, the last summary). A number appears only when it moves the finding.
+- End with the one lever you would pull and why. Pull it yourself when it is an automated lane's; for the human's own sessions, recommend it. "That is your call" with no recommendation is not an answer.
+- Why: on 2026-11-06 an answer about the fleet's burn explained the shepherd's budget cap to the person who wrote it and ended with no recommendation. The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
 
 ## Steps
 

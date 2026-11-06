@@ -33,7 +33,7 @@ IFS=: read -r -a ROOTS <<< "${SESSIONIZER_ROOTS:-$HOME/dev:$HOME/bin:$HOME/src:$
 # `vendor` and `.claude` are here for the same reason `node_modules` is: they hold real git
 # checkouts that are somebody else's code or an agent's scratch, and nesting is now allowed
 # (see repo_roots), so the walk has to be told about them rather than being saved by accident.
-IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.serena:.claude:node_modules:vendor:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
+IFS=: read -r -a PRUNE <<< "${SESSIONIZER_PRUNE:-.git:.github:.claude:node_modules:vendor:.venv:venv:__pycache__:build:dist:target:out:.next:.cache:.npm:.cargo:.pytest_cache:.idea:.vscode:.vs:.DS_Store:.tmp:.temp}"
 # How deep to look FOR A REPO under a root, not how deep a row may be.
 SESSIONIZER_DEPTH="${SESSIONIZER_DEPTH:-4}"
 # Shared with worktree.sh, which owns worktrees and puts them here. Same env key, so pointing
@@ -59,7 +59,7 @@ declared_dirs() {
 
 # current_world -- the socket this client is on (`hub`), or nothing outside tmux.
 #
-# The socket basename, which is how servers.sh:cmd_pick_session already asks. `default` is
+# The socket basename, from $TMUX. `default` is
 # the unnamed server and is nobody's world, so it is reported as such: a directory declared
 # in hub.conf, picked from the default socket, should still go to hub.
 current_world() {
@@ -201,11 +201,11 @@ go() {
   read -r world name <<< "$(world_route "$dir")"
 
   # It lives somewhere else: hand the hop to tmx, which owns crossing worlds
-  # (detach-client -E, the back-crumb, and `ensure` on the far side). `goto` and not `land`
+  # (detach-client -E and `ensure` on the far side). `goto` and not `land`
   # -- land is the far side and would skip the detach; see servers.sh:_enter.
   #
-  # This is reached from inside a display-popup, which is fine and is not new: Prefix+A
-  # (`tmx pick-all`) is a popup that hops worlds exactly this way.
+  # This is reached from inside a display-popup, which is fine and is not new: Prefix+H
+  # (`tmx pick`) is a popup that hops worlds exactly this way.
   if [ "$world" != here ] && [ "$world" != "$(current_world)" ]; then
     panel_need tmx
     # A worktree or an undeclared repo is in no manifest, so tmx's ensure cannot wake it and

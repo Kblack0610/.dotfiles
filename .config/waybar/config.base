@@ -116,13 +116,12 @@
         "modules": [
             "custom/timebox",
             "custom/health",
+            "custom/fleet",
             "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/fleet",
             "custom/ci",
-            "custom/machine-mode",
-            "custom/day"
+            "custom/machine-mode"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
@@ -183,6 +182,8 @@
         "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab sessions",
         "tooltip": true
     },
+    // Fleet pulse: shown beside the health heart only while a machine is not up (fleet_pulse.sh
+    // prints nothing for a healthy fleet). Click opens the gatus status page.
     "custom/fleet": {
         "format": "{}",
         "return-type": "json",
@@ -263,19 +264,6 @@
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab queue",
-        "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup",
-        "tooltip": true
-    },
-    // Day: PRs merged today (day-log's record, refreshed by day-log.timer) and a red !N for
-    // what is red now (day.sh). Click opens the hub on Log (the day view), right-click on Home.
-    "custom/day": {
-        "format": "{}",
-        "return-type": "json",
-        "interval": 60,
-        "exec": "$HOME/.config/waybar/modules.sh gate custom/day $HOME/.config/waybar/day.sh",
-        "signal": 10,
-        "hide-empty-text": true,
-        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab log",
         "on-click-right": "kitty --class floating-term -e $HOME/.local/bin/hub --popup",
         "tooltip": true
     },

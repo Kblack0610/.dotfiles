@@ -62,7 +62,7 @@ setup() {
   # repo. Every other key in .tmux.conf must still point where it did. e and a are muxpoon's,
   # bound by its plugin, so they have no line here.
   local k
-  for k in i u U o p g w m t f S A W r N H; do
+  for k in i u U o p g w m t f W r N H A F; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }

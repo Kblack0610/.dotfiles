@@ -4,8 +4,9 @@
 #
 #   ask-sweep run [--dry-run]   file rows for unfinished plans and missed asks
 #
-# Plans: a plan with unticked phases, no live session and no change for a day gets one row, keyed
-# by its slug so it is never filed twice. No model. Plans older than the first run are not
+# Plans: a plan with unticked phases, no live session and no change for a day gets one row naming
+# its slug; an open row that names it already, or an open twin (`ptask add` exit 3), stops a second
+# one. No model. Plans older than the first run are not
 # back-filled. A plan with no checklist and no Results is only counted, since many of those landed.
 # Asks: the human's messages from quiet sessions in every repo with a board and no client (the
 # registry: project_board, project_inherited client), grouped by board, one model call per board
@@ -36,12 +37,11 @@ HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0
+DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0; STOPPED=0
 declare -A NO_BOARD=()
 
 say() { printf 'ask-sweep: %s\n' "$*" >&2; }
 ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
-sig() { sha256sum | cut -c1-12; }
 
 # file_row [--sheet] <board> <text>: one row within the run's cap. Returns 1 when not filed;
 # an open twin already on the board (`ptask add` exit 3) counts as filed.
@@ -79,18 +79,12 @@ sweep_plans() {
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
     grep -qxF "$f" <<<"$live" && continue
-    grep -qxF "$slug" "$ASK_SWEEP_DIR/plans-filed" 2>/dev/null && continue
     project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
     [ -n "$project" ] || continue
     board="$(board_of "$(basename "$project")")"
     [ -n "$board" ] || continue
-    if notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug"; then
-      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
-      continue
-    fi
-    if file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2 #size/m"; then
-      [ "$DRY" = 1 ] || echo "$slug" >> "$ASK_SWEEP_DIR/plans-filed"
-    fi
+    notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug" && continue
+    file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2 #size/m"
   done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
 }
 
@@ -141,7 +135,7 @@ human_messages() {
 # its rows and moves the watermarks only when the call answered.
 sweep_board() {
   local board="$1" repos="$2" since msgs text open_rows prs prompt wd out rc line quote row tier size
-  local done_is human key tags asked floor r; shift 2
+  local done_is human tags asked floor r; shift 2
   since="$ASK_SWEEP_DIR/since/$board"
   # Oldest first up to ASK_SWEEP_MSG_BYTES: the prompt is one argument, and Linux limits one to
   # 128 KB. What does not fit is past the watermarks this call moves, so the next run reads it.
@@ -174,7 +168,7 @@ $prs"
   rm -rf -- "$wd"
   case "$rc" in
     0) ;;
-    75) say "$board: stopped at its budget"; proof_why "$board: stopped at its budget"; return 1 ;;
+    75) STOPPED=1; say "$board: stopped at its budget"; proof_why "$board: stopped at its budget"; return 1 ;;
     *) FAULT=1; say "$board: model call failed (exit $rc)"; proof_why "$board: model call failed (exit $rc)"; return 1 ;;
   esac
   grep -qx 'ASK-SWEEP-START' <<<"$out" || { FAULT=1; say "$board: model returned no answer block"; proof_why "$board: the model returned no answer block"; return 1; }
@@ -187,9 +181,6 @@ $prs"
     done_is="$(jq -r '.done_is_stated // false' <<<"$line")"
     human="$(jq -r '.human_only // false' <<<"$line")"
     [ -n "$row" ] || continue
-    # The same words on a later run, or the same run twice, are never filed again.
-    key="$(printf '%s' "$quote" | tr '[:upper:]' '[:lower:]' | sig)"
-    grep -qxF "$key" "$ASK_SWEEP_DIR/asks-filed" 2>/dev/null && continue
     # The day the quoted message was sent, else the newest message's.
     asked="$(awk -F'\t' -v q="$(tr '[:upper:]' '[:lower:]' <<<"$quote")" 'index(tolower($3), q) { print $2; exit }' <<<"$msgs")"
     [ -n "$asked" ] || asked="$(cut -f2 <<<"$msgs" | sort | tail -1)"
@@ -197,11 +188,10 @@ $prs"
     tags="#requested #tier/$tier #size/${size,,}"
     [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$human" != true ] && tags+=" #worker/requested"
     if [ "$human" = true ]; then
-      file_row --sheet "$board" "$row; asked $asked \"$quote\" #low" || continue
+      file_row --sheet "$board" "$row; asked $asked \"$quote\" #low"
     else
-      file_row "$board" "$row; asked $asked \"$quote\" $tags" || continue
+      file_row "$board" "$row; asked $asked \"$quote\" $tags"
     fi
-    [ "$DRY" = 1 ] || echo "$key" >> "$ASK_SWEEP_DIR/asks-filed"
   done < <(sed -n '/^ASK-SWEEP-START$/,/^ASK-SWEEP-END$/p' <<<"$out" | sed '1d;$d')
   [ "$DRY" = 1 ] && return 0
   # The newest message read is each file's watermark; one older than the lookback is dropped.
@@ -249,6 +239,8 @@ cmd_run() {
   # A budget stop alone is the cap holding, not a fault; the watermarks resume it next run.
   [ "$rc" != 0 ] && verdict=BLOCKED
   [ "$FAULT" = 1 ] && verdict=FAILED
+  # "budget: " is what agentctl-briefing reads on the last outcome line.
+  [ "$verdict" = BLOCKED ] && [ "$STOPPED" = 1 ] && { rc=75; summary="budget: $summary"; }
   proof_report "$NAME" "$verdict" "$summary"
   return "$rc"
 }

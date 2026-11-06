@@ -25,6 +25,7 @@ mod outcomes;
 mod pipeline;
 mod projects;
 mod queue;
+mod reds;
 mod shepherd;
 mod transcript;
 
@@ -118,11 +119,13 @@ async fn main() -> Result<()> {
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
+        .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/pipeline", get(pipeline_line))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
+        .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
@@ -135,6 +138,7 @@ async fn main() -> Result<()> {
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
+        .route("/api/reds", get(reds::get))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
@@ -839,12 +843,14 @@ struct Ask {
     reason: String,
     answered_by: String,
     answer_note: String,
+    /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
+    assume_at: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note.
+/// judge_reason, answer_note, assume_at.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -880,6 +886,7 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     rule: col(21).into(),
                     reason: col(22).into(),
                     answer_note: col(23).into(),
+                    assume_at: col(24).into(),
                 }
             })
         })
@@ -995,7 +1002,8 @@ async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::H
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&infra))
+        let board = hub_core::tasks::feed(&actions::System);
+        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
     })
     .await
     .map(Json)
@@ -1024,6 +1032,18 @@ async fn fleet_board(State(s): State<Shared>) -> Response {
         s.fleet.get().await,
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct RunnerQuery {
+    name: String,
+}
+
+async fn fleet_runner(Query(q): Query<RunnerQuery>) -> ApiResult<Response> {
+    let json = fleet::runner(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) -> Response {
@@ -1278,6 +1298,10 @@ mod tests {
             ("human", "judge", "taste", "only you know", "in session: b")
         );
         assert_eq!(parse_asks(noted)[0].rule, "");
+        // assume_at after them, for the card's deadline.
+        let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
+        assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
+        assert_eq!(parse_asks(ruled)[0].assume_at, "");
     }
 
     #[test]

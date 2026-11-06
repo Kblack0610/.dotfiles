@@ -353,7 +353,7 @@ declare_in_lab() {
 @test "Prefix+F runs new in the background so tmux keeps taking keys" {
   # A blocking run-shell froze the client for the fetch plus the checkout, which on a Unity
   # repo is many seconds.
-  run grep -E "^bind F run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
+  run grep -E "^bind (-N \"[^\"]*\" )?F .*run-shell -b .*wt new" "$REPO_ROOT/.tmux.conf"
   assert_success
 }
 

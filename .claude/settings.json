@@ -24,7 +24,6 @@
       "NotebookEdit",
       "mcp__context7",
       "mcp__playwright",
-      "mcp__serena",
       "mcp__claude_ai_Gmail",
       "mcp__claude_ai_Google_Calendar",
       "mcp__claude_ai_Google_Drive",
@@ -126,10 +125,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/board-observe.sh"
-          },
-          {
-            "type": "command",
             "command": "bash ~/.claude/hooks/ai-comment-guard.sh"
           },
           {
@@ -139,11 +134,11 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "ExitPlanMode",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
+            "command": "bash ~/.claude/hooks/plan-approved.sh",
             "timeout": 5
           }
         ]
@@ -211,16 +206,6 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/spawn-watch.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
-            "timeout": 5
           }
         ]
       }
@@ -297,18 +282,6 @@
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.config/shared-hooks/worktree-remove.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
-            "timeout": 5
           }
         ]
       }

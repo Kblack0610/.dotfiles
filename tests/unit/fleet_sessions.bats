@@ -251,10 +251,18 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'moved:a moved on (done)'
   run item_of "$(qi "running${t}lab:s2${t}sid-9${t}a${t}0")" sid-9 lab:s1 1 "$start"
   assert_output 'moved:a moved on (running in lab:s2)'
-  # running here is its own; waiting here is neither, and either beats one that moved on
+  # running here is its own; waiting here is only named (here:), and either beats one that moved on
   run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "running${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
   assert_output 'own:b'
   run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "waiting${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'here:b'
+  # an item added by hand records no session:, only this Claude session: it runs here, even in a
+  # tmux session shared by several claudes; one that names another Claude session is not this one's
+  run item_of "$(qi "running${t}-${t}sid-9${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
+  assert_output 'own:c'
+  run item_of "$(qi "waiting${t}-${t}sid-9${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
+  assert_output 'here:c'
+  run item_of "$(qi "running${t}-${t}sid-8${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
   [ "$output" = - ]
   # session: alone: a done item counts only when it finished after this claude started (names recycle)
   run item_of "$(qi "done${t}lab:s1${t}-${t}a${t}500")" sid-9 lab:s1 1 "$start"
@@ -546,7 +554,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -686,6 +694,66 @@ SH
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
+@test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {
+  # ar-185: one test red on several agents' gates at once is a shared cause, and each session chased it alone.
+  landed_fixture
+  local now f doc="$XDG_STATE_HOME/fleet/state.json"
+  now="$(date +%s)" f="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv"
+  mkdir -p "${f%/*}"
+  # T.Shared: an episode from 2.5h ago (gaps under 2h), red on feat/x (this session's worktree), a
+  # detached agent-3 (counted by its worktree) and feat/b twice. T.Two has two branches, T.Old three
+  # outside the window; a future line and a malformed one are skipped.
+  printf '%s\t%s\t%s\t%s\n' \
+    $((now - 9000)) old feat/old T.Shared  $((now - 3600)) wt feat/x T.Shared \
+    $((now - 1800)) uc-agent-3 - T.Shared  $((now - 600)) uc-b feat/b T.Shared  $((now - 300)) uc-b feat/b T.Shared \
+    $((now - 600)) uc-b feat/b T.Two  $((now - 500)) wt feat/x T.Two \
+    $((now - 9000)) a feat/a T.Old  $((now - 8900)) b feat/b T.Old  $((now - 8800)) c feat/c T.Old \
+    $((now + 600)) z feat/z T.Two  junk wt feat/x T.Two > "$f"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -s length <<<"$shared")" = 1 ]
+  [ "$(jq -r .target <<<"$shared")" = T.Shared ]
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 3 branches in 2h: feat/x, uc-agent-3, feat/b' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 9000))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+  # the session keeps its own bucket: the red is not its work
+  [ "$(jq -r 'select(.bucket != "SHARED") | .bucket' <<<"$output")" = LANDED ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line SHARED
+  assert_output --partial 'T.Shared red on 3 branches in 2h'
+
+  # the state document lists it under shared, never as a session
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.shared | length' "$doc")" = 1 ]
+  [ "$(jq -r '.shared[0] | "\(.test) \(.id) \(.escalated)"' "$doc")" = 'T.Shared shared-T_Shared false' ]
+  [ "$(jq -r '[.sessions[].bucket] | join(",")' "$doc")" = LANDED ]
+  [ "$(jq -r '.counts | has("SHARED")' "$doc")" = false ]
+
+  # escalated once; a fourth branch in the same episode is the same fact, so it does not page again
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate shared-T_Shared "SHARED T.Shared @$((now - 9000))"
+  printf '%s\tuc-c\tfeat/c\tT.Shared\n' $((now - 60)) >> "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Shared red on 4 branches in 2h: feat/x, uc-agent-3, feat/b, feat/c' ]
+  [ "$(jq -r .escalated <<<"$shared")" = true ]
+
+  # a quiet gap longer than the window ends the episode: the same test red again is a new fact
+  printf '%s\t%s\t%s\t%s\n' $((now - 20000)) old feat/old T.Shared \
+    $((now - 900)) wt feat/x T.Shared $((now - 800)) uc-b feat/b T.Shared $((now - 700)) uc-c feat/c T.Shared > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Shared @$((now - 900))" ]
+  [ "$(jq -r .escalated <<<"$shared")" = false ]
+
+  # negative control: a higher bar makes no row
+  FLEET_SHARED_RED_BRANCHES=4 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
 @test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
   # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
   git init -q --bare "$SANDBOX/origin.git"
@@ -747,6 +815,27 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
+@test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .item <<<"$output")" = null ]
+  # dispatched: its tmux session, a board row
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ar-9\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-9\norigin: run\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\n---\nfix wave save\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-ar-9.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"ar-9","is":"own","row":"apociseum:ar-9","origin":"run"}' ]
+  # added by hand: no session:, only this Claude session among its sessions, its story row in row:
+  rm -r "$HOME/.agent/queue/running"; mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: hand-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nrow: agent-runtime:ar-660\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nfix it\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-hand-fix.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
+}
+
 # clean_fixture: landed_fixture with no PR on the branch and no plan file: CHAT until an item names it.
 clean_fixture() {
   landed_fixture
@@ -785,6 +874,45 @@ clean_fixture() {
   [ "$(jq -r .reason <<<"$output")" = 'its worktree was removed' ]
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+}
+
+# research_item <state> <type> -- a queue item of session sid-9 on lab:s1 that recorded a doc and an ask.
+research_item() {
+  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
+  mkdir -p "$d"
+  printf 'slug: research-engine\nproject: apociseum\nmode: oneshot\npriority: high\ntype: %s\narea: game\nfrom: board:apociseum:ar-9\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: sid-9\nreport: %s\nask: Rq1\nfinished: %s\n---\n%s(game): which engine\n' \
+    "$2" "$SANDBOX/doc.md" "$(date -u +%FT%TZ)" "$2" > "$d/20261103-100000-research-engine.md"
+}
+
+@test "end to end: a doc+ask kind whose doc exists and ask is filed is DONE; its ask is handed over, not open" {
+  clean_fixture
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json" ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum"
+  printf 'id: Rq1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq1.md"
+  touch "$SANDBOX/doc.md"
+  research_item done research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item research-engine handed off its doc doc.md and ask Rq1' ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  # still running here: the same hand-off
+  rm -r "$HOME/.agent/queue/done"; research_item running research
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # another open question of its own still waits on the human
+  printf 'id: Rq2\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Rq2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  rm "$ASK_ROOT/apociseum/Rq2.md"
+  # no doc on disk: its ask is an open question (NEEDS), as at HEAD
+  rm "$SANDBOX/doc.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  # a kind whose exit is a PR: its ask is an open question too
+  touch "$SANDBOX/doc.md"; rm -r "$HOME/.agent/queue/running"; research_item running fix
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
 }
 
 @test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
@@ -1305,6 +1433,70 @@ SH
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
 }
 
+@test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
+  git init -q "$SANDBOX/r"; git -C "$SANDBOX/r" remote add origin https://github.com/O/R.git
+  echo '{"type":"user","message":{"content":"nothing about it"}}' > "$SANDBOX/t.jsonl"
+  phases_plan '- [x] Phase 1: work (#8750)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_failure
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" -
+  assert_success
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/other","number":875}]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  phases_plan '- [x] Phase 1: work (o/other#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_failure
+  phases_plan '- [x] Phase 1: work (#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
+  assert_success
+  echo '{"content":"see https://github.com/o/r/pull/8750 and https://github.com/o/r2/pull/875"}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"opened https://github.com/o/r/pull/875"}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_success
+  echo '{"input":{"command":"git push -u origin feat/xy"}}' > "$SANDBOX/t.jsonl"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"   abc..def  feat/x -> origin/feat/x"}' > "$SANDBOX/t.jsonl" # a pull, not a push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_failure
+  echo '{"content":"To github.com:o/r.git\n * [new branch]      HEAD -> feat/x\n"}' > "$SANDBOX/t.jsonl" # a bare git push
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+  assert_success
+  for c in 'git push -u origin feat/x' 'git push origin HEAD:feat/x' 'git push origin refs/heads/feat/x'; do
+    printf '{"input":{"command":"%s"}}\n' "$c" > "$SANDBOX/t.jsonl"
+    run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
+    assert_success
+  done
+}
+
+@test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
+  landed_fixture
+  # trader-real-money-plan: its plan and transcript never touched #875, which merged off feat/x.
+  phases_plan '- [x] Phase 1: investigate' '- [-] Phase 2: live money: queue item p2'
+  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  refute_output --partial '#875'
+
+  # The same session pushing feat/x made it: the PR is its own again.
+  echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+
+  # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
+  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tOPEN\\tPASS\\t%s\\n"\n' \
+    "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$SANDBOX/bin/gh"
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/fleet-sessions* 2>/dev/null || true
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+}
+
 @test "json_rows: the newer fields, with a row that predates them still parsing" {
   run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x' 70 80)
   assert_success
@@ -1461,6 +1653,21 @@ SH
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
 }
 
+@test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  printf '#!/usr/bin/env bash\n[ "$*" = "stopped --json" ] && cat "$HOME/stopped.json" 2>/dev/null && exit 1; exit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -c .stopped "$doc")" = '[]' ]
+  echo '{"runner":"fleet-dispatch","since":1000,"why":"load 40","line":"Dispatch stopped 2h: load 40. Clears when the machine'"'"'s load falls."}' > "$HOME/stopped.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.stopped[0].line' "$doc")" = "Dispatch stopped 2h: load 40. Clears when the machine's load falls." ]
+  [ "$(jq -r '.stopped[0].since' "$doc")" = 1000 ]
+}
+
 @test "--write: a pass older than the document on disk leaves it alone" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"
@@ -1515,7 +1722,7 @@ state_doc() {
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
  "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
  {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
-  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123"},
+  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123","item":{"slug":"fix-x","is":"own"}},
  {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
   "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
 JSON
@@ -1565,6 +1772,9 @@ agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
 agent_sessions{bucket="WORKING"} 1
+# HELP agent_sessions_unlinked Live sessions with no agent-queue item, by the item_of join.
+# TYPE agent_sessions_unlinked gauge
+agent_sessions_unlinked 1
 # HELP agent_asks_open Pending asks waiting on the human.
 # TYPE agent_asks_open gauge
 agent_asks_open 2

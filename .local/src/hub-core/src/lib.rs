@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod boards;
+pub mod epics;
 pub mod fleet;
 pub mod focus;
 pub mod home;
@@ -13,12 +14,14 @@ pub mod jobs;
 pub mod layout;
 pub mod outbox;
 pub mod outcomes;
+pub mod page;
 pub mod pager;
 pub mod phone;
 pub mod pipeline;
 pub mod projects;
 pub mod prom;
 pub mod queue;
+pub mod reds;
 pub mod session_actions;
 pub mod tasks;
 pub mod text;

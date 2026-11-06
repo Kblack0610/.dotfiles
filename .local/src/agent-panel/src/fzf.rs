@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 /// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
 const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-/ layout  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -68,7 +68,11 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
     // place. {1} is the row's full target; on a project header it is empty and the label fails.
     // The prompt is the asking-only state (ctrl-y), so a reload from a label key keeps the view.
     let rows = format!("{exe} rows --map-file '{map}'");
-    let reload = format!("reload({rows} $([ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ] && echo --asking))");
+    let asking_arg = format!("$([ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ] && echo --asking)");
+    let reload = format!("reload({rows} {asking_arg})");
+    // C-o steps the sort key and A-o flips it; rows saves the sort, so the panel reopens in it.
+    let sort_next_bind = format!("ctrl-o:reload({rows} --sort next {asking_arg})");
+    let sort_reverse_bind = format!("alt-o:reload({rows} --sort reverse {asking_arg})");
     let asking_bind = format!(
         "ctrl-y:transform:if [ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ]; \
          then echo \"change-prompt({PROMPT_ALL})+reload({rows})\"; \
@@ -107,6 +111,10 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
         labels_bind,
         "--bind".into(),
         asking_bind,
+        "--bind".into(),
+        sort_next_bind,
+        "--bind".into(),
+        sort_reverse_bind,
         // Skip non-selectable project header rows when navigating.
         "--bind".into(),
         "up:up+transform:case {} in *━━*) echo up ;; esac".into(),
@@ -144,6 +152,12 @@ mod tests {
         let y = a.iter().find(|x| x.starts_with("ctrl-y:")).expect("ctrl-y bind");
         assert!(y.contains("change-prompt(Asking only > )+reload(/bin/ap rows --map-file '/tmp/m.map' --asking)"), "{y}");
         assert!(y.contains("change-prompt(Select agent > )+reload(/bin/ap rows --map-file '/tmp/m.map')\""), "{y}");
+        // C-o and A-o move the saved sort, keeping the asking-only view like every reload.
+        let asking = "$([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking)";
+        let rows = "/bin/ap rows --map-file '/tmp/m.map'";
+        assert!(a.contains(&format!("ctrl-o:reload({rows} --sort next {asking})")), "{a:?}");
+        assert!(a.contains(&format!("alt-o:reload({rows} --sort reverse {asking})")), "{a:?}");
+        assert!(HEADER.contains("C-o sort") && HEADER.contains("A-o reverse"));
         // Negative control: no active agent, no load bind.
         assert!(!args("/bin/ap", "/tmp/m.map", None, &stacked)
             .iter()

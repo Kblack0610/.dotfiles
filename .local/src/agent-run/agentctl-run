@@ -152,8 +152,8 @@ route_load "$(route_resolve)"
 route_check_pair
 route_apply
 
-# Only claude can hold a reply to a schema; on any other harness the caller would parse prose.
-[ -z "${AGENT_SCHEMA:-}" ] || [ "$harness" = claude ] || role_die "agent '$agent' has a SCHEMA, which needs the claude harness, not '$harness'"
+# Only claude and codex can hold a reply to a schema; on any other harness the caller would parse prose.
+case "$harness" in claude|codex) ;; *) [ -z "${AGENT_SCHEMA:-}" ] || role_die "agent '$agent' has a SCHEMA, which needs the claude or codex harness, not '$harness'" ;; esac
 
 harness_file="$SELF_DIR/harnesses/$harness.sh"
 [ -r "$harness_file" ] || role_die "unknown harness '$harness' (no $harness_file).
@@ -185,7 +185,7 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
     printf 'agent:       %s (%s)\n' "$agent" "${AGENT_KIND:-?}"
     printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}}"
     printf 'schema:      %s\n' "${AGENT_SCHEMA:-(none)}"
-    printf 'live rules:  %s\n' "${AGENT_LIVE_RULES:-(none)}"
+    printf 'delay rules: %s\n' "${AGENT_DELAY_RULES:-(none)}"
     printf 'call log:    %s\n' "$AGENTCTL_CALLS"
   fi
   printf 'role:        %s\n'  "$ROLE_NAME"

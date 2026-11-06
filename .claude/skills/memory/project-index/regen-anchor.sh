@@ -16,7 +16,7 @@
 # was an AUTO block two months stale: the dotfiles anchor advertised its latest eval as
 # 2026-06-08 while the directory held 2026-08-09. Nothing failed, because a stale
 # generated block and a fresh one look identical. That matters more now that the session
-# preflight stopped listing plans and lessons itself and delegates both to this block.
+# preflight stopped listing plans itself and delegates them to this block.
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
@@ -96,7 +96,7 @@ REPO=""
 if declare -F project_repo_path >/dev/null 2>&1; then
   REPO="$(project_repo_path "$PROJECT")"
 elif command -v jq >/dev/null 2>&1 && [ -f "$MAP_FILE" ]; then
-  REPO=$(jq -r --arg n "$PROJECT" '.paths | to_entries[] | select(.value==$n) | .key' "$MAP_FILE" 2>/dev/null | head -1)
+  REPO=$(jq -r --arg n "$PROJECT" 'limit(1; .paths | to_entries[] | select(.value==$n) | .key)' "$MAP_FILE" 2>/dev/null)
 fi
 # tracker line
 TRACKER=""
@@ -130,7 +130,7 @@ for d in docs/decisions docs/architecture/decisions; do
   if [ -n "$REPO" ] && [ -d "$REPO/$d" ]; then ADR_DIR="$REPO/$d"; break; fi
 done
 if [ -n "$ADR_DIR" ]; then
-  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | head -3 \
+  ADRS="$(ls "$ADR_DIR" | grep -E '^[0-9]+-.*\.md$' | grep -vi template | sort -r | sed -n '1,3p' \
     | paste -sd, - | sed 's/,/, /g' || true)"
 fi
 
@@ -212,7 +212,7 @@ auto_block() {
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
     local plans
-    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | grep -vxE 'active|archive|_archive|tasks' | head -5 || true)
+    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | awk '!/^(active|archive|_archive|tasks)$/ && ++n <= 5' || true)
     if [ -n "$plans" ]; then
       echo "$plans" | sed 's/^/- `/; s/$/`/'
     else
@@ -220,23 +220,6 @@ auto_block() {
     fi
   else
     echo "- _(no plans dir yet)_"
-  fi
-  echo
-  echo "## Recent lessons (digest)"
-  if [ -f "$LESSONS" ]; then
-    local digest
-    # tail of bullet lessons, each truncated to keep the digest scannable (it's injected
-    # at session start — one mega-lesson must not dominate the context window). The cut
-    # lands on a word boundary: a path cut mid-word (`~/.d`) reads as a dead path.
-    digest=$(grep -E '^- ' "$LESSONS" 2>/dev/null | tail -5 \
-      | awk '{ if (length($0) > 200) { s = substr($0,1,197); sub(/[[:space:]]+[^[:space:]]*$/, "", s); print s "..." } else print }' || true)
-    if [ -n "$digest" ]; then
-      echo "$digest"
-    else
-      echo "- _(lessons file has no bullet entries yet)_"
-    fi
-  else
-    echo "- _(no lessons file yet)_"
   fi
   echo "$END"
 }

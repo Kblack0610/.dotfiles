@@ -22,7 +22,7 @@ set -uo pipefail
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
-: "${FLEET_NOT_LOAD_HOLDS:=dispatch}"  # holds that pause work, not the machine: no effect on the verdict
+: "${FLEET_NOT_LOAD_HOLDS:=dispatch mac-desktop}"  # holds that pause work or a mac-mini desktop, not this machine: no effect on the verdict
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
@@ -71,9 +71,9 @@ read_mem_pct() {
 }
 
 # A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
-# that only pauses a workflow (dispatch) says nothing about load, so it does not count: on
-# 2026-10-27 the dispatch hold dropped the trip line from 1.75x to 1x and fleet-thermal paged
-# high 36 times in 8 hours, flapping around load 24.
+# that only pauses a workflow (dispatch) or is the mac-mini desktop mutex (mac-desktop) says
+# nothing about this machine's load, so it does not count: on 2026-10-27 the dispatch hold
+# dropped the trip line from 1.75x to 1x and fleet-thermal paged high 36 times in 8 hours.
 holds_set() {
   local f
   [ -d "$HOLD_ROOT" ] || return 1
