@@ -151,7 +151,6 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .cfold dt { color: var(--muted); } .cfold dd { margin: 0; overflow-wrap: anywhere; }
 .qlate { color: var(--b-stalled); }
 .qnext { font-size: var(--fs-sm); margin-bottom: 6px; }
-.qask-h { font-size: var(--fs-sm); font-weight: 600; color: var(--b-stalled); margin-bottom: 4px; }
 .qitem.done { padding-block: 8px; }
 .qitem.done .chead { margin-bottom: 0; } .qitem.done .ctitle { font-size: var(--fs-md); font-weight: 500; }
 .qitem.done .cline { margin-bottom: 4px; }
@@ -163,7 +162,8 @@ h3.qday { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercas
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
-.qneed > .card { margin: 6px 0; border-color: var(--b-stalled); }
+.badge-line { margin: 6px 0; }
+.more { padding: 4px 8px; }
 .qitem .btn.quiet { margin-left: auto; border-color: transparent; background: none; color: var(--muted); }
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
 .qadd select, .qitem select, .bfilter select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
@@ -189,7 +189,7 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .rd-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 .board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
-/* The Actions tab (static/actions.js): filter chips, then one line per action. */
+/* Log's Actions section (static/actions.js): filter chips, then one line per action. */
 .fseg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
 .flist { max-width: 1200px; padding: 6px 14px; }

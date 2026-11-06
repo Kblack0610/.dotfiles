@@ -331,10 +331,23 @@ EOF
 
 @test "an ask is linted on its question and context, not its bookkeeping" {
   mkdir -p "$HOME/.agent/asks/dotfiles"
-  printf 'id: aB3dEf\nproject: dotfiles\nquestion: dotfiles#910 is stuck. Rerun it?\ncontext: The fast tier timed out.\noptions: a=rerun|b=wait\n' > "$HOME/.agent/asks/dotfiles/aB3dEf.md"
+  printf 'id: aB3dEf\nproject: dotfiles\nquestion: dotfiles#910 is stuck. Rerun it?\ncontext: The fast tier timed out.\noptions: a|b\noption_notes: rerun|wait\n' > "$HOME/.agent/asks/dotfiles/aB3dEf.md"
   printf 'id: Cd4eFg\nproject: dotfiles\nsession: /home/x/caf\xc3\xa9\nquestion: Rerun the fast tier (dotfiles#910)?\n' > "$HOME/.agent/asks/dotfiles/Cd4eFg.md"
   run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['ask']; print(d['messages'], d['passed'], sorted(d['findings']))" "$("$SUBJECT" report --since 1d --channel ask --json)"
   assert_output "2 1 ['lead-id']"
+}
+
+@test "an ask whose options do not each say what they do fails bare-options; a gate's default does not" {
+  mkdir -p "$HOME/.agent/asks/dotfiles"
+  printf 'id: aaaaa1\nquestion: Rerun the fast tier?\noptions: a|b\noption_notes: rerun|\n' > "$HOME/.agent/asks/dotfiles/aaaaa1.md"
+  printf 'id: aaaaa2\nquestion: Merge the fix?\noptions: go|later\n' > "$HOME/.agent/asks/dotfiles/aaaaa2.md"
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['ask']; print(d['messages'], d['passed'], sorted(d['findings']))" "$("$SUBJECT" report --since 1d --channel ask --json)"
+  assert_output "2 0 ['bare-options']"
+  # Negative controls: meanings on every option, and a gate's defaulted approve|hold, pass.
+  printf 'id: aaaaa1\nquestion: Rerun the fast tier?\noptions: a|b\noption_notes: rerun|wait\n' > "$HOME/.agent/asks/dotfiles/aaaaa1.md"
+  printf 'id: aaaaa2\nkind: gate\nquestion: Merge the fix?\noptions: approve|hold\n' > "$HOME/.agent/asks/dotfiles/aaaaa2.md"
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['ask']; print(d['messages'], d['passed'], sorted(d['findings']))" "$("$SUBJECT" report --since 1d --channel ask --json)"
+  assert_output "2 2 []"
 }
 
 @test "every fixture in the replay corpus fails or passes its channel as filed" {

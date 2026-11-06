@@ -35,7 +35,7 @@ EOF
 # post a gate whose resume is a headless command; returns the id
 gate() { # $1=project
   "$AGENT_ASK" post --project "${1:-alpha}" --kind gate \
-    --options 'approve|hold|cancel' --resume "/captain ${1:-alpha} go" \
+    --options 'approve=go ahead|hold=wait|cancel=drop it' --resume "/captain ${1:-alpha} go" \
     'Create the tickets and cut the branch?'
 }
 

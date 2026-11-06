@@ -9,6 +9,9 @@ const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],[
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [] };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
+// Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
+// file that owns each one's data adds {show, onEvent} here and paints its own container.
+const LOG_PARTS = [];
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
@@ -299,11 +302,10 @@ async function sendText() {
 $("send").onclick = sendText;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendText(); } });
 
-// hub_core::layout's landed tabs lead, in its order, then the older tabs until their phase
-// lands (docs/dashboards.md "Hub layout"); agent-web's tab_names_lead_with_the_landed_layout
-// test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "actions", "log", "fleet"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "outbox": "daily", "focus": "daily" };
+// hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
+// tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
+const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
@@ -312,6 +314,7 @@ function seekSection() {
   const e = st.section && $("sec-" + st.section);
   if (!e) return;
   st.section = null;
+  if (e.tagName === "DETAILS") e.open = true;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens

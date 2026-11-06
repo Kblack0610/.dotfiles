@@ -17,8 +17,8 @@ setup() {
   export QUESTIONS_ASK="$AGENT_ASK"
 
   OLD="$("$AGENT_ASK" post --project alpha --session agent-1 --options 'stacked=list on top, card below|side=list left, card right' 'Make stacked the default?')"
-  MID="$("$AGENT_ASK" post --project beta --session agent-2 --options 'keep|drop' 'Keep the merge queue?')"
-  NEW="$("$AGENT_ASK" post --project gamma --session agent-3 --options 'yes|no' 'Ship the map?')"
+  MID="$("$AGENT_ASK" post --project beta --session agent-2 --options 'keep=keep it|drop=drop it' 'Keep the merge queue?')"
+  NEW="$("$AGENT_ASK" post --project gamma --session agent-3 --options 'yes=do it|no=leave it' 'Ship the map?')"
   sed -i 's/^created: .*/created: 2026-11-01T10:00:00-0800/' "$(ask_file "$OLD")"
   sed -i 's/^created: .*/created: 2026-11-03T10:00:00-0800/' "$(ask_file "$MID")"
 }
@@ -93,7 +93,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 @test "at 144x33 a row names its session under the question, the selected name reads, pgdn scrolls the card" {
   mkdir -p "$HOME/.agent/sessions/delta"
   printf '{"session_id":"sid-r","title":"runner-pool-tonight"}\n' >"$HOME/.agent/sessions/delta/sessions.jsonl"
-  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" post --project delta --session delta-agent-4 --options 'a|b' \
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" post --project delta --session delta-agent-4 --options 'a=the first|b=the second' \
     --context "$(printf 'Context sentence %d of a card longer than the screen. ' $(seq 1 60))" 'Which goes first?')"
   sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
   TM_WIDTH=144 TM_HEIGHT=33 open_panel

@@ -26,9 +26,9 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 
 @test "rows: this tmux session's asks first, then oldest, each row keyed by its id" {
   local old new mine
-  old="$(ask alpha agent-1 'a|b' 'old question?')"
-  new="$(ask beta agent-2 'a|b' 'new question?')"
-  mine="$(ask gamma agent-3 'a|b' 'mine?')"
+  old="$(ask alpha agent-1 'a=the first|b=the second' 'old question?')"
+  new="$(ask beta agent-2 'a=the first|b=the second' 'new question?')"
+  mine="$(ask gamma agent-3 'a=the first|b=the second' 'mine?')"
   created "$old" 2026-11-01T10:00:00-0800
   created "$new" 2026-11-04T10:00:00-0800
   created "$mine" 2026-11-05T10:00:00-0800
@@ -43,9 +43,9 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "rows name the asker by project slug and agent number, in a column as wide as its longest name" {
-  ask unity-core-playground unity-core-playground-agent-60 'a|b' 'long project?' >/dev/null
-  ask demo agent-1 'a|b' 'short project?' >/dev/null
-  ask demo hub 'a|b' 'no agent number?' >/dev/null
+  ask unity-core-playground unity-core-playground-agent-60 'a=the first|b=the second' 'long project?' >/dev/null
+  ask demo agent-1 'a=the first|b=the second' 'short project?' >/dev/null
+  ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
   assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]$'
@@ -59,10 +59,10 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
     '{"session_id":"sid-9","title":"tidy-the-board"}' >"$HOME/.agent/sessions/demo/sessions.jsonl"
   local live ended untitled loose
-  live="$(CLAUDE_CODE_SESSION_ID=sid-1 ask demo s 'a|b' 'live?')"
-  ended="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo s 'a|b' 'ended?')"
-  untitled="$(CLAUDE_CODE_SESSION_ID=sid-8 ask demo s 'a|b' 'untitled?')"
-  loose="$(ask demo s 'a|b' 'headless?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-1 ask demo s 'a=the first|b=the second' 'live?')"
+  ended="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo s 'a=the first|b=the second' 'ended?')"
+  untitled="$(CLAUDE_CODE_SESSION_ID=sid-8 ask demo s 'a=the first|b=the second' 'untitled?')"
+  loose="$(ask demo s 'a=the first|b=the second' 'headless?')"
   run rows
   assert_success
   # The second line starts under the question: name column (4) + age (3) + three spaces.
@@ -76,7 +76,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 # magenta): a coloured name or age vanished there (human, 2026-11-05). Bold and faint take fzf's
 # own selected-row white.
 @test "rows carry bold and faint but no colour, so the selected row still reads" {
-  ask demo agent-1 'a|b' 'colour?' >/dev/null
+  ask demo agent-1 'a=the first|b=the second' 'colour?' >/dev/null
   run bash -c '"$1" rows | tr "\0" "\n"' _ "$Q"
   assert_success
   assert_output --partial $'\033[1mdemo:1'
@@ -91,7 +91,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "a number only arms its option; enter sends exactly that one" {
-  local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   run "$Q" key 2 "$id"
   assert_output --partial 'send 2 "later" to demo:1? enter sends'
   assert_equal "$(status_of "$id")" pending
@@ -108,7 +108,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "esc after a number sends nothing, and esc with nothing armed closes" {
-  local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   "$Q" key 1 "$id" >/dev/null
   run "$Q" key esc "$id"
   refute_output --partial abort
@@ -120,8 +120,8 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 
 @test "moving to another question disarms the choice made on the last one" {
   local a b
-  a="$(ask demo agent-1 'go|later' 'first?')"
-  b="$(ask demo agent-1 'go|later' 'second?')"
+  a="$(ask demo agent-1 'go=run it now|later=run it later' 'first?')"
+  b="$(ask demo agent-1 'go=run it now|later=run it later' 'second?')"
   "$Q" key 1 "$a" >/dev/null
   run "$Q" key focus "$a"
   assert_output ''
@@ -133,7 +133,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "a number past the options says so and arms nothing" {
-  local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   run "$Q" key 3 "$id"
   assert_output --partial 'no option 3 here'
   "$Q" key enter "$id" >/dev/null
@@ -141,7 +141,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "t opens the answer line, keys type into it, and enter sends the text" {
-  local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   run "$Q" key t "$id"
   assert_output --partial 'show-input'
   # The header names what is answered; the prompt is only the line to type on.
@@ -165,7 +165,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 }
 
 @test "two typed answers in a row: each opens on an empty line, and the header goes back to the count" {
-  local a b; a="$(ask demo agent-1 'go|later' 'first?')"; b="$(ask demo agent-2 'go|later' 'second?')"
+  local a b; a="$(ask demo agent-1 'go=run it now|later=run it later' 'first?')"; b="$(ask demo agent-2 'go=run it now|later=run it later' 'second?')"
   run "$Q" key t "$a"
   assert_output --regexp '^show-input\+clear-query\+'
   run "$Q" key enter "$a" 'one'
@@ -191,9 +191,9 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 
 @test "g goes to the asking session when it lives, and says why when it cannot" {
   local live gone loose
-  live="$(CLAUDE_CODE_SESSION_ID=sid-live ask demo agent-1 'go|later' 'live?')"
-  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo agent-2 'go|later' 'gone?')"
-  loose="$(ask demo agent-3 'go|later' 'loose?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live ask demo agent-1 'go=run it now|later=run it later' 'live?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo agent-2 'go=run it now|later=run it later' 'gone?')"
+  loose="$(ask demo agent-3 'go=run it now|later=run it later' 'loose?')"
   printf '%s\n' '{"session_id":"sid-live","target":"hub/demo:2"}' >"$NOTES_FIXTURE/agent-panel.list"
   run "$Q" key g "$live"
   assert_output 'execute-silent(agent-panel jump hub/demo:2)+abort'
@@ -218,13 +218,13 @@ transcript() {
   # fleet-dispatch is the one path that opens sessions; the stub records the call and opens nothing.
   printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n[ -f "$NOTES_FIXTURE/dispatch.fail" ] && { echo "start: session busy"; exit 1; }\necho "started $6"\n' >"$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
-  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo dotfiles 'go|later' 'gone?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo dotfiles 'go=run it now|later=run it later' 'gone?')"
   transcript sid-gone "$HOME/.dotfiles"
   run "$Q" key g "$gone"
   assert_output "execute-silent(agent-panel jump hub/dotfiles:ask-$gone)+abort"
   assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$gone --cwd $HOME/.dotfiles --resume sid-gone"
   # A directory no manifest claims reopens in the panel's own world.
-  here="$(CLAUDE_CODE_SESSION_ID=sid-here ask demo agent-4 'go|later' 'here?')"
+  here="$(CLAUDE_CODE_SESSION_ID=sid-here ask demo agent-4 'go=run it now|later=run it later' 'here?')"
   transcript sid-here "$BATS_TEST_TMPDIR/plain"
   TMUX=/tmp/tmux-1000/lab,1,0 run "$Q" key g "$here"
   assert_output --regexp "^execute-silent\(agent-panel jump lab/[^:]+:ask-$here\)\+abort$"
@@ -234,7 +234,7 @@ transcript() {
   assert_output 'change-footer~could not reopen: start: session busy~'
   rm "$NOTES_FIXTURE/dispatch.fail"
   # A conversation still running outside tmux is not resumed a second time.
-  alive="$(CLAUDE_CODE_SESSION_ID=sid-alive ask demo agent-5 'go|later' 'alive?')"
+  alive="$(CLAUDE_CODE_SESSION_ID=sid-alive ask demo agent-5 'go=run it now|later=run it later' 'alive?')"
   transcript sid-alive "$HOME/.dotfiles"
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-alive"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
@@ -242,7 +242,7 @@ transcript() {
   assert_output 'change-footer~session sid-alive still runs outside tmux; nothing to go to~'
   assert_not_called "--resume sid-alive"
   # A directory that is gone has nowhere to resume from.
-  lost="$(CLAUDE_CODE_SESSION_ID=sid-lost ask demo agent-6 'go|later' 'lost?')"
+  lost="$(CLAUDE_CODE_SESSION_ID=sid-lost ask demo agent-6 'go=run it now|later=run it later' 'lost?')"
   transcript sid-lost "$BATS_TEST_TMPDIR/deleted"
   run "$Q" key g "$lost"
   assert_output "change-footer~session ended and its directory $BATS_TEST_TMPDIR/deleted is gone; resume with claude --resume sid-lost~"
@@ -257,7 +257,7 @@ transcript() {
 }
 
 @test "d then enter drops the question; d then esc keeps it" {
-  local id; id="$(ask demo agent-1 'go|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   "$Q" key d "$id" >/dev/null
   "$Q" key esc "$id" >/dev/null
   "$Q" key enter "$id" >/dev/null
@@ -272,7 +272,7 @@ transcript() {
 }
 
 @test "a ~ in what the footer shows never reaches fzf as a delimiter" {
-  local id; id="$(ask demo agent-1 'g~o|later' 'run the sweep?')"
+  local id; id="$(ask demo agent-1 'g~o=run it now|later=run it later' 'run the sweep?')"
   run "$Q" key 1 "$id"
   assert_output --partial 'send 1 "go" to demo:1?'
 }

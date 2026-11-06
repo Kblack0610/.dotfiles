@@ -10,10 +10,10 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{older, Palette};
 
 /// Changes listed under the table; watch.log keeps them all.
-pub const CHANGE_LINES: usize = 15;
+use hub_core::layout::FOLD_ROWS;
 
 /// Buckets in the order the board lists them: what needs the human first.
 const RANK: [&str; 7] = [
@@ -305,14 +305,12 @@ pub fn page(
         }
     }
 
-    out.push(Line::raw(""));
-    out.push(Line::styled(
-        format!(
-            "CHANGES (newest first, {} in watch.log)",
-            watch.transitions.len()
-        ),
-        p.head(),
-    ));
+    out
+}
+
+/// Log's Changes section: watch.log's transitions, newest first, at most `FOLD_ROWS`.
+pub fn changes(watch: &Watch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![];
     if watch.transitions.is_empty() {
         out.push(Line::styled("  none logged yet", p.dim()));
     }
@@ -321,7 +319,7 @@ pub fn page(
         .single()
         .map(|t| t.format("%Y-%m-%d").to_string())
         .unwrap_or_default();
-    for t in watch.transitions.iter().rev().take(CHANGE_LINES) {
+    for t in watch.transitions.iter().rev().take(FOLD_ROWS) {
         let when = match t.ts.split_once(' ') {
             Some((d, hm)) if d == today => hm.to_string(),
             _ => t.ts.get(5..).unwrap_or(&t.ts).to_string(),
@@ -340,6 +338,7 @@ pub fn page(
             w,
         ));
     }
+    out.extend(older(watch.transitions.len(), FOLD_ROWS, p));
     out
 }
 
@@ -413,10 +412,12 @@ pub mod tests {
     #[test]
     fn changes_are_newest_first() {
         let p = Palette { no_color: true };
-        let out = text(&page(&fixture(), p, 1_000_000, 160));
+        let out = text(&changes(&fixture(), p, 1_000_000, 160));
         let a = out.find("stage NEEDS -> WORKING").unwrap();
         let b = out.find("new: NEEDS").unwrap();
         assert!(a < b, "{out}");
+        let sessions = text(&page(&fixture(), p, 1_000_000, 160));
+        assert!(!sessions.contains("new: NEEDS"), "{sessions}");
     }
 
     #[test]

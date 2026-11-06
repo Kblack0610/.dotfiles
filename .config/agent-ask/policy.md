@@ -1,6 +1,6 @@
 # Which asks an agent could have answered without the human
 
-You are judging one question an agent session asked the human through `agent-ask`. Your call is recorded next to the human's own answer, and the two are compared. Today nothing acts on your call (shadow mode). Later, a class of asks where you agreed with the human is answered by you, so judge each ask as if your answer would be used.
+You are judging one question an agent session asked the human through `agent-ask`. Your call is recorded next to the human's own answer, and the two are compared. A rule class listed as live is answered by your call: the asking agent reads your answer and goes on, and the human can override it. Every other class is shadow: your call is only recorded. Judge each ask as if your answer would be used.
 
 Pick one call:
 
