@@ -33,7 +33,7 @@
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's text, the policy or workers.json changes. A picked row is started on its sheet and added
 # to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
-# running /one-shot, tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
+# running its kind's entry skill (kinds.json; /one-shot for code), tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
 # Tier 3 runs unattended only as a `night` item: fill promotes the dotfiles boards' tier-3 rows
 # with that tag, and agent-queue holds them to the night window; each stops at an open PR.
@@ -74,6 +74,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
+: "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
@@ -92,9 +93,9 @@ LEVEL=$(machine_level)
 read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" \
   DISPATCH_NIGHT_MAX "$DISPATCH_NIGHT_MAX" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 : "${DISPATCH_NIGHT_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
-# Rows fill never promotes for the night, whatever the judge says: asks, decisions, anything needing a
+# Rows fill never promotes for the night, whatever the judge says (decide rows are off in kinds.json): anything needing a
 # device or the human's own machine, secrets, prod, wishes. Case-insensitive ERE.
-: "${DISPATCH_NIGHT_SKIP:=^decide[:(]|\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
+: "${DISPATCH_NIGHT_SKIP:=\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops)\b|\b(prod|production|dns)\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Ranking, first match wins: rows that delete or fix a broken mechanism, then observer findings.
 : "${DISPATCH_NIGHT_FIRST:=\b(delete|remove|drop|retire|prune|strip|broken|never|fails|failing|failed|dead|wrong|stale|leaks?|orphans?|races?)\b}"
 # Observer rows: an improvement row (`#kpi/<k>`, filed by `fleet-bench improve`) or a typed finding
@@ -156,7 +157,7 @@ prio_rank() {
     *'#urgent'*) echo 0 ;;
     *'#high'*) echo 1 ;;
     *'#low'*) echo 3 ;;
-    *) echo 2 ;;
+    *) echo 1 ;;   # a bare row is high: the row grammar's default, and the queue priority it gets
   esac
 }
 
@@ -169,7 +170,8 @@ prio_of() {
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,
 # then the row's due date (overdue, today, within 3 days, later or none), then what the human asked
 # for (#requested, as fill_night ranks it), then cleanup of an AI system (cleanup_row), then worker
-# order, then the row's priority, then stage, then oldest first.
+# order, then the row's priority, then its kind (kinds.json `rank`: a bug first), then stage, then
+# oldest first.
 # rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
@@ -193,9 +195,10 @@ def rank_fields($today; $pprio):
                 (if .cleanup == 0 then "cleanup" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
+                (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
-def rank: sort_by((.pprio // 2), (.due // 3), (.req // 1), (.cleanup // 1), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+def rank: sort_by((.pprio // 2), (.due // 3), (.req // 1), (.cleanup // 1), (.wrank // 0), .prio, (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -228,6 +231,48 @@ row_tier() {
   case "$body" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) echo 3; return ;; esac
   tag_value "$1" tier | grep -xE '[123]'
 }
+
+# The kind registry, kinds.json, is keyed by notes-cli's ROW_TYPES (a bats test pins the two): per
+# type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
+# its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask), the `stages` it dispatches
+# at, `enabled`, and an optional `off` list of projects. A row with no type, or one the registry
+# lacks, ranks 1, dispatches and starts /one-shot; with no registry every kind does.
+declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=()
+KINDS_LOADED=0
+load_kinds() {
+  local k r l e on st off
+  [ "$KINDS_LOADED" = 1 ] && return 0
+  KINDS_LOADED=1
+  [ -r "$DISPATCH_KINDS" ] || { say "no kind registry at $DISPATCH_KINDS: every kind ranks alike and dispatches"; return 0; }
+  # "-" stands for empty, because read collapses empty tab fields.
+  while IFS=$'\t' read -r k r l e on st off; do
+    KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off
+  done < <(jq -r 'def d: if . == "" then "-" else . end;
+    to_entries[] | [.key, (.value.rank // 1), (.value.label // "" | d), (.value.entry // "" | d), (.value.enabled // false),
+      ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d)] | @tsv' "$DISPATCH_KINDS")
+}
+
+# row_kind <text> -> the row's type, its `type(area):` or `type:` prefix; nothing for a bare row.
+row_kind() {
+  local body="${1#- \[?\] }"
+  [[ "$body" =~ ^([a-z]+)(\([a-z0-9-]+\))?: ]] && echo "${BASH_REMATCH[1]}"
+  return 0
+}
+
+# kind_off <kind> <project> <stage> -> why the registry keeps a row of that kind from dispatching
+# there, nothing when it may: the kind is off, off in that project, or not at that stage.
+kind_off() {
+  local k="$1"
+  [ -n "$k" ] && [ -n "${KIND_ON[$k]+x}" ] || return 0
+  if [ "${KIND_ON[$k]}" != true ]; then echo "kind $k is off"
+  elif [[ ",${KIND_OFF[$k]}," == *",$2,"* ]]; then echo "kind $k is off in $2"
+  elif [[ ",${KIND_STAGES[$k]}," != *",$3,"* ]]; then echo "kind $k does not dispatch at $3"
+  fi
+}
+
+# row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
+# size a sized row has. The judge sizes only the rest (size_back writes its answer onto the row).
+row_size() { tag_value "$1" size | grep -xiE 's|m|l|xl' | tr '[:lower:]' '[:upper:]'; }
 
 # workers -> one line per worker in registry order: rank, name, max tier capped at the ceiling,
 # projects, only_tag, lane, untagged. "-" stands for empty, because read collapses empty tab fields.
@@ -310,21 +355,36 @@ ROW_JQ='
 def details_json($n): (.details // []) | join("\n") | .[0:$n] | tojson;
 def planned: any(.details[]?; test("^goal:"; "i"));
 def plan_tagged: any(.tags[]?; . == "plan");
-def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);'
+def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);
+def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "") end;'
 
 # detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
 detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
 
-# load_extras -- fill the caller's `local -A DET PLN` from one board read, by "<project>\t<lane>\t<id>":
-# DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan.
+# load_extras -- fill the caller's `local -A DET PLN PAR` from one board read, by "<project>\t<lane>\t<id>":
+# DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan; PAR by id alone
+# (a child may sit on another project's board), 1 for a parent: an open row names it in `#of/`.
 load_extras() {
-  local p l i t g d
+  local board p l i t g d
+  board=$(notes board --json 2>/dev/null)
   while IFS=$'\t' read -r p l i t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
     [ "$t" = 1 ] && PLN["$p"$'\t'"$l"$'\t'"$i"]=1
-  done < <(notes board --json 2>/dev/null | jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
+  done < <(jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
     .rows[]? | select(.id != null)
-    | "\(.project)\t\(.lane)\t\(.id)\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"')
+    | "\(.project)\t\(.lane)\t\(.id)\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
+  while read -r i; do
+    [ -n "$i" ] && PAR[$i]=1
+  done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
+}
+
+# row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
+# its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may.
+row_off() {
+  local why
+  why=$(kind_off "$(row_kind "$4")" "$1" "$2")
+  [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
+  printf '%s' "$why"
 }
 
 # held <judged> <project> <lane> <key> <line> <dsig> -- a judged_keys line still covers the row
@@ -566,13 +626,14 @@ judged_keys() {
 # shows it as blocked.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
-  local x planned dj dsig plan
-  local -A DET=() PLN=()
+  local x planned dj dsig plan off kind
+  local -A DET=() PLN=() PAR=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
   load_extras
+  load_kinds
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -590,6 +651,9 @@ cmd_candidates() {
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
           plan=${PLN["$name"$'\t'"$lane"$'\t'"$key"]:-0}
           [ "$plan" = 0 ] || [ "${SUGGEST:-0}" = 1 ] || continue
+          off=$(row_off "$name" "$stage" "$key" "$text")
+          [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
+          kind=$(row_kind "$text")
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -608,10 +672,14 @@ cmd_candidates() {
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
             --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
+            --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
+            --arg rsize "$(row_size "$text")" --arg off "$off" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1)}
+              worker: $worker, wrank: $wrank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
+              kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
+              + (if $off != "" then {off: $off} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done < <(rows "$prof" "$name" "$lane")
       done
@@ -637,7 +705,8 @@ judge() {
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   prompt="## Rows to judge
 
-$(jq -c '{project, stage, lane, key, text, tier} + (if (.details // "") != "" then {details} else {} end)' <<<"$cands")
+$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
+  + (if (.details // "") != "" then {details} else {} end)' <<<"$cands")
 
 ## Answer
 
@@ -685,6 +754,27 @@ For every row above, return one verdict in the structured output. Copy project, 
     printf '%s\n' "$verdicts"
     verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
   } >> "$VERDICTS"
+  size_back "$cands" "$verdicts"
+}
+
+# size_back <candidates> <verdicts> -- tag each unsized row (with an id) the judge sized with that
+# `#size/`, so the row is the one size store (the human's choice, ask Q0lKDF). The verdict is then
+# recorded again for the row's new text, which differs only by that tag, so it is not judged twice.
+size_back() {
+  local prof p lane key s raw flag
+  while IFS=$'\t' read -r prof p lane key s; do
+    flag=(); [ "$lane" = agent ] && flag=(--agent)
+    np "$prof" ptask "$p" "${flag[@]}" tag --add "size/$s" "$key" >/dev/null 2>&1 || { say "size_back: could not tag $p $key size/$s"; continue; }
+    raw=$(row_line "$prof" "$p" "$lane" "$key")
+    [ -n "$raw" ] || continue
+    jq -c --arg p "$p" --arg l "$lane" --arg k "$key" --arg line "$(printf '%s' "$raw" | sig)" \
+      'select(.project == $p and .lane == $l and .key == $k) | . + {line: $line}' <<<"$2" >> "$VERDICTS"
+  done < <(jq -r --slurpfile c <(printf '%s\n' "$1") '
+    ($c | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | $by[[.project, .lane, .key] | tostring] as $r
+    | select($r != null and ($r.row_size // "") == "" and .verdict != "error"
+        and ((.size // "") | IN("S", "M", "L")) and (.key | test("^[a-z]{2,4}-[0-9]+$")))
+    | [$r.profile, .project, .lane, .key, (.size | ascii_downcase)] | @tsv' <<<"$2")
 }
 
 # verdict_errors <rows> <reason> <call id> -- an `error` verdict line for each row. judged_keys
@@ -753,9 +843,9 @@ cmd_suggest() {
              verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
                        elif $d.policy != $sig or ($d | holds($c) | not) then "unjudged" else $d.verdict end)}
       | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null),
-             size: ($d.size // ""), reason: ($d.reason // "")})
-    | map(. + {blocked: [(.nobody // empty), (if .plan then "waits on a plan" else empty end),
-        (if ((.text | split("<!--")[0] | test("#size/(l|xl)\\b"; "i")) or (.size | IN("L", "XL"))) then "size/l: too big for a pick" else empty end),
+             size: eff_size($d), reason: ($d.reason // "")})
+    | map(. + {blocked: [(.off // empty), (.nobody // empty), (if .plan then "waits on a plan" else empty end),
+        (if .size | IN("L", "XL") then "size/l: too big for a pick" else empty end),
         (if .verdict == "skip" or .verdict == "failed" then "judge: \(.verdict)\(if .reason != "" then ", \(.reason)" else "" end)" else empty end),
         (if .held then "area held by a queue item" else empty end)]})
     | rank | .[]' <<<"$cands" |
@@ -782,7 +872,7 @@ picks() {
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
-      | select($d != null and $d.verdict == "dispatch" and ($d.size == "S" or $d.size == "M")
+      | select($d != null and $d.verdict == "dispatch" and (eff_size($d) | IN("S", "M"))
           and $d.clear == true and $d.agent_only == true and $d.policy == $sig and ($d | holds($c))
           and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
           and ($d.area | type) == "string" and $d.area != "")
@@ -1169,16 +1259,22 @@ cmd_restore() {
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
-# the task as typed, oneshot runs it through /one-shot (--pr-only for a `night` item). opencode has
-# no slash commands, hooks or human at the pane, so it reads the skill and closes differently.
+# the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
+# item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
+# item. opencode has no slash commands, hooks or human at the pane, so it reads the skill and
+# closes differently.
 item_brief() {
-  local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key
+  local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
+  load_kinds
+  kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
+  [ -z "$kind" ] || entry=${KIND_ENTRY[$kind]:-}
+  entry=${entry:-/one-shot}
   if [ "$harness" = opencode ]; then
-    printf 'Read ~/.claude/skills/one-shot/SKILL.md and follow it%s for this task:\n' "${pr_only:+ with$pr_only}"
+    printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
-    printf '/one-shot%s ' "$pr_only"
+    printf '%s%s ' "$entry" "$pr_only"
   fi
   jq -r .task <<<"$it"
   echo
@@ -2290,8 +2386,9 @@ cmd_fill() {
 # rows, then observer rows, first.
 night_rows() {
   local judged="$1" name sheet stage repo key text body t line n x planned dj dsig
-  local -A DET=() PLN=()
+  local -A DET=() PLN=() PAR=()
   load_extras
+  load_kinds
   for name in $DISPATCH_NIGHT_PROJECTS; do
     sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
@@ -2308,6 +2405,7 @@ night_rows() {
       body=${text#- \[ \] }
       grep -qiE -- "$DISPATCH_NIGHT_SKIP" <<<"${body%%<!--*}" && continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
+      [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       line=$(printf '%s' "$text" | sig)
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}
@@ -2317,9 +2415,9 @@ night_rows() {
         --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
         --arg priority "$(row_priority "$text")" --argjson order "$n" --arg first "$DISPATCH_NIGHT_FIRST" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
-        --arg profile "$DISPATCH_NIGHT_PROFILE" \
+        --arg profile "$DISPATCH_NIGHT_PROFILE" --arg rsize "$(row_size "$text")" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
-          text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0,
+          text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, row_size: $rsize,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($first; "i")) then 0
                  elif ($body | test($obs; "i")) then 1 else 2 end)}'
@@ -2337,7 +2435,7 @@ night_picks() {
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d != null and $d.tier3_only == true and $d.tier == 3
-          and ($d.size == "S" or $d.size == "M") and $d.clear == true and $d.agent_only == true
+          and (eff_size($d) | IN("S", "M")) and $d.clear == true and $d.agent_only == true
           and $d.policy == $sig and ($d | holds($c))
           and ($d.area | type) == "string" and $d.area != "")
       | . + {area: ($d.area | ascii_downcase)})
