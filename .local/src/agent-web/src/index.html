@@ -23,6 +23,7 @@
     <button id="tab-infra">Infra</button>
     <button id="tab-log">Log</button>
     <button id="tab-fleet">Fleet</button>
+    <button id="tab-costs">Costs</button>
     <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
   </nav>
 </header>
@@ -62,6 +63,7 @@
   </section>
   <section id="infra" class="board" hidden><div id="infra-main"></div><div id="jobs"></div><div id="infra-tail"></div></section>
   <section id="fleet" class="board" hidden></section>
+  <section id="costs" class="board" hidden></section>
 </main>
 <script src="/static/ui.js?v={{v}}"></script>
 <script src="/static/md.js?v={{v}}"></script>
@@ -82,6 +84,7 @@
 <script src="/static/sessions.js?v={{v}}"></script>
 <script src="/static/actions.js?v={{v}}"></script>
 <script src="/static/fleet.js?v={{v}}"></script>
+<script src="/static/costs.js?v={{v}}"></script>
 <script src="/static/focus.js?v={{v}}"></script>
 </body>
 </html>

@@ -83,11 +83,7 @@ pub fn page(
     let rest = if tonight {
         format!("  tonight, {} -> {}", hhmm(f.at), hhmm(f.tonight.until))
     } else {
-        format!(
-            "  {} runners, {} in 24h across every agentctl run",
-            f.workers.len(),
-            usd(f.cost_24h)
-        )
+        format!("  {} runners, spend: 9 Costs", f.workers.len())
     };
     out.push(clip_line(heading("WORKERS", rest, p), w));
     out.push(clip_line(chips(&f.workers, view, tonight, p), w));
@@ -320,7 +316,6 @@ fn workers(ws: &[&Worker], rows: &Rows, p: Palette, now: i64, w: usize) -> Vec<L
                     },
                 ),
                 r.next.map_or("-".into(), |t| clock(t, now)).into(),
-                usd(r.cost_24h).into(),
                 r.score.as_ref().map_or("-", |s| &s.text).into(),
                 cell(why, p.dim()),
             ]
@@ -328,15 +323,15 @@ fn workers(ws: &[&Worker], rows: &Rows, p: Palette, now: i64, w: usize) -> Vec<L
         .collect();
     let table = Table {
         header: vec![
-            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "$24H", "SCORE", "WHY",
+            "RUNNER", "LANE", "LAST", "WHEN", "RUNS", "FAIL", "NEXT", "SCORE", "WHY",
         ],
         rows,
         // WHY is the flex column and stays last: fit neither pads nor clips it, so a column
         // after it would be pushed off the line by a long WHY.
-        keep: vec![0, 2, 8, 3, 5, 4, 6, 7, 1],
-        flex: Some(9),
+        keep: vec![0, 2, 7, 3, 5, 4, 6, 1],
+        flex: Some(8),
         flexmin: 20,
-        right: vec![4, 5, 7],
+        right: vec![4, 5],
         cap: vec![(0, if slots.is_some() { 37 } else { 30 })],
         ..Default::default()
     }
@@ -1078,7 +1073,6 @@ pub mod tests {
                         text: "claude exited 1".into(),
                     }),
                     next: Some(NOW + 3600),
-                    cost_24h: Some(1.25),
                     score: Some(RunnerScore {
                         text: "81% kept".into(),
                         title: "7d, 34 of 42 right, 0 pending, lessons-kept".into(),
@@ -1142,7 +1136,6 @@ pub mod tests {
                     ..Default::default()
                 },
             ],
-            cost_24h: Some(4.5),
             tonight: Tonight::default(),
             dispatch: Dispatch {
                 recent: vec![Verdict {
@@ -1235,7 +1228,7 @@ pub mod tests {
             "usage unreadable",
             "42%",
             "$12.50",
-            "WORKERS  2 runners, $4.50 in 24h",
+            "WORKERS  2 runners, spend: 9 Costs",
             "FAILED claude exited 1",
             "idle-one (off)",
             "none 7d",
@@ -1284,7 +1277,7 @@ pub mod tests {
             assert!(
                 lines
                     .iter()
-                    .any(|l| l.trim_end().ends_with("WHY") && l.contains("$24H  SCORE ")),
+                    .any(|l| l.trim_end().ends_with("WHY") && l.contains("NEXT   SCORE ")),
                 "{lines:#?}"
             );
             // dream is the row with its lane, memory.
@@ -1355,7 +1348,7 @@ pub mod tests {
 
         let v = WorkerView {
             state: "failed".into(),
-            sort: "cost".into(),
+            sort: "runs".into(),
             ..Default::default()
         };
         let lines = show(&v, false);
@@ -1363,10 +1356,10 @@ pub mod tests {
             lines.iter().any(|l| l.contains("[failed 24h 1]")),
             "{lines:?}"
         );
-        assert!(lines.iter().any(|l| l.contains("sort cost")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("sort runs")), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains("idle-one")), "{lines:?}");
         // Tonight is an order of its own, so a sort does not claim to apply.
-        assert!(!show(&v, true).iter().any(|l| l.contains("sort cost")));
+        assert!(!show(&v, true).iter().any(|l| l.contains("sort runs")));
     }
 
     #[test]

@@ -39,6 +39,9 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
+/// The Costs sources are written nightly or per call and none is watched, so the tick re-reads
+/// them this often while the tab is shown; entering it and `r` read at once.
+pub const COSTS_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -52,11 +55,12 @@ pub enum Tab {
     Infra,
     Log,
     Fleet,
+    Costs,
 }
 
 impl Tab {
     /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
@@ -66,6 +70,7 @@ impl Tab {
         Tab::Infra,
         Tab::Log,
         Tab::Fleet,
+        Tab::Costs,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -77,6 +82,7 @@ impl Tab {
             Tab::Infra => "Infra",
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
+            Tab::Costs => "Costs",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -106,7 +112,7 @@ impl Tab {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Queue => Some("kb-agents-overview"),
+            Tab::Queue | Tab::Costs => Some(hub_core::costs::DASHBOARD),
             Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet => None,
         }
     }
@@ -223,6 +229,8 @@ pub enum Msg {
     Ranked(Result<Vec<Ranked>, String>),
     /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
     Reds(Result<hub_core::reds::Reds, String>),
+    /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
+    Costs(Box<hub_core::costs::Costs>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
     Runner(Box<(String, Result<hub_core::fleet::runner::Runner, String>)>),
@@ -295,6 +303,10 @@ pub struct App {
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     /// Infra's Red fixes section; None until the first read.
     pub reds: Option<Result<hub_core::reds::Reds, String>>,
+    /// The Costs tab's read; None until the first.
+    pub costs: Option<hub_core::costs::Costs>,
+    /// The Costs tab's cut, window, query and sort.
+    pub cv: crate::coststab::CostsView,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
@@ -381,6 +393,8 @@ pub struct App {
     reds_read: Read,
     /// When the last Red fixes read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
+    costs_read: Read,
+    costs_at: Option<std::time::Instant>,
     actions_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
@@ -418,6 +432,8 @@ impl App {
             forecast: None,
             ranked: None,
             reds: None,
+            costs: None,
+            cv: crate::coststab::CostsView::default(),
             fleet: None,
             pipeline: None,
             focus: None,
@@ -466,6 +482,8 @@ impl App {
             ranked_read: Read::default(),
             reds_read: Read::default(),
             reds_at: None,
+            costs_read: Read::default(),
+            costs_at: None,
             actions_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
@@ -537,6 +555,19 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
+            });
+        }
+    }
+
+    /// The Costs tab's sources have no file watch, so it reads them on entering, on `r` and on
+    /// the tick while it is shown, at most every `COSTS_REFRESH`.
+    pub fn read_costs(&mut self) {
+        if self.costs_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let paths = hub_core::costs::Paths::from_env();
+                let c = hub_core::costs::read(runner.as_ref(), &paths, jobs::now());
+                let _ = tx.send(Msg::Costs(Box::new(c)));
             });
         }
     }
@@ -1005,6 +1036,11 @@ impl App {
                 {
                     self.read_reds();
                 }
+                if self.tab == Tab::Costs
+                    && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
+                {
+                    self.read_costs();
+                }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
                     self.read_boards();
@@ -1066,6 +1102,13 @@ impl App {
                 self.ranked = Some(r);
                 if self.ranked_read.done() {
                     self.read_ranked();
+                }
+            }
+            Msg::Costs(c) => {
+                self.costs = Some(*c);
+                self.costs_at = Some(std::time::Instant::now());
+                if self.costs_read.done() && self.tab == Tab::Costs {
+                    self.read_costs();
                 }
             }
             Msg::Reds(r) => {
@@ -1284,6 +1327,10 @@ impl App {
         if self.tab == Tab::Fleet && self.fleet_key(k) {
             return;
         }
+        if self.tab == Tab::Costs && self.cv.key(k.code) {
+            self.scroll = 0;
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -1305,6 +1352,9 @@ impl App {
                 self.read_queue();
                 if self.tab == Tab::Infra {
                     self.read_reds();
+                }
+                if self.tab == Tab::Costs {
+                    self.read_costs();
                 }
                 if self.tab == Tab::Queue {
                     self.read_candidates();
@@ -1464,6 +1514,7 @@ impl App {
                     }
                 }
             }
+            (Tab::Costs, Some(q)) => self.cv.open(&q),
             (_, q) => self.open_project(q),
         }
     }
@@ -1510,6 +1561,9 @@ impl App {
         }
         if t == Tab::Infra {
             self.read_reds();
+        }
+        if t == Tab::Costs {
+            self.read_costs();
         }
         if t == Tab::Daily {
             self.daily_outbox = false;
@@ -2141,6 +2195,12 @@ impl App {
             Tab::Sessions => format!(
                 "j/k pick  Enter detail  / query  f state  s sort  S asc/desc  Esc clear  i p u m x c a act  T start timer  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Costs if self.cv.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Costs => format!(
+                "b/B cut  w window  / query  s sort  S asc/desc  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Fleet if self.fleet_typing => "type to search, Enter keeps it, Esc clears".into(),
             Tab::Fleet if self.fleet_page.is_some() => format!(
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
@@ -2307,6 +2367,11 @@ impl App {
                 };
                 (l, vec![])
             }
+            // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
+            (Tab::Costs, ..) => match &self.costs {
+                None => reading("the costs"),
+                Some(c) => (self.cv.lines(c, self.p, w), vec![]),
+            },
             // The machinery that runs the sessions: accounts, runners and the judges.
             (Tab::Fleet, ..) if self.fleet_page.is_some() => (
                 fleettab::runner_page(
@@ -3637,7 +3702,7 @@ mod tests {
             let d = char::from_digit(i as u32 + 1, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!((Tab::by_digit('9'), Tab::by_digit('0')), (None, None));
+        assert_eq!(Tab::by_digit('0'), None);
     }
 
     #[test]
@@ -4126,8 +4191,12 @@ mod tests {
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
         a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
+        a.costs_read.busy = true;
         a.handle(key('9'));
-        assert_eq!(a.tab, Tab::Log, "9 opens nothing");
+        assert_eq!(a.tab, Tab::Costs, "9 opens the ninth tab");
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Costs, "0 opens nothing");
+        a.handle(key('7'));
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);

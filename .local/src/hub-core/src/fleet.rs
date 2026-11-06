@@ -46,10 +46,6 @@ const RECENT_CALLS: usize = 5;
 /// The Tonight order runs from now to the next of this local hour.
 const MORNING_HOUR: u32 = 7;
 
-/// Each runner's dollars in the last day, by the OTel resource attribute agentctl sets.
-const COST_BY_RUNNER: &str = r#"sum by (agentctl_runner) (increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
-const COST_TOTAL: &str =
-    r#"sum(increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
 /// claude-acct's textfile, only while it is fresh; no `max without`, which would drop the
 /// metric names the table reads. An empty answer makes the table say no data.
 const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#;
@@ -100,8 +96,6 @@ pub struct Fleet {
     pub workers: Vec<Worker>,
     /// The workers in the order they run tonight, the order the human can pick over the default.
     pub tonight: Tonight,
-    /// Every agentctl run's dollars in the last day, labelled or not.
-    pub cost_24h: Option<f64>,
     pub dispatch: Dispatch,
     pub judge: Judge,
 }
@@ -132,8 +126,6 @@ pub struct Worker {
     pub next: Option<i64>,
     /// A call's CALLER: the runner (or program) that makes it.
     pub called_by: Option<String>,
-    /// None until its cost series carries the runner label.
-    pub cost_24h: Option<f64>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
@@ -156,7 +148,7 @@ pub fn page_for<'a>(workers: &'a [Worker], detail: &str) -> Option<&'a str> {
 /// `W_FILTERS` lists them too.
 pub const WORKER_FILTERS: [&str; 5] = ["all", "failed", "running", "idle", "off"];
 /// What the Workers table sorts by, biggest or newest first; a runner with no value sorts last.
-pub const WORKER_SORTS: [&str; 4] = ["runs", "failed", "cost", "last"];
+pub const WORKER_SORTS: [&str; 3] = ["runs", "failed", "last"];
 /// Fewer finished runs than this in the week say nothing about a usual length.
 const USUAL_RUNS: usize = 3;
 /// One run in ten passes `usual_s` by definition, so a run this short is never overdue: a
@@ -190,7 +182,6 @@ impl Worker {
         match key {
             "runs" => Some(f64::from(self.runs_24h)),
             "failed" => Some(f64::from(self.failed_24h)),
-            "cost" => self.cost_24h,
             "last" => self
                 .running_since
                 .or(self.last.as_ref().and_then(|o| o.at))
@@ -525,8 +516,6 @@ impl AskVerdict {
 #[derive(Serialize, Debug, Default, Clone)]
 pub struct Prom {
     pub accounts: Vec<Series>,
-    pub cost_by_runner: BTreeMap<String, f64>,
-    pub cost_total: Option<f64>,
     pub errors: Vec<String>,
 }
 
@@ -615,64 +604,22 @@ fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
     dispatch
 }
 
-/// The Prometheus part: accounts, cost per runner and the total, asked at once.
+/// The Prometheus part: the accounts. What each runner spent is on the Costs tab.
 pub fn prom() -> Prom {
     let mut out = Prom::default();
-    let base = match prom::base() {
-        Ok(b) => b,
-        Err(e) => {
-            out.errors.push(format!("prometheus: {e}"));
-            return out;
-        }
-    };
-    let qs = [
-        ("accounts", ACCOUNTS),
-        ("cost", COST_BY_RUNNER),
-        ("cost total", COST_TOTAL),
-    ];
-    let answers: Vec<_> = std::thread::scope(|s| {
-        let hs: Vec<_> = qs
-            .iter()
-            .map(|&(n, q)| {
-                let base = &base;
-                (n, s.spawn(move || prom::instant(base, q)))
-            })
-            .collect();
-        hs.into_iter()
-            .map(|(n, h)| (n, h.join().unwrap_or_else(|_| Err("panicked".into()))))
-            .collect()
-    });
-    for (name, res) in answers {
-        match (name, res) {
-            (_, Err(e)) => out.errors.push(format!("{name}: {e}")),
-            ("accounts", Ok(s)) => out.accounts = s,
-            ("cost", Ok(s)) => out.cost_by_runner = costs(&s),
-            (_, Ok(s)) => out.cost_total = s.first().and_then(|x| x.value),
-        }
+    match prom::base().and_then(|base| prom::instant(&base, ACCOUNTS)) {
+        Ok(s) => out.accounts = s,
+        Err(e) => out.errors.push(format!("accounts: {e}")),
     }
     out
 }
 
 impl Fleet {
-    /// Lay a Prometheus read over the file read: accounts, the total, each runner's dollars.
+    /// Lay a Prometheus read over the file read.
     pub fn apply(&mut self, p: &Prom) {
         self.accounts = p.accounts.clone();
-        self.cost_24h = p.cost_total;
-        for w in &mut self.workers {
-            w.cost_24h = p.cost_by_runner.get(&w.name).copied();
-        }
         self.errors.extend(p.errors.iter().cloned());
     }
-}
-
-/// Dollars by runner. A series with no `agentctl_runner` (runs from before the label) is in
-/// the total only.
-pub fn costs(series: &[Series]) -> BTreeMap<String, f64> {
-    series
-        .iter()
-        .filter(|s| !s.label("agentctl_runner").is_empty())
-        .filter_map(|s| Some((s.label("agentctl_runner").to_string(), s.value?)))
-        .collect()
 }
 
 /// One runner's config: only what the tab shows.
@@ -1786,40 +1733,6 @@ mod tests {
     }
 
     #[test]
-    fn cost_needs_the_runner_label() {
-        let s = |runner: Option<&str>, v: f64| Series {
-            labels: runner
-                .map(|r| BTreeMap::from([("agentctl_runner".to_string(), r.to_string())]))
-                .unwrap_or_default(),
-            value: Some(v),
-            points: vec![],
-        };
-        let c = costs(&[s(None, 44.9), s(Some("dream"), 1.5)]);
-        assert_eq!(c, BTreeMap::from([("dream".into(), 1.5)]));
-        let mut f = Fleet {
-            workers: vec![
-                Worker {
-                    name: "dream".into(),
-                    ..Default::default()
-                },
-                Worker {
-                    name: "sentinel".into(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        f.apply(&Prom {
-            cost_by_runner: c,
-            cost_total: Some(46.4),
-            ..Default::default()
-        });
-        assert_eq!(f.workers[0].cost_24h, Some(1.5));
-        assert_eq!(f.workers[1].cost_24h, None, "no labelled cost shows as -");
-        assert_eq!(f.cost_24h, Some(46.4));
-    }
-
-    #[test]
     fn a_tail_starts_at_a_whole_line() {
         let dir = std::env::temp_dir().join(format!("hub-fleet-tail-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1938,7 +1851,6 @@ mod tests {
             Worker {
                 failed_24h: 2,
                 runs_24h: 3,
-                cost_24h: Some(1.5),
                 last: Some(at(100)),
                 why: Some(Outcome {
                     word: "FAILED".into(),
@@ -1956,7 +1868,6 @@ mod tests {
             },
             Worker {
                 runs_24h: 1,
-                cost_24h: Some(4.0),
                 last: Some(at(200)),
                 ..row("dream", "deliver", "idle")
             },
@@ -2049,7 +1960,6 @@ mod tests {
         };
         assert_eq!(by("runs"), ["dispatch", "triage", "dream", "retired"]);
         assert_eq!(by("failed"), ["triage", "dispatch", "dream", "retired"]);
-        assert_eq!(by("cost"), ["dream", "triage", "dispatch", "retired"]);
         assert_eq!(
             by("last"),
             ["dispatch", "dream", "triage", "retired"],

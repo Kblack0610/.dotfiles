@@ -37,7 +37,7 @@ for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, state: "idle", running_since: null, usual_s: null, overdue: false, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null, detail: "",
+  runs_24h: 0, failed_24h: 0, why: null, next: null, score: null, detail: "",
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -55,7 +55,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
   ] };
 const data = {
-  at: 1793942659, errors: [], accounts: [], cost_24h: 1, judge,
+  at: 1793942659, errors: [], accounts: [], judge,
   tonight: { until: 1793942659 + 6 * 3600, other_timers: 0, slots: [] },
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
@@ -172,7 +172,9 @@ test("the score cell ends each row in both orders, its title what it counted, an
     f.tonight = tonight;
     ctx.renderFleet();
     const h = box.innerHTML;
-    assert.match(h, /\$ 24h<\/(button><\/)?th><th>score 7d<\/th><\/tr>/);
+    assert.match(h, /<th class="n">next<\/th><th>score 7d<\/th><\/tr>/);
+    assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
+    if (!tonight) assert.match(h, /spend on <a href="#costs\?by=runner&w=24h">Costs<\/a>/);
     assert.match(h, /<td title="7d, 41 of 44 right, 3 pending, triage-untouched">93% untouched<\/td><\/tr>/, `tonight=${tonight}`);
     assert.match(h, /data-key="dream">.*?<td class="muted">-<\/td><\/tr>/, `tonight=${tonight}`);
   }
@@ -196,8 +198,8 @@ const fleet = {
   ...data,
   tonight: { until: data.at + 6 * 3600, other_timers: 0, slots: [{ name: "stuck", at: data.at + 60, under: "" }, { name: "calm", at: data.at + 120, under: "" }] },
   workers: [
-    row("broke", { lane: "deliver", state: "idle", failed_24h: 2, runs_24h: 5, cost_24h: 0.5, why: { word: "FAILED", text: "no gateway route", at: 10, ok: false }, last: { word: "FAILED", at: 900, ok: false } }),
-    row("stuck", { lane: "deliver", state: "running", running_since: data.at - 900, usual_s: 120, overdue: true, runs_24h: 9, cost_24h: 2, description: "hangs on the pool" }),
+    row("broke", { lane: "deliver", state: "idle", failed_24h: 2, runs_24h: 5, why: { word: "FAILED", text: "no gateway route", at: 10, ok: false }, last: { word: "FAILED", at: 900, ok: false } }),
+    row("stuck", { lane: "deliver", state: "running", running_since: data.at - 900, usual_s: 120, overdue: true, runs_24h: 9, description: "hangs on the pool" }),
     row("calm", { lane: "observe", state: "idle", runs_24h: 1, last: { word: "OK", at: 500, ok: true } }),
     row("parked", { lane: "", state: "off", enabled: false }),
   ],
@@ -228,11 +230,11 @@ test("a chip and a sort write the hash, and the plain view is a bare #fleet", ()
   show("");
   press("fstate", "fstate", "failed");
   assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=failed");
-  press("fsort", "fsort", "cost");
-  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=failed&sort=cost");
+  press("fsort", "fsort", "runs");
+  assert.equal(vm.runInContext("history", ctx).url, "#fleet?s=failed&sort=runs");
   press("fstate", "fstate", "all");
-  press("fsort", "fsort", "cost");
-  press("fsort", "fsort", "cost");
+  press("fsort", "fsort", "runs");
+  press("fsort", "fsort", "runs");
   assert.equal(vm.runInContext("history", ctx).url, "#fleet");
 });
 
@@ -269,15 +271,14 @@ test("the lane list is built from the data and keeps a linked lane", () => {
 });
 
 test("a sort goes biggest first then smallest, a runner with no value last both ways", () => {
-  assert.deepEqual(names(show("sort=cost")), ["stuck", "broke", "calm", "parked"]);
-  assert.match(box.innerHTML, /aria-sort="descending"><button class="thsort" data-fsort="cost"[^>]*>\$ 24h v</);
-  assert.deepEqual(names(show("sort=cost&dir=asc")), ["broke", "stuck", "calm", "parked"]);
-  assert.deepEqual(names(show("sort=runs")), ["stuck", "broke", "calm", "parked"]);
   assert.deepEqual(names(show("sort=last")), ["stuck", "broke", "calm", "parked"]);
+  assert.match(box.innerHTML, /aria-sort="descending"><button class="thsort" data-fsort="last"[^>]*>last v</);
+  assert.deepEqual(names(show("sort=last&dir=asc")), ["calm", "broke", "stuck", "parked"]);
+  assert.deepEqual(names(show("sort=runs")), ["stuck", "broke", "calm", "parked"]);
 });
 
 test("a row still opens under a filter and a sort", () => {
-  show("s=failed&sort=cost");
+  show("s=failed&sort=runs");
   click({ target: { closest: (sel) => (sel === "tr.wr" ? { dataset: { key: "broke" } } : null) } });
   assert.match(box.innerHTML, /<tr class="wr sel" data-key="broke">/);
   assert.equal((box.innerHTML.match(/class="wdet"/g) || []).length, 1);
@@ -285,7 +286,7 @@ test("a row still opens under a filter and a sort", () => {
 });
 
 test("Tonight keeps its own order: the filter applies, the headers do not sort", () => {
-  show("sort=cost");
+  show("sort=runs");
   vm.runInContext("fst", ctx).tonight = true;
   ctx.renderFleet();
   assert.deepEqual(names(box.innerHTML), ["stuck", "calm"]);

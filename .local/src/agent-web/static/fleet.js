@@ -96,13 +96,12 @@ function workerDetail(w) {
 // What keeps and orders a row mirrors hub_core::fleet (Worker::shown, hits, sort_value) as
 // askShown does; the two lists are hub-core's, checked by assets.rs.
 const W_FILTERS = ["all", "failed", "running", "idle", "off"];
-const W_SORTS = ["runs", "failed", "cost", "last"];
+const W_SORTS = ["runs", "failed", "last"];
 const W_CHIP = { all: "All", failed: "Failed 24h", running: "Running", idle: "Idle", off: "Off" };
 const workerShown = (w, s) => s === "all" || (s === "failed" ? w.failed_24h > 0 : w.state === s);
 const W_VALUE = {
   runs: (w) => w.runs_24h,
   failed: (w) => w.failed_24h,
-  cost: (w) => w.cost_24h,
   last: (w) => w.running_since ?? w.last?.at,
 };
 
@@ -155,7 +154,7 @@ function workersTable(ws, slots, v) {
     const on = !slots && v.sort === key;
     return `<th${cls ? ` class="${cls}"` : ""}${on ? ` aria-sort="${v.asc ? "ascending" : "descending"}"` : ""}>${slots ? label : `<button class="thsort" data-fsort="${key}" title="sort by ${label}">${label}${on ? (v.asc ? " ^" : " v") : ""}</button>`}</th>`;
   };
-  return `<table class="tbl"><tr><th>runner</th><th>lane</th>${th("last", "last")}<th class="n">when</th>${th("runs", "runs 24h", "n")}${th("failed", "failed", "n")}<th>why</th><th class="n">next</th>${th("cost", "$ 24h", "n")}<th>score 7d</th></tr>${ws.map((w, i) => {
+  return `<table class="tbl"><tr><th>runner</th><th>lane</th>${th("last", "last")}<th class="n">when</th>${th("runs", "runs 24h", "n")}${th("failed", "failed", "n")}<th>why</th><th class="n">next</th><th>score 7d</th></tr>${ws.map((w, i) => {
     const over = w.overdue ? `, over its usual ${secs(w.usual_s)}` : "";
     const last = w.running_since ? `<td class="${w.overdue ? "warn" : "muted"}">running since ${when(w.running_since)}${over}</td><td class="n">-</td>`
       : w.last ? `<td class="${okClass(w.last.ok)}">${esc(w.last.word || "-")}</td><td class="n">${when(w.last.at)}</td>`
@@ -166,7 +165,7 @@ function workersTable(ws, slots, v) {
     const score = w.score ? `<td title="${esc(w.score.title)}">${esc(w.score.text)}</td>` : `<td class="muted">-</td>`;
     return `<tr class="wr${open ? " sel" : ""}${w.enabled ? "" : " muted"}" data-key="${esc(w.name)}"><td title="${esc(w.description)}">${slots ? `${slots[i]} ` : ""}<a href="${runnerHref(w.name)}">${esc(w.name)}</a>${w.enabled ? "" : " (off)"}</td><td class="muted">${esc(w.lane || "-")}</td>${last}` +
       `<td class="n">${w.runs_24h}</td><td class="n${w.failed_24h ? " bad" : ""}">${w.failed_24h}</td><td class="wrap muted">${why}</td>` +
-      `<td class="n">${w.next ? when(w.next) : "-"}</td><td class="n">${usd(w.cost_24h)}</td>${score}</tr>` + (open ? workerDetail(w) : "");
+      `<td class="n">${w.next ? when(w.next) : "-"}</td>${score}</tr>` + (open ? workerDetail(w) : "");
   }).join("")}</table>`;
 }
 
@@ -272,7 +271,7 @@ function renderFleet() {
   if (errs.length) head += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   head += `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
   const order = `<button class="btn sm" data-tonight>${fst.tonight ? "Default order" : "Tonight"}</button>`;
-  head += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, ${usd(d.cost_24h)} in 24h across every agentctl run`}; click a runner for its role, prompt, calls and judge table</span></h2>`;
+  head += `<h2 class="sec" id="sec-workers">Workers ${order} <span class="muted">${fst.tonight ? `tonight, ${clock(d.at * 1e3)} to ${clock(d.tonight.until * 1e3)}` : `${d.workers.length} runners, spend on <a href="#costs?by=runner&w=24h">Costs</a>`}; click a runner for its role, prompt, calls and judge table</span></h2>`;
   const tail = `<h2 class="sec" id="sec-judges">Judges <span class="muted">24h; each judge's page has its tiles and newest verdicts, Log has every verdict</span></h2>${judgeSummary(d)}`;
   // A refresh must not take the search box or an open lane list from under the human, so
   // everything around them repaints and they stay.

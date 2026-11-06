@@ -58,15 +58,7 @@ function historyCharts(sel) {
       segs: [...ac.top.map((a) => ({ v: r.areas[a] || 0, color: ac.of(a) })), { v: other, color: OTHER }],
     };
   }), { sel });
-  const spend = columns(rows.map((r, i) => ({
-    key: r.date, label: lab(r.date, i),
-    tip: `${weekday(r.date)} ${r.date}: ${usd(r.cost_usd)}, ${r.sessions ?? "-"} sessions, ${kfmt(r.tokens)} tokens`,
-    segs: [{ v: r.cost_usd || 0, color: "var(--c1)" }],
-  })), { sel, yfmt: (v) => "$" + Math.round(v) });
-  return `<div class="g2">
-    <div class="panel"><h3>Merged per day ${legend([...ac.top.map((a) => [a, ac.of(a)]), ["Other", OTHER]])}</h3>${merged}</div>
-    <div class="panel"><h3>Spend per day</h3>${spend}</div>
-  </div>`;
+  return `<div class="panel"><h3>Merged per day ${legend([...ac.top.map((a) => [a, ac.of(a)]), ["Other", OTHER]])}</h3>${merged}</div>`;
 }
 
 // Projects keep their colour for the day: the top slots go to the busiest (rec.projects is
@@ -97,16 +89,6 @@ function byHour(rec) {
   const keys = [...pc.top.filter((p) => merged.has(p)), ...(g.rows.some((r) => !pc.top.includes(r.project)) ? [LOG_OTHER] : [])];
   const leg = keys.map((k) => `<button class="lg${lst.proj === k ? " on" : ""}" data-proj="${esc(k)}" title="show only ${esc(projLabel(k))}"><i style="background:${k === LOG_OTHER ? OTHER : pc.of(k)}"></i>${esc(projLabel(k))}</button>`).join("");
   return { chart: columns(cols, { height: 110 }), legend: leg ? `<span class="legend">${leg}</span>` : "" };
-}
-
-function usageTable(rec) {
-  const rows = (rec.usage || []).filter((u) => u.project !== "TOTAL").sort((a, b) => b.cost_usd - a.cost_usd);
-  const total = (rec.usage || []).find((u) => u.project === "TOTAL");
-  if (!rows.length) return '<div class="empty">No usage recorded.</div>';
-  const max = Math.max(...rows.map((u) => u.cost_usd));
-  return `<table class="tbl"><tr><th>project</th><th></th><th class="n">sessions</th><th class="n">tokens</th><th class="n">cost</th></tr>${
-    rows.map((u) => `<tr><td>${esc(u.project)}</td><td class="m">${meter(u.cost_usd / max, "var(--c1)")}</td><td class="n">${u.sessions}</td><td class="n">${kfmt(u.tokens)}</td><td class="n">${usd(u.cost_usd)}</td></tr>`).join("")}${
-    total ? `<tr class="tot"><td>total</td><td></td><td class="n">${total.sessions}</td><td class="n">${kfmt(total.tokens)}</td><td class="n">${usd(total.cost_usd)}</td></tr>` : ""}</table>`;
 }
 
 // `by` is what day-log calls the session that landed a PR: a short target ("agent-18") or an
@@ -181,11 +163,11 @@ function renderLog() {
     <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? ", could not read " + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
   html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
-    tile("SPEND", usd(total.cost_usd), "var(--c2)", `${kfmt(total.tokens)} tokens`)}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
+    tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
   html += `<div id="sec-history">${historyCharts(day)}</div>`;
   const hours = byHour(rec);
-  html += `<div class="g2"><div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div><div class="panel"><h3>Spend by project</h3>${usageTable(rec)}</div></div>`;
+  html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += waiting(nWait);
   // The legend's pick narrows both lists to one project's group; the head says so.
   const only = lst.proj ? ` <span class="muted only">${esc(projLabel(lst.proj))} only, <a href="#" data-proj="${esc(lst.proj)}">show all</a></span>` : "";
