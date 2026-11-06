@@ -237,10 +237,14 @@ enum Cmd {
         rebuild: bool,
     },
     /// Scan the vault for tags (inline `#hashtag` + frontmatter `tags:`). No arg lists
-    /// every tag with a count; `<name>` prints each matching line as `path<TAB>line<TAB>text`.
+    /// every tag with a count, topics before task tags; `<name>` prints each matching line as
+    /// `path<TAB>line<TAB>text`. Every profile's project boards count too, task rows only.
     Tags {
         /// Tag to show hits for (leading `#` optional). Omit to list all tags.
         name: Option<String>,
+        /// List only `task` tags (row state like `#high`, `#size/s`) or `topic` tags.
+        #[arg(long, value_enum, conflicts_with = "name")]
+        kind: Option<md::TagKind>,
     },
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
@@ -1330,10 +1334,10 @@ fn main() -> Result<()> {
             index::run(&prof, &log, rebuild)?;
             0
         }
-        Cmd::Tags { name } => {
+        Cmd::Tags { name, kind } => {
             match name {
                 Some(n) => tags::show(&prof, &n)?,
-                None => tags::list(&prof)?,
+                None => tags::list(&prof, kind)?,
             }
             0
         }
