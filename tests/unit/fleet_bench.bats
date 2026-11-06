@@ -925,11 +925,14 @@ watch() {
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
+  printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
   printf 'NAME=gamma\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/gamma.conf"
   printf "NAME=delta\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/delta.conf"
-  for n in alpha gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
+  for n in alpha beta gamma delta; do mkdir -p "$AGENTCTL_STATE_DIR/$n"; done
   printf STALLED > "$AGENTCTL_STATE_DIR/alpha/last-outcome"
   printf '[2026-10-30T03:00:00-07:00] outcome=STALLED lock held 40m\n' > "$AGENTCTL_STATE_DIR/alpha/activity.log"
+  printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"         # the reason wins over a long summary
+  printf '[2026-10-30T04:00:00-07:00] outcome=FAILED routed 0 of 40 lines, %s why: no answer block\n' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx > "$AGENTCTL_STATE_DIR/beta/activity.log"
   printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
   printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
   echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
@@ -939,14 +942,15 @@ watch() {
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
+  assert_line 'fix(runner): beta is FAILED: 2026-10-30 why: no answer block #high'
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
-  assert_equal "$(grep -c . <<<"$output")" 3
+  assert_equal "$(grep -c . <<<"$output")" 4
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage
   assert_success
-  run grep -c 'fix(runner): alpha is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
-  assert_output 3
+  run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
+  assert_output 4
   run outcome
   assert_output WORKED
   : > "$NLOG"
@@ -967,6 +971,7 @@ watch() {
   [ ! -s "$NLOG" ]
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
 
 @test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
   kpi_setup

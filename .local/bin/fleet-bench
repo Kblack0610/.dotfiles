@@ -1785,7 +1785,7 @@ triage_rows() {
     v=$(awk 'NR == 1 { print $1 }' "$sd/$name/last-outcome" 2>/dev/null)
     case "$v" in FAILED|STALLED) ;; *) continue ;; esac
     detail=$(grep "outcome=$v" "$sd/$name/activity.log" 2>/dev/null | tail -1 \
-      | sed -E 's/^\[([0-9-]{10})[^]]*\] outcome=[A-Z]+ ?/\1 /' | cut -c1-100)
+      | sed -E 's/^\[([0-9-]{10})[^]]*\] outcome=[A-Z]+ ?/\1 /; s/^([0-9-]{10}) .* (why: .*)$/\1 \2/' | cut -c1-100)
     printf 'fix(runner): %s is\tfix(runner): %s is %s: %s\t%s\n' "$name" "$name" "$v" "${detail:-no detail}" \
       "$([ "$v" = FAILED ] && echo '#high' || echo '#low')"
   done
