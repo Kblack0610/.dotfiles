@@ -1116,8 +1116,7 @@ recommend_why: $(field "$f" recommend_why)
 
 ## Answer
 
-One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE-END, nothing else between them:
-{\"call\": \"human|take-recommend|answer\", \"rule\": \"<the id of the rule that decided it>\", \"answer\": \"<your answer when call is answer, else empty>\", \"reason\": \"<one short sentence>\"}"
+Return the verdict in the structured output."
   # An empty directory: from inside a repo, that repo's Stop hook would answer instead (see
   # fleet-dispatch judge).
   wd=$(mktemp -d)
@@ -1131,8 +1130,8 @@ One JSON object on one line, between a line ASK-JUDGE-START and a line ASK-JUDGE
     echo "agent-ask: judge call failed for $id" >&2; return 1
   fi
   rm -rf -- "$wd"
-  verdict=$(sed -n '/^ASK-JUDGE-START$/,/^ASK-JUDGE-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR 'fromjson? | select(type == "object" and (.call == "human" or .call == "take-recommend" or .call == "answer"))' 2>/dev/null | head -1)
+  # The reply is the schema's one object (SCHEMA in the agent's conf); anything else is an error.
+  verdict=$(jq -c 'select(type == "object" and (.call == "human" or .call == "take-recommend" or .call == "answer"))' <<<"$out" 2>/dev/null | head -1)
   if [ -z "$verdict" ]; then
     judge_record "$f" error "" "the reply had no verdict: ${out:0:200}" "$cid"
     echo "agent-ask: no judge verdict for $id" >&2; return 1

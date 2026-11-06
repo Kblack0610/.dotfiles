@@ -735,14 +735,14 @@ registry() {
 
 # ── the answer judge (shadow) ────────────────────────────────────────────────
 
-# fake_judge <json>: a judge command that prints <json> between the markers, and logs its prompt.
+# fake_judge <json>: a judge command that prints <json>, as agentctl-run prints a schema reply, and logs its prompt.
 # Outside the sandbox dir: its path has a space, and the judge command is a word list.
 fake_judge() {
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
 printf '%s\n' "\$AGENTCTL_CALL_ID" > "$BATS_TEST_TMPDIR/judge.id"
-printf 'thinking...\nASK-JUDGE-START\n%s\nASK-JUDGE-END\n' '$1'
+printf '%s\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
   export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
@@ -802,8 +802,22 @@ SH
   assert_failure
   run "$AGENT_ASK" show "$id"
   assert_line 'judge: error'
-  assert_line 'judge_reason: the reply had no verdict: thinking... ASK-JUDGE-START not json ASK-JUDGE-END'
+  assert_line 'judge_reason: the reply had no verdict: not json'
   assert_line --regexp '^judge_call: [0-9a-f]{12}$'
+}
+
+@test "judge: prose around a verdict is an error, and the schema's calls are the ones judge accepts (negative control)" {
+  fake_judge 'thinking...
+ASK-JUDGE-START
+{"call":"human","rule":"taste","answer":"","reason":"x"}
+ASK-JUDGE-END'
+  id="$(AGENT_ASK_NO_JUDGE=1 post demo 'wrapped?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
+  run jq -c .properties.call.enum "$REPO_ROOT/.config/agent-ask/verdict.schema.json"
+  assert_output '["human","take-recommend","answer"]'
 }
 
 @test "judge: a rule the policy does not define, a failed call and a missing policy are error verdicts with their reason" {
