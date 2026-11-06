@@ -57,8 +57,5 @@ inbox_path = "~/.notes/inbox"
 # Update Knowledge Graph MCP
 knowledge_graph = true
 
-# Update Serena project memories
-serena_memories = true
-
 # Auto-create entities for new projects discovered
 auto_create_entities = false
