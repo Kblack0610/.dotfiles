@@ -5,6 +5,9 @@
 # Usage:
 #   claude-acct pick [name]   # print the CLAUDE_CONFIG_DIR to use (empty = main account);
 #                             # with a name, that account's dir (`cl --acct <name>`)
+#   claude-acct run [--acct <name>] [claude args]
+#                             # exec claude on the account pick returns: the one launcher for a
+#                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
 #   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
@@ -300,6 +303,29 @@ usage_json() {
 
 # day_time <epoch> -> "Thu 19:00", or - when there is none
 day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+
+# cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
+# unset dir, so an alt account inherited from a parent session is dropped, not passed on. The
+# project label is added per launch, as claude-telemetry.sh asks. Unattended runs pick through
+# agentctl-run instead; runner_contract.bats fails on a claude started any other way.
+cmd_run() {
+    local dir
+    if [[ "${1:-}" == --acct ]]; then
+        dir=$(cmd_pick "${2:?claude-acct run: --acct needs an account name}") || return 1
+        shift 2
+    else
+        dir=$(cmd_pick)
+    fi
+    if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    set +u
+    # shellcheck source=/dev/null
+    . "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null
+    set -u
+    if declare -F claude_telemetry_project >/dev/null; then
+        OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_project)"; export OTEL_RESOURCE_ATTRIBUTES
+    fi
+    exec claude "$@"
+}
 
 cmd_status() {
     if [[ "${1:-}" == --json ]]; then
@@ -1063,6 +1089,7 @@ cmd_unpark() {
 
 case "${1:-}" in
     pick)   shift; cmd_pick "$@" ;;
+    run)    shift; cmd_run "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     room)   cmd_room ;;
