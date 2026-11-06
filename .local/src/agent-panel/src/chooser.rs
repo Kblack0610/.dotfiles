@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, tmux};
+use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, sort, tmux};
 
 /// One detected Claude agent, ready to render.
 #[derive(Clone, Debug, Default)]
@@ -245,7 +245,7 @@ pub fn run_interactive() -> Result<()> {
     }
 
     let map_file = map_file_path();
-    let rows = write_rows(&agents, &map_file)?;
+    let rows = write_rows(&agents, &map_file, saved_sort())?;
     let rows_text = rows_text(&rows);
 
     // Position the cursor on the currently active agent, if any.
@@ -272,9 +272,13 @@ pub fn run_interactive() -> Result<()> {
     Ok(())
 }
 
-/// Render the rows and write the preview map file they need.
-fn write_rows(agents: &[Agent], map_file: &Path) -> Result<Vec<render::Row>> {
-    let (rows, map_lines) = render::build(agents);
+/// Render the rows in `sort` and write the preview map file they need.
+fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (rows, map_lines) = render::build(agents, sort, now);
     fs::write(map_file, map_lines.join("\n"))?;
     Ok(rows)
 }
@@ -288,10 +292,22 @@ fn rows_text(rows: &[render::Row]) -> String {
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
 /// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
-/// the human (ctrl-y).
-pub fn run_rows(map_file: &Path, asking: bool) -> Result<()> {
-    println!("{}", rows_text(&write_rows(&only_asking(collect(), asking), map_file)?));
+/// the human (ctrl-y). `step` is a C-o or A-o press: it moves the saved sort first.
+pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>) -> Result<()> {
+    let mut sort = saved_sort();
+    if let Some(step) = step {
+        sort = sort.step(step);
+        if let Some(file) = sort::state_file() {
+            sort::save(&file, sort)?;
+        }
+    }
+    println!("{}", rows_text(&write_rows(&only_asking(collect(), asking), map_file, sort)?));
     Ok(())
+}
+
+/// The sort the panel was last left in (`sort::state_file`), project when none.
+fn saved_sort() -> sort::Sort {
+    sort::state_file().map(|f| sort::load(&f)).unwrap_or_default()
 }
 
 /// The agents ctrl-y shows: all of them, or with `asking` only those that need the human.
