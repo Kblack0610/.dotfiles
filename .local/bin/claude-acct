@@ -9,6 +9,8 @@
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
 #   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
+#                                 # burn and sustainable points an hour, when it is back on pace,
+#                                 # and one fleet line: live, burn against what the weeks carry
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room     # for automatic starts: the account under its weekly pace, as pick prints it
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
@@ -301,9 +303,23 @@ usage_json() {
             # remainder would otherwise be lost at its reset gets the work. An account its sessions
             # already empty before the reset ranks behind every one with room, and among those the
             # one its sessions empty last goes first. A 5h window near full goes last.
+            # Points an hour the rest of the week can carry to the reset, landing at 100% on it.
+            def sustain: (100 - (.week_used // 0)) / (if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end);
+            # When used falls back to the week gone: with no spend the clock catches up at 100
+            # points a week; at this burn, only when burn is under that line. null when it is
+            # after the reset (the reset puts it on pace anyway).
+            def on_pace($b):
+                if .week_used == null or .week_gone == null then null
+                elif .week_used <= .week_gone then $now
+                else ((100 * 3600 / $week) - $b) as $g
+                    | if $g <= 0 then null
+                      else ($now + (.week_used - .week_gone) / $g * 3600 | floor) as $t
+                        | if .resets != null and $t >= .resets then null else $t end
+                      end
+                end;
             def rank:
                 (.week_used // 0) as $u
-                | ((100 - $u) / (if .resets == null then $week / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end)) as $carry
+                | sustain as $carry
                 | (if .state == "expired" then 0
                    elif $u >= 100 then 1e9
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
@@ -316,8 +332,10 @@ usage_json() {
              over_pace: (if $over == "" then null else $over == "true" end),
              resets: ($resets | num), run_out: ($run_out | num), live: $live,
              # points an hour its live sessions burn: their count times the fleet rate
-             burn: ($live * $rate),
+             burn: ($live * $rate), rate: $rate,
              usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}
+            | .sustain = (if .week_used == null then null else sustain end)
+            | .on_pace_idle = on_pace(0) | .on_pace_burn = on_pace(.burn)
             | .rank = rank'
     done < <(accounts)
 }
@@ -353,17 +371,19 @@ cmd_status() {
         usage_json | jq -s .
         return
     fi
-    local line state
-    printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %s\n' \
-        ACCOUNT 5H WEEK GONE PACE RUNS-OUT RESETS LIVE '24H-$' EMAIL
+    local line state rows
+    rows=$(usage_json)
+    printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %s\n' \
+        ACCOUNT 5H WEEK GONE PACE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE EMAIL
     while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
         state=$(jq -r .state <<< "$line")
         if [[ "$state" != ok ]]; then
             [[ "$state" == expired ]] && state="token expired" || state="fetch failed"
             printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
@@ -373,8 +393,42 @@ cmd_status() {
             "$(day_time "$(jq -r .resets <<< "$line")")" \
             "$(jq -r .live <<< "$line")" \
             "$(jq -r 'if .usd_24h == null then "-" else "$\(.usd_24h | floor)" end' <<< "$line")" \
+            "$(jq -r '.burn * 100 | round / 100' <<< "$line")" \
+            "$(jq -r 'if .sustain == null then "-" else (.sustain * 100 | round / 100) end' <<< "$line")" \
+            "$(on_pace_word "$(jq -r .on_pace_burn <<< "$line")" "$(jq -r .resets <<< "$line")")" \
             "$(jq -r .email <<< "$line")"
-    done < <(usage_json)
+    done <<< "$rows"
+    fleet_line "$rows"
+}
+
+# on_pace_word <epoch|null> <resets|null> -> "now", "Sat 01:00", or "after-reset" when it is not
+# before the reset at this burn
+on_pace_word() {
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    if [[ -z "$1" || "$1" == null ]]; then
+        [[ -n "$2" && "$2" != null ]] && printf after-reset || printf -
+    elif (( $1 <= now )); then printf now
+    else day_time "$1"; fi
+}
+
+# fleet_line <usage rows> -> the whole fleet in one line: live sessions, burn against what the
+# weeks can carry, how many sessions that is, and when the first account is back on pace, at this
+# burn and with every session stopped. Only accounts read this hour count.
+fleet_line() {
+    local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    j=$(jq -sc '[.[] | select(.state == "ok" and .week_used != null)] as $a
+        | {live: ([.[].live] | add // 0), burn: ([$a[].burn] | add // 0), keeps: ([$a[].sustain] | add // 0),
+           rate: (.[0].rate // null),
+           burn_at: ([$a[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
+           idle_at: ([$a[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
+    jq -r --argjson now "$now" '
+        def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
+        "fleet: \(.live) live, burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
+        + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
+        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor))" else ")" end)
+        + ", back on pace: "
+        + (if .burn_at != null then (.burn_at | at) else "not at this burn" end)
+        + (if .idle_at != null then "; if idle \(.idle_at | at)" else "" end)' <<< "$j"
 }
 
 # textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
@@ -393,6 +447,11 @@ cmd_textfile() {
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
         (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
         (rows("claude_account_live_sessions"; .live)),
+        (rows("claude_account_burn_points_per_hour"; if .week_used == null then null else .burn end)),
+        (rows("claude_account_sustain_points_per_hour"; .sustain)),
+        (rows("claude_account_on_pace_idle_timestamp_seconds"; .on_pace_idle)),
+        (rows("claude_account_on_pace_burn_timestamp_seconds"; .on_pace_burn)),
+        (.[0].rate // empty | "claude_fleet_session_rate_points_per_hour \(.)"),
         (rows("claude_account_cost_24h_usd"; .usd_24h))' > "$tmp" &&
         chmod 0644 "$tmp" && mv -f "$tmp" "$dir/claude_acct.prom"; then
         return 0

@@ -33,6 +33,16 @@ pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
 }
 
+/// agent-propose's store.
+pub fn proposals_dir() -> PathBuf {
+    env("AGENT_PROPOSE_DIR").unwrap_or_else(|| home().join(".agent/proposals"))
+}
+
+/// Whether a changed path is a proposal record in `dir`, not its lock or a half-written temp.
+pub fn is_proposal_file(dir: &Path, p: &Path) -> bool {
+    p.parent() == Some(dir) && p.extension().is_some_and(|e| e == "json")
+}
+
 /// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
 /// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
 /// home is agent-ask's store, so a board shows what the questions panel shows. A failed read

@@ -18,6 +18,7 @@ mod jobs;
 mod logtab;
 mod outboxtab;
 mod projtab;
+mod proptab;
 mod queuetab;
 mod tabreq;
 mod tasktab;
@@ -306,9 +307,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             let f = forecast::Forecast::read();
             a.controls.read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
-            a.controls.set(hub_core::session_actions::gather(
-                &hub_core::session_actions::System,
-            ));
+            a.read_sessions_now();
         }
         // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
         if t == Tab::Fleet {
@@ -458,6 +457,8 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     // A job starting or ending writes one of the job files, fleet-sessions and day-log write
     // the board files, and agent-queue its item files: each re-reads only its own part.
     let files = tx;
+    // agent-propose makes its store on the first write, and a watch needs it to exist now.
+    std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -475,6 +476,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| app::is_queue_file(&queue, p)) {
             let _ = files.send(Msg::QueueFiles);
+        }
+        if e.paths.iter().any(|p| boards.is_proposal_file(p)) {
+            let _ = files.send(Msg::ProposalFiles);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.
@@ -494,7 +498,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     app.read_boards();
     app.read_queue();
     if app.tab == Tab::Home {
-        app.read_tasks();
+        app.read_home();
     }
     if app.tab == Tab::Queue {
         app.read_candidates();

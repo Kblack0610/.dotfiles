@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::session_actions::{argv, Runner};
-use crate::session_table::{is_live, is_machine, is_unlinked};
+use crate::session_table::{is_live, is_machine, is_unlinked, read_state};
 
 /// The timers the header watches: its name in the header and on the Start button, the timer
 /// unit, and the service that timer starts.
@@ -197,6 +197,11 @@ pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
             errors,
         },
     )
+}
+
+/// [`read`] over the sessions in `fleet-sessions`' state document.
+pub fn read_fleet(runner: &dyn Runner) -> Capacity {
+    read(runner, &read_state(&crate::boards::fleet_state()).0)
 }
 
 /// Enable and start one of the two timers. Any other name is refused, and nothing here stops one.
