@@ -62,8 +62,10 @@ unset _k _v
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
-# here only so a policy edit re-judges every row (policy_sig).
+# here so a policy edit re-judges every row (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# shellcheck source=../lib/judge.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
@@ -357,11 +359,13 @@ row_priority() {
 
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>" for each verdict that still holds: one
 # made under the current policy for the row's current text. A `failed` record holds for the
-# key whatever changed ("*"), so a row whose session died is not picked again on its own.
+# key whatever changed ("*"), so a row whose session died is not picked again on its own. An
+# `error` holds nothing: the row is judged again.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
   jq -r --arg sig "$(policy_sig)" '
     if .verdict == "failed" then [.project, .lane, .key, "*"]
+    elif .verdict == "error" then empty
     elif .policy == $sig then [.project, .lane, .key, (.line // "")]
     else empty end | @tsv' "$VERDICTS" 2>/dev/null
 }
@@ -407,9 +411,12 @@ cmd_candidates() {
 
 # --- judgment ------------------------------------------------------------------------
 
-# judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache
+# judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache. Each
+# names the policy rule that decided it (`rule`, an id judge_rules reads from the policy) and its
+# call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
+# saying why: the call failed, the reply named no rule of the policy, or it left the row out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc
+  local cands="$1" prompt out verdicts wd rc cid err rules missing
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -425,30 +432,55 @@ $(jq -c '{project, stage, lane, key, text, tier}' <<<"$cands")
 ## Answer
 
 For every row above, one JSON object per line, between a line DISPATCH-VERDICTS-START and a line DISPATCH-VERDICTS-END, nothing else between them:
-{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"area\": \"<one lowercase word>\", \"clear\": true|false, \"agent_only\": true|false, \"tier3_only\": true|false, \"verdict\": \"dispatch|skip\", \"reason\": \"<one short sentence>\"}
+{\"project\": ..., \"lane\": ..., \"key\": ..., \"tier\": 1|2|3, \"size\": \"S|M|L\", \"area\": \"<one lowercase word>\", \"clear\": true|false, \"agent_only\": true|false, \"tier3_only\": true|false, \"verdict\": \"dispatch|skip\", \"rule\": \"<the id of the rule that decided it>\", \"reason\": \"<one short sentence>\"}
 Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
+  cid=$(judge_call_id)
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && $DISPATCH_JUDGE_CMD -p "$prompt" 2>/dev/null)
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD -p "$prompt" 2>"$wd/err")
   rc=$?
+  err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
-  [ "$rc" = 0 ] || { say "judge call failed"; return 1; }
+  mkdir -p "$DIR"
+  if [ "$rc" != 0 ]; then
+    verdict_errors "$cands" "call failed (exit $rc): $err" "$cid" >> "$VERDICTS"
+    say "judge call failed"; return 1
+  fi
+  rules=$(judge_rules "$DISPATCH_POLICY" | jq -Rsc 'split("\n") | map(select(length > 0))')
   verdicts=$(sed -n '/^DISPATCH-VERDICTS-START$/,/^DISPATCH-VERDICTS-END$/p' <<<"$out" | sed '1d;$d' |
-    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+    jq -cR --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
       --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line})' <<<"$cands")" '
       fromjson? | select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
       | ([.project, .lane, .key] | tostring) as $k
-      | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, reason, at: $at,
-         policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first)}')
+      | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
+         policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first), judge_call: $call}
+      | . as $v | if any($rules[]; . == $v.rule) then $v
+        else {project, lane, key, verdict: "error", reason: "rule \(.rule // "" | tojson) is not in the policy",
+              at, policy, line, judge_call} end')
   # A pass that could not judge must not read as "no row qualifies".
-  [ -n "$verdicts" ] || { say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1; }
-  mkdir -p "$DIR"
-  printf '%s\n' "$verdicts" >> "$VERDICTS"
+  if [ -z "$verdicts" ]; then
+    verdict_errors "$cands" "the reply had no verdicts" "$cid" >> "$VERDICTS"
+    say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
+  fi
+  missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
+    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$cands")
+  {
+    printf '%s\n' "$verdicts"
+    verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
+  } >> "$VERDICTS"
+}
+
+# verdict_errors <rows> <reason> <call id> -- an `error` verdict line for each row. judged_keys
+# skips errors, so the next pass judges those rows again.
+verdict_errors() {
+  [ -n "$1" ] || return 0
+  jq -c --arg r "$2" --arg call "$3" --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+    '{project, lane, key, verdict: "error", reason: $r, at: $at, policy: $sig, line, judge_call: $call}' <<<"$1"
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
@@ -552,7 +584,7 @@ start_ready() {
 #                           It reopens in the mode its transcript last shows, bypass when none.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' brief cmd label origin acct mode
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' brief cmd label origin acct mode rec
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -631,7 +663,7 @@ cmd_start() {
     origin=${START_ORIGIN:-resume}
     mode=$(last_mode "$resume")
     launch_mode "${mode:-bypassPermissions}"
-    cmd="$(account_env)claude${model:+ --model $(printf '%q' "$model")} $flags --resume $(printf '%q' "$resume")"
+    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(account_env)claude${model:+ --model $(printf '%q' "$model")} $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
         { say "could not open window $window in $session on $server"; return 1; }
@@ -639,7 +671,10 @@ cmd_start() {
       tmux -L "$server" new-session -d -s "$session" ${window:+-n "$window"} -c "$cwd" "$cmd" ||
         { say "could not create session $session on $server"; return 1; }
     fi
-    [ -z "$item" ] || agent-queue set "$item" "session=$server:$session" "origin=$origin" >/dev/null ||
+    # A window joined into a live session is one Claude among others there, so the item does not
+    # take that session: reap goes by its `sessions:` ids instead (claude_gone).
+    rec=("origin=$origin"); [ -n "$joined" ] || rec+=("session=$server:$session")
+    [ -z "$item" ] || agent-queue set "$item" "${rec[@]}" >/dev/null ||
       say "restored $session, but could not record it on queue item $item"
   else
     [ -n "$cwd" ] || cwd=$(repo_dir "$project")
@@ -732,10 +767,12 @@ conversation_live() {
 wound_down() { compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
-# it was in, through start. The manifest brings back the declared sessions and windows first; a
-# plain shell is listed, not reopened. Consumed only when every reopen worked, so a rerun finishes.
+# it was in, through start, with the running or waiting queue item that lists its Claude session
+# (`agent-queue mine --sid`), so the item records where it runs again. The manifest brings back the
+# declared sessions and windows first; a plain shell is listed, not reopened. Consumed only when
+# every reopen worked, so a rerun finishes.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project failed=0 opened=0
+  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0
   srv=$(jq -r .server "$f")
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
@@ -745,11 +782,12 @@ restore_world() {
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
     mode=$(last_mode "$id")
     mode=${mode:-bypassPermissions}
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)"; continue; fi
+    item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}"; continue; fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
-        --cwd "$cwd" --resume "$id" </dev/null >/dev/null; then
-      echo "$srv:$sess:$win: reopened in $mode"; opened=$((opened + 1))
+        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} </dev/null >/dev/null; then
+      echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}"; opened=$((opened + 1))
     else
       failed=$((failed + 1))
     fi
@@ -905,6 +943,8 @@ unstart_orphans() {
 # ok (and a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for
 # the merge, CLOSED is failed; a state gh cannot read leaves it for the next pass. A bare-number
 # pr: names no repo, so it is taken as merged, as before. No PR is failed, the reason in note.
+# Every move is a compare-and-set on the state read here (`--if`), and the note or merged: is
+# written only after it: an item its session closed or a human requeued meanwhile is left as it is.
 settle_item() {
   local st pr info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
@@ -914,29 +954,29 @@ settle_item() {
     read -r state oid <<<"$info"
     case "$state" in
     MERGED)
+      agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
       [ -z "$oid" ] || agent-queue set "$1" "merged=$oid" >/dev/null
-      agent-queue move "$1" "done" --status ok >/dev/null
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
       [ "$st" = waiting ] && return 0
+      agent-queue move "$1" "waiting" --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=session $2 ended with PR $pr open" >/dev/null
-      agent-queue move "$1" "waiting" >/dev/null
       logline "reaped $2: session gone, queue item $1 waits on its open PR $pr"
       echo "waiting queue item $1 (PR $pr open, $2 ended)" ;;
     CLOSED)
+      agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended" >/dev/null
-      agent-queue move "$1" "done" --status failed >/dev/null
       logline "reaped $2: session gone, queue item $1 failed: PR $pr closed unmerged"
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
     *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
     esac
   elif [ -n "$pr" ]; then
-    agent-queue move "$1" "done" --status ok >/dev/null
+    agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with PR $pr"
   else
+    agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item" >/dev/null
-    agent-queue move "$1" "done" --status failed >/dev/null
     logline "reaped $2: session gone, queue item $1 failed: no PR"
     echo "failed queue item $1 ($2 ended without closing it)"
   fi
@@ -1180,7 +1220,8 @@ low_starved() {
 
 # board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
 # was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing.
+# else nothing. An `error` verdict counts as written: a pass whose judge fails already publishes
+# FAILED (settle), which fleet-liveness reads.
 board_starved() {
   local judged state mins n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
@@ -1354,7 +1395,7 @@ cmd_reap() {
     [ "$seen" = 1 ] || continue
     want=running; grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting
     [ "$state" = "$want" ] && continue
-    agent-queue move "$slug" "$want" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
+    agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
   unstart_orphans
   return 0

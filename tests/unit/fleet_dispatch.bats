@@ -17,7 +17,7 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  echo 'policy' > "$DISPATCH_POLICY"
+  printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub_notes
@@ -471,7 +471,7 @@ app urgent: fleet, #urgent, alpha"
 
 @test "judge asks for an area and keeps it" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
-    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"agent\",\"key\":\"k\",\"verdict\":\"skip\",\"area\":\"wilds\"}" DISPATCH-VERDICTS-END'
+    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"agent\",\"key\":\"k\",\"verdict\":\"skip\",\"rule\":\"unclear\",\"area\":\"wilds\"}" DISPATCH-VERDICTS-END'
   run judge '{"project":"p","stage":"beta","lane":"agent","key":"k","text":"- [ ] k","prio":2}'
   assert_success
   assert_equal "$(jq -r .area "$FLEET_DISPATCH_DIR/verdicts.jsonl")" wilds
@@ -508,7 +508,7 @@ app urgent: fleet, #urgent, alpha"
   cat > "$NOTES_FIXTURE/judge.out" <<'EOF'
 thinking out loud {"project":"x"}
 DISPATCH-VERDICTS-START
-{"project":"game","lane":"human","key":"fix crash","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","reason":"small bug"}
+{"project":"game","lane":"human","key":"fix crash","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","rule":"fits","reason":"small bug"}
 not json
 {"project":"game","lane":"human","key":"other","verdict":"maybe"}
 DISPATCH-VERDICTS-END
@@ -526,6 +526,44 @@ EOF
   assert_output --partial 'no verdicts for 1 row(s)'
 }
 
+@test "judge: each verdict names its policy rule and the call it came from" {
+  stub judge-stub 'echo "$AGENTCTL_CALL_ID" > "$NOTES_FIXTURE/call.id"; cat "$NOTES_FIXTURE/judge.out"'
+  cat > "$NOTES_FIXTURE/judge.out" <<'EOF'
+DISPATCH-VERDICTS-START
+{"project":"game","lane":"human","key":"a","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","rule":"fits","reason":"small"}
+{"project":"game","lane":"human","key":"b","verdict":"skip","rule":"vibes","reason":"x"}
+{"project":"game","lane":"human","key":"c","verdict":"skip","reason":"no rule"}
+DISPATCH-VERDICTS-END
+EOF
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b; c c; c d)"
+  assert_success
+  local id; id=$(cat "$NOTES_FIXTURE/call.id")
+  [ -n "$id" ]
+  v() { jq -r --arg k "$1" --arg id "$id" 'select(.key == $k) | "\(.verdict) \(.rule // "-") \(.judge_call == $id) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  assert_equal "$(v a)" 'dispatch fits true small'
+  assert_equal "$(v b)" 'error - true rule "vibes" is not in the policy'
+  assert_equal "$(v c)" 'error - true rule "" is not in the policy'
+  assert_equal "$(v d)" 'error - true the reply had no verdict for this row'
+  # An error holds nothing: those rows are judged again; the dispatch verdict holds.
+  assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
+}
+
+@test "judge: a failed call is an error verdict for every row, with its reason, and the rows are judged again" {
+  stub judge-stub 'echo "rate limited" >&2; exit 7'
+  run judge '{"project":"game","stage":"beta","lane":"human","key":"a","text":"- [ ] a","tier":1,"line":"a"}'
+  assert_failure
+  assert_output --partial 'judge call failed'
+  assert_equal "$(jq -r '"\(.verdict) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'error call failed (exit 7): rate limited '
+  assert_equal "$(judged_keys)" ''
+  # negative control: a reply with no markers is an error verdict too, never silence
+  rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub judge-stub 'echo "UserPromptSubmit operation blocked by hook"'
+  run judge '{"project":"game","stage":"beta","lane":"human","key":"a","text":"- [ ] a","tier":1,"line":"a"}'
+  assert_failure
+  assert_equal "$(jq -r '"\(.verdict) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'error the reply had no verdicts'
+}
+
 @test "judge runs the model call outside the caller's directory and cleans up after it" {
   stub judge-stub 'pwd > "$NOTES_FIXTURE/judge.cwd"; cat "$NOTES_FIXTURE/judge.out" 2>/dev/null'
   echo 'no markers' > "$NOTES_FIXTURE/judge.out"
@@ -537,7 +575,7 @@ EOF
 
 @test "judge sends rows in rank order when the batch is capped: prod before alpha at one priority, an urgent alpha first" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
-    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'
+    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}" DISPATCH-VERDICTS-END'
   DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}
 {"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
   assert_success
@@ -1783,7 +1821,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   cat > "$NOTES_FIXTURE/judge.out" <<'J'
 DISPATCH-VERDICTS-START
-{"project": "agent-runtime", "lane": "agent", "key": "fix it", "tier": 3, "size": "S", "area": "hooks", "clear": true, "agent_only": true, "tier3_only": true, "verdict": "skip", "reason": "tier 3"}
+{"project": "agent-runtime", "lane": "agent", "key": "fix it", "tier": 3, "size": "S", "area": "hooks", "clear": true, "agent_only": true, "tier3_only": true, "verdict": "skip", "rule": "tier3", "reason": "tier 3"}
 DISPATCH-VERDICTS-END
 J
   fill
@@ -1859,7 +1897,7 @@ J
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
-    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\"}" DISPATCH-VERDICTS-END'
+    printf "%s\n" DISPATCH-VERDICTS-START "{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}" DISPATCH-VERDICTS-END'
   DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1}
 {"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1}
 {"project":"p","stage":"prod","lane":"human","key":"p3","text":"- [ ] p3","prio":1}
@@ -2059,6 +2097,18 @@ pr_item() {
   assert_output --partial 'failed queue item fix-crash (PR o/game#12 closed unmerged)'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
+}
+
+@test "reap: an item moved while reap reads its PR is left as it is, no note written" {
+  pr_item OPEN
+  # gh answers after a human requeued the item: the move reap planned is from a state it no longer has.
+  stub gh 'agent-queue move fix-crash queued >/dev/null; cat "$NOTES_FIXTURE/pr.state"'
+  run cmd_reap
+  assert_success
+  refute_output --partial 'waiting queue item'
+  f=$(qitem queued fix-crash)
+  [ -n "$f" ] || fail "the requeue was undone"
+  assert_equal "$(qfield "$f" note)" ''
 }
 
 @test "reap: a PR gh cannot read leaves the item where it is" {
@@ -2524,6 +2574,20 @@ restore_setup() {
     fail "a finished restore left its record"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_output --partial 'no lost server on record'
+}
+
+@test "restore reopens a conversation with the queue item that lists it, and a joined window takes no session" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane working "$G" conv-item
+  CLAUDE_CODE_SESSION_ID=conv-item agent-queue add --project game --running --slug hub-work "hub work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work claude --permission-mode bypassPermissions --resume conv-item"
+  f=$(qitem running hub-work)
+  assert_equal "$(qfield "$f" origin)" resume
+  assert_equal "$(qfield "$f" session)" ''
 }
 
 @test "restore keeps the record when a reopen fails, so a rerun finishes it" {
