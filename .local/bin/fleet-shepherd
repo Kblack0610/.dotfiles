@@ -17,6 +17,8 @@
 #                          skipped and paged due lines, 24h nudges, escalations and skips from
 #                          log.md, passes, the pass running now (id, status, age, attach line),
 #                          the last scored one (id, verdict) and why the shepherd is stuck, if it is
+#   fleet-shepherd budget <item>
+#                          the item's `<size> <usd>` budget, which hub_core::session_page shows
 #   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
 #                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
 #                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
@@ -481,6 +483,18 @@ infra_due() {
   [ ! -s "$INFRA" ] || cat "$INFRA"
 }
 
+# item_budget <item json>: print its `<size> <usd>`, by the `#size/` tag of its task
+item_budget() {
+  local size
+  size="$(jq -r '(.task // "" | capture("#size/(?<s>[sml])\\b") | .s) // ""' <<<"$1")"
+  case "$size" in
+    s) echo "s $FLEET_SHEPHERD_BUDGET_S" ;;
+    m) echo "m $FLEET_SHEPHERD_BUDGET_M" ;;
+    l) echo "l $FLEET_SHEPHERD_BUDGET_L" ;;
+    *) echo "unsized $FLEET_SHEPHERD_BUDGET_USD" ;;
+  esac
+}
+
 # budget_sample: hold each queue session to its item's budget, as checkpoints. Each whole budget
 # an item's sessions pass is one checkpoint, handled once: a WORKING session carries on (logged)
 # up to FLEET_SHEPHERD_BUDGET_EXTEND budgets; one STALLED at a checkpoint, or still
@@ -494,9 +508,7 @@ budget_sample() {
   touch "$BUDGETS" 2>/dev/null || return 0
   while IFS=$'\t' read -r target bucket slug sids; do
     item="$(agent-queue show "$slug" --json 2>/dev/null)" || continue
-    size="$(jq -r '(.task // "" | capture("#size/(?<s>[sml])\\b") | .s) // ""' <<<"$item")"
-    case "$size" in s) cap=$FLEET_SHEPHERD_BUDGET_S ;; m) cap=$FLEET_SHEPHERD_BUDGET_M ;;
-                    l) cap=$FLEET_SHEPHERD_BUDGET_L ;; *) cap=$FLEET_SHEPHERD_BUDGET_USD; size=unsized ;; esac
+    read -r size cap < <(item_budget "$item")
     read -r usd n < <(jq -r --argjson c "$costs" --arg sids "$sids" --argjson cap "$cap" '
       ([(.sessions // "" | split(" ")[]), ($sids | split(" ")[])] | map(select(. != "")) | unique
        | map($c[.] // 0) | add // 0) as $u | "\($u * 100 | round / 100) \($u / $cap | floor)"' <<<"$item")
@@ -1183,9 +1195,18 @@ cmd_stuck() {
   return 1
 }
 
+# cmd_budget <item>: its size and budget, for the session page
+cmd_budget() {
+  [ -n "${1:-}" ] || die "usage: fleet-shepherd budget <item>"
+  local item
+  item="$(agent-queue show "$1" --json)" || exit
+  item_budget "$item"
+}
+
 case "${1:-}" in
   run)   cmd_run ;;
   stats) cmd_stats ;;
+  budget) shift; cmd_budget "$@" ;;
   stuck) cmd_stuck ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
@@ -1199,5 +1220,5 @@ case "${1:-}" in
   log)   cmd_holds || exit; shift; cmd_log "$@" ;;
   sweep-cancel) cmd_holds || exit; shift; cmd_sweep_cancel "$@" ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|open|passes|stats|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel)" ;;
+  *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel)" ;;
 esac

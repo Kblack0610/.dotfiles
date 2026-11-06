@@ -200,25 +200,38 @@ pub fn registry() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".agent/sessions")
 }
 
-/// Each session's cost from `<root>/<project>/sessions.jsonl`, whose rows the Stop hook appends;
-/// a later row for a session replaces an earlier one.
+/// Every row of `<root>/<project>/sessions.jsonl`, which the Stop hook appends to, oldest first
+/// within a project.
+fn registry_rows(root: &Path) -> impl Iterator<Item = Value> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| std::fs::read_to_string(d.path().join("sessions.jsonl")).ok())
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .collect::<Vec<_>>()
+        })
+}
+
+/// Each session's cost; a later row for a session replaces an earlier one.
 pub fn costs(root: &Path) -> HashMap<String, f64> {
     let mut out = HashMap::new();
-    let dirs = std::fs::read_dir(root).into_iter().flatten().flatten();
-    for d in dirs {
-        let Ok(text) = std::fs::read_to_string(d.path().join("sessions.jsonl")) else {
-            continue;
-        };
-        for v in text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        {
-            if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
-                out.insert(id.to_string(), c);
-            }
+    for v in registry_rows(root) {
+        if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
+            out.insert(id.to_string(), c);
         }
     }
     out
+}
+
+/// The transcript the registry names for a session: once a session has ended no other store does.
+pub fn transcript(root: &Path, session_id: &str) -> Option<PathBuf> {
+    registry_rows(root)
+        .filter(|v| v["session_id"] == session_id)
+        .filter_map(|v| v["transcript"].as_str().map(PathBuf::from))
+        .last()
 }
 
 fn ended_argv() -> Vec<String> {
@@ -673,6 +686,21 @@ mod tests {
         let c = costs(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(c, HashMap::from([("a".to_string(), 2.5)]));
+    }
+
+    #[test]
+    fn the_registry_names_a_sessions_last_transcript() {
+        let dir = std::env::temp_dir().join(format!("hub-transcript-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("p")).unwrap();
+        std::fs::write(
+            dir.join("p/sessions.jsonl"),
+            "{\"session_id\":\"a\",\"transcript\":\"/t/old\"}\n{\"session_id\":\"a\",\"transcript\":\"/t/new\"}\n{\"session_id\":\"b\"}\n",
+        )
+        .unwrap();
+        let (a, b) = (transcript(&dir, "a"), transcript(&dir, "b"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(a, Some(PathBuf::from("/t/new")));
+        assert_eq!(b, None);
     }
 
     #[test]
