@@ -315,3 +315,14 @@ EOF
   CLAUDE_PROJECT_DIR="$HOME/proj" run bash "$HOOK" </dev/null
   assert_success
 }
+
+@test "regen-anchor: a long lesson is cut on a word boundary, in ASCII" {
+  # Cut mid-word, `~/.dotfiles-private` became `~/.d` plus an ellipsis: a dead path.
+  seed_anchor
+  { printf -- '- **2026-11-05** '; for i in $(seq 1 40); do printf 'word%02d ' "$i"; done; printf '%s\n' '~/.dotfiles-private/x'; } > "$HOME/.agent/lessons/proj.md"
+  run bash "$REGEN" proj
+  assert_success
+  run grep -E '^- \*\*2026-11-05' "$ANCHOR"
+  assert_output --regexp 'word[0-9]+\.\.\.$'
+  refute_output --partial '…'
+}
