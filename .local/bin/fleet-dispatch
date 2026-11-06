@@ -83,6 +83,10 @@ unset _k _v
 # Ranking, first match wins: rows that delete or fix a broken mechanism, then observer findings.
 : "${DISPATCH_NIGHT_FIRST:=\b(delete|remove|drop|retire|prune|strip|broken|never|fails|failing|failed|dead|wrong|stale|leaks?|orphans?|races?)\b}"
 : "${DISPATCH_NIGHT_OBSERVER:=^(kpi|retro|dream)\b}"
+# The AI systems: in these projects a row that fixes something or names a DISPATCH_NIGHT_FIRST word
+# ranks ahead of the rest of its project-priority and due-date bucket, day and night (the human's ask
+# of 2026-11-05 that cleanup of the AI systems be the most urgent work). Empty turns it off.
+: "${DISPATCH_CLEANUP_PROJECTS:=agent-runtime notes-cockpit}"
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 LOG="$DIR/log.md"
@@ -132,9 +136,9 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): the project's priority,
-# then the row's due date (overdue, today, within 3 days, later or none), then worker order, then the
-# row's priority, then stage, then oldest first. rank_fields adds the counted inputs and a `why`
-# naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
+# then the row's due date (overdue, today, within 3 days, later or none), then cleanup of an AI system
+# (cleanup_row), then worker order, then the row's priority, then stage, then oldest first.
+# rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
 RANK_JQ='
@@ -152,11 +156,12 @@ def rank_fields($today; $pprio):
   | . + {why: ([(if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
                  elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
+                (if .cleanup == 0 then "cleanup" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
-def rank: sort_by((.pprio // 2), (.due // 3), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+def rank: sort_by((.pprio // 2), (.due // 3), (.cleanup // 1), (.wrank // 0), .prio, ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -217,6 +222,40 @@ row_worker() {
     return 0
   done <<<"$1"
   return 1
+}
+
+# cleanup_row <project> <row text> -> 0 when the row cleans up an AI system (its project is in
+# DISPATCH_CLEANUP_PROJECTS and it is a fix or names a DISPATCH_NIGHT_FIRST word), else 1: RANK_JQ's
+# `cleanup`, sorted after the due date.
+cleanup_row() {
+  local body="${2%%<!--*}"
+  [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || { echo 1; return; }
+  if [[ "$body" =~ ^-\ \[.\]\ fix[:\(] ]] || grep -qiE -- "$DISPATCH_NIGHT_FIRST" <<<"$body"; then echo 0; else echo 1; fi
+}
+
+# nobody_why <workers> <project> <lane> <row text> -> why no worker takes a row row_worker turned
+# down, the first of: no untagged worker lists the project (on the night path, the skip word that
+# keeps it off that too), its tier is past the unattended ceiling, or its tags and tier fit none.
+nobody_why() {
+  local project="$2" lane="$3" text="$4" rank name max projects only wlane untagged covers=0 t m
+  while IFS=$'\t' read -r rank name max projects only wlane untagged; do
+    [ "$untagged" = true ] || continue
+    [ "$projects" = - ] || [[ ",$projects," == *",$project,"* ]] || continue
+    [ "$wlane" = - ] || [ "$wlane" = "$lane" ] || continue
+    covers=1
+  done <<<"$1"
+  if [ "$covers" = 0 ]; then
+    if [[ " $DISPATCH_NIGHT_PROJECTS " == *" $project "* ]]; then
+      m=$(grep -oiE -m1 -- "$DISPATCH_NIGHT_SKIP" <<<"${text%%<!--*}" | head -1)
+      if [ -n "$m" ]; then echo "night skip: $m"; else echo "night only: no day worker covers $project"; fi
+    else
+      echo "no worker covers $project"
+    fi
+    return
+  fi
+  t=$(row_tier "$text")
+  if [ -n "$t" ] && [ "$t" -gt "$UNATTENDED_TIER_CEILING" ]; then echo "tier $t: past the unattended ceiling"; return; fi
+  echo "no worker takes its tags or tier"
 }
 
 sig() { sha256sum | cut -c1-12; }
@@ -377,7 +416,7 @@ judged_keys() {
 }
 
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today
+  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
@@ -390,14 +429,19 @@ cmd_candidates() {
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
+      # suggest marks a project worked on in the last day, so a gap in worker cover shows.
+      active=false
+      [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
       for lane in human agent; do
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
+          nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
             [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
             rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
+            nobody=$(nobody_why "$table" "$name" "$lane" "$text")
           fi
           line=$(printf '%s' "$text" | sig)
           grep -qxF "$name"$'\t'"$lane"$'\t'"$key"$'\t'"$line" <<<"$judged" && continue
@@ -406,9 +450,11 @@ cmd_candidates() {
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
+            --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank} | rank_fields($today; $pprio)'
+              worker: $worker, wrank: $wrank, cleanup: $cleanup}
+              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done < <(rows "$prof" "$name" "$lane")
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
@@ -492,8 +538,10 @@ verdict_errors() {
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
 # of each project from dev up with a repo, in every notes profile, in RANK_JQ order. Each
 # carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
-# `verdict`, the latest under this policy for this text, or `unjudged`; and `held`, whether an active
-# queue item holds its area. Display only: it never judges, claims or queues.
+# `verdict`, the latest under this policy for this text, or `unjudged`; `held`, whether an active
+# queue item holds its area; and `blocked`, every counted reason it would not start (nobody_why,
+# size, the judge's skip, a held area), with `active` on a row no worker takes when its repo moved
+# in the last day. Display only: it never judges, claims or queues.
 cmd_suggest() {
   local profs cands
   profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[].profile] | unique | join(" ")' 2>/dev/null)
@@ -507,10 +555,15 @@ cmd_suggest() {
       | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase),
              verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
                        elif $d.policy != $sig or $d.line != $c.line then "unjudged" else $d.verdict end)}
-      | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null)})
+      | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null),
+             size: ($d.size // ""), reason: ($d.reason // "")})
+    | map(. + {blocked: [(.nobody // empty),
+        (if ((.text | split("<!--")[0] | test("#size/(l|xl)\\b"; "i")) or (.size | IN("L", "XL"))) then "size/l: too big for a pick" else empty end),
+        (if .verdict == "skip" or .verdict == "failed" then "judge: \(.verdict)\(if .reason != "" then ", \(.reason)" else "" end)" else empty end),
+        (if .held then "area held by a queue item" else empty end)]})
     | rank | .[]' <<<"$cands" |
     if [ "${1:-}" = --json ]; then cat; else
-      jq -r '"\(if .auto then "auto" else "man " end)  \(.verdict | .[0:8] | . + " " * (8 - length))  \(.project) \(.key)\(if .held then " (area held)" else "" end)  [\(.why)]"'
+      jq -r '"\(if .auto then "auto" else "man " end)  \(.verdict | .[0:8] | . + " " * (8 - length))  \(.project) \(.key)  [\(.why)]\(if (.blocked | length) > 0 then "  blocked: \(.blocked | join("; "))" else "" end)"'
     fi
 }
 

@@ -350,6 +350,13 @@ pub struct Candidate {
     /// An active queue item holds its area.
     pub held: bool,
     pub area: String,
+    /// Row priority as fleet-dispatch ranks it: 0 is `#urgent`, 3 is `#low`.
+    pub prio: Option<u8>,
+    /// Each reason no worker would start it, as fleet-dispatch words it ("no worker covers
+    /// trader", "judge: skip, <reason>"); empty when one would.
+    pub blocked: Vec<String>,
+    /// No worker covers it and its repo has a commit in the last day: a gap in cover.
+    pub active: bool,
 }
 
 impl Candidate {
@@ -363,6 +370,24 @@ impl Candidate {
             .filter(|w| !w.starts_with('#'))
             .collect();
         cap(&words.join(" "), TITLE_MAX)
+    }
+
+    /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip
+    /// is one chip.
+    pub fn reasons(&self) -> Vec<String> {
+        self.blocked
+            .iter()
+            .map(|b| b.split(", ").next().unwrap_or(b).to_string())
+            .collect()
+    }
+
+    /// The why, then what blocks it: the WHY cell of both views.
+    pub fn why_line(&self) -> String {
+        if self.blocked.is_empty() {
+            self.why.clone()
+        } else {
+            format!("{}; blocked: {}", self.why, self.blocked.join("; "))
+        }
     }
 
     /// How it would start: auto or man, the judge's verdict once it has one, and held.
@@ -390,12 +415,24 @@ impl Candidate {
     }
 }
 
-/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept.
+/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept,
+/// and every blocked reason counted over all of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Candidates {
     pub total: usize,
     pub auto: usize,
     pub rows: Vec<Candidate>,
+    /// Rows past the first `CANDIDATES_SHOWN`, in rank order, kept so each reason chip lists up
+    /// to `CANDIDATES_SHOWN` of its own.
+    pub blocked_rows: Vec<Candidate>,
+    /// Rows nothing blocks: a worker takes each and no judge, size or held area stops it.
+    pub clear: usize,
+    /// Each chip reason (`Candidate::reasons`) and how many rows it blocks, most first.
+    pub reasons: Vec<(String, usize)>,
+    /// `#urgent` rows something blocks: a view opens its Candidates by itself while any are.
+    pub urgent_blocked: usize,
+    /// Projects worked on in the last day that have a row no worker covers, sorted.
+    pub uncovered: Vec<String>,
 }
 
 impl Candidates {
@@ -404,20 +441,55 @@ impl Candidates {
     }
 }
 
+/// A row no worker covers: what `uncovered` counts.
+fn uncovered_reason(r: &str) -> bool {
+    r.starts_with("no worker covers ") || r.starts_with("night only: ")
+}
+
 /// `fleet-dispatch suggest --json` prints one object per line, in rank order, and nothing when
 /// there is no row; a line that does not parse is skipped.
 pub fn parse_candidates(jsonl: &str) -> Candidates {
     let mut c = Candidates::default();
+    let mut by: Vec<(String, usize)> = Vec::new();
     for row in jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Candidate>(l).ok())
     {
         c.total += 1;
         c.auto += usize::from(row.auto);
+        let reasons = row.reasons();
+        c.clear += usize::from(reasons.is_empty());
+        if !reasons.is_empty() && row.prio == Some(0) {
+            c.urgent_blocked += 1;
+        }
+        if row.active
+            && row.blocked.iter().any(|r| uncovered_reason(r))
+            && !c.uncovered.contains(&row.project)
+        {
+            c.uncovered.push(row.project.clone());
+        }
+        let mut wanted = false;
+        for r in &reasons {
+            match by.iter_mut().find(|(k, _)| k == r) {
+                Some((_, n)) => {
+                    wanted |= *n < CANDIDATES_SHOWN;
+                    *n += 1;
+                }
+                None => {
+                    wanted = true;
+                    by.push((r.clone(), 1));
+                }
+            }
+        }
         if c.rows.len() < CANDIDATES_SHOWN {
             c.rows.push(row);
+        } else if wanted {
+            c.blocked_rows.push(row);
         }
     }
+    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    c.reasons = by;
+    c.uncovered.sort();
     c
 }
 
@@ -683,6 +755,88 @@ mod tests {
             Candidates::default(),
             "no rows prints nothing"
         );
+    }
+
+    #[test]
+    fn candidates_count_each_blocked_reason_over_every_row_and_keep_rows_for_each_chip() {
+        let row = |key: &str, prio: u8, blocked: &str, active: bool, project: &str| {
+            let b: Vec<&str> = blocked.split('|').filter(|s| !s.is_empty()).collect();
+            serde_json::json!({"key": key, "project": project, "prio": prio, "blocked": b,
+                "active": active, "why": "alpha"})
+            .to_string()
+        };
+        let mut lines: Vec<String> = (0..CANDIDATES_SHOWN)
+            .map(|i| row(&format!("top-{i}"), 2, "", false, "game"))
+            .collect();
+        lines.push(row("skip-a", 2, "judge: skip, too vague", false, "game"));
+        lines.push(row(
+            "skip-b",
+            0,
+            "judge: skip, a dupe|size/l: too big for a pick",
+            false,
+            "game",
+        ));
+        lines.push(row(
+            "gap",
+            2,
+            "night only: no day worker covers ar",
+            true,
+            "ar",
+        ));
+        lines.push(row(
+            "gap-old",
+            2,
+            "no worker covers trader",
+            false,
+            "trader",
+        ));
+        lines.push(row("taken", 0, "", false, "game"));
+        let c = parse_candidates(&lines.join("\n"));
+        assert_eq!(
+            (c.total, c.rows.len()),
+            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN)
+        );
+        let kept: Vec<&str> = c.blocked_rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(
+            kept,
+            ["skip-a", "skip-b", "gap", "gap-old"],
+            "an unblocked row past the cap is not kept"
+        );
+        assert_eq!(
+            c.reasons[0],
+            ("judge: skip".to_string(), 2),
+            "a judge's reason is one chip"
+        );
+        assert_eq!(c.reasons.len(), 4);
+        assert_eq!(
+            c.urgent_blocked, 1,
+            "an urgent row a worker takes is not counted"
+        );
+        assert_eq!(
+            c.uncovered,
+            ["ar"],
+            "a gap with no commit in a day is not a gap in cover"
+        );
+        assert_eq!(
+            c.blocked_rows[1].why_line(),
+            "alpha; blocked: judge: skip, a dupe; size/l: too big for a pick"
+        );
+        assert_eq!(c.rows[0].why_line(), "alpha");
+    }
+
+    #[test]
+    fn a_reason_chip_keeps_at_most_the_shown_count_past_the_top() {
+        let line = r#"{"key":"k","blocked":["tier 3: past the unattended ceiling"]}"#;
+        let c = parse_candidates(&vec![line; 3 * CANDIDATES_SHOWN].join("\n"));
+        assert_eq!(c.rows.len() + c.blocked_rows.len(), CANDIDATES_SHOWN);
+        assert_eq!(
+            c.reasons,
+            [(
+                "tier 3: past the unattended ceiling".to_string(),
+                3 * CANDIDATES_SHOWN
+            )]
+        );
+        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
     }
 
     #[test]

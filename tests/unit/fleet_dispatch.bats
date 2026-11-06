@@ -308,6 +308,20 @@ board_workers() {
   assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=requested,assigned=fleet,plain=board'
 }
 
+@test "the shipped registry: the AI systems and the home cluster have a day worker, under the same tier ceiling; finance has none" {
+  export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
+  mkdir -p "$SANDBOX/repos/ar" "$SANDBOX/repos/hc" "$SANDBOX/repos/fin"
+  project agent-runtime alpha "$SANDBOX/repos/ar"
+  project home-config alpha "$SANDBOX/repos/hc"
+  project finance alpha "$SANDBOX/repos/fin"
+  row agent-runtime agent 'ar fix' '- [ ] fix(intake): retry a failed sweep'
+  row agent-runtime agent 'ar ci' '- [ ] ci(runners): the pool'
+  row home-config agent 'hc row' '- [ ] chore(dns): tidy a record'
+  row finance agent 'fin row' '- [ ] chore(budget): a sheet'
+  run cmd_candidates
+  assert_equal "$(jq -sr 'sort_by(.key) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'ar fix=infra,hc row=infra'
+}
+
 # --- picks -------------------------------------------------------------------------------
 
 @test "picks: only S or M, clear, agent-only dispatch verdicts, several per project, urgent then prod first" {
@@ -402,9 +416,9 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_success
   assert_output "auto  dispatch  game game judged  [fleet, #high, beta]
 auto  unjudged  game game human  [fleet, beta]
-auto  dispatch  game game busy (area held)  [fleet, beta]
+auto  dispatch  game game busy  [fleet, beta]  blocked: area held by a queue item
 auto  unjudged  game game new  [fleet, beta]
-man   unjudged  app app row  [#high, alpha]"
+man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   refute_output --partial 'app human'
   refute_output --partial 'sketch'
   run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
@@ -415,6 +429,52 @@ man   unjudged  app app row  [#high, alpha]"
   assert_success
   assert_equal "$(jq -r '"\(.key)=\(.verdict)/\(.auto)"' <<<"$output" | paste -sd' ')" \
     'game judged=unjudged/true game human=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
+}
+
+@test "suggest: each row no worker takes names why: no cover, the night path's skip word or its gap, the tier ceiling, size, the judge" {
+  echo '{"personal": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+  export DISPATCH_NIGHT_PROJECTS="night"
+  project game beta "$SANDBOX/repos/game"
+  project app alpha "$SANDBOX/repos/app"
+  mkdir -p "$SANDBOX/repos/night"
+  project night alpha "$SANDBOX/repos/night"
+  row app agent 'app row' "- [ ] app row"
+  row night agent 'night sudo' "- [ ] chore(box): run it with sudo"
+  row night agent 'night plain' "- [ ] chore(box): tidy the docs"
+  row game agent 'game ci' "- [ ] ci(game): the runner pool #tier/3"
+  row game agent 'game big' "- [ ] feat(game): a whole new mode #size/l"
+  row game agent 'game skip' "- [ ] feat(game): a skipped one"
+  verdict game agent 'game skip' skip
+  run cmd_suggest --json
+  assert_success
+  b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
+  assert_equal "$(b 'app row')" 'no worker covers app'
+  assert_equal "$(b 'night sudo')" 'night skip: sudo'
+  assert_equal "$(b 'night plain')" 'night only: no day worker covers night'
+  assert_equal "$(b 'game ci')" 'tier 3: past the unattended ceiling'
+  assert_equal "$(b 'game big')" 'size/l: too big for a pick'
+  assert_equal "$(b 'game skip')" 'judge: skip, r'
+  # active: no repo here has a commit, so a row nobody takes is never marked worked on today.
+  assert_equal "$(jq -r 'select(.key == "app row") | .active' <<<"$output")" false
+}
+
+@test "rank: a fix or cleanup row of an AI system outranks the rest of its bucket; a feature there, or a fix elsewhere, does not" {
+  echo '{"personal": {"max_tier": 2, "projects": ["game", "app"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+  export DISPATCH_CLEANUP_PROJECTS="app"
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game agent 'game fix' "- [ ] fix(game): the score is wrong #urgent"
+  row app agent 'app feat' "- [ ] feat(app): a new page #urgent"
+  row app agent 'app fix' "- [ ] fix(app): the sweep never retries #low"
+  row app agent 'app stale' "- [ ] chore(app): prune the stale cache #low"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale game fix app feat'
+  assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, beta'
+  assert_equal "$(jq -r 'select(.key == "game fix") | .cleanup' <<<"$output")" 1
+  # Empty scope turns it off: back to row priority.
+  DISPATCH_CLEANUP_PROJECTS="" run cmd_suggest --json
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app fix app stale'
 }
 
 @test "suggest: says so when no project has an open agent row" {

@@ -24,13 +24,23 @@
     "untagged": true
   },
   "personal": {
-    "what": "/one-shot on an agent-board row of a personal app, no tags needed; finance and the infra boards are left out (finance stays human-gated, infra runs as night items to a PR)",
+    "what": "/one-shot on an agent-board row of a personal app, no tags needed; finance is left out (it stays human-gated)",
     "max_tier": 2,
     "projects": [
       "trader",
       "black-dev",
       "kenneth-black-portfolio",
       "notes-cockpit"
+    ],
+    "lane": "agent",
+    "untagged": true
+  },
+  "infra": {
+    "what": "/one-shot on an agent-board row of the AI systems and the home cluster, no tags needed; tier 3 rows (harness, CI, runners) still run only as night items to a PR, under the unattended ceiling",
+    "max_tier": 2,
+    "projects": [
+      "agent-runtime",
+      "home-config"
     ],
     "lane": "agent",
     "untagged": true
