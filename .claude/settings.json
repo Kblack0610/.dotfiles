@@ -139,16 +139,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "ExitPlanMode",
         "hooks": [
           {
@@ -221,16 +211,6 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/spawn-watch.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
-            "timeout": 5
           }
         ]
       }
@@ -307,18 +287,6 @@
           {
             "type": "command",
             "command": "bash ~/.dotfiles/.config/shared-hooks/worktree-remove.sh"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/token-filter.sh",
-            "timeout": 5
           }
         ]
       }

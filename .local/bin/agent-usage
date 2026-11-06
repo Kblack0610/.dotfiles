@@ -607,8 +607,8 @@ cmd_burn() {
 
 # --- tokens ----------------------------------------------------------------
 
-# One JSON per day under ~/.agent/token-usage/ joined from claude-recall tool-output, burn and
-# token-filter verify; its one-line row; the drift check the token-usage-drift watch runs.
+# One JSON per day under ~/.agent/token-usage/ joined from claude-recall tool-output and burn;
+# its one-line row; the drift check the token-usage-drift watch runs.
 # Written nightly by the agentctl token-usage schedule. Logic: ../lib/agent-usage-tokens.py.
 cmd_tokens() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-tokens.py" "$@"
