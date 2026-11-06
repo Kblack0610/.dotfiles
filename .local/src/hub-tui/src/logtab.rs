@@ -2,19 +2,35 @@
 //! the ledger agent-web's Actions section reads) and the shepherd's kept rundowns
 //! (`hub_core::boards::rundowns`). Each list stops at `FOLD_ROWS` and says how many it left out.
 
-use hub_core::actions::Gathered;
+use hub_core::actions::{Action, Gathered};
 use hub_core::boards::Rundown;
 use hub_core::layout::FOLD_ROWS;
 use ratatui::text::{Line, Span};
 
-use crate::fit::clip_line;
+use crate::datatable::DataTable;
+use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, older, Palette};
 
 /// How far back the Actions section reads, as agent-web's default window.
 pub const ACTIONS_HOURS: i64 = 24;
 
-/// The actions in the window, newest first: when, who, what, and the text.
-pub fn actions(g: &Gathered, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// `Action::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
+const HEADER: [&str; 6] = ["WHEN", "ACTOR", "VERB", "PRIO", "SOURCE", "TEXT"];
+
+fn row(a: &Action, p: Palette, now: i64) -> Vec<Cell> {
+    vec![
+        cell(clock(a.at, now), p.dim()),
+        a.actor.as_str().into(),
+        cell(a.verb.as_str(), p.head()),
+        a.priority.as_deref().unwrap_or("").into(),
+        cell(a.source.as_str(), p.dim()),
+        a.text.replace(['\t', '\n'], " ").into(),
+    ]
+}
+
+/// The actions on the shared table, newest first until a sort is asked for: the view's chips,
+/// then the rows it keeps, stopping at `FOLD_ROWS`.
+pub fn actions(g: &Gathered, t: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = g
         .errors
         .iter()
@@ -27,18 +43,33 @@ pub fn actions(g: &Gathered, p: Palette, now: i64, w: usize) -> Vec<Line<'static
         ));
         return out;
     }
-    for a in g.actions.iter().take(FOLD_ROWS) {
-        out.push(clip_line(
-            Line::from(vec![
-                Span::styled(format!("  {:>6} ", clock(a.at, now)), p.dim()),
-                Span::raw(format!("{} ", a.actor)),
-                Span::styled(format!("{} ", a.verb), p.head()),
-                Span::raw(a.text.replace(['\t', '\n'], " ")),
-            ]),
-            w,
+    out.push(clip_line(Line::from(t.status(&g.actions, p)), w));
+    let rows = t.view.apply(&g.actions);
+    if rows.is_empty() {
+        out.push(Line::styled(
+            "  no action matches (/ query, f state, x clears)",
+            p.dim(),
         ));
+        return out;
     }
-    out.extend(older(g.actions.len(), FOLD_ROWS, p));
+    out.extend(
+        Table {
+            header: HEADER.to_vec(),
+            rows: rows
+                .iter()
+                .take(FOLD_ROWS)
+                .map(|a| row(a, p, now))
+                .collect(),
+            keep: vec![0, 2, 1, 3, 4],
+            flex: Some(5),
+            flexmin: 20,
+            flexkeep: true,
+            mark: t.mark::<Action>(),
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.extend(older(rows.len(), FOLD_ROWS, p));
     out
 }
 
@@ -106,12 +137,18 @@ mod tests {
             errors: vec!["dispatch.log: denied".into()],
             ..Gathered::default()
         };
-        let t = text(&actions(&g, p, 1000, 120));
+        let t = text(&actions(&g, &DataTable::default(), p, 1000, 120));
         assert!(t.contains("unread: dispatch.log: denied"), "{t}");
-        assert!(t.contains("shepherd nudge agent-3 stalled"), "{t}");
+        assert!(t.contains("WHEN") && t.contains("agent-3 stalled"), "{t}");
         assert_eq!(t.matches("nudge").count(), FOLD_ROWS);
         assert!(t.ends_with("+3 older"), "{t}");
-        let none = text(&actions(&Gathered::default(), p, 1000, 120));
+        let none = text(&actions(
+            &Gathered::default(),
+            &DataTable::default(),
+            p,
+            1000,
+            120,
+        ));
         assert!(none.contains("nothing in the last 24h"), "{none}");
     }
 

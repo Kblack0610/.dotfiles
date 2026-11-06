@@ -29,11 +29,26 @@ const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
-// The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
-// box has focus replaces around it: `<id>-facets` and `<id>-chips`.
+// The search box, the dropdowns and the chips. `id` names the parts tblPaint replaces around a
+// control in use: `<id>-facets` and `<id>-chips`.
 function tblBar(id, t, hint) {
   return `<div class="card bfilter qcfilter"><div class="opts"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text">` +
     `<span id="${id}-facets">${tblFacets(t)}</span></div></div><div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>`;
+}
+
+// Draw a table view. `parts` is its regions' html in order, each in an `<id>-<part>` element:
+// `head` above the bar, the rest below it. A refresh must not take the search box or an open
+// dropdown from under the human, so while one has focus everything around it repaints and it stays.
+function tblPaint(el, id, t, hint, parts) {
+  const f = document.activeElement, region = ([k, html]) => `<div id="${id}-${k}">${html}</div>`;
+  if (f && el.contains(f) && (f.id === `${id}-q` || f.dataset.tq !== undefined)) {
+    if (f.id === `${id}-q`) paint($(`${id}-facets`), tblFacets(t));
+    paint($(`${id}-chips`), tblChips(t));
+    for (const [k, html] of Object.entries(parts)) paint($(`${id}-${k}`), html);
+    return;
+  }
+  const { head, ...rest } = parts;
+  paint(el, region(["head", head]) + tblBar(id, t, hint) + Object.entries(rest).map(region).join(""));
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.

@@ -73,19 +73,7 @@ function renderJobs() {
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
     return;
   }
-  // A refresh must not take the search box or an open dropdown from under the human, so
-  // everything around the control in use repaints and it stays.
-  const f = document.activeElement;
-  if (f?.id === "jobs-q" || f?.dataset?.tq !== undefined) {
-    paint($("jobs-head"), jobsHead(d));
-    if (f.id === "jobs-q") paint($("jobs-facets"), tblFacets(d.table));
-    paint($("jobs-chips"), tblChips(d.table));
-    paint($("jobs-body"), jobsBody(d));
-    paint($("jobs-tail"), jobsTail());
-    return;
-  }
-  paint(el, `<div id="jobs-head">${jobsHead(d)}</div>${tblBar("jobs", d.table, "search, or source:ci result:fail -name:dream")}` +
-    `<div id="jobs-body">${jobsBody(d)}</div><div id="jobs-tail">${jobsTail()}</div>`);
+  tblPaint(el, "jobs", d.table, "search, or source:ci result:fail -name:dream", { head: jobsHead(d), body: jobsBody(d), tail: jobsTail() });
   seekSection();
 }
 
