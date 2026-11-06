@@ -39,6 +39,26 @@ const refreshCands = coalesce(async () => {
   if (st.tab === "queue") renderQueueList();
 });
 
+// The pipeline line above the tiles: /api/pipeline, hub-core's `pipeline` worded once for this page
+// and the hub TUI. Prometheus pushes nothing, so the open tab re-reads on Infra's cadence. With
+// the gauges absent the line says `pipeline -`; the page never invents a zero.
+const qpl = { data: null, err: null };
+const refreshPipeline = coalesce(async () => {
+  try { qpl.data = await api("/api/pipeline"); qpl.err = null; } catch (e) { qpl.err = e.message; }
+  if (st.tab === "queue") renderQueueList();
+});
+const pollPipeline = poll("queue", refreshPipeline, INFRA_REFRESH_MS);
+
+function qPipeline() {
+  const d = qpl.data;
+  if (!d) return `<div class="qpipe muted">${qpl.err ? `pipeline - ${esc(qpl.err)}` : "pipeline  reading Prometheus"}</div>`;
+  const [first, ...rest] = d.lines;
+  const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
+  const why = d.error ? ` <span class="muted">${esc(d.error)}</span>` : "";
+  return `<div class="qpipe${d.pipeline ? "" : " muted"}">${esc(first)}${why}${g}` +
+    rest.map((l) => `<br><span class="qwarn">${esc(l.trim())}</span>`).join("") + `</div>`;
+}
+
 const refreshQueue = coalesce(async () => {
   try { qst.items = await api("/api/queue"); qst.err = null; } catch (e) { qst.err = e.message; }
   // The window's line and what sits now; the list still shows when agent-queue stats fails.
@@ -212,7 +232,7 @@ function qSorted(state, rows) {
 function drawQueueList(el) {
   if (!qst.items) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
   let html = qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "";
-  html += qTiles();
+  html += qPipeline() + qTiles();
   for (const [state, title] of Q_SECTIONS) {
     const rows = qSorted(state, qst.items.filter((i) => i.state === state));
     if (!rows.length && state === "waiting") continue;
@@ -390,6 +410,7 @@ TABS.queue = {
     renderQueue();
     refreshQueue();
     refreshCands();
+    pollPipeline();
     if (!qst.projects.length) {
       try { qst.projects = await api("/api/queue/projects"); } catch (e) { /* the select stays empty; add says why */ }
       if (st.tab === "queue") { qSaveDraft(); renderQueue(); }
@@ -397,6 +418,7 @@ TABS.queue = {
   },
   onEvent(ev) {
     if (ev.kind === "queue" || ev.kind === "resync") refreshQueue();
+    if (ev.kind === "resync") refreshPipeline();
   },
 };
 refreshQueue();

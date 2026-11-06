@@ -162,6 +162,7 @@ h3.qday { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercas
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
+.qpipe { margin: 0 0 10px; overflow-wrap: anywhere; } .qwarn { color: var(--b-stalled); font-weight: 600; }
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
 .badge-line { margin: 6px 0; }
 .more { padding: 4px 8px; }
