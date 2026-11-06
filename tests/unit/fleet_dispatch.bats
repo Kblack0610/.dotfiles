@@ -2099,6 +2099,18 @@ pr_item() {
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
 }
 
+@test "reap: an item moved while reap reads its PR is left as it is, no note written" {
+  pr_item OPEN
+  # gh answers after a human requeued the item: the move reap planned is from a state it no longer has.
+  stub gh 'agent-queue move fix-crash queued >/dev/null; cat "$NOTES_FIXTURE/pr.state"'
+  run cmd_reap
+  assert_success
+  refute_output --partial 'waiting queue item'
+  f=$(qitem queued fix-crash)
+  [ -n "$f" ] || fail "the requeue was undone"
+  assert_equal "$(qfield "$f" note)" ''
+}
+
 @test "reap: a PR gh cannot read leaves the item where it is" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"
@@ -2562,6 +2574,20 @@ restore_setup() {
     fail "a finished restore left its record"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_output --partial 'no lost server on record'
+}
+
+@test "restore reopens a conversation with the queue item that lists it, and a joined window takes no session" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane working "$G" conv-item
+  CLAUDE_CODE_SESSION_ID=conv-item agent-queue add --project game --running --slug hub-work "hub work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work claude --permission-mode bypassPermissions --resume conv-item"
+  f=$(qitem running hub-work)
+  assert_equal "$(qfield "$f" origin)" resume
+  assert_equal "$(qfield "$f" session)" ''
 }
 
 @test "restore keeps the record when a reopen fails, so a rerun finishes it" {
