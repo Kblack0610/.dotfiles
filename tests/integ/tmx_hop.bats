@@ -54,11 +54,12 @@ at() {
 }
 
 @test "a world with a manifest still hops" {
-  printf 'client ~\n' > "$TMUX_SERVERS_DIR/client.conf"
+  # Not a verb's name (client, popup, ...): a verb wins over a world of the same name.
+  printf 'acme ~\n' > "$TMUX_SERVERS_DIR/acme.conf"
   at hub daily 0
-  run "$TMX" client
+  run "$TMX" acme
   assert_success
-  assert_called "land client last"
+  assert_called "land acme last"
 }
 
 @test "a running server with no manifest still hops" {
